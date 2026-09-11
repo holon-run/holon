@@ -97,9 +97,9 @@ impl RuntimeHandle {
                 let current = self
                     .inner
                     .storage
-                    .latest_wait_conditions()?
+                    .latest_wait_conditions_for_agent(&agent_id)?
                     .into_iter()
-                    .find(|wait| wait.id == wait_id && wait.agent_id == agent_id)
+                    .find(|wait| wait.id == wait_id)
                     .ok_or_else(|| anyhow!("wait condition {wait_id} not found"))?;
                 if current.status != expected_status || current.updated_at != expected_updated_at {
                     bail!("wait condition {wait_id} changed before scheduler repair");

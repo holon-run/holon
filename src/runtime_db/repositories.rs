@@ -112,6 +112,64 @@ impl WorkItemRepository<'_> {
         rows.map(|row| decode_work_item_payload(&row?)).collect()
     }
 
+    /// All open work items for one agent. Open items are scheduler candidates,
+    /// so this set is naturally bounded by live scheduling state.
+    pub fn open_for_agent(&self, agent_id: &str) -> Result<Vec<WorkItemRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_items
+             WHERE agent_id = ?1 AND state = 'open'",
+        )?;
+        let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+
+    /// Most recent non-open work items for one agent, bounded by `limit`.
+    /// Projections only surface a small window of terminal history.
+    pub fn latest_non_open_for_agent(
+        &self,
+        agent_id: &str,
+        limit: usize,
+    ) -> Result<Vec<WorkItemRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM work_items
+             WHERE agent_id = ?1 AND state != 'open'
+             ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![agent_id, limit], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_work_item_payload(&row?)).collect()
+    }
+
+    /// Batched lookup of work items by id, replacing per-id connections on
+    /// projection paths. Ids without a row are silently absent.
+    pub fn latest_many(&self, work_item_ids: &[String]) -> Result<Vec<WorkItemRecord>> {
+        let mut records = Vec::with_capacity(work_item_ids.len());
+        for chunk in work_item_ids.chunks(128) {
+            let placeholders = (0..chunk.len()).map(|_| "?").collect::<Vec<_>>().join(",");
+            let sql = format!(
+                "SELECT payload_json FROM work_items WHERE work_item_id IN ({placeholders})"
+            );
+            let connection = self.db.connection()?;
+            let mut statement = connection.prepare(&sql)?;
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+            let rows = statement.query_map(params.as_slice(), |row| row.get::<_, String>(0))?;
+            records.extend(
+                rows.map(|row| decode_work_item_payload(&row?))
+                    .collect::<Result<Vec<_>>>()?,
+            );
+        }
+        Ok(records)
+    }
+
     pub fn latest_all(&self) -> Result<Vec<WorkItemRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
@@ -1787,6 +1845,28 @@ impl WaitConditionRepository<'_> {
              ORDER BY wait_condition_id ASC",
         )?;
         let rows = statement.query_map([], |row| {
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+    }
+
+    /// All wait conditions for one agent, in the same id order as
+    /// [`WaitConditionRepository::latest_all`], so downstream filters and
+    /// `find` selections keep identical semantics while skipping the
+    /// full-table decode of every other agent's rows.
+    pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
+                wake_sources_json, continuation_json
+             FROM wait_conditions
+             WHERE agent_id = ?1
+             ORDER BY wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map([agent_id], |row| {
             decode_wait_condition_row(row).map_err(wait_condition_decode_error)
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()

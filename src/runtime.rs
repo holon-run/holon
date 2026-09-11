@@ -1070,11 +1070,10 @@ fn execution_protocol_settlement_transition_from_facts(
         }
         ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
             let active_waits = storage
-                .latest_wait_conditions()?
+                .latest_wait_conditions_for_agent(&record.agent_id)?
                 .into_iter()
                 .filter(|wait| {
-                    wait.agent_id == record.agent_id
-                        && wait.work_item_id.is_none()
+                    wait.work_item_id.is_none()
                         && wait.turn_id.as_deref() == Some(terminal_turn.turn_id.as_str())
                         && wait.status == crate::types::WaitConditionStatus::Active
                 })
@@ -1151,11 +1150,10 @@ fn exact_task_result_wait_with_status(
     status_matches: impl Fn(&WaitConditionStatus) -> bool,
 ) -> Result<Option<WaitConditionRecord>> {
     let matching_waits = storage
-        .latest_wait_conditions()?
+        .latest_wait_conditions_for_agent(&message.agent_id)?
         .into_iter()
         .filter(|wait| {
-            wait.agent_id == message.agent_id
-                && wait.work_item_id.as_deref() == Some(work_item_id)
+            wait.work_item_id.as_deref() == Some(work_item_id)
                 && status_matches(&wait.status)
                 && wait.kind == crate::types::WaitConditionKind::Task
                 && wait.trigger_message_id() == Some(message.id.as_str())
@@ -1197,11 +1195,10 @@ fn exact_agent_scope_task_result_wait(
     task_id: &str,
 ) -> Result<Option<WaitConditionRecord>> {
     let matching_waits = storage
-        .latest_wait_conditions()?
+        .latest_wait_conditions_for_agent(&message.agent_id)?
         .into_iter()
         .filter(|wait| {
-            wait.agent_id == message.agent_id
-                && wait.work_item_id.is_none()
+            wait.work_item_id.is_none()
                 && matches!(
                     wait.status,
                     WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
@@ -1301,11 +1298,10 @@ fn exact_task_result_claim_recovery(
         });
     }
     let matching_waits = storage
-        .latest_wait_conditions()?
+        .latest_wait_conditions_for_agent(&message.agent_id)?
         .into_iter()
         .filter(|wait| {
-            wait.agent_id == message.agent_id
-                && wait.work_item_id.as_deref() == Some(work_item_id)
+            wait.work_item_id.as_deref() == Some(work_item_id)
                 && matches!(
                     wait.status,
                     WaitConditionStatus::Resolved | WaitConditionStatus::Cancelled

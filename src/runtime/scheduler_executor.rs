@@ -806,11 +806,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime
             .inner
             .storage
-            .latest_wait_conditions()?
+            .latest_wait_conditions_for_agent(&message.agent_id)?
             .into_iter()
             .find(|condition| {
                 condition.id == *wait_id
-                    && condition.agent_id == message.agent_id
                     && condition.work_item_id.as_deref() == expected_work_item_id.as_deref()
             });
         if durable_wait.as_ref().is_none_or(|condition| {
@@ -890,11 +889,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .runtime
                 .inner
                 .storage
-                .latest_wait_conditions()?
+                .latest_wait_conditions_for_agent(&message.agent_id)?
                 .into_iter()
                 .any(|condition| {
-                    condition.agent_id == message.agent_id
-                        && condition.work_item_id.as_deref() == Some(work_item_id.as_str())
+                    condition.work_item_id.as_deref() == Some(work_item_id.as_str())
                         && matches!(
                             condition.status,
                             crate::types::WaitConditionStatus::Active
@@ -922,11 +920,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime
             .inner
             .storage
-            .latest_wait_conditions()?
+            .latest_wait_conditions_for_agent(&message.agent_id)?
             .into_iter()
             .find(|condition| {
                 condition.id == wait.wait_id
-                    && condition.agent_id == message.agent_id
                     && condition.work_item_id.as_deref() == Some(work_item_id.as_str())
             });
         Ok(current_wait.is_none_or(|condition| {
@@ -1074,11 +1071,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .runtime
                     .inner
                     .storage
-                    .latest_wait_conditions()?
+                    .latest_wait_conditions_for_agent(&message.agent_id)?
                     .into_iter()
                     .filter(|condition| {
-                        condition.agent_id == message.agent_id
-                            && condition.work_item_id.as_deref() == Some(work_item_id.as_str())
+                        condition.work_item_id.as_deref() == Some(work_item_id.as_str())
                             && condition.status == crate::types::WaitConditionStatus::Resolved
                             && condition.kind == crate::types::WaitConditionKind::Task
                             && scheduler::message_matches_wait_condition(message, condition)
@@ -1407,11 +1403,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .runtime
                     .inner
                     .storage
-                    .latest_wait_conditions()?
+                    .latest_wait_conditions_for_agent(&message.agent_id)?
                     .into_iter()
                     .find(|condition| {
                         condition.id == *wait_id
-                            && condition.agent_id == message.agent_id
                             && condition.work_item_id.is_none()
                             && matches!(
                                 condition.status,

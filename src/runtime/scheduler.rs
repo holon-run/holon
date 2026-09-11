@@ -312,9 +312,8 @@ impl SchedulerProjection {
             waiting_work_item_projection.map(|item| item.scheduling_state);
         let active_wait_conditions = storage.active_wait_conditions_for_agent(&snapshot.id)?;
         let activation_waits = storage
-            .latest_wait_conditions()?
+            .latest_wait_conditions_for_agent(&snapshot.id)?
             .into_iter()
-            .filter(|condition| condition.agent_id == snapshot.id)
             .filter(|condition| {
                 condition.status == WaitConditionStatus::Active
                     || condition.status == WaitConditionStatus::Triggered

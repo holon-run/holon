@@ -1137,6 +1137,17 @@ impl AppStorage {
         return runtime_db.wait_conditions().latest_all();
     }
 
+    /// Agent-scoped counterpart of [`AppStorage::latest_wait_conditions`].
+    /// Use this whenever the caller filters by agent id, so the repository can
+    /// skip decoding every other agent's wait conditions.
+    pub fn latest_wait_conditions_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Vec<WaitConditionRecord>> {
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.wait_conditions().latest_for_agent(agent_id);
+    }
+
     pub fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
         let runtime_db = self.runtime_db.clone();
         if let Some(agent_id) = self.current_agent_id()? {
@@ -1257,6 +1268,7 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::{broadcast, Notify};
 
+    use crate::storage::read_models::WORK_QUEUE_NON_OPEN_WINDOW;
     use chrono::Utc;
 
     fn truncate_to_millis(dt: DateTime<Utc>) -> DateTime<Utc> {
@@ -3421,6 +3433,106 @@ mod tests {
         );
         assert!(!completed.has_active_waits);
         assert!(!completed.has_active_task_waits);
+    }
+
+    #[test]
+    fn latest_wait_conditions_for_agent_matches_latest_all_filter() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let now = Utc::now();
+        // Respect the unresolved-owner uniqueness invariants: at most one
+        // active/triggered wait per agent without a work item, and at most one
+        // per (agent, work item).
+        for (id, agent_id, work_item_id, status) in [
+            ("wait-a", "default", None, WaitConditionStatus::Active),
+            ("wait-b", "other-agent", None, WaitConditionStatus::Active),
+            (
+                "wait-c",
+                "default",
+                Some("wi-default-1"),
+                WaitConditionStatus::Active,
+            ),
+            (
+                "wait-d",
+                "other-agent",
+                Some("wi-other-1"),
+                WaitConditionStatus::Resolved,
+            ),
+            (
+                "wait-e",
+                "default",
+                Some("wi-default-2"),
+                WaitConditionStatus::Cancelled,
+            ),
+        ] {
+            storage
+                .append_wait_condition(&WaitConditionRecord {
+                    id: id.into(),
+                    agent_id: agent_id.into(),
+                    work_item_id: work_item_id.map(Into::into),
+                    status,
+                    kind: WaitConditionKind::Task,
+                    source: None,
+                    subject_ref: Some("task-1".into()),
+                    waiting_for: "task result".into(),
+                    wake_sources: vec![WakeSource::TaskResult {
+                        task_id: "task-1".into(),
+                    }],
+                    continuation: None,
+                    created_at: now,
+                    updated_at: now,
+                    expires_at: None,
+                    resolved_at: None,
+                    cancelled_at: None,
+                    turn_id: None,
+                    trigger_message_id: None,
+                    triggered_at: None,
+                })
+                .unwrap();
+        }
+
+        let scoped_ids = storage
+            .latest_wait_conditions_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .map(|wait| wait.id)
+            .collect::<Vec<_>>();
+        let filtered_ids = storage
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .filter(|wait| wait.agent_id == "default")
+            .map(|wait| wait.id)
+            .collect::<Vec<_>>();
+        assert_eq!(scoped_ids, vec!["wait-a", "wait-c", "wait-e"]);
+        assert_eq!(scoped_ids, filtered_ids);
+    }
+
+    #[test]
+    fn work_queue_projection_bounds_terminal_history_to_window() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let open = WorkItemRecord::new("default", "open item", WorkItemState::Open);
+        storage.append_work_item(&open).unwrap();
+        let total_terminal = WORK_QUEUE_NON_OPEN_WINDOW + 10;
+        for index in 0..total_terminal {
+            let mut completed = WorkItemRecord::new(
+                "default",
+                format!("completed {index}"),
+                WorkItemState::Completed,
+            );
+            completed.updated_at = Utc::now() + chrono::Duration::milliseconds(index as i64);
+            storage.append_work_item(&completed).unwrap();
+        }
+
+        let queue = storage.work_queue_read_model().unwrap();
+        let terminal_count = queue
+            .items
+            .iter()
+            .filter(|item| item.work_item.state != WorkItemState::Open)
+            .count();
+        assert_eq!(terminal_count, WORK_QUEUE_NON_OPEN_WINDOW);
+        assert!(queue.items.iter().any(|item| item.work_item.id == open.id));
     }
 
     #[test]

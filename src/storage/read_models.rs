@@ -22,6 +22,11 @@ use super::{
     },
 };
 
+/// Terminal work items retained in scheduling projections. Must cover the
+/// HTTP state bootstrap slice (`STATE_BOOTSTRAP_WORK_ITEM_LIMIT`) plus the
+/// small per-class windows the read model surfaces.
+pub(crate) const WORK_QUEUE_NON_OPEN_WINDOW: usize = 128;
+
 #[derive(Debug, Clone)]
 pub struct RuntimeReadModels {
     runtime_db: RuntimeDb,
@@ -42,10 +47,13 @@ impl RuntimeReadModels {
             .and_then(|agent| agent.current_work_item_id);
         let mut latest = HashMap::<String, WorkItemRecord>::new();
         if let Some(agent_id) = self.agent_id.as_deref() {
+            for record in self.runtime_db.work_items().open_for_agent(agent_id)? {
+                latest.insert(record.id.clone(), record);
+            }
             for record in self
                 .runtime_db
                 .work_items()
-                .latest_for_agent(agent_id, usize::MAX)?
+                .latest_non_open_for_agent(agent_id, WORK_QUEUE_NON_OPEN_WINDOW)?
             {
                 latest.insert(record.id.clone(), record);
             }
@@ -419,26 +427,29 @@ impl RuntimeReadModels {
         &self,
         records: Vec<WaitConditionRecord>,
     ) -> Result<Vec<WaitConditionRecord>> {
-        let mut work_item_is_open = BTreeMap::<String, bool>::new();
+        let referenced_ids = records
+            .iter()
+            .filter_map(|record| record.work_item_id.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let work_item_is_open = self
+            .runtime_db
+            .work_items()
+            .latest_many(&referenced_ids)?
+            .into_iter()
+            .map(|item| (item.id, item.state == WorkItemState::Open))
+            .collect::<BTreeMap<_, _>>();
         let mut live = Vec::new();
         for record in records {
             let Some(work_item_id) = record.work_item_id.as_deref() else {
                 live.push(record);
                 continue;
             };
-            let is_open = match work_item_is_open.get(work_item_id) {
-                Some(is_open) => *is_open,
-                None => {
-                    let is_open = self
-                        .runtime_db
-                        .work_items()
-                        .latest(work_item_id)?
-                        .is_some_and(|item| item.state == WorkItemState::Open);
-                    work_item_is_open.insert(work_item_id.to_string(), is_open);
-                    is_open
-                }
-            };
-            if is_open {
+            if work_item_is_open
+                .get(work_item_id)
+                .is_some_and(|is_open| *is_open)
+            {
                 live.push(record);
             }
         }
