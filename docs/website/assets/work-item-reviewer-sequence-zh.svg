@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="790" viewBox="0 0 800 790" role="img">
+<title>Reviewer：A 与 B 如何交错，而不互相覆盖</title>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0L6 3L0 6" fill="none" stroke="#285fa7"/></marker></defs>
+<rect width="800" height="790" rx="16" fill="#f7faff"/>
+<g font-family="Noto Sans CJK SC, sans-serif">
+<text x="32" y="42" font-size="24" fill="#183457" font-weight="600" text-anchor="start">Reviewer：A 与 B 如何交错，而不互相覆盖</text>
+<text x="32" y="72" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">示意顺序；不是固定优先级，也不是即时抢占</text>
+<text x="132" y="120" font-size="18" fill="#183457" font-weight="600" text-anchor="middle">WorkItem A · #101</text>
+<path d="M132 142V698" fill="none" stroke="#285fa7" stroke-width="1.6" stroke-dasharray="5 6"/>
+<text x="400" y="120" font-size="18" fill="#183457" font-weight="600" text-anchor="middle">Reviewer / 调度</text>
+<path d="M400 142V698" fill="none" stroke="#285fa7" stroke-width="1.6" stroke-dasharray="5 6"/>
+<text x="668" y="120" font-size="18" fill="#183457" font-weight="600" text-anchor="middle">WorkItem B · #102</text>
+<path d="M668 142V698" fill="none" stroke="#285fa7" stroke-width="1.6" stroke-dasharray="5 6"/>
+<rect x="32" y="147" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="168" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">审阅 A，记录权限问题</text>
+<path d="M400 180H132" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="216" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="237" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">A 登记外部等待，让出执行</text>
+<path d="M132 249H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="285" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="306" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">开始 B，读取 diff 并分析</text>
+<path d="M400 318H668" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="354" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="375" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">A 更新通知到达；不立即抢占 B</text>
+<path d="M132 387H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="423" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="444" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">B 保存进度，登记测试 task 等待</text>
+<path d="M668 456H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="492" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="513" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">调度允许时恢复 A，查询新提交与 CI</text>
+<path d="M400 525H132" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="561" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="582" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">A 验收后交付；B 仍未完成</text>
+<path d="M132 594H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="630" width="736" height="27" fill="#f7faff"/>
+<text x="400" y="651" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">B 测试结果到达，后续恢复 B</text>
+<path d="M668 663H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
+<rect x="32" y="717" width="736" height="52" rx="8" fill="#fff" stroke="#c4d3e6" stroke-width="1.5"/>
+<text x="50" y="747" font-size="20" fill="#183457" font-weight="600" text-anchor="start">A 与 B 各有目标、进度、等待条件和完成边界</text>
+</g></svg>

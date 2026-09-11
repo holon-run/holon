@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1150" viewBox="0 0 480 1150" role="img" aria-labelledby="title desc">
+<title id="title">从客户端上报到 GitHub Issue</title><desc id="desc">客户端生成诊断report并上报服务器；webhook通知Holon内的trace report Agent，读取获准trace、整理现场和证据，创建或补充GitHub Issue，再交开发者定位修复。</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8" fill="none" stroke="#285fa7" stroke-width="1.5"/></marker></defs>
+<rect width="480" height="1150" rx="16" fill="#f7faff"/>
+<g font-family="Noto Sans CJK SC, sans-serif" fill="#183457">
+<text x="28" y="48" font-size="27" fill="#183457" font-weight="600" text-anchor="start">从客户端上报到 GitHub Issue</text>
+<text x="28" y="84" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">日志进入调查，调查留下可接手的记录</text>
+<g transform="translate(35,126)">
+<rect x="8" y="0" width="40" height="64" rx="7" fill="white" stroke="#285fa7" stroke-width="1.5"/>
+<path d="M20 8 H36 M23 56 H33" fill="none" stroke="#285fa7" stroke-width="2"/>
+<path d="M17 35 L25 43 L40 23" fill="none" stroke="#285fa7" stroke-width="2"/>
+</g>
+<text x="130" y="148" font-size="25" fill="#183457" font-weight="600" text-anchor="start">客户端</text>
+<text x="130" y="183" font-size="22" fill="#183457" font-weight="400" text-anchor="start">用户操作与系统响应</text>
+<g transform="translate(35,286)">
+<path d="M6 0 H40 L58 18 V64 H6 Z M40 0 V18 H58" fill="none" stroke="#285fa7" stroke-width="2"/>
+<path d="M17 29 H46" fill="none" stroke="#285fa7" stroke-width="2"/>
+<path d="M17 40 H38" fill="none" stroke="#285fa7" stroke-width="2"/>
+<path d="M17 51 H46" fill="none" stroke="#285fa7" stroke-width="2"/>
+</g>
+<text x="130" y="308" font-size="25" fill="#183457" font-weight="600" text-anchor="start">诊断 report</text>
+<text x="130" y="343" font-size="22" fill="#183457" font-weight="400" text-anchor="start">带上现场描述与 trace 线索</text>
+<g transform="translate(35,446)">
+<rect x="0" y="0" width="64" height="17" rx="3" fill="white" stroke="#285fa7" stroke-width="1.5"/>
+<path d="M8 8 H12 M20 8 H52" fill="none" stroke="#285fa7" stroke-width="2"/>
+<rect x="0" y="23" width="64" height="17" rx="3" fill="white" stroke="#285fa7" stroke-width="1.5"/>
+<path d="M8 31 H12 M20 31 H52" fill="none" stroke="#285fa7" stroke-width="2"/>
+<rect x="0" y="46" width="64" height="17" rx="3" fill="white" stroke="#285fa7" stroke-width="1.5"/>
+<path d="M8 54 H12 M20 54 H52" fill="none" stroke="#285fa7" stroke-width="2"/>
+</g>
+<text x="130" y="468" font-size="25" fill="#183457" font-weight="600" text-anchor="start">服务器</text>
+<text x="130" y="502" font-size="22" fill="#183457" font-weight="400" text-anchor="start">接收上报</text>
+<text x="130" y="538" font-size="22" fill="#183457" font-weight="400" text-anchor="start">提供获准访问的 trace</text>
+<path d="M65 206 V254" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="88" y="238" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">生成报告</text>
+<path d="M65 366 V414" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="88" y="398" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">上传 report</text>
+<path d="M65 560 V608" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="88" y="592" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">webhook 通知</text>
+<rect x="28" y="626" width="424" height="258" rx="10" fill="#e8f0fb" stroke="#90afd4" stroke-width="1.5"/>
+<text x="50" y="662" font-size="24" fill="#183457" font-weight="600" text-anchor="start">Holon · 常驻 Runtime</text>
+<text x="50" y="698" font-size="25" fill="#285fa7" font-weight="600" text-anchor="start">trace report Agent</text>
+<text x="50" y="747" font-size="22" fill="#183457" font-weight="400" text-anchor="start">01  读取获准 trace，还原操作过程</text>
+<text x="50" y="789" font-size="22" fill="#183457" font-weight="400" text-anchor="start">02  整理卡住位置、取消与恢复线索</text>
+<text x="50" y="831" font-size="22" fill="#183457" font-weight="400" text-anchor="start">03  注明服务端日志缺口与待确认点</text>
+<path d="M65 884 V932" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="88" y="916" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">创建 / 补充</text>
+<g transform="translate(35,956)">
+<rect x="0" y="0" width="64" height="64" rx="10" fill="white" stroke="#285fa7" stroke-width="1.5"/>
+<circle cx="17" cy="18" r="6" fill="none" stroke="#285fa7" stroke-width="2"/>
+<path d="M31 18 H53 M12 36 H51 M12 48 H43" fill="none" stroke="#285fa7" stroke-width="2"/>
+</g>
+<text x="130" y="979" font-size="25" fill="#183457" font-weight="600" text-anchor="start">GitHub Issue</text>
+<text x="130" y="1014" font-size="22" fill="#183457" font-weight="400" text-anchor="start">场景、证据、标签、负责人</text>
+<text x="28" y="1074" font-size="24" fill="#285fa7" font-weight="600" text-anchor="start">→ 开发者继续定位与修复</text>
+<text x="28" y="1120" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">调查线索 ≠ 已确认根因</text>
+</g></svg>
