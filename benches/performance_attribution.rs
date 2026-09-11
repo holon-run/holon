@@ -17,6 +17,11 @@ use tempfile::TempDir;
 
 const AGENT: &str = "attribution";
 const OTHER: &str = "other";
+const WORK_QUEUE_TERMINAL_WINDOW: usize = 128;
+
+fn projected_item_count(own_completed: usize) -> usize {
+    own_completed.min(WORK_QUEUE_TERMINAL_WINDOW) + 1
+}
 
 struct Fixture {
     storage: AppStorage,
@@ -110,11 +115,12 @@ impl Fixture {
             active_waits == waits && linked_waits == waits,
             "active wait linkage"
         );
-        verify_queue(&self.storage, own + 1)?;
+        let projected_items = projected_item_count(own);
+        verify_queue(&self.storage, projected_items)?;
         Ok(json!({
             "work_items": work_items, "own_completed": own_completed,
             "other_completed": completed - own_completed, "active_waits": active_waits,
-            "distinct_linked_open_items": linked_waits, "projected_items": own + 1,
+            "distinct_linked_open_items": linked_waits, "projected_items": projected_items,
         }))
     }
 }
@@ -209,7 +215,7 @@ fn queue_case(
     let fixture = Fixture::new(own, other, waits)?;
     let rows = fixture.verify_rows(own, other, waits)?;
     let _held_connection = fixture.db.connection()?;
-    verify_queue(&fixture.storage, own + 1)?;
+    verify_queue(&fixture.storage, projected_item_count(own))?;
     let warmup_barrier = Barrier::new(workers);
     thread::scope(|scope| -> Result<()> {
         let handles: Vec<_> = (0..workers)
@@ -220,7 +226,7 @@ fn queue_case(
                 scope.spawn(move || -> Result<()> {
                     let connection = db.connection()?;
                     barrier.wait();
-                    verify_queue(storage, own + 1)?;
+                    verify_queue(storage, projected_item_count(own))?;
                     drop(connection);
                     Ok(())
                 })
@@ -248,7 +254,10 @@ fn queue_case(
                         let start = Instant::now();
                         let queue = storage.work_queue_read_model()?;
                         let elapsed = start.elapsed().as_nanos();
-                        ensure!(queue.items.len() == own + 1, "measured projection count");
+                        ensure!(
+                            queue.items.len() == projected_item_count(own),
+                            "measured projection count"
+                        );
                         black_box(queue);
                         samples.push(Sample {
                             worker,
