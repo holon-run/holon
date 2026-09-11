@@ -1,7 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createWriteStream, type WriteStream } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import http from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +50,33 @@ async function reservePort(): Promise<number> {
       server.close((error) => error ? reject(error) : resolve(address.port));
     });
   });
+}
+
+/**
+ * The daemon fails fast at startup unless the configured model chain has a
+ * usable provider, and CI runners hold no provider credentials. Every daemon
+ * therefore gets a local stub provider that rejects requests quickly, so
+ * startup succeeds and turns settle as deterministic provider errors without
+ * external network calls. Specs that need real provider behavior override
+ * OPENAI_API_KEY / HOLON_OPENAI_BASE_URL through `options.env`.
+ */
+async function startStubProvider(): Promise<{ baseUrl: string; stop: () => Promise<void> }> {
+  const port = await reservePort();
+  const server = http.createServer((_request, response) => {
+    response.writeHead(500, { "Content-Type": "application/json" });
+    response.end(JSON.stringify({ error: { message: "e2e stub provider rejection" } }));
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, "127.0.0.1", resolve);
+  });
+  return {
+    baseUrl: `http://127.0.0.1:${port}/v1`,
+    async stop() {
+      server.closeAllConnections?.();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    },
+  };
 }
 
 function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
@@ -107,6 +135,7 @@ async function createDaemon(
   const artifactDir = path.resolve("test-results", "real-daemon", `worker-${workerIndex}`);
   const stdoutPath = path.join(artifactDir, "daemon.stdout.log");
   const stderrPath = path.join(artifactDir, "daemon.stderr.log");
+  const stubProvider = await startStubProvider();
   const port = await reservePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const binary = path.resolve(
@@ -114,6 +143,7 @@ async function createDaemon(
   );
   let child: ChildProcessWithoutNullStreams | undefined;
   let agentCreated = false;
+  let stderrStream: WriteStream | undefined;
 
   await mkdir(home, { recursive: true });
   await mkdir(artifactDir, { recursive: true });
@@ -136,6 +166,8 @@ async function createDaemon(
         ...process.env,
         HOLON_HOME: home,
         HOLON_MODEL: "openai/gpt-5.4",
+        OPENAI_API_KEY: "e2e-provider-key",
+        HOLON_OPENAI_BASE_URL: stubProvider.baseUrl,
         HOLON_CONTROL_AUTH_MODE: "required",
         HOLON_CALLBACK_BASE_URL: baseUrl,
         ...(options.env ?? {}),
@@ -143,7 +175,8 @@ async function createDaemon(
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stdout.pipe(createWriteStream(stdoutPath, { flags: "a" }));
-    child.stderr.pipe(createWriteStream(stderrPath, { flags: "a" }));
+    stderrStream = createWriteStream(stderrPath, { flags: "a" });
+    child.stderr.pipe(stderrStream);
     await waitForReady(baseUrl, controlToken, child);
     if (!agentCreated) {
       const response = await fetch(
@@ -221,13 +254,26 @@ async function createDaemon(
     await start();
   } catch (error) {
     await stop();
+    if (stderrStream && !stderrStream.closed) {
+      await new Promise<void>((resolve) => stderrStream!.close(() => resolve()));
+    }
+    let stderrTail = "";
+    try {
+      stderrTail = (await readFile(stderrPath, "utf8")).slice(-2000).trim();
+    } catch {
+      // Diagnostics only; keep the original error when the log is unavailable.
+    }
+    await stubProvider.stop();
     await rm(root, { recursive: true, force: true });
-    throw error;
+    throw stderrTail
+      ? new Error(`${String(error)}\n--- daemon stderr (tail) ---\n${stderrTail}`)
+      : error;
   }
   return {
     controller,
     cleanup: async () => {
       await stop();
+      await stubProvider.stop();
       await rm(root, { recursive: true, force: true });
     },
   };

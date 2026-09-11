@@ -24,7 +24,8 @@ test("production assets authenticate and use real snapshot, SSE, and route refre
   });
 
   const unauthorized = await page.request.get(`${daemon.baseUrl}/api/handshake`);
-  expect(unauthorized.status()).toBe(403);
+  // #2758 standardized missing credentials on 401 Unauthorized.
+  expect(unauthorized.status()).toBe(401);
 
   await installLocalToken(page, daemon.token);
   await page.goto(daemon.baseUrl);
