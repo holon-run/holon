@@ -5917,4 +5917,4 @@ pub(crate) fn retryable_enqueue_conflict(error: &anyhow::Error, agent_id: &str) 
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

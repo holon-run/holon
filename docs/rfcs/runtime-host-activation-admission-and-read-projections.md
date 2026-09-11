@@ -104,7 +104,14 @@ posture, or heuristic threshold is sufficient evidence.
 The same pre-listener pass discovers distinct owner agents for durable active
 tasks (`queued`, `running`, or `cancelling`) directly from the shared runtime
 database. It does not enumerate agent directories or use read APIs to
-materialize runtimes.
+materialize runtimes. Timer ownership is discovered the same way: an agent is a
+recovery candidate when it owns at least one non-terminal timer (`active` or
+`scheduled`) or a pending `timer_wakes` admission. Queue, task, and timer
+candidate sets are merged and deduplicated before activation so an agent with
+several durable signals is activated exactly once.
+
+Timer ownership alone does not bypass the stopped-owner gate: a
+lifecycle-stopped agent whose only durable signal is a timer remains lazy.
 
 Every affected owner is explicitly activated with the startup recovery reason,
 and the host waits for a one-shot bootstrap result before continuing. Bootstrap
@@ -128,6 +135,8 @@ Tests cover:
 - execution ingress after admission closes;
 - orphan `dequeued` recovery and idempotence;
 - active-task owner discovery for unloaded named and default agents;
+- timer-only owner discovery, including overdue catch-up fire and resolution
+  of the waiting condition bound to the recovered timer;
 - bootstrap completion before startup recovery returns;
 - stopped-owner task convergence without child reattach or model re-entry;
 - canonical or terminal ownership exclusions;

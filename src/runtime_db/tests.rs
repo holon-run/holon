@@ -105,6 +105,7 @@ mod tests {
         types::{
             ActiveWorkspaceEntry, AgentDeletionJob, AgentDeletionStatus, AgentKind, AgentOwnership,
             AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind,
+            TimerStatus,
         },
     };
     use rusqlite::OptionalExtension;
@@ -4770,6 +4771,211 @@ CREATE TABLE working_memory_deltas (
         assert!(!db
             .queue_entries()
             .has_interrupted_for_agent("agent-dequeued")?);
+        Ok(())
+    }
+
+    fn timer_record_fixture(
+        id: &str,
+        agent_id: &str,
+        status: TimerStatus,
+        next_fire_at: Option<chrono::DateTime<Utc>>,
+    ) -> crate::types::TimerRecord {
+        crate::types::TimerRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            created_at: Utc::now(),
+            duration_ms: 60_000,
+            interval_ms: None,
+            repeat: false,
+            status,
+            summary: None,
+            next_fire_at,
+            last_fired_at: None,
+            fire_count: 0,
+        }
+    }
+
+    #[test]
+    fn timer_active_owner_agent_ids_dedupes_owners_and_filters_terminal_rows() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        for agent_id in [
+            "timer-agent-a",
+            "timer-agent-b",
+            "timer-agent-terminal",
+            "timer-agent-deleting",
+            "timer-agent-deleted",
+            "timer-agent-ghost",
+        ] {
+            db.agent_identities().upsert(&agent_identity(agent_id, 0))?;
+        }
+        let mut deleting_identity = agent_identity("timer-agent-deleting", 0);
+        deleting_identity.status = AgentRegistryStatus::Deleting;
+        db.agent_identities().upsert(&deleting_identity)?;
+        let mut deleted_identity = agent_identity("timer-agent-deleted", 0);
+        deleted_identity.status = AgentRegistryStatus::Deleted;
+        deleted_identity.deleted_at = Some(now);
+        db.agent_identities().upsert(&deleted_identity)?;
+        // Remove the ghost identity so its timer exercises the missing-identity join.
+        db.connection()?.execute(
+            "DELETE FROM agent_identities WHERE agent_id = 'timer-agent-ghost'",
+            [],
+        )?;
+
+        let future = Some(now + chrono::Duration::seconds(60));
+        db.timers().upsert(&timer_record_fixture(
+            "timer-a-1",
+            "timer-agent-a",
+            TimerStatus::Active,
+            future,
+        ))?;
+        db.timers().upsert(&timer_record_fixture(
+            "timer-a-2",
+            "timer-agent-a",
+            TimerStatus::Active,
+            future,
+        ))?;
+        db.timers().upsert(&timer_record_fixture(
+            "timer-b-1",
+            "timer-agent-b",
+            TimerStatus::Active,
+            future,
+        ))?;
+        db.timers().upsert(&timer_record_fixture(
+            "timer-terminal-done",
+            "timer-agent-terminal",
+            TimerStatus::Completed,
+            None,
+        ))?;
+        db.timers().upsert(&timer_record_fixture(
+            "timer-terminal-cancelled",
+            "timer-agent-terminal",
+            TimerStatus::Cancelled,
+            future,
+        ))?;
+        for (timer_id, agent_id) in [
+            ("timer-deleting-1", "timer-agent-deleting"),
+            ("timer-deleted-1", "timer-agent-deleted"),
+            ("timer-ghost-1", "timer-agent-ghost"),
+        ] {
+            db.timers().upsert(&timer_record_fixture(
+                timer_id,
+                agent_id,
+                TimerStatus::Active,
+                future,
+            ))?;
+        }
+
+        assert_eq!(
+            db.timers().active_owner_agent_ids()?,
+            vec!["timer-agent-a", "timer-agent-b"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn timer_active_owner_agent_ids_covers_fire_times_legacy_status_and_pending_wakes() -> Result<()>
+    {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        for agent_id in [
+            "timer-future",
+            "timer-overdue",
+            "timer-missing-next",
+            "timer-legacy",
+            "timer-pending-wake",
+            "timer-cancelled-wake",
+            "timer-stopped-identity",
+        ] {
+            db.agent_identities().upsert(&agent_identity(agent_id, 0))?;
+        }
+        let mut stopped_identity = agent_identity("timer-stopped-identity", 0);
+        stopped_identity.status = AgentRegistryStatus::Deleted;
+        stopped_identity.deleted_at = Some(now);
+        db.agent_identities().upsert(&stopped_identity)?;
+
+        db.timers().upsert(&timer_record_fixture(
+            "timer-future-1",
+            "timer-future",
+            TimerStatus::Active,
+            Some(now + chrono::Duration::seconds(600)),
+        ))?;
+        db.timers().upsert(&timer_record_fixture(
+            "timer-overdue-1",
+            "timer-overdue",
+            TimerStatus::Active,
+            Some(now - chrono::Duration::seconds(600)),
+        ))?;
+        db.timers().upsert(&timer_record_fixture(
+            "timer-missing-next-1",
+            "timer-missing-next",
+            TimerStatus::Active,
+            None,
+        ))?;
+        db.timers().upsert(&timer_record_fixture(
+            "timer-legacy-1",
+            "timer-legacy",
+            TimerStatus::Active,
+            Some(now + chrono::Duration::seconds(600)),
+        ))?;
+        db.connection()?.execute(
+            "UPDATE timers SET status = 'scheduled' WHERE timer_id = 'timer-legacy-1'",
+            [],
+        )?;
+
+        // #2894 late-bind shape: one-shot timer already done, durable wake still pending.
+        db.timers().upsert(&timer_record_fixture(
+            "timer-wake-done",
+            "timer-pending-wake",
+            TimerStatus::Completed,
+            None,
+        ))?;
+        // Cancelled wake must not keep the owner a recovery candidate.
+        db.timers().upsert(&timer_record_fixture(
+            "timer-wake-cancelled",
+            "timer-cancelled-wake",
+            TimerStatus::Completed,
+            None,
+        ))?;
+        // Pending wake owned by a non-active identity must be filtered out.
+        db.timers().upsert(&timer_record_fixture(
+            "timer-wake-stopped",
+            "timer-stopped-identity",
+            TimerStatus::Completed,
+            None,
+        ))?;
+
+        let created_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        for (timer_id, status) in [
+            ("timer-wake-done", "pending"),
+            ("timer-wake-cancelled", "cancelled"),
+            ("timer-wake-stopped", "pending"),
+        ] {
+            db.connection()?.execute(
+                "INSERT INTO timer_wakes
+                 (timer_id, message_id, fire_count, status, created_at, updated_at)
+                 VALUES (?1, ?2, 1, ?3, ?4, ?4)",
+                params![
+                    timer_id,
+                    format!("message:wake:{timer_id}"),
+                    status,
+                    created_at
+                ],
+            )?;
+        }
+
+        assert_eq!(
+            db.timers().active_owner_agent_ids()?,
+            vec![
+                "timer-future",
+                "timer-legacy",
+                "timer-missing-next",
+                "timer-overdue",
+                "timer-pending-wake"
+            ]
+        );
         Ok(())
     }
 

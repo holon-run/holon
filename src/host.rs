@@ -1413,12 +1413,19 @@ impl RuntimeHost {
             .active_owner_agent_ids()?
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
+        let active_timer_owner_ids = self
+            .runtime_db()
+            .timers()
+            .active_owner_agent_ids()?
+            .into_iter()
+            .collect::<std::collections::BTreeSet<_>>();
         let mut recovery_agent_ids = recovered_queue_agent_ids
             .iter()
             .cloned()
             .collect::<std::collections::BTreeSet<_>>();
         recovery_agent_ids.extend(queue_recovery_candidate_ids.iter().cloned());
         recovery_agent_ids.extend(active_task_owner_ids.iter().cloned());
+        recovery_agent_ids.extend(active_timer_owner_ids.iter().cloned());
         for agent_id in recovery_agent_ids {
             let state = self
                 .agent_storage_read_only(&agent_id)?
@@ -6028,9 +6035,9 @@ mod tests {
             BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
             InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
             MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
-            TaskRecoverySpec, TaskStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
-            WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
-            ACTOR_INVOCATION_TASK_KIND,
+            TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TurnTerminalKind,
+            WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
+            WorkItemRecord, WorkItemState, ACTOR_INVOCATION_TASK_KIND,
         },
     };
 
@@ -10742,6 +10749,437 @@ mod tests {
             .read_message_by_id("message:task-restart:task-stopped-owner")
             .unwrap()
             .is_none());
+    }
+
+    fn startup_timer_fixture(
+        id: &str,
+        agent_id: &str,
+        status: TimerStatus,
+        interval_ms: Option<u64>,
+        next_fire_at: Option<chrono::DateTime<Utc>>,
+    ) -> TimerRecord {
+        TimerRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            created_at: Utc::now(),
+            duration_ms: 60_000,
+            interval_ms,
+            repeat: interval_ms.is_some(),
+            status,
+            summary: Some("startup timer summary".into()),
+            next_fire_at,
+            last_fired_at: None,
+            fire_count: 0,
+        }
+    }
+
+    fn assert_startup_timer_tick_count(storage: &AppStorage, timer_id: &str, expected: usize) {
+        let ticks = storage
+            .read_recent_messages(200)
+            .unwrap()
+            .iter()
+            .filter(|message| {
+                message.kind == MessageKind::TimerTick
+                    && matches!(&message.origin, MessageOrigin::Timer { timer_id: origin } if origin == timer_id)
+            })
+            .count();
+        assert_eq!(
+            ticks, expected,
+            "timer {timer_id} should have produced exactly {expected} TimerTick message(s)"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_activates_timer_only_owner_and_resolves_waiting_timer() {
+        let (_home, host) = canonical_test_host();
+        let config = host.config().as_ref().clone();
+        let agent_id = "startup-timer-owner";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        let storage = host.agent_storage(agent_id).unwrap();
+        let mut work_item = WorkItemRecord::new(agent_id, "wait for timer", WorkItemState::Open);
+        work_item.id = "work-startup-timer".into();
+        storage.append_work_item(&work_item).unwrap();
+        let now = Utc::now();
+        // The timer is created already overdue. Overdue state comes from
+        // wall-clock time passing while the agent is unloaded, not from a
+        // record rewrite: the timers upsert guard rejects writes whose
+        // effective updated_at (next_fire_at) moves backwards.
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-startup-owner-1",
+                agent_id,
+                TimerStatus::Active,
+                None,
+                Some(now - chrono::Duration::minutes(30)),
+            ))
+            .unwrap();
+        // Register the wait through the live runtime so the durable wait
+        // condition and its timer wake binding are real, rather than a
+        // hand-written condition that skips wake admission state.
+        // Execution-protocol Waiting authority for the registered
+        // condition is seeded below.
+        let registration = host
+            .try_get_loaded_runtime(agent_id)
+            .await
+            .expect("created agent runtime should stay loaded")
+            .register_wait_for(
+                agent_id,
+                Some(work_item.id.clone()),
+                crate::runtime::WaitForWakeKind::Timer,
+                Some("timer-startup-owner-1".into()),
+                "timer catch-up".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        // register_wait_for only records execution-protocol Waiting
+        // authority when a live execution attempt settles with a Wait
+        // outcome. Seed the same protocol state for the registered
+        // condition, mirroring what a waiting turn persists, so the
+        // recovered TimerTick can claim this work item back into an
+        // execution.
+        let registered_work_item = host
+            .runtime_db()
+            .work_items()
+            .latest(&work_item.id)
+            .unwrap()
+            .unwrap();
+        crate::runtime::tests::support::seed_waiting_work_execution(
+            &storage,
+            &registered_work_item,
+            &registration.condition.id,
+        );
+        host.unload_runtime(agent_id).await;
+
+        // The timer is the only recovery signal: no queue or task candidates exist.
+        assert!(storage.latest_queue_entries().unwrap().is_empty());
+        assert!(storage.latest_active_task_records(10).unwrap().is_empty());
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .recovery_candidate_agent_ids()
+            .unwrap()
+            .is_empty());
+        assert!(host
+            .runtime_db()
+            .tasks()
+            .active_owner_agent_ids()
+            .unwrap()
+            .is_empty());
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        drop(storage);
+        drop(host);
+
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        assert!(restarted
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap()
+            .is_empty());
+
+        restarted
+            .try_get_loaded_runtime(agent_id)
+            .await
+            .expect("startup recovery should activate the timer-only owner");
+        let storage = restarted.agent_storage(agent_id).unwrap();
+        let timer = storage
+            .latest_timer_record("timer-startup-owner-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.status, TimerStatus::Completed);
+        assert_eq!(timer.fire_count, 1);
+        assert_startup_timer_tick_count(&storage, "timer-startup-owner-1", 1);
+
+        let mut resolved = false;
+        for _ in 0..100 {
+            if storage
+                .active_wait_conditions_for_agent(agent_id)
+                .unwrap()
+                .is_empty()
+            {
+                resolved = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            resolved,
+            "the recovered TimerTick should resolve the waiting timer condition"
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_discovers_timer_only_owner_without_wait_records() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-timer-no-wait";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        let overdue = Utc::now() - chrono::Duration::minutes(5);
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-startup-no-wait-1",
+                agent_id,
+                TimerStatus::Active,
+                None,
+                Some(overdue),
+            ))
+            .unwrap();
+
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_some());
+        let timer = storage
+            .latest_timer_record("timer-startup-no-wait-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.status, TimerStatus::Completed);
+        assert_eq!(timer.fire_count, 1);
+        assert_startup_timer_tick_count(&storage, "timer-startup-no-wait-1", 1);
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_overdue_repeating_timer_fires_once_and_keeps_cadence() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-timer-repeating";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        // Overdue by five hourly periods; recovery must catch up once, not replay all.
+        let overdue = Utc::now() - chrono::Duration::hours(5);
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-startup-repeating-1",
+                agent_id,
+                TimerStatus::Active,
+                Some(3_600_000),
+                Some(overdue),
+            ))
+            .unwrap();
+
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        let timer = storage
+            .latest_timer_record("timer-startup-repeating-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.status, TimerStatus::Active);
+        assert_eq!(timer.fire_count, 1);
+        assert!(timer
+            .next_fire_at
+            .is_some_and(|next_fire_at| next_fire_at > Utc::now()));
+        assert_startup_timer_tick_count(&storage, "timer-startup-repeating-1", 1);
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_keeps_terminal_timer_owner_and_unrelated_agents_unloaded() {
+        let (_home, host) = canonical_test_host();
+        let terminal_agent_id = "startup-timer-terminal";
+        let unrelated_agent_id = "startup-agent-no-timer";
+        for agent_id in [terminal_agent_id, unrelated_agent_id] {
+            host.create_named_agent(agent_id, None).await.unwrap();
+            host.unload_runtime(agent_id).await;
+        }
+        let storage = host.agent_storage(terminal_agent_id).unwrap();
+        let future = Utc::now() + chrono::Duration::hours(1);
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-terminal-completed",
+                terminal_agent_id,
+                TimerStatus::Completed,
+                None,
+                None,
+            ))
+            .unwrap();
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-terminal-cancelled",
+                terminal_agent_id,
+                TimerStatus::Cancelled,
+                None,
+                Some(future),
+            ))
+            .unwrap();
+
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        assert!(host
+            .try_get_loaded_runtime(terminal_agent_id)
+            .await
+            .is_none());
+        assert!(host
+            .try_get_loaded_runtime(unrelated_agent_id)
+            .await
+            .is_none());
+        assert_startup_timer_tick_count(&storage, "timer-terminal-completed", 0);
+        assert_startup_timer_tick_count(&storage, "timer-terminal-cancelled", 0);
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_skips_stopped_timer_only_owner() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-timer-stopped";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.status = AgentStatus::Stopped;
+        storage.write_agent(&state).unwrap();
+        let overdue = Utc::now() - chrono::Duration::minutes(15);
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-startup-stopped-1",
+                agent_id,
+                TimerStatus::Active,
+                None,
+                Some(overdue),
+            ))
+            .unwrap();
+
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        let timer = storage
+            .latest_timer_record("timer-startup-stopped-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.status, TimerStatus::Active);
+        assert_eq!(timer.fire_count, 0);
+        assert_startup_timer_tick_count(&storage, "timer-startup-stopped-1", 0);
+        let state = storage.read_agent().unwrap().unwrap();
+        assert_eq!(state.status, AgentStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_activates_timer_and_task_owner_once() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-timer-and-task";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        storage
+            .append_task(&TaskRecord {
+                id: "task-startup-timer-owner".into(),
+                agent_id: agent_id.into(),
+                kind: crate::types::TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("startup timer owner task".into()),
+                detail: None,
+                recovery: None,
+            })
+            .unwrap();
+        let overdue = Utc::now() - chrono::Duration::minutes(10);
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-startup-and-task-1",
+                agent_id,
+                TimerStatus::Active,
+                None,
+                Some(overdue),
+            ))
+            .unwrap();
+
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+
+        let task = storage
+            .latest_task_record("task-startup-timer-owner")
+            .unwrap()
+            .unwrap();
+        assert_eq!(task.status, TaskStatus::Interrupted);
+        let timer = storage
+            .latest_timer_record("timer-startup-and-task-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.status, TimerStatus::Completed);
+        assert_eq!(timer.fire_count, 1);
+        assert_startup_timer_tick_count(&storage, "timer-startup-and-task-1", 1);
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_does_not_refire_persisted_one_shot_timer() {
+        let (_home, host) = canonical_test_host();
+        let config = host.config().as_ref().clone();
+        let agent_id = "startup-timer-once";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let storage = host.agent_storage(agent_id).unwrap();
+        let overdue = Utc::now() - chrono::Duration::minutes(20);
+        host.runtime_db()
+            .timers()
+            .upsert(&startup_timer_fixture(
+                "timer-startup-once-1",
+                agent_id,
+                TimerStatus::Active,
+                None,
+                Some(overdue),
+            ))
+            .unwrap();
+        drop(storage);
+        drop(host);
+
+        let second_host =
+            RuntimeHost::new_with_provider(config.clone(), Arc::new(StubProvider::new("done")))
+                .unwrap();
+        second_host
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+        let storage = second_host.agent_storage(agent_id).unwrap();
+        let timer = storage
+            .latest_timer_record("timer-startup-once-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.status, TimerStatus::Completed);
+        assert_eq!(timer.fire_count, 1);
+        assert_startup_timer_tick_count(&storage, "timer-startup-once-1", 1);
+        drop(storage);
+        tokio::time::timeout(Duration::from_secs(5), second_host.shutdown())
+            .await
+            .expect("second host shutdown")
+            .unwrap();
+        drop(second_host);
+
+        let third_host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        third_host
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+        assert!(third_host.try_get_loaded_runtime(agent_id).await.is_none());
+        let storage = third_host.agent_storage(agent_id).unwrap();
+        let timer = storage
+            .latest_timer_record("timer-startup-once-1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(timer.status, TimerStatus::Completed);
+        assert_eq!(timer.fire_count, 1);
+        assert_startup_timer_tick_count(&storage, "timer-startup-once-1", 1);
     }
 
     #[tokio::test]

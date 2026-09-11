@@ -2211,6 +2211,30 @@ impl TimerRepository<'_> {
         .transpose()
     }
 
+    pub fn active_owner_agent_ids(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT DISTINCT t.agent_id
+             FROM timers t
+             JOIN agent_identities i
+               ON i.agent_id = t.agent_id
+              AND i.status = 'active'
+             WHERE t.status IN ('active', 'scheduled')
+             UNION
+             SELECT DISTINCT t.agent_id
+             FROM timer_wakes w
+             JOIN timers t ON t.timer_id = w.timer_id
+             JOIN agent_identities i
+               ON i.agent_id = t.agent_id
+              AND i.status = 'active'
+             WHERE w.status = 'pending'
+             ORDER BY 1 ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn normalize_wakes_for_recovery(&self, agent_id: &str) -> Result<TimerWakeRecoveryResult> {
         self.db.transaction(|tx| {
             let live_messages = {
