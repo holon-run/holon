@@ -54,6 +54,7 @@ import {
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
+import { truncateToWidth } from "../lib/utils";
 import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation } from "./routes";
 
 const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }> = [
@@ -65,6 +66,11 @@ const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }>
 ];
 
 const APP_WINDOW_TITLE = "Holon";
+
+// Sidebar agent rows cap at two lines: the second line is either the current
+// work-item objective (width-truncated) or, when idle, the agent id for named
+// agents. 40 units ~= 40 latin or 20 CJK glyphs at the 11px meta font.
+const AGENT_ROW_SUMMARY_MAX_WIDTH = 40;
 
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
@@ -598,7 +604,7 @@ export function App() {
                 <button
                   className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
                   key={agent.id}
-                  title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}`}
+                  title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}${workSummary ? ` · ${workSummary}` : ""}`}
                   type="button"
                   onClick={() => navigateAgent(agent.id)}
                 >
@@ -623,11 +629,12 @@ export function App() {
                         <StatusDotIcon tone={status.tone} />
                       </span>
                     </span>
-                    {agent.name ? <small>{agent.id}</small> : null}
                     {workSummary ? (
                       <span className="agent-row-meta">
-                        <span>{workSummary}</span>
+                        <span>{truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH)}</span>
                       </span>
+                    ) : agent.name ? (
+                      <small>{agent.id}</small>
                     ) : null}
                   </span>
                 </button>
