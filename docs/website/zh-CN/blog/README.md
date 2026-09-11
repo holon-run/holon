@@ -39,7 +39,7 @@ Holon 仍处于早期阶段。这里用于解释运行时背后的问题，记�
 <!-- INDEX:START -->
 
 - [Holon 是什么：为持续工作的 Agent 提供一个本地工作台](./what-is-holon.md)
-  从远程开发和团队共享 Agent 的实际需求出发，解释为什么使用 Holon，以及长期 Agent、工作记录与等待唤醒如何支撑这些工作。中文审阅稿，未发布。
+  了解 Holon 如何把常驻运行环境、长期 Agent、工作记录和本地工具链组织在一起，以及它们在远程开发与团队共享中的用法。中文审阅稿，未发布。
   <!-- mdorigin:index kind=article -->
 
 - [为什么 Agent 的工作不应止于一次聊天](./why-agent-work-should-outlive-the-chat.md)
