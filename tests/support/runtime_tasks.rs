@@ -576,12 +576,16 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
             ),
         )
         .await?;
-    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-
-    let briefs = runtime.recent_briefs(10).await?;
-    assert!(briefs
-        .iter()
-        .any(|brief| brief.text.contains("tool loop complete")));
+    wait_until_async_for(Duration::from_secs(10), || {
+        let runtime = runtime.clone();
+        async move {
+            let briefs = runtime.recent_briefs(10).await?;
+            Ok(briefs
+                .iter()
+                .any(|brief| brief.text.contains("tool loop complete")))
+        }
+    })
+    .await?;
     let events = runtime.recent_events(200).await?;
     assert!(events.iter().any(|event| event.kind == "tool_executed"));
     let session = runtime.agent_state().await?;
@@ -751,7 +755,7 @@ pub async fn shell_tools_capture_command_output() -> Result<()> {
 }
 
 pub async fn shell_tools_truncate_large_output_before_provider_reinjection() -> Result<()> {
-    let payload = "shell_chunk_".repeat(300);
+    let payload = format!("{}SHELL_OUTPUT_END", "shell_chunk_".repeat(300));
     let host = RuntimeHost::new_with_provider(
         test_config(),
         Arc::new(TruncatedShellReinjectionProvider::new(payload)),
@@ -801,8 +805,8 @@ pub async fn exec_command_reports_nonzero_exit_and_truncates_output() -> Result<
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
 
-    let long_stdout = "out".repeat(40);
-    let long_stderr = "err".repeat(40);
+    let long_stdout = format!("{}OUTPUT_END", "out".repeat(40));
+    let long_stderr = format!("{}OUTPUT_END", "err".repeat(40));
     let shell_cmd = format!(
         "printf '{}' ; printf '{}' >&2 ; exit 7",
         long_stdout, long_stderr
@@ -846,14 +850,16 @@ pub async fn exec_command_reports_nonzero_exit_and_truncates_output() -> Result<
             .expect("command char count should be present")
             > 0
     );
-    assert!(value["stdout_preview"]
-        .as_str()
-        .expect("stdout should be present")
-        .contains("[output truncated"));
-    assert!(value["stderr_preview"]
-        .as_str()
-        .expect("stderr should be present")
-        .contains("[output truncated"));
+    for (field, output) in [
+        ("stdout_preview", &long_stdout),
+        ("stderr_preview", &long_stderr),
+    ] {
+        let preview = value[field].as_str().expect("stream preview");
+        assert!(!preview.is_empty());
+        assert!(output.starts_with(preview));
+        assert!(preview.len() < output.len());
+        assert!(!preview.contains("OUTPUT_END"));
+    }
     assert_eq!(value["truncated"], true);
     assert!(envelope["summary_text"]
         .as_str()
@@ -868,7 +874,7 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
-    let long_stdout = "batch_chunk_".repeat(80);
+    let long_stdout = format!("{}OUTPUT_END", "batch_chunk_".repeat(80));
 
     let (result, record) = registry
         .execute(
@@ -919,10 +925,14 @@ pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     );
     assert_eq!(value["items"][1]["status"], "failed");
     assert_eq!(value["items"][1]["result"]["exit_status"], 7);
-    assert!(value["items"][2]["result"]["stdout_preview"]
+    let preview = value["items"][2]["result"]["stdout_preview"]
         .as_str()
-        .expect("stdout preview")
-        .contains("[output truncated"));
+        .expect("stdout preview");
+    assert!(!preview.is_empty());
+    assert!(long_stdout.starts_with(preview));
+    assert!(preview.len() < long_stdout.len());
+    assert!(!preview.contains("OUTPUT_END"));
+    assert_eq!(value["items"][2]["result"]["truncated"], true);
     assert_eq!(
         value["items"][2]["result"]["command_diagnostics"]["effective_max_output_tokens"],
         20
@@ -991,7 +1001,7 @@ pub async fn exec_command_batch_top_level_defaults_apply_to_items() -> Result<()
     attach_default_workspace(&host).await?;
     let runtime = host.default_runtime().await?;
     let registry = ToolRegistry::new(runtime.workspace_root());
-    let long_stdout = "top_level_default_".repeat(80);
+    let long_stdout = format!("{}OUTPUT_END", "top_level_default_".repeat(80));
 
     let (result, _) = registry
         .execute(
@@ -1027,10 +1037,26 @@ pub async fn exec_command_batch_top_level_defaults_apply_to_items() -> Result<()
         value["items"][0]["result"]["command_diagnostics"]["effective_max_output_tokens"],
         20
     );
-    assert!(value["items"][0]["result"]["stdout_preview"]
-        .as_str()
-        .expect("stdout preview")
-        .contains("[output truncated"));
+    for item in value["items"].as_array().expect("batch items") {
+        let preview = item["result"]["stdout_preview"]
+            .as_str()
+            .expect("stdout preview");
+        assert!(!preview.is_empty());
+        assert!(long_stdout.starts_with(preview));
+        assert!(preview.len() < long_stdout.len());
+        assert!(!preview.contains("OUTPUT_END"));
+        assert_eq!(item["result"]["truncated"], true);
+    }
+    assert!(
+        value["items"][0]["result"]["stdout_preview"]
+            .as_str()
+            .unwrap()
+            .len()
+            < value["items"][1]["result"]["stdout_preview"]
+                .as_str()
+                .unwrap()
+                .len()
+    );
     assert_eq!(
         value["items"][1]["result"]["command_diagnostics"]["effective_max_output_tokens"],
         200

@@ -448,8 +448,19 @@ impl AgentProvider for TruncatedShellReinjectionProvider {
             })
             .unwrap_or_default();
         assert!(
-            tool_result_text.contains("[output truncated: showing leading and trailing context]")
+            tool_result_text.contains("Output truncated; stream previews are contiguous prefixes.")
         );
+        let stdout = tool_result_text
+            .split_once("stdout: (Unicode scalar range [0, ")
+            .expect("stdout range should be rendered")
+            .1;
+        let (shown_chars, stdout) = stdout.split_once("))\n").expect("stdout range end");
+        let shown_chars: usize = shown_chars.parse()?;
+        assert!(shown_chars > 0);
+        assert!(shown_chars < self.payload.chars().count());
+        let expected_prefix: String = self.payload.chars().take(shown_chars).collect();
+        assert!(stdout.starts_with(&expected_prefix));
+        assert!(!tool_result_text.contains("SHELL_OUTPUT_END"));
         assert!(!tool_result_text.contains(&self.payload));
         Ok(ProviderTurnResponse {
             blocks: vec![ModelBlock::Text {
