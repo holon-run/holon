@@ -5890,6 +5890,45 @@
       },
       "PerformanceDiagnosticsSnapshot": {
         "properties": {
+          "attribution": {
+            "default": [],
+            "items": {
+              "properties": {
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ns": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "rows": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_ns": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ns",
+                "max_ns",
+                "rows"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "captured_at": {
             "type": "string"
           },
