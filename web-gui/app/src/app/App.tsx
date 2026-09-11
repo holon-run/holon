@@ -598,14 +598,14 @@ export function App() {
                 <button
                   className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
                   key={agent.id}
-                  title={`${agent.id} · ${agent.focusSummary} · ${status.title}`}
+                  title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}`}
                   type="button"
                   onClick={() => navigateAgent(agent.id)}
                 >
                   <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
                   <span className="agent-row-main">
                     <span className="agent-row-title">
-                      <strong>{agent.id}</strong>
+                      <strong>{agent.name ?? agent.id}</strong>
                       {unreadView?.mode === "stale_sync_error" ? (
                         <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
                           !
@@ -623,6 +623,7 @@ export function App() {
                         <StatusDotIcon tone={status.tone} />
                       </span>
                     </span>
+                    {agent.name ? <small>{agent.id}</small> : null}
                     {workSummary ? (
                       <span className="agent-row-meta">
                         <span>{workSummary}</span>
