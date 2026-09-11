@@ -18,8 +18,13 @@ short-lived connections, so this cost multiplied across every projection.
 ## Preserved boundary
 
 The #2850 fail-closed divergence detection is unchanged: deleting or
-replacing a sidecar changes its canonical identity, which misses the cache
-and re-runs the full scan, so deleted-open fds and open/canonical inode
-mismatches are still refused. The remembered identities are sampled before
-the scan, so any change during a scan forces a rescan on the next open.
-Scan executions are recorded as `db.sidecar_consistency_scan` diagnostics.
+replacing a sidecar normally changes its canonical `(dev, inode)` identity,
+which misses the cache and re-runs the full scan, so deleted-open fds and
+open/canonical inode mismatches are still refused. The remembered identities
+are sampled before the scan, so any change during a scan forces a rescan on
+the next open. One narrow residual gap remains: if a sidecar is deleted and
+immediately recreated while this process still holds the old fd and the
+filesystem reassigns the same `(dev, inode)`, the cache stays trusted even
+though the original scan would have rejected the deleted-open fd. Scan
+executions are recorded as `db.sidecar_consistency_scan` diagnostics with the
+measured scan duration.
