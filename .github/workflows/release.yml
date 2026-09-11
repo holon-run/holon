@@ -328,7 +328,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release completes the current Agent identity model with canonical detail, rename, recreation, and incarnation-aware surfaces, removes the legacy identity compatibility model after its migration window, and strengthens long-lived Agent lifecycle, delivery, history, workspace, and Web GUI behavior.
+          This release completes the current Agent identity model with canonical detail, rename, recreation, and incarnation-aware surfaces, removes the legacy identity compatibility model after its migration window, adds budget-aware semantic tool projections with recoverable full artifacts and segmented command reads, enables peer invocation of independent agents, adds read-side performance attribution, and strengthens long-lived Agent lifecycle, delivery, timer, workspace, and Web GUI behavior.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
@@ -340,6 +340,19 @@ jobs:
           - Strengthen Agent and WorkItem lifecycle behavior with pre-delivery turn sampling, deeper WorkItem-scoped history, and detached WorkItem completion support ([#2845](https://github.com/holon-run/holon/pull/2845), [#2848](https://github.com/holon-run/holon/pull/2848), [#2854](https://github.com/holon-run/holon/pull/2854)).
           - Harden Agent workspace handling by rejecting symlinked homes during deletion and initializing an explicit agent-local temporary directory ([#2839](https://github.com/holon-run/holon/pull/2839), [#2849](https://github.com/holon-run/holon/pull/2849)).
           - Return canonical workspace URIs from ViewImage for Web GUI consumption and add crates.io publishing to the release pipeline ([#2836](https://github.com/holon-run/holon/pull/2836), [#2853](https://github.com/holon-run/holon/pull/2853)).
+          - Preserve semantic tool results under projection budgets: queue and history projections keep identity, scheduling state, and omission counts, MemoryGet restores real message and command artifacts with explicit incompleteness marking, and command results support segmented recovery ([#2898](https://github.com/holon-run/holon/pull/2898)).
+          - Allow independent agents to invoke each other as peers ([#2868](https://github.com/holon-run/holon/pull/2868)).
+          - Add read-side performance attribution for runtime read paths ([#2889](https://github.com/holon-run/holon/pull/2889)).
+          - Make the projection gate capacity configurable and honor Retry-After responses in the Web GUI ([#2862](https://github.com/holon-run/holon/pull/2862)).
+          - Bind existing invocations to delivery execution and isolate delivery execution identities ([#2878](https://github.com/holon-run/holon/pull/2878), [#2885](https://github.com/holon-run/holon/pull/2885)).
+          - Bound timer wake admission and activate timer-only owners during startup recovery ([#2894](https://github.com/holon-run/holon/pull/2894), [#2897](https://github.com/holon-run/holon/pull/2897)).
+          - Improve runtime database reliability by preserving SQLite WAL sidecars and stabilizing sidecar FD inspection, skipping redundant scans when identities are unchanged ([#2867](https://github.com/holon-run/holon/pull/2867), [#2890](https://github.com/holon-run/holon/pull/2890), [#2892](https://github.com/holon-run/holon/pull/2892)).
+          - Scope wait-condition loads to a single agent instead of full-table scans ([#2891](https://github.com/holon-run/holon/pull/2891)).
+          - Show agent display names in the sidebar with two-line rows and summarized work objectives, and restore the rename button via rename eligibility reporting ([#2872](https://github.com/holon-run/holon/pull/2872), [#2886](https://github.com/holon-run/holon/pull/2886), [#2893](https://github.com/holon-run/holon/pull/2893)).
+          - Stop the current turn from the Web GUI chat composer ([#2869](https://github.com/holon-run/holon/pull/2869)).
+          - Remove periodic work item progress reminders ([#2879](https://github.com/holon-run/holon/pull/2879)).
+          - Improve Chinese PDF generation guidance and clarify delivery, skills, and docs guidance ([#2870](https://github.com/holon-run/holon/pull/2870), [#2871](https://github.com/holon-run/holon/pull/2871)).
+          - Make real-daemon Web E2E self-contained with a stub provider, run it on schedule and dispatch only, and refresh the models.dev snapshot and artifact ([#2880](https://github.com/holon-run/holon/pull/2880), [#2882](https://github.com/holon-run/holon/pull/2882), [#2884](https://github.com/holon-run/holon/pull/2884)).
 
           ## Install
 
