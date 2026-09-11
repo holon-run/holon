@@ -445,10 +445,7 @@ impl RuntimeReadModels {
             .collect::<Vec<_>>();
         let work_item_is_open = {
             let mut lookup = attribution::WAIT_ITEM.start();
-            let items = self
-                .runtime_db
-                .work_items()
-                .latest_many(&referenced_ids)?;
+            let items = self.runtime_db.work_items().latest_many(&referenced_ids)?;
             lookup.rows(items.len());
             items
                 .into_iter()
