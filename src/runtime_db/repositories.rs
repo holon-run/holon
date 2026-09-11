@@ -2079,6 +2079,352 @@ impl QueueEntryRepository<'_> {
 }
 
 impl TimerRepository<'_> {
+    pub fn pending_wake(&self, timer_id: &str) -> Result<Option<TimerWakeRecord>> {
+        let connection = self.db.connection()?;
+        let row = connection
+            .query_row(
+                "SELECT timer_id, message_id, fire_count, status, created_at, updated_at,
+                        incorporated_at, cancelled_at
+                 FROM timer_wakes
+                 WHERE timer_id = ?1 AND status = 'pending'",
+                [timer_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                    ))
+                },
+            )
+            .optional()?;
+        row.map(
+            |(
+                timer_id,
+                message_id,
+                fire_count,
+                created_at,
+                updated_at,
+                incorporated_at,
+                cancelled_at,
+            )| {
+                Ok(TimerWakeRecord {
+                    timer_id,
+                    message_id,
+                    fire_count: u64::try_from(fire_count)
+                        .context("timer wake fire_count is negative")?,
+                    status: TimerWakeStatus::Pending,
+                    created_at: parse_timestamp(&created_at)?,
+                    updated_at: parse_timestamp(&updated_at)?,
+                    incorporated_at: incorporated_at
+                        .map(|value| parse_timestamp(&value))
+                        .transpose()?,
+                    cancelled_at: cancelled_at
+                        .map(|value| parse_timestamp(&value))
+                        .transpose()?,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn normalize_wakes_for_recovery(&self, agent_id: &str) -> Result<TimerWakeRecoveryResult> {
+        self.db.transaction(|tx| {
+            let live_messages = {
+                let mut statement = tx.prepare(
+                    "SELECT q.payload_json, m.payload_json
+                     FROM queue_entries q
+                     JOIN messages m ON m.message_id = q.message_id
+                     WHERE q.agent_id = ?1 AND q.status IN ('queued', 'interrupted')
+                     ORDER BY q.created_at ASC, q.message_id ASC",
+                )?;
+                let rows = statement.query_map([agent_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.map(|row| {
+                    let (queue_payload, message_payload) = row?;
+                    Ok((
+                        decode_queue_entry_payload(&queue_payload)?,
+                        decode_message_payload(&message_payload)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?
+            };
+            let pending_wakes = {
+                let mut statement = tx.prepare(
+                    "SELECT w.timer_id, w.message_id, w.fire_count
+                     FROM timer_wakes w
+                     JOIN timers t ON t.timer_id = w.timer_id
+                     WHERE t.agent_id = ?1 AND w.status = 'pending'",
+                )?;
+                let rows = statement.query_map([agent_id], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                    ))
+                })?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+
+            let mut result = TimerWakeRecoveryResult::default();
+            let mut wakes_by_timer = pending_wakes
+                .into_iter()
+                .map(|(timer_id, message_id, fire_count)| (timer_id, (message_id, fire_count)))
+                .collect::<BTreeMap<_, _>>();
+            let mut messages_by_timer =
+                BTreeMap::<String, Vec<(QueueEntryRecord, MessageEnvelope)>>::new();
+            for (entry, message) in live_messages {
+                let MessageOrigin::Timer { timer_id } = &message.origin else {
+                    continue;
+                };
+                messages_by_timer
+                    .entry(timer_id.clone())
+                    .or_default()
+                    .push((entry, message));
+            }
+
+            for (timer_id, messages) in messages_by_timer {
+                let timer = timer_tx(tx, &timer_id)?;
+                let timer_accepts_wake = timer.as_ref().is_some_and(|timer| {
+                    matches!(timer.status, TimerStatus::Active | TimerStatus::Completed)
+                });
+                let existing_wake = wakes_by_timer.remove(&timer_id);
+                let keep_index = if timer_accepts_wake {
+                    existing_wake
+                        .as_ref()
+                        .and_then(|(message_id, _)| {
+                            messages
+                                .iter()
+                                .position(|(_, message)| message.id == *message_id)
+                        })
+                        .or(Some(0))
+                } else {
+                    None
+                };
+
+                for (index, (mut entry, _)) in messages.iter().cloned().enumerate() {
+                    if Some(index) == keep_index {
+                        continue;
+                    }
+                    entry.status = QueueEntryStatus::Dropped;
+                    entry.updated_at = Utc::now();
+                    upsert_queue_entry_tx(tx, &entry)?;
+                    result.dropped_message_ids.push(entry.message_id);
+                }
+
+                match keep_index {
+                    Some(index) => {
+                        let (entry, message) = &messages[index];
+                        if existing_wake
+                            .as_ref()
+                            .is_some_and(|(message_id, _)| message_id == &message.id)
+                        {
+                            result.retained_wakes += 1;
+                            continue;
+                        }
+                        if existing_wake.is_some() {
+                            result.invalidated_wakes += tx.execute(
+                                "UPDATE timer_wakes
+                                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                                 WHERE timer_id = ?1 AND status = 'pending'",
+                                params![timer_id, timestamp(Utc::now())],
+                            )?;
+                        }
+                        let fire_count = message
+                            .metadata
+                            .as_ref()
+                            .and_then(|metadata| metadata.get("timer_fire_count"))
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or_else(|| {
+                                timer.as_ref().map_or(1, |timer| timer.fire_count.max(1))
+                            });
+                        let created_at = timestamp(entry.created_at);
+                        tx.execute(
+                            "INSERT INTO timer_wakes
+                             (timer_id, message_id, fire_count, status, created_at, updated_at)
+                             VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+                            params![timer_id, message.id, fire_count as i64, created_at],
+                        )?;
+                        result.created_wakes += 1;
+                    }
+                    None => {
+                        if existing_wake.is_some() {
+                            result.invalidated_wakes += tx.execute(
+                                "UPDATE timer_wakes
+                                 SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                                 WHERE timer_id = ?1 AND status = 'pending'",
+                                params![timer_id, timestamp(Utc::now())],
+                            )?;
+                        }
+                    }
+                }
+            }
+
+            for (timer_id, _) in wakes_by_timer {
+                result.invalidated_wakes += tx.execute(
+                    "UPDATE timer_wakes
+                     SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                     WHERE timer_id = ?1 AND status = 'pending'",
+                    params![timer_id, timestamp(Utc::now())],
+                )?;
+            }
+            Ok(result)
+        })
+    }
+
+    pub fn fire(&self, command: &TimerFire) -> Result<TimerFireResult> {
+        self.db.transaction(|tx| {
+            if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
+                || command.expected.status != TimerStatus::Active
+            {
+                return Ok(TimerFireResult {
+                    advanced: false,
+                    wake_created: false,
+                    message: None,
+                });
+            }
+            if command.record.id != command.expected.id
+                || command.record.agent_id != command.expected.agent_id
+                || command.record.fire_count != command.expected.fire_count + 1
+            {
+                return Err(anyhow!("invalid timer fire transition"));
+            }
+            upsert_timer_tx(tx, &command.record)?;
+            let pending = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending')",
+                [&command.record.id],
+                |row| row.get::<_, bool>(0),
+            )?;
+            if pending {
+                return Ok(TimerFireResult {
+                    advanced: true,
+                    wake_created: false,
+                    message: None,
+                });
+            }
+            let actual_agent_state = tx
+                .query_row(
+                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                    [&command.record.agent_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|value| serde_json::from_str::<AgentState>(&value))
+                .transpose()?;
+            if actual_agent_state.as_ref() != Some(&command.agent_state.0) {
+                return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                    "agent_state",
+                    &command.record.agent_id,
+                )
+                .into());
+            }
+            if command.message.id != command.queue_entry.message_id
+                || command.message.agent_id != command.record.agent_id
+                || command.queue_entry.agent_id != command.record.agent_id
+                || command.queue_entry.status != QueueEntryStatus::Queued
+            {
+                return Err(anyhow!("invalid timer wake message or queue entry"));
+            }
+            let (message, inserted) = append_message_tx(tx, &command.message)?;
+            if inserted {
+                insert_runtime_index_changes_tx(tx, &[RuntimeIndexChange::for_message(&message)])?;
+            }
+            upsert_queue_entry_tx(tx, &command.queue_entry)?;
+            let now = timestamp(command.queue_entry.updated_at);
+            tx.execute(
+                "INSERT INTO timer_wakes
+                 (timer_id, message_id, fire_count, status, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
+                params![command.record.id, command.message.id, command.record.fire_count as i64, now],
+            )?;
+            upsert_agent_state_tx(tx, &command.agent_state.1)?;
+            Ok(TimerFireResult {
+                advanced: true,
+                wake_created: true,
+                message: Some(message),
+            })
+        })
+    }
+
+    pub fn cancel(&self, command: &TimerCancel) -> Result<TimerCancelResult> {
+        self.db.transaction(|tx| {
+            if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
+                || command.expected.status != TimerStatus::Active
+            {
+                return Ok(TimerCancelResult {
+                    cancelled: false,
+                    dropped_message_id: None,
+                });
+            }
+            if command.record.id != command.expected.id
+                || command.record.agent_id != command.expected.agent_id
+                || command.record.status != TimerStatus::Cancelled
+                || command.record.fire_count != command.expected.fire_count
+            {
+                return Err(anyhow!("invalid timer cancellation transition"));
+            }
+            if let Some((expected, record)) = command.agent_state.as_ref() {
+                let actual = tx
+                    .query_row(
+                        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                        [&record.id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|value| serde_json::from_str::<AgentState>(&value))
+                    .transpose()?;
+                if actual.as_ref() != Some(expected) {
+                    return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                        "agent_state",
+                        &record.id,
+                    )
+                    .into());
+                }
+            }
+            upsert_timer_tx(tx, &command.record)?;
+            let now = timestamp(timer_updated_at(&command.record));
+            let message_id = tx
+                .query_row(
+                    "SELECT message_id FROM timer_wakes WHERE timer_id = ?1 AND status = 'pending'",
+                    [&command.record.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            tx.execute(
+                "UPDATE timer_wakes SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                 WHERE timer_id = ?1 AND status = 'pending'",
+                params![command.record.id, now],
+            )?;
+            if let Some(message_id) = message_id.as_deref() {
+                let payload = tx
+                    .query_row(
+                        "SELECT payload_json FROM queue_entries WHERE message_id = ?1
+                     AND status IN ('queued', 'interrupted')",
+                        [message_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?;
+                if let Some(payload) = payload {
+                    let mut entry = decode_queue_entry_payload(&payload)?;
+                    entry.status = QueueEntryStatus::Dropped;
+                    entry.updated_at = timer_updated_at(&command.record);
+                    upsert_queue_entry_tx(tx, &entry)?;
+                }
+            }
+            if let Some((_, record)) = command.agent_state.as_ref() {
+                upsert_agent_state_tx(tx, record)?;
+            }
+            Ok(TimerCancelResult {
+                cancelled: true,
+                dropped_message_id: message_id,
+            })
+        })
+    }
+
     pub fn import_legacy(&self, records: Vec<TimerRecord>) -> Result<()> {
         if self.db.storage_domain_is_complete("timers", "db")? {
             return Ok(());
@@ -4333,6 +4679,17 @@ fn try_transition_claimable_message_tx(
     Ok(changed == 1)
 }
 
+fn timer_tx(tx: &Transaction<'_>, timer_id: &str) -> Result<Option<TimerRecord>> {
+    tx.query_row(
+        "SELECT payload_json FROM timers WHERE timer_id = ?1",
+        [timer_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()?
+    .map(|payload| decode_timer_payload(&payload))
+    .transpose()
+}
+
 fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
@@ -4356,8 +4713,10 @@ fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
             fire_count = excluded.fire_count,
             updated_at = excluded.updated_at,
             payload_json = excluded.payload_json
-         WHERE excluded.fire_count > timers.fire_count
-            OR (
+         WHERE NOT (timers.status = 'cancelled' AND excluded.status = 'active')
+           AND (
+             excluded.fire_count > timers.fire_count
+             OR (
                 excluded.fire_count = timers.fire_count
                 AND (
                     CASE excluded.status
@@ -4377,7 +4736,8 @@ fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Result<()> {
                         AND excluded.updated_at >= timers.updated_at
                     )
                 )
-            )",
+             )
+           )",
         params![
             record.id,
             record.agent_id,

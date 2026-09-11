@@ -140,6 +140,36 @@ than to:
 That is why `sleep_job` should not remain the long-term center of timer-based
 waiting semantics.
 
+### Timer Wake Delivery
+
+A timer fire records a clock fact, but its queued wake is a level-triggered
+reactivation hint rather than an obligation to execute one model turn per
+elapsed interval.
+
+The runtime therefore preserves these invariants:
+
+- each timer has at most one wake that is pending execution admission
+- a repeating timer may record additional fires while that wake is pending,
+  but those fires do not create an unbounded queue backlog
+- after one wake is admitted, a later fire may create one new pending wake, so
+  a running turn and one future wake can coexist
+- different timers are never coalesced with each other
+- `fire_count` counts actual timer fires, not queued messages or model turns
+
+Timer cancellation and execution admission compete through one durable wake
+fence. If cancellation wins, pending wakes for that timer become invalid and
+cannot start a new turn. If execution admission wins, cancellation does not
+interrupt the turn that has already started.
+
+A completed one-shot timer can still own one valid pending wake. A later
+`WaitFor(wake=timer)` registration may consume that wake immediately. A
+cancelled timer, or a completed timer whose wake was already consumed, must
+return a diagnostic instead of creating a wait that can never resolve.
+
+Recovery applies the same rules: retain at most one valid pending wake per
+timer, discard pending wakes for cancelled timers, and do not replay every
+historical fire.
+
 ## Callback-Backed Waiting
 
 Callback-backed waiting should also belong to the waiting plane.

@@ -3455,6 +3455,25 @@ CREATE INDEX IF NOT EXISTS idx_agent_relation_backfill_outcomes_agent
   ON agent_relation_backfill_outcomes(agent_id, updated_at);
 "#,
     },
+    Migration {
+        version: 62,
+        name: "durable_timer_wakes",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS timer_wakes (
+  timer_id TEXT NOT NULL REFERENCES timers(timer_id),
+  message_id TEXT NOT NULL UNIQUE,
+  fire_count INTEGER NOT NULL CHECK (fire_count > 0),
+  status TEXT NOT NULL CHECK (status IN ('pending', 'incorporated', 'cancelled')),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  incorporated_at TEXT,
+  cancelled_at TEXT,
+  PRIMARY KEY (timer_id, message_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_timer_wakes_one_pending_per_timer
+  ON timer_wakes(timer_id) WHERE status = 'pending';
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

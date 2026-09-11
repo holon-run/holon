@@ -1,6 +1,64 @@
 //! Public types for runtime_db repositories.
 
 use crate::runtime_db::RuntimeDb;
+use crate::types::{AgentState, MessageEnvelope, QueueEntryRecord, TimerRecord};
+use chrono::{DateTime, Utc};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerWakeStatus {
+    Pending,
+    Incorporated,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerWakeRecord {
+    pub timer_id: String,
+    pub message_id: String,
+    pub fire_count: u64,
+    pub status: TimerWakeStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    pub incorporated_at: Option<DateTime<Utc>>,
+    pub cancelled_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TimerFire {
+    pub expected: TimerRecord,
+    pub record: TimerRecord,
+    pub message: MessageEnvelope,
+    pub queue_entry: QueueEntryRecord,
+    pub agent_state: (AgentState, AgentState),
+}
+
+#[derive(Debug, Clone)]
+pub struct TimerCancel {
+    pub expected: TimerRecord,
+    pub record: TimerRecord,
+    pub agent_state: Option<(AgentState, AgentState)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TimerFireResult {
+    pub advanced: bool,
+    pub wake_created: bool,
+    pub message: Option<MessageEnvelope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TimerCancelResult {
+    pub cancelled: bool,
+    pub dropped_message_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TimerWakeRecoveryResult {
+    pub retained_wakes: usize,
+    pub created_wakes: usize,
+    pub invalidated_wakes: usize,
+    pub dropped_message_ids: Vec<String>,
+}
 
 pub struct WorkItemRepository<'a> {
     pub(crate) db: &'a RuntimeDb,

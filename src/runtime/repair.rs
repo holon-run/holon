@@ -136,6 +136,7 @@ impl RuntimeHandle {
                                 },
                             ],
                             wait_conditions: vec![cancelled],
+                            timer_wake: None,
                             agent_state: None,
                             audit_events: vec![AuditEvent::legacy(
                                 "scheduler_wait_repaired",

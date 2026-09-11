@@ -9,7 +9,7 @@ pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_stat
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeMap;
 
 use crate::{
@@ -165,6 +165,7 @@ pub(crate) struct WaitTransitionCommand {
     pub work_items: Vec<WorkItemMutation>,
     pub expected_wait_conditions: Vec<WaitConditionExpectation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
+    pub timer_wake: Option<TimerWakeClaim>,
     pub agent_state: Option<AgentStateMutation>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
@@ -226,6 +227,13 @@ pub(crate) struct QueueTransitionCommand {
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
     pub brief_evidence: Vec<BriefRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct TimerWakeClaim {
+    pub timer_id: String,
+    pub message_id: String,
+    pub fire_count: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -960,6 +968,27 @@ impl RuntimeTransitionRepository<'_> {
             if let Some(task_expectation) = task_expectation {
                 validate_task_expectation_tx(tx, task_expectation)?;
             }
+            if let Some(timer_wake) = command.timer_wake.as_ref() {
+                let valid = tx.query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
+                       WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
+                         AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
+                    params![
+                        timer_wake.timer_id,
+                        timer_wake.message_id,
+                        timer_wake.fire_count as i64
+                    ],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !valid {
+                    return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+                        "timer_wait",
+                        &timer_wake.timer_id,
+                    )
+                    .into());
+                }
+            }
             validate_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             let execution_protocol = execution_protocol_repository::validate_execution_commands_tx(
                 tx,
@@ -1024,6 +1053,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             &[],
             &[],
+            None,
         )
     }
 
@@ -1032,7 +1062,16 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
     ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(command, execution_protocol, None, None, None, &[], &[])
+        self.commit_queue_transaction(
+            command,
+            execution_protocol,
+            None,
+            None,
+            None,
+            &[],
+            &[],
+            None,
+        )
     }
 
     pub(crate) fn commit_scheduler_recovery(
@@ -1050,6 +1089,7 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             None,
             DeliverySynchronization::IfAvailable,
+            None,
         )
     }
 
@@ -1067,6 +1107,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             terminal_tool_executions,
             &[],
+            None,
         )
     }
 
@@ -1083,6 +1124,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             &[],
             &[],
+            None,
         )
     }
 
@@ -1091,6 +1133,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
         wait_transition: Option<&QueueWaitTransition>,
+        timer_wake_claim: Option<&TimerWakeClaim>,
     ) -> Result<TransitionCommit> {
         self.commit_queue_transaction(
             command,
@@ -1100,6 +1143,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             &[],
             &[],
+            timer_wake_claim,
         )
     }
 
@@ -1118,6 +1162,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             &[],
             wait_conditions,
+            None,
         )
     }
 
@@ -1135,6 +1180,7 @@ impl RuntimeTransitionRepository<'_> {
             Some(completion),
             &[],
             &[],
+            None,
         )
     }
 
@@ -1154,6 +1200,7 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             Some(delivery),
             DeliverySynchronization::Required,
+            None,
         )
     }
 
@@ -1166,6 +1213,7 @@ impl RuntimeTransitionRepository<'_> {
         completion: Option<&CompletionTransition>,
         terminal_tool_executions: &[ToolExecutionRecord],
         extra_wait_conditions: &[crate::types::WaitConditionRecord],
+        timer_wake_claim: Option<&TimerWakeClaim>,
     ) -> Result<TransitionCommit> {
         self.commit_queue_transaction_with_delivery(
             command,
@@ -1177,6 +1225,7 @@ impl RuntimeTransitionRepository<'_> {
             extra_wait_conditions,
             None,
             DeliverySynchronization::Required,
+            timer_wake_claim,
         )
     }
 
@@ -1192,6 +1241,7 @@ impl RuntimeTransitionRepository<'_> {
         extra_wait_conditions: &[crate::types::WaitConditionRecord],
         delivery: Option<&AgentMessageDeliveryRecord>,
         delivery_synchronization: DeliverySynchronization,
+        timer_wake_claim: Option<&TimerWakeClaim>,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             let synchronize_delivery = match delivery_synchronization {
@@ -1225,6 +1275,23 @@ impl RuntimeTransitionRepository<'_> {
             }
             validate_queue_operation(command)?;
             validate_queue_mutation_tx(tx, &command.mutation)?;
+            if let Some(timer_wake_claim) = timer_wake_claim {
+                let valid = tx.query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
+                       WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
+                         AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
+                    params![
+                        timer_wake_claim.timer_id,
+                        timer_wake_claim.message_id,
+                        timer_wake_claim.fire_count as i64
+                    ],
+                    |row| row.get::<_, bool>(0),
+                )?;
+                if !valid {
+                    return Ok(TransitionCommit::default());
+                }
+            }
             if let Some(wait_transition) = wait_transition {
                 validate_wait_condition_expectation_tx(tx, &wait_transition.expected)?;
                 validate_wait_condition_tx(tx, &wait_transition.record)?;
@@ -1360,6 +1427,23 @@ impl RuntimeTransitionRepository<'_> {
             };
             if !matches!(&command.mutation, QueueMutation::Upsert(_)) && !mutation_applied {
                 return Ok(TransitionCommit::default());
+            }
+            if let Some(timer_wake_claim) = timer_wake_claim {
+                let changed = tx.execute(
+                    "UPDATE timer_wakes SET status = 'incorporated', updated_at = ?4,
+                       incorporated_at = ?4
+                     WHERE timer_id = ?1 AND message_id = ?2 AND fire_count = ?3
+                       AND status = 'pending'",
+                    params![
+                        timer_wake_claim.timer_id,
+                        timer_wake_claim.message_id,
+                        timer_wake_claim.fire_count as i64,
+                        Utc::now().to_rfc3339(),
+                    ],
+                )?;
+                if changed != 1 {
+                    return Err(anyhow!("timer wake changed during queue claim"));
+                }
             }
             if synchronize_delivery {
                 advance_delivery_for_queue_transition_tx(
@@ -3304,6 +3388,7 @@ mod tests {
                 }],
                 expected_wait_conditions: Vec::new(),
                 wait_conditions: vec![wait],
+                timer_wake: None,
                 agent_state: None,
                 audit_events: vec![AuditEvent::legacy("wait_registered", serde_json::json!({}))],
                 index_changes: vec![index_change("work_item", &initial.id)],
@@ -3866,6 +3951,7 @@ mod tests {
                         work_items: Vec::new(),
                         expected_wait_conditions: Vec::new(),
                         wait_conditions: vec![wait.clone()],
+                        timer_wake: None,
                         agent_state: None,
                         audit_events: Vec::new(),
                         index_changes: Vec::new(),
@@ -3892,6 +3978,7 @@ mod tests {
                     work_items: Vec::new(),
                     expected_wait_conditions: Vec::new(),
                     wait_conditions: vec![wait],
+                    timer_wake: None,
                     agent_state: None,
                     audit_events: Vec::new(),
                     index_changes: Vec::new(),

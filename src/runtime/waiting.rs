@@ -273,27 +273,42 @@ impl RuntimeHandle {
         }
 
         let now = self.now();
-        let timer_wake_at = if wake == WaitForWakeKind::Timer {
-            let timer_id = wait_resource_required(wake, resource.clone())?;
-            let timer = self
-                .inner
-                .storage
-                .latest_timer_record(&timer_id)?
-                .ok_or_else(|| anyhow!("wait_for timer does not exist: {timer_id}"))?;
-            if timer.agent_id != agent_id {
-                return Err(anyhow!("wait_for timer agent mismatch: {timer_id}"));
-            }
-            if timer.status != TimerStatus::Active {
-                return Err(anyhow!("wait_for timer is not active: {timer_id}"));
-            }
-            Some(
-                timer
-                    .next_fire_at
-                    .ok_or_else(|| anyhow!("wait_for timer has no next fire time: {timer_id}"))?,
-            )
-        } else {
-            None
-        };
+        let mut pending_timer_wake = None;
+        let timer_wake_at =
+            if wake == WaitForWakeKind::Timer {
+                let timer_id = wait_resource_required(wake, resource.clone())?;
+                let timer = self
+                    .inner
+                    .storage
+                    .latest_timer_record(&timer_id)?
+                    .ok_or_else(|| anyhow!("wait_for timer does not exist: {timer_id}"))?;
+                if timer.agent_id != agent_id {
+                    return Err(anyhow!("wait_for timer agent mismatch: {timer_id}"));
+                }
+                match timer.status {
+                    TimerStatus::Active => Some(timer.next_fire_at.ok_or_else(|| {
+                        anyhow!("wait_for timer has no next fire time: {timer_id}")
+                    })?),
+                    TimerStatus::Completed => {
+                        let timer_wake = self
+                            .inner
+                            .runtime_db
+                            .timers()
+                            .pending_wake(&timer_id)?
+                            .ok_or_else(|| {
+                                anyhow!("wait_for timer wake was already consumed: {timer_id}")
+                            })?;
+                        let wake_at = timer_wake.created_at;
+                        pending_timer_wake = Some(timer_wake);
+                        Some(wake_at)
+                    }
+                    TimerStatus::Cancelled => {
+                        return Err(anyhow!("wait_for timer is cancelled: {timer_id}"))
+                    }
+                }
+            } else {
+                None
+            };
         let external_trigger_id = if wake == WaitForWakeKind::External {
             self.inner
                 .runtime_db
@@ -420,7 +435,7 @@ impl RuntimeHandle {
             work_item = Some(updated);
         }
 
-        let condition = WaitConditionRecord {
+        let mut condition = WaitConditionRecord {
             id: crate::ids::wait_condition_id(),
             agent_id: agent_id.to_string(),
             work_item_id: work_item_id.clone(),
@@ -451,6 +466,9 @@ impl RuntimeHandle {
             trigger_message_id: None,
             triggered_at: None,
         };
+        if let Some(timer_wake) = pending_timer_wake.as_ref() {
+            condition.mark_triggered(&timer_wake.message_id, now);
+        }
         wait_conditions.push(condition.clone());
         audit_events.extend(
             self.inner
@@ -478,6 +496,13 @@ impl RuntimeHandle {
             work_items,
             expected_wait_conditions: Vec::new(),
             wait_conditions,
+            timer_wake: pending_timer_wake.as_ref().map(|wake| {
+                crate::runtime_db::transitions::TimerWakeClaim {
+                    timer_id: wake.timer_id.clone(),
+                    message_id: wake.message_id.clone(),
+                    fire_count: wake.fire_count,
+                }
+            }),
             agent_state: committed_agent_state.map(|record| {
                 crate::runtime_db::transitions::AgentStateMutation {
                     expected: Some(Box::new(expected_state)),
@@ -529,6 +554,21 @@ impl RuntimeHandle {
                             return Err(error);
                         }
                         expected_task = Some(task_expectation(&task));
+                    }
+                    Err(error)
+                        if pending_timer_wake.is_some()
+                            && error
+                                .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+                                .is_some_and(|conflict| conflict.domain() == "timer_wait") =>
+                    {
+                        let timer_id = pending_timer_wake
+                            .as_ref()
+                            .expect("pending timer wake exists")
+                            .timer_id
+                            .as_str();
+                        return Err(anyhow!(
+                            "wait_for timer wake was already consumed: {timer_id}"
+                        ));
                     }
                     Err(error) => return Err(error),
                 }
@@ -1184,48 +1224,110 @@ impl RuntimeHandle {
     }
 
     pub async fn cancel_timer(&self, timer_id: &str) -> Result<TimerRecord> {
-        let mut timer = self
-            .inner
-            .storage
-            .latest_timer_record(timer_id)?
-            .ok_or_else(|| {
-                RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))
+        let agent_id = self.agent_id().await?;
+        for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            let expected = self
+                .inner
+                .storage
+                .latest_timer_record(timer_id)?
+                .ok_or_else(|| {
+                    RuntimeError::not_found(
+                        "timer_not_found",
+                        format!("timer {timer_id} not found"),
+                    )
                     .with_safe_context("timer_id", timer_id)
-            })?;
-        if timer.agent_id != self.agent_id().await? {
-            return Err(RuntimeError::not_found(
-                "timer_not_found",
-                format!("timer {timer_id} not found"),
-            )
-            .with_safe_context("timer_id", timer_id)
-            .into());
-        }
-        match timer.status {
-            TimerStatus::Cancelled => return Ok(timer),
-            TimerStatus::Completed => {
-                return Err(RuntimeError::validation(
-                    "timer_completed",
-                    format!("cannot cancel completed timer {timer_id}"),
+                })?;
+            if expected.agent_id != agent_id {
+                return Err(RuntimeError::not_found(
+                    "timer_not_found",
+                    format!("timer {timer_id} not found"),
                 )
                 .with_safe_context("timer_id", timer_id)
-                .into())
+                .into());
             }
-            TimerStatus::Active => {}
-        }
+            match expected.status {
+                TimerStatus::Cancelled => return Ok(expected),
+                TimerStatus::Completed => {
+                    return Err(RuntimeError::validation(
+                        "timer_completed",
+                        format!("cannot cancel completed timer {timer_id}"),
+                    )
+                    .with_safe_context("timer_id", timer_id)
+                    .into())
+                }
+                TimerStatus::Active => {}
+            }
 
-        timer.status = TimerStatus::Cancelled;
-        timer.next_fire_at = None;
-        self.record_timer_projection(&timer).await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "timer_cancelled",
-            serde_json::json!({
-                "timer_id": timer.id,
-                "status": timer.status,
-                "fire_count": timer.fire_count,
-            }),
-        ))?;
-        self.inner.notify.notify_waiters();
-        Ok(timer)
+            let pending_wake = self.inner.runtime_db.timers().pending_wake(timer_id)?;
+            let mut timer = expected.clone();
+            timer.status = TimerStatus::Cancelled;
+            timer.next_fire_at = None;
+
+            let mut guard = self.inner.agent.lock().await;
+            let pending_message_in_memory = pending_wake.as_ref().is_some_and(|wake| {
+                guard
+                    .queue
+                    .peek_next_matching(|message| message.id == wake.message_id)
+                    .is_some()
+            });
+            let expected_state = guard.last_persisted_state.clone();
+            let mut committed_state = guard.state.clone();
+            committed_state.pending = guard
+                .queue
+                .len()
+                .saturating_sub(usize::from(pending_message_in_memory));
+            let command = crate::runtime_db::TimerCancel {
+                expected,
+                record: timer.clone(),
+                agent_state: pending_wake
+                    .as_ref()
+                    .map(|_| (expected_state, committed_state.clone())),
+            };
+            match self.inner.runtime_db.timers().cancel(&command) {
+                Ok(result) if result.cancelled => {
+                    if let Some(message_id) = result.dropped_message_id.as_deref() {
+                        guard
+                            .queue
+                            .pop_next_matching(|message| message.id == message_id);
+                    }
+                    if pending_wake.is_some() {
+                        guard.state = committed_state.clone();
+                        guard.last_persisted_state = committed_state;
+                    }
+                    drop(guard);
+                    self.inner
+                        .projection_cache
+                        .lock()
+                        .await
+                        .upsert_timer(timer.clone());
+                    self.inner.storage.append_event(&AuditEvent::legacy(
+                        "timer_cancelled",
+                        serde_json::json!({
+                            "timer_id": timer.id,
+                            "status": timer.status,
+                            "fire_count": timer.fire_count,
+                            "dropped_message_id": result.dropped_message_id,
+                        }),
+                    ))?;
+                    self.inner.notify.notify_waiters();
+                    return Ok(timer);
+                }
+                Ok(_) => {
+                    drop(guard);
+                    continue;
+                }
+                Err(error) => {
+                    drop(guard);
+                    let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                        && super::retryable_enqueue_conflict(&error, &agent_id)
+                        && self.refresh_enqueue_agent_state_baseline(&agent_id).await?;
+                    if !can_retry {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        unreachable!("timer cancellation attempts always return or retry")
     }
 
     pub(crate) async fn recover_active_timers(&self, timers: Vec<TimerRecord>) -> Result<()> {
@@ -1281,20 +1383,40 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    async fn fire_timer_record(&self, timer: &mut TimerRecord) -> Result<()> {
-        if let Some(latest) = self.inner.storage.latest_timer_record(&timer.id)? {
-            if latest.status != TimerStatus::Active {
-                *timer = latest;
-                return Ok(());
-            }
+    pub(super) async fn fire_timer_record(&self, timer: &mut TimerRecord) -> Result<()> {
+        let expected = self
+            .inner
+            .storage
+            .latest_timer_record(&timer.id)?
+            .unwrap_or_else(|| timer.clone());
+        if expected.status != TimerStatus::Active {
+            *timer = expected;
+            return Ok(());
         }
-
         let scheduled_fire_at = timer.next_fire_at;
         let work_item_id = self
             .wait_condition_work_item_id_for_timer(&timer.id)
             .await?;
+        let fired_at = self.now();
+        let mut record = expected.clone();
+        record.last_fired_at = Some(fired_at);
+        record.fire_count += 1;
+        if let Some(interval_ms) = record.interval_ms {
+            record.status = TimerStatus::Active;
+            record.next_fire_at = Some(next_repeating_fire_at(
+                scheduled_fire_at.unwrap_or(fired_at),
+                fired_at,
+                interval_ms,
+            )?);
+        } else {
+            record.status = TimerStatus::Completed;
+            record.next_fire_at = None;
+        }
         let mut message = MessageEnvelope {
-            metadata: Some(serde_json::json!({ "timer_id": timer.id })),
+            metadata: Some(serde_json::json!({
+                "timer_id": timer.id,
+                "timer_fire_count": record.fire_count,
+            })),
             ..MessageEnvelope::new(
                 timer.agent_id.clone(),
                 MessageKind::TimerTick,
@@ -1316,37 +1438,90 @@ impl RuntimeHandle {
             )
         };
         message.work_item_id = work_item_id;
+        message.turn_id = Some(crate::ids::turn_id());
         message
             .source_refs
             .insert("timer_id".into(), timer.id.clone());
-        self.enqueue(message).await?;
+        message.normalize_admission_fields();
 
-        let fired_at = self.now();
-        timer.last_fired_at = Some(fired_at);
-        timer.fire_count += 1;
-        if let Some(interval_ms) = timer.interval_ms {
-            timer.status = TimerStatus::Active;
-            timer.next_fire_at = Some(next_repeating_fire_at(
-                scheduled_fire_at.unwrap_or(fired_at),
-                fired_at,
-                interval_ms,
-            )?);
-        } else {
-            timer.status = TimerStatus::Completed;
-            timer.next_fire_at = None;
+        for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            let mut guard = self.inner.agent.lock().await;
+            let expected_state = guard.last_persisted_state.clone();
+            let mut committed_state = guard.state.clone();
+            committed_state.pending = guard.queue.len().saturating_add(1);
+            committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
+            committed_state.total_message_count =
+                self.inner.storage.count_messages()?.saturating_add(1);
+            scheduler::apply_message_wake_projection(&mut committed_state);
+            let result = self
+                .inner
+                .runtime_db
+                .timers()
+                .fire(&crate::runtime_db::TimerFire {
+                    expected: expected.clone(),
+                    record: record.clone(),
+                    message: message.clone(),
+                    queue_entry: QueueEntryRecord {
+                        message_id: message.id.clone(),
+                        agent_id: message.agent_id.clone(),
+                        priority: message.priority.clone(),
+                        status: QueueEntryStatus::Queued,
+                        created_at: message.created_at,
+                        updated_at: fired_at,
+                    },
+                    agent_state: (expected_state, committed_state.clone()),
+                });
+            match result {
+                Ok(result) if result.advanced => {
+                    if let Some(message) = result.message {
+                        guard.queue.push(message);
+                        guard.state = committed_state.clone();
+                        guard.last_persisted_state = committed_state;
+                    }
+                    drop(guard);
+                    self.inner
+                        .projection_cache
+                        .lock()
+                        .await
+                        .upsert_timer(record.clone());
+                    *timer = record.clone();
+                    self.inner.storage.append_event(&AuditEvent::legacy(
+                        "timer_fired",
+                        serde_json::json!({
+                            "timer_id": timer.id,
+                            "summary": timer.summary.clone(),
+                            "status": timer.status,
+                            "fire_count": timer.fire_count,
+                            "next_fire_at": timer.next_fire_at,
+                            "wake_created": result.wake_created,
+                        }),
+                    ))?;
+                    if result.wake_created {
+                        self.inner.notify.notify_one();
+                    }
+                    return Ok(());
+                }
+                Ok(_) => {
+                    drop(guard);
+                    if let Some(latest) = self.inner.storage.latest_timer_record(&timer.id)? {
+                        *timer = latest;
+                    }
+                    return Ok(());
+                }
+                Err(error) => {
+                    drop(guard);
+                    let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
+                        && super::retryable_enqueue_conflict(&error, &record.agent_id)
+                        && self
+                            .refresh_enqueue_agent_state_baseline(&record.agent_id)
+                            .await?;
+                    if !can_retry {
+                        return Err(error);
+                    }
+                }
+            }
         }
-        self.record_timer_projection(timer).await?;
-        self.inner.storage.append_event(&AuditEvent::legacy(
-            "timer_fired",
-            serde_json::json!({
-                "timer_id": timer.id,
-                "summary": timer.summary.clone(),
-                "status": timer.status,
-                "fire_count": timer.fire_count,
-                "next_fire_at": timer.next_fire_at,
-            }),
-        ))?;
-        Ok(())
+        unreachable!("timer fire attempts always return or retry")
     }
 
     pub async fn latest_external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>> {
@@ -1769,6 +1944,7 @@ impl RuntimeHandle {
                 work_items,
                 expected_wait_conditions: Vec::new(),
                 wait_conditions: resolved_conditions,
+                timer_wake: None,
                 agent_state: None,
                 audit_events,
                 index_changes,

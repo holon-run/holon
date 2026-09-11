@@ -63,9 +63,11 @@ pub use crate::runtime_db::types::{
     ContextEpisodeRepository, EvidenceRepository, ExecutionRootEntryRepository,
     ExternalTriggerRepository, MessageRepository, OperatorDeliveryRepository,
     OperatorNotificationRepository, OperatorTransportBindingRepository, QueueEntryRepository,
-    TaskRepository, TimerRepository, TranscriptRepository, TurnRecordRepository,
-    WaitConditionRepository, WorkItemContinuationRepository, WorkItemDelegationRepository,
-    WorkItemRepository, WorkspaceEntryRepository, WorkspaceOccupancyRepository,
+    TaskRepository, TimerCancel, TimerCancelResult, TimerFire, TimerFireResult, TimerRepository,
+    TimerWakeRecord, TimerWakeRecoveryResult, TimerWakeStatus, TranscriptRepository,
+    TurnRecordRepository, WaitConditionRepository, WorkItemContinuationRepository,
+    WorkItemDelegationRepository, WorkItemRepository, WorkspaceEntryRepository,
+    WorkspaceOccupancyRepository,
 };
 #[cfg(test)]
 mod tests;

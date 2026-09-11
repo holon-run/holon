@@ -1166,6 +1166,25 @@ fn prepare_runtime_storage(
     }
 
     storage.legacy_importer().import_runtime_domains()?;
+    let timer_wake_recovery = runtime_db
+        .timers()
+        .normalize_wakes_for_recovery(&agent_id)?;
+    if timer_wake_recovery.retained_wakes > 0
+        || timer_wake_recovery.created_wakes > 0
+        || timer_wake_recovery.invalidated_wakes > 0
+        || !timer_wake_recovery.dropped_message_ids.is_empty()
+    {
+        storage.append_event(&AuditEvent::legacy(
+            "timer_wakes_recovered",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "retained_wakes": timer_wake_recovery.retained_wakes,
+                "created_wakes": timer_wake_recovery.created_wakes,
+                "invalidated_wakes": timer_wake_recovery.invalidated_wakes,
+                "dropped_message_ids": timer_wake_recovery.dropped_message_ids,
+            }),
+        ))?;
+    }
 
     let snapshot = storage.recovery_snapshot(&agent_id)?;
     let mut queue = RuntimeQueue::default();

@@ -207,6 +207,24 @@ Blocked WorkItem `recheck_at` deadlines are not part of `WaitingTimer`; they
 remain `Blocked` and only create a fallback reminder for the owning agent to
 inspect the blocker.
 
+Timer wait registration and timer wake execution use a durable per-wake
+admission fence:
+
+- an active timer may accept a new wait normally
+- a completed one-shot timer may accept a wait only while its unique pending
+  wake is still valid
+- a cancelled timer, or a completed timer with no pending wake, cannot create
+  an unresolvable wait
+- queue dequeue alone is not authority to run; the queue claim, wait
+  resolution, timer-wake incorporation, and execution admission must commit
+  atomically
+
+Repeating timer ticks are coalesced while a prior wake remains pending
+execution admission. Once that wake is incorporated into an execution, a later
+fire may create one further pending wake. Cancellation invalidates only wakes
+that have not crossed this admission fence and does not abort an execution
+that already crossed it.
+
 ### WaitingSystem
 
 A WorkItem is waiting for a runtime-owned system tick when progress should

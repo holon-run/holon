@@ -678,6 +678,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     &mut execution_protocol,
                     wait_transition.as_ref(),
                 )?;
+                let timer_wake_claim = timer_wake_claim_for_message(
+                    &self.runtime.inner.runtime_db,
+                    &persisted_message,
+                )?;
                 let mut attempt_audit_events = claim_audit_events.clone();
                 if let Some(wait_transition) = wait_transition.as_ref() {
                     attempt_audit_events.push(AuditEvent::legacy(
@@ -719,6 +723,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         },
                         &execution_protocol,
                         wait_transition.as_ref(),
+                        timer_wake_claim.as_ref(),
                     );
                 let mut commit = match commit_result {
                     Ok(commit) => commit,
@@ -1964,6 +1969,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
 pub(super) fn canonical_activation_id(message_id: &str) -> String {
     format!("activation:message:{message_id}")
+}
+
+fn timer_wake_claim_for_message(
+    runtime_db: &crate::runtime_db::RuntimeDb,
+    message: &MessageEnvelope,
+) -> Result<Option<crate::runtime_db::transitions::TimerWakeClaim>> {
+    let MessageOrigin::Timer { timer_id } = &message.origin else {
+        return Ok(None);
+    };
+    let Some(wake) = runtime_db.timers().pending_wake(timer_id)? else {
+        return Ok(None);
+    };
+    if wake.message_id != message.id {
+        return Ok(None);
+    }
+    Ok(Some(crate::runtime_db::transitions::TimerWakeClaim {
+        timer_id: timer_id.clone(),
+        message_id: message.id.clone(),
+        fire_count: wake.fire_count,
+    }))
 }
 
 fn scheduler_work_item_claim_conflict(error: &anyhow::Error) -> bool {
