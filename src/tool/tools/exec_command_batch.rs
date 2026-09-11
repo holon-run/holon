@@ -375,24 +375,28 @@ fn render_exec_item(lines: &mut Vec<String>, result: Option<&ExecCommandResult>)
             stdout_preview,
             stderr_preview,
             artifacts,
+            truncated,
             ..
         } => {
             match exit_status {
                 Some(code) => lines.push(format!("exit={code}")),
                 None => lines.push("exit=unknown".to_string()),
             }
-            if let Some(stdout) = stdout_preview
-                .as_ref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                lines.push("stdout:".to_string());
+            if *truncated {
+                lines.push("Output truncated; stream previews are contiguous prefixes.".into());
+            }
+            if let Some(stdout) = stdout_preview.as_ref().filter(|value| !value.is_empty()) {
+                lines.push(format!(
+                    "stdout: (Unicode scalar range [0, {}))",
+                    stdout.chars().count()
+                ));
                 lines.push(stdout.clone());
             }
-            if let Some(stderr) = stderr_preview
-                .as_ref()
-                .filter(|value| !value.trim().is_empty())
-            {
-                lines.push("stderr:".to_string());
+            if let Some(stderr) = stderr_preview.as_ref().filter(|value| !value.is_empty()) {
+                lines.push(format!(
+                    "stderr: (Unicode scalar range [0, {}))",
+                    stderr.chars().count()
+                ));
                 lines.push(stderr.clone());
             }
             if !artifacts.is_empty() {

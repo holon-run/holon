@@ -92,20 +92,30 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
             stdout_preview,
             stderr_preview,
             artifacts,
+            truncated,
             ..
         } => {
             let mut lines = vec![match exit_status {
                 Some(code) => format!("Process exited with code {code}"),
                 None => "Process exited".to_string(),
             }];
-            if let Some(stdout) = stdout_preview.filter(|value| !value.trim().is_empty()) {
+            if truncated {
+                lines.push("Output truncated; stream previews are contiguous prefixes.".into());
+            }
+            if let Some(stdout) = stdout_preview.filter(|value| !value.is_empty()) {
                 lines.push(String::new());
-                lines.push("stdout:".to_string());
+                lines.push(format!(
+                    "stdout: (Unicode scalar range [0, {}))",
+                    stdout.chars().count()
+                ));
                 lines.push(stdout);
             }
-            if let Some(stderr) = stderr_preview.filter(|value| !value.trim().is_empty()) {
+            if let Some(stderr) = stderr_preview.filter(|value| !value.is_empty()) {
                 lines.push(String::new());
-                lines.push("stderr:".to_string());
+                lines.push(format!(
+                    "stderr: (Unicode scalar range [0, {}))",
+                    stderr.chars().count()
+                ));
                 lines.push(stderr);
             }
             if !artifacts.is_empty() {

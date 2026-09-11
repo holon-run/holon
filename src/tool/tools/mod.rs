@@ -35,6 +35,7 @@ pub(crate) mod memory_get;
 pub(crate) mod memory_search;
 pub(crate) mod pick_work_item;
 pub(crate) mod remove_worktree;
+pub(crate) mod semantic_projection;
 pub(crate) mod sleep;
 pub(crate) mod switch_workspace;
 pub(crate) mod task_input;
@@ -426,30 +427,24 @@ pub(crate) fn render_tool_result_for_model_with_context(
     } else {
         render_tool_result_for_model(result)?
     };
-    if estimated_tokens(&rendered) <= context.tool_output_budget_estimated_tokens {
+    if result.envelope.tool_name != list_work_items::NAME
+        && estimated_tokens(&rendered) <= context.tool_output_budget_estimated_tokens
+    {
         return Ok(rendered);
     }
 
     let output_ref = format!("tool_execution:{}:output", context.tool_execution_id);
-    let mut receipt = serde_json::json!({
-        "tool_name": result.envelope.tool_name,
-        "status": result.envelope.status,
-        "summary_text": truncate_chars(result.envelope.summary_text.as_deref().unwrap_or(""), 512),
-        "output_ref": output_ref,
-        "provider_projection_truncated": true,
-    });
-    if let Some(error) = result.envelope.error.as_ref() {
-        receipt["error"] = serde_json::json!({
-            "kind": error.kind,
-            "message": truncate_chars(&error.message, 512),
-            "recovery_hint": error
-                .recovery_hint
-                .as_deref()
-                .map(|value| truncate_chars(value, 512)),
-            "retryable": error.retryable,
-        });
-    }
-    serde_json::to_string(&receipt).map_err(Into::into)
+    semantic_projection::project(
+        &result.envelope,
+        Some(&output_ref),
+        context.tool_output_budget_estimated_tokens,
+    )
+    .ok_or_else(|| {
+        anyhow!(
+            "tool output budget cannot accommodate a useful {} receipt",
+            result.envelope.tool_name
+        )
+    })
 }
 
 fn estimated_tokens(text: &str) -> usize {
@@ -466,6 +461,40 @@ pub(crate) fn truncate_chars(value: &str, max_chars: usize) -> String {
         .collect::<String>();
     truncated.push('…');
     truncated
+}
+
+/// Export once at execution, including deferred completion resolution, never
+/// while projecting historical rounds.
+pub(crate) async fn attach_result_recovery(
+    runtime: &RuntimeHandle,
+    result: &mut ToolResult,
+    execution_id: &str,
+) -> Result<()> {
+    if let Some(Value::Object(value)) = result.envelope.result.as_mut() {
+        value
+            .entry("output_ref")
+            .or_insert_with(|| serde_json::json!(format!("tool_execution:{execution_id}:output")));
+    }
+    let canonical = serde_json::to_string_pretty(&result.envelope)?;
+    if canonical.chars().count() > 4096 {
+        let artifact = match runtime
+            .persist_tool_text_artifact("tool-result", &canonical)
+            .await
+        {
+            Ok(path) => serde_json::json!({
+                "path": path, "complete": true, "encoding": "utf-8",
+                "range_unit": "unicode_scalar", "chars": canonical.chars().count(),
+            }),
+            Err(error) => serde_json::json!({
+                "complete": false,
+                "reason": format!("canonical artifact could not be saved: {error}"),
+            }),
+        };
+        if let Some(Value::Object(value)) = result.envelope.result.as_mut() {
+            value.insert("recovery_artifact".into(), artifact);
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn canonical_json_render(result: &ToolResult) -> Result<String> {

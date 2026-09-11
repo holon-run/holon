@@ -171,7 +171,7 @@ impl ToolRegistry {
             .into());
         }
         let tool_started = std::time::Instant::now();
-        let result = tools::execute_builtin_tool_with_context(
+        let mut result = tools::execute_builtin_tool_with_context(
             runtime,
             agent_id,
             authority_class,
@@ -179,6 +179,8 @@ impl ToolRegistry {
             context,
         )
         .await?;
+        let execution_id = crate::ids::tool_execution_id();
+        tools::attach_result_recovery(runtime, &mut result, &execution_id).await?;
         crate::diagnostics::record_tool_execution(&call.name, tool_started.elapsed(), None);
         if !result.is_error() {
             if let Err(error) =
@@ -209,7 +211,7 @@ impl ToolRegistry {
         ))
         .then_some(finished_at);
         let record = ToolExecutionRecord {
-            id: crate::ids::tool_execution_id(),
+            id: execution_id,
             agent_id: agent_id.to_string(),
             work_item_id: None,
             turn_index: 0,

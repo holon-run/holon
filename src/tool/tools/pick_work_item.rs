@@ -96,6 +96,15 @@ pub(crate) async fn execute(
             },
         },
     )?;
+    result.envelope.summary_text = Some(format!(
+        "Selected work item {}; terminal_transition={terminal_transition}.",
+        result
+            .envelope
+            .result
+            .as_ref()
+            .and_then(|value| value["current_work_item_id"].as_str())
+            .unwrap_or("unknown")
+    ));
     if terminal_transition {
         result.should_sleep = true;
         result.terminal_transition = true;

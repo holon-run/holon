@@ -88,6 +88,8 @@ pub(crate) struct WorkItemView {
 pub(crate) struct WorkItemQueryContext {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) current_work_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) bound_work_item_id: Option<String>,
 }
 
 pub(crate) type WorkItemDeliverySummaryMap = BTreeMap<String, DeliverySummaryRecord>;
@@ -104,6 +106,7 @@ pub(crate) async fn query_context(runtime: &RuntimeHandle) -> Result<WorkItemQue
     };
     Ok(WorkItemQueryContext {
         current_work_item_id,
+        bound_work_item_id: state.current_turn_work_item_id,
     })
 }
 

@@ -778,6 +778,53 @@ Compaction may later derive a bounded model-visible receipt from the preserved
 canonical result, but compaction should not depend on re-parsing provider-facing
 receipt text to recover runtime semantics.
 
+### Budgeted semantic receipts and recovery
+
+Immediate delivery and historical compaction share the same semantic projection.
+Budgets count the serialized receipt, including JSON escaping and envelope fields.
+An unrepresentable minimum receipt fails projection rather than emitting an empty
+success or silently exceeding the budget.
+
+`ListWorkItems` uses a compact queue view: full IDs, scheduling state, focus,
+short objectives, and separate canonical `returned` and projected `shown` counts.
+Optional details and objective text are reduced before rows are omitted.
+`PickWorkItem` and `CompleteWorkItem` preserve actual transition and continuation
+facts; prepared completion is not a claim of committed settlement.
+`MemoryGet` prioritizes a Unicode-safe content prefix, preserving its original
+source reference and distinguishing canonical truncation from display truncation.
+Unknown tools expose bounded result shape and recognizable facts, not invented
+business summaries.
+
+Large object results are exported once at execution into the existing
+agent-owned `tool-artifacts` storage. The canonical payload remains intact, with
+an additive `recovery_artifact` descriptor. Historical compaction never writes
+another copy. Export failure is explicit and does not claim a recoverable path.
+`MemoryGet` additionally exports the complete authorized source snapshot before
+applying `max_chars`; that argument limits inline content, not the snapshot.
+The source artifact is UTF-8 text, not an escaped JSON string.
+Snapshot reads restore message bodies without the search projection's 8,000-character
+limit. Command stream snapshots read persisted UTF-8 artifacts only within the
+current agent's canonical `tool-artifacts` directory, after source authorization.
+Search and ordinary memory projections remain bounded. Missing, inaccessible,
+out-of-scope, or legacy preview-only stream sources retain their evidence with
+`complete=false` and a reason; aggregate command previews are not full streams.
+Use explicit stdout/stderr refs for stream recovery.
+
+Read artifacts with existing authorized `ExecCommand`/`ExecCommandBatch` calls.
+Use bounded line ranges for line-oriented material. For long single lines or
+exact reconstruction, use Unicode scalar offsets: Python's
+`open(path, encoding="utf-8", newline="").read()[start:end]`, written with
+`sys.stdout.write` without adding a newline. Offsets are zero-based and the end
+is exclusive. Command previews are contiguous prefixes of raw captured streams,
+including whitespace. A shortened model receipt reports the actual displayed
+prefix range; continue at `start + shown_chars`, not the originally requested
+end. These ranges describe command output, so arbitrary transformations in a
+shell command do not imply a source-file offset mapping.
+
+Artifacts retain existing local access and lifecycle rules, not public download
+access. Missing or removed artifacts are ordinary read failures. Source content
+does not gain instruction authority by being exported or re-read.
+
 ## Runtime Storage Contract
 
 Holon may continue storing richer internal records, including:

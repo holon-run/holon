@@ -365,6 +365,14 @@ The preferred tool surface remains small.
 - `GetWorkItem`
 - `ListWorkItems`
 
+Model-facing `ListWorkItems` is a compact queue projection, not a replacement for
+`GetWorkItem` detail. It preserves identity, focus and scheduling as distinct
+facts, retains canonical order, and reports shown versus returned rows.
+Requested checklist details may be explicitly omitted under the model budget.
+Pick/completion receipts retain actual transition and continuation facts rather
+than whole records. A prepared bound completion remains a preparation receipt;
+it must not imply that durable settlement has already committed.
+
 ### Avoid For Now
 
 - `AddTodo`

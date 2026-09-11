@@ -321,8 +321,6 @@ const RECOVERABLE_MAX_DEPTH: usize = 4;
 const RECOVERABLE_MAX_ARRAY_ITEMS: usize = 8;
 const RECOVERABLE_MAX_NODES: usize = 64;
 const RECOVERABLE_MAX_STRING_CHARS: usize = 256;
-const COMPACT_SUMMARY_MAX_CHARS: usize = 256;
-const COMPACT_ERROR_MAX_CHARS: usize = 256;
 
 struct RecoverableValueBudget {
     remaining_nodes: usize,
@@ -433,30 +431,42 @@ fn recoverable_result_value(value: &Value) -> Option<Value> {
     )
 }
 
-fn count_artifact_refs_at(value: &Value, allow_path: bool) -> usize {
+fn collect_artifact_refs<'a>(
+    value: &'a Value,
+    allow_path: bool,
+    refs: &mut std::collections::BTreeSet<&'a str>,
+) {
     match value {
-        Value::Object(map) => map
-            .iter()
-            .map(|(key, value)| {
-                usize::from(
-                    ((allow_path && key == "path") || key.ends_with("_ref"))
-                        && value.as_str().is_some_and(|value| !value.is_empty()),
-                ) + count_artifact_refs_at(
+        Value::Object(map) => {
+            for (key, value) in map {
+                if (allow_path && key == "path") || key.ends_with("_ref") {
+                    if let Some(reference) = value.as_str().filter(|value| !value.is_empty()) {
+                        refs.insert(reference);
+                    }
+                }
+                collect_artifact_refs(
                     value,
-                    key == "artifacts" || (allow_path && key == "items"),
-                )
-            })
-            .sum(),
-        Value::Array(values) => values
-            .iter()
-            .map(|value| count_artifact_refs_at(value, allow_path))
-            .sum(),
-        _ => 0,
+                    matches!(
+                        key.as_str(),
+                        "artifacts" | "recovery_artifact" | "source_artifact"
+                    ) || (allow_path && key == "items"),
+                    refs,
+                );
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_artifact_refs(value, allow_path, refs);
+            }
+        }
+        _ => {}
     }
 }
 
 fn count_artifact_refs(value: &Value) -> usize {
-    count_artifact_refs_at(value, true)
+    let mut refs = std::collections::BTreeSet::new();
+    collect_artifact_refs(value, true, &mut refs);
+    refs.len()
 }
 
 fn find_output_ref(value: &Value) -> Option<&str> {
@@ -474,68 +484,22 @@ fn compact_tool_result_envelope(
     envelope: &ToolResultEnvelope,
     budget_estimated_tokens: usize,
 ) -> Option<(String, usize)> {
-    let recovered_result = envelope.result.as_ref().and_then(recoverable_result_value);
-    let preserved_artifact_refs = recovered_result
-        .as_ref()
-        .map(count_artifact_refs)
-        .unwrap_or_default();
-    let mut receipt = serde_json::Map::new();
-    receipt.insert(
-        "tool_name".into(),
-        Value::String(envelope.tool_name.clone()),
-    );
-    receipt.insert(
-        "status".into(),
-        serde_json::to_value(&envelope.status).unwrap_or(Value::Null),
-    );
-    if let Some(output_ref) = envelope.result.as_ref().and_then(find_output_ref) {
-        receipt.insert(
-            "output_ref".into(),
-            Value::String(truncate_receipt_text(
-                output_ref,
-                RECOVERABLE_MAX_STRING_CHARS,
-            )),
-        );
+    let output_ref = envelope.result.as_ref().and_then(find_output_ref);
+    let rendered = crate::tool::tools::semantic_projection::project(
+        envelope,
+        output_ref,
+        budget_estimated_tokens,
+    )?;
+    let mut receipt: Value = serde_json::from_str(&rendered).ok()?;
+    if let Some(refs) = envelope.result.as_ref().and_then(recoverable_result_value) {
+        receipt["result_refs"] = refs;
+        let with_refs = serde_json::to_string(&receipt).ok()?;
+        if estimate_text_tokens(&with_refs) <= budget_estimated_tokens {
+            return Some((with_refs, count_artifact_refs(&receipt)));
+        }
     }
-    receipt.insert(
-        "summary_text".into(),
-        envelope
-            .summary_text
-            .as_deref()
-            .map(|value| truncate_receipt_text(value, COMPACT_SUMMARY_MAX_CHARS))
-            .map(Value::String)
-            .unwrap_or(Value::Null),
-    );
-    if let Some(error) = envelope.error.as_ref() {
-        receipt.insert(
-            "error".into(),
-            serde_json::json!({
-                "kind": truncate_receipt_text(&error.kind, COMPACT_ERROR_MAX_CHARS),
-                "message": truncate_receipt_text(&error.message, COMPACT_ERROR_MAX_CHARS),
-                "recovery_hint": error.recovery_hint.as_deref().map(|value| truncate_receipt_text(value, COMPACT_ERROR_MAX_CHARS)),
-                "retryable": error.retryable,
-            }),
-        );
-    }
-    if let Some(result) = recovered_result {
-        receipt.insert("result_refs".into(), result);
-    }
-    receipt.insert("provider_projection_truncated".into(), Value::Bool(true));
-    let mut rendered = serde_json::to_string(&Value::Object(receipt.clone())).ok()?;
-    if estimate_text_tokens(&rendered) <= budget_estimated_tokens {
-        return Some((rendered, preserved_artifact_refs));
-    }
-
-    receipt.remove("result_refs");
-    receipt.remove("error");
-    rendered = serde_json::to_string(&Value::Object(receipt.clone())).ok()?;
-    if estimate_text_tokens(&rendered) <= budget_estimated_tokens {
-        return Some((rendered, 0));
-    }
-
-    receipt.remove("summary_text");
-    rendered = serde_json::to_string(&Value::Object(receipt)).ok()?;
-    (estimate_text_tokens(&rendered) <= budget_estimated_tokens).then_some((rendered, 0))
+    let count = count_artifact_refs(&serde_json::from_str::<Value>(&rendered).ok()?);
+    Some((rendered, count))
 }
 
 pub(super) fn compacted_round_messages(

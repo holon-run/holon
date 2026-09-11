@@ -17,8 +17,7 @@ use crate::{
     },
     tool::helpers::{
         command_cost_diagnostics, command_digest, command_display, command_preview,
-        effective_tool_output_tokens, output_char_budget, truncate_output_to_char_budget,
-        truncate_output_with_flag, truncate_text,
+        effective_tool_output_tokens, output_char_budget, truncate_output_with_flag, truncate_text,
     },
     tool::ToolError,
     types::{
@@ -1018,19 +1017,25 @@ impl RuntimeHandle {
         self.inner.storage.data_dir().join("tool-artifacts")
     }
 
-    async fn persist_exec_command_artifact(&self, stream: &str, content: &str) -> Result<String> {
+    pub(crate) async fn persist_tool_text_artifact(
+        &self,
+        label: &str,
+        content: &str,
+    ) -> Result<String> {
         let dir = self.tool_artifact_dir();
         tokio::fs::create_dir_all(&dir)
             .await
             .with_context(|| format!("failed to create {}", dir.display()))?;
-        let path = dir.join(format!(
-            "exec-command-{}-{stream}.log",
-            Uuid::new_v4().simple()
-        ));
+        let path = dir.join(format!("{label}-{}.log", Uuid::new_v4().simple()));
         tokio::fs::write(&path, content)
             .await
             .with_context(|| format!("failed to persist {}", path.display()))?;
         Ok(path.display().to_string())
+    }
+
+    async fn persist_exec_command_artifact(&self, stream: &str, content: &str) -> Result<String> {
+        self.persist_tool_text_artifact(&format!("exec-command-{stream}"), content)
+            .await
     }
 
     async fn complete_exec_command_result(
@@ -1042,8 +1047,8 @@ impl RuntimeHandle {
     ) -> Result<ExecCommandResult> {
         let stdout_raw = captured.stdout.as_str();
         let stderr_raw = captured.stderr.as_str();
-        let stdout = stdout_raw.trim();
-        let stderr = stderr_raw.trim();
+        let stdout = stdout_raw;
+        let stderr = stderr_raw;
         let non_empty_streams = usize::from(!stdout.is_empty()) + usize::from(!stderr.is_empty());
         let stream_count = non_empty_streams.max(1);
         let char_budget = output_char_budget(max_output_tokens.map(|value| value as usize));
@@ -1051,13 +1056,15 @@ impl RuntimeHandle {
         let (stdout_preview, stdout_truncated) = if stdout.is_empty() {
             (None, false)
         } else {
-            let (value, truncated) = truncate_output_to_char_budget(stdout, per_stream_budget);
+            let value = stdout.chars().take(per_stream_budget).collect::<String>();
+            let truncated = value.len() < stdout.len();
             (Some(value), truncated)
         };
         let (stderr_preview, stderr_truncated) = if stderr.is_empty() {
             (None, false)
         } else {
-            let (value, truncated) = truncate_output_to_char_budget(stderr, per_stream_budget);
+            let value = stderr.chars().take(per_stream_budget).collect::<String>();
+            let truncated = value.len() < stderr.len();
             (Some(value), truncated)
         };
 

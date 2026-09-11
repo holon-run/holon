@@ -99,6 +99,234 @@ where
 }
 
 #[tokio::test]
+async fn scripted_provider_recovers_full_memory_through_bounded_command_results() -> Result<()> {
+    let mut config = test_config();
+    config.prompt_budget_estimated_tokens = 100_000;
+    config.compaction_trigger_estimated_tokens = 80_000;
+    config.compaction_keep_recent_estimated_tokens = 40_000;
+    let source = format!("{}\r\nEND 🦀", "中文🦀\"\\\n".repeat(9000));
+    let chars = source.chars().collect::<Vec<_>>();
+    let mut steps = vec![ScriptedProviderStep::tool_use(
+        "memory-source",
+        "MemoryGet",
+        json!({"source_ref": "agent_memory:self", "max_chars": 50_000}),
+    )];
+    let mut chunks = Vec::new();
+    for (index, chunk) in chars.chunks(4000).enumerate() {
+        let start = index * 4000;
+        let end = start + chunk.len();
+        let code = format!(
+            "import glob,sys; p=glob.glob({}+'/**/tool-artifacts/memory-source-*.log',recursive=True)[0]; sys.stdout.write(open(p,encoding='utf-8',newline='').read()[{start}:{end}])",
+            serde_json::to_string(&config.home_dir.display().to_string())?
+        );
+        let cmd = format!("python3 -c '{}'", code.replace('\'', "'\\''"));
+        let id = format!("range-{index}");
+        let (name, input) = if index % 2 == 0 {
+            (
+                "ExecCommand",
+                json!({"cmd": cmd, "max_output_tokens": 5000}),
+            )
+        } else {
+            (
+                "ExecCommandBatch",
+                json!({"items": [{"cmd": cmd}], "max_output_tokens": 5000}),
+            )
+        };
+        steps.push(ScriptedProviderStep::tool_use(&id, name, input));
+        chunks.push((id, chunk.iter().collect::<String>()));
+    }
+    steps.push(ScriptedProviderStep::text("full source recovered"));
+    let provider = ScriptedAgentProvider::new(steps);
+    let captured = provider.clone();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(provider))?;
+    let runtime = host.default_runtime().await?;
+    std::fs::create_dir_all(runtime.storage().data_dir().join("memory"))?;
+    std::fs::write(runtime.storage().data_dir().join("memory/self.md"), &source)?;
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Read the source snapshot in bounded ranges.".into(),
+            },
+        ))
+        .await?;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while captured.request_count() < chunks.len() + 2 {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "provider did not finish range reads"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let requests = captured.requests();
+    let delivered = |id: &str| {
+        requests.iter().find_map(|request| {
+            request
+                .conversation
+                .iter()
+                .find_map(|message| match message {
+                    ConversationMessage::UserToolResults(results) => {
+                        results.iter().find(|result| result.tool_use_id == id)
+                    }
+                    _ => None,
+                })
+        })
+    };
+    let memory: serde_json::Value =
+        serde_json::from_str(&delivered("memory-source").unwrap().content)?;
+    let preview = memory
+        .pointer("/result/memory/preview/content")
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
+    assert!(!preview.is_empty());
+    assert!(source.starts_with(preview));
+    assert_eq!(
+        memory["result"]["memory"]["source_ref"],
+        "agent_memory:self"
+    );
+    let artifact = memory["result"]["memory"]["source_artifact"]["path"]
+        .as_str()
+        .unwrap();
+    assert_eq!(std::fs::read_to_string(artifact)?, source);
+    let mut rebuilt = String::new();
+    for (id, expected) in chunks {
+        let result = delivered(&id).expect("range result delivered to provider");
+        assert!(!result.is_error);
+        let prefix = result
+            .content
+            .split_once("))\n")
+            .expect("explicit displayed range")
+            .1;
+        assert_eq!(prefix, expected);
+        rebuilt.push_str(prefix);
+    }
+    assert_eq!(rebuilt, source);
+    let records = runtime.storage().read_recent_tool_executions(100)?;
+    let record = records
+        .iter()
+        .find(|record| record.tool_name == "MemoryGet")
+        .unwrap();
+    assert_eq!(
+        record.output["envelope"]["result"]["memory"]["content"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count(),
+        50_000
+    );
+    let recovery = record.output["envelope"]["result"]["recovery_artifact"]["path"]
+        .as_str()
+        .unwrap();
+    let canonical: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(recovery)?)?;
+    assert_eq!(
+        canonical["result"]["memory"]["content"],
+        record.output["envelope"]["result"]["memory"]["content"]
+    );
+    assert!(memory["output_ref"].as_str().unwrap().contains(&record.id));
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn scripted_provider_receives_all_queue_identities_without_plan_previews() -> Result<()> {
+    let provider = ScriptedAgentProvider::new([
+        ScriptedProviderStep::tool_use(
+            "queue",
+            "ListWorkItems",
+            json!({"filter": "open", "limit": 22}),
+        ),
+        ScriptedProviderStep::text("queue inspected"),
+    ]);
+    let captured = provider.clone();
+    let mut config = test_config();
+    config.prompt_budget_estimated_tokens = 100_000;
+    config.compaction_trigger_estimated_tokens = 80_000;
+    let host = RuntimeHost::new_with_provider(config, Arc::new(provider))?;
+    let runtime = host.default_runtime().await?;
+    let mut ids = Vec::new();
+    for index in 0..22 {
+        let item = runtime
+            .create_work_item(
+                format!("Queue item {index}: {}", "long objective ".repeat(200)),
+                Some(holon::types::WorkItemPlanStatus::NeedsInput),
+                Some("plan detail ".repeat(1000)),
+                Vec::new(),
+            )
+            .await?;
+        ids.push(item.id);
+    }
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Inspect the open queue without activating work.".into(),
+            },
+        ))
+        .await?;
+    wait_until(|| Ok(captured.request_count() >= 2)).await?;
+    let requests = captured.requests();
+    let result = requests[1]
+        .conversation
+        .iter()
+        .find_map(|message| match message {
+            ConversationMessage::UserToolResults(results) => {
+                results.iter().find(|result| result.tool_use_id == "queue")
+            }
+            _ => None,
+        })
+        .unwrap();
+    let projected: serde_json::Value = serde_json::from_str(&result.content)?;
+    assert_eq!(projected["result"]["returned"], 22);
+    assert_eq!(projected["result"]["shown"], 22);
+    assert_eq!(projected["result"]["omitted_count"], 0);
+    let rows = projected["result"]["work_items"].as_array().unwrap();
+    for id in ids {
+        let row = rows.iter().find(|row| row["id"] == id).unwrap();
+        assert!(row["objective"].as_str().unwrap().starts_with("Queue item"));
+        assert!(row.get("plan_artifact").is_none());
+        assert!(row["scheduling_state"].is_string());
+    }
+    let records = runtime.storage().read_recent_tool_executions(10)?;
+    let record = records
+        .iter()
+        .find(|record| record.tool_name == "ListWorkItems")
+        .unwrap();
+    let canonical = &record.output["envelope"]["result"];
+    assert_eq!(canonical["work_items"].as_array().unwrap().len(), 22);
+    assert!(
+        canonical["work_items"][0]["plan_artifact"]["preview"]
+            .as_str()
+            .unwrap()
+            .chars()
+            .count()
+            >= 1600
+    );
+    assert!(runtime
+        .get_memory(projected["output_ref"].as_str().unwrap(), Some(1000))
+        .await?
+        .is_some());
+    let artifact = canonical["recovery_artifact"]["path"].as_str().unwrap();
+    let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(artifact)?)?;
+    assert_eq!(saved["result"]["work_items"], canonical["work_items"]);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn scripted_agent_provider_drives_tool_loop_and_captures_requests() -> Result<()> {
     let provider = ScriptedAgentProvider::new([
         ScriptedProviderStep::tool_use("agent-get-1", "GetAgent", json!({}))

@@ -48,7 +48,7 @@ pub(crate) async fn execute(
     let args: MemoryGetArgs = parse_tool_args(NAME, input)?;
     let source_ref = validate_source_ref(args.source_ref)?;
     let max_chars = validate_max_chars(args.max_chars)?;
-    let Some(memory) = runtime.get_memory(&source_ref, max_chars).await? else {
+    let Some(mut memory) = runtime.get_memory_snapshot(&source_ref).await? else {
         return Err(ToolError::new(
             "memory_source_not_found",
             format!("memory source `{source_ref}` was not found"),
@@ -63,7 +63,34 @@ pub(crate) async fn execute(
         )
         .into());
     };
-    serialize_success(NAME, &MemoryGetResponse { memory })
+    let source_chars = memory.content.chars().count();
+    let artifact = match runtime
+        .persist_tool_text_artifact("memory-source", &memory.content)
+        .await
+    {
+        Ok(path) => {
+            json!({"path": path, "complete": !memory.truncated, "reason": memory.metadata.get("source_incomplete_reason"), "chars": source_chars, "encoding": "utf-8", "range_unit": "unicode_scalar"})
+        }
+        Err(error) => {
+            json!({"complete": false, "reason": format!("source artifact could not be saved: {error}")})
+        }
+    };
+    let limit = max_chars.unwrap_or(12_000);
+    if source_chars > limit {
+        memory.content = memory.content.chars().take(limit).collect();
+        memory.truncated = true;
+    }
+    let mut result = serialize_success(NAME, &MemoryGetResponse { memory })?;
+    result
+        .envelope
+        .result
+        .as_mut()
+        .expect("serialized memory result")["memory"]["source_artifact"] = artifact;
+    result.envelope.summary_text = Some(format!(
+        "Read {} of {source_chars} source characters.",
+        source_chars.min(limit)
+    ));
+    Ok(result)
 }
 
 fn validate_source_ref(source_ref: String) -> Result<String> {
@@ -131,6 +158,161 @@ mod tests {
             .downcast_ref::<crate::tool::ToolError>()
             .expect("tool error")
             .clone()
+    }
+
+    #[tokio::test]
+    async fn full_source_artifact_survives_inline_and_command_projection_limits() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        let source = format!(
+            "{}\n{}\r\nEND 🦀",
+            "中文🦀\"\\ ".repeat(9000),
+            "line\n".repeat(100)
+        );
+        let path = crate::agent_template::agent_memory_self_path(runtime.storage().data_dir());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &source).unwrap();
+        let memory_result = execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &json!({"source_ref": "agent_memory:self", "max_chars": 50_000}),
+        )
+        .await
+        .unwrap();
+        let value = memory_result.envelope.result.as_ref().unwrap();
+        let memory = &value["memory"];
+        assert_eq!(memory["content"].as_str().unwrap().chars().count(), 50_000);
+        assert_eq!(memory["truncated"], true);
+        assert_eq!(memory["source_artifact"]["complete"], true);
+        let artifact = memory["source_artifact"]["path"].as_str().unwrap();
+        assert_eq!(std::fs::read_to_string(artifact).unwrap(), source);
+        let rendered = super::super::render_tool_result_for_model_with_context(
+            &memory_result,
+            &super::super::ToolModelRenderContext {
+                tool_execution_id: "memory-full-source",
+                tool_output_budget_estimated_tokens: 800,
+            },
+        )
+        .unwrap();
+        let projected: Value = serde_json::from_str(&rendered).unwrap();
+        assert!(source.starts_with(
+            projected["result"]["memory"]["preview"]["content"]
+                .as_str()
+                .unwrap()
+        ));
+
+        let mut rebuilt = String::new();
+        let mut offset = 0;
+        let mut batch = false;
+        let total = source.chars().count();
+        while offset < total {
+            let code = format!("import sys; sys.stdout.write(open({}, encoding='utf-8', newline='').read()[{}:{}])",
+                serde_json::to_string(artifact).unwrap(), offset, offset + 8000);
+            let cmd = format!("python3 -c '{}'", code.replace('\'', "'\\''"));
+            batch = !batch;
+            let command_result = if batch {
+                super::super::exec_command_batch::execute(
+                    &runtime,
+                    "default",
+                    &AuthorityClass::OperatorInstruction,
+                    &json!({"items": [{"cmd": cmd}], "max_output_tokens": 4000}),
+                )
+                .await
+                .unwrap()
+            } else {
+                super::super::exec_command::execute(
+                    &runtime,
+                    "default",
+                    &AuthorityClass::OperatorInstruction,
+                    &json!({"cmd": cmd, "max_output_tokens": 4000}),
+                )
+                .await
+                .unwrap()
+            };
+            let rendered = super::super::render_tool_result_for_model_with_context(
+                &command_result,
+                &super::super::ToolModelRenderContext {
+                    tool_execution_id: "range-read",
+                    tool_output_budget_estimated_tokens: 1000,
+                },
+            )
+            .unwrap();
+            // Force JSON projection for the final small chunk as well.
+            let projected: Value = serde_json::from_str(&rendered).unwrap_or_else(|_| {
+                serde_json::from_str(
+                    &super::super::semantic_projection::project(
+                        &command_result.envelope,
+                        None,
+                        1000,
+                    )
+                    .unwrap(),
+                )
+                .unwrap()
+            });
+            let output = if batch {
+                &projected["result"]["items"][0]["result"]
+            } else {
+                &projected["result"]
+            };
+            let prefix = output["stdout_preview"]["content"].as_str().unwrap();
+            let shown = output["stdout_preview"]["shown_chars"].as_u64().unwrap() as usize;
+            assert!(shown > 0);
+            assert_eq!(shown, prefix.chars().count());
+            rebuilt.push_str(prefix);
+            offset += shown;
+        }
+        assert_eq!(rebuilt, source);
+    }
+
+    #[tokio::test]
+    async fn source_artifact_write_failure_is_explicit_without_losing_inline_content() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        let path = crate::agent_template::agent_memory_self_path(runtime.storage().data_dir());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "available source text").unwrap();
+        std::fs::write(
+            runtime.storage().data_dir().join("tool-artifacts"),
+            "not a directory",
+        )
+        .unwrap();
+        let result = execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &json!({"source_ref": "agent_memory:self"}),
+        )
+        .await
+        .unwrap();
+        let memory = &result.envelope.result.as_ref().unwrap()["memory"];
+        assert_eq!(memory["content"], "available source text");
+        assert_eq!(memory["source_artifact"]["complete"], false);
+        assert!(memory["source_artifact"].get("path").is_none());
+        assert!(memory["source_artifact"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("could not be saved"));
     }
 
     #[test]
@@ -352,9 +534,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        assert!(content.contains("\"selector\": \"stdout\""));
-        assert!(content.contains("memory_get_stdout_1246"));
-        assert!(content.contains("\"output_available\": true"));
+        assert_eq!(content, "memory_get_stdout_1246\n");
     }
 
     #[tokio::test]

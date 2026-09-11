@@ -112,7 +112,11 @@ pub(crate) async fn execute(
             .await?,
         );
     }
-    serialize_success(
+    let summary = format!(
+        "Returned {} of {total_matching} matching work items.",
+        work_items.len()
+    );
+    let mut result = serialize_success(
         NAME,
         &ListWorkItemsResult {
             context,
@@ -122,7 +126,9 @@ pub(crate) async fn execute(
             limit,
             work_items,
         },
-    )
+    )?;
+    result.envelope.summary_text = Some(summary);
+    Ok(result)
 }
 
 fn matches_filter(

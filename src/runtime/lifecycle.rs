@@ -846,6 +846,27 @@ impl RuntimeHandle {
         .await?
     }
 
+    pub(crate) async fn get_memory_snapshot(
+        &self,
+        source_ref: &str,
+    ) -> Result<Option<crate::memory::MemoryGetResult>> {
+        let active_workspace_id = self
+            .agent_state()
+            .await?
+            .active_workspace_entry
+            .map(|entry| entry.workspace_id);
+        let storage = self.inner.storage.clone();
+        let source_ref = source_ref.to_string();
+        tokio::task::spawn_blocking(move || {
+            crate::memory::get_memory_snapshot(
+                &storage,
+                &source_ref,
+                active_workspace_id.as_deref(),
+            )
+        })
+        .await?
+    }
+
     pub async fn get_memory(
         &self,
         source_ref: &str,

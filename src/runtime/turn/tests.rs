@@ -1068,7 +1068,7 @@ fn compacted_tool_result_projection_uses_canonical_recoverable_receipt() {
     round.estimated_tokens =
         build_round_estimated_tokens(&round.assistant_blocks, &round.tool_results, &[]);
     let prompt_frame = fixture_prompt_frame();
-    let tool_budget = 160;
+    let tool_budget = 250;
     let (projected_messages, stats) =
         compacted_round_messages(&round, tool_budget).expect("compact receipt should fit");
     let compacted_conversation = [
@@ -1115,7 +1115,61 @@ fn compacted_tool_result_projection_uses_canonical_recoverable_receipt() {
     assert!(rendered.contains("tool_execution:tool_123:output"));
     assert!(rendered.contains("task_123"));
     assert!(rendered.contains("/tmp/full-output.log"));
-    assert!(!rendered.contains("sensitive-large-payload"));
+    assert!(rendered.contains("sensitive-large-payload"));
+    assert!(rendered.contains("end_exclusive"));
+}
+
+#[test]
+fn compacted_tool_results_share_queue_semantics_with_immediate_delivery() {
+    let items = (0..22).map(|index| serde_json::json!({
+        "id": format!("work_{index:015x}"), "objective": format!("Task {index} {}", "long ".repeat(200)),
+        "state": "open", "scheduling_state": "yielded", "is_current": index == 0,
+        "plan_artifact": {"preview": "p".repeat(1600)}
+    })).collect::<Vec<_>>();
+    let tool = crate::tool::ToolResult::success(
+        "ListWorkItems",
+        serde_json::json!({
+            "filter": "open", "limit": 22, "returned": 22, "total_matching": 22,
+            "work_items": items, "output_ref": "tool_execution:queue:output"
+        }),
+        None,
+    );
+    let immediate = crate::tool::tools::render_tool_result_for_model_with_context(
+        &tool,
+        &crate::tool::tools::ToolModelRenderContext {
+            tool_execution_id: "queue",
+            tool_output_budget_estimated_tokens: 2500,
+        },
+    )
+    .unwrap();
+    let mut round =
+        fixture_round_with_tool(1, "inspect queue", "ListWorkItems", serde_json::json!({}));
+    round.tool_results = vec![ToolResultBlock {
+        tool_use_id: "call_1".into(),
+        content: serde_json::to_string(&tool.envelope).unwrap(),
+        is_error: false,
+        error: None,
+    }];
+    round.tool_result_envelopes = vec![tool.envelope];
+    let (messages, _) = compacted_round_messages(&round, 2500).unwrap();
+    let historical = messages
+        .iter()
+        .find_map(|message| match message {
+            ConversationMessage::UserToolResults(results) => results.first(),
+            _ => None,
+        })
+        .unwrap();
+    let immediate: serde_json::Value = serde_json::from_str(&immediate).unwrap();
+    let historical: serde_json::Value = serde_json::from_str(&historical.content).unwrap();
+    assert_eq!(historical["result"], immediate["result"]);
+    assert_eq!(
+        historical["result"]["work_items"].as_array().unwrap().len(),
+        22
+    );
+    assert_eq!(
+        historical["result"]["work_items"][0]["scheduling_state"],
+        "yielded"
+    );
 }
 
 #[test]

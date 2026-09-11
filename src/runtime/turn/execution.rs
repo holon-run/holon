@@ -2180,6 +2180,12 @@ impl TurnExecution<'_> {
                         "followup_final_text",
                     )
                     .await?;
+                crate::tool::tools::attach_result_recovery(
+                    runtime,
+                    &mut result,
+                    &pending.tool_execution.id,
+                )
+                .await?;
                 let result_envelope = result.envelope.clone();
                 let mut success_record = pending.tool_execution.clone();
                 let completed_at = Utc::now();

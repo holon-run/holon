@@ -301,6 +301,80 @@ pub fn get_memory(
     max_chars: Option<usize>,
     active_workspace_id: Option<&str>,
 ) -> Result<Option<MemoryGetResult>> {
+    get_memory_with_limit(
+        storage,
+        source_ref,
+        max_chars
+            .unwrap_or(GET_CHARS_DEFAULT)
+            .clamp(1, GET_CHARS_MAX),
+        active_workspace_id,
+    )
+}
+
+/// Read the same authorized source without an inline display limit.
+pub(crate) fn get_memory_snapshot(
+    storage: &AppStorage,
+    source_ref: &str,
+    active_workspace_id: Option<&str>,
+) -> Result<Option<MemoryGetResult>> {
+    let Some(mut memory) =
+        get_memory_with_limit(storage, source_ref, usize::MAX, active_workspace_id)?
+    else {
+        return Ok(None);
+    };
+    // Authorization above must succeed before reading any underlying source.
+    if let Ok(RuntimeRef::Message { id }) = RuntimeRef::parse(source_ref) {
+        if let Some(message) = storage.read_message_by_id(&id)? {
+            if message.agent_id != storage_agent_id(storage) {
+                return Ok(None);
+            }
+            memory.content = message_document_body_with_limit(&message, usize::MAX);
+        }
+    }
+    if memory.kind == "tool_command_output" {
+        let output: Value = serde_json::from_str(&memory.content)?;
+        let selector = output["selector"].as_str().unwrap_or("");
+        let recovered = if matches!(selector, "stdout" | "stderr") {
+            if let Some(path) = output["artifact"]["path"].as_str() {
+                read_snapshot_stream_artifact(storage, path)
+            } else if output["truncated"] == false && output["disposition"] == "completed" {
+                Ok(output["content"].as_str().unwrap_or("").to_string())
+            } else {
+                Err(anyhow::anyhow!("full stream artifact is unavailable"))
+            }
+        } else {
+            Err(anyhow::anyhow!(
+                "aggregate command preview is not a complete stream; use stdout/stderr refs"
+            ))
+        };
+        match recovered {
+            Ok(content) => memory.content = content,
+            Err(error) => {
+                memory.truncated = true;
+                memory.metadata["source_incomplete_reason"] = Value::String(error.to_string());
+            }
+        }
+    }
+    Ok(Some(memory))
+}
+
+fn read_snapshot_stream_artifact(storage: &AppStorage, path: &str) -> Result<String> {
+    let root = storage.data_dir().join("tool-artifacts").canonicalize()?;
+    let path = Path::new(path).canonicalize()?;
+    // Recorded paths are evidence, not authority to read arbitrary files.
+    anyhow::ensure!(
+        path.starts_with(&root) && path.is_file(),
+        "stream artifact is outside the current agent artifact directory"
+    );
+    fs::read_to_string(path).context("full stream artifact is unavailable or not UTF-8")
+}
+
+fn get_memory_with_limit(
+    storage: &AppStorage,
+    source_ref: &str,
+    max_chars: usize,
+    active_workspace_id: Option<&str>,
+) -> Result<Option<MemoryGetResult>> {
     let agent_id = storage_agent_id(storage);
     if let Ok(runtime_ref) = RuntimeRef::parse(source_ref) {
         let Some(document) = document_for_runtime_ref(storage, &runtime_ref)? else {
@@ -316,10 +390,7 @@ pub fn get_memory(
     index.get(source_ref, max_chars, &agent_id, active_workspace_id)
 }
 
-fn memory_get_result(document: MemoryDocument, max_chars: Option<usize>) -> MemoryGetResult {
-    let max_chars = max_chars
-        .unwrap_or(GET_CHARS_DEFAULT)
-        .clamp(1, GET_CHARS_MAX);
+fn memory_get_result(document: MemoryDocument, max_chars: usize) -> MemoryGetResult {
     let (content, truncated) = truncate_chars(&document.body, max_chars);
     MemoryGetResult {
         kind: document.source_kind,
@@ -1291,13 +1362,10 @@ impl MemoryIndex {
     fn get(
         &self,
         source_ref: &str,
-        max_chars: Option<usize>,
+        max_chars: usize,
         agent_id: &str,
         _active_workspace_id: Option<&str>,
     ) -> Result<Option<MemoryGetResult>> {
-        let max_chars = max_chars
-            .unwrap_or(GET_CHARS_DEFAULT)
-            .clamp(1, GET_CHARS_MAX);
         self.connection
             .query_row(
                 r#"
@@ -1892,6 +1960,10 @@ fn message_document(message: MessageEnvelope) -> MemoryDocument {
 }
 
 fn message_document_body(message: &MessageEnvelope) -> String {
+    message_document_body_with_limit(message, 8_000)
+}
+
+fn message_document_body_with_limit(message: &MessageEnvelope, limit: usize) -> String {
     let mut lines = vec![
         format!("message_ref: message:{}", message.id),
         format!("message_id: {}", message.id),
@@ -1934,7 +2006,7 @@ fn message_document_body(message: &MessageEnvelope) -> String {
     }
     let body = message_body_text_for_memory(&message.body);
     lines.push("body:".to_string());
-    lines.push(truncate_multiline(&body, 8_000));
+    lines.push(truncate_multiline(&body, limit));
     lines.join("\n")
 }
 
@@ -3496,6 +3568,118 @@ mod tests {
                 .content
                 .contains("direct-tool-1663")
         );
+    }
+
+    #[test]
+    fn memory_snapshot_restores_long_message_without_expanding_regular_projection() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        let text = format!("{}MESSAGE_TAIL", "正文🙂".repeat(6_000));
+        let mut message = MessageEnvelope::new(
+            "default",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text { text: text.clone() },
+        );
+        storage.append_message(&message).unwrap();
+        let source_ref = format!("message:{}", message.id);
+        let regular = get_memory(&storage, &source_ref, Some(50_000), None)
+            .unwrap()
+            .unwrap();
+        assert!(!regular.content.contains("MESSAGE_TAIL"));
+        let snapshot = get_memory_snapshot(&storage, &source_ref, None)
+            .unwrap()
+            .unwrap();
+        assert!(snapshot.content.ends_with(&text));
+        assert!(!snapshot.truncated);
+        message.id = "foreign-snapshot-message".into();
+        message.agent_id = "other-agent".into();
+        storage.append_message(&message).unwrap();
+        assert!(
+            get_memory_snapshot(&storage, "message:foreign-snapshot-message", None)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn memory_snapshot_restores_stream_and_marks_unrecoverable_evidence() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        let artifacts = storage.data_dir().join("tool-artifacts");
+        fs::create_dir_all(&artifacts).unwrap();
+        let path = artifacts.join("stdout.log");
+        let full = format!("{}STREAM_TAIL", "命令🙂\n".repeat(6_000));
+        fs::write(&path, &full).unwrap();
+        let mut record = ToolExecutionRecord {
+            id: "snapshot-stream".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            turn_index: 0,
+            turn_id: None,
+            tool_name: "ExecCommand".into(),
+            created_at: Utc::now(),
+            completed_at: Some(Utc::now()),
+            duration_ms: 1,
+            authority_class: crate::types::AuthorityClass::OperatorInstruction,
+            status: crate::types::ToolExecutionStatus::Success,
+            input: json!({"cmd": "test"}),
+            output: json!({"result": {
+                "disposition": "completed", "stdout_preview": "命令🙂",
+                "truncated": true, "stdout_artifact": 0,
+                "artifacts": [{"path": path}]
+            }}),
+            summary: "completed".into(),
+            invocation_surface: None,
+        };
+        storage.append_tool_execution(&record).unwrap();
+        let source_ref = "tool_execution:snapshot-stream:stdout";
+        assert!(!get_memory(&storage, source_ref, None, None)
+            .unwrap()
+            .unwrap()
+            .content
+            .contains("STREAM_TAIL"));
+        let snapshot = get_memory_snapshot(&storage, source_ref, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(snapshot.content, full);
+        assert!(!snapshot.truncated);
+        fs::remove_file(&path).unwrap();
+        let missing = get_memory_snapshot(&storage, source_ref, None)
+            .unwrap()
+            .unwrap();
+        assert!(missing.truncated);
+        assert!(missing.metadata["source_incomplete_reason"].is_string());
+        let outside = dir.path().join("secret.txt");
+        fs::write(&outside, "MUST_NOT_READ").unwrap();
+        record.id = "snapshot-outside".into();
+        record.output["result"]["artifacts"][0]["path"] = json!(outside);
+        storage.append_tool_execution(&record).unwrap();
+        let denied = get_memory_snapshot(&storage, "tool_execution:snapshot-outside:stdout", None)
+            .unwrap()
+            .unwrap();
+        assert!(denied.truncated);
+        assert!(!denied.content.contains("MUST_NOT_READ"));
+        assert!(denied.metadata["source_incomplete_reason"]
+            .as_str()
+            .unwrap()
+            .contains("outside"));
+        record.id = "snapshot-legacy".into();
+        record.output["result"]
+            .as_object_mut()
+            .unwrap()
+            .remove("artifacts");
+        storage.append_tool_execution(&record).unwrap();
+        let legacy = get_memory_snapshot(&storage, "tool_execution:snapshot-legacy:stdout", None)
+            .unwrap()
+            .unwrap();
+        assert!(legacy.truncated);
+        assert!(legacy.metadata["source_incomplete_reason"].is_string());
     }
 
     #[test]

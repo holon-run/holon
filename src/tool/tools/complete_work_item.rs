@@ -204,8 +204,21 @@ pub(crate) async fn complete_with_report_candidate(
             "completion_mode".into(),
             serde_json::json!(completion_mode_name(settlement)),
         );
+        object.insert(
+            "completion_phase".into(),
+            serde_json::json!(if prepared.is_some() {
+                "prepared"
+            } else {
+                "unchanged"
+            }),
+        );
     }
     let mut result = serialize_success(NAME, &result)?;
+    result.envelope.summary_text = Some(format!(
+        "Completion {} for {work_item_id}: completed_transition={completed_transition}, mode={}, report_promoted={completion_report_promoted}.",
+        if prepared.is_some() { "prepared" } else { "unchanged" },
+        completion_mode_name(settlement),
+    ));
     let terminal_transition =
         settlement == crate::runtime::WorkItemCompletionSettlement::BoundExecution;
     if terminal_transition {
