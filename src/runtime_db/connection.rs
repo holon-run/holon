@@ -2,6 +2,8 @@
 
 use std::fs::{self, File};
 #[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::thread;
@@ -144,6 +146,60 @@ fn runtime_db_sidecar_identity(path: &Path) -> Result<Option<(u64, u64)>> {
 }
 
 #[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct RuntimeDbSidecarOpen {
+    deleted: bool,
+    identity: (u64, u64),
+}
+
+#[cfg(target_os = "linux")]
+fn inspect_runtime_db_sidecar_fd(
+    fd_path: &Path,
+    sidecar_path: &Path,
+    deleted_path: &str,
+) -> Option<RuntimeDbSidecarOpen> {
+    inspect_runtime_db_sidecar_fd_with_hook(fd_path, sidecar_path, deleted_path, || Ok(())).ok()?
+}
+
+#[cfg(target_os = "linux")]
+fn inspect_runtime_db_sidecar_fd_with_hook(
+    fd_path: &Path,
+    sidecar_path: &Path,
+    deleted_path: &str,
+    after_first_target: impl FnOnce() -> Result<()>,
+) -> Result<Option<RuntimeDbSidecarOpen>> {
+    let observed_target = match fs::read_link(fd_path) {
+        Ok(target) => target,
+        Err(_) => return Ok(None),
+    };
+    let observed_deleted = observed_target.to_string_lossy() == deleted_path;
+    if observed_target != sidecar_path && !observed_deleted {
+        return Ok(None);
+    }
+
+    after_first_target()?;
+
+    let stable_file = match File::open(fd_path) {
+        Ok(file) => file,
+        _ => return Ok(None),
+    };
+    let stable_fd_path = Path::new("/proc/self/fd").join(stable_file.as_raw_fd().to_string());
+    let stable_target = match fs::read_link(stable_fd_path) {
+        Ok(target) if target == observed_target => target,
+        _ => return Ok(None),
+    };
+    let stable_metadata = match stable_file.metadata() {
+        Ok(metadata) if metadata.is_file() => metadata,
+        _ => return Ok(None),
+    };
+
+    Ok(Some(RuntimeDbSidecarOpen {
+        deleted: stable_target.to_string_lossy() == deleted_path,
+        identity: (stable_metadata.dev(), stable_metadata.ino()),
+    }))
+}
+
+#[cfg(target_os = "linux")]
 fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Result<()> {
     use std::ffi::OsString;
 
@@ -152,22 +208,16 @@ fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Resu
     let sidecar_path = Path::new(&name);
     let deleted_path = format!("{} (deleted)", sidecar_path.display());
 
-    for entry in fs::read_dir("/proc/self/fd").context("reading /proc/self/fd")? {
-        let entry = entry.context("reading entry from /proc/self/fd")?;
-        let target = match fs::read_link(entry.path()) {
-            Ok(target) => target,
-            Err(_) => continue,
-        };
-        let target_display = target.to_string_lossy();
-        if target != sidecar_path && target_display != deleted_path {
-            continue;
-        }
+    let fd_entries = fs::read_dir("/proc/self/fd")
+        .context("reading /proc/self/fd")?
+        .collect::<std::io::Result<Vec<_>>>()
+        .context("reading entries from /proc/self/fd")?;
+    for entry in fd_entries {
         let canonical_before = runtime_db_sidecar_identity(sidecar_path)?;
-        let metadata = match fs::metadata(entry.path()) {
-            Ok(metadata) => metadata,
-            Err(_) => continue,
+        let Some(open) = inspect_runtime_db_sidecar_fd(&entry.path(), sidecar_path, &deleted_path)
+        else {
+            continue;
         };
-        let open_identity = (metadata.dev(), metadata.ino());
         let canonical_after = runtime_db_sidecar_identity(sidecar_path)?;
         let fd = entry.file_name().to_string_lossy().into_owned();
 
@@ -176,27 +226,27 @@ fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Resu
                 db_path,
                 suffix,
                 &fd,
-                open_identity,
+                open.identity,
                 canonical_after,
                 "canonical sidecar changed during inspection",
             );
         }
-        if target_display == deleted_path {
+        if open.deleted {
             return runtime_db_sidecar_divergence(
                 db_path,
                 suffix,
                 &fd,
-                open_identity,
+                open.identity,
                 canonical_after,
                 "deleted-open sidecar",
             );
         }
-        if canonical_after.is_some_and(|identity| identity != open_identity) {
+        if canonical_after.is_some_and(|identity| identity != open.identity) {
             return runtime_db_sidecar_divergence(
                 db_path,
                 suffix,
                 &fd,
-                open_identity,
+                open.identity,
                 canonical_after,
                 "open/canonical inode mismatch",
             );
@@ -469,6 +519,8 @@ mod tests {
     use super::*;
     use rusqlite::OpenFlags;
     use std::ffi::OsString;
+    #[cfg(target_os = "linux")]
+    use std::os::fd::IntoRawFd;
     use std::process::{Command, Stdio};
     use tempfile::tempdir;
 
@@ -561,6 +613,58 @@ mod tests {
         assert!(message.contains("sidecar=-wal"));
         assert!(message.contains("open_inode="));
         assert!(message.contains("canonical_identity="));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sidecar_inspection_ignores_concurrent_fd_reuse() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let replacement_path = directory.path().join("replacement");
+        File::create(&replacement_path)?;
+        let inspected_fd = File::create(&wal_path)?.into_raw_fd();
+        let inspected_fd_path = Path::new("/proc/self/fd").join(inspected_fd.to_string());
+        let deleted_path = format!("{} (deleted)", wal_path.display());
+
+        let observation = inspect_runtime_db_sidecar_fd_with_hook(
+            &inspected_fd_path,
+            &wal_path,
+            &deleted_path,
+            move || {
+                thread::spawn(move || -> Result<()> {
+                    // SAFETY: the raw descriptor is exclusively owned by this test.
+                    if unsafe { libc::close(inspected_fd) } != 0 {
+                        return Err(std::io::Error::last_os_error().into());
+                    }
+
+                    let replacement_fd = File::open(replacement_path)?.into_raw_fd();
+                    if replacement_fd != inspected_fd {
+                        // SAFETY: both descriptors are valid and dup2 atomically replaces
+                        // the now-free inspected descriptor.
+                        let duplicate_result = unsafe { libc::dup2(replacement_fd, inspected_fd) };
+                        let duplicate_error = std::io::Error::last_os_error();
+                        // SAFETY: replacement_fd was transferred to raw ownership above.
+                        unsafe {
+                            libc::close(replacement_fd);
+                        }
+                        if duplicate_result < 0 {
+                            return Err(duplicate_error.into());
+                        }
+                    }
+                    Ok(())
+                })
+                .join()
+                .map_err(|_| anyhow!("fd replacement thread panicked"))?
+            },
+        )?;
+
+        // SAFETY: the replacement descriptor is exclusively owned by this test.
+        unsafe {
+            libc::close(inspected_fd);
+        }
+        assert_eq!(observation, None);
         Ok(())
     }
 
