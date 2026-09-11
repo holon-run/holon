@@ -71,8 +71,8 @@ jobs:
           retention-days: 7
 
   real-daemon:
-    name: Real daemon (${{ github.event_name == 'schedule' && 'nightly repeat' || 'main repeat' }})
-    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    name: Real daemon (${{ github.event_name == 'schedule' && 'nightly repeat' || 'on demand' }})
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     defaults:
