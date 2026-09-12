@@ -116,11 +116,13 @@ Agent 将影响后续行动的发现写入工作记录，把完整 diff、日志
 
 ## 一个 reviewer，两个交错的 PR
 
-把这些分工放进一个场景。A 是 PR #101 的审阅，B 是 PR #102 的审阅。假设已经接好 PR 更新通知和测试结果，下图展示其中一种处理顺序。
+把这些分工放进一个场景。每个 PR 对应一个 WorkItem：A 负责 PR #101 的审阅，B 负责 PR #102 的审阅。假设已经接好 PR 更新通知和测试结果，下图展示其中一种处理顺序。
 
-<img src="/assets/work-item-reviewer-sequence-zh.png" width="800" height="438" alt="同一个 reviewer 沿唯一执行线依次审阅 A、审阅 B、恢复 A、恢复 B。上方作者提交修订与 CI 完成事件以虚线指向对应恢复阶段；下方分别保留 A 等待修订和 B 等待测试的工作记录。" loading="lazy" decoding="async">
+<img src="/assets/work-item-reviewer-sequence-zh.png" width="800" height="484" alt="同一个 reviewer 的当前 WorkItem 依次从 A 切换到 B，再回到 A、B。PR A 提交修订使 WorkItem A 可恢复，PR B 的 CI 完成使 WorkItem B 可恢复，再由运行时安排执行，不立即抢占。下方分别保留 WorkItem A 等待修订、WorkItem B 等待 CI 的记录。" loading="lazy" decoding="async">
 
-*图 2：中间只有一条 Agent 执行线；下方保留各项工作的等待记录，上方事件触发对应的恢复条件。运行时再安排执行，不代表通知一到就打断当前工作，也不规定固定优先级。*
+*图 2：中间是同一个 reviewer 切换当前 WorkItem 的执行顺序；下方保留各 WorkItem 的等待记录，上方事件满足对应工作的恢复条件，不表示立即抢占。*
+
+reviewer 通过选择或切换 WorkItem（`PickWorkItem`）确定当前工作焦点，即 current WorkItem；运行时也可以在唤醒时选择可继续的工作。**当前 WorkItem 表示聚焦哪项工作，不等于这项工作正在运行**：它也可能处于等待中。切换焦点不会清除另一项工作的进度与等待条件。
 
 ### A 等修订，Agent 先处理 B
 

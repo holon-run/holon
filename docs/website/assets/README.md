@@ -14,9 +14,11 @@ pairs. It requires CairoSVG and Noto Sans CJK SC.
 
 - `work-item-architecture-zh`: 800×430, showing per-turn judgment, persistent
   work records, and resumption after waiting. It is not an internal component map.
-- `work-item-reviewer-sequence-zh`: 800×438, showing one agent's execution line,
-  external events above it, and retained waiting records below it. Dashed arrows
-  show events satisfying resumption conditions, not immediate preemption.
+- `work-item-reviewer-sequence-zh`: 800×484, showing one reviewer's current
+  WorkItem switching A → B → A → B. Each PR maps to one WorkItem, with consistent
+  colors across execution, external events, and retained waiting records.
+  Events make the corresponding WorkItem resumable, not immediately preemptive;
+  current focus is distinct from running or waiting state.
 - Both use a single desktop-oriented layout. Keep source dimensions
   synchronized with the article HTML.
 

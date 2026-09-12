@@ -56,7 +56,16 @@ class Diagram:
         )
 
     def path(self, data, arrow=True, dashed=False, color=BLUE):
-        attrs = ' marker-end="url(#arrow)"' if arrow else ''
+        marker = 'arrow'
+        if arrow and color != BLUE:
+            marker = f'arrow-{len(self.parts)}'
+            self.parts.append(
+                f'<defs><marker id="{marker}" markerWidth="8" markerHeight="8" '
+                'refX="7" refY="4" orient="auto-start-reverse">'
+                f'<path d="M1 1L7 4L1 7" fill="none" stroke="{color}" '
+                'stroke-width="1.4"/></marker></defs>'
+            )
+        attrs = f' marker-end="url(#{marker})"' if arrow else ''
         attrs += ' stroke-dasharray="5 7"' if dashed else ''
         self.parts.append(
             f'<path d="{data}" fill="none" stroke="{color}" '
@@ -110,47 +119,54 @@ def architecture():
 
 def sequence():
     d = Diagram(
-        '一个 Agent 如何交错推进两项工作',
-        '同一个 reviewer 依次审阅 A、审阅 B、恢复 A、恢复 B。'
-        '外部事件满足恢复条件后，由运行时安排执行；等待期间工作记录保留。',
-        438,
+        '一个 Agent 如何切换并推进两个 WorkItem',
+        '每个 PR 对应一个 WorkItem。同一个 reviewer 的当前工作焦点依次为 A、B、A、B。'
+        '外部事件使对应 WorkItem 可恢复，再由运行时安排执行；切换焦点不清除等待记录。',
+        484,
     )
     teal = '#34746d'
-    d.text(40, 80, '一种处理顺序 · 横向为时间', 14, MUTED)
+    d.text(40, 80, '一个 PR 对应一个 WorkItem · 横向为时间', 14, MUTED)
 
     d.text(40, 135, '外部事件', 15, MUTED)
-    for x, width, title in [(322, 136, '作者提交修订'), (628, 124, 'CI 完成')]:
-        d.rect(x, 108, width, 40)
-        d.text(x + width / 2, 133, title, 15, anchor='middle')
-    d.path('M390 148V168H530V206', dashed=True)
-    d.path('M690 148V206', dashed=True)
-    d.text(40, 182, '满足恢复条件后，由运行时安排执行', 13, MUTED)
+    for x, width, title, note, color in [
+        (310, 160, 'PR A 提交修订', 'WorkItem A 可恢复', BLUE),
+        (610, 150, 'PR B 的 CI 完成', 'WorkItem B 可恢复', teal),
+    ]:
+        d.rect(x, 108, width, 58)
+        d.text(x + width / 2, 131, title, 15, anchor='middle')
+        d.text(x + width / 2, 153, note, 13, color, anchor='middle')
+    d.path('M390 166V185H530V238', dashed=True)
+    d.path('M685 166V204H690V238', dashed=True, color=teal)
+    d.text(40, 211, '可恢复后，由运行时安排执行，不立即抢占', 13, MUTED)
 
-    d.text(40, 233, '同一个 Agent', 15, bold=True)
-    d.text(40, 256, 'reviewer', 14, MUTED)
+    d.text(28, 257, '同一个 reviewer', 14, bold=True)
+    d.text(28, 282, '当前 WorkItem', 13, MUTED)
     for i, (center, title, note, fill, color) in enumerate([
-        (210, '审阅 A', '记录问题', ACTIVE[0], BLUE),
-        (370, '审阅 B', '检查测试', '#edf6f3', teal),
-        (530, '恢复 A', '复查并交付', ACTIVE[0], BLUE),
-        (690, '恢复 B', '接着检查', '#edf6f3', teal),
+        (210, 'WorkItem A', '首次审阅', ACTIVE[0], BLUE),
+        (370, 'WorkItem B', '首次审阅', '#edf6f3', teal),
+        (530, 'WorkItem A', '复查并交付', ACTIVE[0], BLUE),
+        (690, 'WorkItem B', '检查 CI 结果', '#edf6f3', teal),
     ]):
-        d.rect(center - 62, 208, 124, 62, fill, fill)
-        d.text(center, 233, title, 17, color, bold=True, anchor='middle')
-        d.text(center, 256, note, 14, MUTED, anchor='middle')
+        d.rect(center - 66, 240, 132, 66, fill, fill)
+        d.text(center, 266, title, 16, color, bold=True, anchor='middle')
+        d.text(center, 291, note, 14, MUTED, anchor='middle')
         if i < 3:
-            d.path(f'M{center + 62} 239H{center + 96}')
+            d.path(f'M{center + 67} 276H{center + 92}')
+            d.text(center + 80, 258, '切换', 13, MUTED, anchor='middle')
 
-    d.text(40, 319, '保留工作记录', 15, MUTED)
-    d.text(40, 341, '等待不占执行线', 13, MUTED)
-    d.path('M210 270V324H362M386 324H530', arrow=False, color=BLUE)
-    d.path('M530 318V330', arrow=False, color=BLUE)
-    d.text(226, 312, 'A 等待修订', 15, BLUE)
+    d.text(28, 354, 'WorkItem A', 14, BLUE)
+    d.text(28, 375, '保留工作记录', 13, MUTED)
+    d.path('M210 306V366H362M386 366H530', arrow=False, color=BLUE)
+    d.path('M530 360V372', arrow=False, color=BLUE)
+    d.text(226, 354, '等待修订', 14, BLUE)
     # A small bridge keeps the crossing distinct from a state hand-off.
-    d.path('M370 270V317Q382 324 370 331V374H690', arrow=False, color=teal)
-    d.path('M690 368V380', arrow=False, color=teal)
-    d.text(386, 362, 'B 等待测试', 15, teal)
+    d.path('M370 306V359Q382 366 370 373V420H690', arrow=False, color=teal)
+    d.path('M690 414V426', arrow=False, color=teal)
+    d.text(28, 408, 'WorkItem B', 14, teal)
+    d.text(28, 429, '保留工作记录', 13, MUTED)
+    d.text(386, 408, '等待 CI', 14, teal)
 
-    d.text(40, 412, '中间实线：执行顺序    虚线：事件触发恢复条件，不表示立即抢占', 13, MUTED)
+    d.text(40, 462, '当前 WorkItem 是工作焦点，不是运行状态；切换焦点不清除另一项工作的记录。', 13, MUTED)
     d.save('work-item-reviewer-sequence-zh')
 
 
