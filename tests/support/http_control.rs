@@ -2929,7 +2929,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
-                { "key": "model.default", "value": "openai/gpt-4.1" },
+                { "key": "model.default", "value": "ollama/qwen3:latest" },
                 { "key": "home_dir", "value": "/tmp/other-home" }
             ]
         }))
@@ -2956,7 +2956,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
-                { "key": "model.default", "value": "openai/gpt-4.1" }
+                { "key": "model.default", "value": "ollama/qwen3:latest" }
             ]
         }))
         .send()
@@ -2972,17 +2972,17 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         wait_for_runtime_config_reload(&client, addr, &valid_model_payload).await?;
     assert_eq!(
         reloaded_model_payload["runtime_surface"]["model_default"],
-        "openai@default/gpt-4.1"
+        "ollama@default/qwen3:latest"
     );
     assert_eq!(
         host.config().default_model.as_string(),
-        "openai@default/gpt-4.1"
+        "ollama@default/qwen3:latest"
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
     assert_eq!(
         persisted.model.default.as_deref(),
-        Some("openai@default/gpt-4.1")
+        Some("ollama@default/qwen3:latest")
     );
 
     let provider_config_response = client
@@ -3150,7 +3150,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     let persisted = load_persisted_config_at(&config.config_file_path)?;
     assert_eq!(
         persisted.model.default.as_deref(),
-        Some("openai@default/gpt-4.1")
+        Some("ollama@default/qwen3:latest")
     );
     assert_eq!(
         persisted
