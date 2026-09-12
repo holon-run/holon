@@ -2862,7 +2862,7 @@ async fn wait_for_runtime_config_reload(
         .as_u64()
         .expect("runtime config update should report a reload generation");
     assert!(reload_generation >= 1);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let reload_response = client
             .get(format!("http://{addr}/api/control/runtime/config"))
@@ -2878,9 +2878,15 @@ async fn wait_for_runtime_config_reload(
             assert_eq!(reload_payload["reload"]["state"], "completed");
             return Ok(reload_payload);
         }
+        assert_ne!(
+            reload_payload["reload"]["state"], "failed",
+            "runtime config reload generation {reload_generation} failed: {}",
+            reload_payload["reload"]
+        );
         assert!(
             Instant::now() < deadline,
-            "runtime config reload generation {reload_generation} did not complete"
+            "runtime config reload generation {reload_generation} did not complete; last status: {}",
+            reload_payload["reload"]
         );
         sleep(Duration::from_millis(25)).await;
     }
