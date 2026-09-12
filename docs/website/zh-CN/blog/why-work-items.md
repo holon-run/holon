@@ -6,6 +6,8 @@ order: 20
 
 # Holon 的 WorkItem 架构：把工作状态从对话中分离
 
+<img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="抽象插画：流动的蓝绿线条穿过稳定的几何结构，表达上下文不断变化，而工作状态有所承载。" decoding="async" fetchpriority="high">
+
 > 中文审阅稿，未发布。文中的接口迁移与双 PR 流程是设计示例，不是真实运行记录。
 
 ## 河水流过，工作留下什么

@@ -9,6 +9,12 @@ excluded from mdorigin-managed indexes.
 
 ## WorkItem article diagrams
 
+`workitem-abstract-flow-cover.webp` is an AI-generated editorial illustration
+for the Chinese WorkItem article, not a product screenshot. Flowing lines
+contrast with a stable geometric structure. The 1536×1024 draft is center-cropped
+to 1536×768 (box: 0, 128, 1536, 896) to reduce vertical whitespace, then encoded
+as WebP at quality 88. Keep the article's explicit dimensions in sync.
+
 `../.tools/render-work-item-diagrams.py` generates the Chinese SVG/2x PNG
 pairs. It requires CairoSVG and Noto Sans CJK SC.
 
