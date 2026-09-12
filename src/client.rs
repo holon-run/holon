@@ -440,6 +440,26 @@ impl LocalClient {
         self.get_control_json("/control/runtime/performance").await
     }
 
+    pub async fn recent_traces(&self) -> Result<Vec<crate::observability::RecentTraceSummary>> {
+        self.get_control_json("/control/runtime/traces").await
+    }
+
+    pub async fn recent_trace(&self, trace_id: &str) -> Result<crate::observability::RecentTrace> {
+        self.get_control_json(&format!("/control/runtime/traces/{trace_id}"))
+            .await
+    }
+
+    pub async fn search_recent_traces(
+        &self,
+        query: &str,
+    ) -> Result<Vec<crate::observability::RecentTraceSummary>> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("query", query)
+            .finish();
+        self.get_control_json(&format!("/control/runtime/traces/search?{query}",))
+            .await
+    }
+
     pub async fn update_runtime_config(
         &self,
         request: &RuntimeConfigUpdateRequest,

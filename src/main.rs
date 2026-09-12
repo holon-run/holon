@@ -2020,6 +2020,51 @@ mod tests {
     }
 
     #[test]
+    fn debug_trace_command_parses_query_modes() {
+        let cli = Cli::parse_from(["holon", "debug", "trace", "trace-id", "--json"]);
+        let Commands::Debug {
+            command:
+                DebugCommands::Trace {
+                    trace_id,
+                    search,
+                    json,
+                },
+        } = cli.command
+        else {
+            panic!("expected debug trace command");
+        };
+        assert_eq!(trace_id.as_deref(), Some("trace-id"));
+        assert_eq!(search, None);
+        assert!(json);
+
+        let cli = Cli::parse_from(["holon", "debug", "trace", "--search", "message-id"]);
+        let Commands::Debug {
+            command:
+                DebugCommands::Trace {
+                    trace_id,
+                    search,
+                    json,
+                },
+        } = cli.command
+        else {
+            panic!("expected debug trace search command");
+        };
+        assert_eq!(trace_id, None);
+        assert_eq!(search.as_deref(), Some("message-id"));
+        assert!(!json);
+
+        assert!(Cli::try_parse_from([
+            "holon",
+            "debug",
+            "trace",
+            "trace-id",
+            "--search",
+            "message-id",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn export_scheduler_fixture_writes_replay_harness_shape() {
         let config = test_config();
         let agent_id = "default";
@@ -2845,6 +2890,11 @@ async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Resu
             events_limit,
         } => print_latency_diagnostics(&config, agent, limit, events_limit),
         DebugCommands::Performance { json } => print_performance_diagnostics(&config, json).await,
+        DebugCommands::Trace {
+            trace_id,
+            search,
+            json,
+        } => print_trace_diagnostics(&config, trace_id, search, json).await,
         DebugCommands::RuntimeDb { command } => handle_runtime_db_debug_command(&config, command),
         DebugCommands::SchedulerFixture { agent, output } => {
             export_scheduler_fixture(&config, agent, &output)
@@ -3899,6 +3949,62 @@ async fn print_performance_diagnostics(config: &AppConfig, json: bool) -> Result
     print_metric_group("projections", &snapshot.projections);
     print_metric_group("db", &snapshot.db);
     print_metric_group("scheduler", &snapshot.scheduler);
+    Ok(())
+}
+
+async fn print_trace_diagnostics(
+    config: &AppConfig,
+    trace_id: Option<String>,
+    search: Option<String>,
+    json: bool,
+) -> Result<()> {
+    let client = LocalClient::new(config.clone())?;
+    if let Some(query) = search {
+        let traces = client.search_recent_traces(&query).await?;
+        if json {
+            return print_json(&serde_json::to_value(traces)?);
+        }
+        for trace in traces {
+            println!(
+                "{}  {} us  {} spans  {} errors",
+                trace.trace_id, trace.duration_us, trace.span_count, trace.error_count
+            );
+        }
+        return Ok(());
+    }
+    if let Some(trace_id) = trace_id {
+        let trace = client.recent_trace(&trace_id).await?;
+        if json {
+            return print_json(&serde_json::to_value(trace)?);
+        }
+        println!(
+            "{}  {} us  {} spans  {} errors",
+            trace.trace_id, trace.duration_us, trace.span_count, trace.error_count
+        );
+        for span in trace.spans {
+            let offset_us = span
+                .started_at
+                .signed_duration_since(trace.started_at)
+                .num_microseconds()
+                .unwrap_or_default()
+                .max(0);
+            println!(
+                "{offset_us:>10} us  {:>10} us  {:<30} {:?}",
+                span.duration_us, span.name, span.status
+            );
+        }
+        return Ok(());
+    }
+    let traces = client.recent_traces().await?;
+    if json {
+        return print_json(&serde_json::to_value(traces)?);
+    }
+    for trace in traces {
+        println!(
+            "{}  {} us  {} spans  {} errors",
+            trace.trace_id, trace.duration_us, trace.span_count, trace.error_count
+        );
+    }
     Ok(())
 }
 

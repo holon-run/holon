@@ -5,6 +5,36 @@ use crate::runtime::turn::TurnTerminalTransition;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
 use crate::types::ExecutionAdmissionProvenance;
 
+fn record_operator_span(
+    parent: Option<&crate::observability::TraceContext>,
+    name: &'static str,
+    started_at: chrono::DateTime<chrono::Utc>,
+    message: &MessageEnvelope,
+) {
+    let Some(parent) = parent else {
+        return;
+    };
+    let context = parent.child();
+    crate::observability::record_span(
+        &context,
+        crate::observability::completed_span(
+            name,
+            &context,
+            Some(parent.span_id.clone()),
+            started_at,
+            crate::observability::TraceSpanStatus::Ok,
+            crate::observability::TraceAttributes {
+                agent_id: Some(message.agent_id.clone()),
+                message_id: Some(message.id.clone()),
+                turn_id: message.turn_id.clone(),
+                work_item_id: message.work_item_id.clone(),
+                task_id: message.task_id.clone(),
+                ..Default::default()
+            },
+        ),
+    );
+}
+
 impl RuntimeHandle {
     #[cfg(test)]
     pub(super) async fn process_interactive_message(
@@ -19,6 +49,10 @@ impl RuntimeHandle {
                 continuation_resolution,
                 self.execution_admission_provenance(message, continuation_resolution, None)?,
                 loop_control,
+                message
+                    .trace_context
+                    .as_ref()
+                    .map(crate::observability::TraceContext::child),
             )
             .await?;
         self.persist_terminal_transition(&terminal_transition)
@@ -32,12 +66,14 @@ impl RuntimeHandle {
         continuation_resolution: Option<&ContinuationResolution>,
         execution_admission_provenance: ExecutionAdmissionProvenance,
         loop_control: LoopControlOptions,
+        trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<TurnTerminalTransition> {
         let result = Box::pin(self.process_interactive_message_deferred(
             message,
             continuation_resolution,
             execution_admission_provenance,
             loop_control,
+            trace_context,
         ))
         .await;
         let cleanup = self.reconfigure_provider_for_turn(None).await;
@@ -57,6 +93,7 @@ impl RuntimeHandle {
         continuation_resolution: Option<&ContinuationResolution>,
         execution_admission_provenance: ExecutionAdmissionProvenance,
         loop_control: LoopControlOptions,
+        trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<TurnTerminalTransition> {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
@@ -175,10 +212,12 @@ impl RuntimeHandle {
                 built,
                 model_selection,
                 loop_control,
+                trace_context.clone(),
             )
             .await?;
         crate::diagnostics::record_turn_total(context_build_started.elapsed());
         let cleanup_started = std::time::Instant::now();
+        let cleanup_started_at = chrono::Utc::now();
 
         if outcome.prepared_work_item_completion.is_some() {
             // The completion report brief, WorkItem transition, tool execution,
@@ -195,7 +234,14 @@ impl RuntimeHandle {
                 &mut brief,
                 outcome.final_text_source_assistant_round_id.as_deref(),
             );
+            let delivery_started_at = chrono::Utc::now();
             self.persist_brief(&brief).await?;
+            record_operator_span(
+                trace_context.as_ref(),
+                "holon.delivery",
+                delivery_started_at,
+                message,
+            );
             outcome.terminal.no_brief_reason = None;
         } else if !outcome.final_text.trim().is_empty() {
             // Always generate the normal result brief (no longer suppressed for
@@ -214,7 +260,14 @@ impl RuntimeHandle {
                 &mut brief,
                 outcome.final_text_source_assistant_round_id.as_deref(),
             );
+            let delivery_started_at = chrono::Utc::now();
             self.persist_brief(&brief).await?;
+            record_operator_span(
+                trace_context.as_ref(),
+                "holon.delivery",
+                delivery_started_at,
+                message,
+            );
             outcome.terminal.no_brief_reason = None;
         }
         let mut turn_record = self.build_turn_record(&outcome.terminal).await?;
@@ -252,6 +305,12 @@ impl RuntimeHandle {
         }
 
         crate::diagnostics::record_turn_cleanup(cleanup_started.elapsed());
+        record_operator_span(
+            trace_context.as_ref(),
+            "holon.turn.cleanup",
+            cleanup_started_at,
+            message,
+        );
         Ok(TurnTerminalTransition {
             terminal: outcome.terminal,
             turn_record,

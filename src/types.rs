@@ -12,6 +12,7 @@ use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
 pub use crate::domain::{agent::*, agent_home_workspace_id, work_item::*, AGENT_HOME_WORKSPACE_ID};
 use crate::ids;
 use crate::model_catalog::ResolvedRuntimeModelPolicy;
+use crate::observability::TraceContext;
 use crate::runtime_error::{RuntimeErrorContext, RuntimeErrorDomain};
 use crate::system::{
     ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind,
@@ -48,6 +49,8 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             task_id: Option<String>,
             #[serde(default)]
             source_refs: BTreeMap<String, String>,
+            #[serde(default)]
+            trace_context: Option<TraceContext>,
             body: MessageBody,
             #[serde(default)]
             delivery_surface: Option<MessageDeliverySurface>,
@@ -77,6 +80,7 @@ impl<'de> Deserialize<'de> for MessageEnvelope {
             work_item_id: compat.work_item_id,
             task_id: compat.task_id,
             source_refs: compat.source_refs,
+            trace_context: compat.trace_context,
             body: compat.body,
             delivery_surface: compat.delivery_surface,
             admission_context: compat.admission_context,
@@ -1895,6 +1899,8 @@ pub struct MessageEnvelope {
     pub task_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub source_refs: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_context: Option<TraceContext>,
     pub body: MessageBody,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery_surface: Option<MessageDeliverySurface>,
@@ -1928,6 +1934,7 @@ impl MessageEnvelope {
             work_item_id: None,
             task_id: None,
             source_refs: BTreeMap::new(),
+            trace_context: None,
             body,
             delivery_surface: None,
             admission_context: None,
@@ -6093,6 +6100,35 @@ mod tests {
         let message: MessageEnvelope = serde_json::from_value(legacy).unwrap();
 
         assert_eq!(message.authority_class, AuthorityClass::RuntimeInstruction);
+        assert_eq!(message.trace_context, None);
+    }
+
+    #[test]
+    fn message_trace_context_round_trips_without_changing_legacy_shape() {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "runtime".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "resume".into(),
+            },
+        );
+        message.trace_context = Some(
+            TraceContext::parse(
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+                Some("vendor=value"),
+            )
+            .unwrap(),
+        );
+
+        let serialized = serde_json::to_value(&message).unwrap();
+        let decoded: MessageEnvelope = serde_json::from_value(serialized).unwrap();
+
+        assert_eq!(decoded.trace_context, message.trace_context);
     }
 
     #[test]

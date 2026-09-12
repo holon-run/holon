@@ -2903,6 +2903,10 @@ async fn standalone_turn_writer_rejects_prepared_completion() {
             LoopControlOptions {
                 max_tool_rounds: None,
             },
+            message
+                .trace_context
+                .as_ref()
+                .map(crate::observability::TraceContext::child),
         )
         .await
         .unwrap();

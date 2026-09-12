@@ -865,6 +865,7 @@ impl RuntimeHandle {
                 model_selection: TurnModelSelection::default(),
                 loop_control,
                 persist_terminal: false,
+                trace_context: None,
             }
             .run(),
         )
@@ -956,6 +957,7 @@ impl RuntimeHandle {
         effective_prompt: EffectivePrompt,
         model_selection: TurnModelSelection,
         loop_control: LoopControlOptions,
+        trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<AgentLoopOutcome> {
         Box::pin(
             TurnExecution {
@@ -966,11 +968,44 @@ impl RuntimeHandle {
                 model_selection,
                 loop_control,
                 persist_terminal: false,
+                trace_context,
             }
             .run(),
         )
         .await
     }
+}
+
+fn record_provider_round_span(
+    parent: Option<&crate::observability::TraceContext>,
+    agent_id: &str,
+    round: usize,
+    started_at: chrono::DateTime<chrono::Utc>,
+    succeeded: bool,
+) {
+    let Some(parent) = parent else {
+        return;
+    };
+    let context = parent.child();
+    crate::observability::record_span(
+        &context,
+        crate::observability::completed_span(
+            "holon.provider.round",
+            &context,
+            Some(parent.span_id.clone()),
+            started_at,
+            if succeeded {
+                crate::observability::TraceSpanStatus::Ok
+            } else {
+                crate::observability::TraceSpanStatus::Error
+            },
+            crate::observability::TraceAttributes {
+                agent_id: Some(agent_id.to_string()),
+                round: Some(round as u64),
+                ..Default::default()
+            },
+        ),
+    );
 }
 
 pub(super) const TOOL_AUDIT_INPUT_STRING_LIMIT: usize = 4_096;
@@ -1094,6 +1129,7 @@ pub(super) struct TurnExecution<'a> {
     pub(super) model_selection: TurnModelSelection,
     pub(super) loop_control: LoopControlOptions,
     pub(super) persist_terminal: bool,
+    pub(super) trace_context: Option<crate::observability::TraceContext>,
 }
 
 impl TurnExecution<'_> {
@@ -1106,6 +1142,7 @@ impl TurnExecution<'_> {
             model_selection,
             loop_control,
             persist_terminal,
+            trace_context,
         } = self;
         let mut completed_rounds = Vec::<TurnRoundRecord>::new();
         let turn_started_at = Instant::now();
@@ -1341,6 +1378,13 @@ impl TurnExecution<'_> {
                     runtime
                         .complete_turn_with_timing(provider.clone(), request)
                         .await;
+                record_provider_round_span(
+                    trace_context.as_ref(),
+                    agent_id,
+                    round,
+                    provider_started_at,
+                    result.is_ok(),
+                );
                 match result {
                     Ok((response, attempt_timeline)) => (
                         response,
@@ -1660,6 +1704,13 @@ impl TurnExecution<'_> {
                     runtime
                         .complete_turn_with_timing(provider.clone(), request)
                         .await;
+                record_provider_round_span(
+                    trace_context.as_ref(),
+                    agent_id,
+                    round,
+                    provider_started_at,
+                    result.is_ok(),
+                );
                 match result {
                     Ok((response, attempt_timeline)) => (
                         response,
@@ -2773,6 +2824,7 @@ impl TurnExecution<'_> {
                         ),
                     effective_work_item_id: pre_tool_work_item_id.clone(),
                 };
+                let tool_started_at = chrono::Utc::now();
                 let tool_exec_started = std::time::Instant::now();
                 let tool_execution = if let Some(snapshot) = runtime.current_run_abort_token().await
                 {
@@ -2797,6 +2849,30 @@ impl TurnExecution<'_> {
                         .await
                 };
                 crate::diagnostics::record_turn_tool_execution(tool_exec_started.elapsed());
+                if let Some(parent) = trace_context.as_ref() {
+                    let tool_context = parent.child();
+                    crate::observability::record_span(
+                        &tool_context,
+                        crate::observability::completed_span(
+                            "holon.tool.execute",
+                            &tool_context,
+                            Some(parent.span_id.clone()),
+                            tool_started_at,
+                            if tool_execution.is_ok() {
+                                crate::observability::TraceSpanStatus::Ok
+                            } else {
+                                crate::observability::TraceSpanStatus::Error
+                            },
+                            crate::observability::TraceAttributes {
+                                agent_id: Some(agent_id.to_string()),
+                                work_item_id: pre_tool_work_item_id.clone(),
+                                tool_name: Some(tool_name.clone()),
+                                round: Some(round as u64),
+                                ..Default::default()
+                            },
+                        ),
+                    );
+                }
                 match tool_execution {
                     Ok((mut result, mut record)) => {
                         let result_content =

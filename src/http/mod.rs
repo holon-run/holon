@@ -557,6 +557,15 @@ pub fn router(state: AppState) -> Router {
             "/control/runtime/performance",
             get(control::runtime_performance),
         )
+        .route("/control/runtime/traces", get(control::runtime_traces))
+        .route(
+            "/control/runtime/traces/search",
+            get(control::runtime_trace_search),
+        )
+        .route(
+            "/control/runtime/traces/{trace_id}",
+            get(control::runtime_trace),
+        )
         .route("/control/runtime/config", get(control::runtime_config))
         .route(
             "/control/runtime/config",
@@ -1529,6 +1538,9 @@ mod tests {
     use crate::{
         config::{AppConfig, ControlAuthMode},
         host::RuntimeHost,
+        observability::{
+            completed_span, record_span, TraceAttributes, TraceContext, TraceSpanStatus,
+        },
         provider::StubProvider,
         runtime_error::{RuntimeError, RuntimeErrorDomain},
         types::{
@@ -1617,6 +1629,105 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[tokio::test]
+    async fn runtime_trace_queries_require_control_auth_and_return_recent_trace() {
+        let (_home, host) = control_token_test_host();
+        let app = router(AppState::for_tcp(host));
+        let context = TraceContext::new_root(true);
+        let message_id = format!("message-{}", uuid::Uuid::new_v4());
+        let started_at = chrono::Utc::now();
+        record_span(
+            &context,
+            completed_span(
+                "turn",
+                &context,
+                None,
+                started_at,
+                TraceSpanStatus::Ok,
+                TraceAttributes {
+                    message_id: Some(message_id.clone()),
+                    ..Default::default()
+                },
+            ),
+        );
+
+        let unauthorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/control/runtime/traces")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let authorized = |uri: &str| {
+            Request::builder()
+                .method("GET")
+                .uri(uri)
+                .header(header::AUTHORIZATION, "Bearer secret")
+                .body(Body::empty())
+                .unwrap()
+        };
+        let list_response = app
+            .clone()
+            .oneshot(authorized("/api/control/runtime/traces"))
+            .await
+            .unwrap();
+        assert_eq!(list_response.status(), StatusCode::OK);
+        let list: serde_json::Value = serde_json::from_slice(
+            &to_bytes(list_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(list
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|trace| trace["trace_id"].as_str() == Some(context.trace_id.as_str())));
+
+        let trace_response = app
+            .clone()
+            .oneshot(authorized(&format!(
+                "/api/control/runtime/traces/{}",
+                context.trace_id
+            )))
+            .await
+            .unwrap();
+        assert_eq!(trace_response.status(), StatusCode::OK);
+        let trace: serde_json::Value = serde_json::from_slice(
+            &to_bytes(trace_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(trace["trace_id"], context.trace_id);
+        assert_eq!(trace["spans"][0]["attributes"]["message_id"], message_id);
+
+        let search_response = app
+            .oneshot(authorized(&format!(
+                "/api/control/runtime/traces/search?query={message_id}"
+            )))
+            .await
+            .unwrap();
+        assert_eq!(search_response.status(), StatusCode::OK);
+        let search: serde_json::Value = serde_json::from_slice(
+            &to_bytes(search_response.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(search
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|trace| trace["trace_id"].as_str() == Some(context.trace_id.as_str())));
     }
 
     #[test]

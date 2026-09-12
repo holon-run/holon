@@ -250,6 +250,7 @@ async fn run_once_with_host_inner(
         metadata: None,
         correlation_id: None,
         causation_id: None,
+        trace_context: None,
     };
     // Set turn budget before enqueueing the message so the turn execution
     // pipeline can inject a budget warning on the last allowed turn.

@@ -9,7 +9,15 @@ pub async fn enqueue_default(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let agent_id = state.host.config().default_agent_id.clone();
-    enqueue_internal(state, agent_id, request, EnqueueIngress::Public).await
+    let trace_context = trace_context_from_headers(&headers)?;
+    enqueue_internal(
+        state,
+        agent_id,
+        request,
+        EnqueueIngress::Public,
+        trace_context,
+    )
+    .await
 }
 
 pub async fn enqueue(
@@ -19,7 +27,15 @@ pub async fn enqueue(
     Json(request): Json<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    enqueue_internal(state, agent_id, request, EnqueueIngress::Public).await
+    let trace_context = trace_context_from_headers(&headers)?;
+    enqueue_internal(
+        state,
+        agent_id,
+        request,
+        EnqueueIngress::Public,
+        trace_context,
+    )
+    .await
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -77,7 +93,9 @@ pub(crate) async fn enqueue_internal(
     agent_id: String,
     request: EnqueueRequest,
     ingress: EnqueueIngress,
+    trace_context: Option<crate::observability::TraceContext>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let ingress_started_at = chrono::Utc::now();
     let kind = request.kind.unwrap_or(MessageKind::WebhookEvent);
     if matches!(kind, MessageKind::SystemTick | MessageKind::CallbackEvent) {
         return Err(forbidden(
@@ -169,6 +187,7 @@ pub(crate) async fn enqueue_internal(
         metadata: request.metadata,
         correlation_id: request.correlation_id,
         causation_id: request.causation_id,
+        trace_context,
     }
     .into_message();
 
@@ -178,12 +197,50 @@ pub(crate) async fn enqueue_internal(
         .await
         .map_err(agent_access_error)?;
     let queued = runtime.enqueue(message).await.map_err(error_response)?;
+    if let Some(parent) = queued.trace_context.as_ref() {
+        let context = parent.child();
+        crate::observability::record_span(
+            &context,
+            crate::observability::completed_span(
+                "holon.ingress.admit",
+                &context,
+                Some(parent.span_id.clone()),
+                ingress_started_at,
+                crate::observability::TraceSpanStatus::Ok,
+                crate::observability::TraceAttributes {
+                    agent_id: Some(agent_id.clone()),
+                    message_id: Some(queued.id.clone()),
+                    turn_id: queued.turn_id.clone(),
+                    ..Default::default()
+                },
+            ),
+        );
+    }
 
     Ok(Json(EnqueueResponse {
         ok: true,
         agent_id,
         message_id: queued.id,
     }))
+}
+
+pub(crate) fn trace_context_from_headers(
+    headers: &HeaderMap,
+) -> Result<Option<crate::observability::TraceContext>, (StatusCode, Json<Value>)> {
+    let Some(trace_parent) = headers.get("traceparent") else {
+        return Ok(None);
+    };
+    let trace_parent = trace_parent
+        .to_str()
+        .map_err(|_| bad_request("invalid traceparent header"))?;
+    let trace_state = headers
+        .get("tracestate")
+        .map(|value| value.to_str())
+        .transpose()
+        .map_err(|_| bad_request("invalid tracestate header"))?;
+    crate::observability::TraceContext::parse(trace_parent, trace_state)
+        .map(Some)
+        .map_err(|error| bad_request(error.to_string()))
 }
 
 pub async fn status_default(

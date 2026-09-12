@@ -581,6 +581,10 @@ impl RuntimeHandle {
                     LoopControlOptions {
                         max_tool_rounds: None,
                     },
+                    message
+                        .trace_context
+                        .as_ref()
+                        .map(crate::observability::TraceContext::child),
                 )
                 .await?;
             return Ok(transition);

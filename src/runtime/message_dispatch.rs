@@ -187,11 +187,65 @@ impl RuntimeHandle {
         plan: MessageDispatchPlan,
         scheduler_decision: &scheduler::SchedulerDecision,
     ) -> Result<()> {
-        let transition = self
-            .process_message_with_plan_deferred(message, plan, scheduler_decision)
-            .await?;
-        self.persist_terminal_transition(&transition).await?;
-        Ok(())
+        let trace_context = message.trace_context.clone();
+        let attributes = crate::observability::TraceAttributes {
+            agent_id: Some(message.agent_id.clone()),
+            message_id: Some(message.id.clone()),
+            turn_id: message.turn_id.clone(),
+            work_item_id: message.work_item_id.clone(),
+            task_id: message.task_id.clone(),
+            ..Default::default()
+        };
+        if let Some(parent) = trace_context.as_ref() {
+            let queue_context = parent.child();
+            crate::observability::record_span(
+                &queue_context,
+                crate::observability::completed_span(
+                    "holon.scheduler.queue_wait",
+                    &queue_context,
+                    Some(parent.span_id.clone()),
+                    message.created_at,
+                    crate::observability::TraceSpanStatus::Ok,
+                    attributes.clone(),
+                ),
+            );
+        }
+        let turn_context = trace_context
+            .as_ref()
+            .map(crate::observability::TraceContext::child);
+        let turn_started_at = chrono::Utc::now();
+        let result = async {
+            let transition = self
+                .process_message_with_plan_deferred(
+                    message,
+                    plan,
+                    scheduler_decision,
+                    turn_context.clone(),
+                )
+                .await?;
+            self.persist_terminal_transition(&transition).await?;
+            Ok(())
+        }
+        .await;
+        if let Some(context) = turn_context.as_ref() {
+            let status = if result.is_ok() {
+                crate::observability::TraceSpanStatus::Ok
+            } else {
+                crate::observability::TraceSpanStatus::Error
+            };
+            crate::observability::record_span(
+                context,
+                crate::observability::completed_span(
+                    "holon.turn",
+                    context,
+                    trace_context.as_ref().map(|parent| parent.span_id.clone()),
+                    turn_started_at,
+                    status,
+                    attributes,
+                ),
+            );
+        }
+        result
     }
 
     pub(super) async fn process_message_with_plan_deferred(
@@ -199,6 +253,7 @@ impl RuntimeHandle {
         mut message: MessageEnvelope,
         plan: MessageDispatchPlan,
         scheduler_decision: &scheduler::SchedulerDecision,
+        turn_trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<turn::TurnTerminalTransition> {
         message.normalize_admission_fields();
         self.inner.storage.append_event(&AuditEvent::typed(
@@ -273,6 +328,7 @@ impl RuntimeHandle {
                             LoopControlOptions {
                                 max_tool_rounds: None,
                             },
+                            turn_trace_context,
                         )
                         .await?,
                     );

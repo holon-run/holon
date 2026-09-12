@@ -4124,6 +4124,10 @@ impl RuntimeHandle {
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
+        if message.trace_context.is_none() {
+            message.trace_context = Some(crate::observability::TraceContext::new_root(true));
+        }
+        let enqueue_started_at = chrono::Utc::now();
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             match self.enqueue_attempt(&message, delivery).await {
                 Ok(mut commit) => {
@@ -4134,6 +4138,27 @@ impl RuntimeHandle {
                         });
                     let receipt = commit.delivery_receipt.clone();
                     self.apply_transition_commit(commit).await;
+                    if let Some(parent) = message.trace_context.as_ref() {
+                        let span_context = parent.child();
+                        crate::observability::record_span(
+                            &span_context,
+                            crate::observability::completed_span(
+                                "holon.message.enqueue",
+                                &span_context,
+                                Some(parent.span_id.clone()),
+                                enqueue_started_at,
+                                crate::observability::TraceSpanStatus::Ok,
+                                crate::observability::TraceAttributes {
+                                    agent_id: Some(message.agent_id.clone()),
+                                    message_id: Some(message.id.clone()),
+                                    turn_id: message.turn_id.clone(),
+                                    work_item_id: message.work_item_id.clone(),
+                                    task_id: message.task_id.clone(),
+                                    ..Default::default()
+                                },
+                            ),
+                        );
+                    }
                     return Ok((message, receipt));
                 }
                 Err(error) => {
@@ -4951,11 +4976,17 @@ impl RuntimeHandle {
             }
             self.append_state_changed_events(&scheduled.running_state)?;
 
+            let turn_trace_context = scheduled
+                .message
+                .trace_context
+                .as_ref()
+                .map(crate::observability::TraceContext::child);
             let terminal_transition = match self
                 .process_message_with_plan_deferred(
                     scheduled.message,
                     scheduled.dispatch_plan,
                     &scheduled.scheduler_decision,
+                    turn_trace_context,
                 )
                 .await
             {

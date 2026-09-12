@@ -56,6 +56,44 @@ pub async fn runtime_performance(
     Ok(Json(diagnostics::performance_snapshot()))
 }
 
+pub async fn runtime_traces(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    Ok(Json(crate::observability::recent_trace_summaries()))
+}
+
+pub async fn runtime_trace(
+    Path(trace_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    crate::observability::recent_trace(&trace_id)
+        .map(Json)
+        .ok_or_else(|| not_found(format!("trace {trace_id} not found")))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RuntimeTraceSearchQuery {
+    pub query: String,
+}
+
+pub async fn runtime_trace_search(
+    Query(query): Query<RuntimeTraceSearchQuery>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    if query.query.trim().is_empty() {
+        return Err(bad_request("trace search query must not be empty"));
+    }
+    Ok(Json(crate::observability::search_recent_traces(
+        query.query.trim(),
+    )))
+}
+
 pub async fn scheduler_repair_inspect(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -905,6 +943,7 @@ pub async fn control_prompt(
         metadata: Some(json!({ "control": true })),
         correlation_id: None,
         causation_id: None,
+        trace_context: None,
     }
     .into_message();
     let queued = runtime.enqueue(message).await.map_err(error_response)?;
@@ -1407,6 +1446,7 @@ pub async fn operator_ingress(
         metadata: Some(metadata),
         correlation_id: request.correlation_id,
         causation_id: request.causation_id,
+        trace_context: None,
     }
     .into_message();
     let mut message = message;

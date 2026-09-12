@@ -683,6 +683,14 @@ pub enum DebugCommands {
         #[arg(long)]
         json: bool,
     },
+    Trace {
+        #[arg(conflicts_with = "search")]
+        trace_id: Option<String>,
+        #[arg(long, conflicts_with = "trace_id")]
+        search: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     RuntimeDb {
         #[command(subcommand)]
         command: RuntimeDbDebugCommands,

@@ -179,6 +179,7 @@ pub async fn generic_webhook(
     Json(payload): Json<Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let trace_context = super::state::trace_context_from_headers(&headers)?;
     enqueue_internal(
         state,
         agent_id,
@@ -201,6 +202,7 @@ pub async fn generic_webhook(
             delivery_surface: MessageDeliverySurface::HttpWebhook,
             admission_context: public_admission_context(),
         },
+        trace_context,
     )
     .await
 }

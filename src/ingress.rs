@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::observability::TraceContext;
 use crate::types::{
     AdmissionContext, AuthorityClass, MessageBody, MessageDeliverySurface, MessageEnvelope,
     MessageKind, MessageOrigin, Priority,
@@ -19,6 +20,7 @@ pub struct InboundRequest {
     pub metadata: Option<serde_json::Value>,
     pub correlation_id: Option<String>,
     pub causation_id: Option<String>,
+    pub trace_context: Option<TraceContext>,
 }
 
 impl InboundRequest {
@@ -36,6 +38,7 @@ impl InboundRequest {
         message.metadata = self.metadata;
         message.correlation_id = self.correlation_id;
         message.causation_id = self.causation_id;
+        message.trace_context = self.trace_context;
         message
     }
 }
