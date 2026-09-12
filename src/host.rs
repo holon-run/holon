@@ -8254,7 +8254,7 @@ mod tests {
         let (home, host) = test_host();
         let template_dir = home
             .path()
-            .join(".agents/agent_templates/holon-reviewer@official");
+            .join(".agents/agent_templates/code-reviewer@official");
         fs::create_dir_all(&template_dir).unwrap();
         fs::write(
             template_dir.join("AGENTS.md"),
@@ -8267,7 +8267,7 @@ mod tests {
             &parent,
             "review the implementation".into(),
             AuthorityClass::OperatorInstruction,
-            Some("user_global:holon-reviewer@official".into()),
+            Some("user_global:code-reviewer@official".into()),
             None,
         )
         .await

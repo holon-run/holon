@@ -603,13 +603,13 @@ runs:
 
         template=""
         if [ -n "${HOLON_SOURCE_DIR:-}" ]; then
-          source_template="$HOLON_SOURCE_DIR/agent_templates/holon-github-solve"
+          source_template="$HOLON_SOURCE_DIR/agent_templates/github-solver"
           if [ -f "$source_template/AGENTS.md" ]; then
             template="$source_template"
           fi
         fi
         if [ -z "$template" ]; then
-          release_template="$RUNNER_TEMP/holon/bin/agent_templates/holon-github-solve"
+          release_template="$RUNNER_TEMP/holon/bin/agent_templates/github-solver"
           if [ -f "$release_template/AGENTS.md" ]; then
             template="$release_template"
           fi

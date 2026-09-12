@@ -1640,7 +1640,7 @@ async fn run_once_rejects_template_without_create_agent() -> Result<()> {
         host,
         RunOnceRequest {
             agent_id: Some("bench-15".into()),
-            template: Some("holon-reviewer".into()),
+            template: Some("code-reviewer".into()),
             ..run_request("continue existing agent")
         },
     )
