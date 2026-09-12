@@ -8,6 +8,7 @@ import {
   filterFallbackSuggestions,
   providerCredentialReady,
   reorderModelFallbacks,
+  runtimeReloadMessage,
   sortProvidersForSettings,
   sortSearchProvidersForSettings,
 } from "./SettingsPage";
@@ -249,5 +250,35 @@ describe("buildSearchProviderConfigUpdates", () => {
       { key: "web.providers.future-native.kind", value: "future_native" },
       { key: "web.providers.future-native.credential_profile", value: "" },
     ]);
+  });
+});
+
+describe("runtimeReloadMessage", () => {
+  it("distinguishes applying, completed, and failed reloads", () => {
+    expect(runtimeReloadMessage({
+      source: "http",
+      reload: {
+        requestedGeneration: 3,
+        completedGeneration: 2,
+        state: "applying",
+      },
+    })).toContain("applying reload generation 3");
+    expect(runtimeReloadMessage({
+      source: "http",
+      reload: {
+        requestedGeneration: 3,
+        completedGeneration: 3,
+        state: "completed",
+      },
+    })).toContain("generation 3 completed");
+    expect(runtimeReloadMessage({
+      source: "http",
+      reload: {
+        requestedGeneration: 4,
+        completedGeneration: 3,
+        state: "failed",
+        lastError: "provider rebuild failed",
+      },
+    })).toContain("provider rebuild failed");
   });
 });

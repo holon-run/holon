@@ -15,6 +15,7 @@ import type {
   AgentTemplateDetailState,
   AgentTemplateRemoteSource,
   CredentialProfileStatus,
+  CredentialMutationResult,
   CredentialStoreState,
   CodexDeviceLoginResponse,
   DashboardMetric,
@@ -400,6 +401,14 @@ interface RuntimeConfigResponseDto {
   config_file_path?: string;
   runtime_surface?: RuntimeConfigSurfaceDto;
   results?: RuntimeConfigUpdateResultDto[];
+  reload?: RuntimeConfigReloadStatusDto;
+}
+
+interface RuntimeConfigReloadStatusDto {
+  requested_generation?: number;
+  completed_generation?: number;
+  state?: "idle" | "applying" | "completed" | "failed";
+  last_error?: string;
 }
 
 interface RuntimeConfigSurfaceDto {
@@ -436,7 +445,7 @@ interface RuntimeProviderSummaryDto {
 
 interface RuntimeConfigUpdateResultDto {
   key?: string;
-  effect?: "accepted_requires_restart" | "accepted_reloaded" | "rejected";
+  effect?: "accepted_requires_restart" | "accepted_reload_scheduled" | "rejected";
   reason?: string;
 }
 
@@ -455,6 +464,12 @@ interface CredentialListResponseDto {
 interface SetCredentialResponseDto {
   ok?: boolean;
   profile?: CredentialProfileStatusDto;
+  reload_generation?: number;
+}
+
+interface DeleteCredentialResponseDto {
+  ok?: boolean;
+  reload_generation?: number;
 }
 
 interface CodexDeviceStartDto {
@@ -1207,22 +1222,42 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return { profiles: [], error: error instanceof Error ? error.message : String(error) };
       }
     },
-    async setCredential(profile: string, kind: string, material: string): Promise<CredentialProfileStatus> {
+    async setCredential(profile: string, kind: string, material: string): Promise<CredentialMutationResult> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      const response = await putJson<SetCredentialResponseDto>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, { kind, material }, requestHeaders);
+      const response = await putJson<SetCredentialResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/runtime/credentials/${encodeURIComponent(profile)}`,
+        { kind, material },
+        requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
+      );
       return {
-        profile: response.profile?.profile ?? profile,
-        kind: response.profile?.kind ?? kind,
-        configured: response.profile?.configured ?? true,
+        profile: {
+          profile: response.profile?.profile ?? profile,
+          kind: response.profile?.kind ?? kind,
+          configured: response.profile?.configured ?? true,
+        },
+        reloadGeneration: response.reload_generation ?? 0,
       };
     },
-    async deleteCredential(profile: string): Promise<void> {
+    async deleteCredential(profile: string): Promise<CredentialMutationResult> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
-      await deleteJson<unknown>(fetchImpl, baseUrl, `/control/runtime/credentials/${encodeURIComponent(profile)}`, null, requestHeaders);
+      const response = await deleteJson<DeleteCredentialResponseDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/runtime/credentials/${encodeURIComponent(profile)}`,
+        null,
+        requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
+      );
+      return {
+        reloadGeneration: response.reload_generation ?? 0,
+      };
     },
     async startCodexDeviceLogin(providerId = "openai-codex"): Promise<CodexDeviceLoginResponse> {
       if (!baseUrl) {
@@ -2052,9 +2087,13 @@ async function putJson<T>(
   path: string,
   body: unknown,
   headers: Record<string, string> = {},
+  options: { timeoutMs?: number } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+  );
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "PUT",
     headers: {
@@ -2064,7 +2103,7 @@ async function putJson<T>(
     },
     body: JSON.stringify(body),
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw await httpRequestError("PUT", path, response);
   }
@@ -2079,9 +2118,13 @@ async function deleteJson<T>(
   path: string,
   body?: Record<string, unknown> | null,
   headers: Record<string, string> = {},
+  options: { timeoutMs?: number } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(
+    () => controller.abort(),
+    options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
+  );
   const response = await fetchImpl(`${baseUrl}${path}`, {
     method: "DELETE",
     headers: {
@@ -2091,7 +2134,7 @@ async function deleteJson<T>(
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
     signal: controller.signal,
-  }).finally(() => window.clearTimeout(timeout));
+  }).finally(() => globalThis.clearTimeout(timeout));
   if (!response.ok) {
     throw await httpRequestError("DELETE", path, response);
   }
@@ -2140,6 +2183,12 @@ function projectRuntimeConfigState(response: RuntimeConfigResponseDto): RuntimeC
       effect: result.effect ?? "rejected",
       reason: result.reason ?? "",
     })),
+    reload: response.reload ? {
+      requestedGeneration: response.reload.requested_generation ?? 0,
+      completedGeneration: response.reload.completed_generation ?? 0,
+      state: response.reload.state ?? "idle",
+      lastError: response.reload.last_error,
+    } : undefined,
   };
 }
 

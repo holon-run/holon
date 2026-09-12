@@ -144,11 +144,32 @@ The daemon control API exposes this split through:
 - `PATCH /control/runtime/config`, which persists supported runtime-mutable
   keys to `config.json` and returns a per-key effect classification
 
-Until live reload is implemented, supported persisted updates return
-`accepted_requires_restart`: the file-backed runtime config changes, while the
-current process keeps using its already-loaded effective configuration.
-Startup-only and unsupported keys are rejected with structured reasons instead
-of silently editing files.
+Supported live-mutable updates return `accepted_reload_scheduled`: the durable
+`config.json` write has completed and the host has accepted a reload
+generation, but the request does not wait for every loaded runtime to rebuild
+its provider state. Startup-only changes return `accepted_requires_restart`.
+Unsupported keys are rejected with structured reasons instead of silently
+editing files.
+
+Runtime config and credential mutations share one host-owned reload
+coordinator. The coordinator serializes reload rounds, coalesces bursts, and
+runs another round when a newer generation is requested while one is already
+applying. Each round reads the latest durable `config.json` and credential
+store, publishes that host configuration, and then reloads the runtimes that
+were loaded when the round began.
+
+`GET /control/runtime/config` and the response to
+`PATCH /control/runtime/config` expose:
+
+- `requested_generation`
+- `completed_generation`
+- `state` (`idle`, `applying`, `completed`, or `failed`)
+- the most recent reload error, when present
+
+The mutation response therefore confirms durable acceptance, not completed
+runtime convergence. Future turns converge asynchronously. An in-flight
+provider turn continues with the snapshot it already owns. A failed generation
+remains observable, and a later successful mutation schedules another attempt.
 
 ## Status And Inspectability
 

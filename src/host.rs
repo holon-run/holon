@@ -4,7 +4,10 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, Mutex, Weak},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering},
+        Arc, Mutex, Weak,
+    },
     time::Duration,
 };
 
@@ -302,7 +305,47 @@ pub(crate) struct HostInner {
     runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
     runtime_recovery_token: CancellationToken,
     runtime_recovery_handle: Mutex<Option<JoinHandle<()>>>,
+    config_reload_requested_generation: AtomicU64,
+    config_reload_completed_generation: AtomicU64,
+    config_reload_state: AtomicU8,
+    config_reload_last_error: Mutex<Option<String>>,
+    config_reload_closed: AtomicBool,
+    config_reload_token: CancellationToken,
+    config_reload_handle: Mutex<Option<JoinHandle<()>>>,
+    config_reload_notify: Notify,
     bootstrap_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+}
+
+const CONFIG_RELOAD_IDLE: u8 = 0;
+const CONFIG_RELOAD_APPLYING: u8 = 1;
+const CONFIG_RELOAD_COMPLETED: u8 = 2;
+const CONFIG_RELOAD_FAILED: u8 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigReloadState {
+    Idle,
+    Applying,
+    Completed,
+    Failed,
+}
+
+impl ConfigReloadState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Applying => "applying",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigReloadStatus {
+    pub requested_generation: u64,
+    pub completed_generation: u64,
+    pub state: ConfigReloadState,
+    pub last_error: Option<String>,
 }
 
 struct AgentEntry {
@@ -677,6 +720,14 @@ impl RuntimeHost {
                 runtime_recovery_rx: Mutex::new(Some(runtime_recovery_rx)),
                 runtime_recovery_token: CancellationToken::new(),
                 runtime_recovery_handle: Mutex::new(None),
+                config_reload_requested_generation: AtomicU64::new(0),
+                config_reload_completed_generation: AtomicU64::new(0),
+                config_reload_state: AtomicU8::new(CONFIG_RELOAD_IDLE),
+                config_reload_last_error: Mutex::new(None),
+                config_reload_closed: AtomicBool::new(false),
+                config_reload_token: CancellationToken::new(),
+                config_reload_handle: Mutex::new(None),
+                config_reload_notify: Notify::new(),
                 bootstrap_locks: Mutex::new(HashMap::new()),
             }),
         };
@@ -691,13 +742,122 @@ impl RuntimeHost {
         self.inner.registry.config()
     }
 
-    /// Hot-reload config for all currently loaded agents.
-    ///
-    /// Re-reads the full config from disk (config file + credentials),
-    /// rebuilds each agent's provider/catalog/model-availability, and atomically swaps
-    /// the config snapshot. In-progress turns are unaffected; the next
-    /// turn picks up the new config.
-    pub async fn reload_all_agents_config(&self) -> Result<()> {
+    pub fn schedule_config_reload(&self) -> Result<u64> {
+        if self.inner.config_reload_closed.load(Ordering::Acquire) {
+            bail!("runtime config reload coordinator is shutting down");
+        }
+        let generation = self
+            .inner
+            .config_reload_requested_generation
+            .fetch_add(1, Ordering::AcqRel)
+            + 1;
+        let mut handle = self
+            .inner
+            .config_reload_handle
+            .lock()
+            .expect("config reload handle lock poisoned");
+        if handle.is_none() {
+            if self.inner.config_reload_closed.load(Ordering::Acquire) {
+                bail!("runtime config reload coordinator is shutting down");
+            }
+            let host = self.clone();
+            *handle = Some(tokio::spawn(async move {
+                host.run_config_reload_coordinator().await;
+            }));
+        }
+        drop(handle);
+        self.inner.config_reload_notify.notify_one();
+        Ok(generation)
+    }
+
+    pub fn config_reload_status(&self) -> ConfigReloadStatus {
+        let state = match self.inner.config_reload_state.load(Ordering::Acquire) {
+            CONFIG_RELOAD_APPLYING => ConfigReloadState::Applying,
+            CONFIG_RELOAD_COMPLETED => ConfigReloadState::Completed,
+            CONFIG_RELOAD_FAILED => ConfigReloadState::Failed,
+            _ => ConfigReloadState::Idle,
+        };
+        ConfigReloadStatus {
+            requested_generation: self
+                .inner
+                .config_reload_requested_generation
+                .load(Ordering::Acquire),
+            completed_generation: self
+                .inner
+                .config_reload_completed_generation
+                .load(Ordering::Acquire),
+            state,
+            last_error: self
+                .inner
+                .config_reload_last_error
+                .lock()
+                .expect("config reload error lock poisoned")
+                .clone(),
+        }
+    }
+
+    async fn run_config_reload_coordinator(&self) {
+        loop {
+            tokio::select! {
+                _ = self.inner.config_reload_token.cancelled() => return,
+                _ = self.inner.config_reload_notify.notified() => {}
+            }
+            loop {
+                let generation = self
+                    .inner
+                    .config_reload_requested_generation
+                    .load(Ordering::Acquire);
+                if generation
+                    <= self
+                        .inner
+                        .config_reload_completed_generation
+                        .load(Ordering::Acquire)
+                {
+                    break;
+                }
+                self.inner
+                    .config_reload_state
+                    .store(CONFIG_RELOAD_APPLYING, Ordering::Release);
+                let reload_result = tokio::select! {
+                    _ = self.inner.config_reload_token.cancelled() => return,
+                    result = self.reload_all_agents_config_once() => result,
+                };
+                match reload_result {
+                    Ok(()) => {
+                        self.inner
+                            .config_reload_completed_generation
+                            .store(generation, Ordering::Release);
+                        self.inner
+                            .config_reload_state
+                            .store(CONFIG_RELOAD_COMPLETED, Ordering::Release);
+                        *self
+                            .inner
+                            .config_reload_last_error
+                            .lock()
+                            .expect("config reload error lock poisoned") = None;
+                    }
+                    Err(error) => {
+                        self.inner
+                            .config_reload_state
+                            .store(CONFIG_RELOAD_FAILED, Ordering::Release);
+                        *self
+                            .inner
+                            .config_reload_last_error
+                            .lock()
+                            .expect("config reload error lock poisoned") = Some(error.to_string());
+                        tracing::warn!(
+                            generation,
+                            error = %error,
+                            "runtime config reload failed"
+                        );
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn reload_all_agents_config_once(&self) -> Result<()> {
         let new_config = self
             .config()
             .reload_runtime_config()
@@ -711,12 +871,37 @@ impl RuntimeHost {
                 .map(|entry| entry.runtime.clone())
                 .collect()
         };
+        let mut errors = Vec::new();
         for runtime in &agent_handles {
             if let Err(e) = runtime.reload_config(&new_config).await {
                 tracing::warn!(error = %e, "failed to reload config for agent");
+                errors.push(e.to_string());
             }
         }
+        if !errors.is_empty() {
+            bail!(
+                "failed to reload config for {} agent runtime(s): {}",
+                errors.len(),
+                errors.join("; ")
+            );
+        }
         Ok(())
+    }
+
+    async fn shutdown_config_reload_coordinator(&self) {
+        self.inner
+            .config_reload_closed
+            .store(true, Ordering::Release);
+        self.inner.config_reload_token.cancel();
+        let handle = self
+            .inner
+            .config_reload_handle
+            .lock()
+            .expect("config reload handle lock poisoned")
+            .take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
     }
 
     pub fn runtime_db(&self) -> &RuntimeDb {
@@ -1411,6 +1596,7 @@ impl RuntimeHost {
     }
 
     pub async fn shutdown(&self) -> Result<()> {
+        self.shutdown_config_reload_coordinator().await;
         let entries = {
             let mut registry = self.inner.runtimes.write().await;
             match registry.phase {
@@ -6173,6 +6359,70 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    async fn wait_for_config_reload(
+        host: &RuntimeHost,
+        predicate: impl Fn(&ConfigReloadStatus) -> bool,
+    ) -> ConfigReloadStatus {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let status = host.config_reload_status();
+                if predicate(&status) {
+                    return status;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("config reload status")
+    }
+
+    #[tokio::test]
+    async fn config_reload_coordinator_converges_to_latest_scheduled_generation() {
+        let (_home, host) = test_host();
+
+        assert_eq!(host.schedule_config_reload().unwrap(), 1);
+        assert_eq!(host.schedule_config_reload().unwrap(), 2);
+        assert_eq!(host.schedule_config_reload().unwrap(), 3);
+
+        let status = wait_for_config_reload(&host, |status| status.completed_generation == 3).await;
+        assert_eq!(status.requested_generation, 3);
+        assert_eq!(status.state, ConfigReloadState::Completed);
+        assert_eq!(status.last_error, None);
+
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn config_reload_coordinator_recovers_after_a_failed_generation() {
+        let (home, host) = test_host();
+        fs::write(home.path().join("config.json"), "{not-json").unwrap();
+
+        assert_eq!(host.schedule_config_reload().unwrap(), 1);
+        let failed =
+            wait_for_config_reload(&host, |status| status.state == ConfigReloadState::Failed).await;
+        assert_eq!(failed.requested_generation, 1);
+        assert_eq!(failed.completed_generation, 0);
+        assert!(failed.last_error.is_some());
+
+        write_test_model_config(home.path());
+        assert_eq!(host.schedule_config_reload().unwrap(), 2);
+        let recovered =
+            wait_for_config_reload(&host, |status| status.completed_generation == 2).await;
+        assert_eq!(recovered.state, ConfigReloadState::Completed);
+        assert_eq!(recovered.last_error, None);
+
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn config_reload_coordinator_rejects_scheduling_after_shutdown() {
+        let (_home, host) = test_host();
+        host.shutdown().await.unwrap();
+
+        let error = host.schedule_config_reload().unwrap_err();
+        assert!(error.to_string().contains("shutting down"));
     }
 
     #[tokio::test]

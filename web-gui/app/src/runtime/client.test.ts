@@ -332,6 +332,33 @@ describe("createRuntimeClient", () => {
     });
   });
 
+  it("projects asynchronous runtime config reload status", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        Response.json({
+          ok: true,
+          config_file_path: "/tmp/config.json",
+          runtime_surface: {},
+          reload: {
+            requested_generation: 4,
+            completed_generation: 3,
+            state: "applying",
+          },
+        })) as typeof fetch,
+    });
+
+    await expect(client.getRuntimeConfig()).resolves.toMatchObject({
+      configFilePath: "/tmp/config.json",
+      reload: {
+        requestedGeneration: 4,
+        completedGeneration: 3,
+        state: "applying",
+      },
+    });
+  });
+
   it("uses the explicit refresh endpoint when refreshing the model catalog", async () => {
     const seen: Array<{ url: string; method: string; body: unknown }> = [];
     const client = createRuntimeClient({
@@ -1489,6 +1516,8 @@ describe("per-endpoint timeout classes", () => {
         { name: "roster snapshot", abortedAtMs: 20_000, start: (client) => client.getAgentRosterSnapshot() },
         { name: "agent events page", abortedAtMs: 15_000, start: (client) => client.getAgentEvents("agent-one", { limit: 100, order: "desc" }) },
         { name: "search", abortedAtMs: 15_000, start: (client) => client.search("hello") },
+        { name: "credential PUT", abortedAtMs: 30_000, start: (client) => client.setCredential("openai:default", "api_key", "secret") },
+        { name: "credential DELETE", abortedAtMs: 30_000, start: (client) => client.deleteCredential("openai:default") },
       ];
       for (const testCase of cases) {
         const captured: { signal?: AbortSignal } = {};

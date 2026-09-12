@@ -7473,6 +7473,41 @@
           "ok": {
             "type": "boolean"
           },
+          "reload": {
+            "properties": {
+              "completed_generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requested_generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "idle",
+                  "applying",
+                  "completed",
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "requested_generation",
+              "completed_generation",
+              "state"
+            ],
+            "type": "object"
+          },
           "runtime_surface": {
             "properties": {
               "available_search_provider_kinds": {
@@ -7833,7 +7868,8 @@
         "required": [
           "ok",
           "config_file_path",
-          "runtime_surface"
+          "runtime_surface",
+          "reload"
         ],
         "title": "RuntimeConfigReadResponse",
         "type": "object"
@@ -7879,13 +7915,48 @@
           "ok": {
             "type": "boolean"
           },
+          "reload": {
+            "properties": {
+              "completed_generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_error": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "requested_generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "state": {
+                "enum": [
+                  "idle",
+                  "applying",
+                  "completed",
+                  "failed"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "requested_generation",
+              "completed_generation",
+              "state"
+            ],
+            "type": "object"
+          },
           "results": {
             "items": {
               "properties": {
                 "effect": {
                   "enum": [
                     "accepted_requires_restart",
-                    "accepted_reloaded",
+                    "accepted_reload_scheduled",
                     "rejected"
                   ],
                   "type": "string"
@@ -8268,7 +8339,8 @@
           "changed",
           "config_file_path",
           "results",
-          "runtime_surface"
+          "runtime_surface",
+          "reload"
         ],
         "title": "RuntimeConfigUpdateResponse",
         "type": "object"

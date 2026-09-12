@@ -257,6 +257,81 @@ describe("abortCurrentRun", () => {
   });
 });
 
+describe("credential mutations", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("returns durable credential success when the later model refresh fails", async () => {
+    const previous = useRuntimeStore.getState();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) {
+        return jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES });
+      }
+      if (url.endsWith("/agents/list")) return jsonResponse([]);
+      if (url.endsWith("/agents/snapshot")) {
+        return jsonResponse({
+          contract_version: 1,
+          runtime_id: "runtime-1",
+          event_log_epoch: "epoch-1",
+          visibility_scope_id: "scope-1",
+          agents: [],
+        });
+      }
+      if (url.endsWith("/control/runtime/credentials/openai%3Adefault") && init?.method === "PUT") {
+        return jsonResponse({
+          ok: true,
+          profile: { profile: "openai:default", kind: "api_key", configured: true },
+          reload_generation: 1,
+        });
+      }
+      if (url.endsWith("/control/runtime/credentials")) {
+        return jsonResponse({
+          ok: true,
+          profiles: [{ profile: "openai:default", kind: "api_key", configured: true }],
+        });
+      }
+      if (url.endsWith("/control/runtime/config")) {
+        return jsonResponse({
+          ok: true,
+          runtime_surface: {},
+          reload: {
+            requested_generation: 1,
+            completed_generation: 1,
+            state: "completed",
+          },
+        });
+      }
+      if (url.endsWith("/models/refresh")) {
+        return new Response(JSON.stringify({ error: "catalog refresh failed" }), {
+          status: 500,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    try {
+      const result = await useRuntimeStore
+        .getState()
+        .setCredential("openai:default", "api_key", "secret");
+
+      expect(result).toMatchObject({
+        reloadGeneration: 1,
+        profile: { profile: "openai:default", configured: true },
+      });
+      await vi.waitFor(() => {
+        expect(useRuntimeStore.getState().modelCatalogError).toContain("catalog refresh failed");
+      });
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+});
+
 describe("appendOptimisticOperatorPrompt", () => {
   it("attributes the pending prompt to the current user display name", () => {
     const agent = { id: "agent-a" } as AgentSummary;

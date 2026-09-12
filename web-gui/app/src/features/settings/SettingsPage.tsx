@@ -22,6 +22,7 @@ import {
 } from "../../runtime/runtime-store";
 import type {
   CodexDeviceLoginState,
+  CredentialMutationResult,
   CredentialStoreState,
   RuntimeConfigState,
   RuntimeConnection,
@@ -47,7 +48,7 @@ interface SettingsPageProps {
   credentialStore: CredentialStoreState;
   credentialStoreLoading: boolean;
   onRefreshCredentialStore: () => Promise<void>;
-  onSetCredential: (profile: string, kind: string, material: string) => Promise<unknown>;
+  onSetCredential: (profile: string, kind: string, material: string) => Promise<CredentialMutationResult | undefined>;
   onDeleteCredential: (profile: string) => Promise<void>;
   codexDeviceLogin: CodexDeviceLoginState;
   onStartCodexDeviceLogin: (providerId?: string) => Promise<void>;
@@ -59,6 +60,18 @@ function splitCsv(value: string): string[] {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+}
+
+export function runtimeReloadMessage(runtimeConfig: RuntimeConfigState): string | undefined {
+  const reload = runtimeConfig.reload;
+  if (!reload || reload.requestedGeneration === 0) return undefined;
+  if (reload.state === "failed") {
+    return `Configuration was saved, but reload generation ${reload.requestedGeneration} failed${reload.lastError ? `: ${reload.lastError}` : "."}`;
+  }
+  if (reload.completedGeneration < reload.requestedGeneration) {
+    return `Configuration saved; applying reload generation ${reload.requestedGeneration}…`;
+  }
+  return `Configuration reload generation ${reload.completedGeneration} completed.`;
 }
 
 function numberFromInput(value: string): number {
@@ -412,7 +425,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved to config.json. Changes applied via hot-reload."
+          ? "Saved to config.json. Configuration reload scheduled."
           : "No runtime config changes were persisted.",
     );
   }
@@ -434,7 +447,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} search setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved search settings to config.json. Changes applied via hot-reload."
+          ? "Saved search settings to config.json. Configuration reload scheduled."
           : "No search config changes were persisted.",
     );
   }
@@ -472,7 +485,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} search provider setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Saved ${providerId} search provider settings to config.json. Changes applied via hot-reload.`
+          ? `Saved ${providerId} search provider settings to config.json. Configuration reload scheduled.`
           : "No search provider config changes were persisted.",
     );
   }
@@ -529,7 +542,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} vision setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved Vision default to config.json. Changes applied via hot-reload."
+          ? "Saved Vision default to config.json. Configuration reload scheduled."
           : "No Vision config changes were persisted.",
     );
   }
@@ -543,7 +556,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} image generation setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? "Saved image generation default to config.json. Changes applied via hot-reload."
+          ? "Saved image generation default to config.json. Configuration reload scheduled."
           : "No image generation config changes were persisted.",
     );
   }
@@ -589,7 +602,12 @@ export function SettingsPage({
         setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
         const credResult = await onSetCredential(effectiveProfile, "api_key", key);
         if (credResult) {
-          setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.apiKeySaved") }));
+          setCredentialMessages((prev) => ({
+            ...prev,
+            [providerId]: credResult.reloadGeneration > 0
+              ? "Saved; applying configuration…"
+              : t("settings.apiKeySaved"),
+          }));
           setApiKeyDrafts((prev) => ({ ...prev, [providerId]: "" }));
         } else {
           setCredentialMessages((prev) => ({ ...prev, [providerId]: t("settings.failedSaveKey") }));
@@ -612,7 +630,7 @@ export function SettingsPage({
       rejected.length
         ? `${rejected.length} provider setting${rejected.length === 1 ? "" : "s"} rejected.`
         : result.changed
-          ? `Saved ${providerId} provider settings to config.json. Changes applied via hot-reload.`
+          ? `Saved ${providerId} provider settings to config.json. Configuration reload scheduled.`
           : "No provider config changes were persisted.",
     );
   }
@@ -701,6 +719,11 @@ export function SettingsPage({
                 </Button>
               </div>
               {runtimeConfigError ? <div className="settings-error-banner">{runtimeConfigError}</div> : null}
+              {runtimeReloadMessage(runtimeConfig) ? (
+                <div className={runtimeConfig.reload?.state === "failed" ? "settings-error-banner" : "settings-callout"}>
+                  {runtimeReloadMessage(runtimeConfig)}
+                </div>
+              ) : null}
               <dl className="settings-list compact">
                 <div>
                   <dt>{t("settings.connection")}</dt>

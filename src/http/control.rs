@@ -132,6 +132,7 @@ pub struct RuntimeConfigReadResponse {
     pub ok: bool,
     pub config_file_path: std::path::PathBuf,
     pub runtime_surface: RuntimeConfigSurface,
+    pub reload: RuntimeConfigReloadStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -164,6 +165,54 @@ pub struct RuntimeConfigUpdateResponse {
     pub config_file_path: std::path::PathBuf,
     pub results: Vec<RuntimeConfigUpdateResult>,
     pub runtime_surface: RuntimeConfigSurface,
+    pub reload: RuntimeConfigReloadStatus,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeConfigReloadStatus {
+    pub requested_generation: u64,
+    pub completed_generation: u64,
+    pub state: RuntimeConfigReloadState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl Default for RuntimeConfigReloadStatus {
+    fn default() -> Self {
+        Self {
+            requested_generation: 0,
+            completed_generation: 0,
+            state: RuntimeConfigReloadState::Idle,
+            last_error: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeConfigReloadState {
+    Idle,
+    Applying,
+    Completed,
+    Failed,
+}
+
+impl RuntimeConfigReloadStatus {
+    fn from_host(host: &crate::host::RuntimeHost) -> Self {
+        let status = host.config_reload_status();
+        let state = match status.state {
+            crate::host::ConfigReloadState::Idle => RuntimeConfigReloadState::Idle,
+            crate::host::ConfigReloadState::Applying => RuntimeConfigReloadState::Applying,
+            crate::host::ConfigReloadState::Completed => RuntimeConfigReloadState::Completed,
+            crate::host::ConfigReloadState::Failed => RuntimeConfigReloadState::Failed,
+        };
+        Self {
+            requested_generation: status.requested_generation,
+            completed_generation: status.completed_generation,
+            state,
+            last_error: status.last_error,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -177,7 +226,7 @@ pub struct RuntimeConfigUpdateResult {
 #[serde(rename_all = "snake_case")]
 pub enum RuntimeConfigUpdateEffect {
     AcceptedRequiresRestart,
-    AcceptedReloaded,
+    AcceptedReloadScheduled,
     Rejected,
 }
 
@@ -191,6 +240,7 @@ pub async fn runtime_config(
         ok: true,
         config_file_path: config.config_file_path.clone(),
         runtime_surface: RuntimeConfigSurface::new(&config),
+        reload: RuntimeConfigReloadStatus::from_host(&state.host),
     }))
 }
 
@@ -266,27 +316,15 @@ pub async fn runtime_config_update(
 
     if changed {
         save_persisted_config_at(&config.config_file_path, &candidate).map_err(error_response)?;
-        // Hot-reload the runtime so the new config takes effect immediately.
-        // The current turn (if any) completes with the old provider; the next
-        // turn picks up the new config automatically.
-        match state.host.reload_all_agents_config().await {
-            Ok(()) => {
-                // Mark results as reloaded instead of requiring restart.
-                for result in &mut results {
-                    if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
-                        result.effect = RuntimeConfigUpdateEffect::AcceptedReloaded;
-                        result.reason = "applied via hot-reload".into();
-                    }
-                }
-            }
-            Err(e) => {
-                tracing::warn!(error = %e, "config saved but hot-reload failed; restart needed");
-                for result in &mut results {
-                    if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
-                        result.reason =
-                            format!("persisted in config.json, but hot-reload failed: {e}");
-                    }
-                }
+        let generation = state
+            .host
+            .schedule_config_reload()
+            .map_err(error_response)?;
+        for result in &mut results {
+            if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                result.effect = RuntimeConfigUpdateEffect::AcceptedReloadScheduled;
+                result.reason =
+                    format!("persisted in config.json; reload generation {generation} scheduled");
             }
         }
     }
@@ -298,6 +336,7 @@ pub async fn runtime_config_update(
         config_file_path: config.config_file_path.clone(),
         results,
         runtime_surface: RuntimeConfigSurface::new(&config),
+        reload: RuntimeConfigReloadStatus::from_host(&state.host),
     }))
 }
 
@@ -317,8 +356,7 @@ pub async fn runtime_config_migrate_model_routes(
     if request.write && report.ok && report.config.changed {
         state
             .host
-            .reload_all_agents_config()
-            .await
+            .schedule_config_reload()
             .map_err(error_response)?;
     }
     Ok(Json(report))
@@ -418,6 +456,7 @@ pub struct SetCredentialRequest {
 struct SetCredentialResponse {
     ok: bool,
     profile: CredentialProfileStatus,
+    reload_generation: u64,
 }
 
 pub async fn set_credential(
@@ -432,13 +471,14 @@ pub async fn set_credential(
     let kind = CredentialKind::parse(&request.kind).map_err(error_response)?;
     let profile_status = set_credential_profile_at(&path, &profile, kind, request.material)
         .map_err(error_response)?;
-    // Hot-reload so the new credential is available without restart.
-    if let Err(e) = state.host.reload_all_agents_config().await {
-        tracing::warn!(error = %e, "credential saved but hot-reload failed; restart needed");
-    }
+    let reload_generation = state
+        .host
+        .schedule_config_reload()
+        .map_err(error_response)?;
     Ok(Json(SetCredentialResponse {
         ok: true,
         profile: profile_status,
+        reload_generation,
     }))
 }
 
@@ -446,6 +486,7 @@ pub async fn set_credential(
 struct DeleteCredentialResponse {
     ok: bool,
     profile: CredentialProfileStatus,
+    reload_generation: u64,
 }
 
 pub async fn delete_credential(
@@ -457,12 +498,14 @@ pub async fn delete_credential(
     let config = state.host.config();
     let path = credential_store_path(&config.home_dir);
     let profile_status = remove_credential_profile_at(&path, &profile).map_err(error_response)?;
-    if let Err(e) = state.host.reload_all_agents_config().await {
-        tracing::warn!(error = %e, "credential deleted but hot-reload failed; restart needed");
-    }
+    let reload_generation = state
+        .host
+        .schedule_config_reload()
+        .map_err(error_response)?;
     Ok(Json(DeleteCredentialResponse {
         ok: true,
         profile: profile_status,
+        reload_generation,
     }))
 }
 

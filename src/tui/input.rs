@@ -2434,8 +2434,8 @@ fn onboarding_runtime_config_status(
             "Onboarding set runtime default model to {model} via daemon config; restart/reload required: {}",
             result.reason
         ),
-        crate::http::RuntimeConfigUpdateEffect::AcceptedReloaded => format!(
-            "Onboarding set runtime default model to {model} via daemon config; applied via hot-reload: {}",
+        crate::http::RuntimeConfigUpdateEffect::AcceptedReloadScheduled => format!(
+            "Onboarding set runtime default model to {model} via daemon config; reload scheduled: {}",
             result.reason
         ),
         crate::http::RuntimeConfigUpdateEffect::Rejected => format!(
@@ -3202,6 +3202,7 @@ mod tests {
                 reason: "persisted; restart required".into(),
             }],
             runtime_surface: runtime_surface.clone(),
+            reload: Default::default(),
         };
         let status = onboarding_runtime_config_status("openai/gpt-5.4", &accepted);
         assert!(status.contains("via daemon config"));
@@ -3217,6 +3218,7 @@ mod tests {
                 reason: "unsupported or startup-only config key".into(),
             }],
             runtime_surface: runtime_surface.clone(),
+            reload: Default::default(),
         };
         let status = onboarding_runtime_config_status("openai/gpt-5.4", &rejected);
         assert!(status.contains("rejected"));
@@ -3228,6 +3230,7 @@ mod tests {
             config_file_path: "/tmp/config.json".into(),
             results: Vec::new(),
             runtime_surface,
+            reload: Default::default(),
         };
         let status = onboarding_runtime_config_status("openai/gpt-5.4", &omitted);
         assert!(status.contains("requested"));

@@ -100,7 +100,7 @@ import type {
   RuntimeConfigState,
   TaskStatusSnapshot,
   CodexDeviceLoginState,
-  CredentialProfileStatus,
+  CredentialMutationResult,
   CredentialStoreState,
   RuntimeBriefRecord,
   RuntimeTaskOutputResult,
@@ -451,7 +451,7 @@ export interface RuntimeStoreState {
   enableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
   disableAgentSkill: (agentId: string | undefined, name: string) => Promise<boolean>;
   refreshCredentialStore: () => Promise<void>;
-  setCredential: (profile: string, kind: string, material: string) => Promise<CredentialProfileStatus | undefined>;
+  setCredential: (profile: string, kind: string, material: string) => Promise<CredentialMutationResult | undefined>;
   deleteCredential: (profile: string) => Promise<void>;
   startCodexDeviceLogin: (providerId?: string) => Promise<void>;
   clearCodexDeviceLogin: () => void;
@@ -631,6 +631,28 @@ function captureClientRequest(): ClientRequest {
 
 function isCurrentClientRequest(request: ClientRequest): boolean {
   return request.client === runtimeClient && isCurrentClientGeneration(request.generation);
+}
+
+async function observeRuntimeConfigReload(
+  request: ClientRequest,
+  targetGeneration: number,
+): Promise<RuntimeConfigState> {
+  let delayMs = 100;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const runtimeConfig = await request.client.getRuntimeConfig();
+    const reload = runtimeConfig.reload;
+    if (
+      targetGeneration === 0
+      || !reload
+      || reload.completedGeneration >= targetGeneration
+      || reload.state === "failed"
+    ) {
+      return runtimeConfig;
+    }
+    await new Promise((resolve) => globalThis.setTimeout(resolve, delayMs));
+    delayMs = Math.min(delayMs * 2, 1_000);
+  }
+  return request.client.getRuntimeConfig();
 }
 
 function cancelClientGenerationWork(): void {
@@ -2807,22 +2829,57 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const request = captureClientRequest();
     try {
       const result = await request.client.setCredential(profile, kind, material);
-      const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
-        request.client.listCredentials(),
-        request.client.getRuntimeConfig(),
-        request.client.refreshModels(),
-      ]);
       if (!isCurrentClientRequest(request)) return undefined;
-      const modelCatalog = freshModelCatalog(fetchedModelCatalog);
-      set({
-        credentialStore,
-        credentialStoreError: undefined,
-        runtimeConfig,
-        runtimeConfigError: runtimeConfig.error,
-        modelCatalog,
-        modelCatalogError: modelCatalog.error,
-      });
-      persistModelCatalog(runtimeConnectionConfig, modelCatalog);
+      if (result.profile) {
+        set((state) => ({
+          credentialStore: {
+            ...state.credentialStore,
+            profiles: [
+              ...state.credentialStore.profiles.filter((entry) => entry.profile !== result.profile?.profile),
+              result.profile!,
+            ],
+          },
+          credentialStoreError: undefined,
+        }));
+      }
+      void (async () => {
+        const [credentialResult, runtimeConfigResult] = await Promise.allSettled([
+          request.client.listCredentials(),
+          observeRuntimeConfigReload(request, result.reloadGeneration),
+        ]);
+        if (!isCurrentClientRequest(request)) return;
+        if (credentialResult.status === "fulfilled") {
+          set({ credentialStore: credentialResult.value, credentialStoreError: undefined });
+        } else {
+          set({
+            credentialStoreError: credentialResult.reason instanceof Error
+              ? credentialResult.reason.message
+              : String(credentialResult.reason),
+          });
+        }
+        if (runtimeConfigResult.status === "fulfilled") {
+          const runtimeConfig = runtimeConfigResult.value;
+          set({ runtimeConfig, runtimeConfigError: runtimeConfig.error });
+          if (runtimeConfig.reload?.state === "completed") {
+            try {
+              const modelCatalog = freshModelCatalog(await request.client.refreshModels());
+              if (!isCurrentClientRequest(request)) return;
+              set({ modelCatalog, modelCatalogError: modelCatalog.error });
+              persistModelCatalog(runtimeConnectionConfig, modelCatalog);
+            } catch (error) {
+              if (isCurrentClientRequest(request)) {
+                set({ modelCatalogError: error instanceof Error ? error.message : String(error) });
+              }
+            }
+          }
+        } else {
+          set({
+            runtimeConfigError: runtimeConfigResult.reason instanceof Error
+              ? runtimeConfigResult.reason.message
+              : String(runtimeConfigResult.reason),
+          });
+        }
+      })();
       return result;
     } catch (error) {
       if (!isCurrentClientRequest(request)) return undefined;
@@ -2835,23 +2892,53 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   deleteCredential: async (profile) => {
     const request = captureClientRequest();
     try {
-      await request.client.deleteCredential(profile);
-      const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
-        request.client.listCredentials(),
-        request.client.getRuntimeConfig(),
-        request.client.refreshModels(),
-      ]);
+      const result = await request.client.deleteCredential(profile);
       if (!isCurrentClientRequest(request)) return;
-      const modelCatalog = freshModelCatalog(fetchedModelCatalog);
-      set({
-        credentialStore,
+      set((state) => ({
+        credentialStore: {
+          ...state.credentialStore,
+          profiles: state.credentialStore.profiles.filter((entry) => entry.profile !== profile),
+        },
         credentialStoreError: undefined,
-        runtimeConfig,
-        runtimeConfigError: runtimeConfig.error,
-        modelCatalog,
-        modelCatalogError: modelCatalog.error,
-      });
-      persistModelCatalog(runtimeConnectionConfig, modelCatalog);
+      }));
+      void (async () => {
+        const [credentialResult, runtimeConfigResult] = await Promise.allSettled([
+          request.client.listCredentials(),
+          observeRuntimeConfigReload(request, result.reloadGeneration),
+        ]);
+        if (!isCurrentClientRequest(request)) return;
+        if (credentialResult.status === "fulfilled") {
+          set({ credentialStore: credentialResult.value, credentialStoreError: undefined });
+        } else {
+          set({
+            credentialStoreError: credentialResult.reason instanceof Error
+              ? credentialResult.reason.message
+              : String(credentialResult.reason),
+          });
+        }
+        if (runtimeConfigResult.status === "fulfilled") {
+          const runtimeConfig = runtimeConfigResult.value;
+          set({ runtimeConfig, runtimeConfigError: runtimeConfig.error });
+          if (runtimeConfig.reload?.state === "completed") {
+            try {
+              const modelCatalog = freshModelCatalog(await request.client.refreshModels());
+              if (!isCurrentClientRequest(request)) return;
+              set({ modelCatalog, modelCatalogError: modelCatalog.error });
+              persistModelCatalog(runtimeConnectionConfig, modelCatalog);
+            } catch (error) {
+              if (isCurrentClientRequest(request)) {
+                set({ modelCatalogError: error instanceof Error ? error.message : String(error) });
+              }
+            }
+          }
+        } else {
+          set({
+            runtimeConfigError: runtimeConfigResult.reason instanceof Error
+              ? runtimeConfigResult.reason.message
+              : String(runtimeConfigResult.reason),
+          });
+        }
+      })();
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);

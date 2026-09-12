@@ -4351,6 +4351,15 @@ export interface components {
         RuntimeConfigReadResponse: {
             config_file_path: string;
             ok: boolean;
+            reload: {
+                /** Format: uint64 */
+                completed_generation: number;
+                last_error?: string | null;
+                /** Format: uint64 */
+                requested_generation: number;
+                /** @enum {string} */
+                state: "idle" | "applying" | "completed" | "failed";
+            };
             runtime_surface: {
                 /** @default [] */
                 available_search_provider_kinds: {
@@ -4453,9 +4462,18 @@ export interface components {
             changed: boolean;
             config_file_path: string;
             ok: boolean;
+            reload: {
+                /** Format: uint64 */
+                completed_generation: number;
+                last_error?: string | null;
+                /** Format: uint64 */
+                requested_generation: number;
+                /** @enum {string} */
+                state: "idle" | "applying" | "completed" | "failed";
+            };
             results: {
                 /** @enum {string} */
-                effect: "accepted_requires_restart" | "accepted_reloaded" | "rejected";
+                effect: "accepted_requires_restart" | "accepted_reload_scheduled" | "rejected";
                 key: string;
                 reason: string;
             }[];

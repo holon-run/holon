@@ -466,8 +466,15 @@ export interface RuntimeWebSearchProviderCapabilities {
 
 export interface RuntimeConfigUpdateResult {
   key: string;
-  effect: "accepted_requires_restart" | "accepted_reloaded" | "rejected";
+  effect: "accepted_requires_restart" | "accepted_reload_scheduled" | "rejected";
   reason: string;
+}
+
+export interface RuntimeConfigReloadStatus {
+  requestedGeneration: number;
+  completedGeneration: number;
+  state: "idle" | "applying" | "completed" | "failed";
+  lastError?: string;
 }
 
 export interface RuntimeConfigState {
@@ -476,6 +483,7 @@ export interface RuntimeConfigState {
   surface?: RuntimeConfigSurface;
   changed?: boolean;
   results?: RuntimeConfigUpdateResult[];
+  reload?: RuntimeConfigReloadStatus;
   error?: string;
 }
 
@@ -484,6 +492,11 @@ export interface CredentialProfileStatus {
   profile: string;
   kind: string;
   configured: boolean;
+}
+
+export interface CredentialMutationResult {
+  profile?: CredentialProfileStatus;
+  reloadGeneration: number;
 }
 
 export interface CredentialStoreState {

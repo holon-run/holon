@@ -695,32 +695,40 @@ pub(super) fn create_oauth_device_login_job(
                     login.material,
                 ) {
                     Ok(profile_status) => {
-                        if let Err(error) = host.reload_all_agents_config().await {
-                            tracing::warn!(
-                                error = %error,
-                                provider_id,
-                                "OAuth device credential saved but hot-reload failed; restart needed"
-                            );
+                        match host.schedule_config_reload() {
+                            Ok(reload_generation) => {
+                                jobs.update(&job_id, |job| {
+                                    job.status = JobStatus::Completed;
+                                    job.phase = "completed".into();
+                                    job.progress.current = 3;
+                                    job.summary = format!("{provider_label} OAuth login completed");
+                                    job.items = vec![JobItem {
+                                        id: "credential_profile".into(),
+                                        status: JobStatus::Completed,
+                                        summary: format!(
+                                            "Configured {profile} OAuth credential profile"
+                                        ),
+                                        error: None,
+                                    }];
+                                    job.result = Some(json!({
+                                        "provider_id": provider_id,
+                                        "profile": profile_status.profile,
+                                        "auth_kind": profile_status.kind,
+                                        "configured": true,
+                                        "account_id": login.account_id,
+                                        "reload_generation": reload_generation,
+                                    }));
+                                });
+                            }
+                            Err(error) => fail_codex_device_login_job(
+                                &jobs,
+                                &job_id,
+                                &format!(
+                                    "{provider_label} credential persisted but reload scheduling failed"
+                                ),
+                                error.to_string(),
+                            ),
                         }
-                        jobs.update(&job_id, |job| {
-                            job.status = JobStatus::Completed;
-                            job.phase = "completed".into();
-                            job.progress.current = 3;
-                            job.summary = format!("{provider_label} OAuth login completed");
-                            job.items = vec![JobItem {
-                                id: "credential_profile".into(),
-                                status: JobStatus::Completed,
-                                summary: format!("Configured {profile} OAuth credential profile"),
-                                error: None,
-                            }];
-                            job.result = Some(json!({
-                                "provider_id": provider_id,
-                                "profile": profile_status.profile,
-                                "auth_kind": profile_status.kind,
-                                "configured": true,
-                                "account_id": login.account_id,
-                            }));
-                        });
                     }
                     Err(error) => fail_codex_device_login_job(
                         &jobs,
