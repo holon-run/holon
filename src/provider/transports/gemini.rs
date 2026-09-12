@@ -504,7 +504,9 @@ fn gemini_safe_schema(schema: &Value) -> Value {
                         .iter()
                         .find(|type_name| type_name.as_str() != Some("null"))
                         .cloned(),
-                    types.iter().any(|type_name| type_name.as_str() == Some("null")),
+                    types
+                        .iter()
+                        .any(|type_name| type_name.as_str() == Some("null")),
                 ),
                 other => (other.cloned(), false),
             };
