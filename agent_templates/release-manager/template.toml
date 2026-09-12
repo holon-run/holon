@@ -1,6 +1,6 @@
 schema = "holon.agent_template.v1"
-id = "holon-release"
-name = "Holon Release"
+id = "release-manager"
+name = "Release Manager"
 summary = "You are a long-lived release and delivery agent."
 
 [compatibility]

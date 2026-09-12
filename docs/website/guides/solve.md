@@ -131,7 +131,7 @@ When you run `holon solve`, these steps happen inside the runtime:
    input metadata.
 
 3. **Create the agent** — Holon creates an agent from the configured solve
-   template, normally the command-owned `holon-github-solve` preset. It includes
+   template, normally the command-owned `github-solver` preset. It includes
    `sview`, `code-review`, `github-issue-solve`, `github-pr-fix`,
    `github-review`, and `ghx`.
 
@@ -162,7 +162,7 @@ holon solve <REF> [OPTIONS]
 | `--goal` | string | — | Override the agent's interpretation of the target |
 | `--role` | string | — | Additional role context passed to the agent |
 | `--agent` | string | `github-solve` | Agent ID to use or create |
-| `--template` | string | `holon-github-solve` | Template for the agent |
+| `--template` | string | `github-solver` | Template for the agent |
 | `--model` | string | — | Override the configured model (sets `HOLON_MODEL`) |
 | `--max-turns` | integer | — | Maximum agent turns before forced stop |
 | `--trust` | string | `trusted-operator` | Trust level for the run |
@@ -182,7 +182,7 @@ serve different purposes:
 |---|---|---|
 | Use case | General headless tasks | GitHub issues and PRs |
 | Input | Free-text prompt | GitHub target ref |
-| Agent template | hidden default when no selector is provided | `holon-github-solve` (GitHub skills pre-loaded) |
+| Agent template | hidden default when no selector is provided | `github-solver` (GitHub skills pre-loaded) |
 | Output | Text or JSON to stdout | Structured artifacts in output directory |
 | GitHub integration | Manual (`gh` CLI) | Automatic context collection and skill dispatch |
 | Pipeline-friendly | Use `--json` for structured output | Built-in manifest and summary files |

@@ -47,7 +47,7 @@ For focused durable work, create a named agent with an installed or synced
 template:
 
 ```bash
-holon agent create builder --template holon-developer
+holon agent create builder --template software-developer
 ```
 
 This creates `~/.holon/agents/builder/` initialized from the local developer

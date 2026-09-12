@@ -277,7 +277,7 @@ describe("reduceAgentSessionTimeline", () => {
             input: {
               agent_id: "reviewer",
               preset: "public_named",
-              template: "holon-reviewer",
+              template: "code-reviewer",
               initial_message: "Review issue #2150",
             },
             summary: "agent_id=reviewer",
@@ -303,7 +303,7 @@ describe("reduceAgentSessionTimeline", () => {
     });
 
     expect(timeline.map((item) => item.body)).toEqual([
-      expect.stringContaining("Spawned agent · reviewer · public_named · holon-reviewer · Review issue #2150"),
+      expect.stringContaining("Spawned agent · reviewer · public_named · code-reviewer · Review issue #2150"),
       expect.stringContaining("Switched workspace · ws_issue_2150 · isolated"),
       expect.stringContaining("Enqueued follow-up · next · Continue issue #2150 implementation"),
       expect.stringContaining("Generated image · timeline · 1536x1024 · A tool execution timeline"),

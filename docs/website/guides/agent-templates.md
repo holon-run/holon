@@ -17,12 +17,32 @@ capabilities. Without a template, agents start with a generic default contract.
 
 Common scenarios:
 
-- **Creating a synced reviewer agent** — `holon agent create reviewer --template holon-reviewer`
+- **Creating a synced reviewer agent** — `holon agent create reviewer --template code-reviewer`
 - **Working with office documents** — `holon agent create office --template office-assistant`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
 - **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
-- **One-shot tasks with a role** — `holon run --template holon-developer "Fix the null check in handler.rs"`
+- **One-shot tasks with a role** — `holon run --template software-developer "Fix the null check in handler.rs"`
 - **Solving GitHub issues** — `holon solve https://github.com/owner/repo/issues/42`
+
+## Template Naming
+
+Official template IDs describe the target or responsibility of the agent, not
+the fact that Holon distributes the template. The `holon-` prefix is reserved
+for roles that specifically operate Holon itself, such as `holon-ops`.
+Runtime-only presets such as `holon-default` are named separately from the
+syncable template catalog.
+
+The following older IDs remain accepted as compatibility selectors:
+
+| Older ID | Current ID |
+| --- | --- |
+| `holon-developer` | `software-developer` |
+| `holon-reviewer` | `code-reviewer` |
+| `holon-release` | `release-manager` |
+| `holon-github-solve` | `github-solver` |
+
+An exact local installation using an older ID takes precedence over the
+compatibility fallback. Template renames do not rename existing agent IDs.
 
 ## Template library and default bootstrap
 
@@ -56,7 +76,7 @@ The official template source is the Holon repository. When synced, templates
 under its top-level `agent_templates/` directory become normal local catalog
 entries from `~/.agents/agent_templates`.
 
-`holon solve` selects the normal `holon-github-solve` template by default. Sync
+`holon solve` selects the normal `github-solver` template by default. Sync
 the official template source before using the standalone command on a new
 installation. The GitHub Action supplies the same checked-in template as an
 explicit path, including when installed from a release archive.
@@ -66,18 +86,18 @@ explicit path, including when installed from a release archive.
 ### Create an Agent
 
 ```bash
-holon agent create reviewer --template holon-reviewer
+holon agent create reviewer --template code-reviewer
 ```
 
 This initializes `~/.holon/agents/reviewer/AGENTS.md` from the local
-`holon-reviewer` template after that template has been installed or synced. If
+`code-reviewer` template after that template has been installed or synced. If
 the agent home already exists and is non-empty, template initialization refuses
 to overwrite it.
 
 ### One-Shot Run
 
 ```bash
-holon run --template holon-developer "Fix the null check in handler.rs"
+holon run --template software-developer "Fix the null check in handler.rs"
 ```
 
 The agent is created with the developer role contract, executes the prompt,
@@ -86,7 +106,7 @@ and is cleaned up after completion.
 ### Solve a GitHub Issue
 
 ```bash
-holon solve --template holon-github-solve https://github.com/owner/repo/issues/42
+holon solve --template github-solver https://github.com/owner/repo/issues/42
 ```
 
 The agent starts with GitHub workflow guidance and the four GitHub skills

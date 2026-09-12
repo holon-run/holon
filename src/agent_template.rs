@@ -34,9 +34,15 @@ const TEMPLATE_PROVENANCE_FILENAME: &str = "template-provenance.json";
 const MANAGED_TEMPLATE_STATE_FILENAME: &str = ".holon-template.json";
 const TEMPLATE_REGISTRY_FILENAME: &str = ".registry.json";
 pub const DEFAULT_AGENT_TEMPLATE_ID: &str = "holon-default";
-pub const GITHUB_SOLVE_AGENT_TEMPLATE_ID: &str = "holon-github-solve";
+pub const GITHUB_SOLVE_AGENT_TEMPLATE_ID: &str = "github-solver";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_ID: &str = "official";
 pub const OFFICIAL_AGENT_TEMPLATE_REMOTE_SOURCE_URL: &str = "https://github.com/holon-run/holon";
+const RENAMED_AGENT_TEMPLATE_IDS: &[(&str, &str)] = &[
+    ("holon-developer", "software-developer"),
+    ("holon-reviewer", "code-reviewer"),
+    ("holon-release", "release-manager"),
+    ("holon-github-solve", "github-solver"),
+];
 const GITHUB_TEMPLATE_API_BASE_ENV: &str = "HOLON_TEMPLATE_GITHUB_API_BASE";
 const GITHUB_TEMPLATE_TOKEN_ENV_VARS: &[&str] = &["HOLON_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"];
 const GITHUB_TEMPLATE_USER_AGENT: &str = "holon-template-resolver";
@@ -1753,22 +1759,48 @@ fn resolve_template_catalog_entry(
             home_dir,
             catalog_agent_home,
         )
+        .or_else(|| {
+            renamed_agent_template_id(template_id).and_then(|renamed_id| {
+                resolve_prefixed_template_catalog_entry(
+                    source,
+                    renamed_id,
+                    home_dir,
+                    catalog_agent_home,
+                )
+            })
+        })
         .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home));
     }
 
     validate_template_install_id(template)?;
     let catalog = discover_agent_templates_catalog(Some(home_dir), catalog_agent_home);
     if let Some(entry) = catalog
-        .into_iter()
+        .iter()
         .find(|entry| entry.template_id == template || entry.template == template)
+        .cloned()
     {
         return Ok(entry);
+    }
+    if let Some(renamed_id) = renamed_agent_template_id(template) {
+        if let Some(entry) = catalog
+            .iter()
+            .find(|entry| entry.template_id == renamed_id || entry.template == renamed_id)
+            .cloned()
+        {
+            return Ok(entry);
+        }
     }
     BUILTIN_TEMPLATES
         .iter()
         .find(|builtin| builtin.template_id == template)
         .map(builtin_template_catalog_entry)
         .ok_or_else(|| unknown_template_error(template, home_dir, catalog_agent_home))
+}
+
+fn renamed_agent_template_id(template_id: &str) -> Option<&'static str> {
+    RENAMED_AGENT_TEMPLATE_IDS
+        .iter()
+        .find_map(|(legacy_id, renamed_id)| (*legacy_id == template_id).then_some(*renamed_id))
 }
 
 fn resolve_prefixed_template_catalog_entry(
@@ -3458,11 +3490,11 @@ mod tests {
         );
 
         for template_id in [
-            "holon-developer",
-            "holon-github-solve",
+            "software-developer",
+            "github-solver",
             "holon-ops",
-            "holon-release",
-            "holon-reviewer",
+            "release-manager",
+            "code-reviewer",
             "office-assistant",
             "server-ops",
         ] {
@@ -3748,7 +3780,7 @@ mod tests {
     async fn local_catalog_ids_with_install_suffix_resolve_unchanged() {
         let user_home = tempdir().unwrap();
         let agent_home = tempdir().unwrap();
-        let install_id = "holon-reviewer@official";
+        let install_id = "code-reviewer@official";
 
         let user_template = templates_root_for_home(user_home.path()).join(install_id);
         fs::create_dir_all(&user_template).unwrap();
@@ -3769,10 +3801,10 @@ mod tests {
         let catalog = discover_agent_templates_catalog(Some(user_home.path()), agent_home.path());
         assert!(catalog
             .iter()
-            .any(|entry| entry.catalog_id == "agent_home:holon-reviewer@official"));
+            .any(|entry| entry.catalog_id == "agent_home:code-reviewer@official"));
 
         let user = resolve_template(
-            "user_global:holon-reviewer@official",
+            "user_global:code-reviewer@official",
             user_home.path(),
             agent_home.path(),
         )
@@ -3784,7 +3816,7 @@ mod tests {
         );
 
         let agent = resolve_template(
-            "agent_home:holon-reviewer@official",
+            "agent_home:code-reviewer@official",
             user_home.path(),
             agent_home.path(),
         )
@@ -3793,6 +3825,56 @@ mod tests {
         assert_eq!(
             agent.agents_md,
             "# Agent reviewer\n\nOfficial agent-home reviewer\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn renamed_template_ids_fall_back_without_overriding_exact_legacy_installs() {
+        let user_home = tempdir().unwrap();
+        let agent_home = tempdir().unwrap();
+        let templates = templates_root_for_home(user_home.path());
+        let renamed = templates.join("software-developer");
+        fs::create_dir_all(&renamed).unwrap();
+        fs::write(
+            renamed.join(TEMPLATE_AGENTS_FILENAME),
+            "# Software developer\n\nRenamed template\n",
+        )
+        .unwrap();
+
+        let unprefixed = resolve_template("holon-developer", user_home.path(), agent_home.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            unprefixed.agents_md,
+            "# Software developer\n\nRenamed template\n"
+        );
+
+        let prefixed = resolve_template(
+            "user_global:holon-developer",
+            user_home.path(),
+            agent_home.path(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            prefixed.agents_md,
+            "# Software developer\n\nRenamed template\n"
+        );
+
+        let legacy = templates.join("holon-developer");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(
+            legacy.join(TEMPLATE_AGENTS_FILENAME),
+            "# Legacy developer\n\nExact legacy install\n",
+        )
+        .unwrap();
+
+        let exact = resolve_template("holon-developer", user_home.path(), agent_home.path())
+            .await
+            .unwrap();
+        assert_eq!(
+            exact.agents_md,
+            "# Legacy developer\n\nExact legacy install\n"
         );
     }
 

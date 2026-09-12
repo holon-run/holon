@@ -592,11 +592,11 @@ their provenance, install mapping, and content baseline.
 {
   "catalog": [
     {
-      "catalog_id": "user_global:holon-developer",
-      "template": "holon-developer",
-      "template_id": "holon-developer",
+      "catalog_id": "user_global:software-developer",
+      "template": "software-developer",
+      "template_id": "software-developer",
       "source": "user_global",
-      "name": "Holon Developer",
+      "name": "Software Developer",
       "description": "A long-lived implementation-focused agent.",
       "included_skills": []
     }
