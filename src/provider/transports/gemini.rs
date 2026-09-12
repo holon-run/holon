@@ -458,10 +458,106 @@ fn build_gemini_tools(request: &ProviderTurnRequest) -> Vec<Value> {
             json!({
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.input_schema,
+                "parameters": gemini_safe_schema(&tool.input_schema),
             })
         }).collect::<Vec<_>>()
     })]
+}
+
+/// Gemini deserializes function-declaration `parameters` into its proto
+/// `Schema` message, so any JSON-Schema keyword outside that message is
+/// rejected with `400 INVALID_ARGUMENT` ("Unknown name ... Cannot find
+/// field"). Schemars-generated holon tool schemas routinely carry keywords
+/// such as `additionalProperties`, so lower every schema into the
+/// Gemini-supported subset before sending it.
+fn gemini_safe_schema(schema: &Value) -> Value {
+    const GEMINI_SCHEMA_FIELDS: &[&str] = &[
+        "format",
+        "description",
+        "nullable",
+        "enum",
+        "example",
+        "items",
+        "properties",
+        "required",
+        "propertyOrdering",
+        "anyOf",
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+        "minProperties",
+        "maxProperties",
+        "minimum",
+        "maximum",
+        "pattern",
+    ];
+
+    match schema {
+        Value::Object(object) => {
+            let mut lowered = serde_json::Map::new();
+            // JSON Schema allows `type` arrays such as ["string", "null"];
+            // Gemini takes a single type plus an explicit `nullable` flag.
+            let (type_value, nullable_from_type) = match object.get("type") {
+                Some(Value::Array(types)) => (
+                    types
+                        .iter()
+                        .find(|type_name| type_name.as_str() != Some("null"))
+                        .cloned(),
+                    types.iter().any(|type_name| type_name.as_str() == Some("null")),
+                ),
+                other => (other.cloned(), false),
+            };
+            if let Some(type_value) = type_value {
+                lowered.insert("type".to_string(), type_value);
+            }
+            for field in GEMINI_SCHEMA_FIELDS {
+                if let Some(value) = object.get(*field) {
+                    lowered.insert((*field).to_string(), value.clone());
+                }
+            }
+            if nullable_from_type {
+                lowered.insert("nullable".to_string(), Value::Bool(true));
+            }
+            // Gemini has no `oneOf`; `anyOf` is its supported alternative.
+            if !lowered.contains_key("anyOf") {
+                if let Some(one_of) = object.get("oneOf") {
+                    lowered.insert("anyOf".to_string(), one_of.clone());
+                }
+            }
+            if let Some(properties) = lowered.get_mut("properties").and_then(Value::as_object_mut) {
+                for value in properties.values_mut() {
+                    let lowered_value = gemini_safe_schema(value);
+                    *value = lowered_value;
+                }
+            }
+            if let Some(items_value) = lowered.get_mut("items") {
+                // Draft 07 tuple-style `items` arrays have no Gemini
+                // equivalent; keep only the first entry's schema.
+                let lowered_items = match items_value {
+                    Value::Array(entries) => entries.first().map(|first| gemini_safe_schema(first)),
+                    ref value @ Value::Object(_) => Some(gemini_safe_schema(value)),
+                    _ => None,
+                };
+                if let Some(lowered_items) = lowered_items {
+                    *items_value = lowered_items;
+                }
+            }
+            if let Some(any_of) = lowered.get_mut("anyOf").and_then(Value::as_array_mut) {
+                for variant in any_of.iter_mut() {
+                    let lowered_variant = gemini_safe_schema(variant);
+                    *variant = lowered_variant;
+                }
+            }
+            if lowered.is_empty() {
+                lowered.insert("type".to_string(), Value::String("object".to_string()));
+            }
+            Value::Object(lowered)
+        }
+        // Draft 07 boolean schemas have no Gemini equivalent.
+        Value::Bool(true) | Value::Bool(false) => json!({"type": "object"}),
+        other => other.clone(),
+    }
 }
 
 const GEMINI_TOOL_USE_ID_SEPARATOR: &str = "__holon_gemini_call_";
@@ -562,5 +658,57 @@ mod tests {
         assert_ne!(first_id, second_id);
         assert_eq!(gemini_function_response_name(&first_id), "ProbeTool");
         assert_eq!(gemini_function_response_name(&second_id), "ProbeTool");
+    }
+
+    #[test]
+    fn gemini_tool_schemas_strip_fields_gemini_rejects() {
+        let request_tools = json!({
+            "type": "object",
+            "properties": {
+                "cmd": {"type": "string", "description": "command"},
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": true,
+                    "title": "Labels",
+                },
+                "mode": {
+                    "oneOf": [
+                        {"type": "string", "enum": ["a"]},
+                        {"type": "string", "enum": ["b"]},
+                    ],
+                },
+                "maybe": {"type": ["string", "null"]},
+            },
+            "required": ["cmd"],
+            "additionalProperties": false,
+            "$schema": "http://json-schema.org/draft-07/schema#",
+        });
+
+        let lowered = gemini_safe_schema(&request_tools);
+        let lowered_text = lowered.to_string();
+        assert!(!lowered_text.contains("additionalProperties"));
+        assert!(!lowered_text.contains("$schema"));
+        assert!(!lowered_text.contains("title"));
+        assert_eq!(lowered["type"], "object");
+        assert_eq!(lowered["properties"]["labels"]["type"], "object");
+        let mode_variants = lowered["properties"]["mode"]["anyOf"]
+            .as_array()
+            .expect("oneOf should lower to anyOf");
+        assert_eq!(mode_variants.len(), 2);
+        assert_eq!(lowered["properties"]["maybe"]["type"], "string");
+        assert_eq!(lowered["properties"]["maybe"]["nullable"], true);
+    }
+
+    #[test]
+    fn gemini_tool_schemas_lower_boolean_and_tuple_schemas() {
+        assert_eq!(
+            gemini_safe_schema(&Value::Bool(true)),
+            json!({"type": "object"})
+        );
+        let tuple = gemini_safe_schema(&json!({
+            "type": "array",
+            "items": [{"type": "string"}, {"type": "number"}],
+        }));
+        assert_eq!(tuple["items"], json!({"type": "string"}));
     }
 }
