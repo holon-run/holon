@@ -66,15 +66,29 @@ pub struct MemorySearchResult {
 #[serde(rename_all = "snake_case")]
 pub struct MemorySearchIndexStatus {
     pub freshness: String,
+    /// Highest applied contiguous runtime outbox `change_seq`.
     pub cursor: i64,
+    /// Monotonic produced watermark: highest `change_seq` ever appended for
+    /// the agent. Unlike the drained-outbox maximum, it never returns to 0.
     pub high_watermark: i64,
+    /// Sequence distance `produced - applied`. Cross-agent global
+    /// autoincrement makes this an upper-bound hint only; `pending_count` is
+    /// the exact backlog metric.
     pub lag: i64,
+    /// Exact pending outbox row count for this agent.
+    #[serde(default, skip_serializing_if = "is_zero_i64")]
+    pub pending_count: i64,
+    /// Age of the oldest pending outbox row, the real propagation delay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_pending_age_ms: Option<i64>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub indexing_needed: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub results_may_be_incomplete: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub consumption_was_limited: bool,
+    /// Failures hit by this index handle's current consume pass. Transient
+    /// by design; not a durable health history.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub skipped_error_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -367,7 +381,20 @@ fn get_memory_with_limit(
         return Ok(Some(memory_get_result(document, max_chars)));
     }
 
-    let index = ensure_memory_index_current(storage, active_workspace_id)?;
+    let index = match ensure_memory_index_current(storage, active_workspace_id) {
+        Ok(index) => index,
+        Err(error) => {
+            // Point lookups must not fail hard because the pre-read refresh
+            // hit a transient failure (for example a locked index). Query the
+            // current snapshot; search status surfaces the retained backlog.
+            tracing::warn!(
+                source_ref,
+                error = %error,
+                "memory index refresh failed before lookup; querying current index snapshot"
+            );
+            MemoryIndex::open(storage)?
+        }
+    };
     index.get(source_ref, max_chars, &agent_id, active_workspace_id)
 }
 
@@ -412,22 +439,30 @@ fn ensure_memory_indexes_current(
     log_legacy_index_deprecation(storage);
     let mut index = MemoryIndex::open(storage)?;
     let mut refreshed_agent_ids = BTreeSet::new();
-    refresh_memory_index_for_storage(
-        &mut index,
-        storage,
-        active_workspace_id,
-        MEMORY_INDEX_OUTBOX_CONSUME_LIMIT,
-    )?;
+    let mut first_error: Option<anyhow::Error> = None;
+    let mut refresh = |index: &mut MemoryIndex, agent_storage: &AppStorage| {
+        if let Err(error) = refresh_memory_index_for_storage(
+            index,
+            agent_storage,
+            active_workspace_id,
+            MEMORY_INDEX_OUTBOX_CONSUME_LIMIT,
+        ) {
+            // One agent's failed consume must not block refreshing the other
+            // agents in this read path; report the first failure after all.
+            if first_error.is_none() {
+                first_error = Some(error);
+            }
+        }
+    };
+    refresh(&mut index, storage);
     refreshed_agent_ids.insert(storage_agent_id(storage));
     for agent_storage in agent_storages {
         if refreshed_agent_ids.insert(storage_agent_id(agent_storage)) {
-            refresh_memory_index_for_storage(
-                &mut index,
-                agent_storage,
-                active_workspace_id,
-                MEMORY_INDEX_OUTBOX_CONSUME_LIMIT,
-            )?;
+            refresh(&mut index, agent_storage);
         }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
     }
     Ok(index)
 }
@@ -782,6 +817,26 @@ impl MemoryIndex {
         upsert_index_meta_tx(&transaction, &agent_id, Some(Utc::now()))?;
         transaction.commit()?;
         clear_memory_index_dirty(storage)?;
+        if runtime_high_watermark > 0 {
+            // The rebuild re-collected every source up to this watermark, so
+            // outbox rows at or below it are acknowledged. Deleting them is
+            // best-effort: a failure or crash here leaves rows the consume
+            // loop's compensating GC removes later, and pending metrics
+            // already exclude them because the cursor jumped past them.
+            if let Some(runtime_db) = runtime_db.as_ref() {
+                if let Err(error) = runtime_db
+                    .runtime_index_outbox()
+                    .delete_acknowledged_through(&agent_id, runtime_high_watermark)
+                {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        through_change_seq = runtime_high_watermark,
+                        error = %error,
+                        "failed to delete memory index outbox rows acknowledged by rebuild"
+                    );
+                }
+            }
+        }
         Ok(())
     }
 
@@ -951,47 +1006,74 @@ impl MemoryIndex {
             .runtime_index_outbox()
             .read_after(&agent_id, cursor, limit)?;
         let row_count = rows.len();
-        let mut last_change_seq = cursor;
+        // The cursor only advances over the contiguous acknowledged prefix:
+        // each row must apply successfully and advance the cursor inside one
+        // index transaction before it counts as consumed.
+        let mut last_successful_seq = cursor;
+        let mut consume_error: Option<anyhow::Error> = None;
         for row in rows {
-            last_change_seq = last_change_seq.max(row.change_seq);
             let source = pending_source_from_outbox_row(&row);
             let transaction = self.connection.transaction()?;
-            if let Err(error) = apply_pending_source_tx(&transaction, storage, &source) {
-                self.last_outbox_error_count += 1;
-                tracing::warn!(
-                    agent_id = %row.agent_id,
-                    change_seq = row.change_seq,
-                    source_kind = %row.source_kind,
-                    source_ref = %row.source_ref,
-                    error = %error,
-                    "skipping failed memory index outbox row"
-                );
+            let applied = apply_pending_source_tx(&transaction, storage, &source).and_then(|()| {
+                upsert_cursor_tx(
+                    &transaction,
+                    &runtime_id,
+                    &agent_id,
+                    MEMORY_INDEX_OUTBOX_CURSOR,
+                    row.change_seq,
+                )
+            });
+            match applied {
+                Ok(()) => match transaction.commit() {
+                    Ok(()) => {
+                        last_successful_seq = row.change_seq;
+                    }
+                    Err(error) => {
+                        consume_error = Some(error.into());
+                        break;
+                    }
+                },
+                Err(error) => {
+                    consume_error = Some(error.context(format!(
+                        "agent_id={} change_seq={} source_kind={} source_ref={}",
+                        row.agent_id, row.change_seq, row.source_kind, row.source_ref
+                    )));
+                    break;
+                }
             }
-            upsert_cursor_tx(
-                &transaction,
-                &runtime_id,
-                &agent_id,
-                MEMORY_INDEX_OUTBOX_CURSOR,
-                last_change_seq,
-            )?;
-            transaction.commit()?;
         }
 
-        // Delete consumed outbox rows to keep the table bounded.  The cursor
-        // already advanced past every row we processed (including failures
-        // which are skipped), so deleting through `last_change_seq` is safe.
-        if last_change_seq > cursor {
+        // Acknowledged rows are those at or below the committed cursor: rows
+        // applied this round, plus any rows a crash between apply and delete
+        // or a full rebuild cursor jump left behind. A failed row and
+        // everything after it stay in the runtime outbox as a durable retry
+        // queue; only rows at or below `last_successful_seq` are ever
+        // deleted.
+        if last_successful_seq > 0 {
             if let Err(error) = runtime_db
                 .runtime_index_outbox()
-                .delete_through(&agent_id, last_change_seq)
+                .delete_acknowledged_through(&agent_id, last_successful_seq)
             {
                 tracing::warn!(
                     agent_id = %agent_id,
-                    through_change_seq = last_change_seq,
+                    through_change_seq = last_successful_seq,
                     error = %error,
                     "failed to delete consumed memory index outbox rows"
                 );
             }
+        }
+        if let Some(error) = &consume_error {
+            self.last_outbox_error_count += 1;
+            tracing::warn!(
+                agent_id = %agent_id,
+                through_change_seq = last_successful_seq,
+                error = %(error as &dyn std::fmt::Display),
+                "memory index outbox apply failed; retaining rows for ordered retry"
+            );
+            // Head-of-line blocking is intentional: the consumer stops at the
+            // first failure so the applied cursor never crosses an unapplied
+            // row and no row is dropped before it is proven applied.
+            return Err(consume_error.unwrap());
         }
         self.last_outbox_consume_reached_limit = limit > 0 && row_count >= limit;
         Ok(())
@@ -1049,6 +1131,8 @@ impl MemoryIndex {
                 cursor: 0,
                 high_watermark: 0,
                 lag: 0,
+                pending_count: 0,
+                oldest_pending_age_ms: None,
                 indexing_needed,
                 results_may_be_incomplete: indexing_needed,
                 consumption_was_limited: false,
@@ -1060,12 +1144,25 @@ impl MemoryIndex {
         let cursor = self.cursor(&runtime_id, agent_id, MEMORY_INDEX_OUTBOX_CURSOR)?;
         let high_watermark = runtime_db
             .runtime_index_outbox()
-            .high_watermark_for_agent(agent_id)?;
+            .produced_watermark_for_agent(agent_id)?;
+        let pending_count = runtime_db
+            .runtime_index_outbox()
+            .pending_count_for_agent(agent_id, cursor)?;
+        let oldest_pending_age_ms = match runtime_db
+            .runtime_index_outbox()
+            .oldest_pending_created_at_for_agent(agent_id, cursor)?
+        {
+            Some(oldest_pending_at) if pending_count > 0 => {
+                Some((Utc::now() - oldest_pending_at).num_milliseconds().max(0))
+            }
+            _ => None,
+        };
         let lag = (high_watermark - cursor).max(0);
         let freshness = if !memory_index_path(storage).exists() {
             "missing"
         } else if memory_index_is_dirty(storage)
             || lag > 0
+            || pending_count > 0
             || has_stale_projection
             || has_pending_sources
             || lacks_full_backfill
@@ -1080,6 +1177,8 @@ impl MemoryIndex {
             cursor,
             high_watermark,
             lag,
+            pending_count,
+            oldest_pending_age_ms,
             indexing_needed,
             results_may_be_incomplete: indexing_needed,
             consumption_was_limited: self.last_outbox_consume_reached_limit && lag > 0,
@@ -3107,6 +3206,10 @@ fn is_zero(value: &usize) -> bool {
     *value == 0
 }
 
+fn is_zero_i64(value: &i64) -> bool {
+    *value == 0
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
@@ -3982,6 +4085,178 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn consume_runtime_outbox_stops_at_failed_row_and_retains_backlog() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+
+        // The middle row must fail projection: `agent_memory:self` points at
+        // a directory, so reading the source document returns a real error.
+        let self_memory_dir = agent_memory_self_path(storage.data_dir());
+        std::fs::create_dir_all(&self_memory_dir).unwrap();
+
+        let noop = |id: String| RuntimeIndexChange {
+            agent_id: "default".into(),
+            source_kind: "brief".into(),
+            source_id: id.clone(),
+            source_ref: format!("brief:{id}"),
+            operation: RuntimeIndexOperation::Upsert,
+            source_updated_at: Some(Utc::now()),
+            reason: "test_outbox_retry".into(),
+        };
+        let failing = RuntimeIndexChange {
+            agent_id: "default".into(),
+            source_kind: "agent_memory_markdown".into(),
+            source_id: "self".into(),
+            source_ref: "agent_memory:self".into(),
+            operation: RuntimeIndexOperation::Upsert,
+            source_updated_at: Some(Utc::now()),
+            reason: "test_outbox_retry".into(),
+        };
+        runtime_db
+            .runtime_index_outbox()
+            .append_changes(&[noop("noop-1".into()), failing, noop("noop-2".into())])
+            .unwrap();
+
+        let mut index = MemoryIndex::open(&storage).unwrap();
+        let error = index
+            .consume_runtime_outbox(&storage, 10)
+            .expect_err("middle row apply must fail");
+        assert!(error.to_string().contains("agent_memory:self"));
+
+        // The cursor stops at the acknowledged contiguous prefix.
+        let runtime_id = runtime_index_runtime_id(&runtime_db);
+        let cursor = index
+            .cursor(&runtime_id, "default", MEMORY_INDEX_OUTBOX_CURSOR)
+            .unwrap();
+        assert_eq!(cursor, 1);
+
+        // The failed row and its successor stay pending for ordered retry.
+        let outbox = runtime_db.runtime_index_outbox();
+        let remaining: Vec<i64> = outbox
+            .read_after("default", 0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|row| row.change_seq)
+            .collect();
+        assert_eq!(remaining, vec![2, 3]);
+        assert_eq!(
+            outbox.pending_count_for_agent("default", cursor).unwrap(),
+            2
+        );
+        assert_eq!(outbox.produced_watermark_for_agent("default").unwrap(), 3);
+        assert!(outbox
+            .oldest_pending_created_at_for_agent("default", cursor)
+            .unwrap()
+            .is_some());
+
+        // Clear the failure and retry: replay resumes at the failed row, the
+        // applied prefix is not re-processed, and the backlog fully drains.
+        std::fs::remove_dir(&self_memory_dir).unwrap();
+        index.consume_runtime_outbox(&storage, 10).unwrap();
+        let status = index.index_status(&storage, "default").unwrap();
+        assert_eq!(status.cursor, 3);
+        assert_eq!(status.high_watermark, 3);
+        assert_eq!(status.lag, 0);
+        assert_eq!(status.pending_count, 0);
+        assert_eq!(
+            outbox
+                .pending_count_for_agent("default", status.cursor)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            outbox
+                .oldest_pending_created_at_for_agent("default", status.cursor)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn memory_search_status_keeps_produced_watermark_after_drain() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let changes: Vec<_> = (0..2)
+            .map(|i| RuntimeIndexChange {
+                agent_id: "default".into(),
+                source_kind: "brief".into(),
+                source_id: format!("wm-{i}"),
+                source_ref: format!("brief:wm-{i}"),
+                operation: RuntimeIndexOperation::Upsert,
+                source_updated_at: Some(Utc::now()),
+                reason: "test_watermark".into(),
+            })
+            .collect();
+        runtime_db
+            .runtime_index_outbox()
+            .append_changes(&changes)
+            .unwrap();
+
+        let status = refresh_memory_index_bounded(&storage, None, 100).unwrap();
+        // Draining the outbox must not reset the watermark to 0: `lag` and
+        // freshness stay meaningful after row GC.
+        assert_eq!(status.cursor, 2);
+        assert_eq!(status.high_watermark, 2);
+        assert_eq!(status.lag, 0);
+        assert_eq!(status.pending_count, 0);
+        assert!(status.oldest_pending_age_ms.is_none());
+    }
+
+    #[test]
+    fn memory_search_status_reports_exact_pending_backlog() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let runtime_db = RuntimeDb::open_and_migrate(
+            storage.runtime_dir().join("state/runtime.sqlite"),
+            storage.runtime_dir().join("state/runtime.lock"),
+        )
+        .unwrap();
+        let consume_limit = 2;
+        let changes = (0..=consume_limit)
+            .map(|index| RuntimeIndexChange {
+                agent_id: "default".into(),
+                source_kind: "brief".into(),
+                source_id: format!("pending-{index}"),
+                source_ref: format!("brief:pending-{index}"),
+                operation: RuntimeIndexOperation::Upsert,
+                source_updated_at: Some(Utc::now()),
+                reason: "test_pending_backlog".into(),
+            })
+            .collect::<Vec<_>>();
+        runtime_db
+            .runtime_index_outbox()
+            .append_changes(&changes)
+            .unwrap();
+
+        let mut index = MemoryIndex::open(&storage).unwrap();
+        index
+            .consume_runtime_outbox(&storage, consume_limit)
+            .unwrap();
+        let status = index.index_status(&storage, "default").unwrap();
+
+        assert_eq!(status.cursor, consume_limit as i64);
+        assert_eq!(status.high_watermark, (consume_limit + 1) as i64);
+        assert_eq!(status.lag, 1);
+        assert_eq!(status.pending_count, 1);
+        let oldest_pending_age_ms = status.oldest_pending_age_ms.expect("one pending row");
+        assert!(oldest_pending_age_ms >= 0);
+        assert!(status.consumption_was_limited);
     }
 
     #[test]

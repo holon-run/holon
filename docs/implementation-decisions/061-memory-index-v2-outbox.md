@@ -30,7 +30,17 @@ migrating content into the new ref-discovery schema.
 
 `index_status` reports stale/incomplete results when the current projection lacks
 any required full-backfill checkpoint, even if its runtime outbox cursor is
-caught up. It also reports when bounded outbox consumption hit its limit and
-when individual outbox rows were skipped because their source could not be
-projected. A failed row advances the outbox cursor after logging so one bad
-source cannot permanently stall discovery for later refs.
+caught up. It also reports when bounded outbox consumption hit its limit
+(`consumption_was_limited`) and how many rows the current consume attempt
+failed to apply (`skipped_error_count`).
+
+Outbox consumption is at-least-once with contiguous-prefix acknowledgment: the
+applied cursor advances only inside the memory index transaction that projects
+a row, a failed row and everything after it stay in the runtime outbox as a
+durable retry queue, and the daemon backs off a persistently failing agent.
+Rows are deleted only after the cursor has covered them, so a projection
+failure can delay discovery but never silently drop refs. `index_status`
+additionally tracks a monotonic per-agent produced watermark that survives row
+GC, and counts pending rows only above the applied cursor: rows at or below it
+are acknowledged garbage awaiting GC, including rows a full rebuild jumped the
+cursor past.

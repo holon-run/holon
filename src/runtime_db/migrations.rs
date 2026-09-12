@@ -3474,6 +3474,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_timer_wakes_one_pending_per_timer
   ON timer_wakes(timer_id) WHERE status = 'pending';
 "#,
     },
+    Migration {
+        version: 63,
+        name: "runtime_index_outbox_watermarks",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS runtime_index_outbox_watermarks (
+  agent_id TEXT PRIMARY KEY,
+  produced_change_seq INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

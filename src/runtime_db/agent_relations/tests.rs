@@ -682,7 +682,7 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
         5,
         Some(backup_path.clone()),
     )?;
-    assert_eq!(migrated.current_schema_version()?, 62);
+    assert_eq!(migrated.current_schema_version()?, 63);
     assert_eq!(applied.backup_path.as_deref(), Some(backup_path.as_str()));
     Ok(())
 }

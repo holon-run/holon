@@ -1210,9 +1210,19 @@ impl RuntimeHost {
 
     const DAEMON_INDEXER_BATCH: usize = 500;
     const DAEMON_INDEXER_FALLBACK_POLL: Duration = Duration::from_secs(60);
+    /// First retry delay for a failing memory-index agent before exponential
+    /// growth.
+    const MEMORY_INDEXER_RETRY_BASE: Duration = Duration::from_millis(500);
+    /// Upper bound for a failing agent's retry delay.
+    const MEMORY_INDEXER_RETRY_MAX: Duration = Duration::from_secs(30);
 
     async fn run_daemon_memory_indexer(self) {
         use crate::memory::{memory_index_agent_ids_with_pending, refresh_memory_index_bounded};
+        // Process-local per-agent retry backoff. A persistently failing agent
+        // (for example a locked index) must not be retried on every global
+        // notify driven by other agents' writes.
+        let mut agent_retry_not_before: HashMap<String, (tokio::time::Instant, u32)> =
+            HashMap::new();
         loop {
             if self.inner.daemon_indexer_token.is_cancelled() {
                 break;
@@ -1226,7 +1236,7 @@ impl RuntimeHost {
                 Ok(ids) => ids,
                 Err(error) => {
                     tracing::warn!(error = %error, "daemon memory indexer: failed to query pending agents");
-                    self.wait_daemon_indexer_round().await;
+                    self.wait_daemon_indexer_round(None).await;
                     continue;
                 }
             };
@@ -1234,7 +1244,7 @@ impl RuntimeHost {
                 Ok(storage) => storage,
                 Err(error) => {
                     tracing::warn!(error = %error, "daemon memory indexer: failed to open shared index");
-                    self.wait_daemon_indexer_round().await;
+                    self.wait_daemon_indexer_round(None).await;
                     continue;
                 }
             };
@@ -1244,7 +1254,7 @@ impl RuntimeHost {
                 Ok(ids) => ids.into_iter().collect::<std::collections::BTreeSet<_>>(),
                 Err(error) => {
                     tracing::warn!(error = %error, "daemon memory indexer: failed to query pending source agents");
-                    self.wait_daemon_indexer_round().await;
+                    self.wait_daemon_indexer_round(None).await;
                     continue;
                 }
             };
@@ -1255,6 +1265,11 @@ impl RuntimeHost {
 
             let mut did_work = false;
             for agent_id in &agent_ids {
+                if let Some((not_before, _)) = agent_retry_not_before.get(agent_id) {
+                    if tokio::time::Instant::now() < *not_before {
+                        continue;
+                    }
+                }
                 let storage = match self.agent_storage(agent_id) {
                     Ok(storage) => storage,
                     Err(error) => {
@@ -1272,6 +1287,7 @@ impl RuntimeHost {
                 .await;
                 match result {
                     Ok(Ok(status)) => {
+                        agent_retry_not_before.remove(agent_id);
                         did_work |= status.lag > 0
                             || status.consumption_was_limited
                             // A successful rebuild consumes every pending source
@@ -1286,18 +1302,34 @@ impl RuntimeHost {
                         );
                     }
                     Ok(Err(error)) => {
+                        let delay = Self::memory_indexer_retry_delay(
+                            agent_retry_not_before
+                                .get(agent_id)
+                                .map(|(_, attempts)| *attempts)
+                                .unwrap_or(0),
+                        );
                         tracing::warn!(
                             agent_id = %agent_id,
+                            retry_in_ms = delay.as_millis() as u64,
                             error = %error,
-                            "daemon memory indexer: refresh failed"
+                            "daemon memory indexer: refresh failed; backing off agent"
                         );
+                        Self::back_off_memory_indexer_agent(&mut agent_retry_not_before, agent_id);
                     }
                     Err(error) => {
+                        let delay = Self::memory_indexer_retry_delay(
+                            agent_retry_not_before
+                                .get(agent_id)
+                                .map(|(_, attempts)| *attempts)
+                                .unwrap_or(0),
+                        );
                         tracing::warn!(
                             agent_id = %agent_id,
+                            retry_in_ms = delay.as_millis() as u64,
                             error = %error,
-                            "daemon memory indexer: task failed"
+                            "daemon memory indexer: task failed; backing off agent"
                         );
+                        Self::back_off_memory_indexer_agent(&mut agent_retry_not_before, agent_id);
                     }
                 }
             }
@@ -1305,16 +1337,57 @@ impl RuntimeHost {
             if did_work {
                 tokio::task::yield_now().await;
             } else {
-                self.wait_daemon_indexer_round().await;
+                let next_retry_at = agent_retry_not_before
+                    .values()
+                    .map(|(not_before, _)| *not_before)
+                    .min();
+                self.wait_daemon_indexer_round(next_retry_at).await;
             }
         }
     }
 
-    async fn wait_daemon_indexer_round(&self) {
+    /// Exponential retry delay with a cap and ±25% jitter so concurrent
+    /// failing agents do not retry in lockstep.
+    fn memory_indexer_retry_delay(attempts: u32) -> Duration {
+        let shift = attempts.min(8);
+        let exponential = Self::MEMORY_INDEXER_RETRY_BASE
+            .saturating_mul(1u32.checked_shl(shift).unwrap_or(u32::MAX));
+        let capped = exponential.min(Self::MEMORY_INDEXER_RETRY_MAX);
+        let jitter_unit = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.subsec_nanos() % 1000)
+            .unwrap_or(0) as f64;
+        let factor = 0.75 + jitter_unit / 2000.0;
+        Duration::from_secs_f64(capped.as_secs_f64() * factor)
+    }
+
+    fn back_off_memory_indexer_agent(
+        agent_retry_not_before: &mut HashMap<String, (tokio::time::Instant, u32)>,
+        agent_id: &str,
+    ) {
+        let attempts = agent_retry_not_before
+            .get(agent_id)
+            .map(|(_, attempts)| *attempts)
+            .unwrap_or(0);
+        let delay = Self::memory_indexer_retry_delay(attempts);
+        agent_retry_not_before.insert(
+            agent_id.to_string(),
+            (tokio::time::Instant::now() + delay, attempts + 1),
+        );
+    }
+
+    async fn wait_daemon_indexer_round(&self, next_retry_at: Option<tokio::time::Instant>) {
+        let retry_wait = async {
+            match next_retry_at {
+                Some(at) => tokio::time::sleep_until(at).await,
+                None => std::future::pending::<()>().await,
+            }
+        };
         tokio::select! {
             _ = self.inner.daemon_indexer_token.cancelled() => {}
             _ = self.inner.memory_index_notify.notified() => {}
             _ = tokio::time::sleep(Self::DAEMON_INDEXER_FALLBACK_POLL) => {}
+            _ = retry_wait => {}
         }
     }
 
@@ -5998,6 +6071,31 @@ fn child_has_active_lifecycle_blockers(storage: &AppStorage, child_agent_id: &st
             condition.status == crate::types::WaitConditionStatus::Active
                 && condition.kind == crate::types::WaitConditionKind::Task
         }))
+}
+
+#[cfg(test)]
+mod memory_indexer_retry_tests {
+    use super::*;
+
+    #[test]
+    fn memory_indexer_retry_delay_stays_within_jittered_bounds() {
+        for attempts in 0..12u32 {
+            let delay = RuntimeHost::memory_indexer_retry_delay(attempts);
+            let exponential_ms =
+                500u64.saturating_mul(1u64.checked_shl(attempts).unwrap_or(u64::MAX));
+            let expected_ms = exponential_ms.min(30_000);
+            assert!(
+                delay.as_millis() as u64 >= expected_ms * 3 / 4,
+                "attempt {attempts}: delay {:?} below lower bound {expected_ms}ms",
+                delay
+            );
+            assert!(
+                delay.as_millis() as u64 <= expected_ms * 5 / 4 + 1,
+                "attempt {attempts}: delay {:?} above upper bound {expected_ms}ms",
+                delay
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -648,7 +648,10 @@ pub(crate) fn insert_runtime_index_changes_tx(
     tx: &Transaction<'_>,
     changes: &[RuntimeIndexChange],
 ) -> Result<()> {
+    let mut agent_ids = Vec::new();
     for change in changes {
+        // Outbox inserts and the produced watermark advance below share one
+        // transaction, so a committed append always advances its watermark.
         tx.execute(
             "INSERT INTO runtime_index_outbox (
                 agent_id, source_kind, source_id, source_ref, operation,
@@ -665,7 +668,37 @@ pub(crate) fn insert_runtime_index_changes_tx(
                 timestamp(Utc::now()),
             ],
         )?;
+        if !agent_ids.contains(&change.agent_id) {
+            agent_ids.push(change.agent_id.clone());
+        }
     }
+    for agent_id in &agent_ids {
+        update_runtime_index_outbox_watermark_tx(tx, agent_id)?;
+    }
+    Ok(())
+}
+
+/// Advance the agent's monotonic produced watermark to the highest appended
+/// `change_seq`. Deleting consumed outbox rows never lowers this value, which
+/// keeps `produced - applied` meaningful after the outbox is drained.
+fn update_runtime_index_outbox_watermark_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+    let produced: i64 = tx.query_row(
+        "SELECT COALESCE(MAX(change_seq), 0) FROM runtime_index_outbox WHERE agent_id = ?1",
+        params![agent_id],
+        |row| row.get(0),
+    )?;
+    tx.execute(
+        "INSERT INTO runtime_index_outbox_watermarks (
+            agent_id, produced_change_seq, updated_at
+         ) VALUES (?1, ?2, ?3)
+         ON CONFLICT(agent_id) DO UPDATE SET
+            produced_change_seq = MAX(
+                runtime_index_outbox_watermarks.produced_change_seq,
+                excluded.produced_change_seq
+            ),
+            updated_at = excluded.updated_at",
+        params![agent_id, produced, timestamp(Utc::now())],
+    )?;
     Ok(())
 }
 
