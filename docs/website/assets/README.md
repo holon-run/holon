@@ -7,6 +7,14 @@ draft: true
 Static files used by the documentation shell. This directory is intentionally
 excluded from mdorigin-managed indexes.
 
+## Product article cover
+
+`holon-agent-workspace-cover.webp` is an AI-generated conceptual illustration
+selected by the operator for the Chinese product introduction on 2026-09-12.
+It depicts Agent panels and task states, not a screenshot of the Holon UI.
+The image is a full-frame 1672×941 WebP export of the second generated cover,
+`holon-blog-agent-workspace-cover-v2.png`, with no cropping.
+
 ## Runtime architecture
 
 `../.tools/render-runtime-diagram.py` generates both languages from shared

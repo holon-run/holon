@@ -6,6 +6,8 @@ order: 10
 
 # Holon 是什么：让多个 Agent 在你的工作环境里持续做事
 
+<img src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="概念插画：多个 Agent 在同一软件工作空间中，各自管理任务与工作状态。" decoding="async" fetchpriority="high">
+
 > 中文审阅稿，未发布。文中的任务指令用于说明使用方式，实际实践见团队案例。
 
 Holon 是供多个 Agent 持续工作的本地工作台。把它运行在自己的电脑或远程开发机上，你可以让不同 Agent 负责开发、审阅、文档和运维，通过终端或浏览器交代工作、查看进展，在需要时介入。

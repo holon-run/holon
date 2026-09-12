@@ -177,7 +177,4 @@ Start locally, keep the first workflow bounded, and let Holon preserve the work 
 - [Reference](./reference/)
   <!-- mdorigin:index kind=directory -->
 
-- [dist](./dist/)
-  <!-- mdorigin:index kind=directory -->
-
 <!-- INDEX:END -->
