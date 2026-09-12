@@ -12,10 +12,6 @@ Holon 是供多个 Agent 持续工作的本地工作台。把它运行在自己�
 
 Agent 使用那台机器上的项目和工具。你可以交给它一次修改，也可以让它长期负责一类工作：遇到需要等待的测试、反馈或人工确认，先保存进度，条件满足后再继续。
 
-<img src="/assets/holon-tour-agents.webp" width="1600" height="1000" alt="Holon Web GUI 演示：左侧列出六个不同职责的 Agent，中间是 reviewer 的待确认审阅范围，右侧展示其当前工作、工作区与 Skills。" decoding="async">
-
-Web GUI 界面演示，使用可重建的本地测试数据，非真实工作案例。六个 Agent 分别负责开发、文档、增长、运维、发布和审阅；选中的 reviewer 正等待确认审阅范围，右侧可查看它的工作区与 Skills。
-
 ## 为什么要有这样一个工作台？
 
 写代码、查资料、运行命令，已经有很多好用的 Agent 工具。我们做 Holon，关注的是这些能力怎样成为日常工作的一部分：负责审阅的 Agent 能不能保留它的职责和约定？一项工作停下来之后，能不能找到它在等什么？开发环境在远程机器上时，能不能换一个操作入口，继续使用原来的 Agent 和项目？
@@ -46,7 +42,7 @@ Agent 进入项目，阅读变更，调用本地工具执行检查。对于需�
 
 <img src="/assets/holon-tour-review-work.webp" width="1600" height="1000" alt="Web GUI 演示中的 reviewer 工作项详情：审阅计划、三项检查清单和等待操作者确认范围的原因。" loading="lazy" decoding="async">
 
-同一组本地演示数据中的工作项详情。计划、检查清单和等待原因单独保存；这里等待的是范围确认，并不表示审阅已经完成，也不包含合并或发布授权。
+真实 Web GUI 配合本地模拟 API 的界面演示，使用可重建的测试数据，并非完整 Runtime 的实际工作记录。图中展示 reviewer 的计划、检查清单和等待原因；这里等待的是范围确认，不表示审阅已经完成，也不包含合并或发布授权。
 
 如果审阅还要跟随 CI 或新提交继续，需另行配置 GitHub 事件接入。没有接入也可以先使用：由你把结果或新的要求交给 Agent，再继续处理。
 
@@ -76,12 +72,9 @@ Holon 的后台 Runtime 管理 Agent 的执行和工作状态，终端 TUI 与 W
 
 这对远程开发很直接：编译器、仓库和测试环境已经在开发机上，就让 Agent 在那里运行。你从浏览器查看结果，或通过终端继续交代要求，连接的仍是同一个后台。
 
-<picture>
-<source media="(max-width: 600px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="610">
-<img src="/assets/runtime-architecture-zh.png" width="1100" height="520" alt="终端 TUI 与 Web UI 连接同一个常驻 Holon Runtime；Agent 在运行 Runtime 的机器上使用工作区与工具链。Mobile 虚线入口为未来构想。" loading="lazy" decoding="async">
-</picture>
+<img class="article-architecture" src="/assets/runtime-architecture-zh-narrow.png" width="480" height="550" alt="终端 TUI 与 Web UI 连接同一个常驻 Holon Runtime。Runtime 管理 Agent、工作项与等待唤醒，在宿主机上使用工作区、文件和工具链。" loading="lazy" decoding="async">
 
-图中实线表示现有入口；Mobile 是未来构想，不是已提供的独立客户端。后台与宿主机需要保持可用，关闭客户端和关闭运行环境是两回事。
+后台与宿主机需要保持可用，关闭客户端和关闭运行环境是两回事。图中的机器边界说明运行位置，不代表额外的权限隔离。
 
 这里的“本地”指运行 Holon 的那台机器，可以是笔记本，也可以是远程服务器。你决定项目、工具和工作记录放在哪里。
 

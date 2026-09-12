@@ -73,10 +73,10 @@ In daemon mode, Holon Runtime holds agents, work items, and waiting state. TUI a
 
 </div>
 <picture class="home-architecture">
-<source media="(max-width: 600px)" srcset="/assets/runtime-architecture-en-narrow.png" width="480" height="670">
-<img src="/assets/runtime-architecture-en.png" width="1100" height="600" alt="TUI and Web UI connect to one persistent Holon Runtime, managing agents, work items and wait/wake with local workspaces and tools. Dashed Mobile UI is a future concept." loading="lazy" decoding="async">
+<source media="(max-width: 1100px)" srcset="/assets/runtime-architecture-en-narrow.png" width="480" height="550">
+<img src="/assets/runtime-architecture-en.png" width="1200" height="350" alt="TUI and Web UI connect to one persistent Holon Runtime. The runtime manages agents, work items and wait/wake, using workspaces, files and toolchains on its host." loading="lazy" decoding="async">
 </picture>
-<p class="home-product__caption">Architecture overview · Solid lines: existing interfaces. Dashed: future concept, not available or committed. Execution requires the daemon and host to stay running; this diagram does not imply additional permission isolation.</p>
+<p class="home-product__caption">Execution requires the daemon and host to stay running. The machine boundary shows where work runs, not additional permission isolation.</p>
 </section>
 
 <section class="home-section home-proof">

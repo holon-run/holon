@@ -538,12 +538,29 @@ main:has(.home-page) .catalog-page {
   display: block;
 }
 
+.home-product .home-section__intro {
+  margin-bottom: 1.5rem;
+}
+
 .home-architecture img {
   display: block;
   width: 100%;
   height: auto;
-  border: 1px solid var(--home-line);
-  border-radius: 16px;
+}
+
+img.article-architecture {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  height: auto;
+  margin-inline: auto;
+}
+
+@media (max-width: 1100px) {
+  .home-architecture {
+    max-width: 480px;
+    margin-inline: auto;
+  }
 }
 
 .home-product__caption {

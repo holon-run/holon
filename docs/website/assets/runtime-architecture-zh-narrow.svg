@@ -1,36 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="480" height="610" viewBox="0 0 480 610" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="550" viewBox="0 0 480 550" role="img">
 <title>Holon Runtime · 常驻后台与多端连接</title>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0L6 3L0 6" fill="none" stroke="#285fa7" stroke-width="1.3"/></marker></defs>
-<rect width="480" height="610" fill="#fff"/>
+<rect width="480" height="550" fill="#fff"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
-<text x="24" y="32" font-size="15" fill="#536b87" font-weight="500" text-anchor="start">连接入口</text>
-<rect x="24" y="51" width="128" height="58" rx="5" fill="#fff" stroke="#b8c6d6" stroke-width="1.3"/>
-<text x="88.0" y="75" font-size="18" fill="#183457" font-weight="500" text-anchor="middle">TUI</text>
-<text x="88.0" y="97" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">终端</text>
-<path d="M88.0 109V133" fill="none" stroke="#285fa7" stroke-width="1.2"/>
-<rect x="176" y="51" width="128" height="58" rx="5" fill="#fff" stroke="#b8c6d6" stroke-width="1.3"/>
-<text x="240.0" y="75" font-size="18" fill="#183457" font-weight="500" text-anchor="middle">Web UI</text>
-<text x="240.0" y="97" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">浏览器</text>
-<path d="M240.0 109V133" fill="none" stroke="#285fa7" stroke-width="1.2"/>
-<rect x="328" y="51" width="128" height="58" rx="5" fill="#fff" stroke="#b8c6d6" stroke-width="1.3" stroke-dasharray="6 5"/>
-<text x="392.0" y="75" font-size="18" fill="#536b87" font-weight="500" text-anchor="middle">Mobile UI</text>
-<text x="392.0" y="97" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">未来构想</text>
-<path d="M392.0 109V133" fill="none" stroke="#285fa7" stroke-width="1.2" stroke-dasharray="6 5"/>
-<path d="M88.0 133H240.0" fill="none" stroke="#285fa7" stroke-width="1.2"/>
-<path d="M240.0 133H392.0" fill="none" stroke="#285fa7" stroke-width="1.2" stroke-dasharray="6 5"/>
-<rect x="16" y="154" width="448" height="438" rx="6" fill="#f8fafc" stroke="#b8c6d6" stroke-width="1.3"/>
-<text x="36" y="183" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">你的机器 / 服务器</text>
-<path d="M240.0 133V210" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
-<rect x="36" y="210" width="408" height="248" rx="5" fill="#fff" stroke="#9ab1cd" stroke-width="1.3"/>
-<text x="58" y="244" font-size="24" fill="#183457" font-weight="500" text-anchor="start">Holon Runtime</text>
-<text x="58" y="270" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">常驻后台 · daemon 模式</text>
-<text x="58" y="305" font-size="18" fill="#285fa7" font-weight="500" text-anchor="start">Agents</text>
-<text x="58" y="327" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">长期身份与职责</text>
-<text x="58" y="359" font-size="18" fill="#285fa7" font-weight="500" text-anchor="start">WorkItems</text>
-<text x="58" y="381" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">目标、进度与结果</text>
-<text x="58" y="413" font-size="18" fill="#285fa7" font-weight="500" text-anchor="start">Wait / Wake</text>
-<text x="58" y="435" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">等待条件与工作续接</text>
-<path d="M240.0 458V504" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
-<text x="240.0" y="527" font-size="18" fill="#183457" font-weight="500" text-anchor="middle">工作区 · 文件 · 工具链</text>
-<text x="240.0" y="548" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">在明确授权范围内执行</text>
+<text x="32" y="28" font-size="20" fill="#536b87" font-weight="500" text-anchor="start">操作入口</text>
+<rect x="32" y="46" width="192" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
+<text x="128.0" y="71" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">TUI</text>
+<text x="128.0" y="93" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">终端</text>
+<rect x="256" y="46" width="192" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
+<text x="352.0" y="71" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">Web UI</text>
+<text x="352.0" y="93" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">浏览器</text>
+<rect x="12" y="152" width="456" height="386" rx="6" fill="#f8fafc" stroke="#dce3ec" stroke-width="1"/>
+<text x="32" y="180" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">你的机器 / 服务器</text>
+<path d="M128 106V128H352V106" fill="none" stroke="#285fa7" stroke-width="1.2"/>
+<path d="M240 128V200" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
+<text x="252" y="146" font-size="20" fill="#285fa7" font-weight="400" text-anchor="start">连接</text>
+<rect x="32" y="200" width="416" height="216" rx="6" fill="#fff" stroke="#9ab1cd" stroke-width="1"/>
+<text x="54" y="234" font-size="25" fill="#183457" font-weight="500" text-anchor="start">Holon Runtime</text>
+<text x="54" y="260" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">常驻后台 · daemon 模式</text>
+<text x="54" y="303" font-size="20" fill="#285fa7" font-weight="500" text-anchor="start">Agents</text>
+<text x="186" y="303" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">长期身份与职责</text>
+<text x="54" y="345" font-size="20" fill="#285fa7" font-weight="500" text-anchor="start">WorkItems</text>
+<text x="186" y="345" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">目标、进度与结果</text>
+<text x="54" y="387" font-size="20" fill="#285fa7" font-weight="500" text-anchor="start">Wait / Wake</text>
+<text x="186" y="387" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">等待条件与工作续接</text>
+<path d="M240 416V472" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
+<text x="252" y="452" font-size="20" fill="#285fa7" font-weight="400" text-anchor="start">执行</text>
+<text x="240" y="496" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">工作区 · 文件 · 工具链</text>
+<text x="240" y="522" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">在明确授权范围内</text>
 </g></svg>
