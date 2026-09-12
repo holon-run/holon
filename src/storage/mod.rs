@@ -1439,6 +1439,120 @@ mod tests {
             .expect("direct collaborator should share the facade's memory index notify");
     }
 
+    fn pending_memory_index_sources(storage: &AppStorage, agent_id: &str) -> Vec<String> {
+        let connection =
+            rusqlite::Connection::open(crate::memory::index::memory_index_path(storage)).unwrap();
+        let mut statement = connection
+            .prepare(
+                "SELECT source_ref FROM memory_index_pending_sources
+                 WHERE agent_id = ?1 ORDER BY enqueued_at, document_key",
+            )
+            .unwrap();
+        statement
+            .query_map([agent_id], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn memory_index_enqueue_persists_across_appends_without_dirty_marker() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
+
+        let first = BriefRecord::new(
+            "agent-test",
+            BriefKind::Result,
+            "cached connection first",
+            None,
+            None,
+        );
+        let second = BriefRecord::new(
+            "agent-test",
+            BriefKind::Result,
+            "cached connection second",
+            None,
+            None,
+        );
+        storage.append_brief(&first).unwrap();
+        storage.append_brief(&second).unwrap();
+
+        let pending = pending_memory_index_sources(&storage, "agent-test");
+        assert_eq!(
+            pending.len(),
+            2,
+            "both appends should enqueue pending sources"
+        );
+        assert!(pending
+            .iter()
+            .all(|source_ref| source_ref.starts_with("brief:")));
+        let dirty_markers = std::fs::read_dir(storage.shared_indexes_dir())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".dirty"))
+            .count();
+        assert_eq!(
+            dirty_markers, 0,
+            "successful enqueues must not mark the index dirty"
+        );
+    }
+
+    #[test]
+    fn memory_index_enqueue_marks_dirty_and_recovers_when_open_fails() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "agent-test").unwrap();
+
+        // Block the shared index path so the first enqueue cannot open it.
+        let index_path = crate::memory::index::memory_index_path(&storage);
+        std::fs::create_dir_all(&index_path).unwrap();
+        let brief = BriefRecord::new(
+            "agent-test",
+            BriefKind::Result,
+            "enqueue failure recovery",
+            None,
+            None,
+        );
+        storage.append_brief(&brief).unwrap();
+
+        assert!(
+            storage
+                .shared_indexes_dir()
+                .read_dir()
+                .unwrap()
+                .any(|entry| entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".dirty")),
+            "failed memory index enqueue should mark the index dirty"
+        );
+
+        // Clear the blocker and the dirty marker; the next enqueue must
+        // re-open the shared index and persist its pending source.
+        std::fs::remove_dir_all(&index_path).unwrap();
+        for entry in std::fs::read_dir(storage.shared_indexes_dir())
+            .unwrap()
+            .flatten()
+        {
+            if entry.file_name().to_string_lossy().ends_with(".dirty") {
+                std::fs::remove_file(entry.path()).unwrap();
+            }
+        }
+        let recovered = BriefRecord::new(
+            "agent-test",
+            BriefKind::Result,
+            "enqueue failure recovered",
+            None,
+            None,
+        );
+        storage.append_brief(&recovered).unwrap();
+        assert_eq!(
+            pending_memory_index_sources(&storage, "agent-test").len(),
+            1,
+            "enqueue after a failed open must reopen the shared index and persist"
+        );
+    }
+
     #[test]
     fn append_event_persists_before_publishing() {
         let dir = tempdir().unwrap();

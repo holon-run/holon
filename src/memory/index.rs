@@ -143,25 +143,6 @@ pub fn request_memory_index_rebuild(
     index.enqueue_rebuild_intent(&storage_agent_id(storage), active_workspace_id, reason)
 }
 
-pub(crate) fn enqueue_memory_index_upsert(
-    shared_indexes_dir: &Path,
-    agent_id: &str,
-    source_kind: &str,
-    source_id: &str,
-    source_ref: &str,
-) -> Result<()> {
-    let index = MemoryIndex::open_in(shared_indexes_dir)?;
-    index.enqueue_source(
-        agent_id,
-        source_kind,
-        source_id,
-        source_ref,
-        "upsert",
-        None,
-        "source_write",
-    )
-}
-
 pub fn repair_memory_index_for_paths(storage: &AppStorage, changed_paths: &[String]) -> Result<()> {
     let known = known_memory_markdown_sources(storage);
     if !changed_paths.iter().any(|path| {
@@ -561,7 +542,10 @@ fn dirty_filename_for_agent(agent_id: &str) -> String {
     DIRTY_FILENAME.replace(".dirty", &format!(".{agent_key}.dirty"))
 }
 
-struct MemoryIndex {
+/// Shared memory index handle. `open` replays connection pragmas and the full
+/// schema-ensure statement set, so write-path callers enqueueing one pending
+/// source per canonical write must hold one handle open instead of reopening.
+pub(crate) struct MemoryIndex {
     connection: Connection,
     last_outbox_consume_reached_limit: bool,
     last_outbox_error_count: usize,
@@ -592,6 +576,30 @@ impl MemoryIndex {
         )?;
         index.ensure_schema()?;
         Ok(index)
+    }
+
+    /// Opens the shared memory index for a long-lived cached connection.
+    pub(crate) fn open_shared(shared_indexes_dir: &Path) -> Result<Self> {
+        Self::open_in(shared_indexes_dir)
+    }
+
+    /// Enqueues one pending upsert on an already-open connection.
+    pub(crate) fn enqueue_upsert(
+        &mut self,
+        agent_id: &str,
+        source_kind: &str,
+        source_id: &str,
+        source_ref: &str,
+    ) -> Result<()> {
+        self.enqueue_source(
+            agent_id,
+            source_kind,
+            source_id,
+            source_ref,
+            "upsert",
+            None,
+            "source_write",
+        )
     }
 
     fn ensure_schema(&self) -> Result<()> {

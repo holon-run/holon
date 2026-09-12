@@ -12,7 +12,7 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use crate::{
-    memory::index::enqueue_memory_index_upsert,
+    memory::index::MemoryIndex,
     runtime_db::{
         transitions::{PostCommitEffects, PostCommitWarning},
         RuntimeIndexChange, RuntimeIndexOperation,
@@ -26,13 +26,24 @@ use crate::{
 
 use super::memory::memory_index_agent_key;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RuntimeIndexOutbox {
     agent_id: Option<String>,
     read_only: bool,
     shared_indexes_dir: PathBuf,
     append_mutex: Arc<Mutex<()>>,
+    memory_index: Arc<Mutex<Option<MemoryIndex>>>,
     memory_index_notify: Arc<Mutex<Option<Arc<Notify>>>>,
+}
+
+impl std::fmt::Debug for RuntimeIndexOutbox {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RuntimeIndexOutbox")
+            .field("agent_id", &self.agent_id)
+            .field("read_only", &self.read_only)
+            .field("shared_indexes_dir", &self.shared_indexes_dir)
+            .finish_non_exhaustive()
+    }
 }
 
 impl RuntimeIndexOutbox {
@@ -47,6 +58,7 @@ impl RuntimeIndexOutbox {
             read_only,
             shared_indexes_dir,
             append_mutex,
+            memory_index: Arc::new(Mutex::new(None)),
             memory_index_notify: Arc::new(Mutex::new(None)),
         }
     }
@@ -335,13 +347,28 @@ impl RuntimeIndexOutbox {
             .append_mutex
             .lock()
             .map_err(|_| anyhow::anyhow!("storage append mutex poisoned"))?;
-        enqueue_memory_index_upsert(
-            &self.shared_indexes_dir,
-            &self.storage_agent_id()?,
-            source_kind,
-            source_id,
-            source_ref,
-        )
+        let agent_id = self.storage_agent_id()?;
+        let mut cache = self
+            .memory_index
+            .lock()
+            .map_err(|_| anyhow::anyhow!("memory index connection cache mutex poisoned"))?;
+        let result = match cache.as_mut() {
+            Some(index) => index.enqueue_upsert(&agent_id, source_kind, source_id, source_ref),
+            None => {
+                let mut index = MemoryIndex::open_shared(&self.shared_indexes_dir)?;
+                let result = index.enqueue_upsert(&agent_id, source_kind, source_id, source_ref);
+                if result.is_ok() {
+                    *cache = Some(index);
+                }
+                result
+            }
+        };
+        if result.is_err() {
+            // Drop a failed handle so the next enqueue re-opens against the
+            // on-disk index instead of reusing a possibly stale connection.
+            *cache = None;
+        }
+        result
     }
 
     fn finish_enqueue(
