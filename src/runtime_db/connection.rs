@@ -2,11 +2,13 @@
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
+#[cfg(target_os = "linux")]
+use std::fs::OpenOptions;
 use std::fs::{self, File};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -110,6 +112,14 @@ fn bail_persistent_wal_not_enabled(path: &Path, current: i32) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
+    ensure_runtime_db_sidecars_are_consistent_with(path, inspect_runtime_db_sidecar_fd)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_runtime_db_sidecars_are_consistent_with(
+    path: &Path,
+    inspect_fd: impl Fn(&Path, &Path, &str) -> Result<Option<RuntimeDbSidecarOpen>>,
+) -> Result<()> {
     let _timer = crate::diagnostics::attribution::SIDECAR.start();
     let db_path = match path.canonicalize() {
         Ok(path) => path,
@@ -151,7 +161,7 @@ fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
 
     let scan_start = Instant::now();
     for suffix in ["-wal", "-shm"] {
-        ensure_runtime_db_sidecar_is_consistent(&db_path, suffix)?;
+        ensure_runtime_db_sidecar_is_consistent_with(&db_path, suffix, &inspect_fd)?;
     }
     crate::diagnostics::record_runtime_db_sidecar_consistency_scan(scan_start.elapsed());
     remember_verified_runtime_db_sidecars(&db_path, identities);
@@ -254,8 +264,8 @@ fn inspect_runtime_db_sidecar_fd(
     fd_path: &Path,
     sidecar_path: &Path,
     deleted_path: &str,
-) -> Option<RuntimeDbSidecarOpen> {
-    inspect_runtime_db_sidecar_fd_with_hook(fd_path, sidecar_path, deleted_path, || Ok(())).ok()?
+) -> Result<Option<RuntimeDbSidecarOpen>> {
+    inspect_runtime_db_sidecar_fd_with_hook(fd_path, sidecar_path, deleted_path, || Ok(()))
 }
 
 #[cfg(target_os = "linux")]
@@ -264,6 +274,23 @@ fn inspect_runtime_db_sidecar_fd_with_hook(
     sidecar_path: &Path,
     deleted_path: &str,
     after_first_target: impl FnOnce() -> Result<()>,
+) -> Result<Option<RuntimeDbSidecarOpen>> {
+    inspect_runtime_db_sidecar_fd_with_hook_and_open(
+        fd_path,
+        sidecar_path,
+        deleted_path,
+        after_first_target,
+        open_runtime_db_fd_metadata_handle,
+    )
+}
+
+#[cfg(target_os = "linux")]
+fn inspect_runtime_db_sidecar_fd_with_hook_and_open(
+    fd_path: &Path,
+    sidecar_path: &Path,
+    deleted_path: &str,
+    after_first_target: impl FnOnce() -> Result<()>,
+    open_stable: impl FnOnce(&Path) -> std::io::Result<File>,
 ) -> Result<Option<RuntimeDbSidecarOpen>> {
     let observed_target = match fs::read_link(fd_path) {
         Ok(target) => target,
@@ -276,19 +303,37 @@ fn inspect_runtime_db_sidecar_fd_with_hook(
 
     after_first_target()?;
 
-    let stable_file = match File::open(fd_path) {
+    let stable_file = match open_stable(fd_path) {
         Ok(file) => file,
-        _ => return Ok(None),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "opening runtime db fd metadata handle: {}",
+                    fd_path.display()
+                )
+            });
+        }
     };
     let stable_fd_path = Path::new("/proc/self/fd").join(stable_file.as_raw_fd().to_string());
-    let stable_target = match fs::read_link(stable_fd_path) {
-        Ok(target) if target == observed_target => target,
-        _ => return Ok(None),
-    };
-    let stable_metadata = match stable_file.metadata() {
-        Ok(metadata) if metadata.is_file() => metadata,
-        _ => return Ok(None),
-    };
+    let stable_target = fs::read_link(&stable_fd_path).with_context(|| {
+        format!(
+            "reading stable runtime db fd metadata target: {}",
+            stable_fd_path.display()
+        )
+    })?;
+    if stable_target != observed_target {
+        return Ok(None);
+    }
+    let stable_metadata = stable_file.metadata().with_context(|| {
+        format!(
+            "reading stable runtime db fd metadata: {}",
+            stable_fd_path.display()
+        )
+    })?;
+    if !stable_metadata.is_file() {
+        return Ok(None);
+    }
 
     Ok(Some(RuntimeDbSidecarOpen {
         deleted: stable_target.to_string_lossy() == deleted_path,
@@ -297,7 +342,20 @@ fn inspect_runtime_db_sidecar_fd_with_hook(
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Result<()> {
+fn open_runtime_db_fd_metadata_handle(fd_path: &Path) -> std::io::Result<File> {
+    // O_PATH pins the observed object without participating in POSIX record locks.
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_PATH)
+        .open(fd_path)
+}
+
+#[cfg(target_os = "linux")]
+fn ensure_runtime_db_sidecar_is_consistent_with(
+    db_path: &Path,
+    suffix: &str,
+    inspect_fd: &impl Fn(&Path, &Path, &str) -> Result<Option<RuntimeDbSidecarOpen>>,
+) -> Result<()> {
     let sidecar_path = runtime_db_sidecar_file_path(db_path, suffix);
     let deleted_path = format!("{} (deleted)", sidecar_path.display());
 
@@ -307,8 +365,7 @@ fn ensure_runtime_db_sidecar_is_consistent(db_path: &Path, suffix: &str) -> Resu
         .context("reading entries from /proc/self/fd")?;
     for entry in fd_entries {
         let canonical_before = runtime_db_sidecar_identity(&sidecar_path)?;
-        let Some(open) = inspect_runtime_db_sidecar_fd(&entry.path(), &sidecar_path, &deleted_path)
-        else {
+        let Some(open) = inspect_fd(&entry.path(), &sidecar_path, &deleted_path)? else {
             continue;
         };
         let canonical_after = runtime_db_sidecar_identity(&sidecar_path)?;
@@ -610,18 +667,37 @@ pub(crate) fn unlock(_file: &File) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use rusqlite::OpenFlags;
     use std::ffi::OsString;
     #[cfg(target_os = "linux")]
     use std::os::fd::IntoRawFd;
+    #[cfg(target_os = "linux")]
     use std::process::{Command, Stdio};
     use tempfile::tempdir;
 
+    #[cfg(target_os = "linux")]
     const OBSERVER_CHILD_DB_ENV: &str = "HOLON_RUNTIME_DB_OBSERVER_CHILD_DB";
+    #[cfg(target_os = "linux")]
     const OBSERVER_CHILD_READY_ENV: &str = "HOLON_RUNTIME_DB_OBSERVER_CHILD_READY";
+    #[cfg(target_os = "linux")]
     const OBSERVER_CHILD_RELEASE_ENV: &str = "HOLON_RUNTIME_DB_OBSERVER_CHILD_RELEASE";
+    #[cfg(target_os = "linux")]
     const OBSERVER_TEST_NAME: &str =
         "runtime_db::connection::tests::external_observer_does_not_replace_runtime_db_sidecars";
+    #[cfg(target_os = "linux")]
+    const LOCK_PROBE_PATH_ENV: &str = "HOLON_RUNTIME_DB_LOCK_PROBE_PATH";
+    #[cfg(target_os = "linux")]
+    const LOCK_PROBE_READY_ENV: &str = "HOLON_RUNTIME_DB_LOCK_PROBE_READY";
+    #[cfg(target_os = "linux")]
+    const LOCK_PROBE_START_ENV: &str = "HOLON_RUNTIME_DB_LOCK_PROBE_START";
+    #[cfg(target_os = "linux")]
+    const LOCK_PROBE_LEN_ENV: &str = "HOLON_RUNTIME_DB_LOCK_PROBE_LEN";
+    #[cfg(target_os = "linux")]
+    const LOCK_PROBE_EXPECT_ENV: &str = "HOLON_RUNTIME_DB_LOCK_PROBE_EXPECT";
+    #[cfg(target_os = "linux")]
+    const LOCK_PROBE_TEST_NAME: &str =
+        "runtime_db::connection::tests::runtime_db_posix_lock_probe_child";
 
     fn persistent_wal_setting(connection: &Connection) -> Result<i32> {
         const MAIN_SCHEMA: &[u8] = b"main\0";
@@ -646,6 +722,153 @@ mod tests {
         let mut path: OsString = db_path.as_os_str().to_owned();
         path.push(suffix);
         path.into()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn try_posix_write_lock(file: &File, start: i64, len: i64) -> std::io::Result<()> {
+        // SAFETY: flock is initialized before the fcntl call and the file remains open.
+        let mut lock = unsafe { std::mem::zeroed::<libc::flock>() };
+        lock.l_type = libc::F_WRLCK as libc::c_short;
+        lock.l_whence = libc::SEEK_SET as libc::c_short;
+        lock.l_start = start as libc::off_t;
+        lock.l_len = len as libc::off_t;
+        // SAFETY: the descriptor and flock pointer remain valid for the call.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &lock) } == -1 {
+            Err(std::io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_child_ready(
+        mut child: std::process::Child,
+        ready_path: &Path,
+        label: &str,
+    ) -> Result<std::process::Child> {
+        let started_at = Instant::now();
+        while !ready_path.exists() {
+            if child.try_wait()?.is_some() {
+                let output = child.wait_with_output()?;
+                anyhow::bail!(
+                    "{label} exited before ready: status={}; stdout={}; stderr={}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            if started_at.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                let output = child.wait_with_output()?;
+                anyhow::bail!(
+                    "timed out waiting for {label}: stdout={}; stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        Ok(child)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_for_child_exit(
+        mut child: std::process::Child,
+        label: &str,
+    ) -> Result<std::process::Output> {
+        let started_at = Instant::now();
+        loop {
+            if child.try_wait()?.is_some() {
+                return child
+                    .wait_with_output()
+                    .with_context(|| format!("collecting {label} output"));
+            }
+            if started_at.elapsed() > Duration::from_secs(10) {
+                let _ = child.kill();
+                let output = child.wait_with_output()?;
+                anyhow::bail!(
+                    "timed out waiting for {label} to exit: stdout={}; stderr={}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn assert_lock_conflict_from_child(path: &Path, start: i64, len: i64) -> Result<()> {
+        let ready_directory = tempdir()?;
+        let ready_path = ready_directory.path().join("ready");
+        let child = Command::new(std::env::current_exe()?)
+            .arg("--exact")
+            .arg(LOCK_PROBE_TEST_NAME)
+            .arg("--nocapture")
+            .env(LOCK_PROBE_PATH_ENV, path)
+            .env(LOCK_PROBE_READY_ENV, &ready_path)
+            .env(LOCK_PROBE_START_ENV, start.to_string())
+            .env(LOCK_PROBE_LEN_ENV, len.to_string())
+            .env(LOCK_PROBE_EXPECT_ENV, "conflict")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        let child = wait_for_child_ready(child, &ready_path, "POSIX lock probe")?;
+        let output = wait_for_child_exit(child, "POSIX lock probe")?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "POSIX lock probe failed: status={}; stdout={}; stderr={}",
+                output.status,
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_db_posix_lock_probe_child() -> Result<()> {
+        let Some(path) = std::env::var_os(LOCK_PROBE_PATH_ENV) else {
+            return Ok(());
+        };
+        let ready_path = std::env::var_os(LOCK_PROBE_READY_ENV)
+            .ok_or_else(|| anyhow!("POSIX lock probe ready path is missing"))?;
+        let start = std::env::var(LOCK_PROBE_START_ENV)
+            .context("POSIX lock probe start is missing")?
+            .parse::<i64>()
+            .context("parsing POSIX lock probe start")?;
+        let len = std::env::var(LOCK_PROBE_LEN_ENV)
+            .context("POSIX lock probe length is missing")?
+            .parse::<i64>()
+            .context("parsing POSIX lock probe length")?;
+        let expected = std::env::var(LOCK_PROBE_EXPECT_ENV)
+            .context("POSIX lock probe expectation is missing")?;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .with_context(|| {
+                format!("opening POSIX lock probe file: {}", path.to_string_lossy())
+            })?;
+        File::create(ready_path)?;
+
+        let result = try_posix_write_lock(&file, start, len);
+        match expected.as_str() {
+            "conflict" => match result {
+                Err(error)
+                    if matches!(
+                        error.raw_os_error(),
+                        Some(libc::EACCES) | Some(libc::EAGAIN)
+                    ) =>
+                {
+                    Ok(())
+                }
+                Err(error) => Err(error).context("POSIX lock probe failed unexpectedly"),
+                Ok(()) => anyhow::bail!("POSIX lock probe unexpectedly acquired the lock"),
+            },
+            "acquire" => result.context("POSIX lock probe could not acquire the lock"),
+            _ => anyhow::bail!("unknown POSIX lock probe expectation: {expected}"),
+        }
     }
 
     #[test]
@@ -784,15 +1007,54 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn sidecar_inspection_preserves_posix_write_lock() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let locked_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&wal_path)?;
+        try_posix_write_lock(&locked_file, 0, 1)?;
+        assert_lock_conflict_from_child(&wal_path, 0, 1)?;
+
+        let fd_path = Path::new("/proc/self/fd").join(locked_file.as_raw_fd().to_string());
+        let deleted_path = format!("{} (deleted)", wal_path.display());
+        let metadata = locked_file.metadata()?;
+        assert_eq!(
+            inspect_runtime_db_sidecar_fd(&fd_path, &wal_path, &deleted_path)?,
+            Some(RuntimeDbSidecarOpen {
+                deleted: false,
+                identity: (metadata.dev(), metadata.ino()),
+            })
+        );
+
+        assert_lock_conflict_from_child(&wal_path, 0, 1)?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn sidecar_inspection_ignores_concurrent_fd_reuse() -> Result<()> {
         let directory = tempdir()?;
         let db_path = directory.path().join("runtime.sqlite");
         let wal_path = sidecar_path(&db_path, "-wal");
-        let replacement_path = directory.path().join("replacement");
-        File::create(&replacement_path)?;
+        let main_path = db_path;
         let inspected_fd = File::create(&wal_path)?.into_raw_fd();
         let inspected_fd_path = Path::new("/proc/self/fd").join(inspected_fd.to_string());
         let deleted_path = format!("{} (deleted)", wal_path.display());
+        let locked_main = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .read(true)
+            .write(true)
+            .open(&main_path)?;
+        assert_ne!(locked_main.as_raw_fd(), inspected_fd);
+        try_posix_write_lock(&locked_main, 0, 1)?;
+        assert_lock_conflict_from_child(&main_path, 0, 1)?;
+        let locked_main_fd = locked_main.as_raw_fd();
 
         let observation = inspect_runtime_db_sidecar_fd_with_hook(
             &inspected_fd_path,
@@ -800,24 +1062,10 @@ mod tests {
             &deleted_path,
             move || {
                 thread::spawn(move || -> Result<()> {
-                    // SAFETY: the raw descriptor is exclusively owned by this test.
-                    if unsafe { libc::close(inspected_fd) } != 0 {
+                    // SAFETY: both descriptors remain valid, and dup2 atomically replaces
+                    // the inspected sidecar descriptor with the locked main-db descriptor.
+                    if unsafe { libc::dup2(locked_main_fd, inspected_fd) } < 0 {
                         return Err(std::io::Error::last_os_error().into());
-                    }
-
-                    let replacement_fd = File::open(replacement_path)?.into_raw_fd();
-                    if replacement_fd != inspected_fd {
-                        // SAFETY: both descriptors are valid and dup2 atomically replaces
-                        // the now-free inspected descriptor.
-                        let duplicate_result = unsafe { libc::dup2(replacement_fd, inspected_fd) };
-                        let duplicate_error = std::io::Error::last_os_error();
-                        // SAFETY: replacement_fd was transferred to raw ownership above.
-                        unsafe {
-                            libc::close(replacement_fd);
-                        }
-                        if duplicate_result < 0 {
-                            return Err(duplicate_error.into());
-                        }
                     }
                     Ok(())
                 })
@@ -826,11 +1074,95 @@ mod tests {
             },
         )?;
 
-        // SAFETY: the replacement descriptor is exclusively owned by this test.
+        assert_eq!(observation, None);
+        assert_lock_conflict_from_child(&main_path, 0, 1)?;
+
+        // SAFETY: dup2 transferred a duplicate of locked_main into raw ownership.
         unsafe {
             libc::close(inspected_fd);
         }
-        assert_eq!(observation, None);
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sidecar_inspection_classifies_metadata_handle_errors() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let wal_file = File::create(&wal_path)?;
+        let fd_path = Path::new("/proc/self/fd").join(wal_file.as_raw_fd().to_string());
+        let deleted_path = format!("{} (deleted)", wal_path.display());
+
+        let disappeared = inspect_runtime_db_sidecar_fd_with_hook_and_open(
+            &fd_path,
+            &wal_path,
+            &deleted_path,
+            || Ok(()),
+            |_| Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        )?;
+        assert_eq!(disappeared, None);
+
+        let error = inspect_runtime_db_sidecar_fd_with_hook_and_open(
+            &fd_path,
+            &wal_path,
+            &deleted_path,
+            || Ok(()),
+            |_| Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+        )
+        .expect_err("systemic O_PATH failure must fail closed");
+        assert!(format!("{error:#}").contains("opening runtime db fd metadata handle"));
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sidecar_scan_error_does_not_update_verified_cache() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        File::create(&db_path)?;
+        let wal_path = sidecar_path(&db_path, "-wal");
+        let _wal_file = File::create(&wal_path)?;
+
+        let error = ensure_runtime_db_sidecars_are_consistent_with(
+            &db_path,
+            |fd_path, sidecar_path, deleted_path| {
+                inspect_runtime_db_sidecar_fd_with_hook_and_open(
+                    fd_path,
+                    sidecar_path,
+                    deleted_path,
+                    || Ok(()),
+                    |_| Err(std::io::Error::from_raw_os_error(libc::EPERM)),
+                )
+            },
+        )
+        .expect_err("sidecar scan must propagate systemic O_PATH failure");
+        assert!(format!("{error:#}").contains("opening runtime db fd metadata handle"));
+        assert!(
+            verified_runtime_db_sidecars(&db_path.canonicalize()?).is_none(),
+            "failed scans must not populate the verified identities cache"
+        );
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn runtime_db_fd_metadata_handle_closes_on_drop() -> Result<()> {
+        let directory = tempdir()?;
+        let wal_path = directory.path().join("runtime.sqlite-wal");
+        let wal_file = File::create(&wal_path)?;
+        let fd_path = Path::new("/proc/self/fd").join(wal_file.as_raw_fd().to_string());
+        let metadata_handle = open_runtime_db_fd_metadata_handle(&fd_path)?;
+        let metadata_fd_path =
+            Path::new("/proc/self/fd").join(metadata_handle.as_raw_fd().to_string());
+
+        assert_eq!(fs::read_link(&metadata_fd_path)?, wal_path);
+        assert!(metadata_handle.metadata()?.is_file());
+        drop(metadata_handle);
+
+        let error = fs::read_link(&metadata_fd_path)
+            .expect_err("dropping the metadata handle must close its exact descriptor");
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
         Ok(())
     }
 
@@ -901,7 +1233,7 @@ mod tests {
         let shm_path = sidecar_path(&db_path, "-shm");
         let wal_identity = fs::metadata(&wal_path)?.ino();
         let shm_identity = fs::metadata(&shm_path)?.ino();
-        let mut child = Command::new(std::env::current_exe()?)
+        let child = Command::new(std::env::current_exe()?)
             .arg("--exact")
             .arg(OBSERVER_TEST_NAME)
             .arg("--nocapture")
@@ -911,37 +1243,38 @@ mod tests {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        let started_at = Instant::now();
-        while !ready_path.exists() {
-            if let Some(status) = child.try_wait()? {
-                anyhow::bail!("observer child exited before ready: {status}");
-            }
-            if started_at.elapsed() > Duration::from_secs(10) {
-                child.kill()?;
-                anyhow::bail!("timed out waiting for observer child");
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
+        let child = wait_for_child_ready(child, &ready_path, "runtime db observer")?;
 
-        drop(writer);
+        let canonical_db_path = db_path.canonicalize()?;
+        for suffix in ["-wal", "-shm"] {
+            ensure_runtime_db_sidecar_is_consistent_with(
+                &canonical_db_path,
+                suffix,
+                &inspect_runtime_db_sidecar_fd,
+            )?;
+        }
+        writer.execute("INSERT INTO values_seen(value) VALUES (2)", [])?;
+
         File::create(&release_path)?;
-        let output = child.wait_with_output()?;
+        let output = wait_for_child_exit(child, "runtime db observer")?;
         assert!(
             output.status.success(),
             "observer child failed: stdout={}; stderr={}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
+        writer.execute("INSERT INTO values_seen(value) VALUES (3)", [])?;
 
         assert_eq!(fs::metadata(&wal_path)?.ino(), wal_identity);
         assert_eq!(fs::metadata(&shm_path)?.ino(), shm_identity);
         ensure_runtime_db_sidecars_are_consistent(&db_path)?;
+        drop(writer);
 
         let reader = open_connection(&db_path)?;
         assert_eq!(
             reader.query_row("SELECT MAX(value) FROM values_seen", [], |row| row
                 .get::<_, i64>(0))?,
-            1
+            3
         );
         Ok(())
     }
