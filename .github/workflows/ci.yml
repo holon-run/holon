@@ -107,6 +107,7 @@ jobs:
             web:
               - 'web-gui/**'
               - '.github/workflows/ci.yml'
+              - 'docs/website/reference/openapi.json'
             macos_app:
               - '.github/workflows/ci.yml'
               - 'apps/macos/**'
@@ -222,7 +223,7 @@ jobs:
   rust:
     name: Rust
     needs: changes
-    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'
     runs-on: ubuntu-latest
     env:
       RUSTFLAGS: -D warnings

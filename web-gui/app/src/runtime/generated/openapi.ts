@@ -1593,6 +1593,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/runtime/traces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recent runtime traces
+         * @description Return summaries for the bounded in-memory recent trace ring.
+         */
+        get: operations["runtimeTraces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/runtime/traces/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search recent runtime traces
+         * @description Search the bounded in-memory recent trace ring by trace or span attributes.
+         */
+        get: operations["runtimeTraceSearch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/runtime/traces/{trace_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Runtime trace waterfall
+         * @description Return the recorded span waterfall for one recent trace.
+         */
+        get: operations["runtimeTrace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/templates/install": {
         parameters: {
             query?: never;
@@ -3853,6 +3913,18 @@ export interface components {
         };
         /** PerformanceDiagnosticsSnapshot */
         PerformanceDiagnosticsSnapshot: {
+            /** @default [] */
+            attribution: {
+                /** Format: uint64 */
+                count: number;
+                /** Format: uint64 */
+                max_ns: number;
+                name: string;
+                /** Format: uint64 */
+                rows: number;
+                /** Format: uint64 */
+                total_ns: number;
+            }[];
             captured_at: string;
             db: {
                 /** Format: double */
@@ -4181,6 +4253,82 @@ export interface components {
          * @enum {string}
          */
         ProjectionEffect: "none" | "display_invalidation";
+        /** RecentTrace */
+        RecentTrace: {
+            /** Format: date-time */
+            completed_at: string;
+            /** Format: uint64 */
+            dropped_spans: number;
+            /** Format: uint64 */
+            duration_us: number;
+            /** Format: uint */
+            error_count: number;
+            /** Format: uint */
+            span_count: number;
+            spans: {
+                attributes: {
+                    agent_id?: string | null;
+                    /** Format: uint64 */
+                    attempt?: number | null;
+                    backoff_source?: string | null;
+                    /** Format: uint64 */
+                    cache_creation_input_tokens?: number | null;
+                    /** Format: uint64 */
+                    cache_read_input_tokens?: number | null;
+                    disposition?: string | null;
+                    failure_kind?: string | null;
+                    /** Format: uint64 */
+                    input_tokens?: number | null;
+                    /** Format: uint64 */
+                    max_attempts?: number | null;
+                    message_id?: string | null;
+                    outcome?: string | null;
+                    /** Format: uint64 */
+                    output_tokens?: number | null;
+                    provider?: string | null;
+                    provider_http_trace_id?: string | null;
+                    provider_message_id?: string | null;
+                    provider_request_id?: string | null;
+                    /** Format: uint64 */
+                    round?: number | null;
+                    run_id?: string | null;
+                    task_id?: string | null;
+                    tool_name?: string | null;
+                    turn_id?: string | null;
+                    work_item_id?: string | null;
+                };
+                /** Format: date-time */
+                completed_at: string;
+                /** Format: uint64 */
+                duration_us: number;
+                name: string;
+                parent_span_id?: string | null;
+                span_id: string;
+                /** Format: date-time */
+                started_at: string;
+                /** @enum {string} */
+                status: "ok" | "error";
+            }[];
+            /** Format: date-time */
+            started_at: string;
+            trace_id: string;
+        };
+        /** Array_of_RecentTraceSummary */
+        RecentTraceSummaryList: {
+            /** Format: date-time */
+            completed_at: string;
+            /** Format: uint64 */
+            dropped_spans: number;
+            /** Format: uint64 */
+            duration_us: number;
+            /** Format: uint */
+            error_count: number;
+            /** Format: uint */
+            span_count: number;
+            /** Format: date-time */
+            started_at: string;
+            trace_id: string;
+        }[];
         /** ReconcileSkillRequest */
         ReconcileSkillRequest: {
             name?: string | null;
@@ -4509,18 +4657,44 @@ export interface components {
         SearchResponse: {
             index_status: {
                 consumption_was_limited?: boolean;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description Highest applied contiguous runtime outbox `change_seq`.
+                 */
                 cursor: number;
                 freshness: string;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description Monotonic produced watermark: highest `change_seq` ever appended for
+                 *      the agent. Unlike the drained-outbox maximum, it never returns to 0.
+                 */
                 high_watermark: number;
                 indexing_needed?: boolean;
-                /** Format: int64 */
+                /**
+                 * Format: int64
+                 * @description Sequence distance `produced - applied`. Cross-agent global
+                 *      autoincrement makes this an upper-bound hint only; `pending_count` is
+                 *      the exact backlog metric.
+                 */
                 lag: number;
                 /** Format: date-time */
                 last_indexed_at?: string | null;
+                /**
+                 * Format: int64
+                 * @description Age of the oldest pending outbox row, the real propagation delay.
+                 */
+                oldest_pending_age_ms?: number | null;
+                /**
+                 * Format: int64
+                 * @description Exact pending outbox row count for this agent.
+                 */
+                pending_count?: number;
                 results_may_be_incomplete?: boolean;
-                /** Format: uint */
+                /**
+                 * Format: uint
+                 * @description Failures hit by this index handle's current consume pass. Transient
+                 *      by design; not a durable health history.
+                 */
                 skipped_error_count?: number;
             };
             /** Format: uint */
@@ -8781,6 +8955,126 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    runtimeTraces: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecentTraceSummaryList"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    runtimeTraceSearch: {
+        parameters: {
+            query: {
+                /** @description Case-insensitive trace or span attribute search text. */
+                query: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecentTraceSummaryList"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    runtimeTrace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Trace id. */
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecentTrace"];
                 };
             };
             /** @description Client error JSON response. */
