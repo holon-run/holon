@@ -47,6 +47,10 @@ import type {
 const BRIEF_HYDRATION_RETRY_DELAYS_MS = [1_000, 2_000] as const;
 const BRIEF_HYDRATION_MAX_ATTEMPTS = 5;
 
+// Session catch-up closes at most this many ascending pages per run; the
+// rest of the retained history stays behind the explicit load-older flow.
+export const SESSION_CATCHUP_MAX_PAGES = 10;
+
 export interface SessionCacheContext {
   remoteKey: string;
   generation: number;
@@ -853,14 +857,24 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       );
     }
 
-    // Backfill ascending until the cursor overlaps the tail's oldest event.
+    // Fresh sessions (no cached cursor) intentionally keep only the tail:
+    // older history loads on demand through the explicit load-older flow
+    // instead of backfilling the entire retained history. Sessions with a
+    // cursor backfill ascending to close their gap, bounded per run so one
+    // catch-up cannot serially walk the whole event log.
     const hasGap =
       tailHasOlder &&
       tailOldestSeq != null &&
-      (initialAfterSeq == null || tailOldestSeq > initialAfterSeq + 1);
+      initialAfterSeq != null &&
+      tailOldestSeq > initialAfterSeq + 1;
+    let backfillCapped = false;
     if (hasGap) {
       let afterSeq = initialAfterSeq;
-      while (true) {
+      for (let backfillPages = 0; ; backfillPages += 1) {
+        if (backfillPages >= SESSION_CATCHUP_MAX_PAGES) {
+          backfillCapped = true;
+          break;
+        }
         const page = await client.getAgentEvents(agentId, {
           afterSeq,
           limit: 100,
@@ -899,6 +913,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
       gapCount: gaps.length,
       eventCount,
       pageCount,
+      backfillCapped,
     });
   }
 

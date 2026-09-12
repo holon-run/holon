@@ -4666,24 +4666,48 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
   }
   const liveStatus = globalSyncCoordinator.isRecovering(agentId) ? "recovering" : "streaming";
 
+  const currentSession = sessionForEventLogEpoch(
+    currentSnapshot ?? emptyAgentSession(),
+    incomingEpoch,
+  );
+  const uniqueEvents = incomingEvents.filter(
+    (event) => !currentSession.eventsBySeq[event.event_seq as number],
+  );
+  const offerToLedger = (): void => {
+    void agentSessionRepository
+      .ingestSessionEvents(agentId, incomingEvents)
+      .catch((error) => console.warn(`Agent ledger ingestion failed for ${agentId}.`, error));
+  };
+  // Duplicate stream events are common while gap recovery overlaps the live
+  // stream; they must not commit a new session object on every flush. The
+  // ledger is still offered every envelope so its exactness guarantees hold.
+  if (!uniqueEvents.length) {
+    if (currentSession.liveStatus !== liveStatus || currentSession.error !== undefined) {
+      set((state) => ({
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...sessionForEventLogEpoch(
+              state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
+              incomingEpoch,
+            ),
+            liveStatus,
+            error: undefined,
+          },
+        },
+      }));
+    }
+    offerToLedger();
+    return;
+  }
+  const unresolvedBriefIdsBefore = new Set(briefIdsForProjectionHydration(currentSession));
+  let introducedNewBriefRefs = false;
+
   set((state) => {
     const current = sessionForEventLogEpoch(
       state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
       incomingEpoch,
     );
-    const uniqueEvents = incomingEvents.filter((event) => !current.eventsBySeq[event.event_seq as number]);
-    if (!uniqueEvents.length) {
-      return {
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...current,
-            liveStatus,
-            error: undefined,
-          },
-        },
-      };
-    }
     const projectionEvents = uniqueEvents.filter(canApplySessionEvent);
     const rosterActivityByAgentId = projectionEvents.reduce(
       (activityByAgentId, event) =>
@@ -4702,6 +4726,9 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
       events: uniqueEvents,
       eventLogEpoch: incomingEpoch,
     }, "debug", patchedBaseDetail);
+    introducedNewBriefRefs = briefIdsForProjectionHydration(projected).some(
+      (briefId) => !unresolvedBriefIdsBefore.has(briefId),
+    );
     const timelineEvents = state.timelineEventsByAgentId[agentId];
 
     return {
@@ -4732,12 +4759,15 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
       },
     };
   });
-  void agentSessionRepository
-    .ingestSessionEvents(agentId, incomingEvents)
-    .catch((error) => console.warn(`Agent ledger ingestion failed for ${agentId}.`, error));
+  offerToLedger();
   const displayLevel = useRuntimeStore.getState().displayLevel;
   agentSessionRepository.hydrateSelectedContent(agentId, displayLevel);
-  agentSessionRepository.hydrateBriefs(agentId, displayLevel);
+  // Hydrate briefs only when this flush introduced references the store has
+  // not already seen unresolved; otherwise unrelated poll responses would
+  // issue briefs:batchGet on every tick.
+  if (introducedNewBriefRefs) {
+    agentSessionRepository.hydrateBriefs(agentId, displayLevel);
+  }
   agentSessionRepository.scheduleCacheWrite(agentId);
   if (events.some((event) => canApplySessionEvent(event) && isWorkItemCacheInvalidationEvent(event))) {
     void useRuntimeStore.getState().refreshAgentWorkItems(agentId);

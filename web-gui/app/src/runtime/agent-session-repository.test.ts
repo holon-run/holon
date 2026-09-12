@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   AgentSessionRepository,
+  SESSION_CATCHUP_MAX_PAGES,
   type LedgerIngestionIntegration,
   type AgentSessionRepositoryDependencies,
   type AgentSessionRepositoryState,
@@ -245,6 +246,64 @@ describe("AgentSessionRepository", () => {
       5,
       10,
     ]);
+  });
+
+  it("keeps a fresh session on the tail without backfilling retained history", async () => {
+    const harness = createHarness();
+    harness.client.getAgentEvents
+      .mockResolvedValueOnce({
+        events: [event(12), event(11)],
+        oldest_seq: 11,
+        has_older: true,
+      })
+      .mockResolvedValueOnce({
+        events: [event(12)],
+        oldest_seq: 12,
+        has_older: true,
+      });
+
+    await harness.repository.catchUpEvents("agent-a", "info");
+
+    expect(harness.client.getAgentEvents.mock.calls).toEqual([
+      ["agent-a", { limit: 100, order: "desc" }],
+      ["agent-a", { limit: 80, order: "desc", displayLevel: "info" }],
+    ]);
+  });
+
+  it("bounds gap backfill to a fixed page budget per catch-up run", async () => {
+    const harness = createHarness({
+      ...emptyAgentSession(),
+      newestSeq: 3,
+      gaps: [{ afterSeq: 3, beforeSeq: 10 }],
+    });
+    harness.client.getAgentEvents
+      .mockResolvedValueOnce({
+        events: [event(12)],
+        oldest_seq: 500,
+        has_older: true,
+      })
+      .mockResolvedValueOnce({
+        events: [event(12)],
+        oldest_seq: 12,
+        has_older: true,
+      });
+    for (let seq = 4; seq < 4 + SESSION_CATCHUP_MAX_PAGES; seq += 1) {
+      harness.client.getAgentEvents.mockResolvedValueOnce({
+        events: [event(seq)],
+        has_newer: true,
+      });
+    }
+
+    await harness.repository.catchUpEvents("agent-a", "info");
+
+    const ascCalls = harness.client.getAgentEvents.mock.calls.filter(
+      (call) => call[1]?.order === "asc",
+    );
+    expect(ascCalls).toHaveLength(SESSION_CATCHUP_MAX_PAGES);
+    expect(ascCalls[0]?.[1]?.afterSeq).toBe(3);
+    expect(ascCalls[ascCalls.length - 1]?.[1]?.afterSeq).toBe(
+      3 + SESSION_CATCHUP_MAX_PAGES - 1,
+    );
   });
 
   it("deduplicates message hydration and cancels stale generation results", async () => {

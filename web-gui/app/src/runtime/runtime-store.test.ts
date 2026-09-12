@@ -1259,7 +1259,21 @@ describe("brief projection and hydration", () => {
         .toBe("Background hydrated brief.");
     });
 
+    const sessionBefore = useRuntimeStore.getState().sessionsByAgentId["agent-b"];
     applyStreamEvents(useRuntimeStore.setState, "agent-b", [briefEvent]);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // Duplicate flushes neither commit a new session object nor rehydrate.
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-b"]).toBe(sessionBefore);
+
+    // A follow-up event that references no new unresolved brief id must not
+    // issue another briefs:batchGet either.
+    const followUpEvent: StreamEventEnvelopeDto = {
+      ...briefEvent,
+      id: "event-brief-b-followup",
+      event_seq: 2,
+    };
+    applyStreamEvents(useRuntimeStore.setState, "agent-b", [followUpEvent]);
     await Promise.resolve();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
