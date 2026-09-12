@@ -551,7 +551,6 @@ main:has(.home-page) .catalog-page {
 img.article-architecture {
   display: block;
   width: 100%;
-  max-width: 480px;
   height: auto;
   margin-inline: auto;
 }
