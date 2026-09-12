@@ -41,6 +41,7 @@ pub mod projection_eval;
 pub mod prompt;
 pub mod provider;
 pub mod queue;
+pub mod resource_policy;
 pub mod run_once;
 pub mod runtime;
 pub mod runtime_db;

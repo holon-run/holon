@@ -43,6 +43,7 @@ use holon::{
     },
     onboarding_tui::run_onboarding_tui,
     provider::{provider_doctor, resolved_model_availability},
+    resource_policy::{apply_startup_policy, startup_report},
     run_once::{run_once, RunOnceRequest},
     runtime::{maybe_enqueue_first_run_intro, seed_scheduler_terminal_recovery_fixture},
     runtime_db::{
@@ -68,11 +69,34 @@ use holon::cli::{
     ServeOptions, SkillsCommands, TaskCommands, TimerCommands, TimerCreateArgs, WorkItemCommands,
     WorkspaceCommands,
 };
-#[tokio::main]
-async fn main() -> Result<()> {
-    init_tracing();
-    let cli = Cli::parse();
 
+// Linux daemons swap in jemalloc so freed pages are purged back to the OS
+// instead of accumulating per-arena high-watermark RSS (#2931). Keep
+// `allocator_label` below in sync with this declaration.
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+fn allocator_label() -> &'static str {
+    if cfg!(target_os = "linux") {
+        "jemalloc"
+    } else {
+        "system"
+    }
+}
+
+fn main() -> Result<()> {
+    init_tracing();
+    let policy = apply_startup_policy(allocator_label());
+    let cli = Cli::parse();
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(policy.tokio_worker_threads)
+        .enable_all()
+        .build()?
+        .block_on(run(cli))
+}
+
+async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Config { command } => handle_config_command(command).await,
         Commands::Run {
@@ -853,6 +877,9 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         "{}",
         apply_nofile_limit_policy(DEFAULT_NOFILE_TARGET).startup_summary()
     );
+    if let Some(report) = startup_report() {
+        println!("{}", report.startup_summary());
+    }
     ensure_serve_preflight(&config).await?;
     if std::env::var_os(PRE_SERVER_PREPARED_ENV).is_none() {
         prepare_runtime_before_server(&config)?;
