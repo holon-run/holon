@@ -380,7 +380,7 @@ impl RuntimeIndexOutbox {
     ) -> Result<()> {
         if let Err(error) = result {
             tracing::warn!(
-                error = %error,
+                error = ?error,
                 agent_id = self.agent_id.as_deref().unwrap_or("<global>"),
                 source_kind,
                 source_id,

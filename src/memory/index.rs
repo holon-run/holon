@@ -1196,7 +1196,7 @@ impl MemoryIndex {
             tracing::warn!(
                 agent_id = %agent_id,
                 through_change_seq = last_successful_seq,
-                error = %(error as &dyn std::fmt::Display),
+                error = ?error,
                 "memory index outbox apply failed; retaining rows for ordered retry"
             );
             // Head-of-line blocking is intentional: the consumer stops at the
