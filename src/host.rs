@@ -1217,7 +1217,10 @@ impl RuntimeHost {
     const MEMORY_INDEXER_RETRY_MAX: Duration = Duration::from_secs(30);
 
     async fn run_daemon_memory_indexer(self) {
-        use crate::memory::{memory_index_agent_ids_with_pending, refresh_memory_index_bounded};
+        use crate::memory::{
+            memory_index_agent_ids_needing_backfill, memory_index_agent_ids_with_pending,
+            refresh_memory_index_bounded,
+        };
         // Process-local per-agent retry backoff. A persistently failing agent
         // (for example a locked index) must not be retried on every global
         // notify driven by other agents' writes.
@@ -1258,9 +1261,46 @@ impl RuntimeHost {
                     continue;
                 }
             };
+            // Self-heal discovery: agents whose only outstanding work is a
+            // dirty marker or missing full-backfill checkpoints never appear
+            // in the pending-row enumerations above. Without this union they
+            // stay freshness=stale forever (issue #2895).
+            let mut backfill_candidates: Vec<String> = self
+                .agent_identity_records()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|record| {
+                    record.status == AgentRegistryStatus::Active
+                        && record.visibility == AgentVisibility::Public
+                })
+                .map(|record| record.agent_id)
+                .collect();
+            match self
+                .inner
+                .runtime_db
+                .runtime_index_outbox()
+                .agent_ids_with_watermarks()
+            {
+                Ok(ids) => backfill_candidates.extend(ids),
+                Err(error) => {
+                    tracing::warn!(error = %error, "daemon memory indexer: failed to query watermark agents");
+                }
+            }
+            let self_heal_agent_ids = match memory_index_agent_ids_needing_backfill(
+                &default_storage,
+                &backfill_candidates,
+            ) {
+                Ok(ids) => ids.into_iter().collect::<std::collections::BTreeSet<_>>(),
+                Err(error) => {
+                    tracing::warn!(error = %error, "daemon memory indexer: failed to query self-heal agents");
+                    self.wait_daemon_indexer_round(None).await;
+                    continue;
+                }
+            };
             let agent_ids = runtime_agent_ids
                 .into_iter()
                 .chain(pending_source_agent_ids.iter().cloned())
+                .chain(self_heal_agent_ids.iter().cloned())
                 .collect::<std::collections::BTreeSet<_>>();
 
             let mut did_work = false;
@@ -1281,7 +1321,25 @@ impl RuntimeHost {
                         continue;
                     }
                 };
+                let needs_self_heal = self_heal_agent_ids.contains(agent_id);
+                let self_heal_agent_id = agent_id.clone();
                 let result = tokio::task::spawn_blocking(move || {
+                    if needs_self_heal {
+                        // Make the rebuild durable: the pending intent row
+                        // survives daemon restarts and keeps the agent in the
+                        // pending enumeration until the rebuild lands.
+                        if let Err(error) =
+                            crate::memory::request_memory_index_rebuild(&storage, None, "self_heal")
+                        {
+                            tracing::warn!(
+                                agent_id = %self_heal_agent_id,
+                                error = %error,
+                                "daemon memory indexer: failed to enqueue self-heal rebuild intent"
+                            );
+                            // Keep refreshing: the outbox/pending drain still
+                            // applies, and discovery retries the intent.
+                        }
+                    }
                     refresh_memory_index_bounded(&storage, None, Self::DAEMON_INDEXER_BATCH)
                 })
                 .await;

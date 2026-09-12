@@ -109,6 +109,21 @@ impl RuntimeIndexOutboxRepository<'_> {
         rows.map(|row| row.map_err(Into::into)).collect()
     }
 
+    /// Distinct agent ids that ever produced an outbox change, including
+    /// agents whose rows are fully consumed. Self-heal discovery uses this
+    /// to find agents whose dirty marker or missing backfill checkpoints
+    /// would otherwise have no consumer.
+    pub fn agent_ids_with_watermarks(&self) -> Result<Vec<String>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT agent_id FROM runtime_index_outbox_watermarks
+             UNION SELECT DISTINCT agent_id FROM runtime_index_outbox
+             ORDER BY agent_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
     pub fn high_watermark_for_agent(&self, agent_id: &str) -> Result<i64> {
         let connection = self.db.connection()?;
         connection

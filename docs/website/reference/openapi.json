@@ -8717,6 +8717,7 @@
       "SearchResponse": {
         "properties": {
           "index_status": {
+            "description": "Aggregate across the queried agents; per-agent detail is available in\n `index_status_by_agent` when the request spanned multiple agents.",
             "properties": {
               "consumption_was_limited": {
                 "type": "boolean"
@@ -8770,6 +8771,13 @@
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "stale_reasons": {
+                "description": "Machine-readable reasons the index is not currently fresh:\n `index_missing`, `dirty_marker`, `backfill_incomplete`, `outbox_lag`,\n `pending_sources`, `stale_projection`, `consume_error`. Empty when\n fresh. The background daemon self-heals every reason; they are\n diagnostic, not a manual-work order.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
               }
             },
             "required": [
@@ -8779,6 +8787,83 @@
               "lag"
             ],
             "type": "object"
+          },
+          "index_status_by_agent": {
+            "additionalProperties": {
+              "properties": {
+                "consumption_was_limited": {
+                  "type": "boolean"
+                },
+                "cursor": {
+                  "description": "Highest applied contiguous runtime outbox `change_seq`.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "freshness": {
+                  "type": "string"
+                },
+                "high_watermark": {
+                  "description": "Monotonic produced watermark: highest `change_seq` ever appended for\n the agent. Unlike the drained-outbox maximum, it never returns to 0.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "indexing_needed": {
+                  "type": "boolean"
+                },
+                "lag": {
+                  "description": "Sequence distance `produced - applied`. Cross-agent global\n autoincrement makes this an upper-bound hint only; `pending_count` is\n the exact backlog metric.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "last_indexed_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "oldest_pending_age_ms": {
+                  "description": "Age of the oldest pending outbox row, the real propagation delay.",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "pending_count": {
+                  "description": "Exact pending outbox row count for this agent.",
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "results_may_be_incomplete": {
+                  "type": "boolean"
+                },
+                "skipped_error_count": {
+                  "description": "Failures hit by this index handle's current consume pass. Transient\n by design; not a durable health history.",
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "stale_reasons": {
+                  "description": "Machine-readable reasons the index is not currently fresh:\n `index_missing`, `dirty_marker`, `backfill_incomplete`, `outbox_lag`,\n `pending_sources`, `stale_projection`, `consume_error`. Empty when\n fresh. The background daemon self-heals every reason; they are\n diagnostic, not a manual-work order.",
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "freshness",
+                "cursor",
+                "high_watermark",
+                "lag"
+              ],
+              "type": "object"
+            },
+            "type": [
+              "object",
+              "null"
+            ]
           },
           "limit": {
             "format": "uint",

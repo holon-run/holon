@@ -93,13 +93,26 @@ pub struct MemorySearchIndexStatus {
     pub skipped_error_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_indexed_at: Option<DateTime<Utc>>,
+    /// Machine-readable reasons the index is not currently fresh:
+    /// `index_missing`, `dirty_marker`, `backfill_incomplete`, `outbox_lag`,
+    /// `pending_sources`, `stale_projection`, `consume_error`. Empty when
+    /// fresh. The background daemon self-heals every reason; they are
+    /// diagnostic, not a manual-work order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub struct MemorySearchQueryResult {
     pub results: Vec<MemorySearchResult>,
+    /// Aggregate status across the agents actually queried. For a
+    /// default-agent-only search this equals that agent's status exactly.
     pub index_status: MemorySearchIndexStatus,
+    /// Per-agent status covering exactly the queried agents. Present only
+    /// when the query spanned more than one agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_status_by_agent: Option<std::collections::BTreeMap<String, MemorySearchIndexStatus>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -247,11 +260,78 @@ pub fn search_memory_query_for_agent_storages(
         active_workspace_id,
         include_all_workspaces,
     )?;
-    let index_status = index.index_status(storage, &agent_id)?;
+    let mut index_status_by_agent = std::collections::BTreeMap::new();
+    for filter_agent_id in &agent_filter {
+        let status = index.index_status(storage, filter_agent_id)?;
+        index_status_by_agent.insert(filter_agent_id.clone(), status);
+    }
+    let index_status = aggregate_index_status(index_status_by_agent.values());
+    // An empty agent_ids filter means default-agent-only; one status is the
+    // whole story, so per-agent detail would be pure duplication.
+    let index_status_by_agent = if index_status_by_agent.len() > 1 {
+        Some(index_status_by_agent)
+    } else {
+        None
+    };
     Ok(MemorySearchQueryResult {
         results,
         index_status,
+        index_status_by_agent,
     })
+}
+
+/// Merge per-agent statuses into one aggregate without pretending multiple
+/// agents' cursors are a single agent's: freshness is the worst, reasons are
+/// the union, pending counts sum, and sequence fields report cross-agent
+/// maxima with the details available per agent.
+fn aggregate_index_status<'a>(
+    statuses: impl Iterator<Item = &'a MemorySearchIndexStatus>,
+) -> MemorySearchIndexStatus {
+    let mut aggregate = MemorySearchIndexStatus {
+        freshness: "fresh".into(),
+        cursor: 0,
+        high_watermark: 0,
+        lag: 0,
+        pending_count: 0,
+        oldest_pending_age_ms: None,
+        indexing_needed: false,
+        results_may_be_incomplete: false,
+        consumption_was_limited: false,
+        skipped_error_count: 0,
+        last_indexed_at: None,
+        stale_reasons: Vec::new(),
+    };
+    let mut freshness_rank = 0; // fresh < stale < missing
+    let mut reasons_seen = std::collections::BTreeSet::new();
+    for status in statuses {
+        let rank = match status.freshness.as_str() {
+            "missing" => 2,
+            "stale" => 1,
+            _ => 0,
+        };
+        if rank > freshness_rank {
+            freshness_rank = rank;
+            aggregate.freshness = status.freshness.clone();
+        }
+        aggregate.cursor = aggregate.cursor.max(status.cursor);
+        aggregate.high_watermark = aggregate.high_watermark.max(status.high_watermark);
+        aggregate.lag = aggregate.lag.max(status.lag);
+        aggregate.pending_count += status.pending_count;
+        aggregate.oldest_pending_age_ms = aggregate
+            .oldest_pending_age_ms
+            .max(status.oldest_pending_age_ms);
+        aggregate.consumption_was_limited |= status.consumption_was_limited;
+        aggregate.skipped_error_count += status.skipped_error_count;
+        aggregate.last_indexed_at = match (aggregate.last_indexed_at, status.last_indexed_at) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (left, right) => left.or(right),
+        };
+        reasons_seen.extend(status.stale_reasons.iter().cloned());
+    }
+    aggregate.indexing_needed = aggregate.freshness != "fresh";
+    aggregate.results_may_be_incomplete = aggregate.indexing_needed;
+    aggregate.stale_reasons = reasons_seen.into_iter().collect();
+    aggregate
 }
 
 pub fn refresh_memory_index_bounded(
@@ -270,6 +350,36 @@ pub fn refresh_memory_index_bounded(
 pub fn memory_index_agent_ids_with_pending(storage: &AppStorage) -> Result<Vec<String>> {
     let index = MemoryIndex::open(storage)?;
     index.agent_ids_with_pending_sources()
+}
+
+/// Agents whose only outstanding index work is self-heal shaped: a dirty
+/// marker or missing full-backfill checkpoints, with no pending rows. The
+/// daemon uses this to include them in the background work set; without it
+/// they are invisible to every existing enumeration and stay stale forever.
+///
+/// Candidates are agents already known to the index plus `extra_agent_ids`
+/// (for example the host's registered agents). A dirty marker for an agent
+/// outside every candidate set cannot be mapped back safely (marker keys are
+/// lossy) and is left to explicit rebuild.
+pub fn memory_index_agent_ids_needing_backfill(
+    storage: &AppStorage,
+    extra_agent_ids: &[String],
+) -> Result<Vec<String>> {
+    let index = MemoryIndex::open(storage)?;
+    let mut candidates = std::collections::BTreeSet::new();
+    candidates.extend(extra_agent_ids.iter().cloned());
+    candidates.extend(index.agent_ids_with_cursors()?);
+    candidates.extend(index.agent_ids_with_pending_sources()?);
+    let shared_indexes_dir = storage.shared_indexes_dir();
+    let mut needing = Vec::new();
+    for agent_id in candidates {
+        if memory_index_is_dirty_for(&shared_indexes_dir, &agent_id)
+            || !index.has_backfill_checkpoints_for_agent(&agent_id)?
+        {
+            needing.push(agent_id);
+        }
+    }
+    Ok(needing)
 }
 
 fn normalize_memory_search_agent_filter(
@@ -447,10 +557,20 @@ fn ensure_memory_indexes_current(
             active_workspace_id,
             MEMORY_INDEX_OUTBOX_CONSUME_LIMIT,
         ) {
+            let agent_id = storage_agent_id(agent_storage);
             // One agent's failed consume must not block refreshing the other
             // agents in this read path; report the first failure after all.
             if first_error.is_none() {
                 first_error = Some(error);
+            } else {
+                // Later failures would otherwise vanish into the closure;
+                // keep them visible for diagnosis without changing which
+                // error the caller sees.
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %error,
+                    "additional agent memory index refresh failed"
+                );
             }
         }
     };
@@ -546,11 +666,14 @@ fn known_memory_markdown_sources(storage: &AppStorage) -> Vec<KnownMemoryMarkdow
     ]
 }
 
-fn memory_index_is_dirty(storage: &AppStorage) -> bool {
-    storage
-        .shared_indexes_dir()
-        .join(dirty_filename_for_agent(&storage_agent_id(storage)))
+fn memory_index_is_dirty_for(shared_indexes_dir: &Path, agent_id: &str) -> bool {
+    shared_indexes_dir
+        .join(dirty_filename_for_agent(agent_id))
         .exists()
+}
+
+fn memory_index_is_dirty(storage: &AppStorage) -> bool {
+    memory_index_is_dirty_for(&storage.shared_indexes_dir(), &storage_agent_id(storage))
 }
 
 fn clear_memory_index_dirty(storage: &AppStorage) -> Result<()> {
@@ -754,11 +877,14 @@ impl MemoryIndex {
     fn rebuild(&mut self, storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
         let agent_id = storage_agent_id(storage);
         let runtime_db = storage.runtime_db()?;
+        // The rebuild re-collects every source produced so far, so it
+        // acknowledges the monotonic produced watermark, not the drained
+        // outbox's remaining-row maximum (which is 0 once consumed).
         let runtime_high_watermark = runtime_db
             .as_ref()
             .map(|db| {
                 db.runtime_index_outbox()
-                    .high_watermark_for_agent(&agent_id)
+                    .produced_watermark_for_agent(&agent_id)
             })
             .transpose()?
             .unwrap_or(0);
@@ -929,7 +1055,10 @@ impl MemoryIndex {
     fn consume_rebuild_intents(&mut self, storage: &AppStorage) -> Result<()> {
         let agent_id = storage_agent_id(storage);
         let intents = self.rebuild_intents_for_agent(&agent_id)?;
-        for intent in intents {
+        // A rebuild is agent-global (collect_documents ignores the workspace),
+        // and rebuild() deletes every pending intent for the agent, so one
+        // rebuild settles the whole batch no matter how many reasons queued.
+        if let Some(intent) = intents.into_iter().next() {
             let active_workspace_id = if intent.source_id == MEMORY_INDEX_REBUILD_SOURCE_ID {
                 None
             } else {
@@ -1118,14 +1247,35 @@ impl MemoryIndex {
         storage: &AppStorage,
         agent_id: &str,
     ) -> Result<MemorySearchIndexStatus> {
+        let shared_indexes_dir = storage.shared_indexes_dir();
         let has_stale_projection = self.has_stale_source_states_for_agent(agent_id)?;
         let has_pending_sources = self.has_pending_sources_for_agent(agent_id)?;
         let lacks_full_backfill = !self.has_backfill_checkpoints_for_agent(agent_id)?;
+        let is_dirty = memory_index_is_dirty_for(&shared_indexes_dir, agent_id);
+        // Order matters for readability, not semantics: every reason is
+        // independently healed by the background daemon.
+        let mut stale_reasons = Vec::new();
+        if !memory_index_path(storage).exists() {
+            stale_reasons.push("index_missing".to_string());
+        }
+        if is_dirty {
+            stale_reasons.push("dirty_marker".to_string());
+        }
+        if lacks_full_backfill {
+            stale_reasons.push("backfill_incomplete".to_string());
+        }
+        if has_stale_projection {
+            stale_reasons.push("stale_projection".to_string());
+        }
+        if has_pending_sources {
+            stale_reasons.push("pending_sources".to_string());
+        }
+        if self.last_outbox_error_count > 0 {
+            stale_reasons.push("consume_error".to_string());
+        }
         let Some(runtime_db) = storage.runtime_db()? else {
-            let indexing_needed = memory_index_is_dirty(storage)
-                || has_stale_projection
-                || has_pending_sources
-                || lacks_full_backfill;
+            let indexing_needed =
+                is_dirty || has_stale_projection || has_pending_sources || lacks_full_backfill;
             return Ok(MemorySearchIndexStatus {
                 freshness: if indexing_needed { "stale" } else { "fresh" }.into(),
                 cursor: 0,
@@ -1138,6 +1288,7 @@ impl MemoryIndex {
                 consumption_was_limited: false,
                 skipped_error_count: self.last_outbox_error_count,
                 last_indexed_at: None,
+                stale_reasons,
             });
         };
         let runtime_id = runtime_index_runtime_id(&runtime_db);
@@ -1158,9 +1309,12 @@ impl MemoryIndex {
             _ => None,
         };
         let lag = (high_watermark - cursor).max(0);
+        if lag > 0 || pending_count > 0 {
+            stale_reasons.push("outbox_lag".to_string());
+        }
         let freshness = if !memory_index_path(storage).exists() {
             "missing"
-        } else if memory_index_is_dirty(storage)
+        } else if is_dirty
             || lag > 0
             || pending_count > 0
             || has_stale_projection
@@ -1188,6 +1342,7 @@ impl MemoryIndex {
                 agent_id,
                 MEMORY_INDEX_OUTBOX_CURSOR,
             )?,
+            stale_reasons,
         })
     }
 
@@ -1332,6 +1487,16 @@ impl MemoryIndex {
         let mut statement = self.connection.prepare(
             "SELECT DISTINCT agent_id
              FROM memory_index_pending_sources
+             ORDER BY agent_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
+    fn agent_ids_with_cursors(&self) -> Result<Vec<String>> {
+        let mut statement = self.connection.prepare(
+            "SELECT DISTINCT agent_id
+             FROM memory_index_cursors
              ORDER BY agent_id ASC",
         )?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
@@ -5128,6 +5293,167 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn self_heal_discovery_finds_dirty_and_backfill_missing_agents() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        let candidates = vec!["default".to_string()];
+
+        // Never backfilled: the agent is invisible to pending-row
+        // enumerations but must be discovered for self-heal.
+        assert_eq!(
+            memory_index_agent_ids_needing_backfill(&storage, &candidates).unwrap(),
+            vec!["default".to_string()]
+        );
+
+        rebuild_memory_index(&storage, None).unwrap();
+        assert!(
+            memory_index_agent_ids_needing_backfill(&storage, &candidates)
+                .unwrap()
+                .is_empty()
+        );
+
+        // A dirty marker alone (no pending rows anywhere) is rediscovered.
+        storage.mark_memory_index_dirty().unwrap();
+        assert_eq!(
+            memory_index_agent_ids_needing_backfill(&storage, &candidates).unwrap(),
+            vec!["default".to_string()]
+        );
+    }
+
+    #[test]
+    fn daemon_self_heal_flow_backfills_and_clears_dirty_marker() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        fs::write(
+            agent_memory_self_path(dir.path()),
+            "self-heal backfill sentinel",
+        )
+        .unwrap();
+        storage.mark_memory_index_dirty().unwrap();
+
+        // Daemon behavior for a discovered self-heal agent: enqueue a durable
+        // intent (idempotently), then run the bounded refresh.
+        request_memory_index_rebuild(&storage, None, "self_heal").unwrap();
+        request_memory_index_rebuild(&storage, None, "self_heal_retry").unwrap();
+        let status = refresh_memory_index_bounded(&storage, None, 10).unwrap();
+
+        assert_eq!(status.freshness, "fresh");
+        assert!(status.stale_reasons.is_empty());
+        assert!(!memory_index_is_dirty(&storage));
+        assert!(MemoryIndex::open(&storage)
+            .unwrap()
+            .has_backfill_checkpoints_for_agent("default")
+            .unwrap());
+        assert!(memory_index_agent_ids_with_pending(&storage)
+            .unwrap()
+            .is_empty());
+        assert!(
+            search_memory(&storage, "self-heal backfill sentinel", 10, None, false)
+                .unwrap()
+                .iter()
+                .any(|result| result.source_ref == "agent_memory:self")
+        );
+    }
+
+    #[test]
+    fn rebuild_after_outbox_drain_keeps_cursor_at_produced_watermark() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let brief = brief_with_workspace(
+            "default",
+            BriefKind::Result,
+            "drained watermark rebuild sentinel",
+            "ws-holon",
+        );
+        storage.append_brief(&brief).unwrap();
+
+        // Incremental consume drains the outbox; produced watermark stays 1
+        // while the remaining-row maximum collapses to 0.
+        let status = refresh_memory_index_bounded(&storage, None, 10).unwrap();
+        assert_eq!(status.lag, 0);
+        assert_eq!(status.cursor, 1);
+        assert_eq!(status.high_watermark, 1);
+        assert_eq!(status.freshness, "stale");
+        assert!(status
+            .stale_reasons
+            .contains(&"backfill_incomplete".to_string()));
+
+        // A rebuild triggered after the drain must acknowledge the produced
+        // watermark, not the drained maximum, or the cursor regresses to 0
+        // and the agent reports outbox lag forever.
+        request_memory_index_rebuild(&storage, None, "self_heal").unwrap();
+        let rebuilt = refresh_memory_index_bounded(&storage, None, 10).unwrap();
+        assert_eq!(rebuilt.freshness, "fresh");
+        assert_eq!(rebuilt.cursor, 1);
+        assert_eq!(rebuilt.high_watermark, 1);
+        assert_eq!(rebuilt.lag, 0);
+        assert!(rebuilt.stale_reasons.is_empty());
+    }
+
+    #[test]
+    fn multi_agent_search_reports_per_agent_status_and_aggregate() {
+        let dir = tempdir().unwrap();
+        let default_storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        default_storage
+            .write_agent(&AgentState::new("default"))
+            .unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        rebuild_memory_index(&default_storage, None).unwrap();
+
+        let other_storage = AppStorage::new_for_agent_for_test(dir.path(), "other").unwrap();
+        other_storage
+            .write_agent(&AgentState::new("other"))
+            .unwrap();
+
+        // Single-agent query keeps the compact shape: no per-agent map, and
+        // the aggregate is exactly that agent's status.
+        let single = search_memory_query_for_agent_storages(
+            &default_storage,
+            "sentinel",
+            10,
+            None,
+            false,
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(single.index_status_by_agent.is_none());
+        assert_eq!(single.index_status.freshness, "fresh");
+
+        // Two-agent query: the un-backfilled agent dominates the aggregate
+        // and both statuses are reported per agent.
+        let multi = search_memory_query_for_agent_storages(
+            &default_storage,
+            "sentinel",
+            10,
+            None,
+            false,
+            &["default".to_string(), "other".to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let by_agent = multi.index_status_by_agent.expect("per-agent status map");
+        assert_eq!(by_agent.len(), 2);
+        assert_eq!(by_agent["default"].freshness, "fresh");
+        assert_eq!(by_agent["other"].freshness, "stale");
+        assert!(by_agent["other"]
+            .stale_reasons
+            .contains(&"backfill_incomplete".to_string()));
+        assert_eq!(multi.index_status.freshness, "stale");
+        assert!(multi
+            .index_status
+            .stale_reasons
+            .contains(&"backfill_incomplete".to_string()));
     }
 
     #[test]
