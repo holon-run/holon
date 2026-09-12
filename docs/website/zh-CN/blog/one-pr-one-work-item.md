@@ -8,7 +8,7 @@ order: 30
 
 ![蓝色 Reviewer 面对代码面板，前方的 PR 流程依次展示修改、等待与检查通过。](/assets/continuous-pr-reviewer-cover.webp)
 
-> **中文审阅稿 · 未发布。** 案例来自 Holon 仓库自身的 `holon-reviewer`；案例记录采集于 2026 年 9 月 10 日。
+> 案例来自 Holon 仓库自身的 `holon-reviewer`；案例记录采集于 2026 年 9 月 10 日。
 
 作者推送了修复，reviewer 确认原来的问题已经解决。几分钟后，CI 又红了。
 

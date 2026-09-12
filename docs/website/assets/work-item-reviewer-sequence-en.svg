@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="410" viewBox="0 0 800 410" role="img" aria-labelledby="title desc">
+<title id="title">One reviewer, two WorkItems</title>
+<desc id="desc">Each PR has a WorkItem. The same reviewer focuses on A, B, A, then B. External events make the corresponding WorkItem resumable; the runtime schedules execution. Switching focus does not erase wait records.</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#285fa7" stroke-width="1.4"/></marker></defs>
+<rect width="800" height="410" rx="8" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, sans-serif">
+<text x="40" y="45" font-size="22" fill="#183457" font-weight="600" text-anchor="start">One reviewer, two WorkItems</text>
+<text x="28" y="121" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">External events</text>
+<rect x="310" y="96" width="160" height="40" rx="6" fill="#fff" stroke="#d9e2eb"/>
+<text x="390.0" y="121" font-size="15" fill="#285fa7" font-weight="400" text-anchor="middle">PR A updated</text>
+<rect x="610" y="96" width="150" height="40" rx="6" fill="#fff" stroke="#d9e2eb"/>
+<text x="685.0" y="121" font-size="15" fill="#34746d" font-weight="400" text-anchor="middle">PR B · CI done</text>
+<path d="M390 136V163H530V198" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)" stroke-dasharray="5 7"/>
+<defs><marker id="arrow-13" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#34746d" stroke-width="1.4"/></marker></defs>
+<path d="M685 136V163H690V198" fill="none" stroke="#34746d" stroke-width="1.3" marker-end="url(#arrow-13)" stroke-dasharray="5 7"/>
+<text x="544" y="184" font-size="13" fill="#285fa7" font-weight="400" text-anchor="start">Wake</text>
+<text x="704" y="184" font-size="13" fill="#34746d" font-weight="400" text-anchor="start">Wake</text>
+<text x="28" y="239" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">Current WorkItem</text>
+<rect x="150" y="200" width="120" height="66" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
+<text x="210" y="226" font-size="16" fill="#285fa7" font-weight="600" text-anchor="middle">WorkItem A</text>
+<text x="210" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">Review</text>
+<path d="M271 236H308" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<text x="290" y="218" font-size="11.488372093023257" fill="#53677d" font-weight="400" text-anchor="middle">Switch</text>
+<rect x="310" y="200" width="120" height="66" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
+<text x="370" y="226" font-size="16" fill="#34746d" font-weight="600" text-anchor="middle">WorkItem B</text>
+<text x="370" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">Review</text>
+<path d="M431 236H468" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<text x="450" y="218" font-size="11.488372093023257" fill="#53677d" font-weight="400" text-anchor="middle">Switch</text>
+<rect x="470" y="200" width="120" height="66" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
+<text x="530" y="226" font-size="16" fill="#285fa7" font-weight="600" text-anchor="middle">WorkItem A</text>
+<text x="530" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">Verify delivery</text>
+<path d="M591 236H628" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<text x="610" y="218" font-size="11.488372093023257" fill="#53677d" font-weight="400" text-anchor="middle">Switch</text>
+<rect x="630" y="200" width="120" height="66" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
+<text x="690" y="226" font-size="16" fill="#34746d" font-weight="600" text-anchor="middle">WorkItem B</text>
+<text x="690" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">Check CI</text>
+<text x="28" y="331" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">Wait records</text>
+<path d="M210 266V326H362M386 326H530" fill="none" stroke="#285fa7" stroke-width="1.3"/>
+<path d="M530 320V332" fill="none" stroke="#285fa7" stroke-width="1.3"/>
+<text x="226" y="314" font-size="14" fill="#285fa7" font-weight="400" text-anchor="start">A · Await revisions</text>
+<path d="M370 266V319Q382 326 370 333V376H690" fill="none" stroke="#34746d" stroke-width="1.3"/>
+<path d="M690 370V382" fill="none" stroke="#34746d" stroke-width="1.3"/>
+<text x="386" y="364" font-size="14" fill="#34746d" font-weight="400" text-anchor="start">B · Await CI</text>
+</g></svg>

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export the Chinese WorkItem article diagrams as SVG sources and 2x PNGs.
+"""Export WorkItem diagrams as SVG sources and 2x PNGs (--lang zh|en).
 
 Requires CairoSVG and Noto Sans CJK SC. These are conceptual illustrations,
 not runtime state-machine or component-boundary specifications.
@@ -22,6 +22,52 @@ WAITING = ("#fff6e7", "#865b1c")
 DONE = ("#eaf5f0", "#27664d")
 
 
+LANG = "zh"
+EN = {
+    "WorkItem：工作状态的保存与恢复": "WorkItem: save and resume work",
+    "判断与执行按轮进行，工作记录跨轮保留。": "Decisions and execution happen in rounds; work records persist across rounds.",
+    "持久工作记录": "Persistent work record",
+    "读取工作记录": "Read work record",
+    "一个 reviewer，两个 WorkItem": "One reviewer, two WorkItems",
+    "每个 PR 对应一个 WorkItem。同一个 reviewer 的当前工作焦点依次为 A、B、A、B。外部事件使对应 WorkItem 可恢复，再由运行时安排执行；切换焦点不清除等待记录。": "Each PR has a WorkItem. The same reviewer focuses on A, B, A, then B. External events make the corresponding WorkItem resumable; the runtime schedules execution. Switching focus does not erase wait records.",
+    "外部事件": "External events",
+    "唤醒": "Wake",
+    "当前 WorkItem": "Current WorkItem",
+    "等待记录": "Wait records",
+    "A · 等待修订": "A · Await revisions",
+    "B · 等待 CI": "B · Await CI",
+    "Agent 判断": "Agent reasoning",
+    "决定下一步": "Choose the next step",
+    "运行时": "Runtime",
+    "保存状态 · 安排执行": "Save state · Schedule execution",
+    "目标与交付": "Goals & delivery",
+    "进度与证据": "Progress & evidence",
+    "等待与恢复": "Wait & resume",
+    "PR A 更新": "PR A updated",
+    "PR B · CI 完成": "PR B · CI done",
+    "信号到达": "Signal arrives",
+    "检查恢复条件": "Check resume conditions",
+    "恢复上下文": "Restore context",
+    "接回这项工作": "Pick up this work",
+    "继续推进": "Continue work",
+    "复查并更新记录": "Review and update record",
+    "审阅": "Review",
+    "复查交付": "Verify delivery",
+    "检查 CI": "Check CI",
+    "切换": "Switch"
+}
+
+def translate(value):
+    if LANG == "zh":
+        return value
+    # Numbered investigation steps are assembled before reaching text().
+    if value[:2].isdigit() and value[2:4] == "  ":
+        return value[:4] + translate(value[4:])
+    if any("\u4e00" <= char <= "\u9fff" for char in value):
+        return EN[value]
+    return value
+
+
 class Diagram:
     width = 800
 
@@ -31,8 +77,8 @@ class Diagram:
         self.parts = [
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
             f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
-            f'<title id="title">{escape(title)}</title>',
-            f'<desc id="desc">{escape(subtitle)}</desc>',
+            f'<title id="title">{escape(translate(title))}</title>',
+            f'<desc id="desc">{escape(translate(subtitle))}</desc>',
             '<defs><marker id="arrow" markerWidth="8" markerHeight="8" '
             'refX="7" refY="4" orient="auto-start-reverse">'
             f'<path d="M1 1L7 4L1 7" fill="none" stroke="{BLUE}" '
@@ -43,10 +89,30 @@ class Diagram:
         self.text(40, 45, title, 22, bold=True)
 
     def text(self, x, y, value, size=18, color=INK, bold=False, anchor="start"):
+        if LANG == "en":
+            import cairocffi as cairo
+
+            context = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+            context.select_font_face("Noto Sans CJK SC", 0, int(bold))
+            context.set_font_size(size)
+            width = context.text_extents(translate(value))[4]
+            available = self.width - x - 28
+            if anchor == "middle":
+                available = 180 if y in (370, 392) else 112
+                if y == 121:
+                    available = 140
+                if y == 218:
+                    available = 38
+            elif x == 28:
+                available = 114
+            elif y == 267:
+                available = 215
+            if width > available:
+                size *= available / width
         self.parts.append(
             f'<text x="{x}" y="{y}" font-size="{size}" fill="{color}" '
             f'font-weight="{600 if bold else 400}" text-anchor="{anchor}">'
-            f'{escape(value)}</text>'
+            f'{escape(translate(value))}</text>'
         )
 
     def rect(self, x, y, w, h, fill="#fff", stroke=BORDER, radius=6):
@@ -73,6 +139,7 @@ class Diagram:
         )
 
     def save(self, name):
+        name = name.replace("-zh", f"-{LANG}")
         source = '\n'.join(self.parts + ['</g></svg>'])
         (OUT / f'{name}.svg').write_text(source, encoding='utf-8')
         cairosvg.svg2png(
@@ -164,5 +231,10 @@ def sequence():
 
 
 if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lang", choices=("zh", "en"), default="zh")
+    LANG = parser.parse_args().lang
     architecture()
     sequence()

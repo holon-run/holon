@@ -1,4 +1,4 @@
-"""Render the small-team article's diagrams from reviewed, anonymized aggregates."""
+"""Render reviewed team aggregates (--lang zh|en; English fitting uses Cairo)."""
 
 import math
 from pathlib import Path
@@ -21,13 +21,132 @@ TOTAL = sum(value for _, value, _ in ROLES)
 assert TOTAL == 7_764_060_663
 
 
+LANG = "zh"
+EN = {
+    "代码审阅": "Code review",
+    "现场调查": "Investigation",
+    "测试验收": "Acceptance testing",
+    "协作助手": "Team assistance",
+    "数据分析": "Data analysis",
+    "产品运维": "Product operations",
+    "77 天累计 Token 用量与角色占比": "77 days of token usage by role",
+    "2026年6月25日至9月9日，六类共享Agent累计77.64亿Token，含缓存输入。饼图按角色划分，不代表费用或成果。": "June 25–September 9, 2026: six shared Agent roles used 7.764 billion tokens, including cached input. The pie chart shows role shares, not cost or outcomes.",
+    "77 天，共享 Agent 的累计用量": "77 days of shared Agent usage",
+    "2026.06.25 至 09.09 · 北京时间": "2026.06.25–09.09 · Beijing time",
+    "77.64 亿 Token": "7.764 billion tokens",
+    "输入 76.94 亿 · 输出 0.70 亿": "Input 7.694B · Output 0.070B",
+    "含缓存读取 62.59 亿，已计入输入": "Includes 6.259B cached input tokens",
+    "从客户端上报到 GitHub Issue": "From client report to GitHub Issue",
+    "客户端生成诊断report并上报服务器；webhook通知Holon内的trace report Agent，读取获准trace、整理现场和证据，创建或补充GitHub Issue，再交开发者定位修复。": "The client uploads a diagnostic report to the server. A webhook notifies the trace report Agent in Holon, which reads authorized traces, organizes context and evidence, and creates or updates a GitHub Issue for developers to investigate and fix.",
+    "日志进入调查，调查留下可接手的记录": "Logs become evidence others can act on",
+    "Issue 关闭之后，按版本持续跟进验收": "Track acceptance by release after Issue closure",
+    "PR 合并、关联 Issue 关闭不等于已部署、已发包或验收通过。测试 Agent 等待部署和发布事件，按每项变更的依赖核对实际交付版本，整理变更与已关闭 Issue 的验收清单；未进入版本的修复继续等待。自动检查或人工实测之后，注明版本、范围和来源，写回 Issue 与版本验收记录。": "Merged PRs and closed Issues do not mean deployment, release, or acceptance is complete. The test Agent waits for deployment and release events, checks each change against its dependencies and the delivered version, and builds a checklist of changes and linked closed Issues. Fixes not yet included keep waiting. After automated or manual checks, version, scope, and evidence source are recorded in the Issue and release acceptance record.",
+    "Issue 关闭，验收还没结束": "Issue closed. Acceptance still open.",
+    "跟进一个版本周期，而非一次合并": "Follow a release cycle, not just a merge",
+    "按角色划分": "By role",
+    "亿 Token": "100M tokens",
+    "占比": "Share",
+    "图例数值：亿 Token / 占比": "Legend: 100M tokens / share",
+    "仅留存轮次；不代表费用或成果": "Retained rounds only; not cost or outcomes",
+    "模型使用规模，不是费用或成果指标": "Model usage scale, not cost or outcomes",
+    "仅留存轮次；数值各自四舍五入": "Retained rounds only; rounded independently",
+    "Holon · 常驻 Runtime": "Holon · Persistent runtime",
+    "读取获准 trace，还原操作过程": "Read authorized traces; reconstruct actions",
+    "整理卡住位置、取消与恢复线索": "Find stalls, cancellation and recovery clues",
+    "注明服务端日志缺口与待确认点": "Note server-log gaps and open questions",
+    "创建 / 补充": "Create / update",
+    "场景、证据、标签、负责人": "Context, evidence, labels, owner",
+    "→ 开发者继续定位与修复": "→ Developers investigate and fix",
+    "调查线索 ≠ 已确认根因": "Investigation clues ≠ confirmed root cause",
+    "通知调查": "Notify Agent",
+    "获准 trace": "Authorized traces",
+    "供 Agent 读取": "For Agent access",
+    "场景 · 证据 · 待确认点 · 标签 · 负责人": "Context · evidence · open questions · labels · owner",
+    "交接": "Handoff",
+    "开发者继续定位与修复": "Developers investigate and fix",
+    "不用重新下载日志、整理现场": "No need to gather logs and context again",
+    "调查线索 ≠ 已确认根因；已有 Issue 的结果补回原记录。": "Clues ≠ confirmed root cause; append findings to an existing Issue.",
+    "多个 PR 合并 → 关联 Issue 关闭": "PRs merged → linked Issues closed",
+    "代码已合并，修复尚未部署或发包": "Merged, but not yet deployed or released",
+    "测试 Agent 持续跟进": "Test Agent keeps tracking",
+    "等待部署 / 发布事件，工作仍保留": "Wait for deploy / release; retain the work",
+    "服务器部署完成": "Server deployed",
+    "服务器改动：核对对应部署": "Server changes: verify deployment",
+    "客户端版本发布": "Client version released",
+    "客户端改动：核对对应版本": "Client changes: verify release",
+    "按每项变更的依赖等待": "Wait on each change's dependencies",
+    "不是每项都要同时等两个事件": "Not every change needs both events",
+    "跨端问题核对两端条件": "Cross-platform fixes: check both sides",
+    "核对版本，形成验收清单": "Verify version; build acceptance checklist",
+    "本次实际交付的变更": "Changes actually delivered in this release",
+    "+ 这些变更关联的已关闭 Issue": "+ their linked closed Issues",
+    "不按 Issue 关闭日期机械归集": "Do not group solely by Issue closure date",
+    "已进入可测版本的清单项": "Checklist items in a testable version",
+    "清单内的两种验证方式": "Two ways to verify checklist items",
+    "Agent 自动检查": "Agent automated checks",
+    "如后台跳转：4 类请求 → 响应": "E.g. redirects: 4 request types → responses",
+    "记录检查范围，不外推其他功能": "Record scope; do not infer other coverage",
+    "人工实测，Agent 接回结果": "Human testing; Agent records results",
+    "如琴键发声：修复包 + 对应固件": "E.g. piano sound: patched app + firmware",
+    "人工可先完成，无需重复派测": "Reuse prior human results; no duplicate test",
+    "回写原 Issue 与版本验收记录": "Update Issue and release acceptance record",
+    "版本 · 检查范围 · 结果来源": "Version · check scope · evidence source",
+    "分别记录自动检查和人工结论": "Separate automated and human conclusions",
+    "未进入可测版本的修复继续等待；": "Fixes not yet testable keep waiting;",
+    "缺少必要反馈，也不能判定通过。": "without required feedback, do not pass.",
+    "多个 PR 合并": "Multiple PRs merged",
+    "一个版本周期内的修复": "Fixes within one release cycle",
+    "关联 Issue 关闭": "Linked Issues closed",
+    "代码完成，验收仍待跟进": "Code done; acceptance still pending",
+    "尚未部署 / 尚未发包": "Not deployed / not released",
+    "不能据此判定验收通过": "This does not establish acceptance",
+    "测试 Agent 持续跟进，等待部署 / 发布事件": "Test Agent tracks deployment / release events",
+    "按每项变更的依赖等待，不是每项都要同时等两个事件；跨端问题核对两端条件。": "Wait on each change's dependencies, not always both events; check both sides for cross-platform fixes.",
+    "等待期间，待验收的工作仍然保留。": "Pending acceptance work persists while waiting.",
+    "本次实际交付的变更 + 关联的已关闭 Issue": "Delivered changes + linked closed Issues",
+    "尚未进入可测版本的修复": "Fixes not yet in a testable version",
+    "继续等待，不算本次已验收": "Keep waiting; not accepted this release",
+    "验收清单中的两种验证方式": "Two ways to verify the acceptance checklist",
+    "如后台跳转：4 类请求 → 检查响应": "E.g. redirects: 4 request types → check responses",
+    "注明版本、检查范围和结果来源": "Record version, check scope and evidence source",
+    "客户端": "Client",
+    "用户操作与系统响应": "User actions and system responses",
+    "诊断 report": "Diagnostic report",
+    "带上现场描述与 trace 线索": "Context and trace clues",
+    "服务器": "Server",
+    "接收上报，提供获准访问的 trace": "Receive reports; expose authorized traces",
+    "生成报告": "Create report",
+    "上传 report": "Upload report",
+    "webhook 通知": "Webhook notification",
+    "记录操作与响应": "Record actions and responses",
+    "现场描述 + trace 线索": "Context + trace clues",
+    "接收上报 / 保存现场": "Receive report / retain context",
+    "整理卡住位置与取消 / 恢复线索": "Find stalls and cancel / resume clues",
+    "注明日志缺口，保留待确认点": "Note log gaps and open questions",
+    "接收上报": "Receive reports",
+    "提供获准访问的 trace": "Provide authorized traces"
+}
+
+def translate(value):
+    if LANG == "zh":
+        return value
+    # Numbered investigation steps are assembled before reaching text().
+    if value[:2].isdigit() and value[2:4] == "  ":
+        return value[:4] + translate(value[4:])
+    if any("\u4e00" <= char <= "\u9fff" for char in value):
+        return EN[value]
+    return value
+
+
 class Diagram:
     def __init__(self, width, height, title, description):
         self.narrow = width == 480
+        self.width = width
+        self.rectangles = []
         self.parts = [
             f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
             f'viewBox="0 0 {width} {height}" role="img" aria-labelledby="title desc">',
-            f'<title id="title">{escape(title)}</title><desc id="desc">{escape(description)}</desc>',
+            f'<title id="title">{escape(translate(title))}</title><desc id="desc">{escape(translate(description))}</desc>',
             '<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" '
             f'orient="auto"><path d="M1 1 L8 4.5 L1 8" fill="none" stroke="{BLUE}" '
             'stroke-width="1.5"/></marker></defs>',
@@ -38,12 +157,47 @@ class Diagram:
     def text(self, x, y, value, size=22, color=INK, weight=400, anchor="start"):
         if self.narrow:
             size = max(size, 22)
+        if LANG == "en":
+            import cairocffi as cairo
+
+            available = self.width - x - 28
+            if anchor == "middle":
+                available = 210 if y in (252, 288) else 138
+                available = min(available, 2 * (x - 28), 2 * (self.width - x - 28))
+            elif anchor == "end":
+                available = 110
+            else:
+                for left, top, width, height in self.rectangles:
+                    if left <= x < left + width and top < y < top + height:
+                        available = min(available, left + width - x - 28)
+                if self.narrow and x == 60 and 560 < y < 800:
+                    available = 195
+                if not self.narrow:
+                    if x == 560:
+                        available = 255
+                    elif x in (824, 786):
+                        available = 326 if x == 824 else 354
+                    elif x == 72 and y in (510, 548):
+                        available = 352
+                    elif x == 52 and y in (157, 193):
+                        available = 270
+                    elif x == 420:
+                        available = 320
+                    elif x == 52 and y in (615, 655, 684, 1024):
+                        available = 610
+            context = cairo.Context(cairo.ImageSurface(cairo.FORMAT_ARGB32, 1, 1))
+            context.select_font_face("Noto Sans CJK SC", 0, int(weight >= 600))
+            context.set_font_size(size)
+            width = context.text_extents(translate(value))[4]
+            if width > available:
+                size *= available / width
         self.parts.append(
             f'<text x="{x}" y="{y}" font-size="{size}" fill="{color}" '
-            f'font-weight="{weight}" text-anchor="{anchor}">{escape(value)}</text>'
+            f'font-weight="{weight}" text-anchor="{anchor}">{escape(translate(value))}</text>'
         )
 
     def rect(self, x, y, w, h, fill="white", stroke=LINE, radius=10):
+        self.rectangles.append((x, y, w, h))
         self.parts.append(
             f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{radius}" '
             f'fill="{fill}" stroke="{stroke}" stroke-width="1.5"/>'
@@ -85,6 +239,7 @@ class Diagram:
         self.parts.append("</g>")
 
     def save(self, name):
+        name = name.replace("-zh", f"-{LANG}")
         (ASSETS / name).write_text("\n".join(self.parts + ["</g></svg>"]) + "\n")
 
 
@@ -309,6 +464,11 @@ def collaboration(narrow):
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--lang", choices=("zh", "en"), default="zh")
+    LANG = parser.parse_args().lang
     for narrow in (False, True):
         usage(narrow)
         investigation(narrow)

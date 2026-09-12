@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="570" viewBox="0 0 1200 570" role="img" aria-labelledby="title desc">
+<title id="title">77 days of token usage by role</title><desc id="desc">June 25–September 9, 2026: six shared Agent roles used 7.764 billion tokens, including cached input. The pie chart shows role shares, not cost or outcomes.</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8" fill="none" stroke="#285fa7" stroke-width="1.5"/></marker></defs>
+<rect width="1200" height="570" rx="16" fill="#f7faff"/>
+<g font-family="Noto Sans CJK SC, sans-serif" fill="#183457">
+<text x="30" y="48" font-size="26" fill="#183457" font-weight="600" text-anchor="start">77 days of shared Agent usage</text>
+<text x="30" y="82" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">2026.06.25–09.09 · Beijing time</text>
+<text x="30" y="146" font-size="42" fill="#183457" font-weight="600" text-anchor="start">7.764 billion tokens</text>
+<text x="30" y="183" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Input 7.694B · Output 0.070B</text>
+<text x="30" y="215" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">Includes 6.259B cached input tokens</text>
+<path d="M260 390 L260.000 258.000 A132 132 0 1 1 242.144 520.787 Z" fill="#285fa7" stroke="#f7faff" stroke-width="2"/>
+<path d="M260 390 L242.144 520.787 A132 132 0 0 1 128.962 374.092 Z" fill="#398a88" stroke="#f7faff" stroke-width="2"/>
+<path d="M260 390 L128.962 374.092 A132 132 0 0 1 167.040 296.285 Z" fill="#bd8131" stroke="#f7faff" stroke-width="2"/>
+<path d="M260 390 L167.040 296.285 A132 132 0 0 1 195.503 274.830 Z" fill="#56643e" stroke="#f7faff" stroke-width="2"/>
+<path d="M260 390 L195.503 274.830 A132 132 0 0 1 228.650 261.777 Z" fill="#c35672" stroke="#f7faff" stroke-width="2"/>
+<path d="M260 390 L228.650 261.777 A132 132 0 0 1 260.000 258.000 Z" fill="#75579d" stroke="#f7faff" stroke-width="2"/>
+<text x="530" y="110" font-size="24" fill="#183457" font-weight="600" text-anchor="start">By role</text>
+<text x="930" y="110" font-size="18.333333333333332" fill="#536b87" font-weight="400" text-anchor="end">100M tokens</text>
+<text x="1135" y="110" font-size="20" fill="#536b87" font-weight="400" text-anchor="end">Share</text>
+<rect x="530" y="138" width="17" height="17" rx="3" fill="#285fa7" stroke="#285fa7" stroke-width="1.5"/>
+<text x="560" y="155" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Code review</text>
+<text x="930" y="155" font-size="22" fill="#183457" font-weight="400" text-anchor="end">40.50</text>
+<text x="1135" y="155" font-size="22" fill="#183457" font-weight="400" text-anchor="end">52.16%</text>
+<rect x="530" y="193" width="17" height="17" rx="3" fill="#398a88" stroke="#398a88" stroke-width="1.5"/>
+<text x="560" y="210" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Investigation</text>
+<text x="930" y="210" font-size="22" fill="#183457" font-weight="400" text-anchor="end">19.23</text>
+<text x="1135" y="210" font-size="22" fill="#183457" font-weight="400" text-anchor="end">24.76%</text>
+<rect x="530" y="248" width="17" height="17" rx="3" fill="#bd8131" stroke="#bd8131" stroke-width="1.5"/>
+<text x="560" y="265" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Acceptance testing</text>
+<text x="930" y="265" font-size="22" fill="#183457" font-weight="400" text-anchor="end">8.26</text>
+<text x="1135" y="265" font-size="22" fill="#183457" font-weight="400" text-anchor="end">10.64%</text>
+<rect x="530" y="303" width="17" height="17" rx="3" fill="#56643e" stroke="#56643e" stroke-width="1.5"/>
+<text x="560" y="320" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Team assistance</text>
+<text x="930" y="320" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.35</text>
+<text x="1135" y="320" font-size="22" fill="#183457" font-weight="400" text-anchor="end">4.31%</text>
+<rect x="530" y="358" width="17" height="17" rx="3" fill="#c35672" stroke="#c35672" stroke-width="1.5"/>
+<text x="560" y="375" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Data analysis</text>
+<text x="930" y="375" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.35</text>
+<text x="1135" y="375" font-size="22" fill="#183457" font-weight="400" text-anchor="end">4.31%</text>
+<rect x="530" y="413" width="17" height="17" rx="3" fill="#75579d" stroke="#75579d" stroke-width="1.5"/>
+<text x="560" y="430" font-size="22" fill="#183457" font-weight="400" text-anchor="start">Product operations</text>
+<text x="930" y="430" font-size="22" fill="#183457" font-weight="400" text-anchor="end">2.96</text>
+<text x="1135" y="430" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.82%</text>
+<path d="M530 464 H1140" fill="none" stroke="#c4d3e6" stroke-width="2"/>
+<text x="530" y="503" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">Model usage scale, not cost or outcomes</text>
+<text x="530" y="539" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">Retained rounds only; rounded independently</text>
+</g></svg>

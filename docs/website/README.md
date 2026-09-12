@@ -1,6 +1,6 @@
 ---
 title: Holon
-summary: Keep project work moving after the chat ends.
+summary: Let agents keep working in your environment. Holon preserves progress and resumes work when there is something to act on.
 order: 1
 ---
 
@@ -10,9 +10,9 @@ order: 1
 
 <p class="home-eyebrow">Local workbench for long-lived agents</p>
 
-# Let project work outlive the chat.
+# Let agents keep working.<br>Connect when you need to.
 
-<p class="home-hero__lede">Run long-lived agents against real repositories and tools. Holon preserves their work, waits for the next meaningful event, and resumes from durable state.</p>
+<p class="home-hero__lede">Give recurring reviews, investigations, and tests to agents with ongoing roles. Holon runs them in your repositories and toolchains, saves their progress, and resumes work when a commit, check result, or your approval arrives.</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/getting-started/">Get started</a>
@@ -22,11 +22,11 @@ order: 1
 <p class="home-hero__note">A local-first runtime around agents—not another agent or a managed agent service.</p>
 
 </div>
-<div class="home-runtime" aria-label="Placeholder overview of the Holon runtime">
-<div class="home-runtime__top"><span>runtime overview · content placeholder</span><span class="home-runtime__status">running locally</span></div>
+<div class="home-runtime" aria-label="Illustrated Holon runtime workflow">
+<div class="home-runtime__top"><span>Holon Runtime · workflow</span><span class="home-runtime__status">illustration</span></div>
 <div class="home-runtime__events"><span>operator input</span><span>task result</span><span>external event</span><span>timer</span></div>
 <div class="home-runtime-map">
-<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">LONG-LIVED AGENT</span><strong>Responsibility + durable work state</strong><small>The runtime keeps the identity and current objective addressable.</small></div>
+<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">LONG-LIVED AGENT</span><strong>Ongoing roles, lasting responsibility</strong><small>Review, investigate, test—with goals and progress saved for each piece of work.</small></div>
 <div class="home-runtime-map__connector" aria-hidden="true"><span>execute</span></div>
 <div class="home-runtime-map__pair">
 <div class="home-runtime-map__stage"><span class="home-runtime-map__label">WORKSPACE</span><strong>Repositories + tools</strong><small>Work happens in real project environments.</small></div>
@@ -85,34 +85,38 @@ In daemon mode, Holon Runtime holds agents, work items, and waiting state. TUI a
 
 ## Meet Holon. Then see how the work continues.
 
-Four Chinese drafts are awaiting review. English article pages are placeholders until the Chinese review is approved.
+Start with the product and its WorkItem design, set up continuous PR review, then see how shared agents fit into a small team's day-to-day work.
 
 </div>
 <a class="home-reading-all" href="/blog/">View all articles →</a>
 <div class="home-reading-grid">
 <a class="home-reading-card" href="/blog/what-is-holon">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">01 · PRODUCT</span>
-<h3>What is Holon?</h3>
-<p>Chinese draft under review. English translation pending.</p>
-<span class="home-reading-card__cta">View translation status →</span>
+<h3>Let agents keep working in your environment</h3>
+<p>Give agents ongoing roles and connect when you need to. Meet the local workbench, from your own machine to remote development and team use.</p>
+<span class="home-reading-card__cta">Meet Holon →</span>
 </a>
 <a class="home-reading-card" href="/blog/why-work-items">
+<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">02 · DESIGN</span>
-<h3>Why WorkItems?</h3>
-<p>Chinese draft under review. English translation pending.</p>
-<span class="home-reading-card__cta">View translation status →</span>
+<h3>WorkItems: work state beyond the conversation</h3>
+<p>From an API migration to two PRs moving in parallel, see how goals, progress, and waiting conditions survive across turns.</p>
+<span class="home-reading-card__cta">Explore the design →</span>
 </a>
 <a class="home-reading-card" href="/blog/one-pr-one-work-item">
+<img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">03 · REVIEWER</span>
-<h3>One PR, one WorkItem</h3>
-<p>Chinese draft under review. English translation pending.</p>
-<span class="home-reading-card__cta">View translation status →</span>
+<h3>Build a reviewer that follows PRs through</h3>
+<p>Start with the code-reviewer template, agree on responsibilities and permissions, then subscribe to PRs and follow fixes, CI, and merges.</p>
+<span class="home-reading-card__cta">Set up continuous review →</span>
 </a>
 <a class="home-reading-card" href="/blog/agents-in-a-small-team">
+<img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">04 · TEAM</span>
-<h3>Agents in a small team</h3>
-<p>Chinese draft under review. English translation pending.</p>
-<span class="home-reading-card__cta">View translation status →</span>
+<h3>From personal AI tools to shared team agents</h3>
+<p>Device investigations and hands-on testing show how shared agents join a team's workflow and pick up where people leave off.</p>
+<span class="home-reading-card__cta">Read the team story →</span>
 </a>
 </div>
 </section>
@@ -175,6 +179,9 @@ Start locally, keep the first workflow bounded, and let Holon preserve the work 
   <!-- mdorigin:index kind=directory -->
 
 - [Reference](./reference/)
+  <!-- mdorigin:index kind=directory -->
+
+- [dist](./dist/)
   <!-- mdorigin:index kind=directory -->
 
 <!-- INDEX:END -->

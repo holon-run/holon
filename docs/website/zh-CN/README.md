@@ -1,6 +1,6 @@
 ---
 title: Holon
-summary: 让项目工作在对话结束后继续推进。
+summary: 让多个 Agent 在你的工作环境里持续做事。Holon 保存工作状态，在有新进展时接着推进。
 order: 1
 ---
 
@@ -10,9 +10,9 @@ order: 1
 
 <p class="home-eyebrow">长期 Agent 的本地工作台</p>
 
-# 让项目工作不止于一次对话。
+# 让 Agent 持续做事，<br>需要时再接入。
 
-<p class="home-hero__lede">让长期 Agent 在真实仓库和工具链中工作。Holon 保存工作状态，等待下一个有意义的事件，并从持久状态继续推进。</p>
+<p class="home-hero__lede">把审阅、调查、测试等反复发生的工作交给固定角色。Holon 让多个 Agent 在你的仓库和工具链中工作，保存进度，等到新提交、检查结果或你的确认，再接着推进。</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/zh-CN/getting-started/">开始使用</a>
@@ -22,11 +22,11 @@ order: 1
 <p class="home-hero__note">Holon 是围绕 Agent 的本地优先运行时，不是另一个 Agent，也不是托管式 Agent 服务。</p>
 
 </div>
-<div class="home-runtime" aria-label="Holon 运行时全景占位图">
-<div class="home-runtime__top"><span>运行时全景 · 内容占位</span><span class="home-runtime__status">本地运行</span></div>
+<div class="home-runtime" aria-label="Holon 运行时工作流程示意">
+<div class="home-runtime__top"><span>Holon Runtime · 工作流程</span><span class="home-runtime__status">示意图</span></div>
 <div class="home-runtime__events"><span>操作者输入</span><span>任务结果</span><span>外部事件</span><span>定时器</span></div>
 <div class="home-runtime-map">
-<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">长期 AGENT</span><strong>持续职责 + 持久工作状态</strong><small>运行时让身份和当前目标始终可寻址。</small></div>
+<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">长期 AGENT</span><strong>固定角色，持续负责</strong><small>审阅、调查、测试；每项工作的目标和进度分别保留。</small></div>
 <div class="home-runtime-map__connector" aria-hidden="true"><span>执行</span></div>
 <div class="home-runtime-map__pair">
 <div class="home-runtime-map__stage"><span class="home-runtime-map__label">工作环境</span><strong>仓库 + 工具</strong><small>工作发生在真实项目环境中。</small></div>
@@ -85,30 +85,34 @@ order: 1
 
 ## 认识 Holon，再看它如何工作。
 
-从产品介绍到工作项设计，再看审阅与小团队中的使用过程。首批四篇中文稿待审阅，英文暂留占位。
+从产品介绍和 WorkItem 设计出发，动手配置持续审阅，再看共享 Agent 如何参与小团队的日常工作。
 
 </div>
 <a class="home-reading-all" href="/zh-CN/blog/">查看全部文章 →</a>
 <div class="home-reading-grid">
 <a class="home-reading-card" href="/zh-CN/blog/what-is-holon">
+<img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">01 · 产品故事</span>
-<h3>CI 还没结束，你要下班了</h3>
-<p>从一次尚未完成的 PR 出发，看 Holon 为什么把工作留在常驻 Runtime 中，而不只留在对话里。</p>
+<h3>让多个 Agent 在你的工作环境里持续做事</h3>
+<p>固定角色在后台跟进，需要时再接入。认识 Holon 这套本地工作台，以及远程开发和团队协作中的用法。</p>
 <span class="home-reading-card__cta">认识 Holon →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/why-work-items">
+<img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">02 · 技术设计</span>
-<h3>工作暂停之后，Runtime 保存什么？</h3>
-<p>拆开 WorkItem、任务和等待条件，看工作如何让出执行机会，又如何在事件到来后继续。</p>
+<h3>WorkItem：把工作状态从对话中分离</h3>
+<p>从接口迁移到两个 PR 交替推进，看看目标、进度和等待条件如何跨轮保留。</p>
 <span class="home-reading-card__cta">拆解 WorkItem →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/one-pr-one-work-item">
+<img class="home-reading-card__cover" src="/assets/continuous-pr-reviewer-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">03 · 审阅实践</span>
-<h3>一个 PR，一个工作项</h3>
-<p>从授权与首次审阅开始，把新提交、CI 和复查接成一条持续工作流。附任务指令与检查步骤。</p>
+<h3>搭建持续跟进 PR 的 Reviewer</h3>
+<p>从 code-reviewer 模板开始，确认职责与权限，订阅仓库 PR，持续跟进修复、CI 和合并。</p>
 <span class="home-reading-card__cta">配置持续审阅 →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/agents-in-a-small-team">
+<img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">04 · 团队协作</span>
 <h3>个人有了 AI，团队怎样一起工作？</h3>
 <p>从设备故障调查到琴键无声的真机验证，看共享 Agent 怎样接入团队分工，接回人的测试结果。</p>

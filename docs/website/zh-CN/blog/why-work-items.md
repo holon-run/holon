@@ -1,6 +1,6 @@
 ---
 title: "Holon 的 WorkItem 架构：把工作状态从对话中分离"
-summary: "从新版接口上线到旧版下线，解释 WorkItem 与 Goal、Loop 的侧重点：把跨发布周期的目标、进度、外部依赖和交付归入一项持续负责的工作。中文审阅稿，未发布。"
+summary: "从新版接口上线到旧版下线，解释 WorkItem 与 Goal、Loop 的侧重点：把跨发布周期的目标、进度、外部依赖和交付归入一项持续负责的工作。"
 order: 20
 ---
 
@@ -8,7 +8,7 @@ order: 20
 
 <img src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="抽象插画：流动的蓝绿线条穿过稳定的几何结构，表达上下文不断变化，而工作状态有所承载。" decoding="async" fetchpriority="high">
 
-> 中文审阅稿，未发布。文中的接口迁移与双 PR 流程是设计示例，不是真实运行记录。
+> 文中的接口迁移与双 PR 流程是设计示例，不是真实运行记录。
 
 ## 河水流过，工作留下什么
 
@@ -150,4 +150,4 @@ A 结束后，B 的记录和等待仍然存在。等 B 的测试结果到达，�
 2. [Codex Goal 扩展源码](https://github.com/openai/codex/tree/95637f7056835fea66bdd0044414af480fc0fd74/codex-rs/ext/goal)：以固定提交为依据，说明线程级目标、持久记录与空闲续跑。
 3. [Claude Code 定时任务文档](https://code.claude.com/docs/en/scheduled-tasks)：`/loop`、会话范围与其他调度方式。
 
-Holon 的具体接口与行为见[工作项契约](/spec/work-items)和[等待与唤醒](/guide/waiting-and-wakeup)。下一篇[一个 PR，一个工作项](./one-pr-one-work-item)转向 reviewer 的实际配置与操作流程。
+Holon 的具体接口与行为见[工作项契约](/spec/work-items)和[等待与唤醒](/spec/wake-and-continuation)。下一篇[一个 PR，一个工作项](./one-pr-one-work-item)转向 reviewer 的实际配置与操作流程。
