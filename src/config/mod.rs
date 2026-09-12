@@ -422,7 +422,13 @@ impl AppConfig {
             ControlAuthMode::Required => true,
             ControlAuthMode::Auto => match transport {
                 ControlTransportKind::Unix => false,
-                ControlTransportKind::Tcp => !self.tcp_listener_is_local(),
+                ControlTransportKind::Tcp => {
+                    !self.tcp_listener_is_local()
+                        || self
+                            .control_token
+                            .as_deref()
+                            .is_some_and(|token| !token.trim().is_empty())
+                }
             },
         }
     }

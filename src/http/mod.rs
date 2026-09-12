@@ -193,6 +193,7 @@ fn decrement_http_in_flight_requests() -> usize {
 pub struct AppState {
     pub host: RuntimeHost,
     pub require_control_token: bool,
+    transport: ControlTransportKind,
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
     pub web_dist: Option<Arc<PathBuf>>,
@@ -311,6 +312,7 @@ impl AppState {
         Self {
             host,
             require_control_token,
+            transport: ControlTransportKind::Tcp,
             runtime_service,
             advertise_url: None,
             web_dist: None,
@@ -345,6 +347,7 @@ impl AppState {
         Self {
             host,
             require_control_token: false,
+            transport: ControlTransportKind::Unix,
             runtime_service,
             advertise_url: None,
             web_dist: None,
@@ -361,6 +364,10 @@ impl AppState {
     pub fn with_advertise_url(mut self, advertise_url: Option<String>) -> Self {
         self.advertise_url = advertise_url;
         self
+    }
+
+    fn uses_trusted_local_admission(&self) -> bool {
+        self.transport == ControlTransportKind::Unix
     }
 
     pub fn with_web_dist(mut self, web_dist: Option<PathBuf>) -> Self {
@@ -916,6 +923,9 @@ pub(crate) fn projection_gate_error_response(error: ProjectionGateError) -> Axum
     }
 }
 pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result<()> {
+    if state.uses_trusted_local_admission() {
+        return Ok(());
+    }
     if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
         return authenticate_session(headers, state).map(|_| ());
     }
@@ -944,6 +954,9 @@ pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result
 }
 
 pub(crate) fn authorize_remote_access(headers: &HeaderMap, state: &AppState) -> Result<()> {
+    if state.uses_trusted_local_admission() {
+        return Ok(());
+    }
     if state.require_control_token
         || state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc
     {
@@ -1095,6 +1108,9 @@ impl ControlActor {
 /// `authorize_control` remains the gate; this answers *who* is acting so the
 /// enqueued message can carry user-level attribution.
 pub(crate) fn control_actor(headers: &HeaderMap, state: &AppState) -> Result<ControlActor> {
+    if state.uses_trusted_local_admission() {
+        return Ok(ControlActor::LocalControl);
+    }
     if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
         let session = authenticate_session(headers, state)?;
         let user = state
@@ -1129,7 +1145,8 @@ async fn session_auth_middleware(
     ) || api_path.starts_with("/callbacks/")
         || api_path.starts_with("/webhooks/");
 
-    if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc
+    if !state.uses_trusted_local_admission()
+        && state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc
         && !anonymous
     {
         if let Err(error) = authenticate_session(request.headers(), &state) {

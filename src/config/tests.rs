@@ -22,9 +22,9 @@ use crate::config::{
     provider_registry_for_tests, resolve_anthropic_context_management_config,
     save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
     validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig,
-    ControlAuthMode, CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile,
-    ModelConfigFile, ModelRef, ModelRouteCapability, ModelRouteRef, ModelsConfigFile,
-    ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
+    ControlAuthMode, ControlTransportKind, CredentialKind, CredentialSource, CredentialStoreFile,
+    HolonConfigFile, ModelConfigFile, ModelRef, ModelRouteCapability, ModelRouteRef,
+    ModelsConfigFile, ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
     ProviderEndpointConfigFile, ProviderEndpointId, ProviderId, ProviderPlanConfigFile,
     ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog,
     XSearchRuntimeConfig, DEFAULT_LOCAL_AGENT_ID, DEFAULT_X_SEARCH_MODEL,
@@ -477,6 +477,28 @@ fn control_auth_mode_parses_known_values() {
         ControlAuthMode::parse("disabled").unwrap(),
         ControlAuthMode::Disabled
     );
+}
+
+#[test]
+fn control_token_auto_mode_trusts_only_unix_transport() {
+    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
+
+    assert!(fixture
+        .config
+        .control_token_required(ControlTransportKind::Tcp));
+    assert!(!fixture
+        .config
+        .control_token_required(ControlTransportKind::Unix));
+
+    fixture.config.control_token = None;
+    assert!(!fixture
+        .config
+        .control_token_required(ControlTransportKind::Tcp));
+
+    fixture.config.http_addr = "0.0.0.0:7878".into();
+    assert!(fixture
+        .config
+        .control_token_required(ControlTransportKind::Tcp));
 }
 
 #[test]

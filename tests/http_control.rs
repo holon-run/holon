@@ -12,7 +12,8 @@ macro_rules! http_async_tests {
 }
 
 http_async_tests!(
-    control_prompt_is_open_on_loopback_auto,
+    control_prompt_is_open_on_loopback_auto_without_token,
+    control_prompt_requires_configured_token_on_loopback_auto,
     control_agent_create_returns_degraded_receipt_and_repairs,
     agent_state_route_returns_aggregated_snapshot,
     unloaded_agent_state_route_uses_storage_without_starting_runtime,
@@ -70,6 +71,7 @@ http_async_tests!(
 #[cfg(unix)]
 http_async_tests!(
     control_prompt_is_open_over_unix_socket_auto,
+    oidc_unix_socket_uses_trusted_local_admission_and_identity,
     control_runtime_status_is_open_over_unix_socket_when_auth_required,
     control_runtime_readiness_is_open_over_unix_socket_when_auth_required,
     control_agent_delete_fails_closed_when_home_is_symlink,

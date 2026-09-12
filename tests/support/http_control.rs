@@ -40,7 +40,7 @@ use super::{
     wait_until, RuntimeFailureProvider, TestConfigBuilder,
 };
 
-pub async fn control_prompt_is_open_on_loopback_auto() -> Result<()> {
+pub async fn control_prompt_is_open_on_loopback_auto_without_token() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
     let response = client
@@ -49,6 +49,32 @@ pub async fn control_prompt_is_open_on_loopback_auto() -> Result<()> {
         .send()
         .await?;
     assert!(response.status().is_success());
+    server.abort();
+    Ok(())
+}
+
+pub async fn control_prompt_requires_configured_token_on_loopback_auto() -> Result<()> {
+    let config = TestConfigBuilder::new()
+        .with_control_token("secret")
+        .build_retained();
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+
+    let denied = client
+        .post(format!("{base}/api/control/agents/default/prompt"))
+        .json(&serde_json::json!({ "text": "hello" }))
+        .send()
+        .await?;
+    assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let allowed = client
+        .post(format!("{base}/api/control/agents/default/prompt"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({ "text": "hello" }))
+        .send()
+        .await?;
+    assert!(allowed.status().is_success());
+
     server.abort();
     Ok(())
 }
@@ -487,6 +513,68 @@ pub async fn control_prompt_is_open_over_unix_socket_auto() -> Result<()> {
     )
     .await?;
     assert_eq!(response.status, 200);
+    server.abort();
+    Ok(())
+}
+
+#[cfg(unix)]
+pub async fn oidc_unix_socket_uses_trusted_local_admission_and_identity() -> Result<()> {
+    let mut config = TestConfigBuilder::new().build_retained();
+    config.auth.mode = holon::authentication::AuthenticationMode::Oidc;
+    config.auth.oidc = Some(holon::authentication::OidcProviderConfig {
+        issuer_url: "https://issuer.example.com".to_string(),
+        client_id: "holon-test".to_string(),
+        client_secret_env: None,
+        redirect_uri: None,
+    });
+    let (host, socket_path, server) = spawn_unix_server(config).await?;
+    let runtime = host.default_runtime().await?;
+
+    let list = unix_request(
+        &socket_path,
+        "GET",
+        "/api/agents/list",
+        &[
+            ("authorization", "Bearer stale-remote-credential"),
+            ("cookie", "holon_session=stale-session"),
+        ],
+        None,
+    )
+    .await?;
+    assert_eq!(list.status, 200);
+
+    let prompt = unix_request(
+        &socket_path,
+        "POST",
+        "/api/control/agents/default/prompt",
+        &[
+            ("authorization", "Bearer stale-remote-credential"),
+            ("cookie", "holon_session=stale-session"),
+            ("content-type", "application/json"),
+        ],
+        Some(br#"{ "text": "trusted unix oidc" }"#),
+    )
+    .await?;
+    assert_eq!(prompt.status, 200);
+
+    wait_until(|| {
+        Ok(runtime
+            .storage()
+            .read_recent_messages(10)?
+            .iter()
+            .any(|message| {
+                matches!(
+                    &message.body,
+                    MessageBody::Text { text } if text == "trusted unix oidc"
+                ) && message.origin
+                    == MessageOrigin::Operator {
+                        actor_id: Some("control".into()),
+                        actor_display_name: None,
+                    }
+            }))
+    })
+    .await?;
+
     server.abort();
     Ok(())
 }
@@ -2275,12 +2363,13 @@ pub async fn control_wake_records_contentful_system_tick_on_loopback_auto() -> R
 }
 
 pub async fn control_prompt_requires_bearer_token_for_non_loopback_auto() -> Result<()> {
-    let config = test_config_with_paths(
+    let mut config = test_config_with_paths(
         tempdir().unwrap().keep(),
         tempdir().unwrap().keep(),
         "0.0.0.0:0".into(),
         ControlAuthMode::Auto,
     );
+    config.control_token = Some("secret".into());
     let (_host, base, server) = spawn_server_with_config(config).await?;
     let client = reqwest::Client::new();
     let denied = client
@@ -2682,7 +2771,10 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
         payload["startup_surface"]["callback_base_url"],
         config.callback_base_url
     );
-    assert_eq!(payload["startup_surface"]["control_token_configured"], true);
+    assert_eq!(
+        payload["startup_surface"]["control_token_configured"],
+        config.control_token.is_some()
+    );
     assert_eq!(payload["startup_surface"]["control_auth_mode"], "auto");
     assert_eq!(
         payload["runtime_surface"]["model_default"],

@@ -39,6 +39,7 @@ pub struct TestConfigBuilder {
     data_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,
     http_addr: String,
+    control_token: Option<String>,
     control_auth_mode: ControlAuthMode,
     compaction_trigger_messages: usize,
     compaction_keep_recent_messages: usize,
@@ -120,6 +121,7 @@ impl TestConfigBuilder {
             data_dir: None,
             workspace_dir: None,
             http_addr: "127.0.0.1:0".into(),
+            control_token: None,
             control_auth_mode: ControlAuthMode::Auto,
             compaction_trigger_messages: 10,
             compaction_keep_recent_messages: 4,
@@ -146,6 +148,11 @@ impl TestConfigBuilder {
 
     pub fn with_control_auth_mode(mut self, control_auth_mode: ControlAuthMode) -> Self {
         self.control_auth_mode = control_auth_mode;
+        self
+    }
+
+    pub fn with_control_token(mut self, control_token: impl Into<String>) -> Self {
+        self.control_token = Some(control_token.into());
         self
     }
 
@@ -198,7 +205,7 @@ impl TestConfigBuilder {
             compaction_keep_recent_estimated_tokens: self.compaction_keep_recent_estimated_tokens,
             recent_episode_candidates: 12,
             max_relevant_episodes: 3,
-            control_token: Some("secret".into()),
+            control_token: self.control_token,
             control_auth_mode: self.control_auth_mode,
             auth: Default::default(),
             api_cors: Default::default(),
@@ -735,12 +742,16 @@ pub fn test_config_with_paths(
     http_addr: String,
     control_auth_mode: ControlAuthMode,
 ) -> AppConfig {
-    TestConfigBuilder::new()
+    let builder = TestConfigBuilder::new()
         .with_data_dir(data_dir)
         .with_workspace_dir(workspace_dir)
         .with_http_addr(http_addr)
-        .with_control_auth_mode(control_auth_mode)
-        .build_retained()
+        .with_control_auth_mode(control_auth_mode);
+    if control_auth_mode == ControlAuthMode::Required {
+        builder.with_control_token("secret").build_retained()
+    } else {
+        builder.build_retained()
+    }
 }
 
 pub async fn spawn_server() -> Result<(RuntimeHost, String, TestServerHandle)> {
