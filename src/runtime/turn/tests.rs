@@ -823,6 +823,7 @@ fn normalize_provider_attempt_timing_backfills_missing_attempt_timing() {
         active_model_ref: None,
         winning_model_ref: None,
         pending_fallback_model_ref: None,
+        pending_fallback_disposition: None,
         aggregated_token_usage: None,
     };
     let single = normalize_provider_attempt_timing(single.into(), started_at, completed_at, 42)
@@ -838,6 +839,7 @@ fn normalize_provider_attempt_timing_backfills_missing_attempt_timing() {
         active_model_ref: None,
         winning_model_ref: None,
         pending_fallback_model_ref: None,
+        pending_fallback_disposition: None,
         aggregated_token_usage: None,
     };
     let multiple = normalize_provider_attempt_timing(multiple.into(), started_at, completed_at, 42)
@@ -848,6 +850,26 @@ fn normalize_provider_attempt_timing_backfills_missing_attempt_timing() {
         assert_eq!(attempt.completed_at, None);
         assert_eq!(attempt.duration_ms, None);
     }
+}
+
+#[test]
+fn provider_recovery_delay_is_bounded_exponential_and_lineage_seeded() {
+    let first = provider_recovery_delay_ms(0, "lineage-a:model");
+    let second = provider_recovery_delay_ms(1, "lineage-a:model");
+    let capped = provider_recovery_delay_ms(usize::MAX, "lineage-a:model");
+
+    assert!((crate::provider::PROVIDER_RECOVERY_BASE_BACKOFF_MS
+        ..crate::provider::PROVIDER_RECOVERY_BASE_BACKOFF_MS * 5 / 4)
+        .contains(&first));
+    assert!((crate::provider::PROVIDER_RECOVERY_BASE_BACKOFF_MS * 2
+        ..crate::provider::PROVIDER_RECOVERY_BASE_BACKOFF_MS * 5 / 2)
+        .contains(&second));
+    assert_eq!(capped, crate::provider::PROVIDER_RECOVERY_MAX_BACKOFF_MS);
+    assert_eq!(
+        first,
+        provider_recovery_delay_ms(0, "lineage-a:model"),
+        "the same lineage must retain deterministic jitter"
+    );
 }
 
 #[test]

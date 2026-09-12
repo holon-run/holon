@@ -522,6 +522,8 @@ pub(crate) struct ContextLengthExceededProvider;
 
 pub(crate) struct DeferredFallbackProvider;
 
+pub(crate) struct DeferredNetworkFallbackProvider;
+
 pub(crate) struct TextThenFailingFallbackProvider {
     pub(crate) calls: Mutex<usize>,
 }
@@ -715,6 +717,7 @@ impl AgentProvider for TimelineProvider {
                 active_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
                 winning_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
                 pending_fallback_model_ref: None,
+                pending_fallback_disposition: None,
             }),
         ))
     }
@@ -1152,7 +1155,8 @@ impl AgentProvider for FailingTimelineProvider {
                 requested_model_ref: "openai/gpt-5.4".into(),
                 active_model_ref: None,
                 winning_model_ref: None,
-                pending_fallback_model_ref: None
+                pending_fallback_model_ref: None,
+                pending_fallback_disposition: None,
             },
             anyhow!("bad request"),
         ))
@@ -1227,7 +1231,8 @@ impl AgentProvider for ContextLengthExceededProvider {
                 requested_model_ref: "openai-codex/gpt-5.3-codex-spark".into(),
                 active_model_ref: None,
                 winning_model_ref: None,
-                pending_fallback_model_ref: None
+                pending_fallback_model_ref: None,
+                pending_fallback_disposition: None,
             },
             provider_transport_error_with_code(
                 ProviderFailureClassification {
@@ -1271,8 +1276,48 @@ impl AgentProvider for DeferredFallbackProvider {
                 active_model_ref: None,
                 winning_model_ref: None,
                 pending_fallback_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
+                pending_fallback_disposition: Some(
+                    crate::provider::ProviderFallbackDisposition::Immediate,
+                ),
             },
             anyhow!("server unavailable"),
+        ))
+    }
+}
+
+#[async_trait]
+impl AgentProvider for DeferredNetworkFallbackProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Err(provider_turn_error(
+            "all configured providers failed for this turn: openai/gpt-5.4: retryable exhausted",
+            ProviderAttemptTimeline {
+                attempts: vec![ProviderAttemptRecord {
+                    provider: "openai".into(),
+                    model_ref: "openai/gpt-5.4".into(),
+                    attempt: 3,
+                    max_attempts: 3,
+                    started_at: None,
+                    completed_at: None,
+                    duration_ms: Some(125),
+                    failure_kind: Some("connection".into()),
+                    disposition: Some("retryable".into()),
+                    outcome: ProviderAttemptOutcome::RetriesExhausted,
+                    advanced_to_fallback: true,
+                    backoff_ms: None,
+                    backoff_source: None,
+                    token_usage: None,
+                    transport_diagnostics: None,
+                }],
+                aggregated_token_usage: None,
+                requested_model_ref: "openai/gpt-5.4".into(),
+                active_model_ref: None,
+                winning_model_ref: None,
+                pending_fallback_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
+                pending_fallback_disposition: Some(
+                    crate::provider::ProviderFallbackDisposition::Deferred,
+                ),
+            },
+            anyhow!("network unavailable"),
         ))
     }
 }
@@ -1322,6 +1367,9 @@ impl AgentProvider for TextThenFailingFallbackProvider {
                 active_model_ref: None,
                 winning_model_ref: None,
                 pending_fallback_model_ref: Some("anthropic/claude-sonnet-4-6".into()),
+                pending_fallback_disposition: Some(
+                    crate::provider::ProviderFallbackDisposition::Immediate,
+                ),
             },
             anyhow!("server unavailable"),
         ))

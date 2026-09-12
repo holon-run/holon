@@ -10,7 +10,8 @@ use super::{
     provider_error_token_usage, provider_transport_diagnostics, provider_turn_error,
     retry::{
         classify_provider_error, format_provider_failure, provider_error_retry_after,
-        provider_max_attempts, provider_retry_delay, ProviderRetryDelay, RetryDisposition,
+        provider_fallback_disposition, provider_max_attempts, provider_retry_delay,
+        ProviderRetryDelay, RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
@@ -606,6 +607,10 @@ mod tests {
             timeline.pending_fallback_model_ref.as_deref(),
             Some("anthropic/claude-sonnet-4-6")
         );
+        assert_eq!(
+            timeline.pending_fallback_disposition,
+            Some(crate::provider::ProviderFallbackDisposition::Immediate)
+        );
         assert_eq!(timeline.attempts.len(), 1);
         assert!(timeline.attempts[0].advanced_to_fallback);
     }
@@ -691,12 +696,14 @@ impl AgentProvider for FallbackProvider {
                     active_model_ref: None,
                     winning_model_ref: None,
                     pending_fallback_model_ref: None,
+                    pending_fallback_disposition: None,
                 },
                 source,
             ));
         };
         let max_attempts = provider_max_attempts();
         let mut last_error = None;
+        let mut pending_fallback_disposition = None;
         for attempt in 1..=max_attempts {
             let attempt_request =
                 request_for_model_attempt(&request, &requested_model_ref, &candidate.model_ref);
@@ -733,6 +740,7 @@ impl AgentProvider for FallbackProvider {
                         active_model_ref: Some(candidate.model_ref.clone()),
                         winning_model_ref: Some(candidate.model_ref.clone()),
                         pending_fallback_model_ref: None,
+                        pending_fallback_disposition: None,
                     };
                     return Ok((response, Some(diagnostics)));
                 }
@@ -785,7 +793,10 @@ impl AgentProvider for FallbackProvider {
                         last_error = Some(error);
                         continue;
                     }
-                    let has_fallback = pending_fallback_model_ref.is_some();
+                    pending_fallback_disposition = pending_fallback_model_ref
+                        .as_ref()
+                        .map(|_| provider_fallback_disposition(classification.kind));
+                    let has_fallback = pending_fallback_disposition.is_some();
                     if matches!(retry_delay, Some(ProviderRetryDelay::SkipToFallback)) {
                         warn!(
                             model_ref = %candidate.model_ref,
@@ -823,6 +834,7 @@ impl AgentProvider for FallbackProvider {
                         max_attempts,
                         failure_kind = classification.kind.as_str(),
                         disposition = classification.disposition.as_str(),
+                        fallback_disposition = ?pending_fallback_disposition,
                         has_fallback,
                         "provider turn failed; {}", if has_fallback { "deferring fallback to next turn" } else { "no fallback remaining" }
                     );
@@ -847,6 +859,7 @@ impl AgentProvider for FallbackProvider {
                 active_model_ref: None,
                 winning_model_ref: None,
                 pending_fallback_model_ref,
+                pending_fallback_disposition,
             },
             source,
         ))

@@ -1899,6 +1899,8 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
         .unwrap();
 
     assert_eq!(outcome.terminal_kind, TurnTerminalKind::DeferredToFallback);
+    assert!(!outcome.should_sleep);
+    assert_eq!(outcome.sleep_duration_ms, None);
     let state = runtime.agent_state().await.unwrap();
     assert!(state.pending_fallback_model.is_none());
     assert_eq!(
@@ -1921,6 +1923,13 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
             .as_ref()
             .and_then(|metadata| { metadata["provider_recovery"]["fallback_model_ref"].as_str() }),
         Some("anthropic@default/claude-sonnet-4-6")
+    );
+    assert_eq!(
+        queued
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata["provider_recovery"]["fallback_attempt"].as_u64()),
+        Some(1)
     );
     assert_eq!(
         crate::runtime::turn::TurnModelSelection::from_message(&queued)
@@ -1967,6 +1976,118 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     assert!(!events
         .iter()
         .any(|event| event.kind == "recovery_turn_started"));
+}
+
+#[tokio::test]
+async fn network_failure_delays_one_recovery_instead_of_immediate_fallback() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(DeferredNetworkFallbackProvider),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(outcome.terminal_kind, TurnTerminalKind::DeferredToFallback);
+    assert!(outcome.should_sleep);
+    let delay_ms = outcome.sleep_duration_ms.expect("network recovery delay");
+    assert!((crate::provider::PROVIDER_RECOVERY_BASE_BACKOFF_MS
+        ..crate::provider::PROVIDER_RECOVERY_BASE_BACKOFF_MS * 5 / 4)
+        .contains(&delay_ms));
+
+    let queued = {
+        let guard = runtime.inner.agent.lock().await;
+        assert_eq!(guard.queue.len(), 1);
+        guard.queue.peek().cloned().expect("one fallback followup")
+    };
+    assert_eq!(
+        queued
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata["provider_recovery"]["fallback_attempt"].as_u64()),
+        Some(1)
+    );
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    let recovery = events
+        .iter()
+        .find(|event| event.kind == "recovery_enqueued")
+        .expect("recovery_enqueued event");
+    assert_eq!(recovery.data["recovery_delay_ms"].as_u64(), Some(delay_ms));
+}
+
+#[tokio::test]
+async fn provider_recovery_budget_exhaustion_stops_the_lineage() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let error = DeferredNetworkFallbackProvider
+        .complete_turn(ProviderTurnRequest::plain("base", Vec::new(), Vec::new()))
+        .await
+        .expect_err("network provider failure");
+    let recovery = crate::runtime::turn::ProviderRecoveryDirective {
+        fallback_model_ref: crate::config::ModelRouteRef::parse_compatible("openai/gpt-5.4")
+            .unwrap(),
+        fallback_attempt: crate::provider::PROVIDER_RECOVERY_MAX_FALLBACKS,
+        root_message_id: "message-root".into(),
+        source_turn_id: "turn-source".into(),
+        source_message_id: "message-source".into(),
+        source_terminal_kind: TurnTerminalKind::DeferredToFallback,
+        source_round: 1,
+    };
+
+    let outcome = runtime
+        .maybe_defer_provider_lineage_failure(
+            "default",
+            2,
+            &error,
+            Some(&recovery),
+            None,
+            10,
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+
+    assert!(outcome.is_none());
+    assert_eq!(runtime.inner.agent.lock().await.queue.len(), 0);
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    let exhausted = events
+        .iter()
+        .find(|event| event.kind == "provider_recovery_budget_exhausted")
+        .expect("provider_recovery_budget_exhausted event");
+    assert_eq!(
+        exhausted.data["fallback_attempt"].as_u64(),
+        Some(crate::provider::PROVIDER_RECOVERY_MAX_FALLBACKS as u64)
+    );
+    assert!(!events.iter().any(|event| event.kind == "recovery_enqueued"));
 }
 
 #[test]

@@ -12,8 +12,9 @@ use crate::config::ModelRouteRef;
 use crate::prompt::EffectivePrompt;
 use crate::provider::{
     provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
-    ModelBlock, ProviderAttemptTimeline, ProviderTurnRequest, ProviderTurnResponse,
-    ToolResultBlock,
+    ModelBlock, ProviderAttemptTimeline, ProviderFallbackDisposition, ProviderTurnRequest,
+    ProviderTurnResponse, ToolResultBlock, PROVIDER_RECOVERY_BASE_BACKOFF_MS,
+    PROVIDER_RECOVERY_MAX_BACKOFF_MS, PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
 use crate::runtime::provider_turn::{
     build_continuation_request, build_initial_provider_turn_request, build_provider_prompt_frame,
@@ -297,11 +298,12 @@ impl RuntimeHandle {
         })
     }
 
-    pub(super) async fn maybe_defer_provider_lineage_failure(
+    pub(in crate::runtime) async fn maybe_defer_provider_lineage_failure(
         &self,
         agent_id: &str,
         round: usize,
         error: &anyhow::Error,
+        recovery: Option<&ProviderRecoveryDirective>,
         last_assistant_message: Option<String>,
         duration_ms: u64,
         side_effect_boundary_crossed: bool,
@@ -313,6 +315,23 @@ impl RuntimeHandle {
         let Some(fallback_ref) = timeline.pending_fallback_model_ref.as_deref() else {
             return Ok(None);
         };
+        let fallback_attempt = recovery
+            .map(|directive| directive.fallback_attempt)
+            .unwrap_or(0);
+        if fallback_attempt >= PROVIDER_RECOVERY_MAX_FALLBACKS {
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "provider_recovery_budget_exhausted",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "round": round,
+                    "fallback_attempt": fallback_attempt,
+                    "max_lineage_fallbacks": PROVIDER_RECOVERY_MAX_FALLBACKS,
+                    "pending_fallback_model_ref": fallback_ref,
+                    "provider_attempt_timeline": timeline,
+                }),
+            ))?;
+            return Ok(None);
+        }
         let Ok(fallback_model) = ModelRouteRef::parse_compatible(fallback_ref) else {
             return Ok(None);
         };
@@ -322,6 +341,23 @@ impl RuntimeHandle {
             TurnTerminalKind::DeferredToFallback
         };
         let error_text = error.to_string();
+        let recovery_seed = recovery
+            .and_then(|directive| {
+                (!directive.root_message_id.is_empty())
+                    .then_some(directive.root_message_id.as_str())
+                    .or_else(|| {
+                        (!directive.source_message_id.is_empty())
+                            .then_some(directive.source_message_id.as_str())
+                    })
+            })
+            .unwrap_or(agent_id);
+        let recovery_delay_ms = matches!(
+            timeline.pending_fallback_disposition,
+            Some(ProviderFallbackDisposition::Deferred)
+        )
+        .then(|| {
+            provider_recovery_delay_ms(fallback_attempt, &format!("{recovery_seed}:{fallback_ref}"))
+        });
         let provider_failure_text = provider_lineage_failure_text(&error_text);
         let operator_message = provider_lineage_operator_message(
             fallback_ref,
@@ -338,6 +374,8 @@ impl RuntimeHandle {
                 "requested_model_ref": timeline.requested_model_ref,
                 "active_model_ref": timeline.active_model_ref,
                 "pending_fallback_model_ref": fallback_ref,
+                "fallback_attempt": fallback_attempt,
+                "recovery_delay_ms": recovery_delay_ms,
                 "side_effect_boundary_crossed": side_effect_boundary_crossed,
                 "provider_attempt_timeline": timeline,
             }),
@@ -368,6 +406,8 @@ impl RuntimeHandle {
                 "error": error_text,
                 "operator_message": operator_message,
                 "fallback_model_ref": fallback_ref,
+                "fallback_attempt": fallback_attempt,
+                "recovery_delay_ms": recovery_delay_ms,
                 "side_effect_boundary_crossed": side_effect_boundary_crossed,
                 "last_assistant_preview": last_assistant_message
                     .as_deref()
@@ -410,6 +450,11 @@ impl RuntimeHandle {
                 .map(|binding| binding.source_message_id.clone())
                 .unwrap_or_else(|| terminal.turn_id.clone())
         };
+        let root_message_id = recovery
+            .map(|directive| directive.root_message_id.as_str())
+            .filter(|root| !root.is_empty())
+            .unwrap_or(&source_message_id)
+            .to_string();
         message.causation_id = Some(source_message_id.clone());
         message
             .source_refs
@@ -420,6 +465,8 @@ impl RuntimeHandle {
         message.metadata = Some(serde_json::json!({
             "provider_recovery": ProviderRecoveryDirective {
                 fallback_model_ref: fallback_model,
+                fallback_attempt: fallback_attempt + 1,
+                root_message_id,
                 source_turn_id: terminal.turn_id.clone(),
                 source_message_id,
                 source_terminal_kind: terminal_kind,
@@ -434,6 +481,8 @@ impl RuntimeHandle {
                 "agent_id": agent_id,
                 "message_id": queued.id,
                 "fallback_model_ref": fallback_ref,
+                "fallback_attempt": fallback_attempt + 1,
+                "recovery_delay_ms": recovery_delay_ms,
                 "source_terminal_kind": terminal_kind,
             }),
         ))?;
@@ -443,8 +492,8 @@ impl RuntimeHandle {
             final_text_source_assistant_round_id: None,
             turn_index: terminal.turn_index,
             terminal,
-            should_sleep: false,
-            sleep_duration_ms: None,
+            should_sleep: recovery_delay_ms.is_some(),
+            sleep_duration_ms: recovery_delay_ms,
             allow_sleep_runnable_work_override: false,
             terminal_kind,
             prepared_work_item_completion: None,
@@ -1121,6 +1170,24 @@ pub(super) fn provider_lineage_operator_message(
     format!("{prefix}: {failure} {queued} on {fallback_ref}.")
 }
 
+pub(super) fn provider_recovery_delay_ms(fallback_attempt: usize, seed: &str) -> u64 {
+    let exponent = u32::try_from(fallback_attempt).unwrap_or(u32::MAX).min(16);
+    let multiplier = 1_u64.checked_shl(exponent).unwrap_or(u64::MAX);
+    let backoff = PROVIDER_RECOVERY_BASE_BACKOFF_MS
+        .saturating_mul(multiplier)
+        .min(PROVIDER_RECOVERY_MAX_BACKOFF_MS);
+    let digest = Sha256::digest(seed.as_bytes());
+    let jitter_seed = u64::from_le_bytes(
+        digest[..8]
+            .try_into()
+            .expect("sha256 digest prefix has eight bytes"),
+    );
+    let jitter_window = (backoff / 4).max(1);
+    backoff
+        .saturating_add(jitter_seed % jitter_window)
+        .min(PROVIDER_RECOVERY_MAX_BACKOFF_MS)
+}
+
 pub(super) struct TurnExecution<'a> {
     pub(super) runtime: &'a RuntimeHandle,
     pub(super) agent_id: &'a str,
@@ -1157,6 +1224,7 @@ impl TurnExecution<'_> {
         let mut last_assistant_citations = Vec::<Citation>::new();
         let mut last_assistant_round_id: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
+        let provider_recovery = model_selection.recovery.clone();
         let mut checkpoint_state = {
             let guard = runtime.inner.agent.lock().await;
             checkpoint_state_from_last_terminal(guard.state.last_turn_terminal.as_ref())
@@ -1426,6 +1494,7 @@ impl TurnExecution<'_> {
                                 agent_id,
                                 round,
                                 &err,
+                                provider_recovery.as_ref(),
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 !completed_rounds.is_empty() || last_assistant_message.is_some(),
@@ -1752,6 +1821,7 @@ impl TurnExecution<'_> {
                                 agent_id,
                                 round,
                                 &err,
+                                provider_recovery.as_ref(),
                                 last_assistant_message.clone(),
                                 turn_started_at.elapsed().as_millis() as u64,
                                 !completed_rounds.is_empty() || last_assistant_message.is_some(),

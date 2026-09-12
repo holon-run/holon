@@ -66,6 +66,10 @@ pub(crate) struct LoopControlOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(super) struct ProviderRecoveryDirective {
     pub(super) fallback_model_ref: ModelRouteRef,
+    #[serde(default)]
+    pub(super) fallback_attempt: usize,
+    #[serde(default)]
+    pub(super) root_message_id: String,
     pub(super) source_turn_id: String,
     pub(super) source_message_id: String,
     pub(super) source_terminal_kind: TurnTerminalKind,

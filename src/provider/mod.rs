@@ -682,6 +682,13 @@ pub enum ProviderAttemptOutcome {
     Succeeded,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFallbackDisposition {
+    Immediate,
+    Deferred,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderAttemptRecord {
     pub provider: String,
@@ -721,6 +728,8 @@ pub struct ProviderAttemptTimeline {
     pub winning_model_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_fallback_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_fallback_disposition: Option<ProviderFallbackDisposition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aggregated_token_usage: Option<TokenUsage>,
 }
@@ -840,7 +849,10 @@ pub(crate) fn aggregate_attempt_token_usage(
 pub(crate) use catalog::build_candidate;
 #[cfg(test)]
 pub(crate) use retry::provider_max_attempts;
-pub(crate) use retry::{classify_provider_error, ProviderTransportError};
+pub(crate) use retry::{
+    classify_provider_error, ProviderTransportError, PROVIDER_RECOVERY_BASE_BACKOFF_MS,
+    PROVIDER_RECOVERY_MAX_BACKOFF_MS, PROVIDER_RECOVERY_MAX_FALLBACKS,
+};
 #[cfg(test)]
 pub(crate) use retry::{
     provider_transport_error, provider_transport_error_with_code, ProviderFailureClassification,

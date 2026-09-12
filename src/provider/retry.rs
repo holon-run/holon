@@ -7,13 +7,17 @@ use thiserror::Error;
 use tokio::time::Duration;
 
 use super::{
-    http_trace::ProviderHttpTraceRequest, ProviderTransportDiagnostics, ReqwestTransportDiagnostics,
+    http_trace::ProviderHttpTraceRequest, ProviderFallbackDisposition,
+    ProviderTransportDiagnostics, ReqwestTransportDiagnostics,
 };
 use crate::types::TokenUsage;
 
 pub(crate) const PROVIDER_MAX_RETRIES: usize = 2;
 const PROVIDER_RETRY_BASE_BACKOFF_MS: u64 = 200;
 pub(crate) const PROVIDER_RETRY_SERVER_HINT_CAP_MS: u64 = 30_000;
+pub(crate) const PROVIDER_RECOVERY_BASE_BACKOFF_MS: u64 = 2_000;
+pub(crate) const PROVIDER_RECOVERY_MAX_BACKOFF_MS: u64 = 30_000;
+pub(crate) const PROVIDER_RECOVERY_MAX_FALLBACKS: usize = 2;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +109,17 @@ impl RetryDisposition {
     }
 }
 
+pub(crate) fn provider_fallback_disposition(
+    kind: ProviderFailureKind,
+) -> ProviderFallbackDisposition {
+    match kind {
+        ProviderFailureKind::Timeout | ProviderFailureKind::Connection => {
+            ProviderFallbackDisposition::Deferred
+        }
+        _ => ProviderFallbackDisposition::Immediate,
+    }
+}
+
 pub(crate) fn provider_retry_policy_json() -> Value {
     json!({
         "max_retries_per_provider": PROVIDER_MAX_RETRIES,
@@ -126,6 +141,15 @@ pub(crate) fn provider_retry_policy_json() -> Value {
             ProviderFailureKind::UnsupportedTransport.as_str(),
             ProviderFailureKind::Unknown.as_str(),
         ],
+        "fallback": {
+            "max_lineage_fallbacks": PROVIDER_RECOVERY_MAX_FALLBACKS,
+            "deferred_base_backoff_ms": PROVIDER_RECOVERY_BASE_BACKOFF_MS,
+            "deferred_max_backoff_ms": PROVIDER_RECOVERY_MAX_BACKOFF_MS,
+            "deferred_failure_kinds": [
+                ProviderFailureKind::Timeout.as_str(),
+                ProviderFailureKind::Connection.as_str(),
+            ],
+        },
     })
 }
 
@@ -656,9 +680,30 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        classify_status_error_with_trace, provider_retry_delay, ProviderFailureKind,
-        ProviderRetryDelay, ProviderRetryDelaySource, ProviderTransportError,
+        classify_status_error_with_trace, provider_fallback_disposition, provider_retry_delay,
+        ProviderFailureKind, ProviderRetryDelay, ProviderRetryDelaySource, ProviderTransportError,
     };
+    use crate::provider::ProviderFallbackDisposition;
+
+    #[test]
+    fn network_failures_defer_fallback_but_other_failures_remain_immediate() {
+        assert_eq!(
+            provider_fallback_disposition(ProviderFailureKind::Timeout),
+            ProviderFallbackDisposition::Deferred
+        );
+        assert_eq!(
+            provider_fallback_disposition(ProviderFailureKind::Connection),
+            ProviderFallbackDisposition::Deferred
+        );
+        assert_eq!(
+            provider_fallback_disposition(ProviderFailureKind::ServerError),
+            ProviderFallbackDisposition::Immediate
+        );
+        assert_eq!(
+            provider_fallback_disposition(ProviderFailureKind::RateLimited),
+            ProviderFallbackDisposition::Immediate
+        );
+    }
 
     fn retry_after_headers(value: &str) -> reqwest::header::HeaderMap {
         let mut headers = reqwest::header::HeaderMap::new();
