@@ -29,22 +29,22 @@ Holon 仓库的 PR #2854 就经历过这个过程。它修改了工作项的完�
 在自己的终端中，从官方模板创建一个名为 `reviewer` 的 Agent：
 
 ```bash
-holon agent create reviewer --template https://github.com/holon-run/holon/tree/main/agent_templates/holon-reviewer
+holon agent create reviewer --template https://github.com/holon-run/holon/tree/main/agent_templates/code-reviewer
 ```
 
 如果已经安装或同步了该模板，也可以用模板名；两种方式选一种即可：
 
 ```bash
-holon agent create reviewer --template holon-reviewer
+holon agent create reviewer --template code-reviewer
 ```
 
-`reviewer` 是你创建的 Agent 名称，`holon-reviewer` 是模板名。若已有同名 Agent，换一个名称，不要覆盖原来的工作记录。
+`reviewer` 是你创建的 Agent 名称，`code-reviewer` 是模板名。若已有同名 Agent，换一个名称，不要覆盖原来的工作记录。
 
 创建后运行 `holon agent list`，确认新 Agent 出现在列表中，再从 TUI 或 Web GUI 选择它。
 
 ### 模板内置的 AGENTS.md
 
-`holon-reviewer` 模板包含 `AGENTS.md`，创建时用它初始化新 Agent 的工作规范，并安装模板声明的 Skills。下面摘录文件中的职责定义和权限确认清单：
+`code-reviewer` 模板包含 `AGENTS.md`，创建时用它初始化新 Agent 的工作规范，并安装模板声明的 Skills。下面摘录文件中的职责定义和权限确认清单：
 
 ```markdown
 # Holon Reviewer Agent
@@ -147,10 +147,8 @@ reviewer 会按 Skill 检查服务、仓库访问和自己的唤醒目标，并�
 
 交付应写明实际合并结果、最终提交和未验证范围。PR 合并或关闭后，reviewer 按模板要求确认终态、完成 WorkItem，并清理该任务的订阅；共享事件源留给其他工作。
 
-Holon reviewer 的另一条记录里，PR #2856 合并后又收到较早 CI 的迟到通知。它根据保存的终态将通知识别为已处理结果的回声，没有重新开启审阅。工作结束后保留的记录，也帮助它判断哪些变化已经不需要处理。
-
-跑通这一轮后，保留仓库发现订阅，让同一个 reviewer 继续接手新 PR。用户只在职责变化、出现特殊要求或需要升级决策时介入。如果团队希望保留人工合并，把长期授权改成“达到合并条件时通知我，由我合并”即可。
+保留仓库订阅，reviewer 就能继续接手新 PR，只在需要你决策时请你介入。若要保留人工合并，将长期授权改为“达到合并条件时通知我，由我合并”即可。
 
 ## 案例来源
 
-文中的 PR #2854 使用了完整工作计划及 GitHub 提交、审阅、检查和合并快照；PR #2856 的迟到通知处理来自结果简报，GitHub 快照确认它已合并。本次未重新执行案例中的测试，也未独立验证订阅清理结果。
+文中的 PR #2854 使用了完整工作计划及 GitHub 提交、审阅、检查和合并快照。本次未重新执行案例中的测试，也未独立验证订阅清理结果。
