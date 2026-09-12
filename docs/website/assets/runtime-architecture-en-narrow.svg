@@ -4,24 +4,31 @@
 <rect width="480" height="550" fill="#fff"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
 <text x="32" y="28" font-size="20" fill="#536b87" font-weight="500" text-anchor="start">INTERFACES</text>
-<rect x="32" y="46" width="192" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
-<text x="128.0" y="71" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">TUI</text>
-<text x="128.0" y="93" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">Terminal</text>
-<rect x="256" y="46" width="192" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
-<text x="352.0" y="71" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">Web UI</text>
-<text x="352.0" y="93" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">Browser</text>
+<rect x="32" y="46" width="128" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
+<text x="96.0" y="71" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">TUI</text>
+<text x="96.0" y="93" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">Terminal</text>
+<rect x="176" y="46" width="128" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
+<text x="240.0" y="71" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">Web UI</text>
+<text x="240.0" y="93" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">Browser</text>
+<rect x="320" y="46" width="128" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1" stroke-dasharray="5 4"/>
+<text x="384.0" y="71" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">Mobile</text>
+<text x="384.0" y="93" font-size="20" fill="#536b87" font-weight="400" text-anchor="middle">Phone</text>
 <rect x="12" y="152" width="456" height="386" rx="6" fill="#f8fafc" stroke="#dce3ec" stroke-width="1"/>
 <text x="32" y="180" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">HOST MACHINE</text>
-<path d="M128 106V128H352V106" fill="none" stroke="#285fa7" stroke-width="1.2"/>
+<path d="M96 106V128H240V106" fill="none" stroke="#285fa7" stroke-width="1.2"/>
+<path d="M384 106V128H240" fill="none" stroke="#285fa7" stroke-width="1.2" stroke-dasharray="5 4"/>
 <path d="M240 128V200" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
 <text x="252" y="146" font-size="20" fill="#285fa7" font-weight="400" text-anchor="start">Connect</text>
 <rect x="32" y="200" width="416" height="216" rx="6" fill="#fff" stroke="#9ab1cd" stroke-width="1"/>
 <text x="54" y="234" font-size="25" fill="#183457" font-weight="500" text-anchor="start">Holon Runtime</text>
 <text x="54" y="260" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">Background service · daemon mode</text>
+<path d="M54 276H426" fill="none" stroke="#c4d3e6" stroke-width="1.2"/>
 <text x="54" y="303" font-size="20" fill="#285fa7" font-weight="500" text-anchor="start">Agents</text>
 <text x="186" y="303" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">Identity &amp; roles</text>
+<path d="M54 320H426" fill="none" stroke="#e3eaf2" stroke-width="1.2"/>
 <text x="54" y="345" font-size="20" fill="#285fa7" font-weight="500" text-anchor="start">WorkItems</text>
 <text x="186" y="345" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">Goals, progress &amp; results</text>
+<path d="M54 362H426" fill="none" stroke="#e3eaf2" stroke-width="1.2"/>
 <text x="54" y="387" font-size="20" fill="#285fa7" font-weight="500" text-anchor="start">Wait / Wake</text>
 <text x="186" y="387" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">Wait &amp; resume</text>
 <path d="M240 416V472" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>

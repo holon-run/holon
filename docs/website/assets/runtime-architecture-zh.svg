@@ -3,25 +3,32 @@
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0L6 3L0 6" fill="none" stroke="#285fa7" stroke-width="1.3"/></marker></defs>
 <rect width="1200" height="350" fill="#fff"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
-<text x="32" y="92" font-size="16" fill="#536b87" font-weight="500" text-anchor="start">操作入口</text>
-<rect x="32" y="116" width="168" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
-<text x="116.0" y="141" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">TUI</text>
-<text x="116.0" y="163" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">终端</text>
-<rect x="32" y="196" width="168" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
-<text x="116.0" y="221" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">Web UI</text>
-<text x="116.0" y="243" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">浏览器</text>
+<text x="32" y="52" font-size="16" fill="#536b87" font-weight="500" text-anchor="start">操作入口</text>
+<rect x="32" y="76" width="168" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
+<text x="116.0" y="101" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">TUI</text>
+<text x="116.0" y="123" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">终端</text>
+<rect x="32" y="156" width="168" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1"/>
+<text x="116.0" y="181" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">Web UI</text>
+<text x="116.0" y="203" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">浏览器</text>
+<rect x="32" y="236" width="168" height="60" rx="6" fill="#fff" stroke="#c4d3e6" stroke-width="1" stroke-dasharray="5 4"/>
+<text x="116.0" y="261" font-size="20" fill="#183457" font-weight="500" text-anchor="middle">Mobile</text>
+<text x="116.0" y="283" font-size="16" fill="#536b87" font-weight="400" text-anchor="middle">手机</text>
 <rect x="300" y="24" width="880" height="302" rx="6" fill="#f8fafc" stroke="#dce3ec" stroke-width="1"/>
 <text x="320" y="52" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">你的机器 / 服务器</text>
-<path d="M200 146H230V226H200" fill="none" stroke="#285fa7" stroke-width="1.2"/>
+<path d="M200 106H230V186H200" fill="none" stroke="#285fa7" stroke-width="1.2"/>
+<path d="M200 266H230V186" fill="none" stroke="#285fa7" stroke-width="1.2" stroke-dasharray="5 4"/>
 <path d="M230 186H330" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
 <text x="238" y="174" font-size="14" fill="#285fa7" font-weight="400" text-anchor="start">连接</text>
 <rect x="330" y="78" width="460" height="222" rx="6" fill="#fff" stroke="#9ab1cd" stroke-width="1"/>
 <text x="352" y="112" font-size="25" fill="#183457" font-weight="500" text-anchor="start">Holon Runtime</text>
 <text x="352" y="138" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">常驻后台 · daemon 模式</text>
+<path d="M352 154H768" fill="none" stroke="#c4d3e6" stroke-width="1.2"/>
 <text x="352" y="181" font-size="18" fill="#285fa7" font-weight="500" text-anchor="start">Agents</text>
 <text x="484" y="181" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">长期身份与职责</text>
+<path d="M352 198H768" fill="none" stroke="#e3eaf2" stroke-width="1.2"/>
 <text x="352" y="223" font-size="18" fill="#285fa7" font-weight="500" text-anchor="start">WorkItems</text>
 <text x="484" y="223" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">目标、进度与结果</text>
+<path d="M352 240H768" fill="none" stroke="#e3eaf2" stroke-width="1.2"/>
 <text x="352" y="265" font-size="18" fill="#285fa7" font-weight="500" text-anchor="start">Wait / Wake</text>
 <text x="484" y="265" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">等待条件与工作续接</text>
 <path d="M790 186H884" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>

@@ -72,7 +72,7 @@ Holon 的后台 Runtime 管理 Agent 的执行和工作状态，终端 TUI 与 W
 
 这对远程开发很直接：编译器、仓库和测试环境已经在开发机上，就让 Agent 在那里运行。你从浏览器查看结果，或通过终端继续交代要求，连接的仍是同一个后台。
 
-<img class="article-architecture" src="/assets/runtime-architecture-zh-narrow.png" width="480" height="550" alt="终端 TUI 与 Web UI 连接同一个常驻 Holon Runtime。Runtime 管理 Agent、工作项与等待唤醒，在宿主机上使用工作区、文件和工具链。" loading="lazy" decoding="async">
+<img class="article-architecture" src="/assets/runtime-architecture-zh-narrow.png" width="480" height="550" alt="终端 TUI 与 Web UI 连接同一个常驻 Holon Runtime，手机入口以虚线边框和连线表示。Runtime 管理 Agent、工作项与等待唤醒，在宿主机上使用工作区、文件和工具链。" loading="lazy" decoding="async">
 
 后台与宿主机需要保持可用，关闭客户端和关闭运行环境是两回事。图中的机器边界说明运行位置，不代表额外的权限隔离。
 
