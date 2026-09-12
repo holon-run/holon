@@ -52,6 +52,7 @@ jobs:
       - name: Check internal links and contract references
         run: |
           python3 .tools/check-links.py
+          python3 .tools/check-blog.py
           python3 .tools/test-check-contract-refs.py
           python3 .tools/check-contract-refs.py
 
@@ -68,7 +69,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: docs-site-cloudflare
-          path: docs/website/dist/cloudflare
+          path: docs/website/.tools/dist/cloudflare
+          include-hidden-files: true
 
       - name: Deploy to Cloudflare Workers
         if: github.event_name != 'pull_request'

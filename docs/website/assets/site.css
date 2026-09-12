@@ -1,5 +1,22 @@
 /* Holon site extensions. Keep documentation pages on mdorigin's default theme. */
 
+/* Keep multi-column article tables readable without widening the page. */
+.article-table {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 1.5rem 0;
+}
+
+.article-table table {
+  min-width: 32rem;
+  margin: 0;
+}
+
+.article-table:focus-visible {
+  outline: 2px solid #1f63d5;
+  outline-offset: 3px;
+}
+
 /* Article diagrams fill the text column; narrow sources keep labels readable. */
 .team-diagram {
   display: block;

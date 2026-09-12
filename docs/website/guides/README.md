@@ -112,7 +112,7 @@ Edit and build the Holon documentation website.
   <!-- mdorigin:index kind=article -->
 
 - [Multi-agent collaboration](./multi-agent.md)
-  Spawning child agents, supervision contracts, and workspace modes for parallel work.
+  Creating and invoking agents, supervision contracts, and workspace modes for parallel work.
   <!-- mdorigin:index kind=article -->
 
 - [Skills guide](./skills.md)

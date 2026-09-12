@@ -22,6 +22,8 @@ DRAFT = re.compile(
     re.IGNORECASE,
 )
 errors = []
+if (ROOT / "dist").exists():
+    errors.append("Move legacy docs/website/dist out of the content tree; build output belongs in .tools/dist.")
 
 
 class References(HTMLParser):

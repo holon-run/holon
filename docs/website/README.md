@@ -130,7 +130,7 @@ Start with the product and its WorkItem design, set up continuous PR review, the
 
 Install Holon, configure a model provider, and start the daemon. Open the local Web interface at `http://localhost:7878` or use `holon tui`.
 
-<p class="home-start__boundary">Early-stage software · explicit trust boundaries · approval remains visible</p>
+<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.39.0">v0.39.0</a> · early-stage software · explicit trust boundaries</p>
 
 <div class="home-actions"><a class="home-button home-button--primary" href="/getting-started/">Follow the complete setup</a></div>
 
@@ -179,9 +179,6 @@ Start locally, keep the first workflow bounded, and let Holon preserve the work 
   <!-- mdorigin:index kind=directory -->
 
 - [Reference](./reference/)
-  <!-- mdorigin:index kind=directory -->
-
-- [dist](./dist/)
   <!-- mdorigin:index kind=directory -->
 
 <!-- INDEX:END -->

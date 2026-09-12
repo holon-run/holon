@@ -31,10 +31,10 @@ First follow [Create your first agent](../getting-started/first-agent.md) to ins
 In your own terminal, create an agent named `reviewer` from the official template:
 
 ```bash
-holon agent create reviewer --template https://github.com/holon-run/holon/tree/main/agent_templates/code-reviewer
+holon agent create reviewer --template https://github.com/holon-run/holon/tree/4895eafce1926cb4cc4687c5b9a99c13b071a1e4/agent_templates/code-reviewer
 ```
 
-If you have already installed or synced the template, you can also use its name. Choose either method:
+This example pins the template revision so the command does not depend on when the rename from `holon-reviewer` to `code-reviewer` reaches `main`. If you have already installed or synced the renamed template, you can also use its name. Choose either method:
 
 ```bash
 holon agent create reviewer --template code-reviewer
@@ -49,7 +49,7 @@ After creation, run `holon agent list` to confirm that the new agent appears, th
 The `code-reviewer` template includes `AGENTS.md`, which supplies the new agent's initial working rules. Creation also installs the Skills declared by the template. The following excerpt contains the role definition and permission confirmation checklist:
 
 ```markdown
-# Holon Reviewer Agent
+# Code Reviewer Agent
 
 You are a long-lived code review agent responsible for code review, PR
 lifecycle tracking, and merge decisions.

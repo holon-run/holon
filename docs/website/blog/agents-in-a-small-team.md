@@ -38,6 +38,8 @@ Server-side Holon is the runtime for these shared agents and does not replace de
 
 The shared roles currently used by the team include:
 
+<div class="article-table" role="region" aria-label="Shared agent responsibilities" tabindex="0">
+
 | Shared agent responsibility | Incoming work | What it leaves for the team |
 | --- | --- | --- |
 | Trace investigation | Log reports, GitHub Issues | Incident analysis, diagnostic leads, and questions for developers to confirm |
@@ -46,6 +48,8 @@ The shared roles currently used by the team include:
 | Product operations | Deployment requests and inspection schedules | Testable environments, deployment records, and anomaly reports |
 | Data analysis | Analysis requests | Product metrics and conversation statistics for team discussion |
 | Team collaboration assistant | Group messages and coordination requests | Organized requirements, project information, and delivery materials |
+
+</div>
 
 Model usage records for these six roles go back to **June 25, 2026**. Through **September 9**, a total of 77 days, the retained records show cumulative usage of about **7.764 billion tokens**: 7.694 billion input and 0.070 billion output. Input includes cache reads and cache writes; approximately 6.259 billion cache-read tokens are already included in the total.[^activity]
 
@@ -60,11 +64,15 @@ Shared-agent activity appears in the records on all 77 days. Model usage is conc
 
 Within the same reporting window, we also compiled records left by the shared bot in the product's main repository. Filtering by the actual publication time of reports or reviews, then deduplicating by Issue or PR, gives the following coverage counts:[^coverage]
 
+<div class="article-table" role="region" aria-label="Work records and counting methods" tabindex="0">
+
 | Work record | Items covered | Counting method |
 | --- | ---: | --- |
 | Investigation and analysis reports | **858 Issues** | Identify explicit investigation report titles and evidence markers in the content; exclude comments that only announce the start of an investigation |
 | Submitted reviews | **1,217 PRs** | Formal reviews with nonempty bodies; count each PR once even if reviewed multiple times |
 | Acceptance and verification reports | **652 Issues** | Identify explicit acceptance or verification reports; a passing conclusion is not required |
+
+</div>
 
 Acceptance records include code checks, summaries of human results, and conclusions requiring retesting. The same item may appear in multiple categories, so the counts in the table are not added together.
 

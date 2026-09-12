@@ -31,10 +31,10 @@ Holon 仓库的 PR #2854 就经历过这个过程。它修改了工作项的完�
 在自己的终端中，从官方模板创建一个名为 `reviewer` 的 Agent：
 
 ```bash
-holon agent create reviewer --template https://github.com/holon-run/holon/tree/main/agent_templates/code-reviewer
+holon agent create reviewer --template https://github.com/holon-run/holon/tree/4895eafce1926cb4cc4687c5b9a99c13b071a1e4/agent_templates/code-reviewer
 ```
 
-如果已经安装或同步了该模板，也可以用模板名；两种方式选一种即可：
+这里固定模板版本，避免命令依赖 `holon-reviewer` 更名为 `code-reviewer` 的改动何时进入 `main`。如果已经安装或同步了更名后的模板，也可以用模板名；两种方式选一种即可：
 
 ```bash
 holon agent create reviewer --template code-reviewer
@@ -49,7 +49,7 @@ holon agent create reviewer --template code-reviewer
 `code-reviewer` 模板包含 `AGENTS.md`，创建时用它初始化新 Agent 的工作规范，并安装模板声明的 Skills。下面摘录文件中的职责定义和权限确认清单：
 
 ```markdown
-# Holon Reviewer Agent
+# Code Reviewer Agent
 
 You are a long-lived code review agent responsible for code review, PR
 lifecycle tracking, and merge decisions.

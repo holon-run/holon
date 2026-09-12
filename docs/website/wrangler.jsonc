@@ -1,10 +1,10 @@
 {
   "$schema": "./.tools/node_modules/wrangler/config-schema.json",
   "name": "holon-docs-site",
-  "main": "dist/cloudflare/worker.mjs",
+  "main": ".tools/dist/cloudflare/worker.mjs",
   "assets": {
     "binding": "ASSETS",
-    "directory": "dist/cloudflare/assets"
+    "directory": ".tools/dist/cloudflare/assets"
   },
   "alias": {
     "mdorigin/cloudflare-runtime": "./.tools/node_modules/mdorigin/dist/cloudflare-runtime.js"
