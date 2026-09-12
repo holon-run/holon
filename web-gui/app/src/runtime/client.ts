@@ -75,6 +75,26 @@ const DEFAULT_DEV_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
 const CONFIG_UPDATE_TIMEOUT_MS = 30_000;
+// Timeout classes (Web GUI daemon-load observation, 2026-09): a flat 8s abort
+// discarded slow-but-legitimate responses (agent state 4-7.7s, roster
+// snapshots multiple seconds under load) and churned retry load. Polled
+// projection reads get the widest window; retry loops (roster refresh,
+// per-agent backfill) already apply bounded backoff once a request fails.
+const PROJECTION_READ_TIMEOUT_MS = 20_000;
+const HYDRATION_READ_TIMEOUT_MS = 15_000;
+const USER_ACTION_TIMEOUT_MS = 15_000;
+const CONTROL_MUTATION_TIMEOUT_MS = 30_000;
+
+/**
+ * True when the error is a client-side timeout abort (a per-class timeout
+ * fired) rather than a protocol or transport failure. Callers with bounded
+ * backoff (roster refresh, per-agent backfill, hydration retry) treat these
+ * as retryable.
+ */
+export function isTimeoutAbortError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  return error instanceof Error && /timeout|timed out|aborted/i.test(error.message);
+}
 
 function fixtureAgentDetail(agentId: string): AgentDetail {
   return agentDetailFixtures[agentId] ?? agentDetailFixtures[Object.keys(agentDetailFixtures)[0]];
@@ -147,7 +167,7 @@ async function fetchAgentDetail(
 ): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
   const [state, events, workItems] = await Promise.all([
-    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers }),
+    getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS }),
     fetchAgentEvents(baseUrl, fetchImpl, headers, agentId, { limit: 80, order: "desc", displayLevel }).catch(emptyEventPage),
     // Return undefined on failure so projectAgent falls back to state.work_items.
     // Returning [] would shadow the state endpoint's work_items (empty array is not nullish).
@@ -187,7 +207,7 @@ async function fetchAgentState(
     fetchImpl,
     baseUrl,
     `/agents/${encodedAgentId}/state`,
-    { headers },
+    { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
   );
   return projectAgent({ identity: state.agent?.identity ?? { agent_id: agentId } }, state);
 }
@@ -873,7 +893,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/projection-snapshot`,
-        { headers: requestHeaders },
+        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
       );
     },
     /** Authoritative roster snapshot owned by the embedded daemon contract. */
@@ -885,7 +905,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         "/agents/snapshot",
-        { headers: requestHeaders },
+        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
       );
     },
     async getAgentMessagesBatch(agentId: string, messageIds: string[]): Promise<AgentMessagesBatchGetResponseDto> {
@@ -898,6 +918,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/agents/${encodeURIComponent(agentId)}/messages:batchGet`,
         { message_ids: messageIds },
         requestHeaders,
+        { timeoutMs: HYDRATION_READ_TIMEOUT_MS },
       );
     },
     async getAgentTranscriptEntriesBatch(agentId: string, entryIds: string[]): Promise<AgentTranscriptEntriesBatchGetResponseDto> {
@@ -910,6 +931,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/agents/${encodeURIComponent(agentId)}/transcript:batchGet`,
         { entry_ids: entryIds },
         requestHeaders,
+        { timeoutMs: HYDRATION_READ_TIMEOUT_MS },
       );
     },
     async getAgentBriefsById(agentId: string, briefIds: string[]): Promise<BriefFetchResult> {
@@ -1233,7 +1255,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         include_all_workspaces: options.includeAllWorkspaces,
         limit: options.limit,
         types: ["message"],
-      }, requestHeaders);
+      }, requestHeaders, { timeoutMs: USER_ACTION_TIMEOUT_MS });
       return projectSearchResponse(response);
     },
     async getMemorySource(sourceRef: string, maxChars?: number): Promise<MemorySourceContent> {
@@ -1243,7 +1265,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const response = await postJson<MemorySourceContentDto>(fetchImpl, baseUrl, "/memory/get", {
         source_ref: sourceRef,
         max_chars: maxChars,
-      }, requestHeaders);
+      }, requestHeaders, { timeoutMs: USER_ACTION_TIMEOUT_MS });
       return projectMemorySourceContent(response);
     },
     streamAgentEvents(agentId: string, options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
@@ -1276,6 +1298,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
           })),
         },
         requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
       if (!response?.message_id) {
         throw new Error("Operator prompt response did not include message_id.");
@@ -1298,6 +1321,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
           authority_class: "operator_instruction",
         },
         requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
     },
     async setAgentModel(agentId: string, model: string, reasoningEffort?: string): Promise<AgentModelStateDto | undefined> {
@@ -1310,6 +1334,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/control/agents/${encodeURIComponent(agentId)}/model`,
         { model, reasoning_effort: reasoningEffort, authority_class: "operator_instruction" },
         requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
       return response.model;
     },
@@ -1323,6 +1348,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/control/agents/${encodeURIComponent(agentId)}/model/clear`,
         { authority_class: "operator_instruction" },
         requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
       return response.model;
     },
@@ -1336,6 +1362,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/control/agents/${encodeURIComponent(agentId)}/control`,
         { action },
         requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
     },
     async renameAgent(agentId: string, name: string): Promise<AgentDetailDto> {
@@ -1348,6 +1375,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         `/control/agents/${encodeURIComponent(agentId)}/name`,
         { name },
         requestHeaders,
+        { timeoutMs: CONTROL_MUTATION_TIMEOUT_MS },
       );
     },
     async deleteAgent(agentId: string, cascadePrivateChildren = false): Promise<AgentDeletionResult> {
@@ -1388,7 +1416,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         ? `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}`
         : `/workspaces/${encodeURIComponent(workspaceId)}/files`;
       const query = executionRootId ? `?execution_root_id=${encodeURIComponent(executionRootId)}` : "";
-      const response = await getJson<WorkspaceDirectoryListingDto>(fetchImpl, baseUrl, `${urlPath}${query}`, { headers: requestHeaders });
+      const response = await getJson<WorkspaceDirectoryListingDto>(fetchImpl, baseUrl, `${urlPath}${query}`, { headers: requestHeaders, timeoutMs: USER_ACTION_TIMEOUT_MS });
       return projectDirectoryListing(response);
     },
     async readWorkspaceFile(workspaceId: string, path: string, executionRootId?: string): Promise<WorkspaceFileContent> {
@@ -1401,7 +1429,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}${query}`,
-        { headers: requestHeaders },
+        { headers: requestHeaders, timeoutMs: USER_ACTION_TIMEOUT_MS },
       );
       return {
         type: "file",
@@ -1432,7 +1460,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/workspaces/${encodeURIComponent(workspaceId)}/files/${encodedPath}?${params.toString()}`,
-        { headers: requestHeaders },
+        { headers: requestHeaders, timeoutMs: USER_ACTION_TIMEOUT_MS },
       );
       return response.type === "directory"
         ? projectDirectoryListing(response as WorkspaceDirectoryListingDto)
@@ -1450,7 +1478,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         fetchImpl,
         baseUrl,
         `/agents/${encodeURIComponent(agentId)}/tool-executions/${encodeURIComponent(toolExecutionId)}/artifacts/${artifactIndex}`,
-        { headers: requestHeaders },
+        { headers: requestHeaders, timeoutMs: USER_ACTION_TIMEOUT_MS },
       );
       return {
         artifactIndex: response.artifact_index,
@@ -1509,7 +1537,7 @@ async function fetchAgentEvents(
     fetchImpl,
     baseUrl,
     path,
-    { headers },
+    { headers, timeoutMs: HYDRATION_READ_TIMEOUT_MS },
   );
   return {
     ...response,
@@ -1559,7 +1587,7 @@ async function fetchAgentWorkItems(
     fetchImpl,
     baseUrl,
     `/agents/${encodeURIComponent(agentId)}/work-items${queryString ? `?${queryString}` : ""}`,
-    { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers },
+    { timeoutMs: HYDRATION_READ_TIMEOUT_MS, headers },
   );
 }
 
@@ -1574,7 +1602,7 @@ async function fetchAgentWorkItem(
     fetchImpl,
     baseUrl,
     `/agents/${encodeURIComponent(agentId)}/work-items/${encodeURIComponent(workItemId)}`,
-    { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, headers },
+    { timeoutMs: HYDRATION_READ_TIMEOUT_MS, headers },
   );
 }
 
@@ -1599,6 +1627,7 @@ async function fetchTranscriptEntriesForEvents(
     `/agents/${encodeURIComponent(agentId)}/transcript:batchGet`,
     { entry_ids: entryIds },
     headers,
+    { timeoutMs: HYDRATION_READ_TIMEOUT_MS },
   ).catch((): AgentTranscriptEntriesBatchGetResponseDto => ({ entries: [], missing_entry_ids: entryIds }));
   return Object.fromEntries((response.entries ?? []).flatMap((entry) => (entry.id ? [[entry.id, entry]] : [])));
 }
@@ -1646,6 +1675,7 @@ async function fetchBriefRecordsById(
     `/agents/${encodeURIComponent(agentId)}/briefs:batchGet`,
     { brief_ids: Array.from(new Set(briefIds)) },
     headers,
+    { timeoutMs: HYDRATION_READ_TIMEOUT_MS },
   );
   return {
     recordsById: Object.fromEntries((response.briefs ?? []).flatMap((brief) => brief.id ? [[brief.id, brief]] : [])),
@@ -1798,9 +1828,9 @@ async function fetchRuntimeBootstrap(
   const handshake = await getJson<{
     auth?: { mode?: string };
     capabilities?: string[];
-  }>(fetchImpl, baseUrl, "/handshake", { headers });
+  }>(fetchImpl, baseUrl, "/handshake", { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS });
   assertObserverSyncCapabilities(handshake.capabilities ?? []);
-  const agentEntries = await getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers });
+  const agentEntries = await getJson<AgentListEntryDto[]>(fetchImpl, baseUrl, "/agents/list", { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS });
 
   const agents = agentEntries.map((entry) => projectAgent(entry));
   const attentionCount = agents.filter((agent) => agent.pending > 0 || agent.waitingCount > 0).length;
@@ -1948,7 +1978,7 @@ async function getBlob(
   options: { timeoutMs?: number; headers?: Record<string, string> } = {},
 ): Promise<Blob> {
   const controller = new AbortController();
-  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+  const timeout = globalThis.setTimeout(() => controller.abort(), options.timeoutMs ?? USER_ACTION_TIMEOUT_MS);
   const response = await fetchImpl(`${baseUrl}${path}`, {
     headers: { Accept: "*/*", ...options.headers },
     signal: controller.signal,

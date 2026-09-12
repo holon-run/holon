@@ -4,6 +4,7 @@ import {
   buildWorkspaceFileUrl,
   createRuntimeClient,
   httpRetryAfterMs,
+  isTimeoutAbortError,
   projectModelOptions,
   REQUIRED_OBSERVER_SYNC_CAPABILITIES,
 } from "./client";
@@ -1472,5 +1473,63 @@ describe("createRuntimeClient agent naming", () => {
       expect.objectContaining({ id: "main", canRename: false, incarnation: undefined }),
     );
     expect(bootstrap.agents[1].name).toBeUndefined();
+  });
+});
+
+describe("per-endpoint timeout classes", () => {
+  it("lets slow-but-legitimate reads outlive the previous flat 8s timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const cases: Array<{
+        name: string;
+        abortedAtMs: number;
+        start: (client: ReturnType<typeof createRuntimeClient>) => Promise<unknown>;
+      }> = [
+        { name: "agent state", abortedAtMs: 20_000, start: (client) => client.getAgentState("agent-one") },
+        { name: "roster snapshot", abortedAtMs: 20_000, start: (client) => client.getAgentRosterSnapshot() },
+        { name: "agent events page", abortedAtMs: 15_000, start: (client) => client.getAgentEvents("agent-one", { limit: 100, order: "desc" }) },
+        { name: "search", abortedAtMs: 15_000, start: (client) => client.search("hello") },
+      ];
+      for (const testCase of cases) {
+        const captured: { signal?: AbortSignal } = {};
+        const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+          captured.signal = init?.signal instanceof AbortSignal ? init.signal : undefined;
+          return await new Promise<Response>((_resolve, reject) => {
+            captured.signal?.addEventListener("abort", () => {
+              reject(new DOMException("The operation was aborted.", "AbortError"));
+            });
+          });
+        }) as typeof fetch;
+        const client = createRuntimeClient({
+          mode: "remote",
+          baseUrl: "http://example.test:7878",
+          fetchImpl,
+        });
+
+        const settled = testCase.start(client).then(
+          () => "settled",
+          () => "settled",
+        );
+        // The previous flat policy aborted every request at 8s even though
+        // daemon-load observation showed legitimate 4-8s responses.
+        await vi.advanceTimersByTimeAsync(8_000);
+        expect(captured.signal?.aborted, `${testCase.name} should survive the old flat 8s timeout`).toBe(false);
+        await vi.advanceTimersByTimeAsync(testCase.abortedAtMs - 8_000 - 1);
+        expect(captured.signal?.aborted, `${testCase.name} should wait until its class timeout`).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(captured.signal?.aborted, `${testCase.name} should abort at its class timeout`).toBe(true);
+        await settled;
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("classifies timeout aborts for bounded-backoff retry decisions", () => {
+    expect(isTimeoutAbortError(new DOMException("The operation was aborted.", "AbortError"))).toBe(true);
+    expect(isTimeoutAbortError(new Error("request timed out"))).toBe(true);
+    expect(isTimeoutAbortError(new Error("fetch failed"))).toBe(false);
+    expect(isTimeoutAbortError("aborted")).toBe(false);
+    expect(isTimeoutAbortError(undefined)).toBe(false);
   });
 });

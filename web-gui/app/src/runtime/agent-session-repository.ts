@@ -1,5 +1,6 @@
 import {
   cursorNotFoundPayload,
+  isTimeoutAbortError,
   isSnapshotAgentMissingError,
   type AgentProjectionSnapshotDto,
   type StreamEventEnvelopeDto,
@@ -1187,9 +1188,7 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
 }
 
 function briefHydrationErrorKind(error: unknown): string {
-  if (error instanceof DOMException && error.name === "AbortError") return "timeout";
-  if (error instanceof Error && /timeout|aborted/i.test(error.message)) return "timeout";
-  return "request_failed";
+  return isTimeoutAbortError(error) ? "timeout" : "request_failed";
 }
 
 /** Map an S5 projection snapshot DTO into the recovery-layer shape. */

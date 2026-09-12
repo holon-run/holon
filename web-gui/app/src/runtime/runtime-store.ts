@@ -4,6 +4,7 @@ import { create } from "zustand";
 import {
   createRuntimeClient,
   isProjectionBusyError,
+  isTimeoutAbortError,
   projectRosterAgents,
   RuntimeHttpError,
   type AgentEventStreamSubscription,
@@ -4818,20 +4819,17 @@ function updateBriefHydrationState(
 }
 
 export function agentDetailErrorKind(error: unknown): string {
-  if (error instanceof DOMException && error.name === "AbortError") return "timeout";
   if (error instanceof Error) {
     if (error.name === "RuntimeHttpError") return "http_error";
     if (error.name === "SyntaxError") return "parse_error";
     if (error.name === "TypeError") return "network_error";
-    if (/timeout|timed out|aborted/i.test(error.message)) return "timeout";
   }
+  if (isTimeoutAbortError(error)) return "timeout";
   return "unknown";
 }
 
 function briefHydrationErrorKind(error: unknown): string {
-  if (error instanceof DOMException && error.name === "AbortError") return "timeout";
-  if (error instanceof Error && /timeout|aborted/i.test(error.message)) return "timeout";
-  return "request_failed";
+  return isTimeoutAbortError(error) ? "timeout" : "request_failed";
 }
 
 export function agentBriefPatchFromEvents(
