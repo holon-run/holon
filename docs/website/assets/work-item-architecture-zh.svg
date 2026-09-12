@@ -1,37 +1,44 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="660" viewBox="0 0 800 660" role="img">
-<title>WorkItem：连接判断、状态与后续执行</title>
-<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0L6 3L0 6" fill="none" stroke="#285fa7"/></marker></defs>
-<rect width="800" height="660" rx="16" fill="#f7faff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="736" viewBox="0 0 720 736" role="img" aria-labelledby="title desc">
+<title id="title">一轮结束，工作仍在</title>
+<desc id="desc">执行可以暂停 · 记录跨轮保留 · 有依据地继续</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#285fa7" stroke-width="1.4"/></marker></defs>
+<rect width="720" height="736" rx="16" fill="#f8fafc"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
-<text x="32" y="42" font-size="24" fill="#183457" font-weight="600" text-anchor="start">WorkItem：连接判断、状态与后续执行</text>
-<rect x="32" y="76" width="330" height="112" rx="8" fill="#fff" stroke="#c4d3e6" stroke-width="1.5"/>
-<text x="50" y="106" font-size="20" fill="#183457" font-weight="600" text-anchor="start">LLM · 当前轮次</text>
-<text x="50" y="134" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">理解目标、分析证据、决定下一步</text>
-<text x="50" y="160" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">通过工具表达等待、切换与完成</text>
-<rect x="438" y="76" width="330" height="112" rx="8" fill="#fff" stroke="#c4d3e6" stroke-width="1.5"/>
-<text x="456" y="106" font-size="20" fill="#183457" font-weight="600" text-anchor="start">运行时 · 状态转换</text>
-<text x="456" y="134" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">校验工具请求与工作归属</text>
-<text x="456" y="160" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">保存等待、续接与完成结果</text>
-<path d="M362 130H438" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="256" width="736" height="148" rx="8" fill="#edf4ff" stroke="#c4d3e6" stroke-width="1.5"/>
-<text x="50" y="286" font-size="20" fill="#183457" font-weight="600" text-anchor="start">围绕同一 WorkItem 保存，但分开承担责任</text>
-<text x="50" y="314" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">工作记录：目标、生命周期、计划引用、进度</text>
-<text x="50" y="340" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">调度依据：等待条件、续接关系、焦点及阻碍信息</text>
-<text x="50" y="366" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">恢复材料：计划正文、审阅发现、提交标识、证据引用</text>
-<path d="M603 188V256" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<text x="617" y="226" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">持久保存</text>
-<rect x="32" y="466" width="330" height="112" rx="8" fill="#fff" stroke="#c4d3e6" stroke-width="1.5"/>
-<text x="50" y="496" font-size="20" fill="#183457" font-weight="600" text-anchor="start">上下文装配</text>
-<text x="50" y="524" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">目标与进度 → 相关历史和证据</text>
-<text x="50" y="550" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">按预算提供下一轮的恢复依据</text>
-<rect x="438" y="466" width="330" height="112" rx="8" fill="#fff" stroke="#c4d3e6" stroke-width="1.5"/>
-<text x="456" y="496" font-size="20" fill="#183457" font-weight="600" text-anchor="start">调度判断</text>
-<text x="456" y="524" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">结合工作状态与到达的信号</text>
-<text x="456" y="550" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">判断等待、可运行或续接</text>
-<path d="M197 404V466" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<path d="M603 404V466" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<path d="M438 522H362" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<text x="385" y="508" font-size="15" fill="#536b87" font-weight="400" text-anchor="start">续办</text>
-<path d="M32 522H16V130H32" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<text x="32" y="623" font-size="18" fill="#183457" font-weight="400" text-anchor="start">模型判断业务是否满足；运行时不从自然语言里猜测调度状态。</text>
+<text x="32" y="49" font-size="29" fill="#183457" font-weight="600" text-anchor="start">一轮结束，工作仍在</text>
+<text x="32" y="84" font-size="21" fill="#53677d" font-weight="400" text-anchor="start">执行可以暂停 · 记录跨轮保留 · 有依据地继续</text>
+<rect x="32" y="117" width="288" height="145" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="56" y="155" font-size="26" fill="#183457" font-weight="600" text-anchor="start">Agent 判断</text>
+<text x="56" y="198" font-size="23" fill="#53677d" font-weight="400" text-anchor="start">分析目标与证据</text>
+<text x="56" y="234" font-size="23" fill="#53677d" font-weight="400" text-anchor="start">决定下一步</text>
+<rect x="400" y="117" width="288" height="145" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="424" y="155" font-size="26" fill="#183457" font-weight="600" text-anchor="start">运行时登记</text>
+<text x="424" y="198" font-size="23" fill="#53677d" font-weight="400" text-anchor="start">保存进度与等待</text>
+<text x="424" y="234" font-size="23" fill="#53677d" font-weight="400" text-anchor="start">安排后续执行</text>
+<path d="M320 186H399" fill="none" stroke="#285fa7" stroke-width="1.8" marker-end="url(#arrow)"/>
+<path d="M544 262V306" fill="none" stroke="#285fa7" stroke-width="1.8" marker-end="url(#arrow)"/>
+<rect x="32" y="307" width="656" height="193" rx="10" fill="#eef4ff" stroke="#b6cbe7"/>
+<text x="56" y="348" font-size="29" fill="#285fa7" font-weight="600" text-anchor="start">WorkItem</text>
+<text x="256" y="348" font-size="23" fill="#285fa7" font-weight="400" text-anchor="start">属于这项工作的持久记录</text>
+<path d="M56 369H664" fill="none" stroke="#c4d6ec" stroke-width="1.8"/>
+<text x="56" y="412" font-size="25" fill="#183457" font-weight="600" text-anchor="start">目标与交付</text>
+<text x="56" y="455" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">做到什么算完成</text>
+<text x="262" y="412" font-size="25" fill="#183457" font-weight="600" text-anchor="start">进度与证据</text>
+<text x="262" y="455" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">已经确认了什么</text>
+<text x="468" y="412" font-size="25" fill="#183457" font-weight="600" text-anchor="start">等待与恢复</text>
+<text x="468" y="455" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">何时回来查什么</text>
+<text x="32" y="548" font-size="24" fill="#183457" font-weight="600" text-anchor="start">等待之后，接着做</text>
+<text x="378" y="548" font-size="21" fill="#53677d" font-weight="400" text-anchor="start">提供恢复依据</text>
+<rect x="32" y="577" width="192" height="101" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="128" y="615" font-size="25" fill="#183457" font-weight="600" text-anchor="middle">信号到达</text>
+<text x="128" y="653" font-size="22" fill="#53677d" font-weight="400" text-anchor="middle">检查恢复条件</text>
+<path d="M224 628H262" fill="none" stroke="#285fa7" stroke-width="1.8" marker-end="url(#arrow)"/>
+<rect x="264" y="577" width="192" height="101" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="360" y="615" font-size="25" fill="#183457" font-weight="600" text-anchor="middle">恢复上下文</text>
+<text x="360" y="653" font-size="22" fill="#53677d" font-weight="400" text-anchor="middle">读取工作记录</text>
+<path d="M456 628H494" fill="none" stroke="#285fa7" stroke-width="1.8" marker-end="url(#arrow)"/>
+<rect x="496" y="577" width="192" height="101" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="592" y="615" font-size="25" fill="#183457" font-weight="600" text-anchor="middle">下一轮判断</text>
+<text x="592" y="653" font-size="22" fill="#53677d" font-weight="400" text-anchor="middle">复查并更新记录</text>
+<path d="M360 500V576" fill="none" stroke="#285fa7" stroke-width="1.8" marker-end="url(#arrow)" stroke-dasharray="5 7"/>
+<text x="32" y="716" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">信号让工作有机会继续；验收仍需检查证据。</text>
 </g></svg>

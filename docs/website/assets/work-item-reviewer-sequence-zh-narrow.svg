@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1050" viewBox="0 0 480 1050" role="img" aria-labelledby="title desc">
+<title id="title">两项工作，各自接着做</title>
+<desc id="desc">同一个 reviewer · 一种示意顺序</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#285fa7" stroke-width="1.4"/></marker></defs>
+<rect width="480" height="1050" rx="16" fill="#f8fafc"/>
+<g font-family="Noto Sans CJK SC, sans-serif">
+<text x="32" y="49" font-size="29" fill="#183457" font-weight="600" text-anchor="start">两项工作，各自接着做</text>
+<text x="32" y="84" font-size="21" fill="#53677d" font-weight="400" text-anchor="start">同一个 reviewer · 一种示意顺序</text>
+<text x="32" y="126" font-size="24" fill="#183457" font-weight="600" text-anchor="start">A / PR #101     B / PR #102</text>
+<rect x="32" y="152" width="416" height="118" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="51" y="187" font-size="21" fill="#53677d" font-weight="600" text-anchor="start">01</text>
+<text x="96" y="195" font-size="24" fill="#285fa7" font-weight="600" text-anchor="start">A 审阅，记录权限问题</text>
+<text x="96" y="241" font-size="24" fill="#53677d" font-weight="400" text-anchor="start">B 尚未开始</text>
+<path d="M64 270V286" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="32" y="288" width="416" height="118" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="51" y="323" font-size="21" fill="#53677d" font-weight="600" text-anchor="start">02</text>
+<text x="96" y="331" font-size="24" fill="#865b1c" font-weight="600" text-anchor="start">A 等待作者修订</text>
+<text x="96" y="377" font-size="24" fill="#285fa7" font-weight="600" text-anchor="start">B 审阅代码</text>
+<path d="M64 406V422" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="32" y="424" width="416" height="118" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="51" y="459" font-size="21" fill="#53677d" font-weight="600" text-anchor="start">03</text>
+<text x="96" y="467" font-size="24" fill="#865b1c" font-weight="600" text-anchor="start">A 更新到达，不立即抢占</text>
+<text x="96" y="513" font-size="24" fill="#865b1c" font-weight="600" text-anchor="start">B 保存进度，等测试结果</text>
+<path d="M64 542V558" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="32" y="560" width="416" height="118" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="51" y="595" font-size="21" fill="#53677d" font-weight="600" text-anchor="start">04</text>
+<text x="96" y="603" font-size="24" fill="#285fa7" font-weight="600" text-anchor="start">A 恢复，复查修订与 CI</text>
+<text x="96" y="649" font-size="24" fill="#865b1c" font-weight="600" text-anchor="start">B 继续等待测试结果</text>
+<path d="M64 678V694" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="32" y="696" width="416" height="118" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="51" y="731" font-size="21" fill="#53677d" font-weight="600" text-anchor="start">05</text>
+<text x="96" y="739" font-size="24" fill="#27664d" font-weight="600" text-anchor="start">A 按授权完成交付</text>
+<text x="96" y="785" font-size="24" fill="#865b1c" font-weight="600" text-anchor="start">B 仍在等测试结果</text>
+<path d="M64 814V830" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="32" y="832" width="416" height="118" rx="10" fill="#fff" stroke="#d9e2eb"/>
+<text x="51" y="867" font-size="21" fill="#53677d" font-weight="600" text-anchor="start">06</text>
+<text x="96" y="875" font-size="24" fill="#27664d" font-weight="600" text-anchor="start">A 保留交付结果</text>
+<text x="96" y="921" font-size="24" fill="#285fa7" font-weight="600" text-anchor="start">B 收到测试结果，恢复</text>
+<text x="32" y="997" font-size="24" fill="#183457" font-weight="600" text-anchor="start">等待与完成，分别属于各自的工作。</text>
+<text x="32" y="1030" font-size="23" fill="#53677d" font-weight="400" text-anchor="start">通知不会自动结束另一项工作。</text>
+</g></svg>

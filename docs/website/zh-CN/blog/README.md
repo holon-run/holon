@@ -47,7 +47,7 @@ Holon 仍处于早期阶段。这里用于解释运行时背后的问题，记�
   <!-- mdorigin:index kind=article -->
 
 - [Holon 的 WorkItem 架构：把工作状态从对话中分离](./why-work-items.md)
-  从 token 河流上的一条船说起，拆解 WorkItem 如何连接 LLM、调度与恢复上下文，并用 reviewer 交错跟进两个 PR 解释等待和工作连续性。中文审阅稿，未发布。
+  从 Goal、Loop 的持续执行探索出发，解释 WorkItem 如何保留目标、进度和恢复依据，让同一个 Agent 在多项工作之间等待、切换与交付。中文审阅稿，未发布。
   <!-- mdorigin:index kind=article -->
 
 - [从 Issue 到发布：工作不会停在某个人的终端里](./project-work-that-survives-ci-waits.md)

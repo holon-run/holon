@@ -7,6 +7,23 @@ draft: true
 Static files used by the documentation shell. This directory is intentionally
 excluded from mdorigin-managed indexes.
 
+## WorkItem article diagrams
+
+`../.tools/render-work-item-diagrams.py` generates the Chinese SVG/2x PNG
+pairs. It requires CairoSVG and Noto Sans CJK SC.
+
+- `work-item-architecture-zh`: 720×736, showing per-turn judgment, persistent
+  work records, and resumption after waiting. It is not an internal component map.
+- `work-item-reviewer-sequence-zh`: 720×994, showing two independent work items
+  in six chronological rows, not concurrent model turns or fixed priorities.
+- Their `-narrow` variants use 480×1018 and 480×1050 vertical layouts below the
+  article's 640px picture breakpoint. Keep source dimensions synchronized with
+  the article HTML. Narrow sequence rows preserve the same six steps.
+
+Blue marks active processing, amber waiting, and green delivery; every state
+also has a text label. The article's captions and alt text explain the flow
+without relying on color. Keep text legible at article width when regenerating.
+
 ## Product article cover
 
 `holon-agent-workspace-cover.webp` is an AI-generated conceptual illustration

@@ -1,40 +1,74 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="790" viewBox="0 0 800 790" role="img">
-<title>Reviewer：A 与 B 如何交错，而不互相覆盖</title>
-<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0L6 3L0 6" fill="none" stroke="#285fa7"/></marker></defs>
-<rect width="800" height="790" rx="16" fill="#f7faff"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="994" viewBox="0 0 720 994" role="img" aria-labelledby="title desc">
+<title id="title">两项工作，各自接着做</title>
+<desc id="desc">同一个 reviewer · 从上往下读 · 一种示意顺序</desc>
+<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#285fa7" stroke-width="1.4"/></marker></defs>
+<rect width="720" height="994" rx="16" fill="#f8fafc"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
-<text x="32" y="42" font-size="24" fill="#183457" font-weight="600" text-anchor="start">Reviewer：A 与 B 如何交错，而不互相覆盖</text>
-<text x="32" y="72" font-size="17" fill="#536b87" font-weight="400" text-anchor="start">示意顺序；不是固定优先级，也不是即时抢占</text>
-<text x="132" y="120" font-size="18" fill="#183457" font-weight="600" text-anchor="middle">WorkItem A · #101</text>
-<path d="M132 142V698" fill="none" stroke="#285fa7" stroke-width="1.6" stroke-dasharray="5 6"/>
-<text x="400" y="120" font-size="18" fill="#183457" font-weight="600" text-anchor="middle">Reviewer / 调度</text>
-<path d="M400 142V698" fill="none" stroke="#285fa7" stroke-width="1.6" stroke-dasharray="5 6"/>
-<text x="668" y="120" font-size="18" fill="#183457" font-weight="600" text-anchor="middle">WorkItem B · #102</text>
-<path d="M668 142V698" fill="none" stroke="#285fa7" stroke-width="1.6" stroke-dasharray="5 6"/>
-<rect x="32" y="147" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="168" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">审阅 A，记录权限问题</text>
-<path d="M400 180H132" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="216" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="237" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">A 登记外部等待，让出执行</text>
-<path d="M132 249H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="285" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="306" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">开始 B，读取 diff 并分析</text>
-<path d="M400 318H668" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="354" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="375" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">A 更新通知到达；不立即抢占 B</text>
-<path d="M132 387H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="423" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="444" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">B 保存进度，登记测试 task 等待</text>
-<path d="M668 456H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="492" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="513" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">调度允许时恢复 A，查询新提交与 CI</text>
-<path d="M400 525H132" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="561" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="582" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">A 验收后交付；B 仍未完成</text>
-<path d="M132 594H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="630" width="736" height="27" fill="#f7faff"/>
-<text x="400" y="651" font-size="17" fill="#183457" font-weight="400" text-anchor="middle">B 测试结果到达，后续恢复 B</text>
-<path d="M668 663H400" fill="none" stroke="#285fa7" stroke-width="1.6" marker-end="url(#arrow)"/>
-<rect x="32" y="717" width="736" height="52" rx="8" fill="#fff" stroke="#c4d3e6" stroke-width="1.5"/>
-<text x="50" y="747" font-size="20" fill="#183457" font-weight="600" text-anchor="start">A 与 B 各有目标、进度、等待条件和完成边界</text>
+<text x="32" y="49" font-size="29" fill="#183457" font-weight="600" text-anchor="start">两项工作，各自接着做</text>
+<text x="32" y="84" font-size="21" fill="#53677d" font-weight="400" text-anchor="start">同一个 reviewer · 从上往下读 · 一种示意顺序</text>
+<rect x="80" y="116" width="288" height="56" rx="10" fill="#e5edf8" stroke="#e5edf8"/>
+<rect x="400" y="116" width="288" height="56" rx="10" fill="#e5edf8" stroke="#e5edf8"/>
+<text x="224" y="153" font-size="26" fill="#183457" font-weight="600" text-anchor="middle">A / PR #101</text>
+<text x="544" y="153" font-size="26" fill="#183457" font-weight="600" text-anchor="middle">B / PR #102</text>
+<path d="M46 204V874" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="31" y="223" width="30" height="30" rx="15" fill="#e5edf8" stroke="#e5edf8"/>
+<text x="46" y="246" font-size="19" fill="#285fa7" font-weight="600" text-anchor="middle">1</text>
+<rect x="80" y="192" width="288" height="98" rx="10" fill="#eef4ff" stroke="#d9e2eb"/>
+<text x="100" y="228" font-size="25" fill="#285fa7" font-weight="600" text-anchor="start">审阅 A</text>
+<text x="100" y="266" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">记录权限问题</text>
+<rect x="400" y="192" width="288" height="98" rx="10" fill="#f8fafc" stroke="#f8fafc"/>
+<text x="420" y="228" font-size="25" fill="#53677d" font-weight="600" text-anchor="start">尚未开始</text>
+<text x="420" y="266" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">独立的另一项委托</text>
+<path d="M224.0 290V308" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<path d="M544.0 290V308" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="31" y="341" width="30" height="30" rx="15" fill="#e5edf8" stroke="#e5edf8"/>
+<text x="46" y="364" font-size="19" fill="#285fa7" font-weight="600" text-anchor="middle">2</text>
+<rect x="80" y="310" width="288" height="98" rx="10" fill="#fff6e7" stroke="#d9e2eb"/>
+<text x="100" y="346" font-size="25" fill="#865b1c" font-weight="600" text-anchor="start">等待修订</text>
+<text x="100" y="384" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">进度留在 A</text>
+<rect x="400" y="310" width="288" height="98" rx="10" fill="#eef4ff" stroke="#d9e2eb"/>
+<text x="420" y="346" font-size="25" fill="#285fa7" font-weight="600" text-anchor="start">审阅 B</text>
+<text x="420" y="384" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">读取代码并分析</text>
+<path d="M224.0 408V426" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<path d="M544.0 408V426" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="31" y="459" width="30" height="30" rx="15" fill="#e5edf8" stroke="#e5edf8"/>
+<text x="46" y="482" font-size="19" fill="#285fa7" font-weight="600" text-anchor="middle">3</text>
+<rect x="80" y="428" width="288" height="98" rx="10" fill="#fff6e7" stroke="#d9e2eb"/>
+<text x="100" y="464" font-size="25" fill="#865b1c" font-weight="600" text-anchor="start">更新信号到达</text>
+<text x="100" y="502" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">先记录，不立即抢占</text>
+<rect x="400" y="428" width="288" height="98" rx="10" fill="#fff6e7" stroke="#d9e2eb"/>
+<text x="420" y="464" font-size="25" fill="#865b1c" font-weight="600" text-anchor="start">保存 B，等待测试</text>
+<text x="420" y="502" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">保留发现与结果入口</text>
+<path d="M224.0 526V544" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<path d="M544.0 526V544" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="31" y="577" width="30" height="30" rx="15" fill="#e5edf8" stroke="#e5edf8"/>
+<text x="46" y="600" font-size="19" fill="#285fa7" font-weight="600" text-anchor="middle">4</text>
+<rect x="80" y="546" width="288" height="98" rx="10" fill="#eef4ff" stroke="#d9e2eb"/>
+<text x="100" y="582" font-size="25" fill="#285fa7" font-weight="600" text-anchor="start">恢复 A</text>
+<text x="100" y="620" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">复查修订与当前 CI</text>
+<rect x="400" y="546" width="288" height="98" rx="10" fill="#fff6e7" stroke="#d9e2eb"/>
+<text x="420" y="582" font-size="25" fill="#865b1c" font-weight="600" text-anchor="start">继续等待测试</text>
+<text x="420" y="620" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">A 的更新不解除等待</text>
+<path d="M224.0 644V662" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<path d="M544.0 644V662" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="31" y="695" width="30" height="30" rx="15" fill="#e5edf8" stroke="#e5edf8"/>
+<text x="46" y="718" font-size="19" fill="#285fa7" font-weight="600" text-anchor="middle">5</text>
+<rect x="80" y="664" width="288" height="98" rx="10" fill="#eaf5f0" stroke="#d9e2eb"/>
+<text x="100" y="700" font-size="25" fill="#27664d" font-weight="600" text-anchor="start">A 完成交付</text>
+<text x="100" y="738" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">在约定授权范围内</text>
+<rect x="400" y="664" width="288" height="98" rx="10" fill="#fff6e7" stroke="#d9e2eb"/>
+<text x="420" y="700" font-size="25" fill="#865b1c" font-weight="600" text-anchor="start">仍未完成</text>
+<text x="420" y="738" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">进度与等待继续保留</text>
+<path d="M224.0 762V780" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<path d="M544.0 762V780" fill="none" stroke="#d9e2eb" stroke-width="1.8"/>
+<rect x="31" y="813" width="30" height="30" rx="15" fill="#e5edf8" stroke="#e5edf8"/>
+<text x="46" y="836" font-size="19" fill="#285fa7" font-weight="600" text-anchor="middle">6</text>
+<rect x="80" y="782" width="288" height="98" rx="10" fill="#eaf5f0" stroke="#d9e2eb"/>
+<text x="100" y="818" font-size="25" fill="#27664d" font-weight="600" text-anchor="start">保留交付结果</text>
+<text x="100" y="856" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">A 的责任已结束</text>
+<rect x="400" y="782" width="288" height="98" rx="10" fill="#eef4ff" stroke="#d9e2eb"/>
+<text x="420" y="818" font-size="25" fill="#285fa7" font-weight="600" text-anchor="start">结果到达，恢复 B</text>
+<text x="420" y="856" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">检查结果，继续推进</text>
+<text x="80" y="938" font-size="22" fill="#53677d" font-weight="400" text-anchor="start">蓝色：推进中   琥珀色：等待   绿色：已交付</text>
+<text x="80" y="975" font-size="24" fill="#183457" font-weight="600" text-anchor="start">切换工作，不等于结束另一项工作。</text>
 </g></svg>
