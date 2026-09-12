@@ -73,8 +73,8 @@ order: 1
 
 </div>
 <picture class="home-architecture">
-<source media="(max-width: 600px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="670">
-<img src="/assets/runtime-architecture-zh.png" width="1100" height="600" alt="TUI、Web UI 连接同一常驻 Holon Runtime，内部管理 Agents、WorkItems 和等待唤醒，并使用本地工作区与工具链；Mobile 为虚线未来构想。" loading="lazy" decoding="async">
+<source media="(max-width: 600px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="610">
+<img src="/assets/runtime-architecture-zh.png" width="1100" height="520" alt="TUI、Web UI 连接同一常驻 Holon Runtime，内部管理 Agents、WorkItems 和等待唤醒，并使用本地工作区与工具链；Mobile 为虚线未来构想。" loading="lazy" decoding="async">
 </picture>
 <p class="home-product__caption">架构示意 · 实线为现有入口，虚线为未来构想，并非已提供功能或交付承诺。持续执行依赖 daemon 与机器保持运行；图示不代表额外的权限隔离保证。</p>
 </section>

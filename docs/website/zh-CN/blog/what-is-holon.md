@@ -12,9 +12,9 @@ Holon 是供多个 Agent 持续工作的本地工作台。把它运行在自己�
 
 Agent 使用那台机器上的项目和工具。你可以交给它一次修改，也可以让它长期负责一类工作：遇到需要等待的测试、反馈或人工确认，先保存进度，条件满足后再继续。
 
-<img src="/assets/holon-tour-agents.webp" width="1440" height="1000" alt="Holon Web GUI 的 Dashboard：左侧是 Agent 列表，中间是状态概览，右侧是所选 Agent 的详情。图中两个测试 Agent 均无当前工作项。" decoding="async">
+<img src="/assets/holon-tour-agents.webp" width="1600" height="1000" alt="Holon Web GUI 演示：左侧列出六个不同职责的 Agent，中间是 reviewer 的待确认审阅范围，右侧展示其当前工作、工作区与 Skills。" decoding="async">
 
-Web GUI 界面演示，使用本地测试数据，非真实工作案例。这里展示的是 Agent 列表与详情，尚未绑定工作区，也没有运行中的任务；下文的审阅流程另作使用说明。
+Web GUI 界面演示，使用可重建的本地测试数据，非真实工作案例。六个 Agent 分别负责开发、文档、增长、运维、发布和审阅；选中的 reviewer 正等待确认审阅范围，右侧可查看它的工作区与 Skills。
 
 ## 为什么要有这样一个工作台？
 
@@ -43,6 +43,10 @@ Holon 把长期角色、项目环境和跨时间的工作记录放在一起管�
 Agent 进入项目，阅读变更，调用本地工具执行检查。对于需要后续跟进的工作，它会建立工作项，记录目标、计划和进度。你可以查看这项工作，而不必只靠翻聊天记录判断还有什么没做完。
 
 检查可能很快结束，也可能暂时无法继续。长命令还在运行时，Agent 可以等待任务结果；发现一个需要你决定的兼容性取舍时，它应该说明问题，停下来等你确认。等待中的工作仍然是未完成的工作，不会因为 Agent 这一轮停止回复就自动结案。
+
+<img src="/assets/holon-tour-review-work.webp" width="1600" height="1000" alt="Web GUI 演示中的 reviewer 工作项详情：审阅计划、三项检查清单和等待操作者确认范围的原因。" loading="lazy" decoding="async">
+
+同一组本地演示数据中的工作项详情。计划、检查清单和等待原因单独保存；这里等待的是范围确认，并不表示审阅已经完成，也不包含合并或发布授权。
 
 如果审阅还要跟随 CI 或新提交继续，需另行配置 GitHub 事件接入。没有接入也可以先使用：由你把结果或新的要求交给 Agent，再继续处理。
 
@@ -73,23 +77,31 @@ Holon 的后台 Runtime 管理 Agent 的执行和工作状态，终端 TUI 与 W
 这对远程开发很直接：编译器、仓库和测试环境已经在开发机上，就让 Agent 在那里运行。你从浏览器查看结果，或通过终端继续交代要求，连接的仍是同一个后台。
 
 <picture>
-<source media="(max-width: 600px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="670">
-<img src="/assets/runtime-architecture-zh.png" width="1100" height="600" alt="终端 TUI 与 Web UI 连接同一个常驻 Holon Runtime；Agent 在运行 Runtime 的机器上使用工作区与工具链。Mobile 虚线入口为未来构想。" loading="lazy" decoding="async">
+<source media="(max-width: 600px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="610">
+<img src="/assets/runtime-architecture-zh.png" width="1100" height="520" alt="终端 TUI 与 Web UI 连接同一个常驻 Holon Runtime；Agent 在运行 Runtime 的机器上使用工作区与工具链。Mobile 虚线入口为未来构想。" loading="lazy" decoding="async">
 </picture>
 
 图中实线表示现有入口；Mobile 是未来构想，不是已提供的独立客户端。后台与宿主机需要保持可用，关闭客户端和关闭运行环境是两回事。
 
 这里的“本地”指运行 Holon 的那台机器，可以是笔记本，也可以是远程服务器。你决定项目、工具和工作记录放在哪里。
 
-### 把重复说明变成长期合作的约定
+### 为什么需要不同角色，而不只是多个聊天窗口
 
-一个经常合作的 reviewer，应该知道审阅时要提供验证依据，也应该知道自己没有合并权限。这些要求值得维护下来，不必在每个任务里重新输入。
+让两个 Agent 讨论同一份代码，并不等于建立了协作。谁负责修改，谁判断修改是否回应了问题，意见不一致时由谁决定？如果这些没有约定，再多一轮对话也可能只是重复争论。
 
-每个 Agent 有自己的 AgentHome，用来保存职责、记忆和自身材料。你可以用 `AGENTS.md` 说明它负责什么、哪些事情可以直接做、哪些必须请你确认。稳定的工作约定与本次任务分开保存，项目代码和仓库规则则留在对应工作区。
+角色首先要划清决策边界。沿用熟悉的 PR 工作流就能说清楚：开发 Agent 提交修改并回应问题，reviewer 检查风险与验证依据，超出本次范围的取舍交给你决定。在前面的审阅示例中，合并和发布仍由人负责；“reviewer”这个名字本身不带来这些权限。
 
-创建角色时，可以从模板开始；重复使用的方法可以整理成 Skills。例如，把代码审阅步骤交给 reviewer，把文档编写和检查方法交给文档 Agent。模板帮助建立角色，Skills 提供执行方法，后续仍可按实际合作经验调整。
+另一个理由是工作可以独立推进。开发 Agent 修复接口时，文档 Agent 可以检查已经稳定的使用说明。但如果一次改动紧密牵涉前后端，放在同一个 Agent 里完成可能更直接，不必为了分工增加交接。
 
-多个 Agent 因而可以有不同的职责和方法。需要单独检查时，也可以临时委托子 Agent，再接回它的结果。拆分的理由是工作需要不同的职责或复核，而不是 Agent 越多越好。配置方式见 [Agent 模板](/guides/agent-templates)与 [Skills](/guides/skills) 指南（英文）。
+长期角色还值得保留各自的经验。测试 Agent 可以维护容易遗漏的回归场景，运维 Agent 可以记录日志位置、排查步骤和需要人工确认的操作。这些材料需要随着实际工作修订；它们比每次从头说明职责更适合反复合作。
+
+### 把角色和经验留在 AgentHome
+
+每个 Agent 有自己的 AgentHome，用来保存职责、记忆和自身材料。其中的 `AGENTS.md` 可以记录角色契约：负责什么、哪些事情可以直接做、哪些必须请你确认。这份文件记录已有授权，不会因为 Agent 改了文字就扩大实际权限。
+
+角色约定与项目规则也有区别。reviewer 的审阅职责放在它自己的 AgentHome；某个仓库如何构建、怎样测试，则留在对应工作区。这样，换到另一个项目时可以沿用审阅方法，同时遵守那个项目的具体要求。
+
+创建角色时，可以从模板开始；重复使用的方法可以整理成 Skills，例如审阅步骤、文档检查或日志排查。临时需要一次独立复核，也可以委托子 Agent，接回结果后结束，不必为每个小任务都维护一个长期角色。配置方式见 [Agent 模板](/guides/agent-templates)与 [Skills](/guides/skills) 指南（英文）。
 
 ### 把未完成的事留下来，等有条件时继续
 
