@@ -954,7 +954,7 @@ fn build_system_sections(
         section(
             "runtime_scheduling_contract",
             PromptStability::Stable,
-            "Holon is event-driven and resumes work from persisted runtime state, not from agent memory alone. A WorkItem records the durable goal and recovery state for multi-turn work; scheduling state says whether that goal may run now. Current WorkItem means focus, not execution ownership or lifecycle. A task keeps the WorkItem owner captured when it was created; creating or picking another WorkItem does not migrate that task. WaitFor resolves ownership from an explicit owned open work_item_id, then the execution-bound WorkItem, then the turn-bound WorkItem, then current focus, and otherwise the agent lifecycle; a task-result wait must still match the task's owner. Narrative text and plan updates do not change scheduling state, so use lifecycle tools for waits, switches, and completion. Queued runnable WorkItems are normal scheduler candidates. Yielded or parked WorkItems are open but temporarily unschedulable because they yielded through a continuation frame; do not mark them blocked, poll them, or manually pick them just to return. Switching from runnable A to B with PickWorkItem records an A -> B continuation and may end the turn; completing B may restore A and end the turn. Completing the execution-bound WorkItem also ends the turn, while detached completion of another owned WorkItem preserves the current execution subject to runtime conflict checks. Before any control operation that may end the turn, persist required recovery state and arrange any successor or operator-facing delivery that must exist first. External triggers can wake the agent but do not replace WaitFor or completion. Wait for ordinary task completion with WaitFor(task_result) instead of polling; use task inspection or control only for active supervision or bounded diagnosis. Express scheduling facts through runtime tools, not narration, repeated polling, manual blocker fields, or scratch WorkItems.".to_string(),
+            "Holon is event-driven and resumes work from persisted runtime state, not from agent memory alone. A WorkItem records the durable goal and recovery state for multi-turn work; scheduling state says whether that goal may run now. Current WorkItem means focus, not execution ownership or lifecycle. A task keeps the WorkItem owner captured when it was created; creating or picking another WorkItem does not migrate that task. WaitFor resolves ownership from an explicit owned open work_item_id, then the execution-bound WorkItem, then the turn-bound WorkItem, then current focus, and otherwise the agent lifecycle; a task-result wait must still match the task's owner. Narrative text and edits to a plan artifact's body do not change scheduling state. UpdateWorkItem.plan_status does affect WorkItem readiness and scheduling state, so use lifecycle tools for plan-status transitions, waits, switches, and completion. Queued runnable WorkItems are normal scheduler candidates. Yielded or parked WorkItems are open but temporarily unschedulable because they yielded through a continuation frame; do not mark them blocked, poll them, or manually pick them just to return. Switching from runnable A to B with PickWorkItem records an A -> B continuation and may end the turn; completing B may restore A and end the turn. Completing the execution-bound WorkItem also ends the turn, while detached completion of another owned WorkItem preserves the current execution subject to runtime conflict checks. Before any control operation that may end the turn, persist required recovery state and arrange any successor or operator-facing delivery that must exist first. External triggers can wake the agent but do not replace WaitFor or completion. Wait for ordinary task completion with WaitFor(task_result) instead of polling; use task inspection or control only for active supervision or bounded diagnosis. Express scheduling facts through runtime tools, not narration, repeated polling, manual blocker fields, or scratch WorkItems.".to_string(),
         ),
         section(
             "trust_boundary",
@@ -2085,7 +2085,10 @@ mod tests {
             .contains("a task-result wait must still match"));
         assert!(scheduling
             .content
-            .contains("Narrative text and plan updates do not change scheduling state"));
+            .contains("edits to a plan artifact's body do not change scheduling state"));
+        assert!(scheduling
+            .content
+            .contains("UpdateWorkItem.plan_status does affect WorkItem readiness"));
         assert!(scheduling
             .content
             .contains("Before any control operation that may end the turn"));
@@ -2423,7 +2426,10 @@ mod tests {
             .contains("WaitFor resolves ownership from an explicit owned open work_item_id"));
         assert!(section
             .content
-            .contains("Narrative text and plan updates do not change scheduling state"));
+            .contains("edits to a plan artifact's body do not change scheduling state"));
+        assert!(section
+            .content
+            .contains("UpdateWorkItem.plan_status does affect WorkItem readiness"));
         assert!(section.content.contains("Queued runnable WorkItems"));
         assert!(section.content.contains("Yielded or parked WorkItems"));
         assert!(section.content.contains("continuation frame"));

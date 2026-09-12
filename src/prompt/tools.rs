@@ -358,6 +358,11 @@ mod tests {
             .find(|s| s.name == "tool_task_control")
             .expect("task control section");
         assert!(section.content.contains("concrete follow-up"));
+        assert!(section.content.contains("command tasks"));
+        assert!(section.content.contains("`accepts_input`"));
+        assert!(section
+            .content
+            .contains("`child_supervision.followup_target`"));
         assert!(section.content.contains("`accepted_input` receipt"));
         assert!(section
             .content
