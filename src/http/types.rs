@@ -48,7 +48,12 @@ pub struct SearchResponse {
     pub query: String,
     pub limit: usize,
     pub results: Vec<crate::memory::MemorySearchResult>,
+    /// Aggregate across the queried agents; per-agent detail is available in
+    /// `index_status_by_agent` when the request spanned multiple agents.
     pub index_status: crate::memory::MemorySearchIndexStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub index_status_by_agent:
+        Option<std::collections::BTreeMap<String, crate::memory::MemorySearchIndexStatus>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema, Clone)]

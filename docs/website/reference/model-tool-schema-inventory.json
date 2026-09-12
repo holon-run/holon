@@ -4290,7 +4290,7 @@
       "stability": "stable"
     },
     {
-      "description": "Search Holon memory sources, including agent memory markdown and runtime evidence. Normal workspace markdown is not included. Each result includes an opaque source_ref that can be copied verbatim to MemoryGet.\n",
+      "description": "Search Holon memory sources: runtime evidence (messages, briefs, work items, tasks, tool receipts) plus the curated agent memory markdown files agent_memory:self and agent_memory:operator. Other markdown files (notes, workspace docs, source code) are NOT indexed. Each result includes an opaque source_ref that can be copied verbatim to MemoryGet. index_status.stale_reasons explains any temporary staleness; the background indexer self-heals it, so retries are usually better than switching tools.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {

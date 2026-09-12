@@ -23,6 +23,11 @@ runtime write to become runnable. The CLI's default `memory-index rebuild`
 behavior submits that intent; `--offline` remains the explicit foreground repair
 path for stopped-service or operator-controlled maintenance.
 
+The background indexer additionally discovers self-heal agents (dirty marker
+or missing full-backfill checkpoints, no pending rows) and enqueues the same
+rebuild intent for them; see `063-memory-index-self-heal-and-search-status.md`
+for the discovery contract and multi-agent status semantics.
+
 The v1 `memory.sqlite3` file is intentionally ignored by v2. When v2 has not
 been created yet and a v1 file is present, the runtime logs that historical v1
 projection data requires an explicit rebuild/backfill instead of silently

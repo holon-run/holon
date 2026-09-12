@@ -146,6 +146,7 @@ pub async fn search(
             limit,
             results: search_result.results,
             index_status: search_result.index_status,
+            index_status_by_agent: search_result.index_status_by_agent,
         },
     )
 }
