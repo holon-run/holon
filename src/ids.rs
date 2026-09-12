@@ -24,6 +24,16 @@ pub fn message_id() -> String {
     runtime_id("msg")
 }
 
+pub(crate) fn wait_recheck_message_id(wait_id: &str, recheck_at: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"holon.wait-recheck-message.v1\x00");
+    hasher.update(wait_id.as_bytes());
+    hasher.update(b"\x00");
+    hasher.update(recheck_at.as_bytes());
+    let digest = hasher.finalize();
+    format!("msg_recheck1_{}", hex(&digest[..16]))
+}
+
 pub fn agent_message_delivery_id(idempotency_scope: &str, idempotency_key_digest: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"holon.agent-message-delivery.v1\x00");

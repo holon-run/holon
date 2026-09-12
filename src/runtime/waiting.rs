@@ -2224,6 +2224,9 @@ fn matching_wake_source(
             .then(|| ("operator_input".to_string(), actor_id.clone()))
         }
         (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
+            if exact_wait_recheck_source(message, condition, subsystem) {
+                return Some(("wait_recheck".to_string(), Some(condition.id.clone())));
+            }
             if let Some(external) = matching_wake_hint_external_source(message, condition) {
                 return Some(external);
             }
@@ -2235,6 +2238,37 @@ fn matching_wake_source(
         }
         _ => None,
     }
+}
+
+fn exact_wait_recheck_source(
+    message: &MessageEnvelope,
+    condition: &WaitConditionRecord,
+    subsystem: &str,
+) -> bool {
+    if subsystem != "wait_condition_recheck"
+        || message.authority_class != AuthorityClass::RuntimeInstruction
+        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
+        || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
+        || message.source_refs.get("wait_id") != Some(&condition.id)
+    {
+        return false;
+    }
+    let Some(recheck_at) = condition.recheck_at() else {
+        return false;
+    };
+    let recheck = message
+        .metadata
+        .as_ref()
+        .and_then(|value| value.get("wait_condition_recheck"));
+    recheck
+        .and_then(|value| value.get("wait_id"))
+        .and_then(serde_json::Value::as_str)
+        == Some(condition.id.as_str())
+        && recheck
+            .and_then(|value| value.get("recheck_at"))
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| value.parse::<DateTime<Utc>>().ok())
+            == Some(recheck_at)
 }
 
 fn matching_wake_hint_external_source(

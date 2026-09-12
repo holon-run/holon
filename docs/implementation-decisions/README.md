@@ -119,3 +119,4 @@ Current decision notes:
 - [124 Ollama Tool-Only Round Placeholder User Text](./124-ollama-tool-only-round-placeholder-user-text.md)
 - [125 Agent Id Reincarnation Same Row](./125-agent-id-reincarnation-same-row.md)
 - [126 Current-Run Abort Modes](./126-current-run-abort-modes.md)
+- [128 Durable Wait Obligation Selection](./128-durable-wait-obligation-selection.md)

@@ -17,6 +17,9 @@ pub(super) struct ContinuationTrigger {
     /// task result reentry even when the prior closure waiting_reason was
     /// polluted by unrelated waits.
     pub(super) exact_task_wait: bool,
+    /// Durable evidence that this runtime-owned SystemTick is the exact
+    /// recheck event for an agent-scope WaitFor condition.
+    pub(super) exact_wait_recheck: bool,
 }
 
 impl ContinuationTrigger {
@@ -32,6 +35,7 @@ impl ContinuationTrigger {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             }),
             MessageKind::WebhookEvent | MessageKind::CallbackEvent | MessageKind::ChannelEvent => {
                 Some(Self {
@@ -41,6 +45,7 @@ impl ContinuationTrigger {
                     wake_hint_source: None,
                     task_work_item_id: None,
                     exact_task_wait: false,
+                    exact_wait_recheck: false,
                 })
             }
             MessageKind::TimerTick => Some(Self {
@@ -50,6 +55,7 @@ impl ContinuationTrigger {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             }),
             MessageKind::InternalFollowup => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
@@ -58,6 +64,7 @@ impl ContinuationTrigger {
                 task_work_item_id: None,
                 wake_hint_source: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             }),
             MessageKind::SystemTick => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
@@ -72,6 +79,7 @@ impl ContinuationTrigger {
                     .map(ToString::to_string),
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             }),
             MessageKind::TaskResult => Some(Self {
                 kind: admission_trigger_kind_for_message_kind(&message.kind),
@@ -89,6 +97,7 @@ impl ContinuationTrigger {
                 // Filled by the dispatch plan builder from durable wait
                 // evidence; from_message alone cannot see wait conditions.
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             }),
             MessageKind::TaskStatus
             | MessageKind::Control
@@ -117,14 +126,22 @@ pub(super) fn resolve_continuation(
         }
         (Some(t), Some(a)) => t == a,
     };
-    let authorization = resolve_resume_authorization(
-        prior.outcome,
-        prior_waiting_reason,
-        trigger.kind,
-        trigger.contentful,
-        trigger.task_result_outcome,
-        same_work_item,
-    );
+    let authorization = if trigger.exact_wait_recheck && trigger.contentful {
+        super::wake_matching::ResumeDecision {
+            authorization: ResumeAuthorization::ExpectedWait,
+            model_reentry: true,
+            matched_waiting_reason: false,
+        }
+    } else {
+        resolve_resume_authorization(
+            prior.outcome,
+            prior_waiting_reason,
+            trigger.kind,
+            trigger.contentful,
+            trigger.task_result_outcome,
+            same_work_item,
+        )
+    };
     let mut evidence = Vec::new();
     evidence.push(format!("trigger_kind={}", enum_label(trigger.kind)));
     if trigger.contentful {
@@ -138,6 +155,9 @@ pub(super) fn resolve_continuation(
     }
     if trigger.exact_task_wait {
         evidence.push("exact_task_wait".to_string());
+    }
+    if trigger.exact_wait_recheck {
+        evidence.push("exact_wait_recheck".to_string());
     }
     if authorization.matched_waiting_reason {
         evidence.push("matches_waiting_reason".to_string());
@@ -263,6 +283,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -281,6 +302,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -305,6 +327,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: Some("other-work".into()),
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             Some("active-work"),
         );
@@ -325,6 +348,7 @@ mod tests {
                 wake_hint_source: Some("callback".into()),
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -343,6 +367,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -363,6 +388,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -387,6 +413,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -417,6 +444,7 @@ mod tests {
                     wake_hint_source: None,
                     task_work_item_id: None,
                     exact_task_wait: false,
+                    exact_wait_recheck: false,
                 },
                 None,
             );
@@ -442,6 +470,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -460,6 +489,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -478,6 +508,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -496,6 +527,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -515,6 +547,7 @@ mod tests {
                 wake_hint_source: None,
                 task_work_item_id: None,
                 exact_task_wait: false,
+                exact_wait_recheck: false,
             },
             None,
         );
@@ -571,6 +604,7 @@ mod tests {
             wake_hint_source: None,
             task_work_item_id: None,
             exact_task_wait: true,
+            exact_wait_recheck: false,
         };
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingOperatorInput),
@@ -594,6 +628,7 @@ mod tests {
             wake_hint_source: None,
             task_work_item_id: None,
             exact_task_wait: false,
+            exact_wait_recheck: false,
         };
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingOperatorInput),

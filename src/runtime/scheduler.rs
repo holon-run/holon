@@ -1636,6 +1636,20 @@ pub(super) fn message_matches_wait_condition(
     message: &MessageEnvelope,
     condition: &WaitConditionRecord,
 ) -> bool {
+    if matches!(
+        (&message.kind, &message.origin),
+        (
+            MessageKind::SystemTick,
+            MessageOrigin::System { subsystem }
+        ) if subsystem == "wait_condition_recheck"
+    ) && message.authority_class == AuthorityClass::RuntimeInstruction
+        && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
+        && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+        && condition.work_item_id.is_none()
+        && message.source_refs.get("wait_id") == Some(&condition.id)
+    {
+        return true;
+    }
     match (&message.kind, &message.origin) {
         (MessageKind::TaskResult, MessageOrigin::Task { task_id }) => {
             condition.wake_sources.iter().any(

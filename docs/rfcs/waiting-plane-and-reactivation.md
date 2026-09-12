@@ -100,6 +100,10 @@ The waiting plane should own:
 - cancellation of obsolete waits
 - prompt-level guidance for when waiting is appropriate
 
+It must also preserve delivery evidence once a wait has triggered. Replacing a
+wait for the same scope may cancel an older active intent, but it must not erase
+the fact that an already-triggered message is still owed resolution.
+
 The waiting plane should not own:
 
 - shell process lifecycle
@@ -155,6 +159,16 @@ The runtime therefore preserves these invariants:
   a running turn and one future wake can coexist
 - different timers are never coalesced with each other
 - `fire_count` counts actual timer fires, not queued messages or model turns
+
+The same durable-obligation rule applies to `WaitFor` rechecks:
+
+- an agent-scope wait with `recheck_at` has a runtime-owned deadline executor
+- the executor emits one deterministic recheck message for the wait and
+  deadline, so repeated scans are idempotent
+- the recheck message matches only that exact active wait and may authorize
+  model re-entry without pretending to be external input
+- once a wait trigger is durably recorded, its matching message may overtake
+  ordinary queued backlog, but it never overtakes an `Interject`
 
 Timer cancellation and execution admission compete through one durable wake
 fence. If cancellation wins, pending wakes for that timer become invalid and

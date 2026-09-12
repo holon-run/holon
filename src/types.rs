@@ -2951,6 +2951,15 @@ pub struct WaitConditionRecord {
 }
 
 impl WaitConditionRecord {
+    pub fn recheck_at(&self) -> Option<DateTime<Utc>> {
+        self.continuation
+            .as_ref()?
+            .get("recheck_at")?
+            .as_str()?
+            .parse()
+            .ok()
+    }
+
     pub fn trigger_message_id(&self) -> Option<&str> {
         self.trigger_message_id.as_deref()
     }

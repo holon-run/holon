@@ -5,6 +5,33 @@ use crate::types::ExecutionAdmissionProvenance;
 
 const QUEUE_HEAD_NO_PROGRESS_MAX_ATTEMPTS: u32 = 3;
 
+fn select_queue_message<'a>(
+    queue: &'a crate::queue::RuntimeQueue,
+    wait_trigger_message_ids: &std::collections::BTreeSet<String>,
+) -> (Option<&'a MessageEnvelope>, bool) {
+    let head = queue.peek();
+    if head.is_some_and(|message| {
+        message.priority == Priority::Interject
+            || message.delivery_surface == Some(crate::types::MessageDeliverySurface::TaskRejoin)
+    }) {
+        return (head, false);
+    }
+    let mut task_rejoin_barrier_reached = false;
+    if let Some(message) = queue.peek_next_matching(|message| {
+        if task_rejoin_barrier_reached {
+            return false;
+        }
+        if message.delivery_surface == Some(crate::types::MessageDeliverySurface::TaskRejoin) {
+            task_rejoin_barrier_reached = true;
+            return false;
+        }
+        wait_trigger_message_ids.contains(&message.id)
+    }) {
+        return (Some(message), true);
+    }
+    (head, false)
+}
+
 pub(super) enum RunLoopPoll {
     Shutdown,
     Stopped(AgentState, usize),
@@ -145,6 +172,7 @@ struct QueueCandidate {
     message: MessageEnvelope,
     prior_state: AgentState,
     queue_len: usize,
+    wait_obligation: bool,
 }
 
 enum PrepareMessageOutcome {
@@ -382,7 +410,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     );
                     return Ok(poll);
                 }
-                let Some(message) = guard.queue.peek().cloned() else {
+                let wait_trigger_message_ids = self
+                    .runtime
+                    .inner
+                    .storage
+                    .latest_wait_conditions_for_agent(&guard.state.id)?
+                    .into_iter()
+                    .filter(|condition| {
+                        matches!(
+                            condition.status,
+                            crate::types::WaitConditionStatus::Triggered
+                                | crate::types::WaitConditionStatus::Resolved
+                        )
+                    })
+                    .filter_map(|condition| condition.trigger_message_id)
+                    .collect::<std::collections::BTreeSet<_>>();
+                let (message, wait_obligation) =
+                    select_queue_message(&guard.queue, &wait_trigger_message_ids);
+                let message = message.cloned();
+                let Some(message) = message else {
                     let poll = RunLoopPoll::Idle;
                     crate::diagnostics::record_scheduler_poll(
                         poll.outcome_name(),
@@ -394,6 +440,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     message,
                     prior_state: guard.state.clone(),
                     queue_len: guard.queue.len(),
+                    wait_obligation,
                 }
             };
 
@@ -651,10 +698,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         guard.queue.len(),
                     )));
                 }
-                if !guard
-                    .queue
-                    .peek()
-                    .is_some_and(|message| message.id == candidate.message.id)
+                let wait_trigger_message_ids = self
+                    .runtime
+                    .inner
+                    .storage
+                    .latest_wait_conditions_for_agent(&guard.state.id)?
+                    .into_iter()
+                    .filter(|condition| {
+                        matches!(
+                            condition.status,
+                            crate::types::WaitConditionStatus::Triggered
+                                | crate::types::WaitConditionStatus::Resolved
+                        )
+                    })
+                    .filter_map(|condition| condition.trigger_message_id)
+                    .collect::<std::collections::BTreeSet<_>>();
+                let (selected_message, selected_wait_obligation) =
+                    select_queue_message(&guard.queue, &wait_trigger_message_ids);
+                if !selected_message.is_some_and(|message| message.id == candidate.message.id)
+                    || selected_wait_obligation != candidate.wait_obligation
                 {
                     return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
                 }
@@ -757,8 +819,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 }
                 let queued_message = guard
                     .queue
-                    .pop_if_next(&candidate.message.id)
-                    .expect("queue head was just checked");
+                    .pop_selected(&candidate.message.id, candidate.wait_obligation)
+                    .expect("selected queue message was just checked");
                 debug_assert_eq!(queued_message.id, persisted_message.id);
                 guard.state = running_state.clone();
                 guard.last_persisted_state = running_state.clone();
@@ -2362,6 +2424,92 @@ pub(super) fn apply_bootstrap_recovered_projection(
 mod tests {
     use super::*;
 
+    fn queued_message(priority: Priority, id: &str) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: Some("test".into()),
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            priority,
+            MessageBody::Text { text: id.into() },
+        );
+        message.id = id.into();
+        message
+    }
+
+    #[test]
+    fn durable_wait_obligation_overtakes_non_interject_backlog() {
+        let mut queue = crate::queue::RuntimeQueue::default();
+        queue.push(queued_message(Priority::Next, "backlog"));
+        queue.push(queued_message(Priority::Normal, "wait-trigger"));
+        let wait_trigger_message_ids =
+            std::collections::BTreeSet::from(["wait-trigger".to_string()]);
+
+        let (selected, wait_obligation) = select_queue_message(&queue, &wait_trigger_message_ids);
+
+        assert_eq!(
+            selected.map(|message| message.id.as_str()),
+            Some("wait-trigger")
+        );
+        assert!(wait_obligation);
+    }
+
+    #[test]
+    fn interject_remains_ahead_of_durable_wait_obligation() {
+        let mut queue = crate::queue::RuntimeQueue::default();
+        queue.push(queued_message(Priority::Interject, "interject"));
+        queue.push(queued_message(Priority::Next, "wait-trigger"));
+        let wait_trigger_message_ids =
+            std::collections::BTreeSet::from(["wait-trigger".to_string()]);
+
+        let (selected, wait_obligation) = select_queue_message(&queue, &wait_trigger_message_ids);
+
+        assert_eq!(
+            selected.map(|message| message.id.as_str()),
+            Some("interject")
+        );
+        assert!(!wait_obligation);
+    }
+
+    #[test]
+    fn task_rejoin_remains_ahead_of_durable_wait_obligation() {
+        let mut queue = crate::queue::RuntimeQueue::default();
+        let mut task_rejoin = queued_message(Priority::Next, "task-rejoin");
+        task_rejoin.delivery_surface = Some(crate::types::MessageDeliverySurface::TaskRejoin);
+        queue.push(task_rejoin);
+        queue.push(queued_message(Priority::Normal, "wait-trigger"));
+        let wait_trigger_message_ids =
+            std::collections::BTreeSet::from(["wait-trigger".to_string()]);
+
+        let (selected, wait_obligation) = select_queue_message(&queue, &wait_trigger_message_ids);
+
+        assert_eq!(
+            selected.map(|message| message.id.as_str()),
+            Some("task-rejoin")
+        );
+        assert!(!wait_obligation);
+    }
+
+    #[test]
+    fn durable_wait_obligation_does_not_cross_non_head_task_rejoin() {
+        let mut queue = crate::queue::RuntimeQueue::default();
+        queue.push(queued_message(Priority::Next, "backlog"));
+        let mut task_rejoin = queued_message(Priority::Next, "task-rejoin");
+        task_rejoin.delivery_surface = Some(crate::types::MessageDeliverySurface::TaskRejoin);
+        queue.push(task_rejoin);
+        queue.push(queued_message(Priority::Normal, "wait-trigger"));
+        let wait_trigger_message_ids =
+            std::collections::BTreeSet::from(["wait-trigger".to_string()]);
+
+        let (selected, wait_obligation) = select_queue_message(&queue, &wait_trigger_message_ids);
+
+        assert_eq!(selected.map(|message| message.id.as_str()), Some("backlog"));
+        assert!(!wait_obligation);
+    }
+
     fn no_progress_cause(reason: &'static str) -> QueueHeadNoProgressCause {
         use crate::domain::scheduler::SchedulerScenarioClass;
 
@@ -2445,6 +2593,7 @@ mod tests {
             message: guard.queue.peek().cloned().expect("queued test message"),
             prior_state: guard.state.clone(),
             queue_len: guard.queue.len(),
+            wait_obligation: false,
         }
     }
 

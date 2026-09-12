@@ -75,6 +75,17 @@ impl RuntimeQueue {
             .or_else(|| self.background.iter().find(|message| predicate(message)))
     }
 
+    pub fn pop_selected(
+        &mut self,
+        message_id: &str,
+        allow_non_head: bool,
+    ) -> Option<MessageEnvelope> {
+        if !allow_non_head {
+            return self.pop_if_next(message_id);
+        }
+        self.pop_next_matching(|message| message.id == message_id)
+    }
+
     pub fn len(&self) -> usize {
         self.interject.len() + self.next.len() + self.normal.len() + self.background.len()
     }

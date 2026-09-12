@@ -355,6 +355,113 @@ impl RuntimeHandle {
             .next_blocked_work_item_recheck_at(&agent_id)
     }
 
+    pub(super) async fn next_agent_wait_recheck_at(
+        &self,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        let agent_id = self.agent_id().await?;
+        Ok(self
+            .inner
+            .storage
+            .raw_unresolved_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .filter(|condition| {
+                condition.work_item_id.is_none()
+                    && condition.status == crate::types::WaitConditionStatus::Active
+            })
+            .filter_map(|condition| condition.recheck_at())
+            .min())
+    }
+
+    pub(super) async fn emit_due_agent_wait_recheck(&self) -> Result<bool> {
+        let agent_id = self.agent_id().await?;
+        let now = self.now();
+        let Some(condition) = self
+            .inner
+            .storage
+            .raw_unresolved_wait_conditions_for_agent(&agent_id)?
+            .into_iter()
+            .filter(|condition| {
+                condition.work_item_id.is_none()
+                    && condition.status == crate::types::WaitConditionStatus::Active
+                    && condition
+                        .recheck_at()
+                        .is_some_and(|deadline| deadline <= now)
+            })
+            .min_by_key(|condition| condition.recheck_at())
+        else {
+            return Ok(false);
+        };
+        let recheck_at = condition
+            .recheck_at()
+            .expect("due agent wait must have a recheck deadline");
+        let recheck_at_key = recheck_at.to_rfc3339();
+        let wake = condition
+            .continuation
+            .as_ref()
+            .and_then(|value| value.get("wake"))
+            .cloned();
+        let resource = condition
+            .continuation
+            .as_ref()
+            .and_then(|value| value.get("resource"))
+            .cloned();
+        let mut message = MessageEnvelope::new(
+            agent_id.clone(),
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "wait_condition_recheck".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: format!(
+                    "WaitFor recheck deadline reached for wait {}.",
+                    condition.id
+                ),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.id = crate::ids::wait_recheck_message_id(&condition.id, &recheck_at_key);
+        message
+            .source_refs
+            .insert("wait_id".into(), condition.id.clone());
+        message.metadata = Some(serde_json::json!({
+            "wait_condition_recheck": {
+                "wait_id": condition.id,
+                "recheck_at": recheck_at,
+                "wake": wake,
+                "resource": resource,
+                "waiting_for": condition.waiting_for,
+            }
+        }));
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "wait_condition_recheck_due",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "wait_id": message.source_refs.get("wait_id"),
+                "message_id": message.id,
+                "recheck_at": recheck_at,
+            }),
+        ))?;
+        let _ = self.enqueue(message).await?;
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "wait_condition_recheck_enqueued",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "wait_id": condition.id,
+                "message_id": crate::ids::wait_recheck_message_id(
+                    &condition.id,
+                    &recheck_at_key,
+                ),
+                "recheck_at": recheck_at,
+            }),
+        ))?;
+        Ok(true)
+    }
+
     fn duplicate_queued_available_message_id(
         &self,
         work_item: &crate::types::WorkItemRecord,
@@ -999,6 +1106,84 @@ mod tests {
             _dir: dir,
             _workspace: workspace,
         }
+    }
+
+    #[test]
+    fn due_agent_wait_recheck_is_exact_idempotent_and_model_reentering() {
+        let test_runtime = test_runtime();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let registration = rt
+            .block_on(test_runtime.runtime.register_wait_for(
+                "default",
+                None,
+                WaitForWakeKind::OperatorInput,
+                None,
+                "recheck operator wait".into(),
+                Some(0),
+            ))
+            .unwrap();
+        let recheck_at = registration.condition.recheck_at().unwrap();
+        let expected_message_id = crate::ids::wait_recheck_message_id(
+            &registration.condition.id,
+            &recheck_at.to_rfc3339(),
+        );
+        let persisted = test_runtime
+            .runtime
+            .storage()
+            .raw_unresolved_wait_conditions_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .expect("agent wait should remain unresolved before its recheck");
+        assert_eq!(persisted.status, crate::types::WaitConditionStatus::Active);
+        assert_eq!(persisted.work_item_id, None);
+        assert!(
+            persisted.recheck_at().unwrap() <= test_runtime.runtime.now(),
+            "zero-delay agent wait should already be due: persisted={:?}, now={:?}",
+            persisted.recheck_at(),
+            test_runtime.runtime.now(),
+        );
+
+        assert!(rt
+            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .unwrap());
+        assert!(!rt
+            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .unwrap());
+
+        let triggered = test_runtime
+            .runtime
+            .storage()
+            .latest_wait_conditions_for_agent("default")
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .unwrap();
+        assert_eq!(
+            triggered.status,
+            crate::types::WaitConditionStatus::Triggered
+        );
+        assert_eq!(
+            triggered.trigger_message_id(),
+            Some(expected_message_id.as_str())
+        );
+
+        let poll = rt
+            .block_on(
+                super::scheduler_executor::SchedulerDecisionExecutor::new(&test_runtime.runtime)
+                    .poll(),
+            )
+            .unwrap();
+        let super::scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("due agent wait recheck should be scheduled");
+        };
+        assert_eq!(scheduled.message.id, expected_message_id);
+        assert!(scheduled.dispatch_plan.model_turn_allowed);
+        assert!(scheduled
+            .dispatch_plan
+            .continuation_trigger
+            .as_ref()
+            .is_some_and(|trigger| trigger.exact_wait_recheck));
     }
 
     fn set_agent_idle(test_runtime: &TestRuntime) {

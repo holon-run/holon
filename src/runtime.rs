@@ -1220,6 +1220,43 @@ fn exact_agent_scope_task_result_wait(
     Ok(Some(wait.clone()))
 }
 
+fn exact_agent_scope_wait_recheck(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+) -> Result<Option<WaitConditionRecord>> {
+    let MessageOrigin::System { subsystem } = &message.origin else {
+        return Ok(None);
+    };
+    if message.kind != MessageKind::SystemTick
+        || subsystem != "wait_condition_recheck"
+        || message.authority_class != AuthorityClass::RuntimeInstruction
+        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
+        || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
+    {
+        return Ok(None);
+    }
+    let Some(wait_id) = message.source_refs.get("wait_id") else {
+        return Ok(None);
+    };
+    let matching_waits = storage
+        .latest_wait_conditions_for_agent(&message.agent_id)?
+        .into_iter()
+        .filter(|wait| {
+            wait.id == *wait_id
+                && wait.work_item_id.is_none()
+                && matches!(
+                    wait.status,
+                    WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+                )
+                && wait.trigger_message_id() == Some(message.id.as_str())
+        })
+        .collect::<Vec<_>>();
+    let [wait] = matching_waits.as_slice() else {
+        return Ok(None);
+    };
+    Ok(Some(wait.clone()))
+}
+
 enum TaskResultClaimRecovery {
     Replayable {
         transition: crate::runtime_db::transitions::ExecutionProtocolTransition,
@@ -4833,6 +4870,9 @@ impl RuntimeHandle {
         bootstrap?;
 
         loop {
+            if self.emit_due_agent_wait_recheck().await? {
+                continue;
+            }
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
                 .poll()
                 .await?;
@@ -4901,7 +4941,13 @@ impl RuntimeHandle {
                             &decision,
                         )?;
                     }
-                    let next_recheck_at = self.next_blocked_work_item_recheck_at().await?;
+                    let next_recheck_at = match (
+                        self.next_blocked_work_item_recheck_at().await?,
+                        self.next_agent_wait_recheck_at().await?,
+                    ) {
+                        (Some(left), Some(right)) => Some(left.min(right)),
+                        (left, right) => left.or(right),
+                    };
                     let idle_state = scheduler_executor::SchedulerDecisionExecutor::new(&self)
                         .transition_run_loop_idle_to_sleep(next_recheck_at)
                         .await?;

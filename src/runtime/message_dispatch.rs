@@ -81,6 +81,10 @@ impl RuntimeHandle {
         let mut continuation_trigger =
             ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref));
         if let Some(trigger) = continuation_trigger.as_mut() {
+            if trigger.kind == crate::types::ContinuationTriggerKind::SystemTick {
+                trigger.exact_wait_recheck =
+                    exact_agent_scope_wait_recheck(&self.inner.storage, message)?.is_some();
+            }
             // An explicit agent-scope WaitFor that targeted this exact task
             // authorizes terminal task result reentry even when the prior
             // closure waiting_reason was polluted by unrelated waits.
