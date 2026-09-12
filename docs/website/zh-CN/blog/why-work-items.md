@@ -63,10 +63,7 @@ Holon 的 WorkItem 沿着这个问题继续往下拆：如果同一个 Agent 手
 
 如果 Agent 只在回复里说“等作者修好后再看”，人能理解，系统却未必知道何时再安排执行。它需要的不是一句未来时态的承诺，而是一项已登记的等待。
 
-<picture>
-  <source media="(max-width: 640px)" srcset="/assets/work-item-architecture-zh-narrow.png" width="480" height="1018">
-  <img src="/assets/work-item-architecture-zh.png" width="720" height="736" alt="WorkItem 架构：Agent 判断下一步，运行时登记工作状态；目标、进度证据和恢复条件跨轮保留，信号到达后安排执行并读取相关记录。" loading="lazy" decoding="async">
-</picture>
+<img src="/assets/work-item-architecture-zh.png" width="800" height="430" alt="WorkItem 架构：Agent 判断下一步，运行时登记工作状态；目标、进度证据和恢复条件跨轮保留，信号到达后安排执行并读取相关记录。" loading="lazy" decoding="async">
 
 *图 1：一轮执行可以结束，工作记录仍然保留。下方展示需要等待时的恢复路径；能继续的工作不必先等外部信号。*
 
@@ -102,12 +99,9 @@ WorkItem 给恢复上下文提供了一个组织边界：先确认当前工作�
 
 把这些分工放进一个场景。A 是 PR #101 的审阅，B 是 PR #102 的审阅。假设已经接好 PR 更新通知和测试结果，下图展示其中一种处理顺序。
 
-<picture>
-  <source media="(max-width: 640px)" srcset="/assets/work-item-reviewer-sequence-zh-narrow.png" width="480" height="1050">
-  <img src="/assets/work-item-reviewer-sequence-zh.png" width="720" height="994" alt="两个工作项交错推进：审阅 A 后等待修订，转去审阅 B；A 更新时先记录信号，B 保存进度并等待测试后再恢复 A。A 完成交付时，B 仍保留自己的测试等待，之后独立恢复。" loading="lazy" decoding="async">
-</picture>
+<img src="/assets/work-item-reviewer-sequence-zh.png" width="800" height="356" alt="两个工作项交错推进：审阅 A 后等待修订，转去审阅 B；A 更新时先记录信号，B 保存进度并等待测试后再恢复 A。A 完成交付时，B 仍保留自己的测试等待，之后独立恢复。" loading="lazy" decoding="async">
 
-*图 2：从上往下读。同一行只有一项工作在由 Agent 处理；两项工作的记录与等待可以同时存在。顺序不是固定优先级，也不表示通知会立即抢占正在执行的工具。*
+*图 2：按 01—06 从左往右读，对照 A、B 两条泳道。Agent 交错处理两项工作，各自的记录与等待独立保留。顺序不是固定优先级，也不表示通知会立即抢占正在执行的工具。*
 
 ### A 等修订，Agent 先处理 B
 

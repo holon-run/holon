@@ -12,13 +12,13 @@ excluded from mdorigin-managed indexes.
 `../.tools/render-work-item-diagrams.py` generates the Chinese SVG/2x PNG
 pairs. It requires CairoSVG and Noto Sans CJK SC.
 
-- `work-item-architecture-zh`: 720×736, showing per-turn judgment, persistent
+- `work-item-architecture-zh`: 800×430, showing per-turn judgment, persistent
   work records, and resumption after waiting. It is not an internal component map.
-- `work-item-reviewer-sequence-zh`: 720×994, showing two independent work items
-  in six chronological rows, not concurrent model turns or fixed priorities.
-- Their `-narrow` variants use 480×1018 and 480×1050 vertical layouts below the
-  article's 640px picture breakpoint. Keep source dimensions synchronized with
-  the article HTML. Narrow sequence rows preserve the same six steps.
+- `work-item-reviewer-sequence-zh`: 800×356, showing two independent work items
+  in horizontal time lanes, not concurrent model turns or fixed priorities.
+  Continuous bands indicate unchanged waiting or delivery states.
+- Both use a single desktop-oriented layout. Keep source dimensions
+  synchronized with the article HTML.
 
 Blue marks active processing, amber waiting, and green delivery; every state
 also has a text label. The article's captions and alt text explain the flow
