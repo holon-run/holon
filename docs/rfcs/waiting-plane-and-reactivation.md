@@ -112,16 +112,34 @@ The waiting plane should not own:
 
 ## Relationship To Work Items
 
-Waiting should usually be anchored in an active work item.
+Waiting should preserve the owner of the execution or task that is actually
+blocked. That is often a WorkItem, but can be the agent lifecycle when the work
+started without any WorkItem binding.
 
 The intended relationship is:
 
 - a work item says what meaningful work exists
 - the waiting plane says why that work is currently blocked
 - a later timer fire or callback delivery may reactivate that work
+- current focus is only an ownership fallback, not a way to migrate an existing
+  execution or task
 
 This means waiting should help preserve continuity without turning the work
 item itself into a scheduler primitive.
+
+For the current `WaitFor` contract, ownership resolves in this order:
+
+1. an explicitly selected open WorkItem owned by the agent
+2. the WorkItem bound to the current execution
+3. the WorkItem bound to the current turn
+4. the current WorkItem focus
+5. the agent lifecycle
+
+A task-result wait must still match the task's captured agent and WorkItem
+owner. Creating or picking a WorkItem after a task starts does not rebind that
+task, and an explicit WorkItem is not an ownership override. Conversely, a
+background task created without any WorkItem binding can be awaited at
+agent-lifecycle scope without first creating bookkeeping work.
 
 ## Timer-Backed Waiting
 

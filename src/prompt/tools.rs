@@ -275,6 +275,15 @@ mod tests {
         assert!(section
             .content
             .contains("there is no SendAgentMessage tool"));
+        assert!(section
+            .content
+            .contains("A terminal task is historical result or diagnostic evidence"));
+        assert!(section
+            .content
+            .contains("a new InvokeAgent call to the existing agent"));
+        assert!(section
+            .content
+            .contains("rather than creating a same-named replacement"));
     }
 
     #[test]
@@ -344,7 +353,15 @@ mod tests {
             freeform_grammar: None,
         }];
         let sections = tool_sections(&tools);
-        assert!(sections.iter().any(|s| s.name == "tool_task_control"));
+        let section = sections
+            .iter()
+            .find(|s| s.name == "tool_task_control")
+            .expect("task control section");
+        assert!(section.content.contains("concrete follow-up"));
+        assert!(section.content.contains("`accepted_input` receipt"));
+        assert!(section
+            .content
+            .contains("A terminal TaskHandle cannot be restarted"));
     }
 
     #[test]
@@ -466,6 +483,13 @@ mod tests {
             .contains("candidate issue screening, option comparison"));
         assert!(section.content.contains("candidate issue screening"));
         assert!(section.content.contains("normally update one WorkItem"));
+        assert!(section
+            .content
+            .contains("Creating a successor does not switch execution"));
+        assert!(section
+            .content
+            .contains("authorized, recoverable state before that operation"));
+        assert!(!section.content.contains("complete it first"));
         assert!(section.content.contains("edit plan_artifact.path directly"));
         assert!(section.content.contains("plan_status=ready"));
         assert!(section.content.contains("Use WaitFor, not UpdateWorkItem"));
@@ -654,6 +678,23 @@ mod tests {
         assert!(section.content.contains("`wake=external`"));
         assert!(section.content.contains("`wake=operator_input`"));
         assert!(section.content.contains("`recheck_after_ms`"));
+        assert!(section
+            .content
+            .contains("explicit owned open `work_item_id`"));
+        assert!(section
+            .content
+            .contains("then the execution-bound WorkItem"));
+        assert!(section.content.contains("then the turn-bound WorkItem"));
+        assert!(section.content.contains("then current focus"));
+        assert!(section.content.contains("agent lifecycle"));
+        assert!(section
+            .content
+            .contains("cannot migrate or bypass the task's captured owner"));
+        assert!(section
+            .content
+            .contains("without first creating or picking a WorkItem"));
+        assert!(section.content.contains("`terminal_transition`"));
+        assert!(!section.content.contains("To wait on another WorkItem"));
         assert!(section
             .content
             .contains("Do not use UpdateWorkItem blocked fields"));

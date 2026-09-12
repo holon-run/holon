@@ -944,17 +944,17 @@ fn build_system_sections(
         section(
             "planning_discipline",
             PromptStability::Stable,
-            "Before creating durable work state, classify the interaction. Do not create a WorkItem for ordinary questions, casual chat, one-shot explanations, lightweight design discussion, recommendations, comparisons, judgments, short research, bounded inspection, simple work, or multi-step work that can be completed in the current turn. You may state a brief current-turn plan in natural language when useful, but do not upgrade that plan into durable WorkItem state. Create or update a WorkItem only when the user explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work; when the task crosses turns or must be resumable; when waiting on external state such as CI, PR activity, callbacks, or operator input; when the work has an independent lifecycle and acceptance criteria; or when system/developer instructions explicitly require durable tracking. If tool output or agent analysis produces a stable list of issues, options, decisions, or checklist items that the operator wants to discuss, screen, or handle over multiple turns, record it as durable tracking state so later turns can treat the original list and per-item status as authoritative. A tracking WorkItem does not by itself authorize implementation or other high-commitment action: if the operator has not asked you to act on the items, maintain the discussion state, mark the plan as needs_input when appropriate, and wait for the operator to choose or authorize the next item. For tracking/discussion WorkItems, updating agent-local WorkItem state, todo_list, and plan artifacts is discussion-state maintenance, not user workspace or project file mutation; if the operator forbids modifying project files but asks to record discussion state, update the WorkItem state unless another higher-priority instruction forbids it. If you cannot update durable state because of an instruction conflict or tool failure, say that it was not recorded and do not claim it was written. When uncertain, give the lightweight answer or ask whether the operator wants the work tracked instead of preemptively creating durable state.".to_string(),
+            "Your working context is finite: earlier conversation, tool output, and execution detail may be compressed or evicted, so do not assume a later execution remembers them. A WorkItem is the durable record for a goal that must survive across executions, not a log for every turn or operation. Before creating durable work state, classify the interaction. Do not create a WorkItem for ordinary questions, casual chat, one-shot explanations, lightweight design discussion, recommendations, comparisons, judgments, short research, bounded inspection, simple work, or multi-step work that can be completed in the current turn. You may state a brief current-turn plan in natural language when useful, but do not upgrade that plan into durable WorkItem state. Create or update a WorkItem only when the user explicitly asks you to record, track, monitor, schedule, or preserve durable progress for work; when the task crosses turns or must be resumable; when waiting on external state such as CI, PR activity, callbacks, or operator input; when the work has an independent lifecycle and acceptance criteria; or when system/developer instructions explicitly require durable tracking. If tool output or agent analysis produces a stable list of issues, options, decisions, or checklist items that the operator wants to discuss, screen, or handle over multiple turns, record it as durable tracking state so later turns can treat the original list and per-item status as authoritative. A tracking WorkItem does not by itself authorize implementation or other high-commitment action: if the operator has not asked you to act on the items, maintain the discussion state, mark the plan as needs_input when appropriate, and wait for the operator to choose or authorize the next item. For tracking/discussion WorkItems, updating agent-local WorkItem state, todo_list, and plan artifacts is discussion-state maintenance, not user workspace or project file mutation; if the operator forbids modifying project files but asks to record discussion state, update the WorkItem state unless another higher-priority instruction forbids it. If you cannot update durable state because of an instruction conflict or tool failure, say that it was not recorded and do not claim it was written. When uncertain, give the lightweight answer or ask whether the operator wants the work tracked instead of preemptively creating durable state.".to_string(),
         ),
         section(
             "work_item_first_execution",
             PromptStability::Stable,
-            "Use WorkItem-first execution only when `planning_discipline` classifies the interaction as requiring durable WorkItem state. If durable tracking is needed and there is no current active work item anchor, first decide whether the objective is already clear enough to stabilize as a work item. If it is still ambiguous, proactively communicate with the operator to clarify the real objective, acceptance boundary, or priority before making high-commitment edits. If a little local inspection is needed to make the objective concrete, do that bounded inspection first, then create or refresh the active work item once the objective is stable enough to name. Prefer refreshing the current active work item over creating a new one unless the objective has actually changed. Do not convert ordinary current-turn planning, discussion, short research, bounded inspection, or one-shot execution into a WorkItem by default; use brief natural-language planning or direct action instead.".to_string(),
+            "Use WorkItem-first execution only when `planning_discipline` classifies the interaction as requiring durable WorkItem state. Persist the minimum state needed to recover after context loss: keep the objective clear; keep scope, acceptance criteria, key decisions, and evidence references in the plan; and keep progress, unresolved questions, and the next action in the todo list or plan. Update that state after material changes and before handoff, waiting, or ending a long execution. On resume, read the WorkItem records and boundedly recheck external facts that may have changed instead of guessing from lost history. Durable records do not expand model context or guarantee every artifact is injected automatically, so read additional evidence only as needed and do not copy whole chats or tool logs into the plan. If durable tracking is needed and there is no current active WorkItem anchor, stabilize the objective before high-commitment edits; use bounded inspection first when that is what makes the objective concrete. Prefer refreshing the current WorkItem over creating a new one unless the objective has actually changed.".to_string(),
         ),
         section(
             "runtime_scheduling_contract",
             PromptStability::Stable,
-            "Holon is event-driven and resumes work from persisted runtime state, not from agent memory alone. A WorkItem is the durable scheduling anchor for multi-turn work; keep it runnable only when the scheduler may safely resume it. Current WorkItem means focus, not lifecycle. Queued runnable WorkItems are normal scheduler candidates. Yielded or parked WorkItems are open but temporarily unschedulable because they yielded to another WorkItem through a runtime continuation frame; do not mark them blocked, poll them, or manually pick them just to return. When switching from runnable current WorkItem A to another open WorkItem B, call PickWorkItem(B); the runtime records the A -> B continuation. When B completes, CompleteWorkItem(B) may restore A and close the turn so the scheduler continues from A. Use WaitFor when the focused WorkItem itself cannot continue until task_result, external state, or operator_input; use WaitFor `recheck_after_ms` for a timed fallback recheck. The wait attaches to the current open WorkItem when one is focused and otherwise records an agent-level wait. External triggers are reusable ingress capabilities that can wake the agent, but they do not replace WaitFor or completion. When a child agent or background command task only needs terminal-result waiting, call WaitFor with wake=task_result and resource set to the task id instead of polling with TaskOutput. Use TaskStatus, TaskOutput, TaskInput, and TaskStop only for active supervision or bounded current-turn inspection. Express scheduling facts through the runtime tools, not through narration, repeated polling, manual blocker fields, or extra scratch WorkItems.".to_string(),
+            "Holon is event-driven and resumes work from persisted runtime state, not from agent memory alone. A WorkItem records the durable goal and recovery state for multi-turn work; scheduling state says whether that goal may run now. Current WorkItem means focus, not execution ownership or lifecycle. A task keeps the WorkItem owner captured when it was created; creating or picking another WorkItem does not migrate that task. WaitFor resolves ownership from an explicit owned open work_item_id, then the execution-bound WorkItem, then the turn-bound WorkItem, then current focus, and otherwise the agent lifecycle; a task-result wait must still match the task's owner. Narrative text and plan updates do not change scheduling state, so use lifecycle tools for waits, switches, and completion. Queued runnable WorkItems are normal scheduler candidates. Yielded or parked WorkItems are open but temporarily unschedulable because they yielded through a continuation frame; do not mark them blocked, poll them, or manually pick them just to return. Switching from runnable A to B with PickWorkItem records an A -> B continuation and may end the turn; completing B may restore A and end the turn. Completing the execution-bound WorkItem also ends the turn, while detached completion of another owned WorkItem preserves the current execution subject to runtime conflict checks. Before any control operation that may end the turn, persist required recovery state and arrange any successor or operator-facing delivery that must exist first. External triggers can wake the agent but do not replace WaitFor or completion. Wait for ordinary task completion with WaitFor(task_result) instead of polling; use task inspection or control only for active supervision or bounded diagnosis. Express scheduling facts through runtime tools, not narration, repeated polling, manual blocker fields, or scratch WorkItems.".to_string(),
         ),
         section(
             "trust_boundary",
@@ -2026,6 +2026,72 @@ mod tests {
     }
 
     #[test]
+    fn system_prompt_explains_durable_work_tracking_and_scheduling_boundaries() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+            ToolPromptContext::default(),
+        );
+
+        let planning = sections
+            .iter()
+            .find(|section| section.name == "planning_discipline")
+            .expect("planning discipline section");
+        assert!(planning.content.contains("working context is finite"));
+        assert!(planning.content.contains("compressed or evicted"));
+        assert!(planning
+            .content
+            .contains("durable record for a goal that must survive"));
+        assert!(planning
+            .content
+            .contains("not a log for every turn or operation"));
+
+        let recovery = sections
+            .iter()
+            .find(|section| section.name == "work_item_first_execution")
+            .expect("work item first execution section");
+        assert!(recovery
+            .content
+            .contains("minimum state needed to recover after context loss"));
+        assert!(recovery.content.contains("acceptance criteria"));
+        assert!(recovery.content.contains("evidence references"));
+        assert!(recovery.content.contains("unresolved questions"));
+        assert!(recovery.content.contains("before handoff, waiting"));
+        assert!(recovery
+            .content
+            .contains("do not expand model context or guarantee every artifact"));
+        assert!(recovery
+            .content
+            .contains("do not copy whole chats or tool logs"));
+
+        let scheduling = sections
+            .iter()
+            .find(|section| section.name == "runtime_scheduling_contract")
+            .expect("runtime scheduling contract section");
+        assert!(scheduling
+            .content
+            .contains("focus, not execution ownership or lifecycle"));
+        assert!(scheduling.content.contains("does not migrate that task"));
+        assert!(scheduling
+            .content
+            .contains("then the execution-bound WorkItem"));
+        assert!(scheduling
+            .content
+            .contains("a task-result wait must still match"));
+        assert!(scheduling
+            .content
+            .contains("Narrative text and plan updates do not change scheduling state"));
+        assert!(scheduling
+            .content
+            .contains("Before any control operation that may end the turn"));
+    }
+
+    #[test]
     fn system_prompt_includes_engineering_guardrails() {
         let sections = build_system_sections(
             &sample_identity(),
@@ -2297,17 +2363,29 @@ mod tests {
         assert!(section.content.contains("`planning_discipline`"));
         assert!(section
             .content
-            .contains("there is no current active work item anchor"));
-        assert!(section.content.contains("clarify the real objective"));
+            .contains("minimum state needed to recover after context loss"));
         assert!(section
             .content
-            .contains("local inspection is needed to make the objective concrete"));
+            .contains("scope, acceptance criteria, key decisions"));
         assert!(section
             .content
-            .contains("once the objective is stable enough to name"));
+            .contains("progress, unresolved questions, and the next action"));
         assert!(section
             .content
-            .contains("Do not convert ordinary current-turn planning"));
+            .contains("before handoff, waiting, or ending a long execution"));
+        assert!(section
+            .content
+            .contains("On resume, read the WorkItem records"));
+        assert!(section
+            .content
+            .contains("do not copy whole chats or tool logs into the plan"));
+        assert!(section
+            .content
+            .contains("there is no current active WorkItem anchor"));
+        assert!(section.content.contains("use bounded inspection first"));
+        assert!(section
+            .content
+            .contains("Prefer refreshing the current WorkItem"));
     }
 
     #[test]
@@ -2333,28 +2411,45 @@ mod tests {
             .contains("resumes work from persisted runtime state"));
         assert!(section
             .content
-            .contains("A WorkItem is the durable scheduling anchor"));
-        assert!(section.content.contains("Current WorkItem means focus"));
+            .contains("A WorkItem records the durable goal and recovery state"));
+        assert!(section
+            .content
+            .contains("Current WorkItem means focus, not execution ownership"));
+        assert!(section
+            .content
+            .contains("A task keeps the WorkItem owner captured when it was created"));
+        assert!(section
+            .content
+            .contains("WaitFor resolves ownership from an explicit owned open work_item_id"));
+        assert!(section
+            .content
+            .contains("Narrative text and plan updates do not change scheduling state"));
         assert!(section.content.contains("Queued runnable WorkItems"));
         assert!(section.content.contains("Yielded or parked WorkItems"));
-        assert!(section.content.contains("runtime continuation frame"));
+        assert!(section.content.contains("continuation frame"));
         assert!(section.content.contains("do not mark them blocked"));
-        assert!(section.content.contains("PickWorkItem(B)"));
         assert!(section
             .content
-            .contains("CompleteWorkItem(B) may restore A"));
+            .contains("PickWorkItem records an A -> B continuation"));
         assert!(section
             .content
-            .contains("cannot continue until task_result, external state, or operator_input"));
-        assert!(section.content.contains("WaitFor `recheck_after_ms`"));
-        assert!(!section.content.contains("timer, or system state"));
+            .contains("completing B may restore A and end the turn"));
         assert!(section
             .content
-            .contains("call WaitFor with wake=task_result"));
+            .contains("Completing the execution-bound WorkItem also ends the turn"));
+        assert!(section
+            .content
+            .contains("detached completion of another owned WorkItem preserves"));
+        assert!(section
+            .content
+            .contains("persist required recovery state and arrange any successor"));
         assert!(section.content.contains("External triggers"));
         assert!(section
             .content
-            .contains("Express scheduling facts through the runtime tools"));
+            .contains("WaitFor(task_result) instead of polling"));
+        assert!(section
+            .content
+            .contains("Express scheduling facts through runtime tools"));
     }
 
     #[test]
