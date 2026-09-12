@@ -8632,6 +8632,7 @@
                 "type": "boolean"
               },
               "cursor": {
+                "description": "Highest applied contiguous runtime outbox `change_seq`.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -8639,6 +8640,7 @@
                 "type": "string"
               },
               "high_watermark": {
+                "description": "Monotonic produced watermark: highest `change_seq` ever appended for\n the agent. Unlike the drained-outbox maximum, it never returns to 0.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -8646,6 +8648,7 @@
                 "type": "boolean"
               },
               "lag": {
+                "description": "Sequence distance `produced - applied`. Cross-agent global\n autoincrement makes this an upper-bound hint only; `pending_count` is\n the exact backlog metric.",
                 "format": "int64",
                 "type": "integer"
               },
@@ -8656,10 +8659,24 @@
                   "null"
                 ]
               },
+              "oldest_pending_age_ms": {
+                "description": "Age of the oldest pending outbox row, the real propagation delay.",
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "pending_count": {
+                "description": "Exact pending outbox row count for this agent.",
+                "format": "int64",
+                "type": "integer"
+              },
               "results_may_be_incomplete": {
                 "type": "boolean"
               },
               "skipped_error_count": {
+                "description": "Failures hit by this index handle's current consume pass. Transient\n by design; not a durable health history.",
                 "format": "uint",
                 "minimum": 0,
                 "type": "integer"
