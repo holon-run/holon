@@ -1,0 +1,4846 @@
+{
+  "repository": "holon-run/holon",
+  "window": {
+    "start_inclusive": "2026-09-07T00:00:00Z",
+    "end_exclusive": "2026-09-12T00:00:00Z"
+  },
+  "public_activity_account": "jolestar",
+  "source_sha256": {
+    "db_summary.json": "06590ab1ee8c406079c22507b186d870952a57b091af5c7d2ade63712d5660d7",
+    "gh_details.jsonl": "c9e2d8b8ffe892d95ad407e8f7529f8a75bdf0728e4172b4dc2fe8b573836cf5",
+    "actions.tsv": "14a0ce5166c1adba65e5030b572a9b5064190442b3fe5f0bc0b19b9e70ddc9d0",
+    "pr_titles.tsv": "64b63d59f6232f163475384e9a48c8eeb5d890474463e080d2ed4f01ce1c4d9a"
+  },
+  "local_summary": [
+    {
+      "pr": 2800,
+      "first_review": null,
+      "n_reviews": 0,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T00:24:53.456Z"
+    },
+    {
+      "pr": 2801,
+      "first_review": "2026-09-06T03:12:15.001Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T03:34:05.884Z"
+    },
+    {
+      "pr": 2802,
+      "first_review": "2026-09-06T03:47:50.712Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T04:14:04.884Z"
+    },
+    {
+      "pr": 2803,
+      "first_review": "2026-09-06T04:52:48.872Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T05:35:15.283Z"
+    },
+    {
+      "pr": 2804,
+      "first_review": "2026-09-06T07:32:12.166Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-06T07:37:41.248Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-06T07:51:48.071Z"
+    },
+    {
+      "pr": 2805,
+      "first_review": "2026-09-06T11:43:52.089Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T12:10:03.854Z"
+    },
+    {
+      "pr": 2806,
+      "first_review": "2026-09-06T13:27:33.494Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T13:51:02.293Z"
+    },
+    {
+      "pr": 2807,
+      "first_review": "2026-09-06T14:39:45.021Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T14:45:58.351Z"
+    },
+    {
+      "pr": 2808,
+      "first_review": "2026-09-06T15:58:44.306Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T16:27:52.215Z"
+    },
+    {
+      "pr": 2810,
+      "first_review": "2026-09-06T16:44:21.315Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T16:51:11.315Z"
+    },
+    {
+      "pr": 2811,
+      "first_review": "2026-09-06T17:05:21.315Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-06T17:30:58.024Z"
+    },
+    {
+      "pr": 2812,
+      "first_review": "2026-09-07T01:11:30.611Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T01:30:26.344Z"
+    },
+    {
+      "pr": 2813,
+      "first_review": "2026-09-07T03:10:15.176Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-07T03:17:36.586Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-07T03:51:58.441Z"
+    },
+    {
+      "pr": 2814,
+      "first_review": "2026-09-07T04:41:57.270Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T04:48:55.648Z"
+    },
+    {
+      "pr": 2815,
+      "first_review": "2026-09-07T05:38:33.928Z",
+      "n_reviews": 2,
+      "first_comment": "2026-09-07T05:50:19.169Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-07T08:35:16.818Z"
+    },
+    {
+      "pr": 2816,
+      "first_review": "2026-09-07T09:22:13.926Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T10:12:47.799Z"
+    },
+    {
+      "pr": 2817,
+      "first_review": "2026-09-07T10:22:13.447Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T10:45:09.286Z"
+    },
+    {
+      "pr": 2818,
+      "first_review": "2026-09-07T10:56:44.995Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T11:24:27.894Z"
+    },
+    {
+      "pr": 2819,
+      "first_review": "2026-09-07T11:33:49.934Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T11:55:37.583Z"
+    },
+    {
+      "pr": 2820,
+      "first_review": "2026-09-07T15:12:45.695Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T15:18:49.941Z"
+    },
+    {
+      "pr": 2821,
+      "first_review": "2026-09-07T15:21:10.803Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T15:47:32.968Z"
+    },
+    {
+      "pr": 2822,
+      "first_review": "2026-09-07T15:58:23.833Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T16:20:52.513Z"
+    },
+    {
+      "pr": 2823,
+      "first_review": null,
+      "n_reviews": 0,
+      "first_comment": "2026-09-07T23:33:12.886Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-08T00:02:41.006Z"
+    },
+    {
+      "pr": 2824,
+      "first_review": "2026-09-07T20:21:49.270Z",
+      "n_reviews": 2,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-07T21:05:19.099Z"
+    },
+    {
+      "pr": 2825,
+      "first_review": "2026-09-07T23:43:00.939Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-07T23:48:12.675Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-08T00:27:27.756Z"
+    },
+    {
+      "pr": 2826,
+      "first_review": "2026-09-08T00:26:33.248Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T01:49:58.310Z"
+    },
+    {
+      "pr": 2827,
+      "first_review": "2026-09-08T02:46:08.309Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T03:25:00.675Z"
+    },
+    {
+      "pr": 2830,
+      "first_review": "2026-09-08T04:09:10.339Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T04:40:25.566Z"
+    },
+    {
+      "pr": 2831,
+      "first_review": "2026-09-08T04:27:14.755Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T04:49:20.952Z"
+    },
+    {
+      "pr": 2832,
+      "first_review": "2026-09-08T05:02:51.813Z",
+      "n_reviews": 2,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T05:45:50.125Z"
+    },
+    {
+      "pr": 2833,
+      "first_review": "2026-09-08T07:40:28.944Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T07:50:04.226Z"
+    },
+    {
+      "pr": 2834,
+      "first_review": "2026-09-08T08:22:52.507Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T08:29:43.585Z"
+    },
+    {
+      "pr": 2835,
+      "first_review": "2026-09-08T10:16:56.572Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T10:42:16.929Z"
+    },
+    {
+      "pr": 2836,
+      "first_review": "2026-09-08T11:02:18.403Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T11:28:52.909Z"
+    },
+    {
+      "pr": 2839,
+      "first_review": "2026-09-08T12:17:35.124Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T12:47:04.929Z"
+    },
+    {
+      "pr": 2842,
+      "first_review": "2026-09-08T15:31:13.018Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T15:37:20.444Z"
+    },
+    {
+      "pr": 2843,
+      "first_review": "2026-09-08T15:49:48.037Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T17:25:54.930Z"
+    },
+    {
+      "pr": 2844,
+      "first_review": "2026-09-08T15:49:48.037Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-08T17:32:28.077Z",
+      "n_comments": 2,
+      "merge_exec": "2026-09-08T17:32:28.077Z"
+    },
+    {
+      "pr": 2845,
+      "first_review": "2026-09-08T16:27:22.123Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T17:11:24.387Z"
+    },
+    {
+      "pr": 2846,
+      "first_review": "2026-09-08T18:14:41.430Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-08T18:49:08.606Z"
+    },
+    {
+      "pr": 2848,
+      "first_review": "2026-09-09T04:06:50.780Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-09T04:35:01.333Z"
+    },
+    {
+      "pr": 2849,
+      "first_review": "2026-09-09T05:56:20.042Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-09T06:27:42.693Z"
+    },
+    {
+      "pr": 2851,
+      "first_review": "2026-09-09T08:29:44.936Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-09T10:09:29.504Z"
+    },
+    {
+      "pr": 2853,
+      "first_review": "2026-09-09T09:29:26.650Z",
+      "n_reviews": 2,
+      "first_comment": "2026-09-09T10:06:05.176Z",
+      "n_comments": 2,
+      "merge_exec": "2026-09-09T14:07:12.393Z"
+    },
+    {
+      "pr": 2854,
+      "first_review": "2026-09-09T11:48:41.723Z",
+      "n_reviews": 2,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-09T15:51:41.371Z"
+    },
+    {
+      "pr": 2855,
+      "first_review": "2026-09-09T12:05:25.661Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-09T12:05:32.182Z"
+    },
+    {
+      "pr": 2856,
+      "first_review": "2026-09-09T12:55:08.462Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-09T13:07:12.768Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-10T01:32:47.437Z"
+    },
+    {
+      "pr": 2862,
+      "first_review": "2026-09-10T05:46:12.254Z",
+      "n_reviews": 3,
+      "first_comment": "2026-09-10T05:46:35.580Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-10T06:46:49.887Z"
+    },
+    {
+      "pr": 2864,
+      "first_review": "2026-09-10T06:05:28.374Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T06:43:12.101Z"
+    },
+    {
+      "pr": 2867,
+      "first_review": "2026-09-10T06:28:29.145Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T07:08:24.584Z"
+    },
+    {
+      "pr": 2868,
+      "first_review": "2026-09-10T07:06:17.805Z",
+      "n_reviews": 2,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T08:54:51.359Z"
+    },
+    {
+      "pr": 2869,
+      "first_review": "2026-09-10T08:39:36.203Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T09:12:04.051Z"
+    },
+    {
+      "pr": 2870,
+      "first_review": "2026-09-10T09:07:28.029Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T09:07:28.029Z"
+    },
+    {
+      "pr": 2871,
+      "first_review": "2026-09-10T09:46:20.467Z",
+      "n_reviews": 2,
+      "first_comment": "2026-09-10T10:28:12.373Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-10T13:07:15.948Z"
+    },
+    {
+      "pr": 2872,
+      "first_review": "2026-09-10T10:36:48.554Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T12:02:08.873Z"
+    },
+    {
+      "pr": 2878,
+      "first_review": "2026-09-10T16:19:31.893Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T17:00:26.248Z"
+    },
+    {
+      "pr": 2879,
+      "first_review": "2026-09-10T16:45:23.392Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-10T17:21:50.828Z"
+    },
+    {
+      "pr": 2880,
+      "first_review": "2026-09-11T00:44:43.626Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T00:56:45.641Z"
+    },
+    {
+      "pr": 2882,
+      "first_review": "2026-09-11T01:02:03.073Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T01:06:54.261Z"
+    },
+    {
+      "pr": 2884,
+      "first_review": "2026-09-11T01:15:38.132Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T01:27:10.161Z"
+    },
+    {
+      "pr": 2885,
+      "first_review": "2026-09-11T01:26:00.343Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T01:56:07.072Z"
+    },
+    {
+      "pr": 2886,
+      "first_review": "2026-09-11T03:04:04.916Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T03:11:48.061Z"
+    },
+    {
+      "pr": 2889,
+      "first_review": "2026-09-11T04:34:43.781Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-11T05:17:51.569Z",
+      "n_comments": 3,
+      "merge_exec": "2026-09-11T10:04:05.532Z"
+    },
+    {
+      "pr": 2890,
+      "first_review": "2026-09-11T04:38:22.436Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T05:07:09.048Z"
+    },
+    {
+      "pr": 2891,
+      "first_review": "2026-09-11T05:41:25.049Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T06:20:51.599Z"
+    },
+    {
+      "pr": 2892,
+      "first_review": "2026-09-11T07:13:41.753Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-11T07:15:59.100Z",
+      "n_comments": 2,
+      "merge_exec": "2026-09-11T08:30:32.133Z"
+    },
+    {
+      "pr": 2893,
+      "first_review": "2026-09-11T08:02:18.500Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T08:09:41.027Z"
+    },
+    {
+      "pr": 2894,
+      "first_review": "2026-09-11T08:59:43.526Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T09:24:27.403Z"
+    },
+    {
+      "pr": 2897,
+      "first_review": "2026-09-11T14:21:46.798Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T14:21:56.229Z"
+    },
+    {
+      "pr": 2898,
+      "first_review": "2026-09-11T14:42:11.822Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T16:15:04.020Z"
+    },
+    {
+      "pr": 2899,
+      "first_review": "2026-09-11T16:35:08.650Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T16:42:09.245Z"
+    },
+    {
+      "pr": 2900,
+      "first_review": "2026-09-11T17:18:40.853Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-11T17:27:52.660Z"
+    },
+    {
+      "pr": 2906,
+      "first_review": "2026-09-12T01:32:17.298Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T02:33:15.253Z"
+    },
+    {
+      "pr": 2912,
+      "first_review": "2026-09-12T04:06:51.139Z",
+      "n_reviews": 2,
+      "first_comment": "2026-09-12T04:15:53.846Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-12T05:37:59.057Z"
+    },
+    {
+      "pr": 2914,
+      "first_review": "2026-09-12T04:39:57.270Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T05:17:53.465Z"
+    },
+    {
+      "pr": 2915,
+      "first_review": "2026-09-12T04:45:10.928Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T04:45:56.518Z"
+    },
+    {
+      "pr": 2917,
+      "first_review": "2026-09-12T05:54:33.999Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T06:26:26.915Z"
+    },
+    {
+      "pr": 2918,
+      "first_review": "2026-09-12T06:08:52.877Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T07:14:29.160Z"
+    },
+    {
+      "pr": 2919,
+      "first_review": null,
+      "n_reviews": 0,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T06:49:35.935Z"
+    },
+    {
+      "pr": 2920,
+      "first_review": "2026-09-12T07:38:45.243Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T07:39:12.814Z"
+    },
+    {
+      "pr": 2921,
+      "first_review": "2026-09-12T06:56:39.313Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T07:35:13.957Z"
+    },
+    {
+      "pr": 2922,
+      "first_review": "2026-09-12T07:49:04.523Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T08:33:11.308Z"
+    },
+    {
+      "pr": 2924,
+      "first_review": "2026-09-12T08:31:41.834Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-12T08:35:45.544Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-12T09:28:14.962Z"
+    },
+    {
+      "pr": 2925,
+      "first_review": "2026-09-12T08:42:37.130Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T08:42:44.407Z"
+    },
+    {
+      "pr": 2926,
+      "first_review": "2026-09-12T11:29:24.560Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-12T09:38:34.664Z",
+      "n_comments": 2,
+      "merge_exec": null
+    },
+    {
+      "pr": 2927,
+      "first_review": "2026-09-12T09:43:49.668Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T10:40:56.195Z"
+    },
+    {
+      "pr": 2928,
+      "first_review": "2026-09-12T11:37:09.136Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-12T11:46:49.360Z",
+      "n_comments": 1,
+      "merge_exec": "2026-09-12T14:24:59.727Z"
+    },
+    {
+      "pr": 2929,
+      "first_review": "2026-09-12T11:54:00.338Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T12:25:10.057Z"
+    },
+    {
+      "pr": 2930,
+      "first_review": "2026-09-12T13:41:24.919Z",
+      "n_reviews": 1,
+      "first_comment": "2026-09-12T14:24:21.906Z",
+      "n_comments": 1,
+      "merge_exec": null
+    },
+    {
+      "pr": 2932,
+      "first_review": "2026-09-12T15:50:34.064Z",
+      "n_reviews": 1,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": null
+    },
+    {
+      "pr": 2934,
+      "first_review": null,
+      "n_reviews": 0,
+      "first_comment": null,
+      "n_comments": 0,
+      "merge_exec": "2026-09-12T15:55:34.753Z"
+    }
+  ],
+  "local_actions": [
+    {
+      "at": "2026-09-06T00:24:53.456Z",
+      "kind": "merge",
+      "pr": 2800
+    },
+    {
+      "at": "2026-09-06T03:12:15.001Z",
+      "kind": "review",
+      "pr": 2801
+    },
+    {
+      "at": "2026-09-06T03:34:05.884Z",
+      "kind": "merge",
+      "pr": 2801
+    },
+    {
+      "at": "2026-09-06T03:47:50.712Z",
+      "kind": "review",
+      "pr": 2802
+    },
+    {
+      "at": "2026-09-06T04:14:04.884Z",
+      "kind": "merge",
+      "pr": 2802
+    },
+    {
+      "at": "2026-09-06T04:52:48.872Z",
+      "kind": "review",
+      "pr": 2803
+    },
+    {
+      "at": "2026-09-06T05:35:15.283Z",
+      "kind": "merge",
+      "pr": 2803
+    },
+    {
+      "at": "2026-09-06T07:32:12.166Z",
+      "kind": "review",
+      "pr": 2804
+    },
+    {
+      "at": "2026-09-06T07:37:41.248Z",
+      "kind": "comment",
+      "pr": 2804
+    },
+    {
+      "at": "2026-09-06T07:51:48.071Z",
+      "kind": "merge",
+      "pr": 2804
+    },
+    {
+      "at": "2026-09-06T11:43:52.089Z",
+      "kind": "review",
+      "pr": 2805
+    },
+    {
+      "at": "2026-09-06T12:10:03.854Z",
+      "kind": "merge",
+      "pr": 2805
+    },
+    {
+      "at": "2026-09-06T13:27:33.494Z",
+      "kind": "review",
+      "pr": 2806
+    },
+    {
+      "at": "2026-09-06T13:51:02.293Z",
+      "kind": "merge",
+      "pr": 2806
+    },
+    {
+      "at": "2026-09-06T14:39:45.021Z",
+      "kind": "review",
+      "pr": 2807
+    },
+    {
+      "at": "2026-09-06T14:45:58.351Z",
+      "kind": "merge",
+      "pr": 2807
+    },
+    {
+      "at": "2026-09-06T15:58:44.306Z",
+      "kind": "review",
+      "pr": 2808
+    },
+    {
+      "at": "2026-09-06T16:27:52.215Z",
+      "kind": "merge",
+      "pr": 2808
+    },
+    {
+      "at": "2026-09-06T16:44:21.315Z",
+      "kind": "review",
+      "pr": 2810
+    },
+    {
+      "at": "2026-09-06T16:51:11.315Z",
+      "kind": "merge",
+      "pr": 2810
+    },
+    {
+      "at": "2026-09-06T17:05:21.315Z",
+      "kind": "review",
+      "pr": 2811
+    },
+    {
+      "at": "2026-09-06T17:30:58.024Z",
+      "kind": "merge",
+      "pr": 2811
+    },
+    {
+      "at": "2026-09-07T01:11:30.611Z",
+      "kind": "review",
+      "pr": 2812
+    },
+    {
+      "at": "2026-09-07T01:30:26.344Z",
+      "kind": "merge",
+      "pr": 2812
+    },
+    {
+      "at": "2026-09-07T03:10:15.176Z",
+      "kind": "review",
+      "pr": 2813
+    },
+    {
+      "at": "2026-09-07T03:17:36.586Z",
+      "kind": "comment",
+      "pr": 2813
+    },
+    {
+      "at": "2026-09-07T03:51:58.441Z",
+      "kind": "merge",
+      "pr": 2813
+    },
+    {
+      "at": "2026-09-07T04:41:57.270Z",
+      "kind": "review",
+      "pr": 2814
+    },
+    {
+      "at": "2026-09-07T04:48:55.648Z",
+      "kind": "merge",
+      "pr": 2814
+    },
+    {
+      "at": "2026-09-07T05:38:33.928Z",
+      "kind": "review",
+      "pr": 2815
+    },
+    {
+      "at": "2026-09-07T05:50:19.169Z",
+      "kind": "comment",
+      "pr": 2815
+    },
+    {
+      "at": "2026-09-07T06:00:24.204Z",
+      "kind": "review",
+      "pr": 2815
+    },
+    {
+      "at": "2026-09-07T08:35:16.818Z",
+      "kind": "merge",
+      "pr": 2815
+    },
+    {
+      "at": "2026-09-07T09:22:13.926Z",
+      "kind": "review",
+      "pr": 2816
+    },
+    {
+      "at": "2026-09-07T10:12:47.799Z",
+      "kind": "merge",
+      "pr": 2816
+    },
+    {
+      "at": "2026-09-07T10:22:13.447Z",
+      "kind": "review",
+      "pr": 2817
+    },
+    {
+      "at": "2026-09-07T10:45:09.286Z",
+      "kind": "merge",
+      "pr": 2817
+    },
+    {
+      "at": "2026-09-07T10:56:44.995Z",
+      "kind": "review",
+      "pr": 2818
+    },
+    {
+      "at": "2026-09-07T11:24:27.894Z",
+      "kind": "merge",
+      "pr": 2818
+    },
+    {
+      "at": "2026-09-07T11:33:49.934Z",
+      "kind": "review",
+      "pr": 2819
+    },
+    {
+      "at": "2026-09-07T11:55:37.583Z",
+      "kind": "merge",
+      "pr": 2819
+    },
+    {
+      "at": "2026-09-07T15:12:45.695Z",
+      "kind": "review",
+      "pr": 2820
+    },
+    {
+      "at": "2026-09-07T15:18:49.941Z",
+      "kind": "merge",
+      "pr": 2820
+    },
+    {
+      "at": "2026-09-07T15:21:10.803Z",
+      "kind": "review",
+      "pr": 2821
+    },
+    {
+      "at": "2026-09-07T15:47:32.968Z",
+      "kind": "merge",
+      "pr": 2821
+    },
+    {
+      "at": "2026-09-07T15:58:23.833Z",
+      "kind": "review",
+      "pr": 2822
+    },
+    {
+      "at": "2026-09-07T16:20:52.513Z",
+      "kind": "merge",
+      "pr": 2822
+    },
+    {
+      "at": "2026-09-07T20:21:49.270Z",
+      "kind": "review",
+      "pr": 2824
+    },
+    {
+      "at": "2026-09-07T20:30:09.323Z",
+      "kind": "review",
+      "pr": 2824
+    },
+    {
+      "at": "2026-09-07T21:05:19.099Z",
+      "kind": "merge",
+      "pr": 2824
+    },
+    {
+      "at": "2026-09-07T23:33:12.886Z",
+      "kind": "comment",
+      "pr": 2823
+    },
+    {
+      "at": "2026-09-07T23:43:00.939Z",
+      "kind": "review",
+      "pr": 2825
+    },
+    {
+      "at": "2026-09-07T23:48:12.675Z",
+      "kind": "comment",
+      "pr": 2825
+    },
+    {
+      "at": "2026-09-08T00:02:41.006Z",
+      "kind": "merge",
+      "pr": 2823
+    },
+    {
+      "at": "2026-09-08T00:26:33.248Z",
+      "kind": "review",
+      "pr": 2826
+    },
+    {
+      "at": "2026-09-08T00:27:27.756Z",
+      "kind": "merge",
+      "pr": 2825
+    },
+    {
+      "at": "2026-09-08T01:49:58.310Z",
+      "kind": "merge",
+      "pr": 2826
+    },
+    {
+      "at": "2026-09-08T02:46:08.309Z",
+      "kind": "review",
+      "pr": 2827
+    },
+    {
+      "at": "2026-09-08T03:25:00.675Z",
+      "kind": "merge",
+      "pr": 2827
+    },
+    {
+      "at": "2026-09-08T04:09:10.339Z",
+      "kind": "review",
+      "pr": 2830
+    },
+    {
+      "at": "2026-09-08T04:27:14.755Z",
+      "kind": "review",
+      "pr": 2831
+    },
+    {
+      "at": "2026-09-08T04:40:25.566Z",
+      "kind": "merge",
+      "pr": 2830
+    },
+    {
+      "at": "2026-09-08T04:49:20.952Z",
+      "kind": "merge",
+      "pr": 2831
+    },
+    {
+      "at": "2026-09-08T05:02:51.813Z",
+      "kind": "review",
+      "pr": 2832
+    },
+    {
+      "at": "2026-09-08T05:18:10.799Z",
+      "kind": "review",
+      "pr": 2832
+    },
+    {
+      "at": "2026-09-08T05:45:50.125Z",
+      "kind": "merge",
+      "pr": 2832
+    },
+    {
+      "at": "2026-09-08T05:45:55.192Z",
+      "kind": "merge",
+      "pr": 2832
+    },
+    {
+      "at": "2026-09-08T07:40:28.944Z",
+      "kind": "review",
+      "pr": 2833
+    },
+    {
+      "at": "2026-09-08T07:50:04.226Z",
+      "kind": "merge",
+      "pr": 2833
+    },
+    {
+      "at": "2026-09-08T07:50:15.324Z",
+      "kind": "merge",
+      "pr": 2833
+    },
+    {
+      "at": "2026-09-08T08:22:52.507Z",
+      "kind": "review",
+      "pr": 2834
+    },
+    {
+      "at": "2026-09-08T08:29:43.585Z",
+      "kind": "merge",
+      "pr": 2834
+    },
+    {
+      "at": "2026-09-08T10:16:56.572Z",
+      "kind": "review",
+      "pr": 2835
+    },
+    {
+      "at": "2026-09-08T10:42:16.929Z",
+      "kind": "merge",
+      "pr": 2835
+    },
+    {
+      "at": "2026-09-08T11:02:18.403Z",
+      "kind": "review",
+      "pr": 2836
+    },
+    {
+      "at": "2026-09-08T11:28:52.909Z",
+      "kind": "merge",
+      "pr": 2836
+    },
+    {
+      "at": "2026-09-08T12:17:35.124Z",
+      "kind": "review",
+      "pr": 2839
+    },
+    {
+      "at": "2026-09-08T12:47:04.929Z",
+      "kind": "merge",
+      "pr": 2839
+    },
+    {
+      "at": "2026-09-08T15:31:13.018Z",
+      "kind": "review",
+      "pr": 2842
+    },
+    {
+      "at": "2026-09-08T15:37:20.444Z",
+      "kind": "merge",
+      "pr": 2842
+    },
+    {
+      "at": "2026-09-08T15:49:48.037Z",
+      "kind": "review",
+      "pr": 2843
+    },
+    {
+      "at": "2026-09-08T15:49:48.037Z",
+      "kind": "review",
+      "pr": 2844
+    },
+    {
+      "at": "2026-09-08T16:27:22.123Z",
+      "kind": "review",
+      "pr": 2845
+    },
+    {
+      "at": "2026-09-08T17:11:24.387Z",
+      "kind": "merge",
+      "pr": 2845
+    },
+    {
+      "at": "2026-09-08T17:25:54.930Z",
+      "kind": "merge",
+      "pr": 2843
+    },
+    {
+      "at": "2026-09-08T17:32:28.077Z",
+      "kind": "comment",
+      "pr": 2844
+    },
+    {
+      "at": "2026-09-08T17:32:28.077Z",
+      "kind": "merge",
+      "pr": 2844
+    },
+    {
+      "at": "2026-09-08T17:32:55.307Z",
+      "kind": "comment",
+      "pr": 2844
+    },
+    {
+      "at": "2026-09-08T18:14:41.430Z",
+      "kind": "review",
+      "pr": 2846
+    },
+    {
+      "at": "2026-09-08T18:49:08.606Z",
+      "kind": "merge",
+      "pr": 2846
+    },
+    {
+      "at": "2026-09-09T04:06:50.780Z",
+      "kind": "review",
+      "pr": 2848
+    },
+    {
+      "at": "2026-09-09T04:35:01.333Z",
+      "kind": "merge",
+      "pr": 2848
+    },
+    {
+      "at": "2026-09-09T05:56:20.042Z",
+      "kind": "review",
+      "pr": 2849
+    },
+    {
+      "at": "2026-09-09T06:27:42.693Z",
+      "kind": "merge",
+      "pr": 2849
+    },
+    {
+      "at": "2026-09-09T08:29:44.936Z",
+      "kind": "review",
+      "pr": 2851
+    },
+    {
+      "at": "2026-09-09T09:29:26.650Z",
+      "kind": "review",
+      "pr": 2853
+    },
+    {
+      "at": "2026-09-09T09:41:58.960Z",
+      "kind": "review",
+      "pr": 2853
+    },
+    {
+      "at": "2026-09-09T10:06:05.176Z",
+      "kind": "comment",
+      "pr": 2853
+    },
+    {
+      "at": "2026-09-09T10:09:29.504Z",
+      "kind": "merge",
+      "pr": 2851
+    },
+    {
+      "at": "2026-09-09T11:48:41.723Z",
+      "kind": "review",
+      "pr": 2854
+    },
+    {
+      "at": "2026-09-09T12:05:25.661Z",
+      "kind": "review",
+      "pr": 2855
+    },
+    {
+      "at": "2026-09-09T12:05:32.182Z",
+      "kind": "merge",
+      "pr": 2855
+    },
+    {
+      "at": "2026-09-09T12:25:53.231Z",
+      "kind": "comment",
+      "pr": 2853
+    },
+    {
+      "at": "2026-09-09T12:55:08.462Z",
+      "kind": "review",
+      "pr": 2856
+    },
+    {
+      "at": "2026-09-09T13:07:12.768Z",
+      "kind": "comment",
+      "pr": 2856
+    },
+    {
+      "at": "2026-09-09T14:07:12.393Z",
+      "kind": "merge",
+      "pr": 2853
+    },
+    {
+      "at": "2026-09-09T14:31:19.136Z",
+      "kind": "review",
+      "pr": 2854
+    },
+    {
+      "at": "2026-09-09T15:51:41.371Z",
+      "kind": "merge",
+      "pr": 2854
+    },
+    {
+      "at": "2026-09-10T01:32:47.437Z",
+      "kind": "merge",
+      "pr": 2856
+    },
+    {
+      "at": "2026-09-10T05:46:12.254Z",
+      "kind": "review",
+      "pr": 2862
+    },
+    {
+      "at": "2026-09-10T05:46:35.580Z",
+      "kind": "comment",
+      "pr": 2862
+    },
+    {
+      "at": "2026-09-10T05:58:00.792Z",
+      "kind": "review",
+      "pr": 2862
+    },
+    {
+      "at": "2026-09-10T06:05:28.374Z",
+      "kind": "review",
+      "pr": 2864
+    },
+    {
+      "at": "2026-09-10T06:08:19.536Z",
+      "kind": "review",
+      "pr": 2862
+    },
+    {
+      "at": "2026-09-10T06:28:29.145Z",
+      "kind": "review",
+      "pr": 2867
+    },
+    {
+      "at": "2026-09-10T06:43:12.101Z",
+      "kind": "merge",
+      "pr": 2864
+    },
+    {
+      "at": "2026-09-10T06:46:49.887Z",
+      "kind": "merge",
+      "pr": 2862
+    },
+    {
+      "at": "2026-09-10T07:06:17.805Z",
+      "kind": "review",
+      "pr": 2868
+    },
+    {
+      "at": "2026-09-10T07:08:24.584Z",
+      "kind": "merge",
+      "pr": 2867
+    },
+    {
+      "at": "2026-09-10T07:34:39.262Z",
+      "kind": "review",
+      "pr": 2868
+    },
+    {
+      "at": "2026-09-10T08:39:36.203Z",
+      "kind": "review",
+      "pr": 2869
+    },
+    {
+      "at": "2026-09-10T08:54:51.359Z",
+      "kind": "merge",
+      "pr": 2868
+    },
+    {
+      "at": "2026-09-10T08:54:56.462Z",
+      "kind": "merge",
+      "pr": 2868
+    },
+    {
+      "at": "2026-09-10T09:07:28.029Z",
+      "kind": "review",
+      "pr": 2870
+    },
+    {
+      "at": "2026-09-10T09:07:28.029Z",
+      "kind": "merge",
+      "pr": 2870
+    },
+    {
+      "at": "2026-09-10T09:08:04.170Z",
+      "kind": "merge",
+      "pr": 2870
+    },
+    {
+      "at": "2026-09-10T09:12:04.051Z",
+      "kind": "merge",
+      "pr": 2869
+    },
+    {
+      "at": "2026-09-10T09:12:14.121Z",
+      "kind": "merge",
+      "pr": 2869
+    },
+    {
+      "at": "2026-09-10T09:46:20.467Z",
+      "kind": "review",
+      "pr": 2871
+    },
+    {
+      "at": "2026-09-10T10:19:34.139Z",
+      "kind": "review",
+      "pr": 2871
+    },
+    {
+      "at": "2026-09-10T10:28:12.373Z",
+      "kind": "comment",
+      "pr": 2871
+    },
+    {
+      "at": "2026-09-10T10:36:48.554Z",
+      "kind": "review",
+      "pr": 2872
+    },
+    {
+      "at": "2026-09-10T12:02:08.873Z",
+      "kind": "merge",
+      "pr": 2872
+    },
+    {
+      "at": "2026-09-10T13:07:15.948Z",
+      "kind": "merge",
+      "pr": 2871
+    },
+    {
+      "at": "2026-09-10T16:19:31.893Z",
+      "kind": "review",
+      "pr": 2878
+    },
+    {
+      "at": "2026-09-10T16:45:23.392Z",
+      "kind": "review",
+      "pr": 2879
+    },
+    {
+      "at": "2026-09-10T17:00:26.248Z",
+      "kind": "merge",
+      "pr": 2878
+    },
+    {
+      "at": "2026-09-10T17:21:50.828Z",
+      "kind": "merge",
+      "pr": 2879
+    },
+    {
+      "at": "2026-09-11T00:44:43.626Z",
+      "kind": "review",
+      "pr": 2880
+    },
+    {
+      "at": "2026-09-11T00:56:45.641Z",
+      "kind": "merge",
+      "pr": 2880
+    },
+    {
+      "at": "2026-09-11T01:02:03.073Z",
+      "kind": "review",
+      "pr": 2882
+    },
+    {
+      "at": "2026-09-11T01:06:54.261Z",
+      "kind": "merge",
+      "pr": 2882
+    },
+    {
+      "at": "2026-09-11T01:15:38.132Z",
+      "kind": "review",
+      "pr": 2884
+    },
+    {
+      "at": "2026-09-11T01:26:00.343Z",
+      "kind": "review",
+      "pr": 2885
+    },
+    {
+      "at": "2026-09-11T01:27:10.161Z",
+      "kind": "merge",
+      "pr": 2884
+    },
+    {
+      "at": "2026-09-11T01:56:07.072Z",
+      "kind": "merge",
+      "pr": 2885
+    },
+    {
+      "at": "2026-09-11T03:04:04.916Z",
+      "kind": "review",
+      "pr": 2886
+    },
+    {
+      "at": "2026-09-11T03:11:48.061Z",
+      "kind": "merge",
+      "pr": 2886
+    },
+    {
+      "at": "2026-09-11T04:34:43.781Z",
+      "kind": "review",
+      "pr": 2889
+    },
+    {
+      "at": "2026-09-11T04:38:22.436Z",
+      "kind": "review",
+      "pr": 2890
+    },
+    {
+      "at": "2026-09-11T05:07:09.048Z",
+      "kind": "merge",
+      "pr": 2890
+    },
+    {
+      "at": "2026-09-11T05:17:51.569Z",
+      "kind": "comment",
+      "pr": 2889
+    },
+    {
+      "at": "2026-09-11T05:41:25.049Z",
+      "kind": "review",
+      "pr": 2891
+    },
+    {
+      "at": "2026-09-11T06:20:51.599Z",
+      "kind": "merge",
+      "pr": 2891
+    },
+    {
+      "at": "2026-09-11T06:39:56.283Z",
+      "kind": "comment",
+      "pr": 2889
+    },
+    {
+      "at": "2026-09-11T07:13:41.753Z",
+      "kind": "review",
+      "pr": 2892
+    },
+    {
+      "at": "2026-09-11T07:15:59.100Z",
+      "kind": "comment",
+      "pr": 2892
+    },
+    {
+      "at": "2026-09-11T07:21:06.998Z",
+      "kind": "comment",
+      "pr": 2892
+    },
+    {
+      "at": "2026-09-11T07:48:29.406Z",
+      "kind": "comment",
+      "pr": 2889
+    },
+    {
+      "at": "2026-09-11T08:02:18.500Z",
+      "kind": "review",
+      "pr": 2893
+    },
+    {
+      "at": "2026-09-11T08:09:41.027Z",
+      "kind": "merge",
+      "pr": 2893
+    },
+    {
+      "at": "2026-09-11T08:30:32.133Z",
+      "kind": "merge",
+      "pr": 2892
+    },
+    {
+      "at": "2026-09-11T08:59:43.526Z",
+      "kind": "review",
+      "pr": 2894
+    },
+    {
+      "at": "2026-09-11T09:24:27.403Z",
+      "kind": "merge",
+      "pr": 2894
+    },
+    {
+      "at": "2026-09-11T10:04:05.532Z",
+      "kind": "merge",
+      "pr": 2889
+    },
+    {
+      "at": "2026-09-11T14:21:46.798Z",
+      "kind": "review",
+      "pr": 2897
+    },
+    {
+      "at": "2026-09-11T14:21:56.229Z",
+      "kind": "merge",
+      "pr": 2897
+    },
+    {
+      "at": "2026-09-11T14:42:11.822Z",
+      "kind": "review",
+      "pr": 2898
+    },
+    {
+      "at": "2026-09-11T16:15:04.020Z",
+      "kind": "merge",
+      "pr": 2898
+    },
+    {
+      "at": "2026-09-11T16:35:08.650Z",
+      "kind": "review",
+      "pr": 2899
+    },
+    {
+      "at": "2026-09-11T16:42:09.245Z",
+      "kind": "merge",
+      "pr": 2899
+    },
+    {
+      "at": "2026-09-11T17:18:40.853Z",
+      "kind": "review",
+      "pr": 2900
+    },
+    {
+      "at": "2026-09-11T17:27:52.660Z",
+      "kind": "merge",
+      "pr": 2900
+    },
+    {
+      "at": "2026-09-12T01:32:17.298Z",
+      "kind": "review",
+      "pr": 2906
+    },
+    {
+      "at": "2026-09-12T02:33:15.253Z",
+      "kind": "merge",
+      "pr": 2906
+    },
+    {
+      "at": "2026-09-12T04:06:51.139Z",
+      "kind": "review",
+      "pr": 2912
+    },
+    {
+      "at": "2026-09-12T04:15:53.846Z",
+      "kind": "comment",
+      "pr": 2912
+    },
+    {
+      "at": "2026-09-12T04:39:57.270Z",
+      "kind": "review",
+      "pr": 2914
+    },
+    {
+      "at": "2026-09-12T04:45:10.928Z",
+      "kind": "review",
+      "pr": 2915
+    },
+    {
+      "at": "2026-09-12T04:45:56.518Z",
+      "kind": "merge",
+      "pr": 2915
+    },
+    {
+      "at": "2026-09-12T05:02:37.433Z",
+      "kind": "review",
+      "pr": 2912
+    },
+    {
+      "at": "2026-09-12T05:17:53.465Z",
+      "kind": "merge",
+      "pr": 2914
+    },
+    {
+      "at": "2026-09-12T05:37:59.057Z",
+      "kind": "merge",
+      "pr": 2912
+    },
+    {
+      "at": "2026-09-12T05:54:33.999Z",
+      "kind": "review",
+      "pr": 2917
+    },
+    {
+      "at": "2026-09-12T06:08:52.877Z",
+      "kind": "review",
+      "pr": 2918
+    },
+    {
+      "at": "2026-09-12T06:26:26.915Z",
+      "kind": "merge",
+      "pr": 2917
+    },
+    {
+      "at": "2026-09-12T06:49:35.935Z",
+      "kind": "merge",
+      "pr": 2919
+    },
+    {
+      "at": "2026-09-12T06:56:39.313Z",
+      "kind": "review",
+      "pr": 2921
+    },
+    {
+      "at": "2026-09-12T07:14:29.160Z",
+      "kind": "merge",
+      "pr": 2918
+    },
+    {
+      "at": "2026-09-12T07:35:13.957Z",
+      "kind": "merge",
+      "pr": 2921
+    },
+    {
+      "at": "2026-09-12T07:38:45.243Z",
+      "kind": "review",
+      "pr": 2920
+    },
+    {
+      "at": "2026-09-12T07:39:12.814Z",
+      "kind": "merge",
+      "pr": 2920
+    },
+    {
+      "at": "2026-09-12T07:49:04.523Z",
+      "kind": "review",
+      "pr": 2922
+    },
+    {
+      "at": "2026-09-12T08:31:41.834Z",
+      "kind": "review",
+      "pr": 2924
+    },
+    {
+      "at": "2026-09-12T08:33:11.308Z",
+      "kind": "merge",
+      "pr": 2922
+    },
+    {
+      "at": "2026-09-12T08:35:45.544Z",
+      "kind": "comment",
+      "pr": 2924
+    },
+    {
+      "at": "2026-09-12T08:42:37.130Z",
+      "kind": "review",
+      "pr": 2925
+    },
+    {
+      "at": "2026-09-12T08:42:44.407Z",
+      "kind": "merge",
+      "pr": 2925
+    },
+    {
+      "at": "2026-09-12T09:28:14.962Z",
+      "kind": "merge",
+      "pr": 2924
+    },
+    {
+      "at": "2026-09-12T09:38:34.664Z",
+      "kind": "comment",
+      "pr": 2926
+    },
+    {
+      "at": "2026-09-12T09:38:55.178Z",
+      "kind": "comment",
+      "pr": 2926
+    },
+    {
+      "at": "2026-09-12T09:43:49.668Z",
+      "kind": "review",
+      "pr": 2927
+    },
+    {
+      "at": "2026-09-12T10:40:56.195Z",
+      "kind": "merge",
+      "pr": 2927
+    },
+    {
+      "at": "2026-09-12T11:29:24.560Z",
+      "kind": "review",
+      "pr": 2926
+    },
+    {
+      "at": "2026-09-12T11:37:09.136Z",
+      "kind": "review",
+      "pr": 2928
+    },
+    {
+      "at": "2026-09-12T11:46:49.360Z",
+      "kind": "comment",
+      "pr": 2928
+    },
+    {
+      "at": "2026-09-12T11:54:00.338Z",
+      "kind": "review",
+      "pr": 2929
+    },
+    {
+      "at": "2026-09-12T12:25:10.057Z",
+      "kind": "merge",
+      "pr": 2929
+    },
+    {
+      "at": "2026-09-12T13:41:24.919Z",
+      "kind": "review",
+      "pr": 2930
+    },
+    {
+      "at": "2026-09-12T14:24:21.906Z",
+      "kind": "comment",
+      "pr": 2930
+    },
+    {
+      "at": "2026-09-12T14:24:59.727Z",
+      "kind": "merge",
+      "pr": 2928
+    },
+    {
+      "at": "2026-09-12T15:50:34.064Z",
+      "kind": "review",
+      "pr": 2932
+    },
+    {
+      "at": "2026-09-12T15:55:34.753Z",
+      "kind": "merge",
+      "pr": 2934
+    }
+  ],
+  "prs": [
+    {
+      "pr": 2812,
+      "url": "https://github.com/holon-run/holon/pull/2812",
+      "title": "feat: add canonical agent relation projection",
+      "local_first_attempt_at": "2026-09-07T01:11:30.611Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5127276044,
+        "at": "2026-09-07T01:11:32Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2812#pullrequestreview-5127276044"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T01:30:29Z",
+      "snapshot_at": "2026-09-12T16:07:06.478755+00:00",
+      "snapshot_sha256": "9c358b8c739a4f517370cc00d16656af8bc5a607ad9f57dd830b4c31efd0eda3",
+      "reviews": [
+        {
+          "id": 5127276044,
+          "at": "2026-09-07T01:11:32Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2812#pullrequestreview-5127276044"
+        },
+        {
+          "id": 5127290881,
+          "at": "2026-09-07T01:16:52Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2812#pullrequestreview-5127290881"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5563566392,
+          "at": "2026-09-07T01:01:15Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2812#issuecomment-5563566392"
+        },
+        {
+          "id": 5563670340,
+          "at": "2026-09-07T01:17:23Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2812#issuecomment-5563670340"
+        }
+      ]
+    },
+    {
+      "pr": 2813,
+      "url": "https://github.com/holon-run/holon/pull/2813",
+      "title": "feat: expose operator agent tree and canonical detail",
+      "local_first_attempt_at": "2026-09-07T03:10:15.176Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5127737172,
+        "at": "2026-09-07T03:10:17Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2813#pullrequestreview-5127737172"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T03:52:02Z",
+      "snapshot_at": "2026-09-12T16:07:00.934906+00:00",
+      "snapshot_sha256": "99b9832551e36392d5e0839fe6aab6014620315ba0cd1dff1fe5a6d251c98d8f",
+      "reviews": [
+        {
+          "id": 5127737172,
+          "at": "2026-09-07T03:10:17Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2813#pullrequestreview-5127737172"
+        },
+        {
+          "id": 5127768719,
+          "at": "2026-09-07T03:19:25Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2813#pullrequestreview-5127768719"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5564445147,
+          "at": "2026-09-07T03:04:15Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2813#issuecomment-5564445147"
+        },
+        {
+          "id": 5564538553,
+          "at": "2026-09-07T03:17:39Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2813#issuecomment-5564538553"
+        },
+        {
+          "id": 5564554929,
+          "at": "2026-09-07T03:20:06Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2813#issuecomment-5564554929"
+        },
+        {
+          "id": 5564573121,
+          "at": "2026-09-07T03:22:51Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2813#issuecomment-5564573121"
+        }
+      ]
+    },
+    {
+      "pr": 2814,
+      "url": "https://github.com/holon-run/holon/pull/2814",
+      "title": "fix(web): render TaskOutput content in right panel tool detail",
+      "local_first_attempt_at": "2026-09-07T04:41:57.270Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5128116218,
+        "at": "2026-09-07T04:41:59Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2814#pullrequestreview-5128116218"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T04:49:03Z",
+      "snapshot_at": "2026-09-12T16:07:00.934517+00:00",
+      "snapshot_sha256": "9f33de2eaec51eec584436bf94997c7311d0b71947671755f46758e94d5e431f",
+      "reviews": [
+        {
+          "id": 5128116218,
+          "at": "2026-09-07T04:41:59Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2814#pullrequestreview-5128116218"
+        },
+        {
+          "id": 5128142758,
+          "at": "2026-09-07T04:48:08Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2814#pullrequestreview-5128142758"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5565114207,
+          "at": "2026-09-07T04:38:54Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2814#issuecomment-5565114207"
+        },
+        {
+          "id": 5565186002,
+          "at": "2026-09-07T04:48:29Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2814#issuecomment-5565186002"
+        }
+      ]
+    },
+    {
+      "pr": 2815,
+      "url": "https://github.com/holon-run/holon/pull/2815",
+      "title": "feat: add canonical agent creation and invocation services",
+      "local_first_attempt_at": "2026-09-07T05:38:33.928Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5128394267,
+        "at": "2026-09-07T05:38:37Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2815#pullrequestreview-5128394267"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T08:35:20Z",
+      "snapshot_at": "2026-09-12T16:07:00.933972+00:00",
+      "snapshot_sha256": "2a64e7926de953e28c5771a2e099e6f3b04d39629a4e97584d554e79707d9425",
+      "reviews": [
+        {
+          "id": 5128394267,
+          "at": "2026-09-07T05:38:37Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2815#pullrequestreview-5128394267"
+        },
+        {
+          "id": 5128412413,
+          "at": "2026-09-07T05:42:14Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2815#pullrequestreview-5128412413"
+        },
+        {
+          "id": 5128510881,
+          "at": "2026-09-07T06:00:26Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2815#pullrequestreview-5128510881"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5565547918,
+          "at": "2026-09-07T05:32:51Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2815#issuecomment-5565547918"
+        },
+        {
+          "id": 5565627425,
+          "at": "2026-09-07T05:42:51Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2815#issuecomment-5565627425"
+        },
+        {
+          "id": 5565686614,
+          "at": "2026-09-07T05:50:21Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2815#issuecomment-5565686614"
+        },
+        {
+          "id": 5566091176,
+          "at": "2026-09-07T06:33:42Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2815#issuecomment-5566091176"
+        },
+        {
+          "id": 5566579008,
+          "at": "2026-09-07T07:14:12Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2815#issuecomment-5566579008"
+        }
+      ]
+    },
+    {
+      "pr": 2816,
+      "url": "https://github.com/holon-run/holon/pull/2816",
+      "title": "fix: tolerate partial Ollama discovery failures",
+      "local_first_attempt_at": "2026-09-07T09:22:13.926Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5130269248,
+        "at": "2026-09-07T09:22:19Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2816#pullrequestreview-5130269248"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T10:12:51Z",
+      "snapshot_at": "2026-09-12T16:07:00.933631+00:00",
+      "snapshot_sha256": "89d20fe2e818b411fcf036b4ccf6a16f4fd889bc9b805fc95681b3db69e88851",
+      "reviews": [
+        {
+          "id": 5130269248,
+          "at": "2026-09-07T09:22:19Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2816#pullrequestreview-5130269248"
+        },
+        {
+          "id": 5130364310,
+          "at": "2026-09-07T09:33:00Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2816#pullrequestreview-5130364310"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5568369491,
+          "at": "2026-09-07T09:18:07Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2816#issuecomment-5568369491"
+        },
+        {
+          "id": 5568590055,
+          "at": "2026-09-07T09:33:46Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2816#issuecomment-5568590055"
+        }
+      ]
+    },
+    {
+      "pr": 2817,
+      "url": "https://github.com/holon-run/holon/pull/2817",
+      "title": "feat: add office assistant agent template",
+      "local_first_attempt_at": "2026-09-07T10:22:13.447Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5130821552,
+        "at": "2026-09-07T10:22:15Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2817#pullrequestreview-5130821552"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T10:45:13Z",
+      "snapshot_at": "2026-09-12T16:07:00.933290+00:00",
+      "snapshot_sha256": "9e17e7be884ea99a22b9b29b7641fafcf82895870511497cddda726207bd2a7a",
+      "reviews": [
+        {
+          "id": 5130821552,
+          "at": "2026-09-07T10:22:15Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2817#pullrequestreview-5130821552"
+        },
+        {
+          "id": 5130922317,
+          "at": "2026-09-07T10:32:09Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2817#pullrequestreview-5130922317"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5569096594,
+          "at": "2026-09-07T10:15:27Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2817#issuecomment-5569096594"
+        },
+        {
+          "id": 5569302033,
+          "at": "2026-09-07T10:32:48Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2817#issuecomment-5569302033"
+        }
+      ]
+    },
+    {
+      "pr": 2818,
+      "url": "https://github.com/holon-run/holon/pull/2818",
+      "title": "fix: retry request-send disconnects",
+      "local_first_attempt_at": "2026-09-07T10:56:44.995Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5131144671,
+        "at": "2026-09-07T10:56:49Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2818#pullrequestreview-5131144671"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T11:24:32Z",
+      "snapshot_at": "2026-09-12T16:07:00.932947+00:00",
+      "snapshot_sha256": "0ad660e215ee5cebebc8b13dbf23a2693b54249f977c77bb6dd09cd090ae4152",
+      "reviews": [
+        {
+          "id": 5131144671,
+          "at": "2026-09-07T10:56:49Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2818#pullrequestreview-5131144671"
+        },
+        {
+          "id": 5131217143,
+          "at": "2026-09-07T11:05:23Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2818#pullrequestreview-5131217143"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5569553170,
+          "at": "2026-09-07T10:54:42Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2818#issuecomment-5569553170"
+        },
+        {
+          "id": 5569683881,
+          "at": "2026-09-07T11:06:27Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2818#issuecomment-5569683881"
+        }
+      ]
+    },
+    {
+      "pr": 2819,
+      "url": "https://github.com/holon-run/holon/pull/2819",
+      "title": "chore: refresh models.dev snapshot, artifact, and supplement",
+      "local_first_attempt_at": "2026-09-07T11:33:49.934Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5131506428,
+        "at": "2026-09-07T11:33:54Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2819#pullrequestreview-5131506428"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T11:55:43Z",
+      "snapshot_at": "2026-09-12T16:07:00.932649+00:00",
+      "snapshot_sha256": "0e4fa5b2566511c7bda670e63a2ce2410db6fca162e4731087226edc2cba1c98",
+      "reviews": [
+        {
+          "id": 5131506428,
+          "at": "2026-09-07T11:33:54Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2819#pullrequestreview-5131506428"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5569935837,
+          "at": "2026-09-07T11:27:38Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2819#issuecomment-5569935837"
+        }
+      ]
+    },
+    {
+      "pr": 2820,
+      "url": "https://github.com/holon-run/holon/pull/2820",
+      "title": "fix(web-gui): stabilize file browser source view rendering",
+      "local_first_attempt_at": "2026-09-07T15:12:45.695Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5133481743,
+        "at": "2026-09-07T15:12:48Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2820#pullrequestreview-5133481743"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T15:18:53Z",
+      "snapshot_at": "2026-09-12T16:07:00.932252+00:00",
+      "snapshot_sha256": "1f1e14f0967e955d965d1ff2a00a98651056a7957d123d4e61d1c3ff282c9a2c",
+      "reviews": [
+        {
+          "id": 5133481743,
+          "at": "2026-09-07T15:12:48Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2820#pullrequestreview-5133481743"
+        },
+        {
+          "id": 5133516387,
+          "at": "2026-09-07T15:17:40Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2820#pullrequestreview-5133516387"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5572589556,
+          "at": "2026-09-07T15:09:17Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2820#issuecomment-5572589556"
+        },
+        {
+          "id": 5572695336,
+          "at": "2026-09-07T15:18:24Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2820#issuecomment-5572695336"
+        }
+      ]
+    },
+    {
+      "pr": 2821,
+      "url": "https://github.com/holon-run/holon/pull/2821",
+      "title": "fix: add browser headers to WebFetch requests",
+      "local_first_attempt_at": "2026-09-07T15:21:10.803Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5133540569,
+        "at": "2026-09-07T15:21:13Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2821#pullrequestreview-5133540569"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T15:47:37Z",
+      "snapshot_at": "2026-09-12T16:07:00.931869+00:00",
+      "snapshot_sha256": "1d3ea9294268fa1ba5e9e154d46b6d8f36d88f94321a9c7d647bddd51e460baf",
+      "reviews": [
+        {
+          "id": 5133540569,
+          "at": "2026-09-07T15:21:13Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2821#pullrequestreview-5133540569"
+        },
+        {
+          "id": 5133639455,
+          "at": "2026-09-07T15:34:53Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2821#pullrequestreview-5133639455"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5572694228,
+          "at": "2026-09-07T15:18:18Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2821#issuecomment-5572694228"
+        },
+        {
+          "id": 5572880080,
+          "at": "2026-09-07T15:35:31Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2821#issuecomment-5572880080"
+        }
+      ]
+    },
+    {
+      "pr": 2822,
+      "url": "https://github.com/holon-run/holon/pull/2822",
+      "title": "feat: add reliable agent message delivery ledger",
+      "local_first_attempt_at": "2026-09-07T15:58:23.833Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5133799097,
+        "at": "2026-09-07T15:58:27Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2822#pullrequestreview-5133799097"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T16:20:56Z",
+      "snapshot_at": "2026-09-12T16:07:00.931246+00:00",
+      "snapshot_sha256": "6faa7509cfbdd2173e7fc4cbf881e1414df891731d329de67ef079fa6268cdbb",
+      "reviews": [
+        {
+          "id": 5133799097,
+          "at": "2026-09-07T15:58:27Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2822#pullrequestreview-5133799097"
+        },
+        {
+          "id": 5133836992,
+          "at": "2026-09-07T16:03:26Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2822#pullrequestreview-5133836992"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5573041747,
+          "at": "2026-09-07T15:50:47Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2822#issuecomment-5573041747"
+        },
+        {
+          "id": 5573175984,
+          "at": "2026-09-07T16:03:59Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2822#issuecomment-5573175984"
+        }
+      ]
+    },
+    {
+      "pr": 2823,
+      "url": "https://github.com/holon-run/holon/pull/2823",
+      "title": "feat: stream workspace file raw responses with range and conditional requests",
+      "local_first_attempt_at": "2026-09-07T23:33:12.886Z",
+      "local_first_attempt_kind": "comment",
+      "nearest_public_event": {
+        "id": 5576745644,
+        "at": "2026-09-07T23:33:17Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2823#issuecomment-5576745644"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T00:02:45Z",
+      "snapshot_at": "2026-09-12T16:06:57.173348+00:00",
+      "snapshot_sha256": "7b1f0d2d530b424a415443a1d319dd824ecf6253e121af3d6d771fdfbbd6fbbf",
+      "reviews": [
+        {
+          "id": 5134269341,
+          "at": "2026-09-07T17:18:20Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2823#pullrequestreview-5134269341"
+        },
+        {
+          "id": 5134274741,
+          "at": "2026-09-07T17:19:35Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2823#pullrequestreview-5134274741"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5573808219,
+          "at": "2026-09-07T17:11:19Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2823#issuecomment-5573808219"
+        },
+        {
+          "id": 5573882157,
+          "at": "2026-09-07T17:20:04Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2823#issuecomment-5573882157"
+        },
+        {
+          "id": 5573951075,
+          "at": "2026-09-07T17:28:38Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2823#issuecomment-5573951075"
+        },
+        {
+          "id": 5576731565,
+          "at": "2026-09-07T23:31:48Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2823#issuecomment-5576731565"
+        },
+        {
+          "id": 5576745644,
+          "at": "2026-09-07T23:33:17Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2823#issuecomment-5576745644"
+        }
+      ]
+    },
+    {
+      "pr": 2824,
+      "url": "https://github.com/holon-run/holon/pull/2824",
+      "title": "feat: expose native CreateAgent and InvokeAgent tools",
+      "local_first_attempt_at": "2026-09-07T20:21:49.270Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5135062582,
+        "at": "2026-09-07T20:21:51Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2824#pullrequestreview-5135062582"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-07T21:05:23Z",
+      "snapshot_at": "2026-09-12T16:06:57.172887+00:00",
+      "snapshot_sha256": "9e3395e9acb8e3d267f7b9ba74b183c4b1d4ea84ee6b1e55499f073f1303ba85",
+      "reviews": [
+        {
+          "id": 5135062582,
+          "at": "2026-09-07T20:21:51Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2824#pullrequestreview-5135062582"
+        },
+        {
+          "id": 5135089561,
+          "at": "2026-09-07T20:28:11Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2824#pullrequestreview-5135089561"
+        },
+        {
+          "id": 5135096736,
+          "at": "2026-09-07T20:30:11Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2824#pullrequestreview-5135096736"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5575250134,
+          "at": "2026-09-07T20:14:14Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2824#issuecomment-5575250134"
+        },
+        {
+          "id": 5575364680,
+          "at": "2026-09-07T20:29:26Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2824#issuecomment-5575364680"
+        },
+        {
+          "id": 5575421018,
+          "at": "2026-09-07T20:36:48Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2824#issuecomment-5575421018"
+        }
+      ]
+    },
+    {
+      "pr": 2825,
+      "url": "https://github.com/holon-run/holon/pull/2825",
+      "title": "feat: cut over agent relation writes and backfill",
+      "local_first_attempt_at": "2026-09-07T23:43:00.939Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5135878869,
+        "at": "2026-09-07T23:43:03Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2825#pullrequestreview-5135878869"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T00:27:31Z",
+      "snapshot_at": "2026-09-12T16:06:57.172478+00:00",
+      "snapshot_sha256": "7f41cfffef9c711b334a5f6954c53dbd655c4539896806b292fe8539b34d7d72",
+      "reviews": [
+        {
+          "id": 5135878869,
+          "at": "2026-09-07T23:43:03Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2825#pullrequestreview-5135878869"
+        },
+        {
+          "id": 5135914831,
+          "at": "2026-09-07T23:49:18Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2825#pullrequestreview-5135914831"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5576792444,
+          "at": "2026-09-07T23:38:07Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2825#issuecomment-5576792444"
+        },
+        {
+          "id": 5576893331,
+          "at": "2026-09-07T23:48:15Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2825#issuecomment-5576893331"
+        },
+        {
+          "id": 5576906295,
+          "at": "2026-09-07T23:50:01Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2825#issuecomment-5576906295"
+        }
+      ]
+    },
+    {
+      "pr": 2826,
+      "url": "https://github.com/holon-run/holon/pull/2826",
+      "title": "fix: 为 WebFetch 模拟浏览器 TLS 指纹",
+      "local_first_attempt_at": "2026-09-08T00:26:33.248Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5136123076,
+        "at": "2026-09-08T00:26:35Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2826#pullrequestreview-5136123076"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T01:50:02Z",
+      "snapshot_at": "2026-09-12T16:06:57.172056+00:00",
+      "snapshot_sha256": "1d732ad937d4deecbe93422a4f4710992755a62ca1e0f74e6e079a8be88b7d24",
+      "reviews": [
+        {
+          "id": 5136123076,
+          "at": "2026-09-08T00:26:35Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2826#pullrequestreview-5136123076"
+        },
+        {
+          "id": 5136141235,
+          "at": "2026-09-08T00:31:16Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2826#pullrequestreview-5136141235"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5577146267,
+          "at": "2026-09-08T00:20:41Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2826#issuecomment-5577146267"
+        },
+        {
+          "id": 5577237697,
+          "at": "2026-09-08T00:32:21Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2826#issuecomment-5577237697"
+        },
+        {
+          "id": 5577621042,
+          "at": "2026-09-08T01:19:10Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2826#issuecomment-5577621042"
+        }
+      ]
+    },
+    {
+      "pr": 2827,
+      "url": "https://github.com/holon-run/holon/pull/2827",
+      "title": "release: prepare v0.38.0 Agent migration bridge",
+      "local_first_attempt_at": "2026-09-08T02:46:08.309Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5136776871,
+        "at": "2026-09-08T02:46:11Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2827#pullrequestreview-5136776871"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T03:25:04Z",
+      "snapshot_at": "2026-09-12T16:06:57.171737+00:00",
+      "snapshot_sha256": "d32e7086ba1f3fac9a0a947dc07b0cf3833ecb47bf35b6cfce395eb058b361ec",
+      "reviews": [
+        {
+          "id": 5136776871,
+          "at": "2026-09-08T02:46:11Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2827#pullrequestreview-5136776871"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5578296782,
+          "at": "2026-09-08T02:41:50Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2827#issuecomment-5578296782"
+        },
+        {
+          "id": 5578361565,
+          "at": "2026-09-08T02:50:04Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2827#issuecomment-5578361565"
+        }
+      ]
+    },
+    {
+      "pr": 2830,
+      "url": "https://github.com/holon-run/holon/pull/2830",
+      "title": "fix(provider): append placeholder user text for ollama tool-only rounds",
+      "local_first_attempt_at": "2026-09-08T04:09:10.339Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5137214766,
+        "at": "2026-09-08T04:09:12Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2830#pullrequestreview-5137214766"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T04:40:30Z",
+      "snapshot_at": "2026-09-12T16:06:57.171369+00:00",
+      "snapshot_sha256": "15ed758298ce2ea3e2d27e2280f8df48c5f23615cb0b72dc7fd16010c290732f",
+      "reviews": [
+        {
+          "id": 5137214766,
+          "at": "2026-09-08T04:09:12Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2830#pullrequestreview-5137214766"
+        },
+        {
+          "id": 5137279248,
+          "at": "2026-09-08T04:21:27Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2830#pullrequestreview-5137279248"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5579023074,
+          "at": "2026-09-08T04:07:02Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2830#issuecomment-5579023074"
+        },
+        {
+          "id": 5579149171,
+          "at": "2026-09-08T04:21:52Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2830#issuecomment-5579149171"
+        }
+      ]
+    },
+    {
+      "pr": 2831,
+      "url": "https://github.com/holon-run/holon/pull/2831",
+      "title": "feat: enrich web file browser previews with media, metadata, and sorting",
+      "local_first_attempt_at": "2026-09-08T04:27:14.755Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5137313240,
+        "at": "2026-09-08T04:27:19Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2831#pullrequestreview-5137313240"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T04:49:27Z",
+      "snapshot_at": "2026-09-12T16:06:57.170972+00:00",
+      "snapshot_sha256": "3a727abde9b3844dddffdfc2663c969ac61c7e87c34f8851798ce985b342f2a1",
+      "reviews": [
+        {
+          "id": 5137313240,
+          "at": "2026-09-08T04:27:19Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2831#pullrequestreview-5137313240"
+        },
+        {
+          "id": 5137333682,
+          "at": "2026-09-08T04:30:49Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2831#pullrequestreview-5137333682"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5579135901,
+          "at": "2026-09-08T04:20:16Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2831#issuecomment-5579135901"
+        },
+        {
+          "id": 5579256443,
+          "at": "2026-09-08T04:31:11Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2831#issuecomment-5579256443"
+        }
+      ]
+    },
+    {
+      "pr": 2832,
+      "url": "https://github.com/holon-run/holon/pull/2832",
+      "title": "fix: support scheduler recovery on schema 46",
+      "local_first_attempt_at": "2026-09-08T05:02:51.813Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5137494006,
+        "at": "2026-09-08T05:02:54Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2832#pullrequestreview-5137494006"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T05:46:00Z",
+      "snapshot_at": "2026-09-12T16:06:57.170488+00:00",
+      "snapshot_sha256": "7701a841d0d83c1d9bbdadc3f5773a10c106d10c06118ee1ec253d7a7531ed11",
+      "reviews": [
+        {
+          "id": 5137494006,
+          "at": "2026-09-08T05:02:54Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2832#pullrequestreview-5137494006"
+        },
+        {
+          "id": 5137511531,
+          "at": "2026-09-08T05:05:39Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2832#pullrequestreview-5137511531"
+        },
+        {
+          "id": 5137597515,
+          "at": "2026-09-08T05:18:13Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2832#pullrequestreview-5137597515"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5579464855,
+          "at": "2026-09-08T04:54:57Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2832#issuecomment-5579464855"
+        },
+        {
+          "id": 5579563394,
+          "at": "2026-09-08T05:06:13Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2832#issuecomment-5579563394"
+        },
+        {
+          "id": 5579653656,
+          "at": "2026-09-08T05:15:39Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2832#issuecomment-5579653656"
+        }
+      ]
+    },
+    {
+      "pr": 2833,
+      "url": "https://github.com/holon-run/holon/pull/2833",
+      "title": "fix: resolve relative markdown links in web file browser previews",
+      "local_first_attempt_at": "2026-09-08T07:40:28.944Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5138747339,
+        "at": "2026-09-08T07:40:32Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2833#pullrequestreview-5138747339"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T07:50:25Z",
+      "snapshot_at": "2026-09-12T16:06:57.170072+00:00",
+      "snapshot_sha256": "e7c3f9e7b3b6d5be48bcaa65559dab81087272e699bfcdc46fa4296783252e92",
+      "reviews": [
+        {
+          "id": 5138747339,
+          "at": "2026-09-08T07:40:32Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2833#pullrequestreview-5138747339"
+        },
+        {
+          "id": 5138814467,
+          "at": "2026-09-08T07:47:19Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2833#pullrequestreview-5138814467"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5581145454,
+          "at": "2026-09-08T07:36:15Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2833#issuecomment-5581145454"
+        },
+        {
+          "id": 5581287011,
+          "at": "2026-09-08T07:47:53Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2833#issuecomment-5581287011"
+        }
+      ]
+    },
+    {
+      "pr": 2834,
+      "url": "https://github.com/holon-run/holon/pull/2834",
+      "title": "feat: linkify pure-URL code spans in web GUI markdown",
+      "local_first_attempt_at": "2026-09-08T08:22:52.507Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5139163755,
+        "at": "2026-09-08T08:22:55Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2834#pullrequestreview-5139163755"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T08:29:49Z",
+      "snapshot_at": "2026-09-12T16:06:57.169476+00:00",
+      "snapshot_sha256": "1da7088422e5b08d1d77f87c080b592e1ac0a1d59a0ac9bdcfb0b44d75d75c0d",
+      "reviews": [
+        {
+          "id": 5139163755,
+          "at": "2026-09-08T08:22:55Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2834#pullrequestreview-5139163755"
+        },
+        {
+          "id": 5139230476,
+          "at": "2026-09-08T08:28:19Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2834#pullrequestreview-5139230476"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5581679221,
+          "at": "2026-09-08T08:19:04Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2834#issuecomment-5581679221"
+        },
+        {
+          "id": 5581802716,
+          "at": "2026-09-08T08:29:07Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2834#issuecomment-5581802716"
+        }
+      ]
+    },
+    {
+      "pr": 2835,
+      "url": "https://github.com/holon-run/holon/pull/2835",
+      "title": "fix: preserve concurrent state after scheduler commits",
+      "local_first_attempt_at": "2026-09-08T10:16:56.572Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5140417482,
+        "at": "2026-09-08T10:17:01Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2835#pullrequestreview-5140417482"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T10:42:22Z",
+      "snapshot_at": "2026-09-12T16:06:53.873832+00:00",
+      "snapshot_sha256": "6bc799e7d544c643c8d2c76c99551ad55b54d83df52abb6464db02ae8b0d5f5c",
+      "reviews": [
+        {
+          "id": 5140417482,
+          "at": "2026-09-08T10:17:01Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2835#pullrequestreview-5140417482"
+        },
+        {
+          "id": 5140475391,
+          "at": "2026-09-08T10:22:37Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2835#pullrequestreview-5140475391"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5583481443,
+          "at": "2026-09-08T10:12:09Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2835#issuecomment-5583481443"
+        },
+        {
+          "id": 5583649191,
+          "at": "2026-09-08T10:23:03Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2835#issuecomment-5583649191"
+        }
+      ]
+    },
+    {
+      "pr": 2836,
+      "url": "https://github.com/holon-run/holon/pull/2836",
+      "title": "feat: canonical workspace_uri in ViewImage results + web GUI consumption",
+      "local_first_attempt_at": "2026-09-08T11:02:18.403Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5140855731,
+        "at": "2026-09-08T11:02:22Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2836#pullrequestreview-5140855731"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T11:28:58Z",
+      "snapshot_at": "2026-09-12T16:06:53.873474+00:00",
+      "snapshot_sha256": "639d533767592d63471fc7b81bc7d06d94b8a73eadd59a839e189159ea7b1dda",
+      "reviews": [
+        {
+          "id": 5140855731,
+          "at": "2026-09-08T11:02:22Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2836#pullrequestreview-5140855731"
+        },
+        {
+          "id": 5140917160,
+          "at": "2026-09-08T11:08:48Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2836#pullrequestreview-5140917160"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5584085161,
+          "at": "2026-09-08T10:59:03Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2836#issuecomment-5584085161"
+        },
+        {
+          "id": 5584208200,
+          "at": "2026-09-08T11:09:31Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2836#issuecomment-5584208200"
+        }
+      ]
+    },
+    {
+      "pr": 2839,
+      "url": "https://github.com/holon-run/holon/pull/2839",
+      "title": "feat: initialize agent_home tmp/ and guide temp-file placement",
+      "local_first_attempt_at": "2026-09-08T12:17:35.124Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5141550647,
+        "at": "2026-09-08T12:17:37Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2839#pullrequestreview-5141550647"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T12:47:11Z",
+      "snapshot_at": "2026-09-12T16:06:53.873154+00:00",
+      "snapshot_sha256": "b8323e14cc9f88c8841d3babe147734929f1d07617336753f3024e916153ff51",
+      "reviews": [
+        {
+          "id": 5141550647,
+          "at": "2026-09-08T12:17:37Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2839#pullrequestreview-5141550647"
+        },
+        {
+          "id": 5141618101,
+          "at": "2026-09-08T12:24:02Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2839#pullrequestreview-5141618101"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5584957220,
+          "at": "2026-09-08T12:14:20Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2839#issuecomment-5584957220"
+        },
+        {
+          "id": 5585082423,
+          "at": "2026-09-08T12:24:31Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2839#issuecomment-5585082423"
+        }
+      ]
+    },
+    {
+      "pr": 2842,
+      "url": "https://github.com/holon-run/holon/pull/2842",
+      "title": "feat: show agent display name and add rename UI in web gui",
+      "local_first_attempt_at": "2026-09-08T15:31:13.018Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5143737567,
+        "at": "2026-09-08T15:31:16Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2842#pullrequestreview-5143737567"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T15:37:26Z",
+      "snapshot_at": "2026-09-12T16:06:53.872766+00:00",
+      "snapshot_sha256": "71d0f188baaec8c11de77f03082fd3983ddf4016048391a8034d396cb7b5b46f",
+      "reviews": [
+        {
+          "id": 5143737567,
+          "at": "2026-09-08T15:31:16Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2842#pullrequestreview-5143737567"
+        },
+        {
+          "id": 5143793175,
+          "at": "2026-09-08T15:35:52Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2842#pullrequestreview-5143793175"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5587575643,
+          "at": "2026-09-08T15:23:49Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2842#issuecomment-5587575643"
+        },
+        {
+          "id": 5587755462,
+          "at": "2026-09-08T15:36:27Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2842#issuecomment-5587755462"
+        }
+      ]
+    },
+    {
+      "pr": 2843,
+      "url": "https://github.com/holon-run/holon/pull/2843",
+      "title": "feat: add holon agent rename CLI command",
+      "local_first_attempt_at": "2026-09-08T15:49:48.037Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5143956009,
+        "at": "2026-09-08T15:49:55Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2843#pullrequestreview-5143956009"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T17:26:00Z",
+      "snapshot_at": "2026-09-12T16:06:53.872390+00:00",
+      "snapshot_sha256": "1ecb16e2ee0853ec174b021407e8dd2bddf904a21f643a0be9759e46e9af9f0f",
+      "reviews": [
+        {
+          "id": 5143956009,
+          "at": "2026-09-08T15:49:55Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2843#pullrequestreview-5143956009"
+        },
+        {
+          "id": 5143998125,
+          "at": "2026-09-08T15:53:36Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2843#pullrequestreview-5143998125"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5587850528,
+          "at": "2026-09-08T15:43:30Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2843#issuecomment-5587850528"
+        },
+        {
+          "id": 5588000614,
+          "at": "2026-09-08T15:54:03Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2843#issuecomment-5588000614"
+        },
+        {
+          "id": 5588749007,
+          "at": "2026-09-08T16:52:03Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2843#issuecomment-5588749007"
+        }
+      ]
+    },
+    {
+      "pr": 2844,
+      "url": "https://github.com/holon-run/holon/pull/2844",
+      "title": "feat: add canonical agent detail endpoint",
+      "local_first_attempt_at": "2026-09-08T15:49:48.037Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5143956895,
+        "at": "2026-09-08T15:49:59Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2844#pullrequestreview-5143956895"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T17:32:34Z",
+      "snapshot_at": "2026-09-12T16:06:53.872010+00:00",
+      "snapshot_sha256": "a1295c20e7c98b2983d48c4df5ef711904fc58392543789d4f845cd4d00674d7",
+      "reviews": [
+        {
+          "id": 5143956895,
+          "at": "2026-09-08T15:49:59Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2844#pullrequestreview-5143956895"
+        },
+        {
+          "id": 5143984997,
+          "at": "2026-09-08T15:52:24Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2844#pullrequestreview-5143984997"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5587851900,
+          "at": "2026-09-08T15:43:36Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2844#issuecomment-5587851900"
+        },
+        {
+          "id": 5587984128,
+          "at": "2026-09-08T15:52:53Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2844#issuecomment-5587984128"
+        },
+        {
+          "id": 5588163916,
+          "at": "2026-09-08T16:05:47Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2844#issuecomment-5588163916"
+        },
+        {
+          "id": 5589249821,
+          "at": "2026-09-08T17:32:58Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2844#issuecomment-5589249821"
+        }
+      ]
+    },
+    {
+      "pr": 2845,
+      "url": "https://github.com/holon-run/holon/pull/2845",
+      "title": "fix: 深化 work_item_scoped 历史窗口",
+      "local_first_attempt_at": "2026-09-08T16:27:22.123Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5144358639,
+        "at": "2026-09-08T16:27:24Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2845#pullrequestreview-5144358639"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T17:11:30Z",
+      "snapshot_at": "2026-09-12T16:06:53.871635+00:00",
+      "snapshot_sha256": "a256ab6658ce75f05d78394fb5e9a712efe1c15fc5b5dd1aaac7b7e988426b53",
+      "reviews": [
+        {
+          "id": 5144358639,
+          "at": "2026-09-08T16:27:24Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2845#pullrequestreview-5144358639"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5588383872,
+          "at": "2026-09-08T16:22:25Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2845#issuecomment-5588383872"
+        },
+        {
+          "id": 5588593861,
+          "at": "2026-09-08T16:39:19Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2845#issuecomment-5588593861"
+        },
+        {
+          "id": 5588604367,
+          "at": "2026-09-08T16:40:11Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2845#issuecomment-5588604367"
+        }
+      ]
+    },
+    {
+      "pr": 2846,
+      "url": "https://github.com/holon-run/holon/pull/2846",
+      "title": "feat: replace AgentGet with GetAgent",
+      "local_first_attempt_at": "2026-09-08T18:14:41.430Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5145377789,
+        "at": "2026-09-08T18:14:44Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2846#pullrequestreview-5145377789"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-08T18:49:13Z",
+      "snapshot_at": "2026-09-12T16:06:53.871323+00:00",
+      "snapshot_sha256": "ba73e8782f42722fc42fc74d917925fb3890ab37084ff6d98c19a9f4662c06aa",
+      "reviews": [
+        {
+          "id": 5145377789,
+          "at": "2026-09-08T18:14:44Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2846#pullrequestreview-5145377789"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5589644084,
+          "at": "2026-09-08T18:06:00Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2846#issuecomment-5589644084"
+        },
+        {
+          "id": 5589797739,
+          "at": "2026-09-08T18:18:20Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2846#issuecomment-5589797739"
+        }
+      ]
+    },
+    {
+      "pr": 2848,
+      "url": "https://github.com/holon-run/holon/pull/2848",
+      "title": "fix: sample existing agent turn before delivery",
+      "local_first_attempt_at": "2026-09-09T04:06:50.780Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5149619162,
+        "at": "2026-09-09T04:06:53Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2848#pullrequestreview-5149619162"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-09T04:35:06Z",
+      "snapshot_at": "2026-09-12T16:06:53.870962+00:00",
+      "snapshot_sha256": "f42c3da1344b4d8b14e482122aab82da87366160c919a64af3d8c0a97cabde47",
+      "reviews": [
+        {
+          "id": 5149619162,
+          "at": "2026-09-09T04:06:53Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2848#pullrequestreview-5149619162"
+        },
+        {
+          "id": 5149652640,
+          "at": "2026-09-09T04:12:48Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2848#pullrequestreview-5149652640"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5595589689,
+          "at": "2026-09-09T04:02:17Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2848#issuecomment-5595589689"
+        },
+        {
+          "id": 5595671840,
+          "at": "2026-09-09T04:13:07Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2848#issuecomment-5595671840"
+        }
+      ]
+    },
+    {
+      "pr": 2849,
+      "url": "https://github.com/holon-run/holon/pull/2849",
+      "title": "fix: fail agent deletion closed when agent home is a symlink or escapes the agents root",
+      "local_first_attempt_at": "2026-09-09T05:56:20.042Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5150297998,
+        "at": "2026-09-09T05:56:25Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2849#pullrequestreview-5150297998"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-09T06:27:48Z",
+      "snapshot_at": "2026-09-12T16:06:53.870381+00:00",
+      "snapshot_sha256": "614a5e640aef8a19adb6f13a299ce3562c1805962cefed330d2eb027d6d28076",
+      "reviews": [
+        {
+          "id": 5150297998,
+          "at": "2026-09-09T05:56:25Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2849#pullrequestreview-5150297998"
+        },
+        {
+          "id": 5150368986,
+          "at": "2026-09-09T06:05:12Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2849#pullrequestreview-5150368986"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5596523321,
+          "at": "2026-09-09T05:54:08Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2849#issuecomment-5596523321"
+        },
+        {
+          "id": 5596668199,
+          "at": "2026-09-09T06:05:50Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2849#issuecomment-5596668199"
+        }
+      ]
+    },
+    {
+      "pr": 2851,
+      "url": "https://github.com/holon-run/holon/pull/2851",
+      "title": "feat: recreate fully deleted agent ids as new incarnations",
+      "local_first_attempt_at": "2026-09-09T08:29:44.936Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5151717482,
+        "at": "2026-09-09T08:29:47Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2851#pullrequestreview-5151717482"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-09T10:09:32Z",
+      "snapshot_at": "2026-09-12T16:06:49.350309+00:00",
+      "snapshot_sha256": "7b2f027da051510d7236be79e3ef5eaeef59bb5d18de2d5ef1593a00d4b14d81",
+      "reviews": [
+        {
+          "id": 5151664971,
+          "at": "2026-09-09T08:25:56Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2851#pullrequestreview-5151664971"
+        },
+        {
+          "id": 5151717482,
+          "at": "2026-09-09T08:29:47Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2851#pullrequestreview-5151717482"
+        },
+        {
+          "id": 5152390658,
+          "at": "2026-09-09T09:32:04Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2851#pullrequestreview-5152390658"
+        },
+        {
+          "id": 5152391090,
+          "at": "2026-09-09T09:32:06Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2851#pullrequestreview-5152391090"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5598566640,
+          "at": "2026-09-09T08:13:33Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2851#issuecomment-5598566640"
+        },
+        {
+          "id": 5598757144,
+          "at": "2026-09-09T08:26:31Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2851#issuecomment-5598757144"
+        },
+        {
+          "id": 5599656182,
+          "at": "2026-09-09T09:32:50Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2851#issuecomment-5599656182"
+        }
+      ]
+    },
+    {
+      "pr": 2853,
+      "url": "https://github.com/holon-run/holon/pull/2853",
+      "title": "chore: add crates.io publishing to the release pipeline",
+      "local_first_attempt_at": "2026-09-09T09:29:26.650Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5152366722,
+        "at": "2026-09-09T09:29:29Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2853#pullrequestreview-5152366722"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-09T14:07:20Z",
+      "snapshot_at": "2026-09-12T16:06:49.349693+00:00",
+      "snapshot_sha256": "1d39bc070e6a8b6b11686ae73cdcd4f3677d3f499eaceb7169d11f31b02d74cf",
+      "reviews": [
+        {
+          "id": 5152366722,
+          "at": "2026-09-09T09:29:29Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2853#pullrequestreview-5152366722"
+        },
+        {
+          "id": 5152391951,
+          "at": "2026-09-09T09:32:12Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2853#pullrequestreview-5152391951"
+        },
+        {
+          "id": 5152513275,
+          "at": "2026-09-09T09:42:04Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2853#pullrequestreview-5152513275"
+        },
+        {
+          "id": 5153063032,
+          "at": "2026-09-09T10:33:43Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2853#pullrequestreview-5153063032"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5599519693,
+          "at": "2026-09-09T09:21:38Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2853#issuecomment-5599519693"
+        },
+        {
+          "id": 5599655394,
+          "at": "2026-09-09T09:32:46Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2853#issuecomment-5599655394"
+        },
+        {
+          "id": 5600104826,
+          "at": "2026-09-09T10:06:08Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2853#issuecomment-5600104826"
+        },
+        {
+          "id": 5601796350,
+          "at": "2026-09-09T12:25:56Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2853#issuecomment-5601796350"
+        }
+      ]
+    },
+    {
+      "pr": 2854,
+      "url": "https://github.com/holon-run/holon/pull/2854",
+      "title": "fix: support detached work item completion",
+      "local_first_attempt_at": "2026-09-09T11:48:41.723Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5153821610,
+        "at": "2026-09-09T11:48:44Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2854#pullrequestreview-5153821610"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-09T15:51:54Z",
+      "snapshot_at": "2026-09-12T16:06:49.348958+00:00",
+      "snapshot_sha256": "8d515dbd062d3fe5a36ea8833f206bd69c38181ce552840bca54f99ebab5ae9e",
+      "reviews": [
+        {
+          "id": 5153522400,
+          "at": "2026-09-09T11:17:00Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2854#pullrequestreview-5153522400"
+        },
+        {
+          "id": 5153821610,
+          "at": "2026-09-09T11:48:44Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2854#pullrequestreview-5153821610"
+        },
+        {
+          "id": 5155739342,
+          "at": "2026-09-09T14:31:22Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2854#pullrequestreview-5155739342"
+        },
+        {
+          "id": 5156186120,
+          "at": "2026-09-09T15:08:23Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2854#pullrequestreview-5156186120"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5600690232,
+          "at": "2026-09-09T10:55:06Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2854#issuecomment-5600690232"
+        },
+        {
+          "id": 5600965234,
+          "at": "2026-09-09T11:18:09Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2854#issuecomment-5600965234"
+        },
+        {
+          "id": 5603409332,
+          "at": "2026-09-09T14:19:44Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2854#issuecomment-5603409332"
+        },
+        {
+          "id": 5604590407,
+          "at": "2026-09-09T15:41:12Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2854#issuecomment-5604590407"
+        }
+      ]
+    },
+    {
+      "pr": 2855,
+      "url": "https://github.com/holon-run/holon/pull/2855",
+      "title": "feat: show agent incarnation badge in web gui",
+      "local_first_attempt_at": "2026-09-09T12:05:25.661Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5153977513,
+        "at": "2026-09-09T12:05:28Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2855#pullrequestreview-5153977513"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-09T12:05:36Z",
+      "snapshot_at": "2026-09-12T16:06:49.348582+00:00",
+      "snapshot_sha256": "77b294456c1354824f13728f63ba6ed85a46f100a970f8d19cfc619e6141b322",
+      "reviews": [
+        {
+          "id": 5153425487,
+          "at": "2026-09-09T11:06:43Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2855#pullrequestreview-5153425487"
+        },
+        {
+          "id": 5153977513,
+          "at": "2026-09-09T12:05:28Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2855#pullrequestreview-5153977513"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5600716925,
+          "at": "2026-09-09T10:57:24Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2855#issuecomment-5600716925"
+        },
+        {
+          "id": 5600839857,
+          "at": "2026-09-09T11:07:34Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2855#issuecomment-5600839857"
+        }
+      ]
+    },
+    {
+      "pr": 2856,
+      "url": "https://github.com/holon-run/holon/pull/2856",
+      "title": "refactor: remove legacy agent identity surface",
+      "local_first_attempt_at": "2026-09-09T12:55:08.462Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5154523320,
+        "at": "2026-09-09T12:55:11Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2856#pullrequestreview-5154523320"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T01:32:51Z",
+      "snapshot_at": "2026-09-12T16:06:49.347798+00:00",
+      "snapshot_sha256": "7fc6cc32b3e9ceec1760bfabc3298f682aa92e46ed9ddfeccd3d3ecb6f8937ab",
+      "reviews": [
+        {
+          "id": 5154523320,
+          "at": "2026-09-09T12:55:11Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2856#pullrequestreview-5154523320"
+        },
+        {
+          "id": 5154614234,
+          "at": "2026-09-09T13:01:11Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2856#pullrequestreview-5154614234"
+        },
+        {
+          "id": 5161725593,
+          "at": "2026-09-10T01:30:42Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2856#pullrequestreview-5161725593"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5602078563,
+          "at": "2026-09-09T12:47:47Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2856#issuecomment-5602078563"
+        },
+        {
+          "id": 5602272620,
+          "at": "2026-09-09T13:02:16Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2856#issuecomment-5602272620"
+        },
+        {
+          "id": 5602346108,
+          "at": "2026-09-09T13:07:15Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2856#issuecomment-5602346108"
+        },
+        {
+          "id": 5611194364,
+          "at": "2026-09-10T01:16:57Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2856#issuecomment-5611194364"
+        },
+        {
+          "id": 5611305603,
+          "at": "2026-09-10T01:31:27Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2856#issuecomment-5611305603"
+        }
+      ]
+    },
+    {
+      "pr": 2862,
+      "url": "https://github.com/holon-run/holon/pull/2862",
+      "title": "fix: make projection gate capacity configurable and honor Retry-After in web GUI",
+      "local_first_attempt_at": "2026-09-10T05:46:12.254Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5163262534,
+        "at": "2026-09-10T05:58:04Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2862#pullrequestreview-5163262534"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T06:46:57Z",
+      "snapshot_at": "2026-09-12T16:06:49.347278+00:00",
+      "snapshot_sha256": "2120c60713e635779683b036680384a44634bb603eeca92eafbf60887b89a6be",
+      "reviews": [
+        {
+          "id": 5163177958,
+          "at": "2026-09-10T05:44:27Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2862#pullrequestreview-5163177958"
+        },
+        {
+          "id": 5163262534,
+          "at": "2026-09-10T05:58:04Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2862#pullrequestreview-5163262534"
+        },
+        {
+          "id": 5163324317,
+          "at": "2026-09-10T06:08:22Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2862#pullrequestreview-5163324317"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5613681833,
+          "at": "2026-09-10T05:31:38Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2862#issuecomment-5613681833"
+        },
+        {
+          "id": 5613792864,
+          "at": "2026-09-10T05:45:01Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2862#issuecomment-5613792864"
+        },
+        {
+          "id": 5613806304,
+          "at": "2026-09-10T05:46:39Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2862#issuecomment-5613806304"
+        },
+        {
+          "id": 5613939236,
+          "at": "2026-09-10T06:02:35Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2862#issuecomment-5613939236"
+        },
+        {
+          "id": 5613974767,
+          "at": "2026-09-10T06:06:36Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2862#issuecomment-5613974767"
+        }
+      ]
+    },
+    {
+      "pr": 2864,
+      "url": "https://github.com/holon-run/holon/pull/2864",
+      "title": "release: prepare v0.39.0",
+      "local_first_attempt_at": "2026-09-10T06:05:28.374Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5163307100,
+        "at": "2026-09-10T06:05:30Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2864#pullrequestreview-5163307100"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T06:43:17Z",
+      "snapshot_at": "2026-09-12T16:06:49.346913+00:00",
+      "snapshot_sha256": "639f8ff7828212409faa8c3e0c5f9210d6197f95b26f03e5685ea988606bd75f",
+      "reviews": [
+        {
+          "id": 5163307100,
+          "at": "2026-09-10T06:05:30Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2864#pullrequestreview-5163307100"
+        },
+        {
+          "id": 5163324910,
+          "at": "2026-09-10T06:08:28Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2864#pullrequestreview-5163324910"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5613919115,
+          "at": "2026-09-10T06:00:19Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2864#issuecomment-5613919115"
+        },
+        {
+          "id": 5614000695,
+          "at": "2026-09-10T06:09:19Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2864#issuecomment-5614000695"
+        },
+        {
+          "id": 5614010617,
+          "at": "2026-09-10T06:10:27Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2864#issuecomment-5614010617"
+        }
+      ]
+    },
+    {
+      "pr": 2867,
+      "url": "https://github.com/holon-run/holon/pull/2867",
+      "title": "fix: preserve runtime SQLite WAL sidecars",
+      "local_first_attempt_at": "2026-09-10T06:28:29.145Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5163456462,
+        "at": "2026-09-10T06:28:35Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2867#pullrequestreview-5163456462"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T07:08:28Z",
+      "snapshot_at": "2026-09-12T16:06:49.346503+00:00",
+      "snapshot_sha256": "16f2a7140b5b0d9f44e96db9b2d34b42fda7f06cebc8f73858455dd00bccdd93",
+      "reviews": [
+        {
+          "id": 5163456462,
+          "at": "2026-09-10T06:28:35Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2867#pullrequestreview-5163456462"
+        },
+        {
+          "id": 5163513943,
+          "at": "2026-09-10T06:37:14Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2867#pullrequestreview-5163513943"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5614129491,
+          "at": "2026-09-10T06:23:17Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2867#issuecomment-5614129491"
+        },
+        {
+          "id": 5614267061,
+          "at": "2026-09-10T06:37:46Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2867#issuecomment-5614267061"
+        }
+      ]
+    },
+    {
+      "pr": 2868,
+      "url": "https://github.com/holon-run/holon/pull/2868",
+      "title": "feat: allow peer invocation of independent agents",
+      "local_first_attempt_at": "2026-09-10T07:06:17.805Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5163772003,
+        "at": "2026-09-10T07:06:32Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2868#pullrequestreview-5163772003"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T08:55:01Z",
+      "snapshot_at": "2026-09-12T16:06:49.345982+00:00",
+      "snapshot_sha256": "2802a8223f3b19439e5c99edd105d201ee52cc0714eee9472bc05ac260e98652",
+      "reviews": [
+        {
+          "id": 5163772003,
+          "at": "2026-09-10T07:06:32Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2868#pullrequestreview-5163772003"
+        },
+        {
+          "id": 5163850131,
+          "at": "2026-09-10T07:14:06Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2868#pullrequestreview-5163850131"
+        },
+        {
+          "id": 5164073049,
+          "at": "2026-09-10T07:34:42Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2868#pullrequestreview-5164073049"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5614496284,
+          "at": "2026-09-10T07:00:41Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2868#issuecomment-5614496284"
+        },
+        {
+          "id": 5614652248,
+          "at": "2026-09-10T07:14:42Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2868#issuecomment-5614652248"
+        },
+        {
+          "id": 5615022166,
+          "at": "2026-09-10T07:46:57Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2868#issuecomment-5615022166"
+        },
+        {
+          "id": 5615039863,
+          "at": "2026-09-10T07:48:23Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2868#issuecomment-5615039863"
+        }
+      ]
+    },
+    {
+      "pr": 2869,
+      "url": "https://github.com/holon-run/holon/pull/2869",
+      "title": "feat(web): stop the current turn from the chat composer",
+      "local_first_attempt_at": "2026-09-10T08:39:36.203Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5164828630,
+        "at": "2026-09-10T08:39:39Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2869#pullrequestreview-5164828630"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T09:12:20Z",
+      "snapshot_at": "2026-09-12T16:06:49.345340+00:00",
+      "snapshot_sha256": "2f3dd18693e95d0fd84885ed2f3bb6273aa9d9e8aad68ba6c9ca98f902ef68e8",
+      "reviews": [
+        {
+          "id": 5164828630,
+          "at": "2026-09-10T08:39:39Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2869#pullrequestreview-5164828630"
+        },
+        {
+          "id": 5164860830,
+          "at": "2026-09-10T08:42:36Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2869#pullrequestreview-5164860830"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5615616067,
+          "at": "2026-09-10T08:32:35Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2869#issuecomment-5615616067"
+        },
+        {
+          "id": 5615755971,
+          "at": "2026-09-10T08:43:06Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2869#issuecomment-5615755971"
+        }
+      ]
+    },
+    {
+      "pr": 2870,
+      "url": "https://github.com/holon-run/holon/pull/2870",
+      "title": "feat: improve Chinese PDF generation guidance",
+      "local_first_attempt_at": "2026-09-10T09:07:28.029Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5165107989,
+        "at": "2026-09-10T09:07:35Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2870#pullrequestreview-5165107989"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T09:08:10Z",
+      "snapshot_at": "2026-09-12T16:06:45.730990+00:00",
+      "snapshot_sha256": "6e11bed2996abaa31562a9e9c0668210ab62d25509b56450c0a5cca8a7f545aa",
+      "reviews": [
+        {
+          "id": 5165072162,
+          "at": "2026-09-10T09:03:38Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2870#pullrequestreview-5165072162"
+        },
+        {
+          "id": 5165107989,
+          "at": "2026-09-10T09:07:35Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2870#pullrequestreview-5165107989"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5615913206,
+          "at": "2026-09-10T08:55:16Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2870#issuecomment-5615913206"
+        },
+        {
+          "id": 5616030264,
+          "at": "2026-09-10T09:04:44Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2870#issuecomment-5616030264"
+        }
+      ]
+    },
+    {
+      "pr": 2871,
+      "url": "https://github.com/holon-run/holon/pull/2871",
+      "title": "fix: clarify delivery, skills, and docs guidance",
+      "local_first_attempt_at": "2026-09-10T09:46:20.467Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5165485308,
+        "at": "2026-09-10T09:46:23Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2871#pullrequestreview-5165485308"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T13:07:22Z",
+      "snapshot_at": "2026-09-12T16:06:45.730481+00:00",
+      "snapshot_sha256": "6744662be7feeaad7d948c8fb0db34573e1298aab8a80ff0604be14684ddacbd",
+      "reviews": [
+        {
+          "id": 5165485308,
+          "at": "2026-09-10T09:46:23Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2871#pullrequestreview-5165485308"
+        },
+        {
+          "id": 5165842858,
+          "at": "2026-09-10T10:19:36Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2871#pullrequestreview-5165842858"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5616519617,
+          "at": "2026-09-10T09:42:13Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2871#issuecomment-5616519617"
+        },
+        {
+          "id": 5616802908,
+          "at": "2026-09-10T10:03:36Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2871#issuecomment-5616802908"
+        },
+        {
+          "id": 5616818374,
+          "at": "2026-09-10T10:04:34Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2871#issuecomment-5616818374"
+        },
+        {
+          "id": 5617150866,
+          "at": "2026-09-10T10:28:15Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2871#issuecomment-5617150866"
+        },
+        {
+          "id": 5618727991,
+          "at": "2026-09-10T12:32:49Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2871#issuecomment-5618727991"
+        }
+      ]
+    },
+    {
+      "pr": 2872,
+      "url": "https://github.com/holon-run/holon/pull/2872",
+      "title": "fix: report agent rename eligibility in identity views (restore Web GUI rename button)",
+      "local_first_attempt_at": "2026-09-10T10:36:48.554Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5166000066,
+        "at": "2026-09-10T10:36:51Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2872#pullrequestreview-5166000066"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T12:02:13Z",
+      "snapshot_at": "2026-09-12T16:06:45.730092+00:00",
+      "snapshot_sha256": "c665ba51e080e9ba735b95869dfa5e1ed9e3b33f9c1eb0d5f2fd085a415b3a72",
+      "reviews": [
+        {
+          "id": 5165784659,
+          "at": "2026-09-10T10:13:52Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2872#pullrequestreview-5165784659"
+        },
+        {
+          "id": 5166000066,
+          "at": "2026-09-10T10:36:51Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2872#pullrequestreview-5166000066"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5616799644,
+          "at": "2026-09-10T10:03:23Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2872#issuecomment-5616799644"
+        },
+        {
+          "id": 5616957782,
+          "at": "2026-09-10T10:14:13Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2872#issuecomment-5616957782"
+        },
+        {
+          "id": 5618149410,
+          "at": "2026-09-10T11:45:41Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2872#issuecomment-5618149410"
+        }
+      ]
+    },
+    {
+      "pr": 2878,
+      "url": "https://github.com/holon-run/holon/pull/2878",
+      "title": "fix: isolate cross-agent delivery execution identities",
+      "local_first_attempt_at": "2026-09-10T16:19:31.893Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5169623942,
+        "at": "2026-09-10T16:19:33Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2878#pullrequestreview-5169623942"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T17:00:29Z",
+      "snapshot_at": "2026-09-12T16:06:45.729740+00:00",
+      "snapshot_sha256": "b30e50e515694f3c4421a952212cc257445d8f0ffac143822c495c9f04314302",
+      "reviews": [
+        {
+          "id": 5169623942,
+          "at": "2026-09-10T16:19:33Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2878#pullrequestreview-5169623942"
+        },
+        {
+          "id": 5169707001,
+          "at": "2026-09-10T16:28:20Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2878#pullrequestreview-5169707001"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5621843453,
+          "at": "2026-09-10T16:15:59Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2878#issuecomment-5621843453"
+        },
+        {
+          "id": 5622012493,
+          "at": "2026-09-10T16:29:00Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2878#issuecomment-5622012493"
+        }
+      ]
+    },
+    {
+      "pr": 2879,
+      "url": "https://github.com/holon-run/holon/pull/2879",
+      "title": "fix: 删除周期性 WorkItem 进度催更",
+      "local_first_attempt_at": "2026-09-10T16:45:23.392Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5169889147,
+        "at": "2026-09-10T16:45:25Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2879#pullrequestreview-5169889147"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-10T17:21:54Z",
+      "snapshot_at": "2026-09-12T16:06:45.729404+00:00",
+      "snapshot_sha256": "174831b702d64bb6487c4291837bf727433c1330f0c7140a1f3aebaeba0a8598",
+      "reviews": [
+        {
+          "id": 5169889147,
+          "at": "2026-09-10T16:45:25Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2879#pullrequestreview-5169889147"
+        },
+        {
+          "id": 5170010228,
+          "at": "2026-09-10T16:57:58Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2879#pullrequestreview-5170010228"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5622164724,
+          "at": "2026-09-10T16:41:11Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2879#issuecomment-5622164724"
+        },
+        {
+          "id": 5622378669,
+          "at": "2026-09-10T16:58:35Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2879#issuecomment-5622378669"
+        }
+      ]
+    },
+    {
+      "pr": 2880,
+      "url": "https://github.com/holon-run/holon/pull/2880",
+      "title": "chore: refresh models.dev snapshot, artifact, and supplement",
+      "local_first_attempt_at": "2026-09-11T00:44:43.626Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5173806467,
+        "at": "2026-09-11T00:44:45Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2880#pullrequestreview-5173806467"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T00:56:50Z",
+      "snapshot_at": "2026-09-12T16:06:45.729135+00:00",
+      "snapshot_sha256": "7abaa13269bc1b8228c42b7535219aaa2cbb23d86a62f44a5da2f188ccab6e3b",
+      "reviews": [
+        {
+          "id": 5173806467,
+          "at": "2026-09-11T00:44:45Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2880#pullrequestreview-5173806467"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5627155539,
+          "at": "2026-09-10T23:58:09Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2880#issuecomment-5627155539"
+        }
+      ]
+    },
+    {
+      "pr": 2882,
+      "url": "https://github.com/holon-run/holon/pull/2882",
+      "title": "test: make real-daemon web e2e self-contained with a stub provider",
+      "local_first_attempt_at": "2026-09-11T01:02:03.073Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5173928864,
+        "at": "2026-09-11T01:02:06Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2882#pullrequestreview-5173928864"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T01:06:57Z",
+      "snapshot_at": "2026-09-12T16:06:45.728762+00:00",
+      "snapshot_sha256": "527cd962578ab45ff6aa185489ed7df53a30e3edef19c35542cf2d68b9a785a5",
+      "reviews": [
+        {
+          "id": 5173928252,
+          "at": "2026-09-11T01:02:00Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2882#pullrequestreview-5173928252"
+        },
+        {
+          "id": 5173928864,
+          "at": "2026-09-11T01:02:06Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2882#pullrequestreview-5173928864"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5627681391,
+          "at": "2026-09-11T00:51:27Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2882#issuecomment-5627681391"
+        },
+        {
+          "id": 5627776587,
+          "at": "2026-09-11T01:02:30Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2882#issuecomment-5627776587"
+        }
+      ]
+    },
+    {
+      "pr": 2884,
+      "url": "https://github.com/holon-run/holon/pull/2884",
+      "title": "ci: run real-daemon web e2e on schedule and dispatch only",
+      "local_first_attempt_at": "2026-09-11T01:15:38.132Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5174014329,
+        "at": "2026-09-11T01:15:40Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2884#pullrequestreview-5174014329"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T01:27:14Z",
+      "snapshot_at": "2026-09-12T16:06:45.728426+00:00",
+      "snapshot_sha256": "f3348b304a9a9e5c0c57f01a1cd2d1950fc3bd36a39a7dec09c42a1b2ce8372b",
+      "reviews": [
+        {
+          "id": 5174014329,
+          "at": "2026-09-11T01:15:40Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2884#pullrequestreview-5174014329"
+        },
+        {
+          "id": 5174052512,
+          "at": "2026-09-11T01:22:29Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2884#pullrequestreview-5174052512"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5627878179,
+          "at": "2026-09-11T01:13:21Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2884#issuecomment-5627878179"
+        },
+        {
+          "id": 5627964741,
+          "at": "2026-09-11T01:23:04Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2884#issuecomment-5627964741"
+        }
+      ]
+    },
+    {
+      "pr": 2885,
+      "url": "https://github.com/holon-run/holon/pull/2885",
+      "title": "fix: bind existing invocations to delivery execution",
+      "local_first_attempt_at": "2026-09-11T01:26:00.343Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5174068222,
+        "at": "2026-09-11T01:26:02Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2885#pullrequestreview-5174068222"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T01:56:11Z",
+      "snapshot_at": "2026-09-12T16:06:45.728030+00:00",
+      "snapshot_sha256": "764f2cea25808935332c1fa9fb35a1c681fae1461b3c514f9d3d5d29d81aac1e",
+      "reviews": [
+        {
+          "id": 5174064787,
+          "at": "2026-09-11T01:25:15Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2885#pullrequestreview-5174064787"
+        },
+        {
+          "id": 5174068222,
+          "at": "2026-09-11T01:26:02Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2885#pullrequestreview-5174068222"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5627907871,
+          "at": "2026-09-11T01:16:25Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2885#issuecomment-5627907871"
+        },
+        {
+          "id": 5627984340,
+          "at": "2026-09-11T01:25:33Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2885#issuecomment-5627984340"
+        }
+      ]
+    },
+    {
+      "pr": 2886,
+      "url": "https://github.com/holon-run/holon/pull/2886",
+      "title": "fix: show agent display name in sidebar agent list",
+      "local_first_attempt_at": "2026-09-11T03:04:04.916Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5174597177,
+        "at": "2026-09-11T03:04:10Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2886#pullrequestreview-5174597177"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T03:11:52Z",
+      "snapshot_at": "2026-09-12T16:06:45.727465+00:00",
+      "snapshot_sha256": "43dc2e0e71af2dd65c4fb39573348a9d9aed965d4f288bd993171292c07a0a93",
+      "reviews": [
+        {
+          "id": 5174597177,
+          "at": "2026-09-11T03:04:10Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2886#pullrequestreview-5174597177"
+        },
+        {
+          "id": 5174623215,
+          "at": "2026-09-11T03:10:08Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2886#pullrequestreview-5174623215"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5628789040,
+          "at": "2026-09-11T02:59:58Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2886#issuecomment-5628789040"
+        },
+        {
+          "id": 5628870557,
+          "at": "2026-09-11T03:10:30Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2886#issuecomment-5628870557"
+        }
+      ]
+    },
+    {
+      "pr": 2889,
+      "url": "https://github.com/holon-run/holon/pull/2889",
+      "title": "feat: add read-side performance attribution",
+      "local_first_attempt_at": "2026-09-11T04:34:43.781Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5174994108,
+        "at": "2026-09-11T04:34:45Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2889#pullrequestreview-5174994108"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T10:04:10Z",
+      "snapshot_at": "2026-09-12T16:06:42.413564+00:00",
+      "snapshot_sha256": "36417cfdffe136f802bb0f7a19f753d92ed50c41126e2161040cf0241e49a00e",
+      "reviews": [
+        {
+          "id": 5174994108,
+          "at": "2026-09-11T04:34:45Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2889#pullrequestreview-5174994108"
+        },
+        {
+          "id": 5175021753,
+          "at": "2026-09-11T04:40:40Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2889#pullrequestreview-5175021753"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5629508115,
+          "at": "2026-09-11T04:31:06Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2889#issuecomment-5629508115"
+        },
+        {
+          "id": 5629581691,
+          "at": "2026-09-11T04:41:15Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2889#issuecomment-5629581691"
+        },
+        {
+          "id": 5629853426,
+          "at": "2026-09-11T05:17:54Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2889#issuecomment-5629853426"
+        },
+        {
+          "id": 5630525564,
+          "at": "2026-09-11T06:39:59Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2889#issuecomment-5630525564"
+        },
+        {
+          "id": 5631203038,
+          "at": "2026-09-11T07:48:34Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2889#issuecomment-5631203038"
+        }
+      ]
+    },
+    {
+      "pr": 2890,
+      "url": "https://github.com/holon-run/holon/pull/2890",
+      "title": "fix: stabilize runtime DB sidecar FD inspection",
+      "local_first_attempt_at": "2026-09-11T04:38:22.436Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5175009295,
+        "at": "2026-09-11T04:38:24Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2890#pullrequestreview-5175009295"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T05:07:13Z",
+      "snapshot_at": "2026-09-12T16:06:42.413217+00:00",
+      "snapshot_sha256": "00734cfbcc058eee1328f9066c9f29214e8da48b2ea52becf8a33956786aa6d4",
+      "reviews": [
+        {
+          "id": 5175009295,
+          "at": "2026-09-11T04:38:24Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2890#pullrequestreview-5175009295"
+        },
+        {
+          "id": 5175069311,
+          "at": "2026-09-11T04:50:10Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2890#pullrequestreview-5175069311"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5629527010,
+          "at": "2026-09-11T04:33:45Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2890#issuecomment-5629527010"
+        },
+        {
+          "id": 5629650872,
+          "at": "2026-09-11T04:50:50Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2890#issuecomment-5629650872"
+        }
+      ]
+    },
+    {
+      "pr": 2891,
+      "url": "https://github.com/holon-run/holon/pull/2891",
+      "title": "perf: scope wait-condition loads to agent instead of full-table scans",
+      "local_first_attempt_at": "2026-09-11T05:41:25.049Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5175318180,
+        "at": "2026-09-11T05:41:28Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2891#pullrequestreview-5175318180"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T06:20:59Z",
+      "snapshot_at": "2026-09-12T16:06:42.412846+00:00",
+      "snapshot_sha256": "ac27b24f2ccd54ba5069d05346c95c37bdf308f7ddc850878ecf5f985f804023",
+      "reviews": [
+        {
+          "id": 5175318180,
+          "at": "2026-09-11T05:41:28Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2891#pullrequestreview-5175318180"
+        },
+        {
+          "id": 5175356442,
+          "at": "2026-09-11T05:48:37Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2891#pullrequestreview-5175356442"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5630003739,
+          "at": "2026-09-11T05:37:27Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2891#issuecomment-5630003739"
+        },
+        {
+          "id": 5630095346,
+          "at": "2026-09-11T05:49:11Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2891#issuecomment-5630095346"
+        }
+      ]
+    },
+    {
+      "pr": 2892,
+      "url": "https://github.com/holon-run/holon/pull/2892",
+      "title": "perf: skip runtime db sidecar fd scans when identities are unchanged",
+      "local_first_attempt_at": "2026-09-11T07:13:41.753Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5175901773,
+        "at": "2026-09-11T07:13:44Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2892#pullrequestreview-5175901773"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T08:30:35Z",
+      "snapshot_at": "2026-09-12T16:06:42.411140+00:00",
+      "snapshot_sha256": "f901fb9b7afd6bb6832ea506e93f65745e21bf47ced87104d1cb0bee7be8afc0",
+      "reviews": [
+        {
+          "id": 5175882681,
+          "at": "2026-09-11T07:10:55Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2892#pullrequestreview-5175882681"
+        },
+        {
+          "id": 5175901773,
+          "at": "2026-09-11T07:13:44Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2892#pullrequestreview-5175901773"
+        },
+        {
+          "id": 5175951138,
+          "at": "2026-09-11T07:20:29Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2892#pullrequestreview-5175951138"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5630717669,
+          "at": "2026-09-11T07:00:17Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2892#issuecomment-5630717669"
+        },
+        {
+          "id": 5630828194,
+          "at": "2026-09-11T07:11:15Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2892#issuecomment-5630828194"
+        },
+        {
+          "id": 5630875789,
+          "at": "2026-09-11T07:16:01Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2892#issuecomment-5630875789"
+        },
+        {
+          "id": 5630925174,
+          "at": "2026-09-11T07:20:59Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2892#issuecomment-5630925174"
+        },
+        {
+          "id": 5630928839,
+          "at": "2026-09-11T07:21:20Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2892#issuecomment-5630928839"
+        }
+      ]
+    },
+    {
+      "pr": 2893,
+      "url": "https://github.com/holon-run/holon/pull/2893",
+      "title": "fix: cap sidebar agent rows at two lines with summarized work objectives",
+      "local_first_attempt_at": "2026-09-11T08:02:18.500Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5176277175,
+        "at": "2026-09-11T08:02:23Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2893#pullrequestreview-5176277175"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T08:09:45Z",
+      "snapshot_at": "2026-09-12T16:06:42.410769+00:00",
+      "snapshot_sha256": "8a09cf975a2901d5116505b73d84cc7f29e0f091b7419bf1ed50161fcdb22610",
+      "reviews": [
+        {
+          "id": 5176277175,
+          "at": "2026-09-11T08:02:23Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2893#pullrequestreview-5176277175"
+        },
+        {
+          "id": 5176328586,
+          "at": "2026-09-11T08:08:50Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2893#pullrequestreview-5176328586"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5631304669,
+          "at": "2026-09-11T07:58:23Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2893#issuecomment-5631304669"
+        },
+        {
+          "id": 5631397426,
+          "at": "2026-09-11T08:07:09Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2893#issuecomment-5631397426"
+        },
+        {
+          "id": 5631423242,
+          "at": "2026-09-11T08:09:23Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2893#issuecomment-5631423242"
+        }
+      ]
+    },
+    {
+      "pr": 2894,
+      "url": "https://github.com/holon-run/holon/pull/2894",
+      "title": "fix: bound timer wake admission",
+      "local_first_attempt_at": "2026-09-11T08:59:43.526Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5176790610,
+        "at": "2026-09-11T08:59:46Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2894#pullrequestreview-5176790610"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T09:24:30Z",
+      "snapshot_at": "2026-09-12T16:06:42.410414+00:00",
+      "snapshot_sha256": "3f721e87d09dd566f82087885ac67f9065631b5e9a415a3af452f2145e8d5aff",
+      "reviews": [
+        {
+          "id": 5176790610,
+          "at": "2026-09-11T08:59:46Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2894#pullrequestreview-5176790610"
+        },
+        {
+          "id": 5176852428,
+          "at": "2026-09-11T09:05:20Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2894#pullrequestreview-5176852428"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5631900589,
+          "at": "2026-09-11T08:49:51Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2894#issuecomment-5631900589"
+        },
+        {
+          "id": 5632122149,
+          "at": "2026-09-11T09:05:43Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2894#issuecomment-5632122149"
+        }
+      ]
+    },
+    {
+      "pr": 2897,
+      "url": "https://github.com/holon-run/holon/pull/2897",
+      "title": "fix: activate timer-only owners during startup recovery",
+      "local_first_attempt_at": "2026-09-11T14:21:46.798Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5179744696,
+        "at": "2026-09-11T14:21:49Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2897#pullrequestreview-5179744696"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T14:22:01Z",
+      "snapshot_at": "2026-09-12T16:06:42.410053+00:00",
+      "snapshot_sha256": "2f80e0fc2b12274f653596fdc4eca1ab827bd66be70a57570b79268a8ca2edee",
+      "reviews": [
+        {
+          "id": 5178601502,
+          "at": "2026-09-11T12:26:48Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2897#pullrequestreview-5178601502"
+        },
+        {
+          "id": 5179744696,
+          "at": "2026-09-11T14:21:49Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2897#pullrequestreview-5179744696"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5634248074,
+          "at": "2026-09-11T12:11:10Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2897#issuecomment-5634248074"
+        },
+        {
+          "id": 5634426910,
+          "at": "2026-09-11T12:27:28Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2897#issuecomment-5634426910"
+        }
+      ]
+    },
+    {
+      "pr": 2898,
+      "url": "https://github.com/holon-run/holon/pull/2898",
+      "title": "fix: preserve semantic tool results under projection budgets",
+      "local_first_attempt_at": "2026-09-11T14:42:11.822Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5179959853,
+        "at": "2026-09-11T14:42:14Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2898#pullrequestreview-5179959853"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T16:15:08Z",
+      "snapshot_at": "2026-09-12T16:06:42.409605+00:00",
+      "snapshot_sha256": "5865e4d2e54ea7ab195a1091bbde9acc781d40517826b4942ad61c7e0c00230c",
+      "reviews": [
+        {
+          "id": 5179959853,
+          "at": "2026-09-11T14:42:14Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2898#pullrequestreview-5179959853"
+        },
+        {
+          "id": 5180003617,
+          "at": "2026-09-11T14:46:27Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2898#pullrequestreview-5180003617"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5636026761,
+          "at": "2026-09-11T14:33:22Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2898#issuecomment-5636026761"
+        },
+        {
+          "id": 5636220777,
+          "at": "2026-09-11T14:46:56Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2898#issuecomment-5636220777"
+        },
+        {
+          "id": 5636424884,
+          "at": "2026-09-11T15:02:16Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2898#issuecomment-5636424884"
+        },
+        {
+          "id": 5636813726,
+          "at": "2026-09-11T15:32:39Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2898#issuecomment-5636813726"
+        }
+      ]
+    },
+    {
+      "pr": 2899,
+      "url": "https://github.com/holon-run/holon/pull/2899",
+      "title": "release: extend v0.39.0 release notes",
+      "local_first_attempt_at": "2026-09-11T16:35:08.650Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5181145833,
+        "at": "2026-09-11T16:35:11Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2899#pullrequestreview-5181145833"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T16:42:14Z",
+      "snapshot_at": "2026-09-12T16:06:42.409268+00:00",
+      "snapshot_sha256": "583b704daf784dceda0d8483762a1d9465ec62233dce8cf63eaee85c803d8638",
+      "reviews": [
+        {
+          "id": 5181145833,
+          "at": "2026-09-11T16:35:11Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2899#pullrequestreview-5181145833"
+        },
+        {
+          "id": 5181198269,
+          "at": "2026-09-11T16:40:34Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2899#pullrequestreview-5181198269"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5637540352,
+          "at": "2026-09-11T16:31:33Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2899#issuecomment-5637540352"
+        },
+        {
+          "id": 5637647915,
+          "at": "2026-09-11T16:40:56Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2899#issuecomment-5637647915"
+        }
+      ]
+    },
+    {
+      "pr": 2900,
+      "url": "https://github.com/holon-run/holon/pull/2900",
+      "title": "test: accept canonical relation databases in the release upgrade E2E",
+      "local_first_attempt_at": "2026-09-11T17:18:40.853Z",
+      "local_first_attempt_kind": "review",
+      "nearest_public_event": {
+        "id": 5181569805,
+        "at": "2026-09-11T17:18:43Z",
+        "account": "jolestar",
+        "url": "https://github.com/holon-run/holon/pull/2900#pullrequestreview-5181569805"
+      },
+      "state": "MERGED",
+      "merged_at": "2026-09-11T17:27:57Z",
+      "snapshot_at": "2026-09-12T16:06:42.408777+00:00",
+      "snapshot_sha256": "f9058666dd2688ebf6e24a361984e962ffaff5a4c72ff92166e350e79604a2f1",
+      "reviews": [
+        {
+          "id": 5181569805,
+          "at": "2026-09-11T17:18:43Z",
+          "account": "jolestar",
+          "url": "https://github.com/holon-run/holon/pull/2900#pullrequestreview-5181569805"
+        }
+      ],
+      "comments": [
+        {
+          "id": 5638047415,
+          "at": "2026-09-11T17:16:14Z",
+          "account": "vercel",
+          "url": "https://github.com/holon-run/holon/pull/2900#issuecomment-5638047415"
+        },
+        {
+          "id": 5638164583,
+          "at": "2026-09-11T17:25:51Z",
+          "account": "holonbot",
+          "url": "https://github.com/holon-run/holon/pull/2900#issuecomment-5638164583"
+        }
+      ]
+    }
+  ]
+}
