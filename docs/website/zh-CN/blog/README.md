@@ -39,7 +39,7 @@ Holon 仍处于早期阶段。这里用于解释运行时背后的问题，记�
 <!-- INDEX:START -->
 
 - [Holon 是什么：让多个 Agent 在你的工作环境里持续做事](./what-is-holon.md)
-  从交代任务、查看进展到等待后继续，认识 Holon 这套供多个 Agent 持续工作的本地工作台，以及它在远程开发和团队协作中的用法。中文审阅稿，未发布。
+  把反复发生的工作交给固定角色，在后台跟进，需要时接入。通过持续审阅的例子，认识 Holon 这套本地工作台及其在远程开发和团队协作中的用法。中文审阅稿，未发布。
   <!-- mdorigin:index kind=article -->
 
 - [为什么 Agent 的工作不应止于一次聊天](./why-agent-work-should-outlive-the-chat.md)
