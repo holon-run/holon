@@ -277,7 +277,7 @@ mod tests {
             .contains("there is no SendAgentMessage tool"));
         assert!(section
             .content
-            .contains("A terminal task is historical result or diagnostic evidence"));
+            .contains("A terminal task is a historical result or diagnostic evidence"));
         assert!(section
             .content
             .contains("a new InvokeAgent call to the existing agent"));
@@ -485,7 +485,7 @@ mod tests {
         assert!(section.content.contains("normally update one WorkItem"));
         assert!(section
             .content
-            .contains("Creating a successor does not switch execution"));
+            .contains("Creating a successor makes it a runnable scheduler candidate"));
         assert!(section
             .content
             .contains("authorized, recoverable state before that operation"));
