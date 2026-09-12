@@ -1733,7 +1733,7 @@ impl RuntimeTransitionRepository<'_> {
     }
 }
 
-fn validate_wait_condition_expectation_tx(
+pub(super) fn validate_wait_condition_expectation_tx(
     tx: &Transaction<'_>,
     expected: &WaitConditionExpectation,
 ) -> Result<()> {
@@ -2229,7 +2229,10 @@ fn apply_agent_state_mutation_tx(
     Ok(true)
 }
 
-fn validate_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutation) -> Result<()> {
+pub(super) fn validate_work_item_mutation_tx(
+    tx: &Transaction<'_>,
+    mutation: &WorkItemMutation,
+) -> Result<()> {
     validate_work_item_completion_contract(mutation.record())?;
     match mutation {
         WorkItemMutation::Insert { record } => {
@@ -2360,7 +2363,10 @@ fn validate_work_item_state_transition(
     Ok(())
 }
 
-fn apply_work_item_mutation_tx(tx: &Transaction<'_>, mutation: &WorkItemMutation) -> Result<bool> {
+pub(super) fn apply_work_item_mutation_tx(
+    tx: &Transaction<'_>,
+    mutation: &WorkItemMutation,
+) -> Result<bool> {
     match mutation {
         WorkItemMutation::Insert { record } => {
             let existing = tx
@@ -2399,7 +2405,10 @@ fn validate_task_tx(tx: &Transaction<'_>, incoming: &TaskRecord) -> Result<()> {
     Ok(())
 }
 
-fn validate_wait_condition_tx(tx: &Transaction<'_>, incoming: &WaitConditionRecord) -> Result<()> {
+pub(super) fn validate_wait_condition_tx(
+    tx: &Transaction<'_>,
+    incoming: &WaitConditionRecord,
+) -> Result<()> {
     let existing = tx
         .query_row(
             "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1",
@@ -2633,7 +2642,7 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
     Ok(())
 }
 
-fn inject_fault(
+pub(super) fn inject_fault(
     configured: Option<TransitionFaultPoint>,
     current: TransitionFaultPoint,
 ) -> Result<()> {

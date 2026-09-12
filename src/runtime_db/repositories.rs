@@ -12,6 +12,10 @@ use crate::runtime_db::agent_relations::{
 };
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
+use crate::runtime_db::transitions::{
+    apply_work_item_mutation_tx, inject_fault, validate_wait_condition_expectation_tx,
+    validate_wait_condition_tx, validate_work_item_mutation_tx,
+};
 use crate::runtime_db::types::*;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::runtime_db::{
@@ -2381,6 +2385,15 @@ impl TimerRepository<'_> {
     }
 
     pub fn fire(&self, command: &TimerFire) -> Result<TimerFireResult> {
+        self.fire_with_wait(command, None, None)
+    }
+
+    pub(crate) fn fire_with_wait(
+        &self,
+        command: &TimerFire,
+        wait_transition: Option<&crate::runtime_db::transitions::QueueWaitTransition>,
+        fault: Option<crate::runtime_db::transitions::TransitionFaultPoint>,
+    ) -> Result<TimerFireResult> {
         self.db.transaction(|tx| {
             if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
                 || command.expected.status != TimerStatus::Active
@@ -2433,6 +2446,17 @@ impl TimerRepository<'_> {
             {
                 return Err(anyhow!("invalid timer wake message or queue entry"));
             }
+            if let Some(wait_transition) = wait_transition {
+                validate_wait_condition_expectation_tx(tx, &wait_transition.expected)?;
+                validate_wait_condition_tx(tx, &wait_transition.record)?;
+                if let Some(work_item) = wait_transition.work_item.as_ref() {
+                    validate_work_item_mutation_tx(tx, work_item)?;
+                }
+            }
+            inject_fault(
+                fault,
+                crate::runtime_db::transitions::TransitionFaultPoint::AfterValidation,
+            )?;
             let (message, inserted) = append_message_tx(tx, &command.message)?;
             if inserted {
                 insert_runtime_index_changes_tx(tx, &[RuntimeIndexChange::for_message(&message)])?;
@@ -2445,7 +2469,18 @@ impl TimerRepository<'_> {
                  VALUES (?1, ?2, ?3, 'pending', ?4, ?4)",
                 params![command.record.id, command.message.id, command.record.fire_count as i64, now],
             )?;
+            if let Some(wait_transition) = wait_transition {
+                upsert_wait_condition_tx(tx, &wait_transition.record)?;
+                if let Some(work_item) = wait_transition.work_item.as_ref() {
+                    apply_work_item_mutation_tx(tx, work_item)?;
+                }
+                insert_runtime_index_changes_tx(tx, &wait_transition.index_changes)?;
+            }
             upsert_agent_state_tx(tx, &command.agent_state.1)?;
+            inject_fault(
+                fault,
+                crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+            )?;
             Ok(TimerFireResult {
                 advanced: true,
                 wake_created: true,

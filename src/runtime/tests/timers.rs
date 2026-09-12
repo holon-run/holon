@@ -213,11 +213,12 @@ async fn timer_message_binds_the_unique_matching_wait_work_item() {
         .create_work_item("wait for timer".into(), None, None, Vec::new())
         .await
         .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
     let timer = runtime
         .schedule_timer(100, None, Some("bound timer".into()))
         .await
         .unwrap();
-    runtime
+    let registration = runtime
         .register_wait_for(
             "default",
             Some(work.id.clone()),
@@ -242,6 +243,108 @@ async fn timer_message_binds_the_unique_matching_wait_work_item() {
         .expect("timer tick should be queued");
     assert_eq!(message.work_item_id.as_deref(), Some(work.id.as_str()));
     assert_eq!(message.source_refs.get("timer_id"), Some(&timer.id));
+    let triggered = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|condition| condition.id == registration.condition.id)
+        .expect("timer wait should remain durable");
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    assert_eq!(
+        triggered.trigger_message_id(),
+        Some(message.id.as_str()),
+        "timer fire must trigger the exact wait in the enqueue transaction"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn timer_fire_fault_rolls_back_the_wait_and_wake_transaction() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("timer done")),
+        "default".into(),
+        context_config(),
+        clock,
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("atomic timer wake".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let mut timer = runtime
+        .schedule_timer(10_000, None, Some("atomic timer".into()))
+        .await
+        .unwrap();
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "waiting for atomic timer".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+    );
+    let error = runtime.fire_timer_record(&mut timer).await.unwrap_err();
+    assert_injected_transition_fault(&error);
+    let persisted = runtime
+        .recent_timers(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == timer.id)
+        .unwrap();
+    assert_eq!(persisted.status, TimerStatus::Active);
+    assert_eq!(persisted.fire_count, 0);
+    assert!(runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .is_none());
+    assert!(!runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .iter()
+        .any(|message| message.kind == MessageKind::TimerTick));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Active)
+    );
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
+
+    runtime.fire_timer_record(&mut timer).await.unwrap();
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == registration.condition.id)
+            .map(|condition| condition.status),
+        Some(WaitConditionStatus::Triggered)
+    );
 }
 
 #[tokio::test(start_paused = true)]

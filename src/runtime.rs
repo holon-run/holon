@@ -3691,6 +3691,7 @@ impl RuntimeHandle {
                     .ok_or_else(|| {
                         anyhow!("canonical execution admission references an unknown attempt")
                     })?;
+                let claimed_work_revision = attempt.admitted_fences.work_item_source_revision;
                 let owner = match attempt.binding {
                     crate::domain::execution_protocol::ExecutionBinding::WorkItem {
                         work_item_id,
@@ -3705,7 +3706,7 @@ impl RuntimeHandle {
                         crate::types::TurnOwner::Command
                     }
                 };
-                Some((activation_id.clone(), owner))
+                Some((activation_id.clone(), owner, claimed_work_revision))
             }
             ExecutionAdmissionProvenance::LegacyCompat { .. } => None,
         };
@@ -3763,7 +3764,7 @@ impl RuntimeHandle {
             };
             guard.state.current_turn_id = Some(turn_id.clone());
             guard.state.last_turn_terminal = None;
-            if let Some((_, owner)) = canonical_execution_binding.as_ref() {
+            if let Some((_, owner, _)) = canonical_execution_binding.as_ref() {
                 guard.state.current_turn_work_item_id =
                     owner.work_item_id().map(ToString::to_string);
             } else if let Some((_, source_turn)) = replay_source.as_ref() {
@@ -3777,27 +3778,32 @@ impl RuntimeHandle {
                 let work_item_id = if canonical_execution_binding.is_some() {
                     canonical_execution_binding
                         .as_ref()
-                        .and_then(|(_, owner)| owner.work_item_id().map(ToString::to_string))
+                        .and_then(|(_, owner, _)| owner.work_item_id().map(ToString::to_string))
                 } else {
                     message
                         .work_item_id
                         .clone()
                         .or_else(|| guard.state.current_turn_work_item_id.clone())
                 };
-                let claimed_work_revision = work_item_id
-                    .as_deref()
-                    .and_then(|work_item_id| {
-                        self.inner
-                            .runtime_db
-                            .work_items()
-                            .latest(work_item_id)
-                            .ok()
-                            .flatten()
-                    })
-                    .map(|work_item| work_item.revision);
+                let claimed_work_revision = canonical_execution_binding
+                    .as_ref()
+                    .and_then(|(_, _, claimed_work_revision)| *claimed_work_revision)
+                    .or_else(|| {
+                        work_item_id
+                            .as_deref()
+                            .and_then(|work_item_id| {
+                                self.inner
+                                    .runtime_db
+                                    .work_items()
+                                    .latest(work_item_id)
+                                    .ok()
+                                    .flatten()
+                            })
+                            .map(|work_item| work_item.revision)
+                    });
                 let activation_id = canonical_execution_binding
                     .as_ref()
-                    .map(|(activation_id, _)| activation_id.clone());
+                    .map(|(activation_id, _, _)| activation_id.clone());
                 WorkItemExecutionBinding {
                     activation_id,
                     admission_provenance: Some(execution_admission_provenance.clone()),
@@ -3805,7 +3811,7 @@ impl RuntimeHandle {
                     turn_id,
                     owner: canonical_execution_binding
                         .as_ref()
-                        .map(|(_, owner)| owner.clone()),
+                        .map(|(_, owner, _)| owner.clone()),
                     work_item_id,
                     claimed_work_revision,
                 }

@@ -1445,6 +1445,7 @@ impl RuntimeHandle {
         message.normalize_admission_fields();
 
         for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+            let wait_transition = self.wait_trigger_transition_for_message(&message)?;
             let mut guard = self.inner.agent.lock().await;
             let expected_state = guard.last_persisted_state.clone();
             let mut committed_state = guard.state.clone();
@@ -1453,11 +1454,8 @@ impl RuntimeHandle {
             committed_state.total_message_count =
                 self.inner.storage.count_messages()?.saturating_add(1);
             scheduler::apply_message_wake_projection(&mut committed_state);
-            let result = self
-                .inner
-                .runtime_db
-                .timers()
-                .fire(&crate::runtime_db::TimerFire {
+            let result = self.inner.runtime_db.timers().fire_with_wait(
+                &crate::runtime_db::TimerFire {
                     expected: expected.clone(),
                     record: record.clone(),
                     message: message.clone(),
@@ -1470,7 +1468,10 @@ impl RuntimeHandle {
                         updated_at: fired_at,
                     },
                     agent_state: (expected_state, committed_state.clone()),
-                });
+                },
+                wait_transition.as_ref(),
+                self.take_transition_fault(),
+            );
             match result {
                 Ok(result) if result.advanced => {
                     if let Some(message) = result.message {
@@ -1496,6 +1497,19 @@ impl RuntimeHandle {
                             "wake_created": result.wake_created,
                         }),
                     ))?;
+                    if result.wake_created {
+                        if let Some(wait_transition) = wait_transition.as_ref() {
+                            self.inner.storage.append_event(&AuditEvent::legacy(
+                                "wait_condition_triggered",
+                                serde_json::json!({
+                                    "agent_id": message.agent_id,
+                                    "wait_condition_id": wait_transition.record.id,
+                                    "trigger_message_id": message.id,
+                                    "work_item_id": wait_transition.record.work_item_id,
+                                }),
+                            ))?;
+                        }
+                    }
                     if result.wake_created {
                         self.inner.notify.notify_one();
                     }

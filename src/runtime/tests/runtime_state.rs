@@ -942,6 +942,108 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
     );
 }
 
+#[tokio::test]
+async fn canonical_turn_binding_preserves_the_admitted_work_item_revision() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("preserve admitted revision".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claim work before a later durable write".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    bind_autonomous_work_queue_tick(&mut message, &work, "queued_available");
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("work item wake should be claimed");
+    };
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let admitted_revision = execution.attempts[&activation_id]
+        .admitted_fences
+        .work_item_source_revision
+        .expect("work item attempt should carry an admitted revision");
+
+    let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+    runtime
+        .storage()
+        .append_work_item(&WorkItemRecord {
+            revision: latest.revision + 1,
+            objective: "durable write after admission".into(),
+            updated_at: Utc::now(),
+            ..latest
+        })
+        .unwrap();
+
+    runtime
+        .begin_interactive_turn_with_provenance(
+            Some(&scheduled.message),
+            None,
+            None,
+            scheduled
+                .dispatch_plan
+                .execution_admission_provenance
+                .clone(),
+        )
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state
+            .current_execution_binding
+            .as_ref()
+            .and_then(|binding| binding.claimed_work_revision),
+        Some(admitted_revision)
+    );
+    assert!(
+        runtime
+            .latest_work_item(&work.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .revision
+            > admitted_revision,
+        "the regression requires durable state to have advanced after admission"
+    );
+}
+
 struct OperatorInterjectionProbeProvider {
     calls: Mutex<usize>,
     requests: Mutex<Vec<ProviderTurnRequest>>,
