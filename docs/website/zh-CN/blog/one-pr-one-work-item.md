@@ -1,6 +1,6 @@
 ---
 title: "不止审一次代码：用 Holon 搭建持续跟进 PR 的 Reviewer"
-summary: "从模板创建自带工作规范与 Skills 的 reviewer，补充项目要求，接入 PR 与 CI 事件，再验证一次持续复查。"
+summary: "从模板创建自带工作规范与 Skills 的 reviewer，确认职责与合并权限，订阅仓库 PR，自动审阅并持续跟进修复与 CI。"
 order: 30
 ---
 
@@ -20,7 +20,7 @@ Holon 仓库的 PR #2854 就经历过这个过程。它修改了工作项的完�
 
 这一过程发生在 2026 年 9 月 9 日，提交、公开审阅与合并结果已和 GitHub 快照核对。部分 CI 任务按条件跳过，表中的“通过”只指实际执行的相关检查。
 
-下面从创建 reviewer 开始，让它接手一条 PR，并确认后续提交到达时，它能接着复查。
+下面从创建 reviewer 开始，让它订阅仓库的新 PR，自动开始审阅，并在修复和 CI 更新后继续跟进。职责与合并权限在开始时确认，之后不需要逐条派发 PR。
 
 ## 从模板创建 Reviewer
 
@@ -42,57 +42,79 @@ holon agent create reviewer --template holon-reviewer
 
 创建后运行 `holon agent list`，确认新 Agent 出现在列表中，再从 TUI 或 Web GUI 选择它。
 
-### 模板已经写好了哪些工作规范
+### 模板内置的 AGENTS.md
 
-`holon-reviewer` 模板会为新 Agent 初始化 `AGENTS.md`，并安装声明的 Skills。`AGENTS.md` 开篇就定义了它的职责：长期负责代码审阅、PR 生命周期跟进和合并判断。后续章节把工作方式写成明确规则：
+`holon-reviewer` 模板包含 `AGENTS.md`，创建时用它初始化新 Agent 的工作规范，并安装模板声明的 Skills。下面摘录文件中的职责定义和权限确认清单：
 
-- **权限确认**：开始长期跟进前，确认能否订阅事件、批准、合并、代作者修代码，并把确认结果记入自己的工作规范。
+```markdown
+# Holon Reviewer Agent
+
+You are a long-lived code review agent responsible for code review, PR
+lifecycle tracking, and merge decisions.
+
+## Permission Confirmation Protocol
+
+For **non-one-time** review work, confirm the following with the operator
+before starting, then record the confirmed scope in your agent-local
+AGENTS.md:
+
+- whether you may merge PRs
+- whether you should subscribe to PR events via `agentinbox` follow
+- whether you may approve PRs
+- whether you may fix code on behalf of the author
+```
+
+它定义的是一份长期职责：审代码、跟进 PR 生命周期、判断能否合并。模板要求 Agent 在开始持续工作前确认权限，再记入自己的 `AGENTS.md`；安装模板本身并不等于授予合并权限。
+
+文件后面的章节规定了怎么工作：
+
 - **持续跟进**：为 PR 建立 WorkItem，订阅新提交、CI 和审阅评论；新版本到达后先复查旧问题，合并或关闭后完成工作项、清理订阅。
 - **合并门槛**：最终 head 的必要 CI 全部通过，没有未解决的阻塞问题；普通建议不应被当成阻塞，也不能绕过 GitHub 的平台限制。
 - **升级处理**：大规模重构、破坏性 API 变更或安全敏感修改交给操作者判断；未经授权，不主动代作者修代码。
 
 审阅的具体方法由 Skills 提供：`code-review` 规定证据、问题分类和验证范围，`github-review` 负责 GitHub 上的上下文收集、去重与审阅发布。`ghx`、`sview` 辅助平台操作和源码阅读，`agentinbox`、`uxc` 负责事件接入。
 
-这些规则和 Skills 随 Agent 一起准备好，用户不用在每条 PR 的请求里重写。要调整通用职责或替换 Skills，可以参考[Agent 模板指南](../../guides/agent-templates.md)。
+`AGENTS.md` 规定角色与工作边界，Skills 提供具体方法。用户只需补充自己的项目要求，不用从头写一份审阅提示词。要调整通用职责或替换 Skills，可以参考[Agent 模板指南](../../guides/agent-templates.md)。
 
-## 告诉它你的项目要求
+## 开始前确认职责与合并权限
 
-补充仓库位置、审阅偏好和授权即可。例如，替换占位内容后，向 reviewer 发送：
+创建后，向 reviewer 一次说明负责哪个仓库、怎样反馈，以及能做哪些操作。例如：
 
 ```text
-负责 <owner/repo> 的持续审阅，本地仓库在 <绝对路径>，重点看兼容性，中文反馈。
-允许在独立 worktree 中按仓库规范运行测试、订阅 PR/CI 事件、发布评论和批准。
+负责 <owner/repo> 的 PR，订阅仓库并自动审阅新 PR，持续跟进到合并或关闭。
+本地仓库在 <绝对路径>，重点看兼容性，中文反馈；允许隔离测试、评论和批准。
 最终版本的必要检查通过、无遗留阻塞且符合仓库合并规则时，可以直接合并。
 不代作者修代码；重大或安全敏感变更先问我。请记住这些长期要求。
 ```
 
-后面的 PR 沿用这些要求，只有特殊情况才需要补充。构建、测试和代码约定优先读取仓库本身的 `AGENTS.md`；如果团队还有额外要求，例如只允许 squash 合并，在这里说明一次就好。
+让 reviewer 确认并把这些职责写入自己的 `AGENTS.md`。后续发现新 PR 时沿用这份授权，不再逐条询问“要不要审”“能不能合并”。构建、测试和代码约定优先读取仓库本身的 `AGENTS.md`；如果团队只允许 squash 合并，也在这里说明一次。
 
 这里明确授予了合并权限，GitHub 账号也需要有相应权限，仓库保护规则仍然适用。模板不提供凭据。首次试用选自己熟悉的低风险 PR，并为测试准备隔离环境。
 
-## 让后续 PR 和 CI 事件能找到它
+## 订阅仓库，自动发现 PR
 
-第一次审阅可以直接读取 GitHub；要在作者推送后继续跟进，还需要把事件接到这个 reviewer。
+职责确认后，接通事件来源。Holon 仓库自身的 `holon-reviewer` 在工作规范中采用两层订阅：
 
-这套模板通过 AgentInbox 接收 PR 和 CI 变化，再通知 Holon 恢复工作；GitHub 适配会用到 UXC。接入步骤已在 `agentinbox` Skill 中，可以直接让 reviewer 检查：
+- **仓库订阅长期保留**，发现新开的 PR，让 reviewer 自动开始审阅。
+- **每条 PR 单独跟进**，接收后续提交、CI 和审阅评论；合并或关闭后，清理该 PR 的订阅。
+
+模板提供了逐 PR 跟进规则与接入 Skills；负责哪个仓库、是否自动接手新 PR，则由前面的长期职责确定。创建 Agent 不会自动完成外部服务的认证和订阅。
+
+事件通过 AgentInbox 接收，再通知 Holon 恢复工作；GitHub 适配会用到 UXC。让 reviewer 按自带的 Skill 完成接入即可：
 
 ```text
-请按 agentinbox Skill 准备好后续 PR 的持续跟进，缺少工具或凭据时告诉我需要做什么。
+请按 agentinbox Skill 接通这个仓库的新 PR 订阅和逐 PR 的 CI、评论跟进，缺少工具或认证时告诉我。
 ```
 
 reviewer 会按 Skill 检查服务、仓库访问和自己的唤醒目标，并指出需要你完成的安装或认证。凭据通过工具的认证流程配置，不要贴进对话。接入细节见[AgentInbox 接入指南](https://agentinbox.holon.run/guides/onboarding-with-agent-skill)。
 
-指定 PR 后，它再建立对应的 PR/CI 订阅，并在等待作者或 CI 时保存工作进度与恢复条件。这些步骤不需要用户逐项下指令；是否接通，要用后面的一次实际更新来验证。
+接入后，让它确认仓库发现订阅已生效。仓库订阅负责发现此后新开的 PR；如果还要接管已有的未关闭 PR，在初始化时补一句“也接管当前打开的 PR”，不要假定新事件订阅会补齐历史。
 
-## 交给它第一条 PR
+## 检查它是否自动开始审阅
 
-现在只需给出 PR：
+等仓库出现一条新的、适合试运行的低风险 PR。不要再把地址发给 reviewer；这一步要检查它能否从仓库事件发现 PR，自动建立 WorkItem 并开始审阅。
 
-```text
-请持续审阅 <PR 地址>，满足约定条件就合并，有需要我决定的事再找我。
-```
-
-如果这条 PR 有额外关注点，比如“特别检查旧配置迁移”，再补一句即可。建立 WorkItem、复查旧问题和等待 CI 都是模板已有的工作方式。
+如果新 PR 出现后没有开始审阅，先检查仓库发现订阅、AgentInbox 的事件记录和 reviewer 的唤醒目标。手动发一条 PR 可以测试单次审阅，但不能证明仓库自动接入已经生效。
 
 打开这条 PR 对应的 WorkItem，应该能找到已审 head、问题与证据、已经完成的验证，以及下一步在等什么。修复到达时，reviewer 就能拿新版本对照上次的阻塞项。
 
@@ -127,7 +149,7 @@ reviewer 会按 Skill 检查服务、仓库访问和自己的唤醒目标，并�
 
 Holon reviewer 的另一条记录里，PR #2856 合并后又收到较早 CI 的迟到通知。它根据保存的终态将通知识别为已处理结果的回声，没有重新开启审阅。工作结束后保留的记录，也帮助它判断哪些变化已经不需要处理。
 
-跑通这一轮后，就可以继续给同一个 reviewer 新 PR，沿用已经确认的项目要求和权限。如果团队希望保留人工合并，把长期授权改成“达到合并条件时通知我，由我合并”即可。
+跑通这一轮后，保留仓库发现订阅，让同一个 reviewer 继续接手新 PR。用户只在职责变化、出现特殊要求或需要升级决策时介入。如果团队希望保留人工合并，把长期授权改成“达到合并条件时通知我，由我合并”即可。
 
 ## 案例来源
 

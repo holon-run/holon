@@ -55,7 +55,7 @@ Holon 仍处于早期阶段。这里用于解释运行时背后的问题，记�
   <!-- mdorigin:index kind=article -->
 
 - [不止审一次代码：用 Holon 搭建持续跟进 PR 的 Reviewer](./one-pr-one-work-item.md)
-  从模板创建自带工作规范与 Skills 的 reviewer，补充项目要求，接入 PR 与 CI 事件，再验证一次持续复查。
+  从模板创建自带工作规范与 Skills 的 reviewer，确认职责与合并权限，订阅仓库 PR，自动审阅并持续跟进修复与 CI。
   <!-- mdorigin:index kind=article -->
 
 - [用 Holon 构建你的第一个长期 Agent 工作流](./first-long-lived-agent-workflow.md)
