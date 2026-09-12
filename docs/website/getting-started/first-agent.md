@@ -185,7 +185,7 @@ Templates provide reusable agent configurations:
 
 ```bash
 # Use an installed or synced template by ID
-holon agent create docs-helper --template holon-developer
+holon agent create docs-helper --template software-developer
 
 # Use a local template path
 holon agent create custom --template /path/to/template

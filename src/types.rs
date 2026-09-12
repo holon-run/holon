@@ -1232,7 +1232,7 @@ impl AgentTemplateSourceKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTemplateCatalogEntry {
-    /// Stable source-scoped catalog identifier, such as `user:holon-reviewer`.
+    /// Stable source-scoped catalog identifier, such as `user:code-reviewer`.
     pub catalog_id: String,
     /// Preferred selector accepted by agent creation and invocation requests.
     ///
@@ -1281,7 +1281,7 @@ pub struct AgentTemplateCatalogEntry {
 /// a GUI detail view or daemon API response.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentTemplateDetail {
-    /// Stable source-scoped catalog identifier, such as `user:holon-reviewer`.
+    /// Stable source-scoped catalog identifier, such as `user:code-reviewer`.
     pub catalog_id: String,
     /// Preferred selector accepted by agent creation and invocation requests.
     pub template: String,

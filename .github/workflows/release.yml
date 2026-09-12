@@ -148,7 +148,7 @@ jobs:
           tmpdir="$(mktemp -d)"
           cp "target/${{ matrix.target }}/release/holon" "$tmpdir/holon"
           mkdir -p "$tmpdir/agent_templates"
-          cp -R agent_templates/holon-github-solve "$tmpdir/agent_templates/"
+          cp -R agent_templates/github-solver "$tmpdir/agent_templates/"
           tar -czf "dist/${{ matrix.asset }}.tar.gz" -C "$tmpdir" holon agent_templates
           shasum -a 256 "dist/${{ matrix.asset }}.tar.gz" > "dist/${{ matrix.asset }}.tar.gz.sha256"
 

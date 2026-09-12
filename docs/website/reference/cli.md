@@ -141,7 +141,7 @@ holon run --trust untrusted-external "User query"      # mark trust level
 ### Create and use an agent
 
 ```bash
-holon agent create reviewer --template holon-reviewer
+holon agent create reviewer --template code-reviewer
 holon agent repair reviewer
 holon run --agent reviewer "Review src/runtime/turn.rs"
 ```

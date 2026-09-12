@@ -183,7 +183,7 @@ holon agent create reviewer
 
 ```bash
 # 用已安装或已同步的模板 ID
-holon agent create docs-helper --template holon-developer
+holon agent create docs-helper --template software-developer
 
 # 用本地模板路径
 holon agent create custom --template /path/to/template
