@@ -78,7 +78,10 @@ impl ResourcePolicyReport {
             ),
             None => "glibc arena cap n/a".to_string(),
         };
-        format!("runtime resources: allocator {}; tokio workers {workers}; {glibc}", self.allocator)
+        format!(
+            "runtime resources: allocator {}; tokio workers {workers}; {glibc}",
+            self.allocator
+        )
     }
 }
 
