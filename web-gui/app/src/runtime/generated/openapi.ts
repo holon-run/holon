@@ -1621,8 +1621,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Search recent runtime traces
-         * @description Search the bounded in-memory recent trace ring by trace or span attributes.
+         * Search runtime traces
+         * @description Search the bounded in-memory recent trace ring and retained persistent diagnostics by trace or span attributes.
          */
         get: operations["runtimeTraceSearch"];
         put?: never;
@@ -1642,7 +1642,7 @@ export interface paths {
         };
         /**
          * Runtime trace waterfall
-         * @description Return the recorded span waterfall for one recent trace.
+         * @description Return the recorded span waterfall for a recent or retained persistent trace.
          */
         get: operations["runtimeTrace"];
         put?: never;
@@ -3936,11 +3936,53 @@ export interface components {
                 /** Format: uint64 */
                 max_ms: number;
                 name: string;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p50_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p95_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p99_ms: number;
                 /** Format: uint64 */
                 total_bytes?: number | null;
                 /** Format: uint64 */
                 total_ms: number;
             }[];
+            /**
+             * @default {
+             *       "dropped_traces": 0,
+             *       "filtered_traces": 0,
+             *       "persisted_traces": 0,
+             *       "queue_depth": 0,
+             *       "queued_traces": 0,
+             *       "retention_deleted_traces": 0,
+             *       "writer_failures": 0
+             *     }
+             */
+            diagnostics_writer: {
+                /** Format: uint64 */
+                dropped_traces: number;
+                /** Format: uint64 */
+                filtered_traces: number;
+                /** Format: uint64 */
+                persisted_traces: number;
+                /** Format: uint64 */
+                queue_depth: number;
+                /** Format: uint64 */
+                queued_traces: number;
+                /** Format: uint64 */
+                retention_deleted_traces: number;
+                /** Format: uint64 */
+                writer_failures: number;
+            };
             http: {
                 /** Format: double */
                 avg_bytes?: number | null;
@@ -3951,6 +3993,21 @@ export interface components {
                 /** Format: uint64 */
                 max_ms: number;
                 name: string;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p50_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p95_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p99_ms: number;
                 /** Format: uint64 */
                 total_bytes?: number | null;
                 /** Format: uint64 */
@@ -3988,6 +4045,21 @@ export interface components {
                 /** Format: uint64 */
                 max_ms: number;
                 name: string;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p50_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p95_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p99_ms: number;
                 /** Format: uint64 */
                 total_bytes?: number | null;
                 /** Format: uint64 */
@@ -4003,6 +4075,21 @@ export interface components {
                 /** Format: uint64 */
                 max_ms: number;
                 name: string;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p50_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p95_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p99_ms: number;
                 /** Format: uint64 */
                 total_bytes?: number | null;
                 /** Format: uint64 */
@@ -4018,6 +4105,21 @@ export interface components {
                 /** Format: uint64 */
                 max_ms: number;
                 name: string;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p50_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p95_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p99_ms: number;
                 /** Format: uint64 */
                 total_bytes?: number | null;
                 /** Format: uint64 */
@@ -4033,6 +4135,21 @@ export interface components {
                 /** Format: uint64 */
                 max_ms: number;
                 name: string;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p50_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p95_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p99_ms: number;
                 /** Format: uint64 */
                 total_bytes?: number | null;
                 /** Format: uint64 */

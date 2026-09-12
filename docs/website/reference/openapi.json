@@ -5959,6 +5959,24 @@
                 "name": {
                   "type": "string"
                 },
+                "p50_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "total_bytes": {
                   "format": "uint64",
                   "minimum": 0,
@@ -5983,6 +6001,64 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "diagnostics_writer": {
+            "default": {
+              "dropped_traces": 0,
+              "filtered_traces": 0,
+              "persisted_traces": 0,
+              "queue_depth": 0,
+              "queued_traces": 0,
+              "retention_deleted_traces": 0,
+              "writer_failures": 0
+            },
+            "properties": {
+              "dropped_traces": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "filtered_traces": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "persisted_traces": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "queue_depth": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "queued_traces": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "retention_deleted_traces": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "writer_failures": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "queue_depth",
+              "queued_traces",
+              "dropped_traces",
+              "filtered_traces",
+              "persisted_traces",
+              "retention_deleted_traces",
+              "writer_failures"
+            ],
+            "type": "object"
           },
           "http": {
             "items": {
@@ -6010,6 +6086,24 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "p50_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 },
                 "total_bytes": {
                   "format": "uint64",
@@ -6129,6 +6223,24 @@
                 "name": {
                   "type": "string"
                 },
+                "p50_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "total_bytes": {
                   "format": "uint64",
                   "minimum": 0,
@@ -6180,6 +6292,24 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "p50_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 },
                 "total_bytes": {
                   "format": "uint64",
@@ -6233,6 +6363,24 @@
                 "name": {
                   "type": "string"
                 },
+                "p50_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
                 "total_bytes": {
                   "format": "uint64",
                   "minimum": 0,
@@ -6284,6 +6432,24 @@
                 },
                 "name": {
                   "type": "string"
+                },
+                "p50_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 },
                 "total_bytes": {
                   "format": "uint64",
@@ -17349,7 +17515,7 @@
     },
     "/api/control/runtime/traces/search": {
       "get": {
-        "description": "Search the bounded in-memory recent trace ring by trace or span attributes.",
+        "description": "Search the bounded in-memory recent trace ring and retained persistent diagnostics by trace or span attributes.",
         "operationId": "runtimeTraceSearch",
         "parameters": [
           {
@@ -17400,7 +17566,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Search recent runtime traces",
+        "summary": "Search runtime traces",
         "tags": [
           "runtime"
         ]
@@ -17408,7 +17574,7 @@
     },
     "/api/control/runtime/traces/{trace_id}": {
       "get": {
-        "description": "Return the recorded span waterfall for one recent trace.",
+        "description": "Return the recorded span waterfall for a recent or retained persistent trace.",
         "operationId": "runtimeTrace",
         "parameters": [
           {

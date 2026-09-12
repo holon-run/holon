@@ -3777,3 +3777,73 @@ fn default_provider_ready_false_when_provider_missing() {
         "missing provider should not be ready"
     );
 }
+
+#[test]
+fn diagnostics_writer_config_resolves_runtime_values() {
+    let config: HolonConfigFile = serde_json::from_value(json!({
+        "runtime": {
+            "diagnostics": {
+                "queue_capacity": 17,
+                "slow_trace_threshold_ms": 2500,
+                "sample_rate_permyriad": 1250,
+                "retention_age_days": 3,
+                "retention_max_traces": 400,
+                "retention_min_traces": 40,
+                "retention_delete_batch": 25
+            }
+        }
+    }))
+    .unwrap();
+
+    let resolved = super::resolve_diagnostics_writer_config(&config).unwrap();
+
+    assert_eq!(resolved.queue_capacity, 17);
+    assert_eq!(
+        resolved.slow_trace_threshold,
+        std::time::Duration::from_millis(2500)
+    );
+    assert_eq!(resolved.sample_rate_permyriad, 1250);
+    assert_eq!(
+        resolved.retention_age,
+        std::time::Duration::from_secs(3 * 24 * 60 * 60)
+    );
+    assert_eq!(resolved.retention_max_traces, 400);
+    assert_eq!(resolved.retention_min_traces, 40);
+    assert_eq!(resolved.retention_delete_batch, 25);
+}
+
+#[test]
+fn diagnostics_writer_config_rejects_invalid_values() {
+    let config: HolonConfigFile = serde_json::from_value(json!({
+        "runtime": {
+            "diagnostics": {
+                "sample_rate_permyriad": 10001
+            }
+        }
+    }))
+    .unwrap();
+
+    let error = super::resolve_diagnostics_writer_config(&config).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("diagnostics sample rate must not exceed 10000 permyriad"));
+}
+
+#[test]
+fn diagnostics_writer_config_rejects_out_of_range_retention_age() {
+    let config: HolonConfigFile = serde_json::from_value(json!({
+        "runtime": {
+            "diagnostics": {
+                "retention_age_days": u64::MAX
+            }
+        }
+    }))
+    .unwrap();
+
+    let error = super::resolve_diagnostics_writer_config(&config).unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("diagnostics retention age is out of range"));
+}
