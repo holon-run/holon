@@ -15324,6 +15324,82 @@ async fn register_wait_for_agent_scoped_cancels_prior_agent_scoped_waits() {
 }
 
 #[tokio::test]
+async fn register_wait_for_agent_scoped_resolves_prior_triggered_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let first = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "first agent wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut triggered = first.condition.clone();
+    triggered.mark_triggered("message:triggered-before-replacement", Utc::now());
+    runtime.storage().append_wait_condition(&triggered).unwrap();
+
+    let second = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::OperatorInput,
+            None,
+            "second agent wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(second.cancelled_wait_condition_ids.is_empty());
+    let all_conditions = runtime.storage().latest_wait_conditions().unwrap();
+    let first_record = all_conditions
+        .iter()
+        .find(|condition| condition.id == first.condition.id)
+        .unwrap();
+    assert_eq!(first_record.status, WaitConditionStatus::Resolved);
+    assert_eq!(
+        first_record.trigger_message_id(),
+        Some("message:triggered-before-replacement")
+    );
+    assert!(first_record.resolved_at.is_some());
+    assert_eq!(
+        all_conditions
+            .iter()
+            .find(|condition| condition.id == second.condition.id)
+            .unwrap()
+            .status,
+        WaitConditionStatus::Active
+    );
+    assert!(runtime
+        .storage()
+        .read_recent_events(32)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "wait_conditions_resolved"
+                && event.data["reason"] == "wait_for_replaced_after_trigger"
+                && event.data["wait_condition_ids"]
+                    .as_array()
+                    .is_some_and(|ids| ids.iter().any(|id| id == &first.condition.id))
+        }));
+}
+
+#[tokio::test]
 async fn agent_scoped_wait_replacement_preserves_work_item_scoped_waits() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
