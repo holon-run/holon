@@ -2853,6 +2853,39 @@ pub async fn runtime_readiness_route_omits_activity_summary() -> Result<()> {
     Ok(())
 }
 
+async fn wait_for_runtime_config_reload(
+    client: &Client,
+    addr: SocketAddr,
+    mutation_payload: &serde_json::Value,
+) -> Result<serde_json::Value> {
+    let reload_generation = mutation_payload["reload"]["requested_generation"]
+        .as_u64()
+        .expect("runtime config update should report a reload generation");
+    assert!(reload_generation >= 1);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let reload_response = client
+            .get(format!("http://{addr}/api/control/runtime/config"))
+            .bearer_auth("secret")
+            .send()
+            .await?;
+        assert!(reload_response.status().is_success());
+        let reload_payload: serde_json::Value = reload_response.json().await?;
+        if reload_payload["reload"]["completed_generation"]
+            .as_u64()
+            .is_some_and(|generation| generation >= reload_generation)
+        {
+            assert_eq!(reload_payload["reload"]["state"], "completed");
+            return Ok(reload_payload);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "runtime config reload generation {reload_generation} did not complete"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
 pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -> Result<()> {
     let config = test_config();
     std::fs::create_dir_all(&config.workspace_dir)?;
@@ -2927,10 +2960,12 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(valid_model_payload["changed"], true);
     assert_eq!(
         valid_model_payload["results"][0]["effect"],
-        "accepted_reloaded"
+        "accepted_reload_scheduled"
     );
+    let reloaded_model_payload =
+        wait_for_runtime_config_reload(&client, addr, &valid_model_payload).await?;
     assert_eq!(
-        valid_model_payload["runtime_surface"]["model_default"],
+        reloaded_model_payload["runtime_surface"]["model_default"],
         "openai@default/gpt-4.1"
     );
     assert_eq!(
@@ -2963,17 +2998,19 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(provider_config_payload["changed"], true);
     assert_eq!(
         provider_config_payload["results"][0]["effect"],
-        "accepted_reloaded"
+        "accepted_reload_scheduled"
     );
+    let reloaded_provider_payload =
+        wait_for_runtime_config_reload(&client, addr, &provider_config_payload).await?;
     assert_eq!(
-        provider_config_payload["runtime_surface"]["providers"]
+        reloaded_provider_payload["runtime_surface"]["providers"]
             .as_array()
             .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
             .and_then(|provider| provider["credential_env"].as_str()),
         Some("OPENAI_API_KEY_TEST")
     );
     assert_eq!(
-        provider_config_payload["runtime_surface"]["providers"]
+        reloaded_provider_payload["runtime_surface"]["providers"]
             .as_array()
             .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
             .and_then(|provider| provider["configured_in_config"].as_bool()),
@@ -2999,10 +3036,12 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(provider_remove_payload["changed"], true);
     assert_eq!(
         provider_remove_payload["results"][0]["effect"],
-        "accepted_reloaded"
+        "accepted_reload_scheduled"
     );
+    let reloaded_provider_remove_payload =
+        wait_for_runtime_config_reload(&client, addr, &provider_remove_payload).await?;
     assert_eq!(
-        provider_remove_payload["runtime_surface"]["providers"]
+        reloaded_provider_remove_payload["runtime_surface"]["providers"]
             .as_array()
             .and_then(|providers| providers.iter().find(|provider| provider["id"] == "openai"))
             .and_then(|provider| provider["configured_in_config"].as_bool()),
@@ -3038,7 +3077,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
     assert_eq!(valid_cors_payload["changed"], true);
     assert_eq!(
         valid_cors_payload["results"][0]["effect"],
-        "accepted_reloaded"
+        "accepted_reload_scheduled"
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
