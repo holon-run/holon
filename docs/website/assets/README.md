@@ -22,7 +22,9 @@ Keep HTML image dimensions and the homepage picture/CSS breakpoint synchronized.
 The host boundary contains the runtime and execution resources, not interfaces;
 it describes execution location, not a security sandbox.
 Mobile uses a dashed outline and connector. Thin internal rules separate the
-Runtime heading and its three parallel responsibilities, without a workflow arrow.
+Holon heading and its three parallel responsibilities, without a workflow arrow.
+The heading avoids runtime terminology; its subtitle describes ongoing work,
+saved state and event wakeups. Technical terminology in article prose is unchanged.
 
 The product article uses only `holon-tour-review-work.webp`, with a fixture-data
 caption. Keep `holon-tour-agents.webp` and the versioned demo fixture available

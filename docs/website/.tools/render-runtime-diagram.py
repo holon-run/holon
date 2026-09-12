@@ -25,7 +25,7 @@ def render(lang, narrow):
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
         f'viewBox="0 0 {width} {height}" role="img">',
-        "<title>Holon Runtime · "
+        "<title>Holon · "
         + ("常驻后台与多端连接" if zh else "One service, multiple interfaces")
         + "</title>",
         '<defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" '
@@ -88,8 +88,8 @@ def render(lang, narrow):
         text(238, 174, "连接" if zh else "Connect", 14, BLUE)
 
     rect(rx, ry, rw, rh, stroke="#9ab1cd")
-    text(rx + 22, ry + 34, "Holon Runtime", 25, INK, 500)
-    text(rx + 22, ry + 60, "常驻后台 · daemon 模式" if zh else "Background service · daemon mode", 16, MUTED)
+    text(rx + 22, ry + 34, "Holon", 25, INK, 500)
+    text(rx + 22, ry + 60, "持续工作 · 状态保存 · 事件唤醒" if zh else "Work · saved state · event wakeups", 16, MUTED)
     line(f"M{rx + 22} {ry + 76}H{rx + rw - 22}", color="#c4d3e6")
 
     modules = [

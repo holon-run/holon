@@ -74,7 +74,7 @@ order: 1
 </div>
 <picture class="home-architecture">
 <source media="(max-width: 1100px)" srcset="/assets/runtime-architecture-zh-narrow.png" width="480" height="550">
-<img src="/assets/runtime-architecture-zh.png" width="1200" height="350" alt="TUI 与 Web UI 连接同一常驻 Holon Runtime，手机入口以虚线边框和连线表示。Runtime 管理 Agent、工作项和等待唤醒，在宿主机上使用工作区、文件与工具链。" loading="lazy" decoding="async">
+<img src="/assets/runtime-architecture-zh.png" width="1200" height="350" alt="TUI 与 Web UI 连接同一常驻 Holon，手机入口以虚线边框和连线表示。Holon 支持持续工作、状态保存与事件唤醒，管理 Agent 和工作项，在宿主机上使用工作区、文件与工具链。" loading="lazy" decoding="async">
 </picture>
 <p class="home-product__caption">持续执行依赖 daemon 与宿主机保持运行；机器边界说明运行位置，不代表额外的权限隔离。</p>
 </section>

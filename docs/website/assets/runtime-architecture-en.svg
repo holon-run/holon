@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="350" viewBox="0 0 1200 350" role="img">
-<title>Holon Runtime · One service, multiple interfaces</title>
+<title>Holon · One service, multiple interfaces</title>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0L6 3L0 6" fill="none" stroke="#285fa7" stroke-width="1.3"/></marker></defs>
 <rect width="1200" height="350" fill="#fff"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
@@ -20,8 +20,8 @@
 <path d="M230 186H330" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
 <text x="238" y="174" font-size="14" fill="#285fa7" font-weight="400" text-anchor="start">Connect</text>
 <rect x="330" y="78" width="460" height="222" rx="6" fill="#fff" stroke="#9ab1cd" stroke-width="1"/>
-<text x="352" y="112" font-size="25" fill="#183457" font-weight="500" text-anchor="start">Holon Runtime</text>
-<text x="352" y="138" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">Background service · daemon mode</text>
+<text x="352" y="112" font-size="25" fill="#183457" font-weight="500" text-anchor="start">Holon</text>
+<text x="352" y="138" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">Work · saved state · event wakeups</text>
 <path d="M352 154H768" fill="none" stroke="#c4d3e6" stroke-width="1.2"/>
 <text x="352" y="181" font-size="18" fill="#285fa7" font-weight="500" text-anchor="start">Agents</text>
 <text x="484" y="181" font-size="16" fill="#536b87" font-weight="400" text-anchor="start">Identity &amp; roles</text>

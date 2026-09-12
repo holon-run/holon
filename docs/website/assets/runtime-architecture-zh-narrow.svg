@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="480" height="550" viewBox="0 0 480 550" role="img">
-<title>Holon Runtime · 常驻后台与多端连接</title>
+<title>Holon · 常驻后台与多端连接</title>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto-start-reverse"><path d="M0 0L6 3L0 6" fill="none" stroke="#285fa7" stroke-width="1.3"/></marker></defs>
 <rect width="480" height="550" fill="#fff"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
@@ -20,8 +20,8 @@
 <path d="M240 128V200" fill="none" stroke="#285fa7" stroke-width="1.2" marker-end="url(#arrow)"/>
 <text x="252" y="146" font-size="20" fill="#285fa7" font-weight="400" text-anchor="start">连接</text>
 <rect x="32" y="200" width="416" height="216" rx="6" fill="#fff" stroke="#9ab1cd" stroke-width="1"/>
-<text x="54" y="234" font-size="25" fill="#183457" font-weight="500" text-anchor="start">Holon Runtime</text>
-<text x="54" y="260" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">常驻后台 · daemon 模式</text>
+<text x="54" y="234" font-size="25" fill="#183457" font-weight="500" text-anchor="start">Holon</text>
+<text x="54" y="260" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">持续工作 · 状态保存 · 事件唤醒</text>
 <path d="M54 276H426" fill="none" stroke="#c4d3e6" stroke-width="1.2"/>
 <text x="54" y="303" font-size="20" fill="#285fa7" font-weight="500" text-anchor="start">Agents</text>
 <text x="186" y="303" font-size="20" fill="#536b87" font-weight="400" text-anchor="start">长期身份与职责</text>
