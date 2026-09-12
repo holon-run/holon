@@ -99,9 +99,9 @@ WorkItem 给恢复上下文提供了一个组织边界：先确认当前工作�
 
 把这些分工放进一个场景。A 是 PR #101 的审阅，B 是 PR #102 的审阅。假设已经接好 PR 更新通知和测试结果，下图展示其中一种处理顺序。
 
-<img src="/assets/work-item-reviewer-sequence-zh.png" width="800" height="356" alt="两个工作项交错推进：审阅 A 后等待修订，转去审阅 B；A 更新时先记录信号，B 保存进度并等待测试后再恢复 A。A 完成交付时，B 仍保留自己的测试等待，之后独立恢复。" loading="lazy" decoding="async">
+<img src="/assets/work-item-reviewer-sequence-zh.png" width="800" height="438" alt="同一个 reviewer 沿唯一执行线依次审阅 A、审阅 B、恢复 A、恢复 B。上方作者提交修订与 CI 完成事件以虚线指向对应恢复阶段；下方分别保留 A 等待修订和 B 等待测试的工作记录。" loading="lazy" decoding="async">
 
-*图 2：按 01—06 从左往右读，对照 A、B 两条泳道。Agent 交错处理两项工作，各自的记录与等待独立保留。顺序不是固定优先级，也不表示通知会立即抢占正在执行的工具。*
+*图 2：中间只有一条 Agent 执行线；下方保留各项工作的等待记录，上方事件触发对应的恢复条件。运行时再安排执行，不代表通知一到就打断当前工作，也不规定固定优先级。*
 
 ### A 等修订，Agent 先处理 B
 

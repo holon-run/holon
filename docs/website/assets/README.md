@@ -14,9 +14,9 @@ pairs. It requires CairoSVG and Noto Sans CJK SC.
 
 - `work-item-architecture-zh`: 800×430, showing per-turn judgment, persistent
   work records, and resumption after waiting. It is not an internal component map.
-- `work-item-reviewer-sequence-zh`: 800×356, showing two independent work items
-  in horizontal time lanes, not concurrent model turns or fixed priorities.
-  Continuous bands indicate unchanged waiting or delivery states.
+- `work-item-reviewer-sequence-zh`: 800×438, showing one agent's execution line,
+  external events above it, and retained waiting records below it. Dashed arrows
+  show events satisfying resumption conditions, not immediate preemption.
 - Both use a single desktop-oriented layout. Keep source dimensions
   synchronized with the article HTML.
 

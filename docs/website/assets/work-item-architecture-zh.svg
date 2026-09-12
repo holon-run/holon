@@ -1,10 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="430" viewBox="0 0 800 430" role="img" aria-labelledby="title desc">
-<title id="title">一轮结束，工作仍在</title>
+<title id="title">WorkItem：工作状态的保存与恢复</title>
 <desc id="desc">判断与执行按轮进行，工作记录跨轮保留。</desc>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#285fa7" stroke-width="1.4"/></marker></defs>
 <rect width="800" height="430" rx="8" fill="#f8fafc"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
-<text x="40" y="45" font-size="22" fill="#183457" font-weight="600" text-anchor="start">一轮结束，工作仍在</text>
+<text x="40" y="45" font-size="22" fill="#183457" font-weight="600" text-anchor="start">WorkItem：工作状态的保存与恢复</text>
 <rect x="40" y="82" width="300" height="68" rx="6" fill="#fff" stroke="#d9e2eb"/>
 <text x="60" y="109" font-size="18" fill="#183457" font-weight="600" text-anchor="start">Agent 判断</text>
 <text x="60" y="133" font-size="15" fill="#53677d" font-weight="400" text-anchor="start">决定下一步</text>

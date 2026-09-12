@@ -1,45 +1,43 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="356" viewBox="0 0 800 356" role="img" aria-labelledby="title desc">
-<title id="title">两项工作，各自接着做</title>
-<desc id="desc">同一个 reviewer 交错推进两项工作；横向为一种示意顺序。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="438" viewBox="0 0 800 438" role="img" aria-labelledby="title desc">
+<title id="title">一个 Agent 如何交错推进两项工作</title>
+<desc id="desc">同一个 reviewer 依次审阅 A、审阅 B、恢复 A、恢复 B。外部事件满足恢复条件后，由运行时安排执行；等待期间工作记录保留。</desc>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#285fa7" stroke-width="1.4"/></marker></defs>
-<rect width="800" height="356" rx="8" fill="#f8fafc"/>
+<rect width="800" height="438" rx="8" fill="#f8fafc"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
-<text x="40" y="45" font-size="22" fill="#183457" font-weight="600" text-anchor="start">两项工作，各自接着做</text>
-<text x="40" y="80" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">同一个 reviewer · 按 01—06 顺序阅读</text>
-<path d="M130 106H756" fill="none" stroke="#d9e2eb" stroke-width="1.3" marker-end="url(#arrow)"/>
-<text x="176" y="96" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">01</text>
-<text x="280" y="96" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">02</text>
-<text x="384" y="96" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">03</text>
-<text x="488" y="96" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">04</text>
-<text x="592" y="96" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">05</text>
-<text x="696" y="96" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">06</text>
-<text x="40" y="168" font-size="18" fill="#183457" font-weight="600" text-anchor="start">工作 A</text>
-<text x="40" y="191" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">PR #101</text>
-<path d="M130 176H756" fill="none" stroke="#d9e2eb" stroke-width="1.3"/>
-<text x="40" y="265" font-size="18" fill="#183457" font-weight="600" text-anchor="start">工作 B</text>
-<text x="40" y="288" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">PR #102</text>
-<path d="M130 273H756" fill="none" stroke="#d9e2eb" stroke-width="1.3"/>
-<rect x="129" y="148" width="94" height="58" rx="5" fill="#eef4ff" stroke="#eef4ff"/>
-<text x="176.0" y="173" font-size="16" fill="#285fa7" font-weight="400" text-anchor="middle">审阅</text>
-<text x="176.0" y="194" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">记录问题</text>
-<rect x="233" y="148" width="94" height="58" rx="5" fill="#fff6e7" stroke="#fff6e7"/>
-<text x="280.0" y="183" font-size="16" fill="#865b1c" font-weight="400" text-anchor="middle">等待修订</text>
-<rect x="337" y="148" width="94" height="58" rx="5" fill="#fff6e7" stroke="#fff6e7"/>
-<text x="384.0" y="173" font-size="16" fill="#865b1c" font-weight="400" text-anchor="middle">更新到达</text>
-<text x="384.0" y="194" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">暂存信号</text>
-<rect x="441" y="148" width="94" height="58" rx="5" fill="#eef4ff" stroke="#eef4ff"/>
-<text x="488.0" y="173" font-size="16" fill="#285fa7" font-weight="400" text-anchor="middle">恢复审阅</text>
-<text x="488.0" y="194" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">复查 CI</text>
-<rect x="545" y="148" width="198" height="58" rx="5" fill="#eaf5f0" stroke="#eaf5f0"/>
-<text x="644.0" y="183" font-size="16" fill="#27664d" font-weight="400" text-anchor="middle">完成交付</text>
-<text x="176" y="280" font-size="15" fill="#53677d" font-weight="400" text-anchor="middle">未开始</text>
-<rect x="233" y="245" width="94" height="58" rx="5" fill="#eef4ff" stroke="#eef4ff"/>
-<text x="280.0" y="280" font-size="16" fill="#285fa7" font-weight="400" text-anchor="middle">审阅</text>
-<rect x="337" y="245" width="302" height="58" rx="5" fill="#fff6e7" stroke="#fff6e7"/>
-<text x="488.0" y="270" font-size="16" fill="#865b1c" font-weight="400" text-anchor="middle">等待测试</text>
-<text x="488.0" y="291" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">保留进度</text>
-<rect x="649" y="245" width="94" height="58" rx="5" fill="#eef4ff" stroke="#eef4ff"/>
-<text x="696.0" y="270" font-size="16" fill="#285fa7" font-weight="400" text-anchor="middle">恢复</text>
-<text x="696.0" y="291" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">测试结果到达</text>
-<text x="40" y="334" font-size="15" fill="#53677d" font-weight="400" text-anchor="start">切换工作，不等于结束另一项工作。</text>
+<text x="40" y="45" font-size="22" fill="#183457" font-weight="600" text-anchor="start">一个 Agent 如何交错推进两项工作</text>
+<text x="40" y="80" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">一种处理顺序 · 横向为时间</text>
+<text x="40" y="135" font-size="15" fill="#53677d" font-weight="400" text-anchor="start">外部事件</text>
+<rect x="322" y="108" width="136" height="40" rx="6" fill="#fff" stroke="#d9e2eb"/>
+<text x="390.0" y="133" font-size="15" fill="#183457" font-weight="400" text-anchor="middle">作者提交修订</text>
+<rect x="628" y="108" width="124" height="40" rx="6" fill="#fff" stroke="#d9e2eb"/>
+<text x="690.0" y="133" font-size="15" fill="#183457" font-weight="400" text-anchor="middle">CI 完成</text>
+<path d="M390 148V168H530V206" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)" stroke-dasharray="5 7"/>
+<path d="M690 148V206" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)" stroke-dasharray="5 7"/>
+<text x="40" y="182" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">满足恢复条件后，由运行时安排执行</text>
+<text x="40" y="233" font-size="15" fill="#183457" font-weight="600" text-anchor="start">同一个 Agent</text>
+<text x="40" y="256" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">reviewer</text>
+<rect x="148" y="208" width="124" height="62" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
+<text x="210" y="233" font-size="17" fill="#285fa7" font-weight="600" text-anchor="middle">审阅 A</text>
+<text x="210" y="256" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">记录问题</text>
+<path d="M272 239H306" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<rect x="308" y="208" width="124" height="62" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
+<text x="370" y="233" font-size="17" fill="#34746d" font-weight="600" text-anchor="middle">审阅 B</text>
+<text x="370" y="256" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">检查测试</text>
+<path d="M432 239H466" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<rect x="468" y="208" width="124" height="62" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
+<text x="530" y="233" font-size="17" fill="#285fa7" font-weight="600" text-anchor="middle">恢复 A</text>
+<text x="530" y="256" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">复查并交付</text>
+<path d="M592 239H626" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<rect x="628" y="208" width="124" height="62" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
+<text x="690" y="233" font-size="17" fill="#34746d" font-weight="600" text-anchor="middle">恢复 B</text>
+<text x="690" y="256" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">接着检查</text>
+<text x="40" y="319" font-size="15" fill="#53677d" font-weight="400" text-anchor="start">保留工作记录</text>
+<text x="40" y="341" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">等待不占执行线</text>
+<path d="M210 270V324H362M386 324H530" fill="none" stroke="#285fa7" stroke-width="1.3"/>
+<path d="M530 318V330" fill="none" stroke="#285fa7" stroke-width="1.3"/>
+<text x="226" y="312" font-size="15" fill="#285fa7" font-weight="400" text-anchor="start">A 等待修订</text>
+<path d="M370 270V317Q382 324 370 331V374H690" fill="none" stroke="#34746d" stroke-width="1.3"/>
+<path d="M690 368V380" fill="none" stroke="#34746d" stroke-width="1.3"/>
+<text x="386" y="362" font-size="15" fill="#34746d" font-weight="400" text-anchor="start">B 等待测试</text>
+<text x="40" y="412" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">中间实线：执行顺序    虚线：事件触发恢复条件，不表示立即抢占</text>
 </g></svg>

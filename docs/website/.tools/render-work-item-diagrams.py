@@ -73,7 +73,7 @@ class Diagram:
 
 
 def architecture():
-    d = Diagram('一轮结束，工作仍在', '判断与执行按轮进行，工作记录跨轮保留。', 430)
+    d = Diagram('WorkItem：工作状态的保存与恢复', '判断与执行按轮进行，工作记录跨轮保留。', 430)
 
     for x, title, note in [
         (40, 'Agent 判断', '决定下一步'),
@@ -109,40 +109,48 @@ def architecture():
 
 
 def sequence():
-    d = Diagram('两项工作，各自接着做', '同一个 reviewer 交错推进两项工作；横向为一种示意顺序。', 356)
-    xs = [176 + i * 104 for i in range(6)]
-    d.text(40, 80, '同一个 reviewer · 按 01—06 顺序阅读', 14, MUTED)
-    d.path('M130 106H756', color=BORDER)
-    for i, x in enumerate(xs):
-        d.text(x, 96, f'0{i + 1}', 13, MUTED, anchor='middle')
+    d = Diagram(
+        '一个 Agent 如何交错推进两项工作',
+        '同一个 reviewer 依次审阅 A、审阅 B、恢复 A、恢复 B。'
+        '外部事件满足恢复条件后，由运行时安排执行；等待期间工作记录保留。',
+        438,
+    )
+    teal = '#34746d'
+    d.text(40, 80, '一种处理顺序 · 横向为时间', 14, MUTED)
 
-    for y, label, pr in [(148, '工作 A', 'PR #101'), (245, '工作 B', 'PR #102')]:
-        d.text(40, y + 20, label, 18, bold=True)
-        d.text(40, y + 43, pr, 14, MUTED)
-        d.path(f'M130 {y + 28}H756', arrow=False, color=BORDER)
+    d.text(40, 135, '外部事件', 15, MUTED)
+    for x, width, title in [(322, 136, '作者提交修订'), (628, 124, 'CI 完成')]:
+        d.rect(x, 108, width, 40)
+        d.text(x + width / 2, 133, title, 15, anchor='middle')
+    d.path('M390 148V168H530V206', dashed=True)
+    d.path('M690 148V206', dashed=True)
+    d.text(40, 182, '满足恢复条件后，由运行时安排执行', 13, MUTED)
 
-    def stage(step, y, title, note='', palette=ACTIVE, span=1):
-        x = xs[step] - 47
-        width = 94 + (span - 1) * 104
-        fill, color = palette
-        d.rect(x, y, width, 58, fill, fill, radius=5)
-        center = x + width / 2
-        d.text(center, y + (25 if note else 35), title, 16, color, anchor='middle')
-        if note:
-            d.text(center, y + 46, note, 13, MUTED, anchor='middle')
+    d.text(40, 233, '同一个 Agent', 15, bold=True)
+    d.text(40, 256, 'reviewer', 14, MUTED)
+    for i, (center, title, note, fill, color) in enumerate([
+        (210, '审阅 A', '记录问题', ACTIVE[0], BLUE),
+        (370, '审阅 B', '检查测试', '#edf6f3', teal),
+        (530, '恢复 A', '复查并交付', ACTIVE[0], BLUE),
+        (690, '恢复 B', '接着检查', '#edf6f3', teal),
+    ]):
+        d.rect(center - 62, 208, 124, 62, fill, fill)
+        d.text(center, 233, title, 17, color, bold=True, anchor='middle')
+        d.text(center, 256, note, 14, MUTED, anchor='middle')
+        if i < 3:
+            d.path(f'M{center + 62} 239H{center + 96}')
 
-    stage(0, 148, '审阅', '记录问题')
-    stage(1, 148, '等待修订', palette=WAITING)
-    stage(2, 148, '更新到达', '暂存信号', WAITING)
-    stage(3, 148, '恢复审阅', '复查 CI')
-    stage(4, 148, '完成交付', palette=DONE, span=2)
+    d.text(40, 319, '保留工作记录', 15, MUTED)
+    d.text(40, 341, '等待不占执行线', 13, MUTED)
+    d.path('M210 270V324H362M386 324H530', arrow=False, color=BLUE)
+    d.path('M530 318V330', arrow=False, color=BLUE)
+    d.text(226, 312, 'A 等待修订', 15, BLUE)
+    # A small bridge keeps the crossing distinct from a state hand-off.
+    d.path('M370 270V317Q382 324 370 331V374H690', arrow=False, color=teal)
+    d.path('M690 368V380', arrow=False, color=teal)
+    d.text(386, 362, 'B 等待测试', 15, teal)
 
-    d.text(xs[0], 280, '未开始', 15, MUTED, anchor='middle')
-    stage(1, 245, '审阅')
-    stage(2, 245, '等待测试', '保留进度', WAITING, span=3)
-    stage(5, 245, '恢复', '测试结果到达')
-
-    d.text(40, 334, '切换工作，不等于结束另一项工作。', 15, MUTED)
+    d.text(40, 412, '中间实线：执行顺序    虚线：事件触发恢复条件，不表示立即抢占', 13, MUTED)
     d.save('work-item-reviewer-sequence-zh')
 
 
