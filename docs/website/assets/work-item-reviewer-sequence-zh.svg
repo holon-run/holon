@@ -1,51 +1,44 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="800" height="484" viewBox="0 0 800 484" role="img" aria-labelledby="title desc">
-<title id="title">一个 Agent 如何切换并推进两个 WorkItem</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="410" viewBox="0 0 800 410" role="img" aria-labelledby="title desc">
+<title id="title">一个 reviewer，两个 WorkItem</title>
 <desc id="desc">每个 PR 对应一个 WorkItem。同一个 reviewer 的当前工作焦点依次为 A、B、A、B。外部事件使对应 WorkItem 可恢复，再由运行时安排执行；切换焦点不清除等待记录。</desc>
 <defs><marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#285fa7" stroke-width="1.4"/></marker></defs>
-<rect width="800" height="484" rx="8" fill="#f8fafc"/>
+<rect width="800" height="410" rx="8" fill="#f8fafc"/>
 <g font-family="Noto Sans CJK SC, sans-serif">
-<text x="40" y="45" font-size="22" fill="#183457" font-weight="600" text-anchor="start">一个 Agent 如何切换并推进两个 WorkItem</text>
-<text x="40" y="80" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">一个 PR 对应一个 WorkItem · 横向为时间</text>
-<text x="40" y="135" font-size="15" fill="#53677d" font-weight="400" text-anchor="start">外部事件</text>
-<rect x="310" y="108" width="160" height="58" rx="6" fill="#fff" stroke="#d9e2eb"/>
-<text x="390.0" y="131" font-size="15" fill="#183457" font-weight="400" text-anchor="middle">PR A 提交修订</text>
-<text x="390.0" y="153" font-size="13" fill="#285fa7" font-weight="400" text-anchor="middle">WorkItem A 可恢复</text>
-<rect x="610" y="108" width="150" height="58" rx="6" fill="#fff" stroke="#d9e2eb"/>
-<text x="685.0" y="131" font-size="15" fill="#183457" font-weight="400" text-anchor="middle">PR B 的 CI 完成</text>
-<text x="685.0" y="153" font-size="13" fill="#34746d" font-weight="400" text-anchor="middle">WorkItem B 可恢复</text>
-<path d="M390 166V185H530V238" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)" stroke-dasharray="5 7"/>
-<defs><marker id="arrow-16" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#34746d" stroke-width="1.4"/></marker></defs>
-<path d="M685 166V204H690V238" fill="none" stroke="#34746d" stroke-width="1.3" marker-end="url(#arrow-16)" stroke-dasharray="5 7"/>
-<text x="40" y="211" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">可恢复后，由运行时安排执行，不立即抢占</text>
-<text x="28" y="257" font-size="14" fill="#183457" font-weight="600" text-anchor="start">同一个 reviewer</text>
-<text x="28" y="282" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">当前 WorkItem</text>
-<rect x="144" y="240" width="132" height="66" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
-<text x="210" y="266" font-size="16" fill="#285fa7" font-weight="600" text-anchor="middle">WorkItem A</text>
-<text x="210" y="291" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">首次审阅</text>
-<path d="M277 276H302" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
-<text x="290" y="258" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">切换</text>
-<rect x="304" y="240" width="132" height="66" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
-<text x="370" y="266" font-size="16" fill="#34746d" font-weight="600" text-anchor="middle">WorkItem B</text>
-<text x="370" y="291" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">首次审阅</text>
-<path d="M437 276H462" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
-<text x="450" y="258" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">切换</text>
-<rect x="464" y="240" width="132" height="66" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
-<text x="530" y="266" font-size="16" fill="#285fa7" font-weight="600" text-anchor="middle">WorkItem A</text>
-<text x="530" y="291" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">复查并交付</text>
-<path d="M597 276H622" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
-<text x="610" y="258" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">切换</text>
-<rect x="624" y="240" width="132" height="66" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
-<text x="690" y="266" font-size="16" fill="#34746d" font-weight="600" text-anchor="middle">WorkItem B</text>
-<text x="690" y="291" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">检查 CI 结果</text>
-<text x="28" y="354" font-size="14" fill="#285fa7" font-weight="400" text-anchor="start">WorkItem A</text>
-<text x="28" y="375" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">保留工作记录</text>
-<path d="M210 306V366H362M386 366H530" fill="none" stroke="#285fa7" stroke-width="1.3"/>
-<path d="M530 360V372" fill="none" stroke="#285fa7" stroke-width="1.3"/>
-<text x="226" y="354" font-size="14" fill="#285fa7" font-weight="400" text-anchor="start">等待修订</text>
-<path d="M370 306V359Q382 366 370 373V420H690" fill="none" stroke="#34746d" stroke-width="1.3"/>
-<path d="M690 414V426" fill="none" stroke="#34746d" stroke-width="1.3"/>
-<text x="28" y="408" font-size="14" fill="#34746d" font-weight="400" text-anchor="start">WorkItem B</text>
-<text x="28" y="429" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">保留工作记录</text>
-<text x="386" y="408" font-size="14" fill="#34746d" font-weight="400" text-anchor="start">等待 CI</text>
-<text x="40" y="462" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">当前 WorkItem 是工作焦点，不是运行状态；切换焦点不清除另一项工作的记录。</text>
+<text x="40" y="45" font-size="22" fill="#183457" font-weight="600" text-anchor="start">一个 reviewer，两个 WorkItem</text>
+<text x="28" y="121" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">外部事件</text>
+<rect x="310" y="96" width="160" height="40" rx="6" fill="#fff" stroke="#d9e2eb"/>
+<text x="390.0" y="121" font-size="15" fill="#285fa7" font-weight="400" text-anchor="middle">PR A 更新</text>
+<rect x="610" y="96" width="150" height="40" rx="6" fill="#fff" stroke="#d9e2eb"/>
+<text x="685.0" y="121" font-size="15" fill="#34746d" font-weight="400" text-anchor="middle">PR B · CI 完成</text>
+<path d="M390 136V163H530V198" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)" stroke-dasharray="5 7"/>
+<defs><marker id="arrow-13" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M1 1L7 4L1 7" fill="none" stroke="#34746d" stroke-width="1.4"/></marker></defs>
+<path d="M685 136V163H690V198" fill="none" stroke="#34746d" stroke-width="1.3" marker-end="url(#arrow-13)" stroke-dasharray="5 7"/>
+<text x="544" y="184" font-size="13" fill="#285fa7" font-weight="400" text-anchor="start">唤醒</text>
+<text x="704" y="184" font-size="13" fill="#34746d" font-weight="400" text-anchor="start">唤醒</text>
+<text x="28" y="239" font-size="13" fill="#53677d" font-weight="400" text-anchor="start">当前 WorkItem</text>
+<rect x="150" y="200" width="120" height="66" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
+<text x="210" y="226" font-size="16" fill="#285fa7" font-weight="600" text-anchor="middle">WorkItem A</text>
+<text x="210" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">审阅</text>
+<path d="M271 236H308" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<text x="290" y="218" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">切换</text>
+<rect x="310" y="200" width="120" height="66" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
+<text x="370" y="226" font-size="16" fill="#34746d" font-weight="600" text-anchor="middle">WorkItem B</text>
+<text x="370" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">审阅</text>
+<path d="M431 236H468" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<text x="450" y="218" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">切换</text>
+<rect x="470" y="200" width="120" height="66" rx="6" fill="#eef4ff" stroke="#eef4ff"/>
+<text x="530" y="226" font-size="16" fill="#285fa7" font-weight="600" text-anchor="middle">WorkItem A</text>
+<text x="530" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">复查交付</text>
+<path d="M591 236H628" fill="none" stroke="#285fa7" stroke-width="1.3" marker-end="url(#arrow)"/>
+<text x="610" y="218" font-size="13" fill="#53677d" font-weight="400" text-anchor="middle">切换</text>
+<rect x="630" y="200" width="120" height="66" rx="6" fill="#edf6f3" stroke="#edf6f3"/>
+<text x="690" y="226" font-size="16" fill="#34746d" font-weight="600" text-anchor="middle">WorkItem B</text>
+<text x="690" y="251" font-size="14" fill="#53677d" font-weight="400" text-anchor="middle">检查 CI</text>
+<text x="28" y="331" font-size="14" fill="#53677d" font-weight="400" text-anchor="start">等待记录</text>
+<path d="M210 266V326H362M386 326H530" fill="none" stroke="#285fa7" stroke-width="1.3"/>
+<path d="M530 320V332" fill="none" stroke="#285fa7" stroke-width="1.3"/>
+<text x="226" y="314" font-size="14" fill="#285fa7" font-weight="400" text-anchor="start">A · 等待修订</text>
+<path d="M370 266V319Q382 326 370 333V376H690" fill="none" stroke="#34746d" stroke-width="1.3"/>
+<path d="M690 370V382" fill="none" stroke="#34746d" stroke-width="1.3"/>
+<text x="386" y="364" font-size="14" fill="#34746d" font-weight="400" text-anchor="start">B · 等待 CI</text>
 </g></svg>

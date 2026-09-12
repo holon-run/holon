@@ -118,7 +118,7 @@ Agent 将影响后续行动的发现写入工作记录，把完整 diff、日志
 
 把这些分工放进一个场景。每个 PR 对应一个 WorkItem：A 负责 PR #101 的审阅，B 负责 PR #102 的审阅。假设已经接好 PR 更新通知和测试结果，下图展示其中一种处理顺序。
 
-<img src="/assets/work-item-reviewer-sequence-zh.png" width="800" height="484" alt="同一个 reviewer 的当前 WorkItem 依次从 A 切换到 B，再回到 A、B。PR A 提交修订使 WorkItem A 可恢复，PR B 的 CI 完成使 WorkItem B 可恢复，再由运行时安排执行，不立即抢占。下方分别保留 WorkItem A 等待修订、WorkItem B 等待 CI 的记录。" loading="lazy" decoding="async">
+<img src="/assets/work-item-reviewer-sequence-zh.png" width="800" height="410" alt="同一个 reviewer 的当前 WorkItem 依次从 A 切换到 B，再回到 A、B。PR A 提交修订使 WorkItem A 可恢复，PR B 的 CI 完成使 WorkItem B 可恢复，再由运行时安排执行，不立即抢占。下方分别保留 WorkItem A 等待修订、WorkItem B 等待 CI 的记录。" loading="lazy" decoding="async">
 
 *图 2：中间是同一个 reviewer 切换当前 WorkItem 的执行顺序；下方保留各 WorkItem 的等待记录，上方事件满足对应工作的恢复条件，不表示立即抢占。*
 

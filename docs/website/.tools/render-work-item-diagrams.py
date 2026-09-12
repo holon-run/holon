@@ -119,54 +119,47 @@ def architecture():
 
 def sequence():
     d = Diagram(
-        '一个 Agent 如何切换并推进两个 WorkItem',
+        '一个 reviewer，两个 WorkItem',
         '每个 PR 对应一个 WorkItem。同一个 reviewer 的当前工作焦点依次为 A、B、A、B。'
         '外部事件使对应 WorkItem 可恢复，再由运行时安排执行；切换焦点不清除等待记录。',
-        484,
+        410,
     )
     teal = '#34746d'
-    d.text(40, 80, '一个 PR 对应一个 WorkItem · 横向为时间', 14, MUTED)
-
-    d.text(40, 135, '外部事件', 15, MUTED)
-    for x, width, title, note, color in [
-        (310, 160, 'PR A 提交修订', 'WorkItem A 可恢复', BLUE),
-        (610, 150, 'PR B 的 CI 完成', 'WorkItem B 可恢复', teal),
+    d.text(28, 121, '外部事件', 14, MUTED)
+    for x, width, title, color in [
+        (310, 160, 'PR A 更新', BLUE),
+        (610, 150, 'PR B · CI 完成', teal),
     ]:
-        d.rect(x, 108, width, 58)
-        d.text(x + width / 2, 131, title, 15, anchor='middle')
-        d.text(x + width / 2, 153, note, 13, color, anchor='middle')
-    d.path('M390 166V185H530V238', dashed=True)
-    d.path('M685 166V204H690V238', dashed=True, color=teal)
-    d.text(40, 211, '可恢复后，由运行时安排执行，不立即抢占', 13, MUTED)
+        d.rect(x, 96, width, 40)
+        d.text(x + width / 2, 121, title, 15, color, anchor='middle')
+    d.path('M390 136V163H530V198', dashed=True)
+    d.path('M685 136V163H690V198', dashed=True, color=teal)
+    d.text(544, 184, '唤醒', 13, BLUE)
+    d.text(704, 184, '唤醒', 13, teal)
 
-    d.text(28, 257, '同一个 reviewer', 14, bold=True)
-    d.text(28, 282, '当前 WorkItem', 13, MUTED)
+    d.text(28, 239, '当前 WorkItem', 13, MUTED)
     for i, (center, title, note, fill, color) in enumerate([
-        (210, 'WorkItem A', '首次审阅', ACTIVE[0], BLUE),
-        (370, 'WorkItem B', '首次审阅', '#edf6f3', teal),
-        (530, 'WorkItem A', '复查并交付', ACTIVE[0], BLUE),
-        (690, 'WorkItem B', '检查 CI 结果', '#edf6f3', teal),
+        (210, 'WorkItem A', '审阅', ACTIVE[0], BLUE),
+        (370, 'WorkItem B', '审阅', '#edf6f3', teal),
+        (530, 'WorkItem A', '复查交付', ACTIVE[0], BLUE),
+        (690, 'WorkItem B', '检查 CI', '#edf6f3', teal),
     ]):
-        d.rect(center - 66, 240, 132, 66, fill, fill)
-        d.text(center, 266, title, 16, color, bold=True, anchor='middle')
-        d.text(center, 291, note, 14, MUTED, anchor='middle')
+        d.rect(center - 60, 200, 120, 66, fill, fill)
+        d.text(center, 226, title, 16, color, bold=True, anchor='middle')
+        d.text(center, 251, note, 14, MUTED, anchor='middle')
         if i < 3:
-            d.path(f'M{center + 67} 276H{center + 92}')
-            d.text(center + 80, 258, '切换', 13, MUTED, anchor='middle')
+            d.path(f'M{center + 61} 236H{center + 98}')
+            d.text(center + 80, 218, '切换', 13, MUTED, anchor='middle')
 
-    d.text(28, 354, 'WorkItem A', 14, BLUE)
-    d.text(28, 375, '保留工作记录', 13, MUTED)
-    d.path('M210 306V366H362M386 366H530', arrow=False, color=BLUE)
-    d.path('M530 360V372', arrow=False, color=BLUE)
-    d.text(226, 354, '等待修订', 14, BLUE)
+    d.text(28, 331, '等待记录', 14, MUTED)
+    d.path('M210 266V326H362M386 326H530', arrow=False, color=BLUE)
+    d.path('M530 320V332', arrow=False, color=BLUE)
+    d.text(226, 314, 'A · 等待修订', 14, BLUE)
     # A small bridge keeps the crossing distinct from a state hand-off.
-    d.path('M370 306V359Q382 366 370 373V420H690', arrow=False, color=teal)
-    d.path('M690 414V426', arrow=False, color=teal)
-    d.text(28, 408, 'WorkItem B', 14, teal)
-    d.text(28, 429, '保留工作记录', 13, MUTED)
-    d.text(386, 408, '等待 CI', 14, teal)
+    d.path('M370 266V319Q382 326 370 333V376H690', arrow=False, color=teal)
+    d.path('M690 370V382', arrow=False, color=teal)
+    d.text(386, 364, 'B · 等待 CI', 14, teal)
 
-    d.text(40, 462, '当前 WorkItem 是工作焦点，不是运行状态；切换焦点不清除另一项工作的记录。', 13, MUTED)
     d.save('work-item-reviewer-sequence-zh')
 
 

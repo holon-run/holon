@@ -14,11 +14,11 @@ pairs. It requires CairoSVG and Noto Sans CJK SC.
 
 - `work-item-architecture-zh`: 800×430, showing per-turn judgment, persistent
   work records, and resumption after waiting. It is not an internal component map.
-- `work-item-reviewer-sequence-zh`: 800×484, showing one reviewer's current
+- `work-item-reviewer-sequence-zh`: 800×410, showing one reviewer's current
   WorkItem switching A → B → A → B. Each PR maps to one WorkItem, with consistent
   colors across execution, external events, and retained waiting records.
-  Events make the corresponding WorkItem resumable, not immediately preemptive;
-  current focus is distinct from running or waiting state.
+  Short labels keep the diagram light; the article explains that events make
+  work resumable without immediate preemption, and focus is not running state.
 - Both use a single desktop-oriented layout. Keep source dimensions
   synchronized with the article HTML.
 
