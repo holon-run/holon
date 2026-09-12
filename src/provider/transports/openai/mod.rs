@@ -37,8 +37,8 @@ use crate::{
         ProviderOpenAiRemoteCompactionDiagnostics, ProviderOpenAiRequestControlsDiagnostics,
         ProviderPromptFrame, ProviderRequestDiagnostics, ProviderResponseFormatDiagnostics,
         ProviderResponseFormatRequest, ProviderStablePrefixDiagnostics,
-        ProviderTransportDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
-        ToolSchemaContract,
+        ProviderTransportDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
+        ProviderTurnResponse, ToolSchemaContract,
     },
     token_estimate::estimate_json_tokens,
 };
@@ -292,6 +292,7 @@ pub(crate) struct ParsedOpenAiResponse {
     pub(crate) response: ProviderTurnResponse,
     pub(crate) response_id: Option<String>,
     pub(crate) output_items: Vec<Value>,
+    pub(crate) transport_timeline: Option<ProviderTransportTimeline>,
 }
 
 impl OpenAiProvider {
@@ -632,6 +633,7 @@ impl AgentProvider for OpenAiProvider {
             )
             .await;
         }
+        sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
@@ -935,6 +937,7 @@ impl AgentProvider for OpenAiCodexProvider {
             )
             .await;
         }
+        sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
@@ -1145,6 +1148,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             &parsed,
         );
 
+        sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
         Ok(parsed.response.with_request_diagnostics(sent_diagnostics))
     }
 
@@ -1240,6 +1244,11 @@ pub(in crate::provider::transports::openai) fn openai_stable_prefix_diagnostics(
 impl ParsedOpenAiResponse {
     fn with_provider_request_id(mut self, provider_request_id: Option<String>) -> Self {
         self.response.provider_request_id = provider_request_id;
+        self
+    }
+
+    fn with_transport_timeline(mut self, transport_timeline: ProviderTransportTimeline) -> Self {
+        self.transport_timeline = Some(transport_timeline);
         self
     }
 

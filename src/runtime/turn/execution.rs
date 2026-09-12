@@ -12,8 +12,8 @@ use crate::config::ModelRouteRef;
 use crate::prompt::EffectivePrompt;
 use crate::provider::{
     provider_attempt_timeline, provider_error_is_context_length_exceeded, AgentProvider,
-    ModelBlock, ProviderAttemptTimeline, ProviderFallbackDisposition, ProviderTurnRequest,
-    ProviderTurnResponse, ToolResultBlock, PROVIDER_RECOVERY_BASE_BACKOFF_MS,
+    ModelBlock, ProviderAttemptOutcome, ProviderAttemptTimeline, ProviderFallbackDisposition,
+    ProviderTurnRequest, ProviderTurnResponse, ToolResultBlock, PROVIDER_RECOVERY_BASE_BACKOFF_MS,
     PROVIDER_RECOVERY_MAX_BACKOFF_MS, PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
 use crate::runtime::provider_turn::{
@@ -1030,7 +1030,206 @@ fn record_provider_round_span(
     agent_id: &str,
     round: usize,
     started_at: chrono::DateTime<chrono::Utc>,
-    succeeded: bool,
+    result: &Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)>,
+) {
+    let Some(parent) = parent else {
+        return;
+    };
+    let context = parent.child();
+    let (response, timeline) = match result {
+        Ok((response, timeline)) => (Some(response), timeline.as_ref()),
+        Err(error) => (None, provider_attempt_timeline(error)),
+    };
+    let token_usage = timeline.and_then(|timeline| timeline.aggregated_token_usage.as_ref());
+    let cache_usage = response.and_then(|response| response.cache_usage.as_ref());
+    let attributes = crate::observability::TraceAttributes {
+        agent_id: Some(agent_id.to_string()),
+        round: Some(round as u64),
+        outcome: Some(
+            if result.is_ok() {
+                "succeeded"
+            } else {
+                "failed"
+            }
+            .to_string(),
+        ),
+        input_tokens: response
+            .map(|response| response.input_tokens)
+            .or_else(|| token_usage.map(|usage| usage.input_tokens)),
+        output_tokens: response
+            .map(|response| response.output_tokens)
+            .or_else(|| token_usage.map(|usage| usage.output_tokens)),
+        cache_read_input_tokens: cache_usage.map(|usage| usage.read_input_tokens),
+        cache_creation_input_tokens: cache_usage.map(|usage| usage.creation_input_tokens),
+        provider_request_id: response.and_then(|response| response.provider_request_id.clone()),
+        provider_message_id: response.and_then(|response| response.provider_message_id.clone()),
+        ..Default::default()
+    };
+    crate::observability::record_span(
+        &context,
+        crate::observability::completed_span(
+            "holon.provider.round",
+            &context,
+            Some(parent.span_id.clone()),
+            started_at,
+            if result.is_ok() {
+                crate::observability::TraceSpanStatus::Ok
+            } else {
+                crate::observability::TraceSpanStatus::Error
+            },
+            attributes,
+        ),
+    );
+    let Some(timeline) = timeline else {
+        return;
+    };
+    for attempt in &timeline.attempts {
+        let attempt_context = context.child();
+        let cache_usage = attempt.cache_usage.as_ref();
+        let token_usage = attempt.token_usage.as_ref();
+        crate::observability::record_span(
+            &attempt_context,
+            crate::observability::completed_span_at(
+                "holon.provider.attempt",
+                &attempt_context,
+                Some(context.span_id.clone()),
+                attempt.started_at.unwrap_or(started_at),
+                attempt.completed_at.unwrap_or_else(chrono::Utc::now),
+                if attempt.outcome == ProviderAttemptOutcome::Succeeded {
+                    crate::observability::TraceSpanStatus::Ok
+                } else {
+                    crate::observability::TraceSpanStatus::Error
+                },
+                crate::observability::TraceAttributes {
+                    agent_id: Some(agent_id.to_string()),
+                    provider: Some(attempt.provider.clone()),
+                    round: Some(round as u64),
+                    attempt: Some(attempt.attempt as u64),
+                    max_attempts: Some(attempt.max_attempts as u64),
+                    outcome: Some(attempt.outcome.as_str().to_string()),
+                    failure_kind: attempt.failure_kind.clone(),
+                    disposition: attempt.disposition.clone(),
+                    input_tokens: token_usage.map(|usage| usage.input_tokens),
+                    output_tokens: token_usage.map(|usage| usage.output_tokens),
+                    cache_read_input_tokens: cache_usage.map(|usage| usage.read_input_tokens),
+                    cache_creation_input_tokens: cache_usage
+                        .map(|usage| usage.creation_input_tokens),
+                    provider_request_id: attempt.provider_request_id.clone(),
+                    provider_message_id: attempt.provider_message_id.clone(),
+                    provider_http_trace_id: attempt.provider_http_trace_id.clone(),
+                    ..Default::default()
+                },
+            ),
+        );
+        if let Some(transport) = attempt.transport_timeline.as_ref() {
+            let transport_attributes = || crate::observability::TraceAttributes {
+                agent_id: Some(agent_id.to_string()),
+                provider: Some(attempt.provider.clone()),
+                round: Some(round as u64),
+                attempt: Some(attempt.attempt as u64),
+                provider_request_id: attempt.provider_request_id.clone(),
+                provider_message_id: attempt.provider_message_id.clone(),
+                provider_http_trace_id: attempt.provider_http_trace_id.clone(),
+                ..Default::default()
+            };
+            let http_context = attempt_context.child();
+            crate::observability::record_span(
+                &http_context,
+                crate::observability::completed_span_at(
+                    "holon.provider.http",
+                    &http_context,
+                    Some(attempt_context.span_id.clone()),
+                    transport.request_started_at,
+                    transport.response_headers_at,
+                    crate::observability::TraceSpanStatus::Ok,
+                    transport_attributes(),
+                ),
+            );
+            let headers_context = attempt_context.child();
+            crate::observability::record_span(
+                &headers_context,
+                crate::observability::completed_span_at(
+                    "holon.provider.response_headers",
+                    &headers_context,
+                    Some(attempt_context.span_id.clone()),
+                    transport.response_headers_at,
+                    transport.response_headers_at,
+                    crate::observability::TraceSpanStatus::Ok,
+                    transport_attributes(),
+                ),
+            );
+            if transport.streaming {
+                if let Some(response_body_completed_at) = transport.response_body_completed_at {
+                    let stream_context = attempt_context.child();
+                    crate::observability::record_span(
+                        &stream_context,
+                        crate::observability::completed_span_at(
+                            "holon.provider.stream",
+                            &stream_context,
+                            Some(attempt_context.span_id.clone()),
+                            transport.response_headers_at,
+                            response_body_completed_at,
+                            crate::observability::TraceSpanStatus::Ok,
+                            transport_attributes(),
+                        ),
+                    );
+                }
+            }
+            let parse_context = attempt_context.child();
+            crate::observability::record_span(
+                &parse_context,
+                crate::observability::completed_span_at(
+                    "holon.provider.parse",
+                    &parse_context,
+                    Some(attempt_context.span_id.clone()),
+                    transport
+                        .response_body_completed_at
+                        .unwrap_or(transport.response_headers_at),
+                    transport.parse_completed_at,
+                    crate::observability::TraceSpanStatus::Ok,
+                    transport_attributes(),
+                ),
+            );
+        }
+        if let Some(backoff_ms) = attempt.backoff_ms {
+            let backoff_context = attempt_context.child();
+            let backoff_started_at = attempt.completed_at.unwrap_or(started_at);
+            let backoff_duration =
+                chrono::Duration::milliseconds(backoff_ms.min(i64::MAX as u64) as i64);
+            let backoff_completed_at = backoff_started_at
+                .checked_add_signed(backoff_duration)
+                .unwrap_or(backoff_started_at);
+            crate::observability::record_span(
+                &backoff_context,
+                crate::observability::TraceSpan {
+                    name: "holon.provider.retry_backoff".to_string(),
+                    span_id: backoff_context.span_id.clone(),
+                    parent_span_id: Some(attempt_context.span_id.clone()),
+                    started_at: backoff_started_at,
+                    completed_at: backoff_completed_at,
+                    duration_us: backoff_ms.saturating_mul(1_000),
+                    status: crate::observability::TraceSpanStatus::Ok,
+                    attributes: crate::observability::TraceAttributes {
+                        agent_id: Some(agent_id.to_string()),
+                        provider: Some(attempt.provider.clone()),
+                        round: Some(round as u64),
+                        attempt: Some(attempt.attempt as u64),
+                        max_attempts: Some(attempt.max_attempts as u64),
+                        backoff_source: attempt.backoff_source.clone(),
+                        ..Default::default()
+                    },
+                },
+            );
+        }
+    }
+}
+
+fn record_turn_local_span(
+    parent: Option<&crate::observability::TraceContext>,
+    name: &'static str,
+    agent_id: &str,
+    round: usize,
+    started_at: chrono::DateTime<chrono::Utc>,
 ) {
     let Some(parent) = parent else {
         return;
@@ -1039,15 +1238,11 @@ fn record_provider_round_span(
     crate::observability::record_span(
         &context,
         crate::observability::completed_span(
-            "holon.provider.round",
+            name,
             &context,
             Some(parent.span_id.clone()),
             started_at,
-            if succeeded {
-                crate::observability::TraceSpanStatus::Ok
-            } else {
-                crate::observability::TraceSpanStatus::Error
-            },
+            crate::observability::TraceSpanStatus::Ok,
             crate::observability::TraceAttributes {
                 agent_id: Some(agent_id.to_string()),
                 round: Some(round as u64),
@@ -1055,6 +1250,193 @@ fn record_provider_round_span(
             },
         ),
     );
+}
+
+#[cfg(test)]
+mod provider_span_tests {
+    use chrono::{Duration, Utc};
+
+    use super::*;
+    use crate::observability::{recent_trace, TraceContext, TraceSpanStatus};
+    use crate::provider::{ProviderAttemptRecord, ProviderCacheUsage, ProviderTransportTimeline};
+
+    #[test]
+    fn provider_round_records_attempt_backoff_usage_and_identifiers() {
+        let parent = TraceContext::new_root(true);
+        let started_at = Utc::now() - Duration::seconds(2);
+        let first_completed_at = started_at + Duration::milliseconds(120);
+        let second_started_at = first_completed_at + Duration::milliseconds(200);
+        let second_completed_at = second_started_at + Duration::milliseconds(80);
+        let timeline = ProviderAttemptTimeline {
+            attempts: vec![
+                ProviderAttemptRecord {
+                    provider: "openai".into(),
+                    model_ref: "openai/test".into(),
+                    attempt: 1,
+                    max_attempts: 2,
+                    started_at: Some(started_at),
+                    completed_at: Some(first_completed_at),
+                    duration_ms: Some(120),
+                    failure_kind: Some("rate_limited".into()),
+                    disposition: Some("retryable".into()),
+                    outcome: ProviderAttemptOutcome::Retrying,
+                    advanced_to_fallback: false,
+                    backoff_ms: Some(200),
+                    backoff_source: Some("server_retry_after".into()),
+                    token_usage: None,
+                    cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: Some("request-1".into()),
+                    provider_http_trace_id: Some("capture-1".into()),
+                    transport_diagnostics: None,
+                    transport_timeline: None,
+                },
+                ProviderAttemptRecord {
+                    provider: "openai".into(),
+                    model_ref: "openai/test".into(),
+                    attempt: 2,
+                    max_attempts: 2,
+                    started_at: Some(second_started_at),
+                    completed_at: Some(second_completed_at),
+                    duration_ms: Some(80),
+                    failure_kind: None,
+                    disposition: None,
+                    outcome: ProviderAttemptOutcome::Succeeded,
+                    advanced_to_fallback: false,
+                    backoff_ms: None,
+                    backoff_source: None,
+                    token_usage: Some(TokenUsage::new(13, 5)),
+                    cache_usage: Some(ProviderCacheUsage {
+                        read_input_tokens: 8,
+                        creation_input_tokens: 3,
+                    }),
+                    provider_message_id: Some("message-2".into()),
+                    provider_request_id: Some("request-2".into()),
+                    provider_http_trace_id: Some("capture-2".into()),
+                    transport_diagnostics: None,
+                    transport_timeline: Some(ProviderTransportTimeline {
+                        request_started_at: second_started_at,
+                        response_headers_at: second_started_at + Duration::milliseconds(20),
+                        response_body_completed_at: Some(
+                            second_started_at + Duration::milliseconds(65),
+                        ),
+                        parse_completed_at: second_completed_at,
+                        streaming: true,
+                    }),
+                },
+            ],
+            requested_model_ref: "openai/test".into(),
+            active_model_ref: Some("openai/test".into()),
+            winning_model_ref: Some("openai/test".into()),
+            pending_fallback_model_ref: None,
+            pending_fallback_disposition: None,
+            aggregated_token_usage: Some(TokenUsage::new(13, 5)),
+        };
+        let result = Ok((
+            ProviderTurnResponse {
+                blocks: Vec::new(),
+                stop_reason: Some("end_turn".into()),
+                input_tokens: 13,
+                output_tokens: 5,
+                cache_usage: Some(ProviderCacheUsage {
+                    read_input_tokens: 8,
+                    creation_input_tokens: 3,
+                }),
+                provider_message_id: Some("message-2".into()),
+                provider_request_id: Some("request-2".into()),
+                request_diagnostics: None,
+            },
+            Some(timeline),
+        ));
+
+        record_provider_round_span(Some(&parent), "agent-1", 3, started_at, &result);
+
+        let trace = recent_trace(&parent.trace_id).expect("provider trace");
+        let round = trace
+            .spans
+            .iter()
+            .find(|span| span.name == "holon.provider.round")
+            .expect("round span");
+        assert_eq!(
+            round.parent_span_id.as_deref(),
+            Some(parent.span_id.as_str())
+        );
+        assert_eq!(round.attributes.input_tokens, Some(13));
+        assert_eq!(round.attributes.cache_read_input_tokens, Some(8));
+        assert_eq!(
+            round.attributes.provider_request_id.as_deref(),
+            Some("request-2")
+        );
+
+        let attempts = trace
+            .spans
+            .iter()
+            .filter(|span| span.name == "holon.provider.attempt")
+            .collect::<Vec<_>>();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].duration_us, 120_000);
+        assert_eq!(attempts[0].status, TraceSpanStatus::Error);
+        assert_eq!(
+            attempts[0].attributes.failure_kind.as_deref(),
+            Some("rate_limited")
+        );
+        assert_eq!(
+            attempts[0].attributes.provider_http_trace_id.as_deref(),
+            Some("capture-1")
+        );
+        assert_eq!(attempts[1].duration_us, 80_000);
+        assert_eq!(attempts[1].attributes.output_tokens, Some(5));
+        assert_eq!(
+            attempts[1].attributes.provider_message_id.as_deref(),
+            Some("message-2")
+        );
+
+        let transport_span = |name: &str| {
+            trace
+                .spans
+                .iter()
+                .find(|span| span.name == name)
+                .unwrap_or_else(|| panic!("missing {name} span"))
+        };
+        let http = transport_span("holon.provider.http");
+        assert_eq!(http.parent_span_id, Some(attempts[1].span_id.clone()));
+        assert_eq!(http.started_at, second_started_at);
+        assert_eq!(http.duration_us, 20_000);
+        assert_eq!(
+            http.attributes.provider_http_trace_id.as_deref(),
+            Some("capture-2")
+        );
+        let headers = transport_span("holon.provider.response_headers");
+        assert_eq!(headers.parent_span_id, Some(attempts[1].span_id.clone()));
+        assert_eq!(
+            headers.started_at,
+            second_started_at + Duration::milliseconds(20)
+        );
+        assert_eq!(headers.duration_us, 0);
+        let stream = transport_span("holon.provider.stream");
+        assert_eq!(stream.parent_span_id, Some(attempts[1].span_id.clone()));
+        assert_eq!(stream.duration_us, 45_000);
+        let parse = transport_span("holon.provider.parse");
+        assert_eq!(parse.parent_span_id, Some(attempts[1].span_id.clone()));
+        assert_eq!(
+            parse.started_at,
+            second_started_at + Duration::milliseconds(65)
+        );
+        assert_eq!(parse.duration_us, 15_000);
+
+        let backoff = trace
+            .spans
+            .iter()
+            .find(|span| span.name == "holon.provider.retry_backoff")
+            .expect("backoff span");
+        assert_eq!(backoff.parent_span_id, Some(attempts[0].span_id.clone()));
+        assert_eq!(backoff.started_at, first_completed_at);
+        assert_eq!(backoff.duration_us, 200_000);
+        assert_eq!(
+            backoff.attributes.backoff_source.as_deref(),
+            Some("server_retry_after")
+        );
+    }
 }
 
 pub(super) const TOOL_AUDIT_INPUT_STRING_LIMIT: usize = 4_096;
@@ -1408,6 +1790,7 @@ impl TurnExecution<'_> {
             }
 
             let context_build_started = Instant::now();
+            let context_build_started_at = chrono::Utc::now();
 
             let provider_round_started = std::time::Instant::now();
             let (
@@ -1421,6 +1804,7 @@ impl TurnExecution<'_> {
                 turn_local_compaction,
             ) = if round == 1 {
                 let request_build_started = std::time::Instant::now();
+                let request_build_started_at = chrono::Utc::now();
                 let request = build_initial_provider_turn_request(
                     provider.as_ref(),
                     &effective_prompt,
@@ -1428,6 +1812,13 @@ impl TurnExecution<'_> {
                     native_web_search.clone(),
                 );
                 crate::diagnostics::record_provider_request_build(request_build_started.elapsed());
+                record_turn_local_span(
+                    trace_context.as_ref(),
+                    "holon.provider.request_build",
+                    agent_id,
+                    round,
+                    request_build_started_at,
+                );
                 let mut context_management =
                     context_management_diagnostic(provider.as_ref(), &request);
                 context_management["history_projection"] = projection_diagnostic(
@@ -1442,6 +1833,13 @@ impl TurnExecution<'_> {
                     projection_outcome,
                 );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
+                record_turn_local_span(
+                    trace_context.as_ref(),
+                    "holon.turn.context_build",
+                    agent_id,
+                    round,
+                    context_build_started_at,
+                );
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
                     runtime
                         .complete_turn_with_timing(provider.clone(), request)
@@ -1451,7 +1849,7 @@ impl TurnExecution<'_> {
                     agent_id,
                     round,
                     provider_started_at,
-                    result.is_ok(),
+                    &result,
                 );
                 match result {
                     Ok((response, attempt_timeline)) => (
@@ -1748,12 +2146,20 @@ impl TurnExecution<'_> {
                         ))?;
                     }
                 }
+                let request_build_started_at = chrono::Utc::now();
                 let request = build_continuation_request(
                     crate::provider::ContinuationScopeId::new(agent_id),
                     prompt_frame,
                     projection.conversation,
                     available_tools.clone(),
                     native_web_search.clone(),
+                );
+                record_turn_local_span(
+                    trace_context.as_ref(),
+                    "holon.provider.request_build",
+                    agent_id,
+                    round,
+                    request_build_started_at,
                 );
                 let mut context_management =
                     context_management_diagnostic(provider.as_ref(), &request);
@@ -1769,6 +2175,13 @@ impl TurnExecution<'_> {
                     projection_outcome,
                 );
                 let context_build_ms = context_build_started.elapsed().as_millis() as u64;
+                record_turn_local_span(
+                    trace_context.as_ref(),
+                    "holon.turn.context_build",
+                    agent_id,
+                    round,
+                    context_build_started_at,
+                );
                 let (result, provider_started_at, provider_completed_at, provider_round_ms) =
                     runtime
                         .complete_turn_with_timing(provider.clone(), request)
@@ -1778,7 +2191,7 @@ impl TurnExecution<'_> {
                     agent_id,
                     round,
                     provider_started_at,
-                    result.is_ok(),
+                    &result,
                 );
                 match result {
                     Ok((response, attempt_timeline)) => (
@@ -2893,6 +3306,7 @@ impl TurnExecution<'_> {
                             },
                         ),
                     effective_work_item_id: pre_tool_work_item_id.clone(),
+                    trace_context: trace_context.as_ref().map(|parent| parent.child()),
                 };
                 let tool_started_at = chrono::Utc::now();
                 let tool_exec_started = std::time::Instant::now();
@@ -2919,13 +3333,15 @@ impl TurnExecution<'_> {
                         .await
                 };
                 crate::diagnostics::record_turn_tool_execution(tool_exec_started.elapsed());
-                if let Some(parent) = trace_context.as_ref() {
-                    let tool_context = parent.child();
+                if let (Some(parent), Some(tool_context)) = (
+                    trace_context.as_ref(),
+                    tool_execution_context.trace_context.as_ref(),
+                ) {
                     crate::observability::record_span(
-                        &tool_context,
+                        tool_context,
                         crate::observability::completed_span(
                             "holon.tool.execute",
-                            &tool_context,
+                            tool_context,
                             Some(parent.span_id.clone()),
                             tool_started_at,
                             if tool_execution.is_ok() {
@@ -2945,7 +3361,8 @@ impl TurnExecution<'_> {
                 }
                 match tool_execution {
                     Ok((mut result, mut record)) => {
-                        let result_content =
+                        let render_started_at = chrono::Utc::now();
+                        let render_result =
                             crate::tool::tools::render_tool_result_for_model_with_context(
                                 &result,
                                 &crate::tool::tools::ToolModelRenderContext {
@@ -2954,7 +3371,32 @@ impl TurnExecution<'_> {
                                         .resolved_policy
                                         .tool_output_truncation_estimated_tokens,
                                 },
-                            )?;
+                            );
+                        if let Some(parent) = tool_execution_context.trace_context.as_ref() {
+                            let context = parent.child();
+                            crate::observability::record_span(
+                                &context,
+                                crate::observability::completed_span(
+                                    "holon.tool.render_for_model",
+                                    &context,
+                                    Some(parent.span_id.clone()),
+                                    render_started_at,
+                                    if render_result.is_ok() {
+                                        crate::observability::TraceSpanStatus::Ok
+                                    } else {
+                                        crate::observability::TraceSpanStatus::Error
+                                    },
+                                    crate::observability::TraceAttributes {
+                                        agent_id: Some(agent_id.to_string()),
+                                        work_item_id: pre_tool_work_item_id.clone(),
+                                        tool_name: Some(tool_name.clone()),
+                                        round: Some(round as u64),
+                                        ..Default::default()
+                                    },
+                                ),
+                            );
+                        }
+                        let result_content = render_result?;
                         let loop_directive = result.loop_directive.take();
                         let duration_ms = record.duration_ms;
                         let (turn_index, turn_id, run_id, current_work_item_id) = {
@@ -3031,22 +3473,53 @@ impl TurnExecution<'_> {
                             }),
                         );
                         let stops_tool_batch = result.prepared_work_item_completion.is_some();
-                        if let Some(mut prepared) = result.prepared_work_item_completion.take() {
-                            prepared.tool_execution = Some(record.clone());
-                            prepared.audit_events.push(tool_executed_event);
-                            if prepared.settlement
-                                == crate::runtime::WorkItemCompletionSettlement::Detached
+                        let persist_started_at = chrono::Utc::now();
+                        let persist_result: Result<()> = async {
+                            if let Some(mut prepared) = result.prepared_work_item_completion.take()
                             {
-                                runtime
-                                    .commit_prepared_detached_work_item_completion(*prepared)
-                                    .await?;
+                                prepared.tool_execution = Some(record.clone());
+                                prepared.audit_events.push(tool_executed_event);
+                                if prepared.settlement
+                                    == crate::runtime::WorkItemCompletionSettlement::Detached
+                                {
+                                    runtime
+                                        .commit_prepared_detached_work_item_completion(*prepared)
+                                        .await?;
+                                } else {
+                                    prepared_work_item_completion = Some(prepared);
+                                }
                             } else {
-                                prepared_work_item_completion = Some(prepared);
+                                runtime.persist_tool_execution_evidence(&record)?;
+                                runtime.inner.storage.append_event(&tool_executed_event)?;
                             }
-                        } else {
-                            runtime.persist_tool_execution_evidence(&record)?;
-                            runtime.inner.storage.append_event(&tool_executed_event)?;
+                            Ok(())
                         }
+                        .await;
+                        if let Some(parent) = tool_execution_context.trace_context.as_ref() {
+                            let context = parent.child();
+                            crate::observability::record_span(
+                                &context,
+                                crate::observability::completed_span(
+                                    "holon.tool.persist",
+                                    &context,
+                                    Some(parent.span_id.clone()),
+                                    persist_started_at,
+                                    if persist_result.is_ok() {
+                                        crate::observability::TraceSpanStatus::Ok
+                                    } else {
+                                        crate::observability::TraceSpanStatus::Error
+                                    },
+                                    crate::observability::TraceAttributes {
+                                        agent_id: Some(agent_id.to_string()),
+                                        work_item_id: record.work_item_id.clone(),
+                                        tool_name: Some(tool_name.clone()),
+                                        round: Some(round as u64),
+                                        ..Default::default()
+                                    },
+                                ),
+                            );
+                        }
+                        persist_result?;
                         if let Some(crate::tool::spec::ToolLoopDirective::AwaitCompletionReport(
                             directive,
                         )) = loop_directive

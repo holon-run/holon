@@ -8,7 +8,7 @@ use crate::config::ProviderId;
 use axum::{routing::post, Json, Router};
 use serde_json::{json, Value};
 
-async fn capture_gemini_request(request: ProviderTurnRequest) -> Value {
+async fn capture_gemini_request(request: ProviderTurnRequest) -> (Value, ProviderTurnResponse) {
     let captured_body = Arc::new(Mutex::new(None::<Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url =
@@ -48,10 +48,10 @@ async fn capture_gemini_request(request: ProviderTurnRequest) -> Value {
     )
     .unwrap();
 
-    provider.complete_turn(request).await.unwrap();
+    let response = provider.complete_turn(request).await.unwrap();
 
     let body = captured_body.lock().unwrap().clone();
-    body.expect("server should capture request body")
+    (body.expect("server should capture request body"), response)
 }
 
 fn text_occurrences(value: &Value, expected: &str) -> usize {
@@ -76,7 +76,27 @@ async fn gemini_request_emits_each_prompt_section_once() {
         .conversation
         .push(ConversationMessage::UserText("current input".into()));
 
-    let body = capture_gemini_request(request).await;
+    let (body, response) = capture_gemini_request(request).await;
+
+    let timeline = response
+        .request_diagnostics
+        .as_ref()
+        .and_then(|diagnostics| diagnostics.transport_timeline.as_ref())
+        .expect("Gemini transport timeline");
+    assert!(!timeline.streaming);
+    assert!(timeline.request_started_at <= timeline.response_headers_at);
+    assert!(
+        timeline.response_headers_at
+            <= timeline
+                .response_body_completed_at
+                .expect("Gemini response body completion")
+    );
+    assert!(
+        timeline
+            .response_body_completed_at
+            .expect("Gemini response body completion")
+            <= timeline.parse_completed_at
+    );
 
     assert_eq!(
         body["systemInstruction"]["parts"][0]["text"],
@@ -98,7 +118,7 @@ async fn gemini_request_emits_each_prompt_section_once() {
 
 #[tokio::test]
 async fn gemini_continuation_preserves_history_without_repeating_prompt_sections() {
-    let body = capture_gemini_request(provider_continuation_request_with_prompt_frame()).await;
+    let (body, _) = capture_gemini_request(provider_continuation_request_with_prompt_frame()).await;
 
     assert_eq!(text_occurrences(&body, "stable system"), 1);
     assert_eq!(text_occurrences(&body, "agent context"), 1);
@@ -114,7 +134,7 @@ async fn gemini_continuation_preserves_history_without_repeating_prompt_sections
 
 #[tokio::test]
 async fn gemini_request_falls_back_to_rendered_system_without_structured_blocks() {
-    let body = capture_gemini_request(ProviderTurnRequest::plain(
+    let (body, _) = capture_gemini_request(ProviderTurnRequest::plain(
         "fallback system",
         vec![ConversationMessage::UserText("current input".into())],
         Vec::new(),

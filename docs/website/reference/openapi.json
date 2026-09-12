@@ -7175,13 +7175,103 @@
                         "null"
                       ]
                     },
+                    "attempt": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "backoff_source": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cache_creation_input_tokens": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "cache_read_input_tokens": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "disposition": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "failure_kind": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "input_tokens": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "max_attempts": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
                     "message_id": {
                       "type": [
                         "string",
                         "null"
                       ]
                     },
+                    "outcome": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "output_tokens": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
                     "provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "provider_http_trace_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "provider_message_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "provider_request_id": {
                       "type": [
                         "string",
                         "null"

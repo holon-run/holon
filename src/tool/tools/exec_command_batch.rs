@@ -9,7 +9,7 @@ use crate::{
     runtime::RuntimeHandle,
     tool::{
         helpers::{command_preview, invalid_tool_input, parse_tool_args_with_recovery_hint},
-        spec::ToolResultStatus,
+        spec::{ToolExecutionContext, ToolResultStatus},
         ToolError, ToolResult,
     },
     types::{
@@ -62,6 +62,7 @@ pub(crate) async fn execute(
     _agent_id: &str,
     authority_class: &AuthorityClass,
     input: &Value,
+    context: &ToolExecutionContext,
 ) -> Result<ToolResult> {
     let args = parse_batch_args(input)?;
     validate_batch_shape(&args)?;
@@ -103,7 +104,7 @@ pub(crate) async fn execute(
             continue;
         }
 
-        let item_result = execute_batch_item(runtime, authority_class, index, item).await;
+        let item_result = execute_batch_item(runtime, authority_class, index, item, context).await;
         if stop_on_error
             && matches!(
                 item_result.status,
@@ -265,6 +266,7 @@ async fn execute_batch_item(
     authority_class: &AuthorityClass,
     index: usize,
     item: ExecCommandBatchItemArgs,
+    context: &ToolExecutionContext,
 ) -> ExecCommandBatchItemResult {
     let started = Instant::now();
     let cmd = item.cmd.clone();
@@ -282,7 +284,7 @@ async fn execute_batch_item(
 
     match runtime
         .managed_tasks()
-        .execute_exec_command_once(spec, authority_class)
+        .execute_exec_command_once(spec, authority_class, context.trace_context.as_ref())
         .await
     {
         Ok(result) => {

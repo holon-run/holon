@@ -11,7 +11,8 @@ use crate::{
     provider::{
         http_trace::ProviderHttpTrace, AgentProvider, ConversationMessage, ModelBlock,
         ModelToolCallKind, ProviderCacheUsage, ProviderPromptCapability,
-        ProviderRequestDiagnostics, ProviderTurnRequest, ProviderTurnResponse,
+        ProviderRequestDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
+        ProviderTurnResponse,
     },
 };
 
@@ -168,6 +169,7 @@ impl AgentProvider for GeminiProvider {
                 &request_payload,
             )
         });
+        let request_started_at = chrono::Utc::now();
         let response = self
             .client
             .post(&url)
@@ -188,6 +190,7 @@ impl AgentProvider for GeminiProvider {
                     request_trace.as_ref(),
                 )
             })?;
+        let response_headers_at = chrono::Utc::now();
         if let Some(trace) = request_trace.as_ref() {
             trace.write_response_headers(response.status(), response.headers());
         }
@@ -240,12 +243,26 @@ impl AgentProvider for GeminiProvider {
                     ));
                 }
             };
+        let response_body_completed_at = chrono::Utc::now();
         if let Some(trace) = request_trace.as_ref() {
             trace.write_response_body(&response_body);
         }
         let parsed: GenerateContentResponse = serde_json::from_str(&response_body)
             .map_err(|error| invalid_response_error("invalid Gemini JSON", error))?;
-        gemini_response_to_provider_turn_response(parsed)
+        let mut response = gemini_response_to_provider_turn_response(parsed)?;
+        let parse_completed_at = chrono::Utc::now();
+        response
+            .request_diagnostics
+            .as_mut()
+            .expect("Gemini responses include request diagnostics")
+            .transport_timeline = Some(ProviderTransportTimeline {
+            request_started_at,
+            response_headers_at,
+            response_body_completed_at: Some(response_body_completed_at),
+            parse_completed_at,
+            streaming: false,
+        });
+        Ok(response)
     }
 
     #[cfg(test)]
@@ -445,6 +462,7 @@ fn gemini_response_to_provider_turn_response(
             native_web_search: None,
             response_format: None,
             stable_prefix: None,
+            transport_timeline: None,
         }),
     })
 }

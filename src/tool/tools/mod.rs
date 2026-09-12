@@ -358,12 +358,14 @@ fn execute_builtin_tool_inner<'a>(
             agent_id,
             authority_class,
             &call.input,
+            context,
         )),
         exec_command_batch::NAME => Box::pin(exec_command_batch::execute(
             runtime,
             agent_id,
             authority_class,
             &call.input,
+            context,
         )),
         use_workspace::NAME => Box::pin(use_workspace::execute(
             runtime,

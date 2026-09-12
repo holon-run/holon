@@ -5070,6 +5070,7 @@ async fn operator_prompt_completion_uses_pre_tool_effective_work_item_as_bound_t
                     source_tool_call_id: "complete-operator-prompt".into(),
                 }),
                 effective_work_item_id: Some(work_item.id.clone()),
+                trace_context: None,
             },
         )
         .await
@@ -5173,6 +5174,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
                     source_tool_call_id: "complete".into(),
                 }),
                 effective_work_item_id: Some(work_item.id.clone()),
+                trace_context: None,
             },
         )
         .await

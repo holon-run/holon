@@ -525,6 +525,7 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
         },
         response_id,
         output_items,
+        transport_timeline: None,
     })
 }
 

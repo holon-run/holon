@@ -961,6 +961,17 @@ async fn openai_responses_replays_lossless_window_after_continuation_rejection()
         .unwrap();
 
     let diagnostics = response.request_diagnostics.as_ref().unwrap();
+    let timeline = diagnostics
+        .transport_timeline
+        .as_ref()
+        .expect("OpenAI transport timeline");
+    assert!(!timeline.streaming);
+    assert!(timeline.request_started_at <= timeline.response_headers_at);
+    let response_body_completed_at = timeline
+        .response_body_completed_at
+        .expect("OpenAI response body completion");
+    assert!(timeline.response_headers_at <= response_body_completed_at);
+    assert!(response_body_completed_at <= timeline.parse_completed_at);
     assert_eq!(diagnostics.request_lowering_mode, "provider_window_replay");
     let continuation = diagnostics.incremental_continuation.as_ref().unwrap();
     assert_eq!(continuation.status, "fallback_provider_window_replay");

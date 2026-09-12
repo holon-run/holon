@@ -18,7 +18,7 @@ use super::{
     validate_emitted_tool_schema, AgentProvider, AnthropicProvider, ConversationMessage,
     GeminiProvider, ModelBlock, OpenAiCodexProvider, OpenAiProvider, PromptContentBlock,
     ProviderAttemptOutcome, ProviderPromptCache, ProviderPromptCapability, ProviderPromptFrame,
-    ProviderTurnRequest, ToolResultBlock, ToolSchemaContract,
+    ProviderTurnRequest, ProviderTurnResponse, ToolResultBlock, ToolSchemaContract,
 };
 
 mod anthropic_messages;
@@ -28,3 +28,21 @@ mod openai_responses;
 mod routing_auth_doctor;
 mod support;
 mod tool_schema;
+
+#[test]
+fn provider_attempt_outcome_labels_match_serialized_values() {
+    for outcome in [
+        ProviderAttemptOutcome::Retrying,
+        ProviderAttemptOutcome::RetriesExhausted,
+        ProviderAttemptOutcome::FailFastAborted,
+        ProviderAttemptOutcome::Succeeded,
+    ] {
+        assert_eq!(
+            outcome.as_str(),
+            serde_json::to_value(outcome)
+                .unwrap()
+                .as_str()
+                .expect("provider attempt outcome should serialize as a string")
+        );
+    }
+}

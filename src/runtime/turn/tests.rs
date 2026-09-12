@@ -811,6 +811,11 @@ fn normalize_provider_attempt_timing_backfills_missing_attempt_timing() {
             backoff_ms: None,
             backoff_source: None,
             token_usage: None,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            provider_http_trace_id: None,
+            transport_timeline: None,
             transport_diagnostics: None,
         }
     }

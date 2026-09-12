@@ -216,6 +216,7 @@ mod tests {
         let mut offset = 0;
         let mut batch = false;
         let total = source.chars().count();
+        let execution_context = crate::tool::spec::ToolExecutionContext::default();
         while offset < total {
             let code = format!("import sys; sys.stdout.write(open({}, encoding='utf-8', newline='').read()[{}:{}])",
                 serde_json::to_string(artifact).unwrap(), offset, offset + 8000);
@@ -227,6 +228,7 @@ mod tests {
                     "default",
                     &AuthorityClass::OperatorInstruction,
                     &json!({"items": [{"cmd": cmd}], "max_output_tokens": 4000}),
+                    &execution_context,
                 )
                 .await
                 .unwrap()
@@ -236,6 +238,7 @@ mod tests {
                     "default",
                     &AuthorityClass::OperatorInstruction,
                     &json!({"cmd": cmd, "max_output_tokens": 4000}),
+                    &execution_context,
                 )
                 .await
                 .unwrap()

@@ -73,6 +73,15 @@ pub(super) struct RunningCommand {
     process: Box<dyn RunningProcess>,
     output_rx: mpsc::Receiver<OutputChunk>,
     reader_handles: Vec<JoinHandle<()>>,
+    trace: Option<RunningCommandTrace>,
+}
+
+struct RunningCommandTrace {
+    child_process_context: crate::observability::TraceContext,
+    output_collect_context: crate::observability::TraceContext,
+    parent_span_id: String,
+    started_at: chrono::DateTime<chrono::Utc>,
+    tool_name: String,
 }
 
 struct CommandTaskRunOutcome {
@@ -80,6 +89,8 @@ struct CommandTaskRunOutcome {
     cancel_requested: bool,
     force_stop_requested: bool,
     exit_status: RunningProcessExitStatus,
+    process_completed_at: chrono::DateTime<chrono::Utc>,
+    output_completed_at: chrono::DateTime<chrono::Utc>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -193,7 +204,9 @@ impl RuntimeHandle {
             .await?;
 
         let resolved = self.resolve_command_task(&spec).await?;
-        let running = self.start_command_process(&resolved).await?;
+        let running = self
+            .start_command_process(&resolved, None, crate::tool::names::EXEC_COMMAND)
+            .await?;
         self.register_command_task(
             summary,
             resolved,
@@ -210,6 +223,7 @@ impl RuntimeHandle {
         mut spec: CommandTaskSpec,
         duplicate_policy: ExecCommandDuplicatePolicy,
         authority_class: &AuthorityClass,
+        trace_context: Option<&crate::observability::TraceContext>,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND)
             .await?;
@@ -243,7 +257,9 @@ impl RuntimeHandle {
                 });
             }
         }
-        let mut running = self.start_command_process(&resolved).await?;
+        let mut running = self
+            .start_command_process(&resolved, trace_context, crate::tool::names::EXEC_COMMAND)
+            .await?;
         let mut captured = CapturedOutput::default();
         if spec.yield_time_ms == 0 {
             return self
@@ -276,7 +292,19 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        let process_completed_at = chrono::Utc::now();
                         collect_remaining_output(&mut running, &mut captured).await;
+                        record_command_trace(
+                            &mut running,
+                            process_completed_at,
+                            chrono::Utc::now(),
+                            if status.success() {
+                                crate::observability::TraceSpanStatus::Ok
+                            } else {
+                                crate::observability::TraceSpanStatus::Error
+                            },
+                            if status.success() { "completed" } else { "failed" },
+                        );
                         return self
                             .complete_exec_command_result(
                                 &captured,
@@ -295,7 +323,19 @@ impl RuntimeHandle {
                             .await
                             .context("failed to query command status")?
                         {
+                            let process_completed_at = chrono::Utc::now();
                             collect_remaining_output(&mut running, &mut captured).await;
+                            record_command_trace(
+                                &mut running,
+                                process_completed_at,
+                                chrono::Utc::now(),
+                                if status.success() {
+                                    crate::observability::TraceSpanStatus::Ok
+                                } else {
+                                    crate::observability::TraceSpanStatus::Error
+                                },
+                                if status.success() { "completed" } else { "failed" },
+                            );
                             return self
                                 .complete_exec_command_result(
                                     &captured,
@@ -357,6 +397,7 @@ impl RuntimeHandle {
         &self,
         mut spec: CommandTaskSpec,
         _authority_class: &AuthorityClass,
+        trace_context: Option<&crate::observability::TraceContext>,
     ) -> Result<ExecCommandResult> {
         self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND_BATCH)
             .await?;
@@ -364,7 +405,13 @@ impl RuntimeHandle {
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
         let mut captured = CapturedOutput::default();
-        let mut running = self.start_command_process(&resolved).await?;
+        let mut running = self
+            .start_command_process(
+                &resolved,
+                trace_context,
+                crate::tool::names::EXEC_COMMAND_BATCH,
+            )
+            .await?;
         let sleep = tokio::time::sleep(Duration::from_millis(resolved.spec.yield_time_ms));
         let mut status_tick = tokio::time::interval(PROCESS_STATUS_POLL_INTERVAL);
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -384,7 +431,19 @@ impl RuntimeHandle {
                         .await
                         .context("failed to query command status")?
                     {
+                        let process_completed_at = chrono::Utc::now();
                         collect_remaining_output(&mut running, &mut captured).await;
+                        record_command_trace(
+                            &mut running,
+                            process_completed_at,
+                            chrono::Utc::now(),
+                            if status.success() {
+                                crate::observability::TraceSpanStatus::Ok
+                            } else {
+                                crate::observability::TraceSpanStatus::Error
+                            },
+                            if status.success() { "completed" } else { "failed" },
+                        );
                         return self
                             .complete_exec_command_result(
                                 &captured,
@@ -397,7 +456,15 @@ impl RuntimeHandle {
                 }
                 _ = &mut sleep => {
                     let _ = running.process.stop(StopSignal::Kill).await;
+                    let process_completed_at = chrono::Utc::now();
                     collect_remaining_output(&mut running, &mut captured).await;
+                    record_command_trace(
+                        &mut running,
+                        process_completed_at,
+                        chrono::Utc::now(),
+                        crate::observability::TraceSpanStatus::Error,
+                        "timed_out",
+                    );
                     return Err(ToolError::new(
                         "command_timed_out",
                         format!(
@@ -744,23 +811,45 @@ impl RuntimeHandle {
             )
             .await
         {
-            Ok(outcome) => CommandTaskTerminal {
-                status: if outcome.cancelled {
+            Ok(outcome) => {
+                let status = if outcome.cancelled {
                     TaskStatus::Cancelled
                 } else if outcome.exit_status.success() {
                     TaskStatus::Completed
                 } else {
                     TaskStatus::Failed
-                },
-                exit_status: outcome.exit_status.code(),
-                error: None,
-                cancel_requested: outcome.cancel_requested,
-                force_stop_requested: outcome.force_stop_requested,
-            },
+                };
+                record_command_trace(
+                    &mut running,
+                    outcome.process_completed_at,
+                    outcome.output_completed_at,
+                    if status == TaskStatus::Completed {
+                        crate::observability::TraceSpanStatus::Ok
+                    } else {
+                        crate::observability::TraceSpanStatus::Error
+                    },
+                    task_status_label(&status),
+                );
+                CommandTaskTerminal {
+                    status,
+                    exit_status: outcome.exit_status.code(),
+                    error: None,
+                    cancel_requested: outcome.cancel_requested,
+                    force_stop_requested: outcome.force_stop_requested,
+                }
+            }
             Err(err) => {
                 let _ = running.process.stop(StopSignal::Kill).await;
                 let _ = running.process.wait().await;
+                let process_completed_at = chrono::Utc::now();
                 collect_remaining_output(&mut running, &mut captured).await;
+                record_command_trace(
+                    &mut running,
+                    process_completed_at,
+                    chrono::Utc::now(),
+                    crate::observability::TraceSpanStatus::Error,
+                    "failed",
+                );
                 CommandTaskTerminal {
                     status: TaskStatus::Failed,
                     exit_status: None,
@@ -910,6 +999,7 @@ impl RuntimeHandle {
         let mut status_tick = tokio::time::interval(PROCESS_STATUS_POLL_INTERVAL);
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let exit_status;
+        let process_completed_at;
         loop {
             tokio::select! {
                 chunk = running.output_rx.recv(), if !output_closed => {
@@ -938,6 +1028,7 @@ impl RuntimeHandle {
                         .context("failed to query command status")?
                     {
                         exit_status = status;
+                        process_completed_at = chrono::Utc::now();
                         break;
                     }
                 }
@@ -956,12 +1047,15 @@ impl RuntimeHandle {
         }
 
         collect_remaining_output_into_file(running, captured, &mut file).await?;
+        let output_completed_at = chrono::Utc::now();
         file.flush().await?;
         Ok(CommandTaskRunOutcome {
             cancelled,
             cancel_requested: cancellation_requested,
             force_stop_requested,
             exit_status,
+            process_completed_at,
+            output_completed_at,
         })
     }
 
@@ -1110,7 +1204,10 @@ impl RuntimeHandle {
     pub(super) async fn start_command_process(
         &self,
         resolved: &ResolvedCommandTask,
+        trace_context: Option<&crate::observability::TraceContext>,
+        tool_name: &str,
     ) -> Result<RunningCommand> {
+        let started_at = chrono::Utc::now();
         let system = self.system();
         let execution = self
             .effective_execution(ExecutionScopeKind::CommandTask)
@@ -1165,6 +1262,13 @@ impl RuntimeHandle {
             process,
             output_rx: rx,
             reader_handles,
+            trace: trace_context.map(|parent| RunningCommandTrace {
+                child_process_context: parent.child(),
+                output_collect_context: parent.child(),
+                parent_span_id: parent.span_id.clone(),
+                started_at,
+                tool_name: tool_name.to_string(),
+            }),
         })
     }
 }
@@ -1213,6 +1317,47 @@ async fn collect_remaining_output(running: &mut RunningCommand, captured: &mut C
             handle.abort();
         }
     }
+}
+
+fn record_command_trace(
+    running: &mut RunningCommand,
+    process_completed_at: chrono::DateTime<chrono::Utc>,
+    output_completed_at: chrono::DateTime<chrono::Utc>,
+    status: crate::observability::TraceSpanStatus,
+    outcome: &str,
+) {
+    let Some(trace) = running.trace.take() else {
+        return;
+    };
+    let attributes = crate::observability::TraceAttributes {
+        tool_name: Some(trace.tool_name),
+        outcome: Some(outcome.to_string()),
+        ..Default::default()
+    };
+    crate::observability::record_span(
+        &trace.child_process_context,
+        crate::observability::completed_span_at(
+            "holon.tool.child_process",
+            &trace.child_process_context,
+            Some(trace.parent_span_id.clone()),
+            trace.started_at,
+            process_completed_at,
+            status,
+            attributes.clone(),
+        ),
+    );
+    crate::observability::record_span(
+        &trace.output_collect_context,
+        crate::observability::completed_span_at(
+            "holon.tool.output_collect",
+            &trace.output_collect_context,
+            Some(trace.parent_span_id),
+            trace.started_at,
+            output_completed_at,
+            status,
+            attributes,
+        ),
+    );
 }
 
 async fn collect_remaining_output_into_file(
@@ -1414,6 +1559,16 @@ mod tests {
             }
         }
 
+        fn completed(code: i32) -> Self {
+            Self {
+                status: Arc::new(Mutex::new(Some(RunningProcessExitStatus::new(
+                    Some(code),
+                    None,
+                )))),
+                ..Self::pending()
+            }
+        }
+
         fn failing_status(error: impl Into<String>) -> Self {
             Self {
                 try_status_error: Some(error.into()),
@@ -1520,7 +1675,26 @@ mod tests {
             process: Box::new(process),
             output_rx: rx,
             reader_handles: Vec::new(),
+            trace: None,
         }
+    }
+
+    fn traced_running_command(
+        process: FakeRunningProcess,
+        stdout: &str,
+        stderr: &str,
+        parent: &crate::observability::TraceContext,
+        tool_name: &str,
+    ) -> RunningCommand {
+        let mut running = running_command(process, stdout, stderr);
+        running.trace = Some(RunningCommandTrace {
+            child_process_context: parent.child(),
+            output_collect_context: parent.child(),
+            parent_span_id: parent.span_id.clone(),
+            started_at: Utc::now(),
+            tool_name: tool_name.to_string(),
+        });
+        running
     }
 
     fn task_record(
@@ -1610,6 +1784,59 @@ mod tests {
             output.push_str(&chunk.text);
         }
         output
+    }
+
+    #[test]
+    fn command_trace_records_distinct_process_and_output_completion() {
+        let parent = crate::observability::TraceContext::new_root(true);
+        let mut running = traced_running_command(
+            FakeRunningProcess::completed(0),
+            "",
+            "",
+            &parent,
+            crate::tool::names::EXEC_COMMAND,
+        );
+        let started_at = Utc::now();
+        running.trace.as_mut().expect("trace").started_at = started_at;
+
+        record_command_trace(
+            &mut running,
+            started_at + chrono::Duration::milliseconds(5),
+            started_at + chrono::Duration::milliseconds(8),
+            crate::observability::TraceSpanStatus::Ok,
+            "completed",
+        );
+
+        let trace = crate::observability::recent_trace(&parent.trace_id).expect("trace");
+        let child_process = trace
+            .spans
+            .iter()
+            .find(|span| span.name == "holon.tool.child_process")
+            .expect("child process span");
+        let output_collect = trace
+            .spans
+            .iter()
+            .find(|span| span.name == "holon.tool.output_collect")
+            .expect("output collect span");
+        assert_eq!(
+            child_process.parent_span_id.as_deref(),
+            Some(parent.span_id.as_str())
+        );
+        assert_eq!(
+            output_collect.parent_span_id.as_deref(),
+            Some(parent.span_id.as_str())
+        );
+        assert_ne!(child_process.span_id, output_collect.span_id);
+        assert_eq!(child_process.duration_us, 5_000);
+        assert_eq!(output_collect.duration_us, 8_000);
+        assert_eq!(
+            child_process.attributes.tool_name.as_deref(),
+            Some(crate::tool::names::EXEC_COMMAND)
+        );
+        assert_eq!(
+            output_collect.attributes.outcome.as_deref(),
+            Some("completed")
+        );
     }
 
     #[tokio::test]
@@ -1705,14 +1932,17 @@ mod tests {
         let (_home, _workspace, runtime) = test_runtime();
         let spec = command_spec(false, false);
         let resolved = resolved_command(&runtime, &spec).await;
+        let tool_context = crate::observability::TraceContext::new_root(true);
         let task = runtime
             .register_command_task(
                 "cancel with output".into(),
                 resolved,
-                running_command(
+                traced_running_command(
                     FakeRunningProcess::pending(),
                     "partial stdout\n",
                     "partial stderr\n",
+                    &tool_context,
+                    crate::tool::names::EXEC_COMMAND,
                 ),
                 AuthorityClass::OperatorInstruction,
                 false,
@@ -1748,6 +1978,22 @@ mod tests {
             .contains("partial stdout"));
         let output_path = detail["output_path"].as_str().expect("output path");
         assert_output_file_contains(Path::new(output_path), "partial stderr");
+
+        let trace =
+            crate::observability::recent_trace(&tool_context.trace_id).expect("command trace");
+        for name in ["holon.tool.child_process", "holon.tool.output_collect"] {
+            let span = trace
+                .spans
+                .iter()
+                .find(|span| span.name == name)
+                .unwrap_or_else(|| panic!("missing {name} span"));
+            assert_eq!(
+                span.parent_span_id.as_deref(),
+                Some(tool_context.span_id.as_str())
+            );
+            assert_eq!(span.status, crate::observability::TraceSpanStatus::Error);
+            assert_eq!(span.attributes.outcome.as_deref(), Some("cancelled"));
+        }
     }
 
     #[tokio::test]

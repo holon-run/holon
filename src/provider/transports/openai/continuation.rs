@@ -143,6 +143,7 @@ pub(super) fn incremental_diagnostics(
         native_web_search,
         response_format,
         stable_prefix: None,
+        transport_timeline: None,
     }
 }
 

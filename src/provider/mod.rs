@@ -219,6 +219,19 @@ pub struct ProviderRequestDiagnostics {
     pub response_format: Option<ProviderResponseFormatDiagnostics>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stable_prefix: Option<ProviderStablePrefixDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_timeline: Option<ProviderTransportTimeline>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderTransportTimeline {
+    pub request_started_at: chrono::DateTime<chrono::Utc>,
+    pub response_headers_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body_completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub parse_completed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub streaming: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -682,6 +695,17 @@ pub enum ProviderAttemptOutcome {
     Succeeded,
 }
 
+impl ProviderAttemptOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Retrying => "retrying",
+            Self::RetriesExhausted => "retries_exhausted",
+            Self::FailFastAborted => "fail_fast_aborted",
+            Self::Succeeded => "succeeded",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderFallbackDisposition {
@@ -714,7 +738,17 @@ pub struct ProviderAttemptRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_usage: Option<TokenUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_usage: Option<ProviderCacheUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_http_trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transport_diagnostics: Option<ProviderTransportDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_timeline: Option<ProviderTransportTimeline>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

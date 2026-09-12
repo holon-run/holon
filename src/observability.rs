@@ -60,6 +60,32 @@ pub struct TraceAttributes {
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub round: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_http_trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -218,7 +244,26 @@ pub fn completed_span(
     status: TraceSpanStatus,
     attributes: TraceAttributes,
 ) -> TraceSpan {
-    let completed_at = chrono::Utc::now();
+    completed_span_at(
+        name,
+        context,
+        parent_span_id,
+        started_at,
+        chrono::Utc::now(),
+        status,
+        attributes,
+    )
+}
+
+pub fn completed_span_at(
+    name: impl Into<String>,
+    context: &TraceContext,
+    parent_span_id: Option<String>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    completed_at: chrono::DateTime<chrono::Utc>,
+    status: TraceSpanStatus,
+    attributes: TraceAttributes,
+) -> TraceSpan {
     TraceSpan {
         name: name.into(),
         span_id: context.span_id.clone(),
@@ -366,6 +411,18 @@ mod tests {
         assert_eq!(child.trace_id, parent.trace_id);
         assert_ne!(child.span_id, parent.span_id);
         assert_eq!(child.trace_flags, parent.trace_flags);
+    }
+
+    #[test]
+    fn trace_attributes_deserialize_without_phase_two_fields() {
+        let attributes: TraceAttributes =
+            serde_json::from_str(r#"{"agent_id":"agent-1","round":2}"#).unwrap();
+
+        assert_eq!(attributes.agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(attributes.round, Some(2));
+        assert_eq!(attributes.attempt, None);
+        assert_eq!(attributes.failure_kind, None);
+        assert_eq!(attributes.provider_http_trace_id, None);
     }
 
     #[test]

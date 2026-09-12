@@ -290,6 +290,12 @@ mod tests {
             timeline.attempts[0].backoff_source.as_deref(),
             Some("server_retry_after")
         );
+        assert!(timeline.attempts[0].started_at.is_some());
+        assert!(timeline.attempts[0].completed_at.is_some());
+        assert!(
+            timeline.attempts[0].completed_at.unwrap() >= timeline.attempts[0].started_at.unwrap()
+        );
+        assert!(timeline.attempts[0].duration_ms.is_some());
         assert_eq!(
             timeline.attempts[1].outcome,
             ProviderAttemptOutcome::Succeeded
@@ -731,7 +737,15 @@ impl AgentProvider for FallbackProvider {
                             response.input_tokens,
                             response.output_tokens,
                         )),
+                        cache_usage: response.cache_usage.clone(),
+                        provider_message_id: response.provider_message_id.clone(),
+                        provider_request_id: response.provider_request_id.clone(),
+                        provider_http_trace_id: None,
                         transport_diagnostics: None,
+                        transport_timeline: response
+                            .request_diagnostics
+                            .as_ref()
+                            .and_then(|diagnostics| diagnostics.transport_timeline.clone()),
                     });
                     let diagnostics = ProviderAttemptTimeline {
                         aggregated_token_usage: aggregate_attempt_token_usage(&timeline),
@@ -775,7 +789,14 @@ impl AgentProvider for FallbackProvider {
                             backoff_ms: Some(backoff.as_millis() as u64),
                             backoff_source: Some(source.as_str().to_string()),
                             token_usage: provider_error_token_usage(&error).cloned(),
+                            cache_usage: None,
+                            provider_message_id: None,
+                            provider_request_id: None,
+                            provider_http_trace_id: provider_transport_diagnostics(&error)
+                                .and_then(|diagnostics| diagnostics.http_trace.as_ref())
+                                .map(|trace| trace.capture_id.clone()),
                             transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
+                            transport_timeline: None,
                         });
                         warn!(
                             model_ref = %candidate.model_ref,
@@ -825,7 +846,14 @@ impl AgentProvider for FallbackProvider {
                         backoff_ms: None,
                         backoff_source: None,
                         token_usage: provider_error_token_usage(&error).cloned(),
+                        cache_usage: None,
+                        provider_message_id: None,
+                        provider_request_id: None,
+                        provider_http_trace_id: provider_transport_diagnostics(&error)
+                            .and_then(|diagnostics| diagnostics.http_trace.as_ref())
+                            .map(|trace| trace.capture_id.clone()),
                         transport_diagnostics: provider_transport_diagnostics(&error).cloned(),
+                        transport_timeline: None,
                     });
                     last_error = Some(error);
                     warn!(

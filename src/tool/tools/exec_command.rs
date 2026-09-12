@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::{
     runtime::RuntimeHandle,
     tool::{
-        spec::{typed_spec, ToolResultStatus},
+        spec::{typed_spec, ToolExecutionContext, ToolResultStatus},
         ToolResult,
     },
     types::{
@@ -50,6 +50,7 @@ pub(crate) async fn execute(
     _agent_id: &str,
     authority_class: &AuthorityClass,
     input: &Value,
+    context: &ToolExecutionContext,
 ) -> Result<ToolResult> {
     let args: ExecCommandArgs = parse_tool_args(NAME, input)?;
     let tty = args.tty.unwrap_or(false);
@@ -67,7 +68,12 @@ pub(crate) async fn execute(
     };
     let result: ExecCommandResult = runtime
         .managed_tasks()
-        .execute_exec_command(spec, duplicate_policy, authority_class)
+        .execute_exec_command(
+            spec,
+            duplicate_policy,
+            authority_class,
+            context.trace_context.as_ref(),
+        )
         .await?;
     serialize_success(NAME, &result)
 }

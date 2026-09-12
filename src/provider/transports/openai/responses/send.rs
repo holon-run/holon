@@ -28,6 +28,7 @@ pub(in super::super) async fn send_openai_responses_request(
         request = request.header(name, value);
     }
 
+    let request_started_at = chrono::Utc::now();
     let response = send_openai_request(
         request.json(&body),
         "OpenAI-style request failed",
@@ -39,6 +40,7 @@ pub(in super::super) async fn send_openai_responses_request(
         request_trace.as_ref(),
     )
     .await?;
+    let response_headers_at = chrono::Utc::now();
     trace_response_headers(
         request_trace.as_ref(),
         response.status(),
@@ -92,11 +94,21 @@ pub(in super::super) async fn send_openai_responses_request(
             ));
         }
     };
+    let response_body_completed_at = chrono::Utc::now();
     trace_response_body(request_trace.as_ref(), &body);
     let parsed: Value = serde_json::from_str(&body)
         .map_err(|error| invalid_response_error("invalid OpenAI-style JSON", error))?;
-    parse_openai_response_with_transport_state(parsed)
-        .map(|parsed| parsed.with_provider_request_id(provider_request_id))
+    let parsed = parse_openai_response_with_transport_state(parsed)?;
+    let parse_completed_at = chrono::Utc::now();
+    Ok(parsed
+        .with_provider_request_id(provider_request_id)
+        .with_transport_timeline(ProviderTransportTimeline {
+            request_started_at,
+            response_headers_at,
+            response_body_completed_at: Some(response_body_completed_at),
+            parse_completed_at,
+            streaming: false,
+        }))
 }
 
 pub(in super::super) async fn retry_openai_responses_with_lossless_replay(
@@ -186,6 +198,7 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         request = request.header(name, value);
     }
 
+    let request_started_at = chrono::Utc::now();
     let response = send_openai_request(
         request.json(&body),
         "OpenAI-style streaming request failed",
@@ -197,6 +210,7 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
         request_trace.as_ref(),
     )
     .await?;
+    let response_headers_at = chrono::Utc::now();
     trace_response_headers(
         request_trace.as_ref(),
         response.status(),
@@ -231,6 +245,16 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
 
     let terminal_response =
         read_openai_streaming_response(response, request_trace.as_ref()).await?;
-    parse_openai_response_with_transport_state(terminal_response)
-        .map(|parsed| parsed.with_provider_request_id(provider_request_id))
+    let response_body_completed_at = chrono::Utc::now();
+    let parsed = parse_openai_response_with_transport_state(terminal_response)?;
+    let parse_completed_at = chrono::Utc::now();
+    Ok(parsed
+        .with_provider_request_id(provider_request_id)
+        .with_transport_timeline(ProviderTransportTimeline {
+            request_started_at,
+            response_headers_at,
+            response_body_completed_at: Some(response_body_completed_at),
+            parse_completed_at,
+            streaming: true,
+        }))
 }

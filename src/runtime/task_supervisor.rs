@@ -1,6 +1,7 @@
 use anyhow::Result;
 
 use super::RuntimeHandle;
+use crate::observability::TraceContext;
 use crate::types::{
     AuthorityClass, CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandResult,
     TaskInputResult, TaskListEntry, TaskOutputResult, TaskRecord, TaskStatusSnapshot,
@@ -22,9 +23,10 @@ impl ManagedTaskSupervisor<'_> {
         spec: CommandTaskSpec,
         duplicate_policy: ExecCommandDuplicatePolicy,
         authority_class: &AuthorityClass,
+        trace_context: Option<&TraceContext>,
     ) -> Result<ExecCommandResult> {
         self.runtime
-            .execute_exec_command(spec, duplicate_policy, authority_class)
+            .execute_exec_command(spec, duplicate_policy, authority_class, trace_context)
             .await
     }
 
@@ -32,9 +34,10 @@ impl ManagedTaskSupervisor<'_> {
         &self,
         spec: CommandTaskSpec,
         authority_class: &AuthorityClass,
+        trace_context: Option<&TraceContext>,
     ) -> Result<ExecCommandResult> {
         self.runtime
-            .execute_exec_command_once(spec, authority_class)
+            .execute_exec_command_once(spec, authority_class, trace_context)
             .await
     }
 

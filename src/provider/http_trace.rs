@@ -21,6 +21,8 @@ const PROVIDER_HTTP_FAILURE_TRACE_MAX_EVENTS: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderHttpTraceDiagnostics {
+    #[serde(default)]
+    pub capture_id: String,
     pub mode: String,
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -196,6 +198,7 @@ impl ProviderHttpTraceRequest {
         flush_stream_text(&mut guard);
         let path = ensure_trace_file(&mut guard)?;
         Some(ProviderHttpTraceDiagnostics {
+            capture_id: format!("provider-http-{:016x}", guard.sequence),
             mode: guard.mode.as_str().to_string(),
             path: path.to_string_lossy().to_string(),
             status,
@@ -410,10 +413,21 @@ fn current_time_millis() -> u128 {
 mod tests {
     use super::{
         redact_headers, redact_json_secrets, redact_url, sanitize_trace_path_segment,
-        ProviderHttpTrace,
+        ProviderHttpTrace, ProviderHttpTraceDiagnostics,
     };
     use serde_json::{json, Value};
     use std::fs;
+
+    #[test]
+    fn provider_http_trace_diagnostics_deserialize_without_capture_id() {
+        let diagnostics: ProviderHttpTraceDiagnostics = serde_json::from_value(json!({
+            "mode": "failure_only",
+            "path": "/tmp/provider-http-trace.jsonl"
+        }))
+        .unwrap();
+
+        assert_eq!(diagnostics.capture_id, "");
+    }
 
     #[test]
     fn provider_http_trace_redacts_secrets() {

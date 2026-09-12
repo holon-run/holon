@@ -155,6 +155,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
         },
         response_id,
         output_items,
+        transport_timeline: None,
     })
 }
 

@@ -135,6 +135,7 @@ impl RuntimeHandle {
             .storage
             .append_event(&brief::make_acknowledgement_event(message))?;
         let context_build_started = std::time::Instant::now();
+        let context_build_started_at = chrono::Utc::now();
         let identity = self.agent_identity_view().await?;
         let default_external_ingress = self
             .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
@@ -205,6 +206,12 @@ impl RuntimeHandle {
                 "rendered_system_chars": built.rendered_system_prompt.chars().count(),
             }),
         ))?;
+        record_operator_span(
+            trace_context.as_ref(),
+            "holon.turn.context_build",
+            context_build_started_at,
+            message,
+        );
         let mut outcome = self
             .run_agent_loop_deferred(
                 &message.agent_id,

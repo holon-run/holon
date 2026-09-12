@@ -24,8 +24,8 @@ use crate::{
         ProviderBuiltinWebSearchCapability, ProviderCacheUsage, ProviderContextManagementPolicy,
         ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
         ProviderNativeWebSearchRequest, ProviderPromptCapability,
-        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest, ProviderTurnRequest,
-        ProviderTurnResponse,
+        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
+        ProviderTransportTimeline, ProviderTurnRequest, ProviderTurnResponse,
     },
 };
 
@@ -367,6 +367,7 @@ impl AgentProvider for AnthropicProvider {
         for (name, value) in &headers {
             request_builder = request_builder.header(*name, value);
         }
+        let request_started_at = chrono::Utc::now();
         let response = request_builder
             .timeout(request_send_timeout())
             .json(&request_body)
@@ -383,6 +384,7 @@ impl AgentProvider for AnthropicProvider {
                     request_trace.as_ref(),
                 )
             })?;
+        let response_headers_at = chrono::Utc::now();
         if let Some(trace) = request_trace.as_ref() {
             trace.write_response_headers(response.status(), response.headers());
         }
@@ -411,7 +413,8 @@ impl AgentProvider for AnthropicProvider {
             ));
         }
 
-        let parsed = if anthropic_response_is_sse(&response) {
+        let streaming = anthropic_response_is_sse(&response);
+        let parsed = if streaming {
             read_anthropic_streaming_response(
                 response,
                 &self.route_provider,
@@ -430,7 +433,8 @@ impl AgentProvider for AnthropicProvider {
             )
             .await?
         };
-        anthropic_messages_response_to_turn_response(
+        let response_body_completed_at = chrono::Utc::now();
+        let mut response = anthropic_messages_response_to_turn_response(
             parsed,
             provider_request_id,
             &request,
@@ -444,7 +448,20 @@ impl AgentProvider for AnthropicProvider {
             &model_ref,
             url.as_str(),
             request_trace.as_ref(),
-        )
+        )?;
+        let parse_completed_at = chrono::Utc::now();
+        response
+            .request_diagnostics
+            .as_mut()
+            .expect("Anthropic responses include request diagnostics")
+            .transport_timeline = Some(ProviderTransportTimeline {
+            request_started_at,
+            response_headers_at,
+            response_body_completed_at: Some(response_body_completed_at),
+            parse_completed_at,
+            streaming,
+        });
+        Ok(response)
     }
 
     #[cfg(test)]
@@ -800,6 +817,7 @@ fn anthropic_messages_response_to_turn_response(
             native_web_search: native_web_search_diagnostics(request),
             response_format: response_format_diagnostics(request),
             stable_prefix: Some(stable_prefix),
+            transport_timeline: None,
         }),
     })
 }

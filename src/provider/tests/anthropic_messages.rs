@@ -112,6 +112,17 @@ async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
         "request_diagnostics should be populated"
     );
     let diagnostics = response.request_diagnostics.as_ref().unwrap();
+    let timeline = diagnostics
+        .transport_timeline
+        .as_ref()
+        .expect("Anthropic transport timeline");
+    assert!(!timeline.streaming);
+    assert!(timeline.request_started_at <= timeline.response_headers_at);
+    let response_body_completed_at = timeline
+        .response_body_completed_at
+        .expect("Anthropic response body completion");
+    assert!(timeline.response_headers_at <= response_body_completed_at);
+    assert!(response_body_completed_at <= timeline.parse_completed_at);
     assert!(
         diagnostics.anthropic_cache.is_some(),
         "anthropic_cache diagnostics should be populated"
