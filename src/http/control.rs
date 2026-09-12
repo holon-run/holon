@@ -3,6 +3,7 @@ use anyhow::Context as _;
 
 const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_TRACE_SEARCH_RESULTS: usize = 100;
 
 pub async fn runtime_status(
     State(state): State<Arc<AppState>>,
@@ -70,7 +71,16 @@ pub async fn runtime_trace(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    crate::observability::recent_trace(&trace_id)
+    let trace = if let Some(trace) = crate::observability::recent_trace(&trace_id) {
+        Some(trace)
+    } else {
+        crate::diagnostics_store::persistent_trace(
+            &state.host.config().diagnostics_db_path(),
+            &trace_id,
+        )
+        .map_err(error_response)?
+    };
+    trace
         .map(Json)
         .ok_or_else(|| not_found(format!("trace {trace_id} not found")))
 }
@@ -89,9 +99,32 @@ pub async fn runtime_trace_search(
     if query.query.trim().is_empty() {
         return Err(bad_request("trace search query must not be empty"));
     }
-    Ok(Json(crate::observability::search_recent_traces(
-        query.query.trim(),
-    )))
+    let query = query.query.trim();
+    let traces = crate::observability::search_recent_traces(query);
+    let persisted = crate::diagnostics_store::search_persistent_traces(
+        &state.host.config().diagnostics_db_path(),
+        query,
+        MAX_TRACE_SEARCH_RESULTS,
+    )
+    .map_err(error_response)?;
+    Ok(Json(merge_trace_search_results(traces, persisted)))
+}
+
+fn merge_trace_search_results(
+    mut traces: Vec<crate::observability::RecentTraceSummary>,
+    persisted: Vec<crate::observability::RecentTraceSummary>,
+) -> Vec<crate::observability::RecentTraceSummary> {
+    for trace in persisted {
+        if !traces
+            .iter()
+            .any(|candidate| candidate.trace_id == trace.trace_id)
+        {
+            traces.push(trace);
+        }
+    }
+    traces.sort_by(|left, right| right.completed_at.cmp(&left.completed_at));
+    traces.truncate(MAX_TRACE_SEARCH_RESULTS);
+    traces
 }
 
 pub async fn scheduler_repair_inspect(
@@ -1213,6 +1246,47 @@ fn percent_encode_path_segment(segment: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn trace_summary(
+        trace_id: impl Into<String>,
+        completed_at_seconds: i64,
+    ) -> crate::observability::RecentTraceSummary {
+        let completed_at =
+            chrono::DateTime::from_timestamp(completed_at_seconds, 0).expect("valid timestamp");
+        crate::observability::RecentTraceSummary {
+            trace_id: trace_id.into(),
+            started_at: completed_at,
+            completed_at,
+            duration_us: 0,
+            span_count: 1,
+            dropped_spans: 0,
+            error_count: 0,
+        }
+    }
+
+    #[test]
+    fn trace_search_merge_deduplicates_sorts_and_applies_global_limit() {
+        let recent = (0..75)
+            .map(|index| trace_summary(format!("recent-{index}"), index + 200))
+            .collect();
+        let mut persisted = (100..200)
+            .map(|index| trace_summary(format!("persisted-{index}"), index))
+            .collect::<Vec<_>>();
+        persisted.push(trace_summary("recent-50", 200));
+
+        let merged = merge_trace_search_results(recent, persisted);
+
+        assert_eq!(merged.len(), MAX_TRACE_SEARCH_RESULTS);
+        assert_eq!(merged[0].trace_id, "recent-74");
+        assert_eq!(merged.last().unwrap().trace_id, "persisted-175");
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|trace| trace.trace_id == "recent-50")
+                .count(),
+            1
+        );
+    }
 
     #[test]
     fn runtime_mutable_config_keys_include_visual_model_defaults() {

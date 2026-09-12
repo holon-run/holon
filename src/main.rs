@@ -28,6 +28,7 @@ use holon::{
         daemon_status, daemon_stop, ensure_serve_preflight, prepare_runtime_before_server,
         RuntimeServiceHandle, DAEMON_SERVE_ARGS_ENV, PRE_SERVER_PREPARED_ENV,
     },
+    diagnostics_store::DiagnosticsWriter,
     fd_limit::{apply_nofile_limit_policy, DEFAULT_NOFILE_TARGET},
     host::RuntimeHost,
     http::{
@@ -865,6 +866,11 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     }
 
     let host = RuntimeHost::new(config.clone())?;
+    let diagnostics_writer = DiagnosticsWriter::start(
+        config.diagnostics_db_path(),
+        config.diagnostics_writer_config()?,
+    )?;
+    diagnostics_writer.install();
     let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
     #[cfg(unix)]
     let unix_server = {
@@ -966,6 +972,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         };
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
+        diagnostics_writer.shutdown()?;
         return result;
     }
 
@@ -993,6 +1000,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         }
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
+        diagnostics_writer.shutdown()?;
         Ok(())
     }
 }
