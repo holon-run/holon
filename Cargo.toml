@@ -89,3 +89,7 @@ harness = false
 [[bench]]
 name = "performance_attribution"
 harness = false
+
+[[bench]]
+name = "observability_overhead"
+harness = false
