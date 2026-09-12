@@ -7138,6 +7138,212 @@
         ],
         "type": "string"
       },
+      "RecentTrace": {
+        "properties": {
+          "completed_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "dropped_spans": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "duration_us": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "error_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "span_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "spans": {
+            "items": {
+              "properties": {
+                "attributes": {
+                  "properties": {
+                    "agent_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "message_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "provider": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "round": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "run_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "task_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "tool_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "turn_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "type": "object"
+                },
+                "completed_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "duration_us": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "parent_span_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "span_id": {
+                  "type": "string"
+                },
+                "started_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "ok",
+                    "error"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "span_id",
+                "started_at",
+                "completed_at",
+                "duration_us",
+                "status",
+                "attributes"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "started_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "trace_id",
+          "started_at",
+          "completed_at",
+          "duration_us",
+          "span_count",
+          "dropped_spans",
+          "error_count",
+          "spans"
+        ],
+        "title": "RecentTrace",
+        "type": "object"
+      },
+      "RecentTraceSummaryList": {
+        "items": {
+          "properties": {
+            "completed_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "dropped_spans": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "duration_us": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "error_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "span_count": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "started_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "trace_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "trace_id",
+            "started_at",
+            "completed_at",
+            "duration_us",
+            "span_count",
+            "dropped_spans",
+            "error_count"
+          ],
+          "type": "object"
+        },
+        "title": "Array_of_RecentTraceSummary",
+        "type": "array"
+      },
       "ReconcileSkillRequest": {
         "properties": {
           "name": {
@@ -16824,6 +17030,171 @@
           }
         ],
         "summary": "Runtime status",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/traces": {
+      "get": {
+        "description": "Return summaries for the bounded in-memory recent trace ring.",
+        "operationId": "runtimeTraces",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentTraceSummaryList"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Recent runtime traces",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/traces/search": {
+      "get": {
+        "description": "Search the bounded in-memory recent trace ring by trace or span attributes.",
+        "operationId": "runtimeTraceSearch",
+        "parameters": [
+          {
+            "description": "Case-insensitive trace or span attribute search text.",
+            "in": "query",
+            "name": "query",
+            "required": true,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentTraceSummaryList"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Search recent runtime traces",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/traces/{trace_id}": {
+      "get": {
+        "description": "Return the recorded span waterfall for one recent trace.",
+        "operationId": "runtimeTrace",
+        "parameters": [
+          {
+            "description": "Trace id.",
+            "in": "path",
+            "name": "trace_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecentTrace"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime trace waterfall",
         "tags": [
           "runtime"
         ]

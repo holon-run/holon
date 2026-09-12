@@ -4976,17 +4976,11 @@ impl RuntimeHandle {
             }
             self.append_state_changed_events(&scheduled.running_state)?;
 
-            let turn_trace_context = scheduled
-                .message
-                .trace_context
-                .as_ref()
-                .map(crate::observability::TraceContext::child);
             let terminal_transition = match self
                 .process_message_with_plan_deferred(
                     scheduled.message,
                     scheduled.dispatch_plan,
                     &scheduled.scheduler_decision,
-                    turn_trace_context,
                 )
                 .await
             {

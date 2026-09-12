@@ -18,6 +18,7 @@ use crate::{
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
     model_config_migration::ModelConfigMigrationReport,
+    observability::{RecentTrace, RecentTraceSummary},
     runtime::{SchedulerRepairInspection, SchedulerRepairRequest, SchedulerRepairResult},
     types::{
         AddSkillRequest, BriefRecord, CheckSkillRequest, ReconcileSkillRequest,
@@ -155,6 +156,9 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/control/runtime/readiness", "runtimeReadiness", "runtime", "Runtime readiness", "Return daemon readiness metadata.", None, AuthKind::Control),
     route("get", "/control/runtime/status", "runtimeStatus", "runtime", "Runtime status", "Return daemon status and runtime activity metadata.", None, AuthKind::Control),
     route_with_response("get", "/control/runtime/performance", "runtimePerformance", "runtime", "Runtime performance diagnostics", "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.", None, "PerformanceDiagnosticsSnapshot", AuthKind::Control),
+    route_with_response("get", "/control/runtime/traces", "runtimeTraces", "runtime", "Recent runtime traces", "Return summaries for the bounded in-memory recent trace ring.", None, "RecentTraceSummaryList", AuthKind::Control),
+    route_with_response("get", "/control/runtime/traces/search", "runtimeTraceSearch", "runtime", "Search recent runtime traces", "Search the bounded in-memory recent trace ring by trace or span attributes.", None, "RecentTraceSummaryList", AuthKind::Control),
+    route_with_response("get", "/control/runtime/traces/{trace_id}", "runtimeTrace", "runtime", "Runtime trace waterfall", "Return the recorded span waterfall for one recent trace.", None, "RecentTrace", AuthKind::Control),
     route_with_response("get", "/control/runtime/config", "runtimeConfig", "runtime", "Runtime config", "Return the daemon effective runtime configuration surface.", None, "RuntimeConfigReadResponse", AuthKind::Control),
     route_with_response("patch", "/control/runtime/config", "runtimeConfigUpdate", "runtime", "Update runtime config", "Persist runtime-mutable config updates and classify their effect as restart/reload-required or rejected.", Some("RuntimeConfigUpdateRequest"), "RuntimeConfigUpdateResponse", AuthKind::Control),
     route_with_response("post", "/control/runtime/config/migrate-model-routes", "migrateModelConfigRoutes", "runtime", "Migrate model config routes", "Inspect legacy model route references or persist a complete canonical migration across config.json and agent state.", Some("ModelConfigMigrationRequest"), "ModelConfigMigrationReport", AuthKind::Control),
@@ -395,12 +399,22 @@ fn aide_operation(spec: &RouteSpec) -> Operation {
 }
 
 fn operation(spec: &RouteSpec) -> Value {
+    let mut parameters = path_parameters(spec.path);
+    if spec.operation_id == "runtimeTraceSearch" {
+        parameters.push(json!({
+            "name": "query",
+            "in": "query",
+            "required": true,
+            "description": "Case-insensitive trace or span attribute search text.",
+            "schema": { "type": "string", "minLength": 1 }
+        }));
+    }
     let mut op = json!({
         "operationId": spec.operation_id,
         "tags": [spec.tag],
         "summary": spec.summary,
         "description": spec.description,
-        "parameters": path_parameters(spec.path),
+        "parameters": parameters,
         "responses": responses(spec.response_kind, spec.response_schema),
     });
     if let Some(schema) = spec.request_schema {
@@ -451,6 +465,9 @@ fn path_parameters(path: &str) -> Vec<Value> {
     }
     if path.contains("{message_id}") {
         params.push(path_param("message_id", "Message id."));
+    }
+    if path.contains("{trace_id}") {
+        params.push(path_param("trace_id", "Trace id."));
     }
     if path.contains("{skill_id}") {
         params.push(path_param("skill_id", "Root-qualified skill id."));
@@ -658,6 +675,11 @@ fn component_schemas() -> Value {
         "PerformanceDiagnosticsSnapshot".into(),
         component_schema::<PerformanceDiagnosticsSnapshot>(),
     );
+    schemas.insert(
+        "RecentTraceSummaryList".into(),
+        component_schema::<Vec<RecentTraceSummary>>(),
+    );
+    schemas.insert("RecentTrace".into(), component_schema::<RecentTrace>());
     schemas.insert(
         "RuntimeConfigUpdateRequest".into(),
         component_schema::<RuntimeConfigUpdateRequest>(),

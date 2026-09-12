@@ -573,7 +573,34 @@ impl RuntimeHandle {
                 guard.state.current_turn_work_item_id = Some(work_item_id);
                 guard.persist_state(&self.inner.storage)?;
             }
-            let transition = self
+            let trace_context = message.trace_context.clone();
+            let attributes = crate::observability::TraceAttributes {
+                agent_id: Some(message.agent_id.clone()),
+                message_id: Some(message.id.clone()),
+                turn_id: message.turn_id.clone(),
+                work_item_id: message.work_item_id.clone(),
+                task_id: message.task_id.clone(),
+                ..Default::default()
+            };
+            if let Some(parent) = trace_context.as_ref() {
+                let queue_context = parent.child();
+                crate::observability::record_span(
+                    &queue_context,
+                    crate::observability::completed_span(
+                        "holon.scheduler.queue_wait",
+                        &queue_context,
+                        Some(parent.span_id.clone()),
+                        message.created_at,
+                        crate::observability::TraceSpanStatus::Ok,
+                        attributes.clone(),
+                    ),
+                );
+            }
+            let turn_context = trace_context
+                .as_ref()
+                .map(crate::observability::TraceContext::child);
+            let turn_started_at = chrono::Utc::now();
+            let result = self
                 .process_interactive_message_deferred_with_cleanup(
                     message,
                     continuation_resolution,
@@ -581,13 +608,28 @@ impl RuntimeHandle {
                     LoopControlOptions {
                         max_tool_rounds: None,
                     },
-                    message
-                        .trace_context
-                        .as_ref()
-                        .map(crate::observability::TraceContext::child),
+                    turn_context.clone(),
                 )
-                .await?;
-            return Ok(transition);
+                .await;
+            if let Some(context) = turn_context.as_ref() {
+                let status = if result.is_ok() {
+                    crate::observability::TraceSpanStatus::Ok
+                } else {
+                    crate::observability::TraceSpanStatus::Error
+                };
+                crate::observability::record_span(
+                    context,
+                    crate::observability::completed_span(
+                        "holon.turn",
+                        context,
+                        trace_context.as_ref().map(|parent| parent.span_id.clone()),
+                        turn_started_at,
+                        status,
+                        attributes,
+                    ),
+                );
+            }
+            return result;
         } else if !model_reentry {
             if emit_result_brief {
                 let brief = brief::make_result(&message.agent_id, message, result_text);

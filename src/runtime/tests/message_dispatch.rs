@@ -299,12 +299,15 @@ async fn dispatch_brief_ack_is_noop() {
 #[tokio::test]
 async fn dispatch_brief_result_is_noop() {
     let (_dir, _ws, runtime) = fresh_runtime().await;
-    let msg = message_of_kind(
+    let mut msg = message_of_kind(
         MessageKind::BriefResult,
         MessageBody::Text {
             text: "result".into(),
         },
     );
+    let trace_context = crate::observability::TraceContext::new_root(true);
+    msg.trace_context = Some(trace_context.clone());
+    let message_id = msg.id.clone();
     let plan = runtime
         .build_message_dispatch_plan(
             &msg,
@@ -320,6 +323,24 @@ async fn dispatch_brief_result_is_noop() {
         .process_message_with_plan(msg, plan, &decision)
         .await
         .expect("BriefResult dispatch should not error");
+
+    let trace = crate::observability::recent_trace(&trace_context.trace_id)
+        .expect("dispatch trace should be retained");
+    for span_name in ["holon.scheduler.queue_wait", "holon.turn"] {
+        let span = trace
+            .spans
+            .iter()
+            .find(|span| span.name == span_name)
+            .unwrap_or_else(|| panic!("{span_name} span should be recorded"));
+        assert_eq!(
+            span.parent_span_id.as_deref(),
+            Some(trace_context.span_id.as_str())
+        );
+        assert_eq!(
+            span.attributes.message_id.as_deref(),
+            Some(message_id.as_str())
+        );
+    }
 }
 
 #[tokio::test]

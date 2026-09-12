@@ -187,6 +187,19 @@ impl RuntimeHandle {
         plan: MessageDispatchPlan,
         scheduler_decision: &scheduler::SchedulerDecision,
     ) -> Result<()> {
+        let transition = self
+            .process_message_with_plan_deferred(message, plan, scheduler_decision)
+            .await?;
+        self.persist_terminal_transition(&transition).await?;
+        Ok(())
+    }
+
+    pub(super) async fn process_message_with_plan_deferred(
+        &self,
+        message: MessageEnvelope,
+        plan: MessageDispatchPlan,
+        scheduler_decision: &scheduler::SchedulerDecision,
+    ) -> Result<turn::TurnTerminalTransition> {
         let trace_context = message.trace_context.clone();
         let attributes = crate::observability::TraceAttributes {
             agent_id: Some(message.agent_id.clone()),
@@ -214,19 +227,14 @@ impl RuntimeHandle {
             .as_ref()
             .map(crate::observability::TraceContext::child);
         let turn_started_at = chrono::Utc::now();
-        let result = async {
-            let transition = self
-                .process_message_with_plan_deferred(
-                    message,
-                    plan,
-                    scheduler_decision,
-                    turn_context.clone(),
-                )
-                .await?;
-            self.persist_terminal_transition(&transition).await?;
-            Ok(())
-        }
-        .await;
+        let result = self
+            .process_message_with_plan_deferred_in_turn(
+                message,
+                plan,
+                scheduler_decision,
+                turn_context.clone(),
+            )
+            .await;
         if let Some(context) = turn_context.as_ref() {
             let status = if result.is_ok() {
                 crate::observability::TraceSpanStatus::Ok
@@ -248,7 +256,7 @@ impl RuntimeHandle {
         result
     }
 
-    pub(super) async fn process_message_with_plan_deferred(
+    async fn process_message_with_plan_deferred_in_turn(
         &self,
         mut message: MessageEnvelope,
         plan: MessageDispatchPlan,

@@ -850,6 +850,66 @@
   },
   {
     "method": "get",
+    "path": "/api/control/runtime/traces",
+    "handler": "runtime_traces",
+    "operation_id": "runtimeTraces",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/control/runtime/traces/search",
+    "handler": "runtime_trace_search",
+    "operation_id": "runtimeTraceSearch",
+    "tag": "runtime",
+    "parameters": [
+      {
+        "name": "query",
+        "location": "query",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/control/runtime/traces/{trace_id}",
+    "handler": "runtime_trace",
+    "operation_id": "runtimeTrace",
+    "tag": "runtime",
+    "parameters": [
+      {
+        "name": "trace_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/events/stream",
     "handler": "global_events_stream",
     "operation_id": "eventsStream",

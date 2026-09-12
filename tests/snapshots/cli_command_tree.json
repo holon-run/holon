@@ -1163,6 +1163,37 @@
     "aliases": []
   },
   {
+    "path": "debug.trace",
+    "positionals": [
+      {
+        "name": "trace_id",
+        "value_name": "TRACE_ID",
+        "index": null,
+        "required": false
+      }
+    ],
+    "flags": [
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "search",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "events",
     "positionals": [],
     "flags": [],
