@@ -62,6 +62,11 @@ tempfile = "3.14"
 proptest = "1.6"
 tokio = { version = "1.43", features = ["test-util"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# Linux daemons use jemalloc so freed pages are purged back to the OS instead
+# of accumulating per-arena high-watermark RSS (#2931).
+tikv-jemallocator = { version = "0.7", features = ["background_threads"] }
+
 [lib]
 name = "holon"
 path = "src/lib.rs"
