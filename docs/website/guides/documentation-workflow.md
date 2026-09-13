@@ -101,6 +101,30 @@ mdorigin build cloudflare --root . --search dist/search
 
 The generated `dist/` directory is ignored and should not be committed.
 
+## Generated pages and locales
+
+Some pages are produced by a generator rather than written by hand. Today that
+is `reference/models.md`, generated with:
+
+```bash
+cargo run --bin holon-docgen -- models > docs/website/reference/models.md
+```
+
+Do not hand-translate a generated page: the next regeneration would discard the
+translation. Register the page in `.tools/generated-pages.json` instead, then
+sync its localized copies:
+
+```bash
+npm --prefix .tools run sync:generated
+```
+
+The script copies the generated English page to each configured locale path,
+replaces the listed front matter fields with localized values, and adds a notice
+that the page body is generated. Commit the copy together with the regenerated
+source page. Docs CI runs the same script with `--check` and fails when a
+generated page and its copies disagree, so a regeneration needs one extra
+command — never a new translation.
+
 ## Refresh generated contract snapshots
 
 OpenAPI, HTTP route, CLI, runtime status enum, and model tool schema snapshots

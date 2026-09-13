@@ -47,7 +47,7 @@ order: 40
 - [运行时状态枚举清单](/reference/runtime-status-enum-inventory.md)（英文）
   稳定序列化运行时生命周期和状态枚举的机器可读基线。
 
-- [支持的模型](/reference/models.md)（英文）
+- [支持的模型](/zh-CN/reference/models.md)（正文为英文，随英文版自动同步）
   Holon 内置支持的所有模型和提供商的完整参考。
 
 <!-- INDEX:START -->

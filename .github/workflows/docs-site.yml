@@ -56,6 +56,9 @@ jobs:
           python3 .tools/test-check-contract-refs.py
           python3 .tools/check-contract-refs.py
 
+      - name: Check generated page copies
+        run: python3 .tools/sync-generated-pages.py --check
+
       - name: Build directory indexes
         run: npm --prefix .tools run build:index
 

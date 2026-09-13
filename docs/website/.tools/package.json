@@ -3,12 +3,13 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "mdorigin dev --root .. --config ../mdorigin.config.json",
+    "sync:generated": "python3 sync-generated-pages.py",
+    "dev": "npm run sync:generated && mdorigin dev --root .. --config ../mdorigin.config.json",
     "build:index": "mdorigin build index --root .. --config ../mdorigin.config.json",
     "build:search": "mdorigin build search --root .. --config ../mdorigin.config.json --out ./dist/search",
     "build:cloudflare": "mdorigin build cloudflare --root .. --config ../mdorigin.config.json --search ./dist/search --out ./dist/cloudflare",
     "check:blog": "python3 check-blog.py",
-    "build": "npm run build:index && npm run check:blog && npm run build:search && npm run build:cloudflare",
+    "build": "npm run sync:generated && npm run build:index && npm run check:blog && npm run build:search && npm run build:cloudflare",
     "deploy": "wrangler deploy --config ../wrangler.jsonc"
   },
   "devDependencies": {

@@ -1,0 +1,20 @@
+{
+  "comment": "Pages produced by a generator. Do not hand-translate them: run `python3 docs/website/.tools/sync-generated-pages.py` after regenerating the source page. CI verifies the copies with --check.",
+  "pages": [
+    {
+      "source": "reference/models.md",
+      "generator": "cargo run --bin holon-docgen -- models > docs/website/reference/models.md",
+      "targets": [
+        {
+          "path": "zh-CN/reference/models.md",
+          "frontMatter": {
+            "title": "支持的模型",
+            "summary": "Holon 内置支持的所有模型和提供商的完整参考。",
+            "description": "Holon 内置支持的所有模型和提供商的完整参考。"
+          },
+          "notice": "> **本页正文由源码自动生成，因此不单独翻译。** 它由 `cargo run --bin holon-docgen -- models` 从 Holon 源码生成，并随英文版一起更新。\n> 英文原文：[Supported Models](/reference/models.md)"
+        }
+      ]
+    }
+  ]
+}
