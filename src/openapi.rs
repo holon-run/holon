@@ -10,7 +10,8 @@ use crate::{
     http::{
         AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
-        CompleteWorkItemRequest, CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest,
+        CompleteWorkItemRequest, ConversationActivityResponse, ConversationReadQuery,
+        ConversationSummaryResponse, CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest,
         ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
         RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
         SearchRequest, SearchResponse, UpdateWorkItemRequest,
@@ -78,6 +79,8 @@ const ROUTES: &[RouteSpec] = &[
     aide_route("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/snapshot", "agentsSnapshot", "agents", "Agent roster snapshot", "Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentRosterSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/projection-snapshot", "agentProjectionSnapshot", "agents", "Agent projection snapshot", "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentProjectionSnapshot", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/activities", "agentConversationActivities", "agents", "Conversation turn activity snapshot", "Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationActivityResponse", AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}", "getAgent", "agents", "Get agent", "Return the canonical public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
@@ -435,6 +438,35 @@ fn operation(spec: &RouteSpec) -> Value {
             "schema": { "type": "string", "minLength": 1 }
         }));
     }
+    if matches!(
+        spec.operation_id,
+        "agentConversation" | "agentConversationActivities"
+    ) {
+        let (default, maximum) = if spec.operation_id == "agentConversation" {
+            (30, 100)
+        } else {
+            (50, 200)
+        };
+        parameters.push(json!({
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "Bounded page size.",
+            "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": maximum,
+                "default": default
+            }
+        }));
+        parameters.push(json!({
+            "name": "before",
+            "in": "query",
+            "required": false,
+            "description": "Opaque pagination cursor returned by the preceding page.",
+            "schema": { "type": "string", "minLength": 1 }
+        }));
+    }
     let mut op = json!({
         "operationId": spec.operation_id,
         "tags": [spec.tag],
@@ -491,6 +523,9 @@ fn path_parameters(path: &str) -> Vec<Value> {
     }
     if path.contains("{message_id}") {
         params.push(path_param("message_id", "Message id."));
+    }
+    if path.contains("{turn_id}") {
+        params.push(path_param("turn_id", "Native turn id."));
     }
     if path.contains("{trace_id}") {
         params.push(path_param("trace_id", "Trace id."));
@@ -675,6 +710,18 @@ fn component_schemas() -> Value {
     schemas.insert(
         "EventsPageResponse".into(),
         component_schema::<crate::http::EventsPageResponse>(),
+    );
+    schemas.insert(
+        "ConversationReadQuery".into(),
+        component_schema::<ConversationReadQuery>(),
+    );
+    schemas.insert(
+        "ConversationSummaryResponse".into(),
+        component_schema::<ConversationSummaryResponse>(),
+    );
+    schemas.insert(
+        "ConversationActivityResponse".into(),
+        component_schema::<ConversationActivityResponse>(),
     );
     schemas.insert("SlimTaskDto".into(), component_schema::<SlimTaskDto>());
     schemas.insert(

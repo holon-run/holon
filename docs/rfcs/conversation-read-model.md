@@ -172,10 +172,11 @@ means the source remains readable for diagnostics but prevents
 | Result finality | canonical delivery/terminal lifecycle | Blocked: `settled` is not yet a revisioned read-model fact |
 | Snapshot watermark | observer projection snapshot read transaction and per-Agent event head | Verified foundation; conversation-specific sources still need coverage |
 
-The durable verifier persists this inventory as
-`conversation_read_verified = false`. Later phases replace each blocker with
-an executable invariant; they must not bypass the gate by advertising a
-partial capability.
+Phase 1 replaced these blockers with durable source revisions, canonical turn
+ownership/assignment linkage, atomic source-event coverage, and a recomputed
+`conversation_read_verified` proof. Phase 2 still evaluates that persisted
+proof at request time: route registration and OpenAPI publication alone never
+advertise or serve `agents.conversation-read.v1`.
 
 ## 4. Summary snapshot and history pagination
 
@@ -206,6 +207,14 @@ hydration. Deferred content preserves complete Brief membership and is fetched
 through the existing authorized Brief read. A summary never inlines attachment
 files, arbitrary attachment values or URIs, commands, tool arguments/output, or
 intermediate assistant text.
+
+Phase 2 applies the RFC's allowed concrete-DTO refinement by publishing complete
+Brief membership as canonical `brief_ids[]`. Brief bodies, citations,
+attachments, artifact values, workspace metadata, and URIs remain on the
+existing authorized Brief read surface and are never copied into the
+conversation snapshot. Clients hydrate selected Brief IDs through that surface;
+legacy Briefs without a canonical turn remain reachable there but are not
+attached to a pseudo-turn.
 
 All briefs associated with a turn travel with that turn's summary; the history
 page never splits them. `limit` counts turns, not briefs, events, or rendered
@@ -321,6 +330,26 @@ Live streaming does not continuously update expanded *terminal* details. A
 relevant later change emits `detail_invalidated` with the owning turn and detail
 revision; an open detail view re-fetches bounded pages. Only active turns may
 receive activity deltas, and their recovery count/bytes are hard bounded.
+
+### 5.1 Phase 2 HTTP bounds and typed failures
+
+The initial implementation uses these hard bounds:
+
+- history page: default 30 turns, maximum 100;
+- activity page: default 50 items, maximum 200;
+- one serialized turn summary: 64 KiB;
+- one serialized activity item: 256 KiB;
+- complete summary response: 2 MiB;
+- complete activity response: 4 MiB;
+- one database-read and assembly attempt: 10 seconds.
+
+Invalid requested counts return `400 conversation_invalid_limit`. Count budgets
+enforced while assembling active turns, pending inputs, or Brief membership
+return `413 conversation_count_limit_exceeded`. Item and response byte budgets
+return stable `413` codes identifying the oversized resource. A read timeout
+returns retryable `503 conversation_snapshot_timeout`; cursor scope/version/
+integrity failures and fixed-coverage violations remain typed rather than
+falling back to an unbounded or silently truncated response.
 
 ## 6. Conversation change stream
 

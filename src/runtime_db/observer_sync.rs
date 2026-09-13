@@ -393,51 +393,89 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         &now,
         &projection_detail,
     )?;
-    // Keep this Phase 0 inventory aligned with RFC `conversation-read-model` §3.3.
-    let conversation_detail = serde_json::json!({
-        "verified": false,
-        "capability": "agents.conversation-read.v1",
-        "blocked_sources": [
-            {
-                "source": "turn_records",
-                "reason": "turn creation and ordinary updates lack one atomic projection revision/event linkage"
-            },
-            {
-                "source": "messages_and_queue_assignment",
-                "reason": "dequeue-to-turn assignment lacks one proven atomic pending-to-turn transition"
-            },
-            {
-                "source": "transcript_entries",
-                "reason": "assistant activity lacks an atomic created-event linkage"
-            },
-            {
-                "source": "tool_executions",
-                "reason": "ordinary tool evidence and its audit event commit separately"
-            },
-            {
-                "source": "wait_and_error_activity",
-                "reason": "transition-backed and direct write paths do not yet share complete event coverage"
-            },
-            {
-                "source": "delivery_finality",
-                "reason": "settled result finality is not yet exposed as a revisioned conversation source"
-            }
-        ],
-        "verified_sources": [
-            "brief_created_atomic_linkage",
-            "observer_projection_snapshot_boundary",
-            "event_projection_effect_inventory"
-        ]
-    })
-    .to_string();
+    let conversation = verify_conversation_read_view(connection);
+    let conversation_detail = match &conversation {
+        Ok(verified) => serde_json::json!({
+            "verified": verified,
+            "boundary_rule": "deferred_read_transaction_event_head",
+            "cursor_key": "durable_runtime_metadata",
+            "legacy_unattributed_briefs": "existing_briefs_surface",
+        })
+        .to_string(),
+        Err(error) => serde_json::json!({ "error": format!("{error:#}") }).to_string(),
+    };
     persist_verification(
         connection,
         CONVERSATION_READ_VERIFIED,
-        false,
+        conversation.unwrap_or(false),
         &now,
         &conversation_detail,
     )?;
     Ok(())
+}
+
+fn verify_conversation_read_view(connection: &Connection) -> Result<bool> {
+    for table in [
+        "agent_identities",
+        "turn_records",
+        "messages",
+        "queue_entries",
+        "briefs",
+        "transcript_entries",
+        "tool_executions",
+        "wait_conditions",
+        "conversation_turn_revisions",
+        "conversation_source_revisions",
+        "conversation_input_assignments",
+        "runtime_metadata",
+        "runtime_sequences",
+        "audit_event_retention_watermarks",
+    ] {
+        if !table_exists(connection, table)? {
+            return Ok(false);
+        }
+    }
+    let cursor_key: Option<String> = connection
+        .query_row(
+            "SELECT value FROM runtime_metadata
+             WHERE key = 'conversation_cursor_signing_key'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if cursor_key.as_deref().is_none_or(str::is_empty) {
+        return Ok(false);
+    }
+    let missing_turn_revisions: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM turn_records AS turns
+         LEFT JOIN conversation_turn_revisions AS revisions
+           ON revisions.agent_id = turns.agent_id
+          AND revisions.turn_id = turns.turn_id
+         WHERE revisions.turn_id IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let invalid_assignments: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM conversation_input_assignments AS assignments
+         LEFT JOIN turn_records AS turns
+           ON turns.agent_id = assignments.agent_id
+          AND turns.turn_id = assignments.turn_id
+         WHERE turns.turn_id IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    let invalid_sources: i64 = connection.query_row(
+        "SELECT COUNT(*)
+         FROM conversation_source_revisions
+         WHERE source_kind NOT IN ('operator', 'assistant', 'tool', 'wait', 'error')
+            OR revision <= 0
+            OR (turn_id IS NOT NULL AND activity_seq IS NULL)",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(missing_turn_revisions == 0 && invalid_assignments == 0 && invalid_sources == 0)
 }
 
 /// Proves the roster read view is assemblable and sound for this database:

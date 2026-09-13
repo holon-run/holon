@@ -425,25 +425,29 @@ pub async fn agent_roster_snapshot(
 /// read view plus the request's resolved authority mode. Credentials are
 /// never an input, so token rotation with unchanged entitlement keeps the
 /// scope stable.
-fn observer_visibility_scope(
+pub(crate) fn observer_visibility_scope(
     state: &AppState,
     runtime_id: &str,
     visibility_policy_generation: u64,
 ) -> String {
-    let (principal, entitlement) = if state.require_control_token {
-        (CONTROL_SCOPE_PRINCIPAL, CONTROL_SCOPE_ENTITLEMENT)
-    } else {
-        (
-            crate::runtime_db::observer_sync::PUBLIC_SCOPE_PRINCIPAL,
-            crate::runtime_db::observer_sync::PUBLIC_SCOPE_ENTITLEMENT,
-        )
-    };
+    let (principal, entitlement) = observer_scope_authority(state);
     crate::ids::visibility_scope_id(
         runtime_id,
         principal,
         entitlement,
         visibility_policy_generation,
     )
+}
+
+pub(crate) fn observer_scope_authority(state: &AppState) -> (&'static str, &'static str) {
+    if state.require_control_token {
+        (CONTROL_SCOPE_PRINCIPAL, CONTROL_SCOPE_ENTITLEMENT)
+    } else {
+        (
+            crate::runtime_db::observer_sync::PUBLIC_SCOPE_PRINCIPAL,
+            crate::runtime_db::observer_sync::PUBLIC_SCOPE_ENTITLEMENT,
+        )
+    }
 }
 
 /// `GET /api/agents/{agent_id}/projection-snapshot`: the per-Agent
