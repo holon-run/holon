@@ -235,6 +235,7 @@ pub(crate) fn load_observer_sync_verification(
             verification.event_projection_effect_complete =
                 foundations.event_projection_effect_complete;
             verification.brief_atomic_linkage_verified = foundations.brief_atomic_linkage_verified;
+            verification.conversation_read_verified = foundations.conversation_read_verified;
         }
         Err(error) => {
             tracing::warn!(

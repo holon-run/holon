@@ -6934,6 +6934,40 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn conversation_read_capability_stays_off_with_inventory_blockers() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let foundations = db.observer_sync_foundations()?;
+        assert!(!foundations.conversation_read_verified);
+
+        let (verified, detail): (i64, String) = db.connection()?.query_row(
+            "SELECT verified, detail
+             FROM observer_sync_capability_verifications
+             WHERE capability = 'conversation_read_verified'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(verified, 0);
+        let detail: serde_json::Value = serde_json::from_str(&detail)?;
+        assert_eq!(detail["capability"], "agents.conversation-read.v1");
+        assert_eq!(
+            detail["blocked_sources"]
+                .as_array()
+                .expect("blocked source inventory")
+                .len(),
+            6
+        );
+        assert_eq!(
+            detail["verified_sources"]
+                .as_array()
+                .expect("verified source inventory")
+                .len(),
+            3
+        );
+        Ok(())
+    }
+
+    #[test]
     fn observer_sync_event_projection_effect_accepts_legacy_and_typed_events() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {

@@ -29,6 +29,7 @@ use axum::http::{HeaderMap, StatusCode};
 
 pub(crate) const ROSTER_SNAPSHOT_CAPABILITY: &str = "agents.roster-snapshot.v1";
 pub(crate) const PROJECTION_SNAPSHOT_CAPABILITY: &str = "agents.projection-snapshot.v1";
+pub(crate) const CONVERSATION_READ_CAPABILITY: &str = "agents.conversation-read.v1";
 pub(crate) const PROJECTION_EFFECT_CAPABILITY: &str = "events.projection-effect.v1";
 pub(crate) const ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY: &str = "briefs.atomic-created-event.v1";
 
@@ -65,6 +66,9 @@ pub(crate) struct ObserverSyncCapabilityVerification {
     /// `brief_created` event atomically (or via durable outbox) and the
     /// historical backfill is unambiguous.
     pub(crate) brief_atomic_linkage_verified: bool,
+    /// Every conversation source has canonical ownership, monotonic revision,
+    /// and atomic source-event coverage.
+    pub(crate) conversation_read_verified: bool,
 }
 
 /// Evaluates the four observer-sync capabilities independently. Snapshot
@@ -92,6 +96,15 @@ pub(crate) fn advertised_observer_sync_capabilities(
     }
     if verification.brief_atomic_linkage_verified {
         capabilities.push(ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY);
+    }
+    if verification.runtime_identity_stable
+        && verification.agent_identity_reserved
+        && verification.projection_snapshot_verified
+        && verification.event_projection_effect_complete
+        && verification.brief_atomic_linkage_verified
+        && verification.conversation_read_verified
+    {
+        capabilities.push(CONVERSATION_READ_CAPABILITY);
     }
     capabilities
 }
@@ -628,6 +641,7 @@ mod tests {
             projection_snapshot_verified: true,
             brief_atomic_linkage_verified: true,
             event_projection_effect_complete: true,
+            conversation_read_verified: true,
             ..Default::default()
         };
         let advertised = advertised_observer_sync_capabilities(&verification);
@@ -635,6 +649,7 @@ mod tests {
         assert!(!advertised.contains(&PROJECTION_SNAPSHOT_CAPABILITY));
         assert!(advertised.contains(&PROJECTION_EFFECT_CAPABILITY));
         assert!(advertised.contains(&ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY));
+        assert!(!advertised.contains(&CONVERSATION_READ_CAPABILITY));
     }
 
     #[test]
@@ -660,6 +675,25 @@ mod tests {
             advertised_observer_sync_capabilities(&verification),
             vec![PROJECTION_SNAPSHOT_CAPABILITY]
         );
+    }
+
+    #[test]
+    fn evaluator_requires_every_conversation_source_verification() {
+        let mut verification = ObserverSyncCapabilityVerification {
+            runtime_identity_stable: true,
+            agent_identity_reserved: true,
+            roster_snapshot_verified: true,
+            projection_snapshot_verified: true,
+            event_projection_effect_complete: true,
+            brief_atomic_linkage_verified: true,
+            ..Default::default()
+        };
+        assert!(!advertised_observer_sync_capabilities(&verification)
+            .contains(&CONVERSATION_READ_CAPABILITY));
+
+        verification.conversation_read_verified = true;
+        assert!(advertised_observer_sync_capabilities(&verification)
+            .contains(&CONVERSATION_READ_CAPABILITY));
     }
 
     #[test]

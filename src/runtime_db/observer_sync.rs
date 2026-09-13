@@ -22,6 +22,7 @@ pub(crate) const RUNTIME_IDENTITY_STABLE: &str = "runtime_identity_stable";
 pub(crate) const AGENT_IDENTITY_RESERVED: &str = "agent_identity_reserved";
 pub(crate) const EVENT_PROJECTION_EFFECT_COMPLETE: &str = "event_projection_effect_complete";
 pub(crate) const BRIEF_ATOMIC_LINKAGE_VERIFIED: &str = "brief_atomic_linkage_verified";
+pub(crate) const CONVERSATION_READ_VERIFIED: &str = "conversation_read_verified";
 pub(crate) const ROSTER_SNAPSHOT_VERIFIED: &str = "roster_snapshot_verified";
 pub(crate) const PROJECTION_SNAPSHOT_VERIFIED: &str = "projection_snapshot_verified";
 pub(crate) const EVENT_PROJECTION_EFFECT_VERIFIER_VERSION: i64 = 1;
@@ -158,6 +159,10 @@ pub struct ObserverSyncFoundationVerification {
     /// linkage resolves to exactly one matching event. Retention-pruned
     /// history with no linkage stays acceptable.
     pub brief_atomic_linkage_verified: bool,
+    /// Every source required by the conversation read model has canonical
+    /// ownership, a durable monotonic revision, and atomic source-event
+    /// coverage. This remains false until all inventory blockers are fixed.
+    pub conversation_read_verified: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -387,6 +392,49 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         projection.unwrap_or(false),
         &now,
         &projection_detail,
+    )?;
+    let conversation_detail = serde_json::json!({
+        "verified": false,
+        "capability": "agents.conversation-read.v1",
+        "blocked_sources": [
+            {
+                "source": "turn_records",
+                "reason": "turn creation and ordinary updates lack one atomic projection revision/event linkage"
+            },
+            {
+                "source": "messages_and_queue_assignment",
+                "reason": "dequeue-to-turn assignment lacks one proven atomic pending-to-turn transition"
+            },
+            {
+                "source": "transcript_entries",
+                "reason": "assistant activity lacks an atomic created-event linkage"
+            },
+            {
+                "source": "tool_executions",
+                "reason": "ordinary tool evidence and its audit event commit separately"
+            },
+            {
+                "source": "wait_and_error_activity",
+                "reason": "transition-backed and direct write paths do not yet share complete event coverage"
+            },
+            {
+                "source": "delivery_finality",
+                "reason": "settled result finality is not yet exposed as a revisioned conversation source"
+            }
+        ],
+        "verified_sources": [
+            "brief_created_atomic_linkage",
+            "observer_projection_snapshot_boundary",
+            "event_projection_effect_inventory"
+        ]
+    })
+    .to_string();
+    persist_verification(
+        connection,
+        CONVERSATION_READ_VERIFIED,
+        false,
+        &now,
+        &conversation_detail,
     )?;
     Ok(())
 }
@@ -1281,6 +1329,7 @@ impl crate::runtime_db::RuntimeDb {
             projection_snapshot_verified: verified(PROJECTION_SNAPSHOT_VERIFIED),
             event_projection_effect_complete,
             brief_atomic_linkage_verified: verified(BRIEF_ATOMIC_LINKAGE_VERIFIED),
+            conversation_read_verified: verified(CONVERSATION_READ_VERIFIED),
         })
     }
 

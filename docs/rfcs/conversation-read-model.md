@@ -1,12 +1,12 @@
 ---
 title: RFC: Conversation Read Model
 date: 2026-09-13
-status: draft
+status: accepted
 ---
 
 # RFC: Conversation Read Model
 
-## 1. Summary and review status
+## 1. Summary and status
 
 Propose a read-only conversation surface for the Web GUI:
 
@@ -17,10 +17,15 @@ events. Active turns receive live activity. Opening a brief's execution details
 loads the associated turn's activity on demand. Folding, animation, and manual
 expansion preferences remain client decisions.
 
-This is a discussion draft, not an implemented API or authorization to implement.
-Route names, DTO names, and example limits below are proposals. Section 11 lists
-the decisions that still need review. Actual Codex/ChatGPT App folding behavior
-has not been verified and is not a prerequisite for this interface design.
+This RFC was accepted for phased implementation on 2026-09-13. Sections 3-7
+define the normative v1 contract. Concrete DTO field names and hard limit values
+may be refined without changing the lifecycle, consistency, or compatibility
+boundaries frozen here.
+
+This implementation does not modify the existing `web-gui`. It may add an
+independent Web/TypeScript protocol SDK used by real HTTP/stream E2E tests and
+available for a later GUI integration WorkItem. Actual Codex/ChatGPT App folding
+behavior has not been verified and is not a prerequisite for this interface.
 
 Related native contracts:
 
@@ -87,6 +92,21 @@ timestamps, the latest operator message, WorkItem focus, or a raw sequence range
 Cross-turn task relationships do not transfer ownership of earlier activity.
 Multiple briefs from one turn share one detail cache and execution group.
 
+Mutable public entities use durable monotonic revisions distinct from the
+stream checkpoint. Prefer the canonical audit `event_seq` allocated in the same
+transaction as the visible mutation. If a source cannot provide that atomic
+linkage, add an entity-local monotonic revision before advertising the
+capability. Timestamps are never revisions. Immutable Brief content starts at
+revision 1; a turn-summary revision covers input assignment, Brief membership,
+execution/result/finality, attention, and detail-coverage changes.
+
+`pending_inputs` is a projection, not another lifecycle. It contains visible
+operator inputs whose canonical queue/assignment state is `queued` or
+`assigning` and which may still form a future turn. Assigned, processed,
+interjected, aborted, dropped, and quarantined inputs are not pending. The
+dequeue-to-turn-assignment transition must be atomic or revisioned so an input
+cannot disappear between the pending set and its owning turn.
+
 ### 3.2 Execution, result availability, and attention are separate
 
 A summary must distinguish:
@@ -94,7 +114,8 @@ A summary must distinguish:
 | Dimension | Proposed meaning |
 | --- | --- |
 | Execution | Whether the turn is active or terminal; a safe typed terminal outcome |
-| Result availability | Whether known briefs are resolved, explicitly absent, or unresolved |
+| Result availability | Whether known briefs are resolved, explicitly absent, or durably unavailable |
+| Result finality | Whether canonical delivery lifecycle proves the result set is settled |
 | Attention | Safe error/interruption/wait information requiring visibility |
 | Detail availability | Whether activity is available, partial, unavailable, or unknown |
 
@@ -114,18 +135,47 @@ Proposed result states are `pending`, `available`, `none`, and `unavailable`:
 - `pending`: result association/materialization is not yet resolved.
 - `available`: currently associated briefs can be read.
 - `none`: canonical facts explicitly establish no brief.
-- `unavailable`: result resolution failed or retained data is insufficient;
-  return a safe reason and retryability, not a fabricated result.
+- `unavailable`: durable canonical linkage, retention, or legacy coverage is
+  insufficient to resolve the result; return a safe typed reason and
+  retryability, not a fabricated result.
 
-`available` does not promise that no later brief can be attached. The summary's
-brief list remains revisioned. An empty brief list alone does not prove `none`;
-a short timeout must not turn missing evidence into a no-result claim.
-How legacy ambiguity maps to `pending` versus `unavailable`, and how finalization
-settles unresolved results without endless retries, remain review items.
+Every summary also carries `settled`. It is true only when canonical delivery
+lifecycle durably proves that no later Brief can join the result set. Turn
+terminal state, agent idle state, a timeout, or the current contents of
+`briefs[]` do not imply `settled`. `available` may therefore be either settled
+or unsettled, and the summary's Brief list remains revisioned.
+
+Transient storage, decoding, or authorization failures fail the HTTP/stream
+operation. They never map to `unavailable`. An empty Brief list alone does not
+prove `none`, and a short timeout must not turn missing evidence into a
+no-result claim.
 
 Attention is typed metadata, not a synthetic `BriefRecord`. Failed/interrupted
 turns with no brief remain discoverable. Silent background turns do not acquire
 fake assistant output.
+
+### 3.3 Canonical source and event-coverage inventory
+
+Phase 0 records the current storage boundary below. `verified` means the
+existing write already provides the required committed linkage. `blocked`
+means the source remains readable for diagnostics but prevents
+`agents.conversation-read.v1` advertisement.
+
+| Source | Canonical write boundary | Phase 0 state |
+| --- | --- | --- |
+| Turn create/update | `TurnRecord` repository upsert; terminal transitions use `commit_turn_terminal` | Blocked: ordinary create/update lacks one projection revision/event linkage |
+| Input and assignment | message evidence plus queue/turn transitions | Blocked: pending-to-turn assignment is not yet one proven atomic transition |
+| Brief result | `append_brief_with_created_event` | Verified: Brief, `brief_created`, `event_seq`, and `created_event_seq` commit together |
+| Assistant activity | transcript/assistant-round evidence | Blocked: no atomic created-event linkage or unified revision |
+| Tool activity | tool-execution evidence plus `tool_executed` audit event | Blocked: ordinary record and event currently commit separately |
+| Wait/error activity | wait/queue/task transitions and typed audit events | Blocked: transition and direct write paths do not have complete shared coverage |
+| Result finality | canonical delivery/terminal lifecycle | Blocked: `settled` is not yet a revisioned read-model fact |
+| Snapshot watermark | observer projection snapshot read transaction and per-Agent event head | Verified foundation; conversation-specific sources still need coverage |
+
+The durable verifier persists this inventory as
+`conversation_read_verified = false`. Later phases replace each blocker with
+an executable invariant; they must not bypass the gate by advertising a
+partial capability.
 
 ## 4. Summary snapshot and history pagination
 
@@ -150,30 +200,38 @@ Logical response fields:
 A turn summary contains stable identity and ordering information, a revision,
 necessary visible inputs, safe execution/result/attention metadata, duration
 when known, detail availability, and its `briefs[]`. Each brief includes its
-canonical identity, body, citations, and attachment metadata. It does not
-require transcript hydration to obtain the body and does not inline attachment
-files, commands, tool arguments/output, or intermediate assistant text.
+canonical identity, citations, safe attachment metadata, and
+`content_state = inline | deferred`. Inline content does not require transcript
+hydration. Deferred content preserves complete Brief membership and is fetched
+through the existing authorized Brief read. A summary never inlines attachment
+files, arbitrary attachment values or URIs, commands, tool arguments/output, or
+intermediate assistant text.
 
 All briefs associated with a turn travel with that turn's summary; the history
 page never splits them. `limit` counts turns, not briefs, events, or rendered
-rows. Turn-count bounds alone do not bound bytes; payload limits and explicit
-handling of an oversized single-turn summary must be decided before shipping,
-rather than silently truncating results or splitting the turn.
+rows. Count and byte budgets are both mandatory. An oversized Brief body becomes
+`deferred`; an oversized summary returns a typed error that preserves its cursor
+position rather than silently truncating, splitting the turn, or permanently
+blocking pagination.
 
 ### 4.1 Page membership and order
 
-1. The first request selects the most recent page of native turns. `active_turns`
+1. Every native turn belongs to the conversation page chain, including timer,
+   task-wake, recovery, operational, and otherwise silent turns. Each turn gets
+   an immutable `presentation_class` derived from its creation trigger.
+   Presentation clients may fold classes but must not change API membership.
+2. The first request selects the most recent page of native turns. `active_turns`
    may overlap that page; merge by identity/revision, never render duplicates.
-2. Older pages use keyset pagination with a stable total order. A candidate key
+3. Older pages use keyset pagination with a stable total order. A candidate key
    is `(turn_index, turn_id)` within the agent; uniqueness/index assumptions
    must be verified against actual storage.
-3. The page chain fixes a membership upper bound from the first page. New turns
+4. The page chain fixes a membership upper bound from the first page. New turns
    do not shift it. A new brief on an old turn updates that summary, not its
    position. No offset pagination or timestamp-only ordering.
-4. The proposal freezes page membership, not every historical value across
+5. The contract freezes page membership, not every historical value across
    requests. Each page is its own coherent read; mutable fields may be newer.
    Clients merge revisions and preserve live state against late page responses.
-5. Bootstrap includes `active_turns` and `pending_inputs`; older-page reads need
+6. Bootstrap includes `active_turns` and `pending_inputs`; older-page reads need
    not repeat them. Older-page `snapshot_cursor` is not permission to advance an
    already connected client's stream checkpoint past unconsumed changes.
 
@@ -193,6 +251,13 @@ source changes. Every visible record mutation must participate in that coverage.
 If current writes cannot provide this guarantee, repair that boundary before
 exposing the API; do not disguise an arbitrary event head as a snapshot cursor.
 
+The v1 capability is `agents.conversation-read.v1`. It remains absent unless a
+durable verifier proves the required source tables, canonical ownership
+linkages, monotonic entity revisions, and source-event coverage for turn,
+message assignment, Brief, assistant activity, tool activity, wait/error, and
+detail invalidation mutations. Route registration alone never advertises the
+capability.
+
 Query canonical records and indexes without scanning the entire audit history
 per page. Add keyset queries/indexes first. Only introduce a rebuildable reference
 index if bounded queries and consistent coverage cannot otherwise be achieved;
@@ -204,11 +269,10 @@ Nullable event linkage or missing turn ownership must not silently remove old
 briefs or manufacture native turns. Return reliably associated legacy records
 normally, marking missing activity coverage explicitly.
 
-For briefs that cannot be attributed to any turn, the compatibility surface is
-still open: a separately paginated legacy result collection or an explicit
-legacy-history entry point are candidates. The normal turn page must not contain
-pseudo-turns. A decision and migration fixtures are required before replacing the
-old history UI.
+Briefs that cannot be attributed to any turn remain accessible through the
+existing bounded `/briefs` compatibility surface. The normal turn page never
+contains pseudo-turns, and v1 does not introduce another authoritative legacy
+collection. Migration fixtures must prove that legacy results remain reachable.
 
 ## 5. Single-turn activity read
 
@@ -229,6 +293,20 @@ update replaces that item; it is not a second tool invocation. Known final
 assistant output and the delivered brief are associated through canonical
 finalization references, not text matching.
 
+The v1 activity vocabulary is closed:
+
+| Activity | Stable identity |
+| --- | --- |
+| `operator` | canonical `message_id` |
+| `assistant` | canonical transcript/assistant-round identity |
+| `tool` | canonical `tool_execution_id` |
+| `wait` | canonical wait record or typed audit-event identity |
+| `error` | canonical typed failure/event identity |
+
+Briefs are results and are not duplicated as activity. Unknown source types are
+omitted and force `coverage = partial` with a safe typed reason. V1 does not
+publish a generic item that can carry arbitrary source payload.
+
 These are safe typed verbose items with bounded fields and authorized detail
 references. Existing inspectors handle large output/diffs. Shared activity
 resolution should be reused rather than implementing another set of tool-state
@@ -239,10 +317,10 @@ Its cursor is bound to agent, turn, epoch, and query version; it cannot resume
 the conversation stream. A late detail response cannot overwrite newer streamed
 revisions. Detail read errors leave the already loaded brief intact.
 
-Live streaming is not a promise to continuously update expanded *terminal*
-details. A relevant later change should invalidate that turn's detail coverage;
-an open detail view can re-fetch bounded pages. The precise invalidation message
-is part of the stream DTO review.
+Live streaming does not continuously update expanded *terminal* details. A
+relevant later change emits `detail_invalidated` with the owning turn and detail
+revision; an open detail view re-fetches bounded pages. Only active turns may
+receive activity deltas, and their recovery count/bytes are hard bounded.
 
 ## 6. Conversation change stream
 
@@ -268,18 +346,21 @@ contract is required either way.
 
 | Message | Purpose |
 | --- | --- |
-| `operator_upsert` | Insert/update visible input by message ID, including its eventual turn assignment |
-| `brief_upsert` | Insert/update a result by brief ID and native turn ID |
-| `turn_state` | Revisioned summary/state update, including result/detail availability |
+| `batch_begin` | Start one bounded reconciliation/live batch identified by `batch_id` |
+| `operator_upsert` | Insert/update a visible pending input by canonical message identity |
+| `operator_remove` | Remove an input from pending by identity after assignment or terminal queue state |
+| `turn_summary_upsert` | Lightweight full summary, including Brief membership and entity revision |
 | `activity_upsert` | Revisioned verbose item for a live-observed active turn |
-| `checkpoint` | Advance the boundary fully covered by this view |
+| `detail_invalidated` | Advance a turn's detail revision and require bounded refetch |
+| `checkpoint` | End the batch and expose its resumable opaque cursor |
 | `reset_required` | Invalidate recovery and request a fresh bootstrap |
 
 Messages carry scope/epoch and stable entity identities/revisions. Updates for a
-turn outside loaded pages must be self-contained or explicitly invalidate that
-summary; a bare terminal flag cannot reconstruct missed briefs and inputs.
-The exact choice of full-summary upsert versus invalidation/refetch is open.
-Input assignment must remove the matching pending representation by identity.
+turn outside loaded pages use a lightweight full-summary upsert; a bare terminal
+flag cannot reconstruct missed Briefs and inputs. Clients retain it only when
+the turn is already loaded or belongs to the bounded live window, so the stream
+does not require an unbounded local history cache. Input assignment removes the
+matching pending representation by identity.
 
 Revisions are source-derived or durably reproducible, not response timestamps.
 The stream checkpoint orders covered changes; entity revisions prevent stale
@@ -295,12 +376,15 @@ replacement. They have different roles and cannot be substituted for each other.
   recovery; missing earlier detail remains explicitly pageable.
 - Reconciliation may coalesce mutations. This is view recovery, not exactly-once
   replay of every raw event.
-- Only commit a checkpoint after all required summary changes and detail
-  recovery/invalidation instructions through that boundary have been delivered
-  and applied. A disconnect mid-batch must be safely replayable.
+- The server emits `checkpoint` only after every required change through that
+  boundary has been encoded and sent in the same bounded batch. The client
+  buffers the batch, applies it atomically, and only then persists the
+  checkpoint/SSE id. The server never claims to know that the client applied it.
+  A disconnect before `checkpoint` replays from the client's previously
+  persisted cursor.
 - Proposed SSE `id` values represent safe resumable checkpoints, not raw sequence
-  numbers or incomplete reconciliation progress. Define `Last-Event-ID` support
-  and precedence relative to `after` before implementation.
+  numbers or incomplete reconciliation progress. `Last-Event-ID` takes
+  precedence over `after`; `after` is used only when the header is absent.
 - Filtered source events advance coverage via checkpoints; they are not gaps
   to repair using the raw event ledger.
 - Expired cursors, epoch replacement, incompatible query versions, or exceeded
@@ -389,9 +473,9 @@ GUI or forcing a shared external Session model.
 ## 9. Compatibility, rollout, and security
 
 - Preserve `/briefs`, `/events`, `/events/stream`, and existing diagnostic reads.
-- Advertise the new read capability/version. A new GUI on an old daemon should
-  explicitly retain the old mode, not secretly fetch all history and call it
-  lightweight mode.
+- Advertise `agents.conversation-read.v1` only after its durable verification
+  succeeds. Capability absence means the surface is unavailable; route
+  registration or partial source coverage is insufficient.
 - Ordinary conversation startup must not also initialize old raw-history
   catch-up/transcript hydration through roster or unread recovery side paths.
 - Keep debug/trace separate. Reuse verbose visibility rules, not arbitrary raw
@@ -400,9 +484,11 @@ GUI or forcing a shared external Session model.
   capabilities; validate scope and permissions independently.
 - Do not persist folding state in runtime records or duplicate brief text.
 
-After review, sequence implementation as: canonical query/coverage proof and
-DTOs; backend contract tests; isolated GUI read/cache path; then UI integration
-and migration. No implementation is included in this RFC.
+Sequence implementation as: source/event coverage proof; revisions and bounded
+queries; snapshot/detail DTOs and backend contract tests; stream/recovery;
+independent Web/TypeScript protocol SDK and real protocol E2E; compatibility
+and observability. Existing `web-gui` repository/cache, dual-mode integration,
+UI migration, and legacy side-path removal are explicitly out of scope.
 
 ## 10. Acceptance evidence required for implementation
 
@@ -424,24 +510,31 @@ and migration. No implementation is included in this RFC.
    Oversized summary behavior and slow-consumer recovery are tested.
 9. Agent/remote switches discard stale responses; authorization and artifact
    access checks cover the new paths. Raw consumers remain compatible.
-10. Network-level GUI tests prove hidden legacy hydration/recovery paths are not
-    fetching verbose history. Existing unread behavior and manual expansion
-    preferences remain intact.
+10. The independent TypeScript SDK runs the same bootstrap, history, detail,
+    deferred-Brief, reconnect, reset, retention, and backpressure scenarios
+    against a real HTTP/SSE server. Network assertions prove it never fetches
+    historical `/events` or transcript/tool hydration.
+11. The SDK has no `web-gui` store/view-model dependency and the existing
+    `web-gui` is unchanged by this implementation.
 
-## 11. Review agenda
+## 11. Accepted v1 decisions
 
-| Decision | Current recommendation / unresolved part |
+| Decision | Frozen v1 contract |
 | --- | --- |
-| Pagination unit | Native turn; briefs remain grouped and detail is per turn |
-| Endpoint organization | Three reads as above; new stream URL versus explicit mode remains open |
-| Summary DTO and size | Include readable briefs/inputs; settle exact safe fields and oversized-turn behavior |
-| Ordering and cursor encoding | Keyset + fixed membership upper bound; validate storage key, expiry, scope/version rules |
-| Consistent coverage | Prove source writes and snapshot watermark share a boundary before choosing implementation |
-| Public terminal/result mapping | Keep execution/result/attention separate; settle recovery outcomes and unresolved/legacy finalization |
-| Stream reconciliation | Coalesced completed summaries, bounded active recovery; settle full upserts/invalidation and checkpoint framing |
-| Legacy ownership | No invented turns or dropped briefs; choose a bounded compatibility entry point |
-| Detail invalidation | Explicitly signal late terminal-detail changes; finalize message and refresh semantics |
+| Pagination membership | Every native turn; immutable trigger-derived `presentation_class` |
+| Endpoint organization | Summary page, per-turn detail, and distinct conversation SSE stream |
+| Summary DTO and size | Complete Brief membership; bounded inline content with `deferred` body fallback |
+| Ordering and cursor encoding | Keyset + fixed membership upper bound; opaque agent/epoch/scope/schema/query-bound cursor |
+| Consistent coverage | Same committed source view and covered watermark; capability gated on durable verification |
+| Public terminal/result mapping | Execution, result, `settled`, attention, and detail coverage remain separate |
+| Entity revisions | Same-transaction canonical event sequence where possible, otherwise durable monotonic entity revision |
+| Pending inputs | Only `queued | assigning`; assignment atomically/revisionedly moves identity to a turn |
+| Activity vocabulary | Closed operator/assistant/tool/wait/error set; unknown kinds omitted with partial coverage |
+| Stream reconciliation | Lightweight full-summary upsert, bounded active recovery, terminal detail invalidation |
+| Checkpoint framing | Server completes a batch; client atomically applies then persists; `Last-Event-ID` wins |
+| Legacy ownership | Existing bounded `/briefs`; no invented turn or new authoritative legacy collection |
 | Relationship to #2904 | Reuse native facts; independent external identities, DTOs, permissions, and replay contracts |
 
-Discuss and revise this document before freezing OpenAPI/TypeScript types.
-Approval of the RFC and authorization to implement are separate steps.
+Changes to these lifecycle or consistency decisions require an RFC amendment.
+DTO spelling, documented hard limits, and additive safe fields may evolve inside
+the versioned capability and schema process.
