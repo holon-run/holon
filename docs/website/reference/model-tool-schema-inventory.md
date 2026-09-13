@@ -32,9 +32,10 @@ Each built-in tool entry records:
 - related HTTP or CLI surfaces when commands wrap tool or runtime APIs
 - model-visible tool description
 
-The version 2 inventory starts result-schema coverage with `Enqueue`,
-`GenerateImage`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, and
-`TaskStop`. Uncovered tools keep their result type name and an explicit
+The version 2 inventory currently covers result schemas for `CreateTimer`,
+`ListTimers`, `GetTimer`, `CancelTimer`, `Enqueue`, `CreateAgent`, `InvokeAgent`,
+`ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, `TaskStop`, and
+`GenerateImage`. Uncovered tools keep their result type name and an explicit
 `null` schema; this avoids presenting an inferred or partial shape as a stable
 contract. Coverage can expand only when the concrete Rust result type derives
 `schemars::JsonSchema`.

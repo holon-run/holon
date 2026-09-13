@@ -62,7 +62,7 @@ Holon 提供三种与运行时交互的方式：
 - **[快速示例](/zh-CN/guides/quick-examples)** — 单次执行与常见任务模式
 - **[持久 Agent 工作流](/zh-CN/guides/durable-agent-workflow)** — 持久 Agent 工作的完整生命周期
 - **[概念](/zh-CN/concepts/)** — 深入内部机制前的心智模型
-- **[CLI 参考](/reference/cli.md)**（英文）— 完整命令面
+- **[CLI 参考](/zh-CN/reference/cli.md)** — 完整命令面
 - **[故障排查](/zh-CN/guides/troubleshooting)** — 诊断常见安装问题
 
 ## 贡献或开发？

@@ -31,8 +31,8 @@ and description.
 
 | Key | Type | Description |
 |-----|------|-------------|
-| `vision.default` | model_route_ref | Route ref for ViewImage visual observation. Unset auto-discovers an image-capable provider |
-| `image_generation.default` | model_route_ref | Route ref for GenerateImage requests. Unset selects the first turn model that supports image generation |
+| `vision.default` | model_route_ref_or_auto | Route ref for ViewImage visual observation. Unset auto-discovers an image-capable provider |
+| `image_generation.default` | model_route_ref_or_auto | Route ref for GenerateImage requests. Unset selects the first turn model that supports image generation |
 | `model.default` | model_route_ref | Default executable route, e.g. `"anthropic@default/claude-sonnet-4-6"` |
 | `model.fallbacks` | model_route_ref_list | Ordered executable fallback routes |
 | `runtime.disable_provider_fallback` | boolean | Disable provider/model fallback; require deterministic single-provider execution |
@@ -386,7 +386,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 |-----|------|---------|-------------|
 | `api.cors.enabled` | boolean | `true` | Enable CORS responses on the HTTP/control API; localhost/loopback origins are allowed by default |
 | `api.cors.allowed_origins` | string_list | `[]` | Additional explicit browser origins allowed to call the API |
-| `api.cors.allowed_methods` | string_list | `["GET","POST","PATCH","DELETE","OPTIONS"]` | HTTP methods allowed by CORS preflight |
+| `api.cors.allowed_methods` | string_list | `["GET","POST","PUT","PATCH","DELETE","OPTIONS"]` | HTTP methods allowed by CORS preflight |
 | `api.cors.allowed_headers` | string_list | `["content-type","authorization"]` | Request headers allowed by CORS preflight |
 | `api.cors.allow_credentials` | boolean | `false` | Allow credentialed CORS requests; incompatible with wildcard origins |
 | `api.cors.max_age_seconds` | integer | `600` | Browser cache lifetime for preflight responses |

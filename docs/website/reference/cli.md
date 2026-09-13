@@ -1,9 +1,9 @@
 ---
 title: CLI reference
-summary: Holon's command-line interface — verified against holon --help (v0.30.0).
+summary: Holon's command-line interface — verified against holon --help (v0.39.0).
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.30.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.39.0. -->
 
 # CLI Reference
 
@@ -16,7 +16,9 @@ For scripting guidance, stability levels, and support policy, see
 ## Command Tree
 
 ```
-holon (v0.35.0)
+holon (v0.39.0)
+├── context      Show the declared caller context
+├── commands     Show machine-readable CLI command metadata
 ├── serve        Start HTTP control plane server
 ├── onboard      Interactive setup wizard or secret-safe diagnostics
 ├── daemon       Background daemon lifecycle
@@ -53,13 +55,18 @@ holon (v0.35.0)
 │   ├── tail     Fetch a bounded page of event envelopes
 │   └── stream   Stream event envelopes as newline-delimited JSON
 ├── task         Run a command as a background task
+│   ├── list     List tasks
 │   ├── status   Show task lifecycle status
 │   ├── output   Read task output
 │   ├── input    Send text input to a task
 │   └── stop     Stop a task
-├── work-item    Inspect WorkItems
+├── work-item    Inspect and manage WorkItems
 │   ├── list     List WorkItems
-│   └── get      Show a WorkItem
+│   ├── get      Show a WorkItem
+│   ├── create   Create a WorkItem
+│   ├── pick     Pick a WorkItem as current focus
+│   ├── update   Update a WorkItem
+│   └── complete Complete a WorkItem
 ├── timer        Create a delayed or recurring timer
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
@@ -68,10 +75,12 @@ holon (v0.35.0)
 │   ├── status   Show agent status
 │   ├── create   Create a new agent
 │   ├── rename   Rename a public self-owned agent
+│   ├── repair   Retry incomplete post-create bootstrap steps
 │   ├── start    Start an agent
 │   ├── stop     Stop an agent
 │   ├── delete   Permanently delete an agent and its data
 │   ├── abort    Abort current run
+│   ├── reset-callback Reset the external trigger callback for an agent
 │   └── model    Per-agent model configuration
 │       ├── get  Get agent model override
 │       ├── set  Set agent model override
@@ -91,23 +100,12 @@ holon (v0.35.0)
 │   └── uninstall  [deprecated] Compatibility alias
 ├── run          One-shot agent interaction
 ├── solve        Solve a GitHub issue or similar target
-├── template     Agent template management
-│   ├── catalog  List installed templates
-│   ├── install  Install a template from a source
-│   ├── remove   Remove an installed template
-│   ├── info     Show template detail
-│   ├── sources  Remote template source management
-│   │   ├── list List configured remote sources
-│   │   ├── add  Add a remote source
-│   │   └── remove Remove a remote source
-│   └── sync     Sync templates from remote sources
 ├── workspace    Workspace management (attach, exit, detach)
 │   ├── attach   Attach to an existing workspace
 │   ├── exit     Exit current workspace
 │   └── detach   Detach from a workspace
 ├── tui          Launch interactive terminal UI
 ├── memory-index Memory indexing management
-│   ├── status   Show indexing status
 │   └── rebuild  Rebuild the memory search index
 ├── models-dev   models.dev snapshot refresh, validation, and audit
 │   ├── refresh  Fetch the snapshot and regenerate the artifact
@@ -117,6 +115,7 @@ holon (v0.35.0)
 │   ├── prompt   Debug-mode prompt
 │   ├── latency  Show latency metrics
 │   ├── performance  Show performance metrics
+│   ├── trace    Show end-to-end trace by id or search
 │   ├── runtime-db   Runtime database audit and retention
 │   ├── scheduler-recovery  Inspect/apply scheduler recovery
 │   └── scheduler-fixture Generate scheduler fixture data
@@ -135,7 +134,7 @@ holon (v0.35.0)
 ```bash
 holon run "Explain Rust ownership"
 holon run --json "List files"                          # JSON output
-holon run --trust untrusted-external "User query"      # mark trust level
+holon run --authority-class external-evidence "User query"  # set authority class
 ```
 
 ### Create and use an agent
@@ -317,13 +316,16 @@ holon work-item list
 holon work-item list --limit 10 --agent planner
 holon work-item get <WORK_ITEM_ID>
 holon work-item get <WORK_ITEM_ID> --agent planner
+holon work-item create "Triage failing CI"
+holon work-item pick <WORK_ITEM_ID> --reason "unblock release"
+holon work-item complete <WORK_ITEM_ID>
 ```
 
-The initial WorkItem CLI surface is read-only. It prints the HTTP read-model
-`WorkItemRecord` JSON shape returned by `/agents/:agent_id/work-items` and
-`/agents/:agent_id/work-items/:work_item_id`. Mutating commands such as create,
-update, pick, and complete remain intentionally deferred until their API
-contracts are stabilized.
+`list` and `get` are read-only and print the HTTP read-model `WorkItemRecord`
+JSON shape returned by `/agents/:agent_id/work-items` and
+`/agents/:agent_id/work-items/:work_item_id`. The `create`, `update`, `pick`,
+and `complete` subcommands mutate WorkItem state and return the corresponding
+control-plane response.
 
 ### Events
 
@@ -363,7 +365,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--agent <AGENT>` | Target a specific agent |
 | `--create-agent` | Create agent if not exists |
 | `--template <TEMPLATE>` | Agent template for new agents |
-| `--trust <TRUST>` | Trust level: `trusted-operator`, `trusted-system`, `trusted-integration`, `untrusted-external` |
+| `--authority-class <CLASS>` | Authority class: `operator-instruction`, `runtime-instruction`, `integration-signal`, `external-evidence` (alias: `--trust`) |
 | `--json` | Machine-readable JSON output |
 | `--max-turns <N>` | Limit agent turns |
 | `--no-wait-for-tasks` | Don't block on background tasks |

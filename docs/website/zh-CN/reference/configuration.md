@@ -1,0 +1,429 @@
+---
+title: 配置
+summary: Holon 的配置文件、配置键、凭据、环境变量与诊断。
+order: 15
+---
+
+# 配置参考
+
+Holon 把运行时配置保存在 `~/.holon/` 下的 JSON 文件中：
+
+| 文件 | 用途 |
+|------|------|
+| `~/.holon/config.json` | 提供商、默认模型、TUI、Web 与运行时设置 |
+| `~/.holon/credentials.json` | 受权限保护的凭据存储（通过 `config credentials` 管理） |
+
+## 配置键
+
+用 `holon config get/set/unset/list` 读写配置键。本地 daemon 运行时，这些命令优先走
+daemon 的运行时配置 API；无法连接 daemon 时，回退到离线配置存储。`set` 和 `unset` 会在
+stderr 打印 `applied_via=daemon_api` 或 `applied_via=offline_store`，stdout 仍是脚本
+使用的 JSON 值或状态。不被支持的 daemon 更新会失败，并给出 daemon 返回的拒绝原因。被
+接受的 daemon 更新会持久化到 `config.json`；在支持重启或重载之前，运行中的 daemon 可能
+继续使用当前生效的配置，CLI 会在 stderr 上提示这一点。
+用 `holon config schema` 查看所有可用的键及其类型、默认值和说明。
+
+### 模型与提供商设置
+
+| 键 | 类型 | 说明 |
+|-----|------|-------------|
+| `vision.default` | model_route_ref_or_auto | ViewImage 视觉观测的路由引用。未设置时自动发现支持图像的提供商 |
+| `image_generation.default` | model_route_ref_or_auto | GenerateImage 请求的路由引用。未设置时选择第一个支持图像生成的轮次模型 |
+| `model.default` | model_route_ref | 默认可执行路由，例如 `"anthropic@default/claude-sonnet-4-6"` |
+| `model.fallbacks` | model_route_ref_list | 有序的可执行回退路由 |
+| `runtime.disable_provider_fallback` | boolean | 禁用提供商/模型回退，要求确定性的单提供商执行 |
+
+```bash
+# 设置默认模型
+holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
+
+# 添加回退模型（JSON 数组）
+holon config set model.fallbacks '["anthropic@default/claude-sonnet-4-6","minimax@default/MiniMax-M2.7"]'
+
+# 读取当前默认值
+holon config get model.default
+
+# 查看全部当前配置
+holon config list
+
+# 删除配置键（恢复默认值）
+holon config unset model.fallbacks
+```
+
+### 按模型策略
+
+`models.catalog` 键用于覆盖特定提供商/模型引用的运行时元数据。`model.unknown_fallback.*`
+下的键控制缺少内置元数据的模型的策略。
+
+模型元数据与可执行选择使用不同的身份：
+
+- `provider/model` 是逻辑模型引用，供 `models.catalog` 使用。
+- `provider@endpoint/model` 是模型路由引用，供默认值、回退、视觉与图像生成选择以及
+  Agent 覆盖使用。
+
+旧的 `provider/model` 选择值仍被接受，但所有新的写入都会带上 endpoint。用以下命令检查
+或显式重写现有配置与 Agent 状态：
+
+```bash
+holon config migrate-model-routes          # 试运行
+holon config migrate-model-routes --write  # 经校验的规范化重写
+```
+
+写入会创建一次性配置备份，并在一个 SQLite 事务中更新所有 Agent 状态。无效或有歧义的
+引用会阻止部分写入。
+
+### HTTP API CORS
+
+CORS 默认对任意端口的 localhost/loopback 浏览器来源启用：
+`http://localhost:<port>`、`https://localhost:<port>`、
+`http://127.0.0.1:<port>` 和 `http://[::1]:<port>`。这样本地 Web UI 在提供所需的
+`Authorization: Bearer <token>` 请求头时，就能调用本地或远程的 Holon HTTP/控制 API。
+
+配置 `api.cors.allowed_origins` 可以添加非本地的浏览器来源，例如局域网托管的 Web UI。
+这些来源会追加到内置的 localhost/loopback 白名单。局域网访问还要求 API 绑定到可达的
+地址，例如 `0.0.0.0:7878` 或特定的局域网 IP；绑定到 `127.0.0.1` 时其他设备无法访问。
+设置 `api.cors.enabled=false` 可完全禁用 CORS。
+
+```bash
+holon config set api.cors.allowed_origins '["http://192.168.1.10:5173"]'
+holon config set api.cors.allowed_methods '["GET","POST","PATCH","DELETE","OPTIONS"]'
+holon config set api.cors.allowed_headers '["content-type","authorization"]'
+holon config set api.cors.allow_credentials false
+holon config set api.cors.max_age_seconds 600
+```
+
+不要同时设置 `api.cors.allow_credentials=true` 和
+`api.cors.allowed_origins=["*"]`；Holon 会拒绝这个不安全的组合。
+
+### 调度器
+
+规范调度器始终启用。`runtime.scheduler` 不再是可配置的键。为兼容一个次版本，已有的
+持久化值 `runtime.scheduler=canonical` 或环境变量值 `HOLON_SCHEDULER=canonical` 会被
+接受，并给出弃用警告。`legacy` 及其他所有值都会导致启动失败。请从部署配置中移除这个
+过时的选择器。
+
+迁移 40 把 rollout 表标记为已废弃的兼容数据。后续清理迁移会在恢复到达固定点后删除这些
+表。它们不参与启动、常规调度器事务或类型化修复中的权限判定。
+
+当存在未结束的规范执行、在途的执行工作项或已出队的队列条目时，后续清理迁移会失败关闭。
+错误信息会列出受影响的 Agent ID。停止 Holon，运行
+`holon debug scheduler-recovery --agent <agent>` 进行报告、应用类型化恢复，然后再次
+报告。该命令可以在不触发清理的情况下打开紧邻的前一个 schema；当前二进制的其他命令做
+不到。
+
+对于仍需要旧调度器的部署，Holon v0.31.1 是回滚版本。仅在拥有迁移前数据库备份时使用它；
+经后续 schema 清理迁移过的数据库不支持降级。
+
+## 凭据管理
+
+凭据安全存储在 `~/.holon/credentials.json`。使用 `config credentials` 子命令，**不要直接编辑这个文件**。
+
+### 设置凭据
+
+```bash
+# 推荐：用 --stdin 避免 shell 历史泄露
+holon config credentials set --kind api_key --stdin deepseek
+# 粘贴 API key 后回车（Ctrl+D 结束）
+
+# 备选：--material（会出现在 shell 历史中，不推荐）
+holon config credentials set --kind api_key --material "sk-..." deepseek
+```
+
+`<PROFILE>` 参数是你自选的标签（例如 `deepseek`、`bigmodel`、`openai`）。
+
+### 列出与删除
+
+```bash
+holon config credentials list
+holon config credentials remove deepseek
+```
+
+### 环境变量
+
+作为凭据存储的替代方案，Holon 从环境变量读取 API key：
+
+| 提供商 | 环境变量 |
+|----------|---------------------|
+| Anthropic | `ANTHROPIC_AUTH_TOKEN` |
+| DeepSeek | `DEEPSEEK_API_KEY` |
+| OpenAI | `OPENAI_API_KEY` |
+| BigModel (Zhipu) | `BIGMODEL_API_KEY` |
+| MiniMax | `MINIMAX_API_KEY` |
+| Xiaomi MiMo | `XIAOMI_API_KEY` |
+| OpenRouter | `OPENROUTER_API_KEY` |
+| Fireworks | `FIREWORKS_API_KEY` |
+| Together | `TOGETHER_API_KEY` |
+| Mistral | `MISTRAL_API_KEY` |
+| xAI | `XAI_API_KEY` |
+| Moonshot | `MOONSHOT_API_KEY` |
+| NEAR AI Cloud（TEE 推理） | `NEARAI_API_KEY` |
+| Volcengine | `VOLCENGINE_API_KEY` 或 `ARK_API_KEY` |
+| StepFun | `STEPFUN_API_KEY` |
+| Qwen | `QWEN_API_KEY` 或 `DASHSCOPE_API_KEY` |
+| HuggingFace | `HUGGINGFACE_API_KEY` 或 `HF_TOKEN` |
+| Venice | `VENICE_API_KEY` |
+| Chutes | `CHUTES_API_KEY` |
+| NVIDIA | `NVIDIA_API_KEY` |
+
+完整且最新的列表请运行 `holon config providers list`。
+
+### 凭据来源
+
+| 来源 | 说明 |
+|--------|-------------|
+| `none` | 不需要凭据（仅本地提供商） |
+| `env` | 从环境变量读取凭据 |
+| `credential_profile` | 按 profile 名从 `~/.holon/credentials.json` 读取凭据 |
+| `external_cli` | 运行外部 CLI（例如 `codex`）获取凭据 |
+
+## 提供商配置
+
+Holon 内置 40+ 个提供商的定义。你可以在 `config.json` 中添加或覆盖提供商。
+
+### 列出已注册提供商
+
+```bash
+holon config providers list
+```
+
+每个提供商条目会显示它的 transport 协议（`anthropic_messages`、`openai_chat_completions`
+等）、base URL 和凭据要求。
+
+### Ollama（本地）
+
+Holon 内置 [`ollama`](/zh-CN/reference/models.md) 提供商，用于通过
+[Ollama](https://ollama.com) 在本地运行模型。它不需要 API key，通过 Anthropic Messages
+transport 连接本地 Ollama 服务器 `http://127.0.0.1:11434`。
+
+1. 安装并启动 Ollama，然后拉取模型，例如 `ollama pull qwen3.8:latest`。
+2. 在 `holon onboard` 中选择 Ollama，或直接设置：
+
+```bash
+holon config set model.default "ollama/qwen3.8:latest"
+```
+
+Web GUI 无需任何凭据配置即可发现本地运行的 Ollama 模型，`ViewImage` 也会自动发现 Ollama
+视觉模型用于图像分析。
+
+### 添加自定义提供商
+
+```bash
+holon config providers set my-proxy \
+  --transport openai_chat_completions \
+  --base-url "https://my-proxy.example.com/v1" \
+  --credential-source env \
+  --credential-env "MY_PROXY_API_KEY" \
+  --credential-kind api_key
+```
+
+选项：
+- `--transport`：协议，取值为 `anthropic_messages`、`openai_chat_completions` 或 `openai_responses`
+- `--base-url`：API 端点基础 URL
+- `--credential-source`：`none`、`env`、`credential_profile` 或 `external_cli`
+- `--credential-kind`：`none`、`api_key` 或 `session_token`
+- `--credential-env`：环境变量名（当 source 为 `env` 时）
+- `--credential-profile`：凭据存储 profile（当 source 为 `credential_profile` 时）
+
+### 提供商端点与 Plan
+
+提供商配置把提供商账号与其具体端点分开。旧版提供商键仍用于配置默认端点：
+
+```bash
+holon config set providers.openai.transport openai_responses
+holon config set providers.openai.base_url "https://api.openai.com/v1"
+```
+
+它们是 `providers.openai.endpoints.default.transport` 和
+`providers.openai.endpoints.default.base_url` 的快捷方式。当同一提供商账号需要另一个
+transport、base URL 或凭据策略时，使用端点键：
+
+```bash
+holon config set providers.volcengine.endpoints.image-openai.transport openai_chat_completions
+holon config set providers.volcengine.endpoints.image-openai.base_url "https://ark.cn-beijing.volces.com/api/plan/v3"
+holon config set providers.volcengine.plans.image-openai.endpoint image-openai
+```
+
+plan 把稳定的提供商别名（例如 `volcengine-image-openai`）映射到具名端点。规范化选择会
+显式持久化该路由，例如 `volcengine@image-openai/model-id`。已有的内置别名和更旧的
+`provider/model` 引用继续作为兼容输入可用。
+
+### 删除提供商
+
+```bash
+holon config providers remove my-proxy
+```
+
+## 提供商 OAuth 与登录流程
+
+部分提供商使用 OAuth 或浏览器登录，而不是静态 API key。Holon 支持两种 OAuth 风格流程：
+
+### OpenAI Codex OAuth
+
+Codex 支持两种 OAuth 流程：
+
+- **设备 OAuth（推荐）**：Holon 请求设备码，打印验证 URL 和用户码。在任意浏览器中打开
+  该 URL 并输入用户码，daemon 会自动轮询完成状态。整个流程作为后台任务运行（见 Web GUI
+  的任务监控）。
+- **浏览器 OAuth**：`codex` CLI 打开浏览器进行 OAuth 登录，并把凭据存储在本地。Holon
+  通过 `external_cli` 读取它。
+
+浏览器 OAuth 使用 `credential_source: external_cli` 和 `credential_kind: oauth`；设备
+OAuth 则通过引导向导完成。
+
+如果凭据过期，再次运行 `holon onboard`：向导会检测到过期并引导你重新认证。
+
+### Vercel AI Gateway OIDC
+
+Vercel AI Gateway 使用 OpenID Connect（OIDC）进行认证。当选择 Vercel 作为提供商时，
+引导向导支持这一流程。
+
+对于 OAuth 和 OIDC 流程，推荐的设置路径是：
+
+```bash
+holon onboard
+```
+
+向导会处理整个 OAuth 流程并安全存储凭据。除非你在编写无头部署脚本，否则不要尝试在
+`config.json` 中手动配置 OAuth 提供商。
+
+## 列出可用模型
+
+```bash
+holon config models list
+```
+
+它会显示每个模型的可用性、凭据状态、提供商、transport 和策略（上下文窗口、最大输出
+token 数、能力）。
+
+## Agent 级模型覆盖
+
+每个 Agent 都可以覆盖默认模型：
+
+```bash
+holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
+```
+
+该覆盖存储在 Agent 自己的配置中，而不是全局的 `model.default`。
+
+## 诊断
+
+```bash
+# 完整系统健康检查，包括模型可用性
+holon config doctor
+
+# 列出所有配置键及其类型和默认值
+holon config schema
+```
+
+`config doctor` 报告：默认模型、回退模型、逐模型可用性、提供商设置和重试策略。
+
+## 配置文件位置
+
+Holon 按以下顺序解析配置目录：
+
+1. `$HOLON_HOME/config.json`（设置了 `HOLON_HOME` 时）
+2. `~/.holon/config.json`（回退）
+
+凭据遵循同样的规则，使用 `credentials.json`。
+
+## TUI 设置
+
+| 键 | 取值 | 默认值 | 说明 |
+|-----|--------|---------|-------------|
+| `tui.alternate_screen` | `auto`、`always`、`never` | `auto` | 备用屏幕缓冲区行为 |
+
+TUI 调试探针由环境变量控制：
+
+| 环境变量 | 取值 | 默认值 | 说明 |
+|----------------------|--------|---------|-------------|
+| `HOLON_TUI_PRESENTATION_LOG` | `1`、`true`、`yes`、`on`、`debug` | unset | 为流驱动的呈现决策启用 `<HOLON_HOME>/logs/tui/presentation.jsonl` 调试日志 |
+| `HOLON_TUI_PRESENTATION_LOG_MAX_BYTES` | 正整数，单位字节 | `5242880` | 当呈现调试日志达到该大小时轮转 |
+
+## 运行时可观测性
+
+OTLP trace 导出是可选的，默认关闭。控制 API 运行时，OpenMetrics 通过受保护的
+`/api/control/runtime/metrics` 端点暴露。
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `runtime.observability.otlp.enabled` | boolean | `false` | 启用有界的 OTLP/HTTP JSON trace 导出器 |
+| `runtime.observability.otlp.endpoint` | string | unset | 完整的 HTTP 或 HTTPS OTLP trace 端点，通常以 `/v1/traces` 结尾 |
+| `runtime.observability.otlp.headers` | json_object | `{}` | 静态的非机密请求头 |
+| `runtime.observability.otlp.credential_profile` | string | unset | 作为 bearer authorization 头注入的凭据 profile |
+| `runtime.observability.otlp.queue_capacity` | positive integer | `1024` | 非阻塞导出器队列中等待的最大 span 数 |
+| `runtime.observability.otlp.batch_size` | positive integer | `128` | 单个导出请求中的最大 span 数 |
+| `runtime.observability.otlp.batch_interval_ms` | positive integer | `1000` | 最大批处理延迟 |
+| `runtime.observability.otlp.timeout_ms` | positive integer | `5000` | 每个请求的导出超时 |
+
+OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告警和故障排查示例见
+[运行时可观测性指南](/zh-CN/guides/observability)。
+
+## Web 抓取/搜索设置
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `api.cors.enabled` | boolean | `true` | 在 HTTP/控制 API 上启用 CORS 响应；默认允许 localhost/loopback 来源 |
+| `api.cors.allowed_origins` | string_list | `[]` | 允许调用 API 的额外显式浏览器来源 |
+| `api.cors.allowed_methods` | string_list | `["GET","POST","PUT","PATCH","DELETE","OPTIONS"]` | CORS 预检允许的 HTTP 方法 |
+| `api.cors.allowed_headers` | string_list | `["content-type","authorization"]` | CORS 预检允许的请求头 |
+| `api.cors.allow_credentials` | boolean | `false` | 允许带凭据的 CORS 请求；与通配符来源不兼容 |
+| `api.cors.max_age_seconds` | integer | `600` | 预检响应的浏览器缓存时长 |
+| `api.projection.max_leaders` | integer | `16` | 并发 projection 构建的上限；在 leader 释放前，更多不同 key 会得到 `429 projection_busy` |
+| `api.projection.cache_ttl_ms` | integer | `500` | 已完成的 projection 构建被缓存并复用的毫秒数 |
+| `web.fetch.enabled` | boolean | `true` | 启用 WebFetch 工具 |
+| `web.fetch.max_chars` | integer | `20000` | 返回给模型的最大字符数 |
+| `web.fetch.max_response_bytes` | integer | `750000` | 截断前的最大响应字节数 |
+| `web.fetch.timeout_seconds` | integer | `20` | 每个请求的超时 |
+| `web.fetch.max_redirects` | integer | `5` | 最大重定向跳数 |
+| `web.fetch.allowed_hosts` | string_list | `[]` | 允许的主机（为空表示全部） |
+| `web.fetch.denied_hosts` | string_list | `[]` | 被屏蔽的主机 |
+| `web.search.enabled` | boolean | `true` | 启用 WebSearch 工具 |
+| `web.search.provider` | string | `"auto"` | 默认搜索提供商，或 `auto` |
+| `web.search.mode` | enum | `"fallback"` | 路由模式：`single`、`fallback` 或 `aggregate` |
+| `web.search.providers` | string_list | `[]` | auto 模式下显式的提供商尝试顺序 |
+| `web.search.max_results` | integer | `5` | 返回的最大结果数 |
+| `web.search.max_provider_attempts` | integer | `3` | fallback/aggregate 路由尝试的最大提供商数 |
+| `x_search.enabled` | boolean | `true` | 有 xAI 凭据时自动启用 `XSearch`；设为 `false` 可隐藏它 |
+| `x_search.model` | model_ref | — | 用于隔离 `XSearch` 请求的可选 xAI 模型路由 |
+| `x_search.timeout_seconds` | integer | `60` | 隔离 xAI `XSearch` 请求的超时 |
+| `web.providers.<name>.kind` | string | required | 提供商类型：`duck_duck_go`、`searxng`、`brave`、`tencent_cloud_wsa`、`bocha`、`tavily`、`exa`、`perplexity`、`firecrawl`、`open_ai_native`、`anthropic_native`、`gemini_native` 或 `command` |
+| `web.providers.<name>.base_url` | string | unset | 自定义提供商端点 |
+| `web.providers.<name>.credential_profile` | string | unset | API 型提供商的凭据 profile |
+| `web.providers.<name>.capabilities` | json_object | derived | `holon config get` 和路由诊断暴露的只读能力元数据 |
+
+## Agent 模板远程源
+
+配置 Holon 同步以填充 Agent 模板目录的远程 Git 仓库：
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `agent_templates.remote_sources` | json_object | `{}` | 源 ID 到远程源配置的映射 |
+| `agent_templates.remote_sources.<id>.url` | string | required | Git 仓库 URL（HTTPS） |
+| `agent_templates.remote_sources.<id>.ref` | string | unset | Git ref（分支、标签或提交）；默认为仓库的默认分支 |
+| `agent_templates.remote_sources.<id>.enabled` | boolean | `true` | 该源是否启用同步 |
+| `agent_templates.remote_sources.<id>.credential_profile` | string | unset | 私有仓库的凭据 profile |
+
+daemon 在启动时运行同步任务，把远程源模板拉取到本地模板库（`~/.agents/agent_templates`）。
+重新同步会复用已记录安装映射，并拒绝覆盖本地编辑过的模板。
+
+## HTTP 寻址
+
+Holon 把**监听地址**和**通告地址**分开：
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `http_addr` | string | `127.0.0.1:7878` | HTTP/控制 API 的 TCP 监听地址 |
+| `advertise_url` | string | unset | 向客户端通告的公网可达 URL（例如 `https://holon.example.com`） |
+| `callback_base_url` | string | derived | 同主机 webhook 回调使用的本地 loopback URL |
+
+`advertise_url` 是远程客户端（CLI、Web GUI）用来访问 daemon 的 URL。当 daemon 位于
+反向代理、隧道之后，或使用的网络接口不是默认 localhost 地址时，需要设置它。
+
+`callback_base_url` 始终由监听端口推导为 `http://127.0.0.1:<port>`，除非通过
+`HOLON_CALLBACK_BASE_URL` 环境变量覆盖。这样即便 `advertise_url` 指向远程地址，同主机
+webhook 回调仍可正常工作。
+
+## 另请参阅
+
+- [CLI 参考](/zh-CN/reference/cli.md)：完整的 CLI 命令参考
+- [入门指南](/zh-CN/getting-started/first-agent.md)：分步设置教程

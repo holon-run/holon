@@ -10,7 +10,7 @@ order: 60
 schema/分发对齐，以及结果信封约定。
 
 内置面向模型工具的机器可读清单是
-[`model-tool-schema-inventory.json`](/zh-CN/reference/model-tool-schema-inventory.json)；
+[`model-tool-schema-inventory.json`](/reference/model-tool-schema-inventory.json)；
 它的版本策略和刷新流程记录在
 [模型工具 schema 清册参考](/zh-CN/reference/model-tool-schema-inventory.md)。
 
