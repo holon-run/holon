@@ -6,11 +6,16 @@ use std::{
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, params_from_iter, types::Value as SqlValue, Connection, OptionalExtension};
+use rusqlite::{
+    params, params_from_iter,
+    types::{Type, Value as SqlValue},
+    Connection, OptionalExtension,
+};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
@@ -43,6 +48,10 @@ const MEMORY_INDEX_REBUILD_SOURCE_KIND: &str = "memory_index_rebuild";
 const MEMORY_INDEX_REBUILD_SOURCE_ID: &str = "agent";
 const MEMORY_INDEX_REBUILD_SOURCE_REF_PREFIX: &str = "memory_index_rebuild";
 const MEMORY_INDEX_SEARCH_TEXT_MAX_CHARS: usize = 12_000;
+const MEMORY_INDEX_REBUILD_DEFAULT_SLICE: usize = 500;
+const MEMORY_INDEX_REBUILD_PHASE_SCAN: &str = "scan";
+const MEMORY_INDEX_REBUILD_PHASE_PRUNE: &str = "prune";
+const MEMORY_INDEX_REBUILD_PHASE_FINALIZE: &str = "finalize";
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -100,6 +109,14 @@ pub struct MemorySearchIndexStatus {
     /// diagnostic, not a manual-work order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub stale_reasons: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild_phase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild_documents_processed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild_started_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rebuild_last_progress_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -158,7 +175,13 @@ fn legacy_memory_index_path(storage: &AppStorage) -> PathBuf {
 
 pub fn rebuild_memory_index(storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
     let mut index = MemoryIndex::open(storage)?;
-    index.rebuild(storage, active_workspace_id)
+    index.enqueue_rebuild_intent(
+        &storage_agent_id(storage),
+        active_workspace_id,
+        "explicit_rebuild",
+    )?;
+    while index.advance_rebuild(storage, MEMORY_INDEX_REBUILD_DEFAULT_SLICE)? {}
+    Ok(())
 }
 
 pub fn request_memory_index_rebuild(
@@ -300,6 +323,10 @@ fn aggregate_index_status<'a>(
         skipped_error_count: 0,
         last_indexed_at: None,
         stale_reasons: Vec::new(),
+        rebuild_phase: None,
+        rebuild_documents_processed: None,
+        rebuild_started_at: None,
+        rebuild_last_progress_at: None,
     };
     let mut freshness_rank = 0; // fresh < stale < missing
     let mut reasons_seen = std::collections::BTreeSet::new();
@@ -326,6 +353,12 @@ fn aggregate_index_status<'a>(
             (Some(left), Some(right)) => Some(left.min(right)),
             (left, right) => left.or(right),
         };
+        if aggregate.rebuild_phase.is_none() {
+            aggregate.rebuild_phase = status.rebuild_phase.clone();
+            aggregate.rebuild_documents_processed = status.rebuild_documents_processed;
+            aggregate.rebuild_started_at = status.rebuild_started_at;
+            aggregate.rebuild_last_progress_at = status.rebuild_last_progress_at;
+        }
         reasons_seen.extend(status.stale_reasons.iter().cloned());
     }
     aggregate.indexing_needed = aggregate.freshness != "fresh";
@@ -341,9 +374,13 @@ pub fn refresh_memory_index_bounded(
 ) -> Result<MemorySearchIndexStatus> {
     log_legacy_index_deprecation(storage);
     let mut index = MemoryIndex::open(storage)?;
-    index.consume_rebuild_intents(storage)?;
-    refresh_memory_index_for_storage(&mut index, storage, active_workspace_id, batch_limit)?;
     let agent_id = storage_agent_id(storage);
+    let handled_rebuild = index.rebuild_job(&agent_id)?.is_some()
+        || !index.rebuild_intents_for_agent(&agent_id)?.is_empty();
+    index.advance_rebuild(storage, batch_limit.max(1))?;
+    if !handled_rebuild {
+        refresh_memory_index_for_storage(&mut index, storage, active_workspace_id, batch_limit)?;
+    }
     index.index_status(storage, &agent_id)
 }
 
@@ -676,16 +713,6 @@ fn memory_index_is_dirty(storage: &AppStorage) -> bool {
     memory_index_is_dirty_for(&storage.shared_indexes_dir(), &storage_agent_id(storage))
 }
 
-fn clear_memory_index_dirty(storage: &AppStorage) -> Result<()> {
-    let path = storage
-        .shared_indexes_dir()
-        .join(dirty_filename_for_agent(&storage_agent_id(storage)));
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    Ok(())
-}
-
 fn dirty_filename_for_agent(agent_id: &str) -> String {
     let agent_key: String = agent_id
         .chars()
@@ -707,6 +734,28 @@ pub(crate) struct MemoryIndex {
     connection: Connection,
     last_outbox_consume_reached_limit: bool,
     last_outbox_error_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RebuildJob {
+    agent_id: String,
+    generation: String,
+    phase: String,
+    source_kind_index: usize,
+    source_cursor: String,
+    source_offset: usize,
+    runtime_high_watermark: i64,
+    documents_processed: u64,
+    started_at: DateTime<Utc>,
+    last_progress_at: DateTime<Utc>,
+}
+
+#[derive(Debug)]
+struct RebuildSourceRecord {
+    cursor: String,
+    documents: Vec<MemoryDocument>,
+    document_offset: usize,
+    total_documents: usize,
 }
 
 impl MemoryIndex {
@@ -838,6 +887,26 @@ impl MemoryIndex {
                 updated_at TEXT NOT NULL,
                 PRIMARY KEY (runtime_id, agent_id, cursor_kind)
             );
+            CREATE TABLE IF NOT EXISTS memory_index_rebuild_jobs (
+                agent_id TEXT PRIMARY KEY,
+                generation TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                source_kind_index INTEGER NOT NULL,
+                source_cursor TEXT NOT NULL,
+                source_offset INTEGER NOT NULL,
+                runtime_high_watermark INTEGER NOT NULL,
+                documents_processed INTEGER NOT NULL DEFAULT 0,
+                started_at TEXT NOT NULL,
+                last_progress_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS memory_index_rebuild_seen (
+                agent_id TEXT NOT NULL,
+                generation TEXT NOT NULL,
+                document_key TEXT NOT NULL,
+                PRIMARY KEY (agent_id, generation, document_key)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_index_rebuild_seen_agent_generation
+                ON memory_index_rebuild_seen(agent_id, generation);
             "#,
         )?;
         if !self.table_has_column("memory_index_source_state", "projection_version")? {
@@ -874,48 +943,272 @@ impl MemoryIndex {
         Ok(false)
     }
 
-    fn rebuild(&mut self, storage: &AppStorage, active_workspace_id: Option<&str>) -> Result<()> {
+    fn advance_rebuild(&mut self, storage: &AppStorage, slice_limit: usize) -> Result<bool> {
         let agent_id = storage_agent_id(storage);
-        let runtime_db = storage.runtime_db()?;
-        // The rebuild re-collects every source produced so far, so it
-        // acknowledges the monotonic produced watermark, not the drained
-        // outbox's remaining-row maximum (which is 0 once consumed).
+        let mut remaining = slice_limit.max(1);
+        let started_job = if self.rebuild_job(&agent_id)?.is_none() {
+            self.start_rebuild_job(storage)?
+        } else {
+            false
+        };
+        let Some(initial_job) = self.rebuild_job(&agent_id)? else {
+            return Ok(false);
+        };
+        if started_job {
+            self.consume_initial_dirty_marker(storage, &initial_job)?;
+        }
+        loop {
+            let Some(job) = self.rebuild_job(&agent_id)? else {
+                return Ok(false);
+            };
+            let used = match job.phase.as_str() {
+                MEMORY_INDEX_REBUILD_PHASE_SCAN => {
+                    self.scan_rebuild_slice(storage, &job, remaining)?
+                }
+                MEMORY_INDEX_REBUILD_PHASE_PRUNE => self.prune_rebuild_slice(&job, remaining)?,
+                MEMORY_INDEX_REBUILD_PHASE_FINALIZE => {
+                    self.finalize_rebuild(storage, &job)?;
+                    return Ok(false);
+                }
+                phase => anyhow::bail!(
+                    "unsupported memory index rebuild phase {phase:?} for agent {}",
+                    job.agent_id
+                ),
+            };
+            remaining = remaining.saturating_sub(used);
+            if used > 0 && remaining == 0 {
+                return Ok(true);
+            }
+        }
+    }
+
+    fn start_rebuild_job(&mut self, storage: &AppStorage) -> Result<bool> {
+        let agent_id = storage_agent_id(storage);
+        let Some(_intent) = self
+            .rebuild_intents_for_agent(&agent_id)?
+            .into_iter()
+            .next()
+        else {
+            return Ok(false);
+        };
+        let runtime_db = storage
+            .runtime_db()?
+            .context("runtime database is required for memory index rebuild")?;
         let runtime_high_watermark = runtime_db
-            .as_ref()
-            .map(|db| {
-                db.runtime_index_outbox()
-                    .produced_watermark_for_agent(&agent_id)
-            })
-            .transpose()?
-            .unwrap_or(0);
+            .runtime_index_outbox()
+            .produced_watermark_for_agent(&agent_id)?;
+        let generation = Uuid::new_v4().simple().to_string();
+        let now = Utc::now();
+        self.connection.execute(
+            "INSERT INTO memory_index_rebuild_jobs (
+                agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
+                runtime_high_watermark, documents_processed, started_at, last_progress_at
+             ) VALUES (?1, ?2, ?3, 0, '', 0, ?4, 0, ?5, ?5)
+             ON CONFLICT(agent_id) DO NOTHING",
+            params![
+                agent_id,
+                generation,
+                MEMORY_INDEX_REBUILD_PHASE_SCAN,
+                runtime_high_watermark,
+                now.to_rfc3339(),
+            ],
+        )?;
+        tracing::info!(
+            agent_id = %agent_id,
+            generation = %generation,
+            runtime_high_watermark,
+            "started bounded memory index rebuild"
+        );
+        Ok(true)
+    }
+
+    fn consume_initial_dirty_marker(&self, storage: &AppStorage, job: &RebuildJob) -> Result<()> {
+        let dirty_path = storage
+            .shared_indexes_dir()
+            .join(dirty_filename_for_agent(&job.agent_id));
+        if !dirty_path.exists() {
+            return Ok(());
+        }
+        let consumed_path = dirty_path.with_extension(format!("rebuild-{}.dirty", job.generation));
+        match fs::rename(&dirty_path, &consumed_path) {
+            Ok(()) => {
+                let _ = fs::remove_file(consumed_path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+        Ok(())
+    }
+
+    fn scan_rebuild_slice(
+        &mut self,
+        storage: &AppStorage,
+        job: &RebuildJob,
+        slice_limit: usize,
+    ) -> Result<usize> {
+        let source_kinds = all_backfill_source_kinds();
+        if job.source_kind_index >= source_kinds.len() {
+            self.update_rebuild_phase(job, MEMORY_INDEX_REBUILD_PHASE_PRUNE)?;
+            return Ok(0);
+        }
+        let source_kind = source_kinds[job.source_kind_index];
+        let records = rebuild_source_records(
+            storage,
+            source_kind,
+            &job.source_cursor,
+            job.source_offset > 0,
+            job.source_offset,
+            slice_limit,
+        )?;
+        if records.is_empty() {
+            let next_index = job.source_kind_index + 1;
+            let phase = if next_index >= source_kinds.len() {
+                MEMORY_INDEX_REBUILD_PHASE_PRUNE
+            } else {
+                MEMORY_INDEX_REBUILD_PHASE_SCAN
+            };
+            self.connection.execute(
+                "UPDATE memory_index_rebuild_jobs
+                 SET phase = ?1, source_kind_index = ?2, source_cursor = '',
+                     source_offset = 0, last_progress_at = ?3
+                 WHERE agent_id = ?4 AND generation = ?5",
+                params![
+                    phase,
+                    i64::try_from(next_index).unwrap_or(i64::MAX),
+                    Utc::now().to_rfc3339(),
+                    job.agent_id,
+                    job.generation,
+                ],
+            )?;
+            return Ok(0);
+        }
+
+        let mut remaining = slice_limit;
+        let mut next_cursor = job.source_cursor.clone();
+        let mut next_offset = job.source_offset;
+        let mut documents = Vec::new();
+        for record in records {
+            let offset = record.document_offset.min(record.total_documents);
+            let available = record.total_documents.saturating_sub(offset);
+            let take = record.documents.len().min(remaining);
+            documents.extend(record.documents.into_iter().take(take));
+            remaining = remaining.saturating_sub(take.max(1));
+            if take < available {
+                next_cursor = record.cursor;
+                next_offset = offset + take;
+                break;
+            }
+            next_cursor = record.cursor;
+            next_offset = 0;
+            if remaining == 0 {
+                break;
+            }
+        }
+
+        let now = Utc::now();
         let transaction = self.connection.transaction()?;
-        transaction.execute(
-            "DELETE FROM memory_documents_fts
-             WHERE document_key IN (
-                SELECT document_key FROM memory_documents WHERE agent_id = ?1
-             )",
-            [&agent_id],
-        )?;
-        transaction.execute(
-            "DELETE FROM memory_documents WHERE agent_id = ?1",
-            [&agent_id],
-        )?;
-        transaction.execute(
-            "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
-            [&agent_id],
-        )?;
-        for document in collect_documents(storage, active_workspace_id)? {
-            upsert_document_tx(&transaction, &document)?;
+        for document in &documents {
+            upsert_document_tx(&transaction, document)?;
             upsert_source_state_tx(
                 &transaction,
-                &document,
+                document,
                 source_id_from_ref(&document.source_ref),
+            )?;
+            transaction.execute(
+                "INSERT OR IGNORE INTO memory_index_rebuild_seen (
+                    agent_id, generation, document_key
+                 ) VALUES (?1, ?2, ?3)",
+                params![job.agent_id, job.generation, document_key(document)],
             )?;
         }
         transaction.execute(
-            "DELETE FROM memory_index_pending_sources WHERE agent_id = ?1",
-            [&agent_id],
+            "UPDATE memory_index_rebuild_jobs
+             SET source_cursor = ?1, source_offset = ?2,
+                 documents_processed = documents_processed + ?3,
+                 last_progress_at = ?4
+             WHERE agent_id = ?5 AND generation = ?6",
+            params![
+                next_cursor,
+                i64::try_from(next_offset).unwrap_or(i64::MAX),
+                i64::try_from(documents.len()).unwrap_or(i64::MAX),
+                now.to_rfc3339(),
+                job.agent_id,
+                job.generation,
+            ],
         )?;
+        transaction.commit()?;
+        tracing::debug!(
+            agent_id = %job.agent_id,
+            generation = %job.generation,
+            source_kind,
+            documents = documents.len(),
+            "advanced bounded memory index rebuild scan"
+        );
+        Ok(slice_limit.saturating_sub(remaining))
+    }
+
+    fn prune_rebuild_slice(&mut self, job: &RebuildJob, slice_limit: usize) -> Result<usize> {
+        let document_key_start = format!("{}:", job.agent_id);
+        let document_key_end = format!("{};", job.agent_id);
+        let keys = {
+            let mut statement = self.connection.prepare(
+                "SELECT d.document_key
+                 FROM memory_documents d
+                 WHERE d.document_key >= ?1
+                   AND d.document_key < ?2
+                   AND d.agent_id = ?3
+                   AND NOT EXISTS (
+                       SELECT 1 FROM memory_index_rebuild_seen s
+                       WHERE s.agent_id = ?3
+                         AND s.generation = ?4
+                         AND s.document_key = d.document_key
+                   )
+                 ORDER BY d.document_key
+                 LIMIT ?5",
+            )?;
+            let rows = statement.query_map(
+                params![
+                    document_key_start,
+                    document_key_end,
+                    job.agent_id,
+                    job.generation,
+                    i64::try_from(slice_limit).unwrap_or(i64::MAX)
+                ],
+                |row| row.get::<_, String>(0),
+            )?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        if keys.is_empty() {
+            self.update_rebuild_phase(job, MEMORY_INDEX_REBUILD_PHASE_FINALIZE)?;
+            return Ok(0);
+        }
+        let transaction = self.connection.transaction()?;
+        for document_key in &keys {
+            delete_document_tx(&transaction, document_key)?;
+        }
+        transaction.execute(
+            "UPDATE memory_index_rebuild_jobs
+             SET last_progress_at = ?1
+             WHERE agent_id = ?2 AND generation = ?3",
+            params![Utc::now().to_rfc3339(), job.agent_id, job.generation],
+        )?;
+        transaction.commit()?;
+        tracing::debug!(
+            agent_id = %job.agent_id,
+            generation = %job.generation,
+            documents = keys.len(),
+            "advanced bounded memory index rebuild prune"
+        );
+        Ok(keys.len())
+    }
+
+    fn finalize_rebuild(&mut self, storage: &AppStorage, job: &RebuildJob) -> Result<()> {
+        let runtime_db = storage
+            .runtime_db()?
+            .context("runtime database is required for memory index rebuild")?;
+        let runtime_id = runtime_index_runtime_id(&runtime_db);
+        let now = Utc::now();
+        let transaction = self.connection.transaction()?;
         for source_kind in all_backfill_source_kinds() {
             transaction.execute(
                 "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
@@ -924,46 +1217,106 @@ impl MemoryIndex {
                     cursor=excluded.cursor,
                     updated_at=excluded.updated_at",
                 params![
-                    agent_id,
+                    job.agent_id,
                     source_kind,
                     MEMORY_INDEX_BACKFILL_CURSOR,
-                    Utc::now().to_rfc3339(),
+                    now.to_rfc3339(),
                 ],
             )?;
         }
-        if let Some(runtime_db) = runtime_db.as_ref() {
-            upsert_cursor_tx(
-                &transaction,
-                &runtime_index_runtime_id(runtime_db),
-                &agent_id,
-                MEMORY_INDEX_OUTBOX_CURSOR,
-                runtime_high_watermark,
-            )?;
-        }
-        upsert_index_meta_tx(&transaction, &agent_id, Some(Utc::now()))?;
+        upsert_cursor_tx(
+            &transaction,
+            &runtime_id,
+            &job.agent_id,
+            MEMORY_INDEX_OUTBOX_CURSOR,
+            job.runtime_high_watermark,
+        )?;
+        transaction.execute(
+            "DELETE FROM memory_index_pending_sources
+             WHERE agent_id = ?1
+               AND enqueued_at <= ?2",
+            params![job.agent_id, job.started_at.to_rfc3339()],
+        )?;
+        upsert_index_meta_tx(&transaction, &job.agent_id, Some(now))?;
+        transaction.execute(
+            "DELETE FROM memory_index_rebuild_seen
+             WHERE agent_id = ?1 AND generation = ?2",
+            params![job.agent_id, job.generation],
+        )?;
+        transaction.execute(
+            "DELETE FROM memory_index_rebuild_jobs
+             WHERE agent_id = ?1 AND generation = ?2",
+            params![job.agent_id, job.generation],
+        )?;
         transaction.commit()?;
-        clear_memory_index_dirty(storage)?;
-        if runtime_high_watermark > 0 {
-            // The rebuild re-collected every source up to this watermark, so
-            // outbox rows at or below it are acknowledged. Deleting them is
-            // best-effort: a failure or crash here leaves rows the consume
-            // loop's compensating GC removes later, and pending metrics
-            // already exclude them because the cursor jumped past them.
-            if let Some(runtime_db) = runtime_db.as_ref() {
-                if let Err(error) = runtime_db
-                    .runtime_index_outbox()
-                    .delete_acknowledged_through(&agent_id, runtime_high_watermark)
-                {
-                    tracing::warn!(
-                        agent_id = %agent_id,
-                        through_change_seq = runtime_high_watermark,
-                        error = %error,
-                        "failed to delete memory index outbox rows acknowledged by rebuild"
-                    );
-                }
+        if job.runtime_high_watermark > 0 {
+            if let Err(error) = runtime_db
+                .runtime_index_outbox()
+                .delete_acknowledged_through(&job.agent_id, job.runtime_high_watermark)
+            {
+                tracing::warn!(
+                    agent_id = %job.agent_id,
+                    through_change_seq = job.runtime_high_watermark,
+                    error = %error,
+                    "failed to delete memory index outbox rows acknowledged by rebuild"
+                );
             }
         }
+        tracing::info!(
+            agent_id = %job.agent_id,
+            generation = %job.generation,
+            documents_processed = job.documents_processed,
+            elapsed_ms = (now - job.started_at).num_milliseconds().max(0),
+            "completed bounded memory index rebuild"
+        );
         Ok(())
+    }
+
+    fn update_rebuild_phase(&self, job: &RebuildJob, phase: &str) -> Result<()> {
+        self.connection.execute(
+            "UPDATE memory_index_rebuild_jobs
+             SET phase = ?1, last_progress_at = ?2
+             WHERE agent_id = ?3 AND generation = ?4",
+            params![phase, Utc::now().to_rfc3339(), job.agent_id, job.generation],
+        )?;
+        tracing::info!(
+            agent_id = %job.agent_id,
+            generation = %job.generation,
+            from_phase = %job.phase,
+            to_phase = phase,
+            "advanced memory index rebuild phase"
+        );
+        Ok(())
+    }
+
+    fn rebuild_job(&self, agent_id: &str) -> Result<Option<RebuildJob>> {
+        self.connection
+            .query_row(
+                "SELECT agent_id, generation, phase, source_kind_index, source_cursor,
+                        source_offset, runtime_high_watermark, documents_processed,
+                        started_at, last_progress_at
+                 FROM memory_index_rebuild_jobs
+                 WHERE agent_id = ?1",
+                [agent_id],
+                |row| {
+                    let started_at: String = row.get(8)?;
+                    let last_progress_at: String = row.get(9)?;
+                    Ok(RebuildJob {
+                        agent_id: row.get(0)?,
+                        generation: row.get(1)?,
+                        phase: row.get(2)?,
+                        source_kind_index: row.get::<_, i64>(3)?.max(0) as usize,
+                        source_cursor: row.get(4)?,
+                        source_offset: row.get::<_, i64>(5)?.max(0) as usize,
+                        runtime_high_watermark: row.get(6)?,
+                        documents_processed: row.get::<_, i64>(7)?.max(0) as u64,
+                        started_at: parse_db_timestamp(8, started_at)?,
+                        last_progress_at: parse_db_timestamp(9, last_progress_at)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
     }
 
     fn upsert_document(&self, document: &MemoryDocument) -> Result<()> {
@@ -1040,6 +1393,9 @@ impl MemoryIndex {
         active_workspace_id: Option<&str>,
         reason: &str,
     ) -> Result<()> {
+        if reason.starts_with("self_heal") && self.rebuild_job(agent_id)?.is_some() {
+            return Ok(());
+        }
         let source_ref = rebuild_intent_source_ref(agent_id);
         self.enqueue_source(
             agent_id,
@@ -1050,23 +1406,6 @@ impl MemoryIndex {
             None,
             reason,
         )
-    }
-
-    fn consume_rebuild_intents(&mut self, storage: &AppStorage) -> Result<()> {
-        let agent_id = storage_agent_id(storage);
-        let intents = self.rebuild_intents_for_agent(&agent_id)?;
-        // A rebuild is agent-global (collect_documents ignores the workspace),
-        // and rebuild() deletes every pending intent for the agent, so one
-        // rebuild settles the whole batch no matter how many reasons queued.
-        if let Some(intent) = intents.into_iter().next() {
-            let active_workspace_id = if intent.source_id == MEMORY_INDEX_REBUILD_SOURCE_ID {
-                None
-            } else {
-                Some(intent.source_id.as_str())
-            };
-            self.rebuild(storage, active_workspace_id)?;
-        }
-        Ok(())
     }
 
     fn consume_pending_sources(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
@@ -1252,6 +1591,7 @@ impl MemoryIndex {
         let has_pending_sources = self.has_pending_sources_for_agent(agent_id)?;
         let lacks_full_backfill = !self.has_backfill_checkpoints_for_agent(agent_id)?;
         let is_dirty = memory_index_is_dirty_for(&shared_indexes_dir, agent_id);
+        let rebuild_job = self.rebuild_job(agent_id)?;
         // Order matters for readability, not semantics: every reason is
         // independently healed by the background daemon.
         let mut stale_reasons = Vec::new();
@@ -1270,12 +1610,18 @@ impl MemoryIndex {
         if has_pending_sources {
             stale_reasons.push("pending_sources".to_string());
         }
+        if rebuild_job.is_some() {
+            stale_reasons.push("rebuild_in_progress".to_string());
+        }
         if self.last_outbox_error_count > 0 {
             stale_reasons.push("consume_error".to_string());
         }
         let Some(runtime_db) = storage.runtime_db()? else {
-            let indexing_needed =
-                is_dirty || has_stale_projection || has_pending_sources || lacks_full_backfill;
+            let indexing_needed = is_dirty
+                || has_stale_projection
+                || has_pending_sources
+                || lacks_full_backfill
+                || rebuild_job.is_some();
             return Ok(MemorySearchIndexStatus {
                 freshness: if indexing_needed { "stale" } else { "fresh" }.into(),
                 cursor: 0,
@@ -1289,6 +1635,12 @@ impl MemoryIndex {
                 skipped_error_count: self.last_outbox_error_count,
                 last_indexed_at: None,
                 stale_reasons,
+                rebuild_phase: rebuild_job.as_ref().map(|job| job.phase.clone()),
+                rebuild_documents_processed: rebuild_job
+                    .as_ref()
+                    .map(|job| job.documents_processed),
+                rebuild_started_at: rebuild_job.as_ref().map(|job| job.started_at),
+                rebuild_last_progress_at: rebuild_job.as_ref().map(|job| job.last_progress_at),
             });
         };
         let runtime_id = runtime_index_runtime_id(&runtime_db);
@@ -1320,6 +1672,7 @@ impl MemoryIndex {
             || has_stale_projection
             || has_pending_sources
             || lacks_full_backfill
+            || rebuild_job.is_some()
         {
             "stale"
         } else {
@@ -1343,6 +1696,10 @@ impl MemoryIndex {
                 MEMORY_INDEX_OUTBOX_CURSOR,
             )?,
             stale_reasons,
+            rebuild_phase: rebuild_job.as_ref().map(|job| job.phase.clone()),
+            rebuild_documents_processed: rebuild_job.as_ref().map(|job| job.documents_processed),
+            rebuild_started_at: rebuild_job.as_ref().map(|job| job.started_at),
+            rebuild_last_progress_at: rebuild_job.as_ref().map(|job| job.last_progress_at),
         })
     }
 
@@ -1751,7 +2108,7 @@ fn upsert_cursor_tx(
             runtime_id, agent_id, cursor_kind, last_change_seq, updated_at
          ) VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(runtime_id, agent_id, cursor_kind) DO UPDATE SET
-            last_change_seq=excluded.last_change_seq,
+            last_change_seq=MAX(memory_index_cursors.last_change_seq, excluded.last_change_seq),
             updated_at=excluded.updated_at",
         params![
             runtime_id,
@@ -1943,21 +2300,235 @@ fn source_id_from_ref(source_ref: &str) -> &str {
         .unwrap_or(source_ref)
 }
 
-fn collect_documents(
+fn rebuild_source_records(
     storage: &AppStorage,
-    _active_workspace_id: Option<&str>,
-) -> Result<Vec<MemoryDocument>> {
-    let runtime_db = storage.runtime_db()?;
-    let mut documents = Vec::new();
-    documents.extend(agent_memory_documents(storage)?);
-    documents.extend(workspace_profile_documents(storage)?);
-    documents.extend(message_documents(storage)?);
-    documents.extend(brief_documents(storage, runtime_db.as_ref())?);
-    documents.extend(context_episode_documents(storage)?);
-    documents.extend(work_item_documents(storage, runtime_db.as_ref())?);
-    documents.extend(task_documents(storage, runtime_db.as_ref())?);
-    documents.extend(command_execution_documents(storage, runtime_db.as_ref())?);
-    Ok(documents)
+    source_kind: &str,
+    cursor: &str,
+    inclusive: bool,
+    source_offset: usize,
+    limit: usize,
+) -> Result<Vec<RebuildSourceRecord>> {
+    let runtime_db = storage
+        .runtime_db()?
+        .context("runtime database is required for memory index rebuild")?;
+    let agent_id = storage_agent_id(storage);
+    match source_kind {
+        "agent_memory_markdown" => {
+            let mut documents = agent_memory_documents(storage)?;
+            documents.sort_by(|left, right| left.source_ref.cmp(&right.source_ref));
+            Ok(documents
+                .into_iter()
+                .filter(|document| {
+                    if inclusive {
+                        document.source_ref.as_str() >= cursor
+                    } else {
+                        document.source_ref.as_str() > cursor
+                    }
+                })
+                .take(limit)
+                .map(|document| RebuildSourceRecord {
+                    cursor: document.source_ref.clone(),
+                    documents: vec![document],
+                    document_offset: 0,
+                    total_documents: 1,
+                })
+                .collect())
+        }
+        "workspace_profile" => Ok(runtime_payload_page::<WorkspaceEntry>(
+            &runtime_db,
+            "workspace_entries",
+            "workspace_id",
+            None,
+            cursor,
+            inclusive,
+            limit,
+        )?
+        .into_iter()
+        .map(|(cursor, entry)| RebuildSourceRecord {
+            cursor,
+            documents: vec![workspace_profile_document(entry, &agent_id)],
+            document_offset: 0,
+            total_documents: 1,
+        })
+        .collect()),
+        "message" => Ok(runtime_payload_page::<MessageEnvelope>(
+            &runtime_db,
+            "messages",
+            "evidence_id",
+            Some(("agent_id", &agent_id)),
+            cursor,
+            inclusive,
+            limit,
+        )?
+        .into_iter()
+        .map(|(cursor, message)| RebuildSourceRecord {
+            cursor,
+            documents: vec![message_document(message)],
+            document_offset: 0,
+            total_documents: 1,
+        })
+        .collect()),
+        "brief" => Ok(runtime_payload_page::<BriefRecord>(
+            &runtime_db,
+            "briefs",
+            "evidence_id",
+            Some(("agent_id", &agent_id)),
+            cursor,
+            inclusive,
+            limit,
+        )?
+        .into_iter()
+        .map(|(cursor, brief)| {
+            let documents: Vec<_> = semantic_brief_is_retrievable(&brief)
+                .then(|| brief_document(storage, brief))
+                .into_iter()
+                .collect();
+            RebuildSourceRecord {
+                cursor,
+                total_documents: documents.len(),
+                documents,
+                document_offset: 0,
+            }
+        })
+        .collect()),
+        "context_episode" => Ok(runtime_payload_page::<ContextEpisodeRecord>(
+            &runtime_db,
+            "context_episode_anchors",
+            "episode_id",
+            Some(("agent_id", &agent_id)),
+            cursor,
+            inclusive,
+            limit,
+        )?
+        .into_iter()
+        .map(|(cursor, episode)| RebuildSourceRecord {
+            cursor,
+            documents: vec![episode_document(episode)],
+            document_offset: 0,
+            total_documents: 1,
+        })
+        .collect()),
+        "work_item" => Ok(runtime_payload_page::<WorkItemRecord>(
+            &runtime_db,
+            "work_items",
+            "work_item_id",
+            Some(("agent_id", &agent_id)),
+            cursor,
+            inclusive,
+            limit,
+        )?
+        .into_iter()
+        .map(|(cursor, item)| RebuildSourceRecord {
+            cursor,
+            documents: vec![work_item_document(item)],
+            document_offset: 0,
+            total_documents: 1,
+        })
+        .collect()),
+        "task" => Ok(runtime_payload_page::<TaskRecord>(
+            &runtime_db,
+            "tasks",
+            "task_id",
+            Some(("owner_agent_id", &agent_id)),
+            cursor,
+            inclusive,
+            limit,
+        )?
+        .into_iter()
+        .map(|(cursor, task)| RebuildSourceRecord {
+            cursor,
+            documents: vec![task_document(task)],
+            document_offset: 0,
+            total_documents: 1,
+        })
+        .collect()),
+        "tool_command_receipt" => Ok(runtime_payload_page::<ToolExecutionRecord>(
+            &runtime_db,
+            "tool_executions",
+            "evidence_id",
+            Some(("agent_id", &agent_id)),
+            cursor,
+            inclusive,
+            1,
+        )?
+        .into_iter()
+        .map(|(record_cursor, record)| {
+            let document_offset = if inclusive && record_cursor == cursor {
+                source_offset
+            } else {
+                0
+            };
+            let total_documents = command_execution_record_document_count(&record);
+            RebuildSourceRecord {
+                cursor: record_cursor,
+                documents: command_execution_record_documents_slice(
+                    &record,
+                    document_offset,
+                    limit,
+                ),
+                document_offset,
+                total_documents,
+            }
+        })
+        .collect()),
+        other => anyhow::bail!("unsupported memory index rebuild source kind {other:?}"),
+    }
+}
+
+fn runtime_payload_page<T: DeserializeOwned>(
+    runtime_db: &RuntimeDb,
+    table: &str,
+    key_column: &str,
+    agent_filter: Option<(&str, &str)>,
+    cursor: &str,
+    inclusive: bool,
+    limit: usize,
+) -> Result<Vec<(String, T)>> {
+    let comparison = if inclusive { ">=" } else { ">" };
+    let sql = if let Some((agent_column, _)) = agent_filter {
+        format!(
+            "SELECT {key_column}, payload_json
+             FROM {table}
+             WHERE {agent_column} = ?1 AND {key_column} {comparison} ?2
+             ORDER BY {key_column}
+             LIMIT ?3"
+        )
+    } else {
+        format!(
+            "SELECT {key_column}, payload_json
+             FROM {table}
+             WHERE {key_column} {comparison} ?1
+             ORDER BY {key_column}
+             LIMIT ?2"
+        )
+    };
+    let connection = runtime_db.connection()?;
+    let mut statement = connection.prepare(&sql)?;
+    let decode = |row: &rusqlite::Row<'_>| -> rusqlite::Result<(String, String)> {
+        Ok((row.get(0)?, row.get(1)?))
+    };
+    let rows = if let Some((_, agent_id)) = agent_filter {
+        statement
+            .query_map(
+                params![agent_id, cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
+                decode,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    } else {
+        statement
+            .query_map(
+                params![cursor, i64::try_from(limit).unwrap_or(i64::MAX)],
+                decode,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    rows.into_iter()
+        .map(|(key, payload)| {
+            serde_json::from_str(&payload)
+                .with_context(|| format!("failed to decode {table} payload for {key}"))
+                .map(|record| (key, record))
+        })
+        .collect()
 }
 
 fn document_for_pending_source(
@@ -2073,37 +2644,39 @@ fn workspace_profile_documents(storage: &AppStorage) -> Result<Vec<MemoryDocumen
     }
     Ok(latest
         .into_values()
-        .map(|entry| {
-            let title = entry
-                .repo_name
-                .clone()
-                .unwrap_or_else(|| format!("Workspace {}", entry.workspace_id));
-            let body = format!(
-                "{}\nworkspace_id: {}\nworkspace_anchor: {}",
-                title,
-                entry.workspace_id,
-                entry.workspace_anchor.display()
-            );
-            MemoryDocument {
-                source_ref: format!("workspace_profile:{}", entry.workspace_id),
-                source_kind: "workspace_profile".into(),
-                scope_kind: "workspace".into(),
-                workspace_id: Some(entry.workspace_id.clone()),
-                agent_id: storage_agent_id(storage),
-                source_path: Some(entry.workspace_anchor.clone()),
-                title,
-                sanitized_excerpt: excerpt(&body),
-                body,
-                metadata: json!({
-                    "workspace_anchor": entry.workspace_anchor,
-                    "governance_surface": "workspace_profile_projection",
-                    "provenance_class": "workspace_registry",
-                    "trust_class": "runtime_projection",
-                }),
-                updated_at: entry.updated_at,
-            }
-        })
+        .map(|entry| workspace_profile_document(entry, &storage_agent_id(storage)))
         .collect())
+}
+
+fn workspace_profile_document(entry: WorkspaceEntry, agent_id: &str) -> MemoryDocument {
+    let title = entry
+        .repo_name
+        .clone()
+        .unwrap_or_else(|| format!("Workspace {}", entry.workspace_id));
+    let body = format!(
+        "{}\nworkspace_id: {}\nworkspace_anchor: {}",
+        title,
+        entry.workspace_id,
+        entry.workspace_anchor.display()
+    );
+    MemoryDocument {
+        source_ref: format!("workspace_profile:{}", entry.workspace_id),
+        source_kind: "workspace_profile".into(),
+        scope_kind: "workspace".into(),
+        workspace_id: Some(entry.workspace_id.clone()),
+        agent_id: agent_id.to_string(),
+        source_path: Some(entry.workspace_anchor.clone()),
+        title,
+        sanitized_excerpt: excerpt(&body),
+        body,
+        metadata: json!({
+            "workspace_anchor": entry.workspace_anchor,
+            "governance_surface": "workspace_profile_projection",
+            "provenance_class": "workspace_registry",
+            "trust_class": "runtime_projection",
+        }),
+        updated_at: entry.updated_at,
+    }
 }
 
 fn workspace_profile_document_by_id(
@@ -2113,27 +2686,6 @@ fn workspace_profile_document_by_id(
     Ok(workspace_profile_documents(storage)?
         .into_iter()
         .find(|document| document.workspace_id.as_deref() == Some(workspace_id)))
-}
-
-fn brief_documents(
-    storage: &AppStorage,
-    runtime_db: Option<&RuntimeDb>,
-) -> Result<Vec<MemoryDocument>> {
-    let briefs = if let Some(runtime_db) = runtime_db {
-        runtime_db
-            .evidence()
-            .recent_payloads(EvidenceKind::Brief, &storage_agent_id(storage), usize::MAX)?
-            .into_iter()
-            .map(|row| serde_json::from_str::<BriefRecord>(&row.payload_json).map_err(Into::into))
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        storage.read_recent_briefs(usize::MAX)?
-    };
-    Ok(briefs
-        .into_iter()
-        .filter(semantic_brief_is_retrievable)
-        .map(|brief| brief_document(storage, brief))
-        .collect())
 }
 
 fn semantic_brief_is_retrievable(brief: &BriefRecord) -> bool {
@@ -2193,14 +2745,6 @@ fn message_document_by_id(
     Ok(storage
         .read_message_by_id(message_id)?
         .map(message_document))
-}
-
-fn message_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
-    Ok(storage
-        .read_all_messages()?
-        .into_iter()
-        .map(message_document)
-        .collect())
 }
 
 fn message_document(message: MessageEnvelope) -> MemoryDocument {
@@ -2300,14 +2844,6 @@ fn truncate_multiline(value: &str, limit: usize) -> String {
     } else {
         truncated
     }
-}
-
-fn context_episode_documents(storage: &AppStorage) -> Result<Vec<MemoryDocument>> {
-    Ok(storage
-        .read_recent_context_episodes(usize::MAX)?
-        .into_iter()
-        .map(episode_document)
-        .collect())
 }
 
 fn episode_document(episode: ContextEpisodeRecord) -> MemoryDocument {
@@ -2580,27 +3116,6 @@ fn truncate_inline(value: &str, limit: usize) -> String {
     }
 }
 
-fn work_item_documents(
-    storage: &AppStorage,
-    runtime_db: Option<&RuntimeDb>,
-) -> Result<Vec<MemoryDocument>> {
-    let latest = if let Some(runtime_db) = runtime_db {
-        runtime_db
-            .work_items()
-            .latest_for_agent(&storage_agent_id(storage), usize::MAX)?
-            .into_iter()
-            .map(|item| (item.id.clone(), item))
-            .collect()
-    } else {
-        let mut latest = BTreeMap::<String, WorkItemRecord>::new();
-        for item in storage.read_recent_work_items(usize::MAX)? {
-            latest.insert(item.id.clone(), item);
-        }
-        latest
-    };
-    Ok(latest.into_values().map(work_item_document).collect())
-}
-
 fn work_item_document(item: WorkItemRecord) -> MemoryDocument {
     let body = work_item_document_body(&item);
     MemoryDocument {
@@ -2682,20 +3197,6 @@ fn work_item_document_body(item: &WorkItemRecord) -> String {
         }
     }
     lines.join("\n")
-}
-
-fn task_documents(
-    storage: &AppStorage,
-    runtime_db: Option<&RuntimeDb>,
-) -> Result<Vec<MemoryDocument>> {
-    let tasks = if let Some(runtime_db) = runtime_db {
-        runtime_db
-            .tasks()
-            .latest_for_agent(&storage_agent_id(storage), usize::MAX)?
-    } else {
-        storage.latest_task_records_from_recent(usize::MAX)?
-    };
-    Ok(tasks.into_iter().map(task_document).collect())
 }
 
 fn task_document(task: TaskRecord) -> MemoryDocument {
@@ -2846,53 +3347,53 @@ fn task_status_label(status: &TaskStatus) -> &'static str {
     }
 }
 
-fn command_execution_documents(
-    storage: &AppStorage,
-    runtime_db: Option<&RuntimeDb>,
-) -> Result<Vec<MemoryDocument>> {
-    let mut documents = Vec::new();
-    let records = if let Some(runtime_db) = runtime_db {
-        runtime_db
-            .evidence()
-            .recent_payloads(
-                EvidenceKind::ToolExecution,
-                &storage_agent_id(storage),
-                usize::MAX,
-            )?
+fn command_execution_record_document_count(record: &ToolExecutionRecord) -> usize {
+    match record.tool_name.as_str() {
+        "ExecCommand" => usize::from(record.input.get("cmd").and_then(Value::as_str).is_some()),
+        "ExecCommandBatch" => record
+            .input
+            .get("items")
+            .and_then(Value::as_array)
             .into_iter()
-            .map(|row| {
-                serde_json::from_str::<ToolExecutionRecord>(&row.payload_json).map_err(Into::into)
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        storage.read_recent_tool_executions(usize::MAX)?
-    };
-    for record in records {
-        match record.tool_name.as_str() {
-            "ExecCommand" => {
-                if let Some(cmd) = record.input.get("cmd").and_then(Value::as_str) {
-                    documents.push(command_receipt_document(&record, None, None, cmd));
-                }
-            }
-            "ExecCommandBatch" => {
-                if let Some(items) = record.input.get("items").and_then(Value::as_array) {
-                    for (offset, item) in items.iter().enumerate() {
-                        if let Some(cmd) = item.get("cmd").and_then(Value::as_str) {
-                            let index = offset + 1;
-                            documents.push(command_receipt_document(
-                                &record,
-                                Some(index),
-                                Some(item),
-                                cmd,
-                            ));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+            .flatten()
+            .filter(|item| item.get("cmd").and_then(Value::as_str).is_some())
+            .count(),
+        _ => 0,
     }
-    Ok(documents)
+}
+
+fn command_execution_record_documents_slice(
+    record: &ToolExecutionRecord,
+    offset: usize,
+    limit: usize,
+) -> Vec<MemoryDocument> {
+    match record.tool_name.as_str() {
+        "ExecCommand" => record
+            .input
+            .get("cmd")
+            .and_then(Value::as_str)
+            .map(|cmd| command_receipt_document(record, None, None, cmd))
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect(),
+        "ExecCommandBatch" => record
+            .input
+            .get("items")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .filter_map(|(offset, item)| {
+                item.get("cmd")
+                    .and_then(Value::as_str)
+                    .map(|cmd| command_receipt_document(record, Some(offset + 1), Some(item), cmd))
+            })
+            .skip(offset)
+            .take(limit)
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 fn command_tool_execution_document_by_ref(
@@ -3273,6 +3774,14 @@ fn storage_agent_id(storage: &AppStorage) -> String {
         .ok()
         .flatten()
         .unwrap_or_else(|| "global".into())
+}
+
+fn parse_db_timestamp(column: usize, value: String) -> rusqlite::Result<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(&value)
+        .map(|timestamp| timestamp.with_timezone(&Utc))
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(column, Type::Text, Box::new(error))
+        })
 }
 
 fn file_updated_at(path: &Path) -> DateTime<Utc> {
@@ -5292,6 +5801,327 @@ mod tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn sliced_rebuild_persists_progress_and_prunes_old_documents() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        fs::write(
+            agent_memory_self_path(dir.path()),
+            "obsolete sliced rebuild sentinel",
+        )
+        .unwrap();
+        rebuild_memory_index(&storage, None).unwrap();
+        fs::remove_file(agent_memory_self_path(dir.path())).unwrap();
+
+        for index in 0..4 {
+            let mut message = MessageEnvelope::new(
+                "default",
+                crate::types::MessageKind::OperatorPrompt,
+                crate::types::MessageOrigin::Operator {
+                    actor_id: Some("operator:test".into()),
+                    actor_display_name: None,
+                },
+                crate::types::AuthorityClass::OperatorInstruction,
+                crate::types::Priority::Normal,
+                MessageBody::Text {
+                    text: format!("sliced rebuild message {index}"),
+                },
+            );
+            message.id = format!("msg-sliced-rebuild-{index}");
+            storage.append_message(&message).unwrap();
+        }
+        request_memory_index_rebuild(&storage, None, "test_sliced_resume").unwrap();
+
+        let first = refresh_memory_index_bounded(&storage, None, 1).unwrap();
+        assert_eq!(first.rebuild_phase.as_deref(), Some("scan"));
+        assert_eq!(first.rebuild_documents_processed, Some(1));
+        let first_job = MemoryIndex::open(&storage)
+            .unwrap()
+            .rebuild_job("default")
+            .unwrap()
+            .unwrap();
+
+        let mut previous_documents = first_job.documents_processed;
+        let mut final_status = first;
+        for _ in 0..64 {
+            final_status = refresh_memory_index_bounded(&storage, None, 1).unwrap();
+            let job = MemoryIndex::open(&storage)
+                .unwrap()
+                .rebuild_job("default")
+                .unwrap();
+            if let Some(job) = job {
+                assert!(job.documents_processed >= previous_documents);
+                previous_documents = job.documents_processed;
+            } else {
+                break;
+            }
+        }
+
+        assert_eq!(
+            final_status.freshness, "fresh",
+            "unexpected final status: {final_status:?}"
+        );
+        assert!(final_status.rebuild_phase.is_none());
+        assert!(MemoryIndex::open(&storage)
+            .unwrap()
+            .rebuild_job("default")
+            .unwrap()
+            .is_none());
+        let obsolete_results = search_memory(
+            &storage,
+            "obsolete sliced rebuild sentinel",
+            10,
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(
+            obsolete_results
+                .iter()
+                .all(|result| result.source_ref != "agent_memory:self"),
+            "unexpected obsolete self-memory result: {obsolete_results:?}"
+        );
+        assert!(
+            search_memory(&storage, "sliced rebuild message 3", 10, None, false)
+                .unwrap()
+                .iter()
+                .any(|result| result.source_ref == "message:msg-sliced-rebuild-3")
+        );
+    }
+
+    #[test]
+    fn rebuild_finalize_preserves_new_dirty_pending_and_monotonic_cursor() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        rebuild_memory_index(&storage, None).unwrap();
+
+        let first_brief = brief_with_workspace(
+            "default",
+            BriefKind::Result,
+            "rebuild snapshot watermark",
+            "ws-holon",
+        );
+        storage.append_brief(&first_brief).unwrap();
+        request_memory_index_rebuild(&storage, None, "test_dirty_revision").unwrap();
+        refresh_memory_index_bounded(&storage, None, 1).unwrap();
+
+        let job = MemoryIndex::open(&storage)
+            .unwrap()
+            .rebuild_job("default")
+            .unwrap()
+            .unwrap();
+        let runtime_db = storage.runtime_db().unwrap().unwrap();
+        let runtime_id = runtime_index_runtime_id(&runtime_db);
+        let advanced_cursor = job.runtime_high_watermark + 100;
+        let index = MemoryIndex::open(&storage).unwrap();
+        upsert_cursor_tx(
+            &index.connection,
+            &runtime_id,
+            "default",
+            MEMORY_INDEX_OUTBOX_CURSOR,
+            advanced_cursor,
+        )
+        .unwrap();
+
+        let second_brief = brief_with_workspace(
+            "default",
+            BriefKind::Result,
+            "post snapshot dirty and pending sentinel",
+            "ws-holon",
+        );
+        storage.append_brief(&second_brief).unwrap();
+        storage.mark_memory_index_dirty().unwrap();
+        let pending_ref = format!("brief:{}", second_brief.id);
+        MemoryIndex::open(&storage)
+            .unwrap()
+            .enqueue_upsert("default", "brief", &second_brief.id, &pending_ref)
+            .unwrap();
+        request_memory_index_rebuild(&storage, None, "self_heal").unwrap();
+
+        let mut status = refresh_memory_index_bounded(&storage, None, 10).unwrap();
+        for _ in 0..32 {
+            if status.rebuild_phase.is_none() {
+                break;
+            }
+            status = refresh_memory_index_bounded(&storage, None, 10).unwrap();
+        }
+
+        let index = MemoryIndex::open(&storage).unwrap();
+        assert_eq!(
+            index
+                .cursor(&runtime_id, "default", MEMORY_INDEX_OUTBOX_CURSOR)
+                .unwrap(),
+            advanced_cursor
+        );
+        assert!(memory_index_is_dirty(&storage));
+        assert!(index
+            .pending_sources_for_agent("default")
+            .unwrap()
+            .iter()
+            .any(|source| source.source_ref == pending_ref));
+        assert!(index
+            .rebuild_intents_for_agent("default")
+            .unwrap()
+            .is_empty());
+        assert!(status.stale_reasons.contains(&"dirty_marker".to_string()));
+        assert!(status
+            .stale_reasons
+            .contains(&"pending_sources".to_string()));
+    }
+
+    #[test]
+    fn one_agent_sliced_rebuild_does_not_block_another_agent_refresh() {
+        let dir = tempdir().unwrap();
+        let agents_dir = dir.path().join("agents");
+        let alpha_home = agents_dir.join("alpha");
+        let beta_home = agents_dir.join("beta");
+        let alpha = AppStorage::new_for_agent_for_test(&alpha_home, "alpha").unwrap();
+        let beta = AppStorage::new_for_agent_for_test(&beta_home, "beta").unwrap();
+        alpha.write_agent(&AgentState::new("alpha")).unwrap();
+        beta.write_agent(&AgentState::new("beta")).unwrap();
+        ensure_agent_home_layout(&alpha_home).unwrap();
+        ensure_agent_home_layout(&beta_home).unwrap();
+        rebuild_memory_index(&alpha, None).unwrap();
+        rebuild_memory_index(&beta, None).unwrap();
+
+        for index in 0..8 {
+            let mut message = MessageEnvelope::new(
+                "alpha",
+                crate::types::MessageKind::OperatorPrompt,
+                crate::types::MessageOrigin::Operator {
+                    actor_id: Some("operator:test".into()),
+                    actor_display_name: None,
+                },
+                crate::types::AuthorityClass::OperatorInstruction,
+                crate::types::Priority::Normal,
+                MessageBody::Text {
+                    text: format!("large alpha rebuild message {index}"),
+                },
+            );
+            message.id = format!("msg-alpha-rebuild-{index}");
+            alpha.append_message(&message).unwrap();
+        }
+        request_memory_index_rebuild(&alpha, None, "test_fairness").unwrap();
+        let alpha_status = refresh_memory_index_bounded(&alpha, None, 1).unwrap();
+        assert!(alpha_status.rebuild_phase.is_some());
+
+        let beta_brief = brief_with_workspace(
+            "beta",
+            BriefKind::Result,
+            "beta advances before alpha rebuild completes",
+            "ws-holon",
+        );
+        beta.append_brief(&beta_brief).unwrap();
+        let beta_status = refresh_memory_index_bounded(&beta, None, 10).unwrap();
+        assert_eq!(beta_status.pending_count, 0);
+        assert_eq!(beta_status.cursor, beta_status.high_watermark);
+        let beta_results = search_memory(
+            &beta,
+            "beta advances before alpha rebuild completes",
+            10,
+            Some("ws-holon"),
+            false,
+        )
+        .unwrap();
+        let indexed_beta_documents = {
+            let index = MemoryIndex::open(&beta).unwrap();
+            let mut statement = index
+                .connection
+                .prepare(
+                    "SELECT agent_id, source_ref, title
+                     FROM memory_documents
+                     WHERE agent_id = 'beta'
+                     ORDER BY source_ref",
+                )
+                .unwrap();
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert!(
+            beta_results
+                .iter()
+                .any(|result| result.source_ref == format!("brief:{}", beta_brief.id)),
+            "unexpected beta results: {beta_results:?}; indexed={indexed_beta_documents:?}"
+        );
+        assert!(MemoryIndex::open(&alpha)
+            .unwrap()
+            .rebuild_job("alpha")
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn rebuild_command_record_paging_bounds_document_construction() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: "tool-rebuild-page".into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: "ExecCommandBatch".into(),
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 10,
+                authority_class: crate::types::AuthorityClass::OperatorInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: json!({
+                    "items": [
+                        {"cmd": "echo rebuild-page-1"},
+                        {"cmd": "echo rebuild-page-2"},
+                        {"cmd": "echo rebuild-page-3"}
+                    ]
+                }),
+                output: json!({"completed_count": 3}),
+                summary: "ExecCommandBatch completed 3/3 items".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
+
+        let first =
+            rebuild_source_records(&storage, "tool_command_receipt", "", false, 0, 1).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].documents.len(), 1);
+        assert_eq!(first[0].total_documents, 3);
+        assert_eq!(
+            first[0].documents[0].source_ref,
+            "tool_execution:tool-rebuild-page:batch_item:1:cmd"
+        );
+
+        let second = rebuild_source_records(
+            &storage,
+            "tool_command_receipt",
+            &first[0].cursor,
+            true,
+            1,
+            1,
+        )
+        .unwrap();
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].document_offset, 1);
+        assert_eq!(second[0].documents.len(), 1);
+        assert_eq!(
+            second[0].documents[0].source_ref,
+            "tool_execution:tool-rebuild-page:batch_item:2:cmd"
         );
     }
 

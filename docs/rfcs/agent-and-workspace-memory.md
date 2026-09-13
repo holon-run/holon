@@ -361,6 +361,30 @@ paths when they are touched, and `MemorySearch` performs bounded stale repair
 before querying. If the index is missing or dirty, it is rebuilt from the
 source-of-truth records.
 
+### Bounded rebuild convergence
+
+A full rebuild must be resumable and bounded at every expensive boundary. The
+runtime persists one rebuild job per agent, scans each source family with a
+keyset cursor, writes only a bounded page in one index transaction, prunes old
+documents in bounded pages, and finalizes checkpoints separately. The job and
+its seen-document set are derived state in the shared index database, so daemon
+restart resumes the current phase instead of restarting an unbounded scan.
+
+The rebuild captures the runtime outbox produced watermark at start. Finalize
+advances the applied cursor monotonically to at least that watermark and only
+acknowledges pending index rows that predate the rebuild. Writes after the
+snapshot remain pending for normal incremental consumption. The dirty marker is
+consumed when the job starts; a new dirty marker created while the job runs is
+not cleared by finalize and therefore schedules another self-heal pass.
+
+An agent with an active rebuild temporarily defers its own incremental drain,
+but one bounded slice returns control to the daemon's serial round so other
+agents can advance before that rebuild completes. Search remains available over
+the mixed old/new derived projection and reports `rebuild_in_progress` plus the
+current phase and last-progress timestamp. A daemon watchdog warns while an
+individual agent slice is still blocked; it is observability, not an unsafe
+attempt to cancel a running SQLite or blocking-thread operation.
+
 LLM extraction should not be required for every message. If Holon adds
 LLM-based extraction later, it should be boundary-triggered:
 
