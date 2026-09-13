@@ -47,12 +47,12 @@ the Sparkle appcast, and publishes the DMG with the other release assets. The
 certificate secret must contain the base64-encoded `.p12` export; no signing
 secret is needed for pull requests.
 
-Every release tag is blocked until the protected **Release E2E** workflow has
-passed for the exact tag commit and intended release tag. That workflow builds
-one candidate image after protected-environment approval, records its immutable
-digest, runs the production image smoke test, executes the real-LLM core suite
-against that exact digest, and uploads a machine-readable attestation. The
-default model route is `dashscope-token-plan/qwen-3.7`.
+Every release tag is blocked until the **Release E2E** workflow has passed for
+the exact tag commit and intended release tag. That workflow builds one
+candidate image, records its immutable digest, runs the production image smoke
+test, executes the real-LLM core suite against that exact digest, and uploads a
+machine-readable attestation. The default model route is
+`dashscope-token-plan/qwen-3.7`.
 
 ## Versioning
 
@@ -70,9 +70,8 @@ Before creating the tag:
      from that release's verified Linux binary asset.
    The workflow fails rather than falling back when an explicit image is
    invalid, when both inputs are set, or when neither input is set.
-2. Select the protected `release-e2e` environment approval.
-3. Confirm the uploaded `summary.json`, JUnit report, and secret scan all pass.
-4. Record the successful workflow run and candidate digest in the release
+2. Confirm the uploaded `summary.json`, JUnit report, and secret scan all pass.
+3. Record the successful workflow run and candidate digest in the release
    preparation notes.
 
 ```bash
