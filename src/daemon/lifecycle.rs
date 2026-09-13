@@ -1369,6 +1369,7 @@ fn status_from_metadata(metadata: RuntimeServiceMetadata) -> RuntimeStatusRespon
         startup_surface: None,
         runtime_surface: None,
         last_failure: None,
+        runtime_db_protection: None,
     }
 }
 

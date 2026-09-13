@@ -11,10 +11,14 @@ use std::time::Instant;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{Connection, Transaction};
 
+#[cfg(target_os = "linux")]
+use crate::runtime_db::connection::RuntimeDbSidecarGuard;
 use crate::runtime_db::connection::{
-    is_retryable_db_error, next_runtime_db_retry_delay, run_transaction_on_connection,
+    ensure_runtime_db_sidecars_are_consistent, is_retryable_db_error, next_runtime_db_retry_delay,
+    open_connection, run_transaction_on_connection,
 };
 use crate::runtime_db::{
+    RuntimeDbProtectionError, RuntimeDbProtectionState, RuntimeDbProtectionStatus,
     RUNTIME_DB_APPEND_RETRY_MAX_DELAY, RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY,
     RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY, RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL,
     RUNTIME_DB_WRITE_QUEUE_CAPACITY,
@@ -30,6 +34,9 @@ pub(crate) struct RuntimeDbWriterState {
     pub(crate) path: PathBuf,
     pub(crate) connection: Mutex<Connection>,
     pub(crate) queue: Arc<RuntimeDbWriteQueue>,
+    #[cfg(target_os = "linux")]
+    pub(crate) sidecar_guard: Mutex<Option<RuntimeDbSidecarGuard>>,
+    protection: Mutex<RuntimeDbProtectionStatus>,
 }
 
 pub(crate) struct RuntimeDbWriteQueue {
@@ -105,12 +112,25 @@ static RUNTIME_DB_WRITE_QUEUES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<RuntimeDbWr
     OnceLock::new();
 
 impl RuntimeDbWriter {
+    #[cfg(test)]
     pub(crate) fn open(path: PathBuf, connection: Connection) -> Result<Self> {
+        let writer = Self::open_starting(path, connection)?;
+        writer.activate_sidecar_protection()?;
+        Ok(writer)
+    }
+
+    pub(crate) fn open_starting(path: PathBuf, connection: Connection) -> Result<Self> {
         let queue = runtime_db_write_queue(&path)?;
         let state = Arc::new(RuntimeDbWriterState {
             path,
             connection: Mutex::new(connection),
             queue,
+            #[cfg(target_os = "linux")]
+            sidecar_guard: Mutex::new(None),
+            protection: Mutex::new(RuntimeDbProtectionStatus {
+                state: RuntimeDbProtectionState::Starting,
+                evidence: None,
+            }),
         });
         let (append_tx, append_rx) =
             mpsc::sync_channel::<RuntimeDbWriteRequest>(RUNTIME_DB_WRITE_QUEUE_CAPACITY);
@@ -172,6 +192,18 @@ impl RuntimeDbWriter {
             })
             .context("spawning runtime db writer thread")?;
         Ok(Self { state, append_tx })
+    }
+
+    pub(crate) fn activate_sidecar_protection(&self) -> Result<()> {
+        self.state.activate_sidecar_protection()
+    }
+
+    pub(crate) fn open_connection(&self) -> Result<Connection> {
+        self.state.open_connection()
+    }
+
+    pub(crate) fn protection_status(&self) -> RuntimeDbProtectionStatus {
+        self.state.protection_status()
     }
 
     pub(crate) fn append(
@@ -242,6 +274,106 @@ impl RuntimeDbWriter {
 }
 
 impl RuntimeDbWriterState {
+    fn activate_sidecar_protection(&self) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            let guard = RuntimeDbSidecarGuard::acquire(&self.path)?;
+            ensure_runtime_db_sidecars_are_consistent(&self.path)?;
+            let mut slot = self
+                .sidecar_guard
+                .lock()
+                .map_err(|_| anyhow!("runtime db sidecar guard mutex poisoned"))?;
+            *slot = Some(guard);
+        }
+        let mut protection = self
+            .protection
+            .lock()
+            .map_err(|_| anyhow!("runtime db protection mutex poisoned"))?;
+        protection.state = if cfg!(target_os = "linux") {
+            RuntimeDbProtectionState::Protected
+        } else {
+            RuntimeDbProtectionState::Unsupported
+        };
+        protection.evidence = None;
+        Ok(())
+    }
+
+    fn protection_status(&self) -> RuntimeDbProtectionStatus {
+        self.protection
+            .lock()
+            .map(|status| status.clone())
+            .unwrap_or_else(|_| RuntimeDbProtectionStatus {
+                state: RuntimeDbProtectionState::Quarantined,
+                evidence: Some("runtime db protection mutex poisoned".into()),
+            })
+    }
+
+    fn ensure_protected(&self) -> Result<()> {
+        let status = self.protection_status();
+        match status.state {
+            RuntimeDbProtectionState::Starting | RuntimeDbProtectionState::Unsupported => {
+                return Ok(());
+            }
+            RuntimeDbProtectionState::Quarantined => {
+                return Err(RuntimeDbProtectionError::new(
+                    &self.path,
+                    status
+                        .evidence
+                        .unwrap_or_else(|| "sidecar protection was lost".into()),
+                )
+                .into());
+            }
+            RuntimeDbProtectionState::Protected => {}
+        }
+        if let Err(error) = ensure_runtime_db_sidecars_are_consistent(&self.path) {
+            return Err(self.quarantine(error));
+        }
+        Ok(())
+    }
+
+    fn quarantine(&self, error: anyhow::Error) -> anyhow::Error {
+        let incident = error
+            .chain()
+            .find_map(|source| source.downcast_ref::<RuntimeDbProtectionError>())
+            .cloned()
+            .unwrap_or_else(|| RuntimeDbProtectionError::new(&self.path, format!("{error:#}")));
+        let mut protection = match self.protection.lock() {
+            Ok(protection) => protection,
+            Err(_) => return incident.into(),
+        };
+        if protection.state != RuntimeDbProtectionState::Quarantined {
+            tracing::error!(
+                error = %incident,
+                path = %self.path.display(),
+                "runtime db sidecar protection quarantined"
+            );
+            protection.state = RuntimeDbProtectionState::Quarantined;
+            protection.evidence = Some(incident.evidence().to_string());
+        }
+        RuntimeDbProtectionError::new(
+            &self.path,
+            protection
+                .evidence
+                .clone()
+                .unwrap_or_else(|| incident.evidence().to_string()),
+        )
+        .into()
+    }
+
+    fn open_connection(&self) -> Result<Connection> {
+        self.ensure_protected()?;
+        open_connection(&self.path).map_err(|error| {
+            if error
+                .chain()
+                .any(|source| source.is::<RuntimeDbProtectionError>())
+            {
+                self.quarantine(error)
+            } else {
+                error
+            }
+        })
+    }
+
     fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.append_wait_with_context(
             RuntimeDbWriteContext::sync("runtime_db.transaction", "unknown"),
@@ -268,6 +400,7 @@ impl RuntimeDbWriterState {
         let mut retry_count = 0u32;
         let mut next_warn_at = RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
         loop {
+            self.ensure_protected()?;
             match run_transaction_on_connection(
                 &connection,
                 &self.path,
@@ -325,6 +458,7 @@ impl RuntimeDbWriterState {
             .lock()
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
+        self.ensure_protected()?;
         run_transaction_on_connection(
             &connection,
             &self.path,
@@ -400,5 +534,60 @@ fn runtime_db_write_queue_key(path: &Path) -> PathBuf {
             .map(|parent| parent.join(file_name))
             .unwrap_or_else(|_| path.to_path_buf()),
         _ => path.to_path_buf(),
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::runtime_db::connection::configure_persistent_database;
+
+    fn sidecar_path(db_path: &Path, suffix: &str) -> PathBuf {
+        let mut path = db_path.as_os_str().to_owned();
+        path.push(suffix);
+        PathBuf::from(path)
+    }
+
+    #[test]
+    fn sidecar_divergence_quarantines_writer_without_reconcile() -> Result<()> {
+        let directory = tempdir()?;
+        let db_path = directory.path().join("runtime.sqlite");
+        let connection = open_connection(&db_path)?;
+        configure_persistent_database(&connection)?;
+        connection.execute_batch(
+            "CREATE TABLE values_seen(value INTEGER NOT NULL);
+             INSERT INTO values_seen(value) VALUES (1);",
+        )?;
+        let writer = RuntimeDbWriter::open(db_path.clone(), connection)?;
+        let wal_path = sidecar_path(&db_path, "-wal");
+
+        fs::remove_file(&wal_path)?;
+        let first_error = writer
+            .append_wait_once::<()>(|_| panic!("quarantined writer must not begin a transaction"))
+            .expect_err("deleted-open WAL must quarantine the writer");
+        assert!(first_error
+            .chain()
+            .any(|source| source.is::<RuntimeDbProtectionError>()));
+        let first_status = writer.protection_status();
+        assert_eq!(first_status.state, RuntimeDbProtectionState::Quarantined);
+        assert!(first_status
+            .evidence
+            .as_deref()
+            .is_some_and(|evidence| evidence.contains("deleted-open sidecar")));
+        assert!(!wal_path.exists(), "quarantine must not recreate the WAL");
+
+        let second_error = writer
+            .open_connection()
+            .expect_err("quarantined writer must reject new connections");
+        assert!(second_error
+            .chain()
+            .any(|source| source.is::<RuntimeDbProtectionError>()));
+        assert_eq!(writer.protection_status(), first_status);
+        assert!(!wal_path.exists(), "quarantine must remain fail-stop");
+        Ok(())
     }
 }

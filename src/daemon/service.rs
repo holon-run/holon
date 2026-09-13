@@ -16,6 +16,7 @@ use tokio::sync::watch;
 use crate::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
+    runtime_db::RuntimeDbProtectionStatus,
     types::{AgentStatus, RuntimeFailureSummary},
     web::{WebProviderCapabilityMetadata, WebProviderKind},
 };
@@ -72,6 +73,8 @@ pub struct RuntimeStatusResponse {
     pub runtime_surface: Option<RuntimeConfigSurface>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_failure: Option<RuntimeFailureSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_db_protection: Option<RuntimeDbProtectionStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -359,6 +362,7 @@ impl RuntimeServiceHandle {
             runtime_surface: Some(runtime_surface),
             activity: Some(activity),
             last_failure,
+            runtime_db_protection: None,
         }
     }
 
@@ -384,6 +388,7 @@ impl RuntimeServiceHandle {
             runtime_surface: Some(runtime_surface),
             activity: None,
             last_failure: None,
+            runtime_db_protection: None,
         }
     }
 

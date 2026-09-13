@@ -79,6 +79,18 @@ Keep the runtime database readable under its existing deployment permissions,
 but do not treat direct access to a live `runtime.sqlite` as the default
 diagnostic path. Prefer native runtime tools and APIs.
 
+On Linux, inspect `runtime_db_protection` in runtime status or readiness:
+
+- `starting` is limited to startup and migration before the guard is published
+- `protected` means the process-lifetime OFD sidecar guard is active
+- `quarantined` means sidecar integrity failed and runtime DB access is
+  permanently fail-stopped for the process
+- `unsupported` means the platform does not provide the Linux OFD guarantee
+
+DB-dependent requests in quarantine return `503 Service Unavailable` with
+error code `runtime_db_quarantined` and `Retry-After: 1`. Do not loop on that
+response or assume the runtime will reconstruct the sidecars automatically.
+
 If direct structural inspection is necessary:
 
 - require the direct runtime-database read authority gate
@@ -86,15 +98,18 @@ If direct structural inspection is necessary:
   been granted to stop the Holon service
 - if maintenance authority has not been granted and no verified backup exists,
   request authorization instead of stopping the service
-- do not open the live database with an unmanaged SQLite client while Holon is
-  running, even in read-only mode
+- an unmanaged SQLite open/query/close must not remove live sidecars while
+  protection is active, but it remains a last-resort diagnostic path and
+  unmanaged writes are unsupported
 - never delete, rename, replace, restore, or copy over live `-wal` or `-shm`
   sidecars
 
-If Holon reports a deleted-open WAL/SHM file or an inode divergence:
+If Holon reports `quarantined`, a deleted-open WAL/SHM file, or an inode
+divergence:
 
 1. do not delete files or immediately restart over the evidence
-2. record the database path, sidecar path, process ID, FD, device, and inode
+2. record the protection evidence, database path, sidecar path, process ID, FD,
+   device, and inode
 3. preserve the main database and both sidecars before recovery
 4. perform recovery or restart only under explicit maintenance authority,
    using the preserved files and an offline verification step
