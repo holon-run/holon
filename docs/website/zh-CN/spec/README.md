@@ -76,4 +76,36 @@ order: 1
 
 <!-- INDEX:START -->
 
+- [Agent 状态](./agent-state.md)
+  当前的 Agent 状态、生命周期标签、运行时投影，以及面向用户的展示契约。
+  <!-- mdorigin:index kind=article -->
+
+- [工作项](./work-items.md)
+  当前 WorkItem 生命周期、focus、readiness、规划、阻塞和完成契约。
+  <!-- mdorigin:index kind=article -->
+
+- [调度器](./scheduler.md)
+  当前调度器输入、runnable/waiting 决策、WorkItem readiness 和 wake/sleep 边界。
+  <!-- mdorigin:index kind=article -->
+
+- [唤醒与延续](./wake-and-continuation.md)
+  当前触发器分类、外部 ingress 能力、延续解析和 wake/sleep 生命周期。
+  <!-- mdorigin:index kind=article -->
+
+- [任务](./tasks.md)
+  当前任务生命周期、终态重入，以及命令/子 Agent 监督契约。
+  <!-- mdorigin:index kind=article -->
+
+- [工具](./tools.md)
+  当前面向模型的工具家族、权限边界、输入/结果契约和已废弃接口。
+  <!-- mdorigin:index kind=article -->
+
+- [Workspace 与执行](./workspace-and-execution.md)
+  当前 workspace 身份、agent home、execution root、worktree 和 host-local 策略契约。
+  <!-- mdorigin:index kind=article -->
+
+- [信任与来源](./trust-and-provenance.md)
+  当前 provenance、admission/authentication、指令权威和执行策略契约。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

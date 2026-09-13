@@ -89,4 +89,32 @@ episode 中组装有界的提示上下文，而不依赖原始对话回放。
 
 <!-- INDEX:START -->
 
+- [运行时模型](./runtime-model.md)
+  Agent、任务、工作项、工作区，以及构成 Holon 运行时的执行循环。
+  <!-- mdorigin:index kind=article -->
+
+- [上下文连续性](./context-continuity.md)
+  Holon 如何在不重放全部对话记录的前提下，让长期 Agent 的上下文保持连贯。
+  <!-- mdorigin:index kind=article -->
+
+- [记忆系统](./memory.md)
+  Holon 的记忆分层如何跨轮次保持连续性——工作项、work refs、片段、持久账本和索引搜索。
+  <!-- mdorigin:index kind=article -->
+
+- [信任边界](./trust-boundaries.md)
+  Holon 如何对来源、信任和优先级分类，让长期 Agent 保持安全。
+  <!-- mdorigin:index kind=article -->
+
+- [文档分层](./documentation-layers.md)
+  Holon 如何区分产品文档、当前契约参考和维护者设计记录。
+  <!-- mdorigin:index kind=article -->
+
+- [外部触发器](./external-triggers.md)
+  Holon Agent 如何通过 webhook 唤醒端点和回调 URL 等待并接收外部事件。
+  <!-- mdorigin:index kind=article -->
+
+- [安全与执行边界](./security-and-execution-boundaries.md)
+  Holon 沙箱化与不沙箱化的部分：本地执行、工作区绑定、远程访问、能力密钥和信任元数据。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->
