@@ -45,7 +45,7 @@ holon solve https://github.com/holon-run/holon/issues/42
 holon solve holon-run/holon#42
 
 # Numeric ref with --repo
-holon solve 42 --repo holon-run/holon
+holon solve '#42' --repo holon-run/holon
 ```
 
 The agent clones the repository, reads the issue, collects related context,
@@ -165,7 +165,7 @@ holon solve <REF> [OPTIONS]
 | `--template` | string | `github-solver` | Template for the agent |
 | `--model` | string | — | Override the configured model (sets `HOLON_MODEL`) |
 | `--max-turns` | integer | — | Maximum agent turns before forced stop |
-| `--trust` | string | `trusted-operator` | Trust level for the run |
+| `--authority-class` (alias `--trust`) | string | `operator-instruction` | Trust level for the run |
 | `--json` | flag | false | Print output as JSON instead of text |
 | `--home` | path | `~/.holon` | Holon home directory |
 | `--workspace` | path | — | Working directory for the agent |

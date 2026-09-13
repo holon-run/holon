@@ -47,13 +47,13 @@ holon run --agent reviewer "Review the changes in src/runtime/turn.rs"
 Change the global default model:
 
 ```bash
-holon config set model.default "deepseek-anthropic/deepseek-v4-pro"
+holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
 ```
 
 Set a per-agent model override:
 
 ```bash
-holon agent model set "anthropic/claude-sonnet-4-6" reviewer
+holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 ```
 
 Check which model an agent uses:

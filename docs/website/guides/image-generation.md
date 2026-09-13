@@ -1,6 +1,6 @@
 ---
 title: Image Generation guide
-summary: Agent tool for generating images from text prompts — model selection, size and format options, output management, and caching.
+summary: Agent tool for generating images from text prompts — model selection, size and format options, and output management.
 order: 47
 ---
 
@@ -65,7 +65,7 @@ The result also includes provider/model provenance and the original prompt.
 Set a dedicated image-generation model:
 
 ```bash
-holon config set image_generation.default "openai/dall-e-3"
+holon config set image_generation.default "openai/gpt-image-2"
 ```
 
 When `image_generation.default` is configured, GenerateImage uses that model
@@ -73,7 +73,7 @@ for all image generation requests. Use a model route ref that includes the
 endpoint for unambiguous routing:
 
 ```bash
-holon config set image_generation.default "volcengine@image-openai/seedream-4.0"
+holon config set image_generation.default "volcengine@image-openai/doubao-seedream-5.0-lite"
 ```
 
 ### Auto-discovery
@@ -96,8 +96,8 @@ Image generation is supported through providers whose models advertise the
 
 | Provider | Model | Notes |
 |----------|-------|-------|
-| OpenAI | dall-e-3, dall-e-2 | Native image generation |
-| Volcengine | seedream-4.0 | Via Volcengine Ark plan endpoint |
+| OpenAI | gpt-image-2 | Native image generation |
+| Volcengine | doubao-seedream-5.0-lite | Via Volcengine Ark plan endpoint |
 
 > See [Models reference](/reference/models.md) for the current list of
 > image-generation capable models.
@@ -116,7 +116,7 @@ holon config set providers.volcengine.plans.image-openai.endpoint image-openai
 Then set the image generation default:
 
 ```bash
-holon config set image_generation.default "volcengine@image-openai/seedream-4.0"
+holon config set image_generation.default "volcengine@image-openai/doubao-seedream-5.0-lite"
 ```
 
 ## Output management

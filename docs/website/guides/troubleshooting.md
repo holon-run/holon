@@ -100,7 +100,7 @@ This shows which models are available, which credentials are configured, and det
 
 3. Try switching to a different model:
    ```bash
-   holon config set model.default "anthropic/claude-sonnet-4-6"
+   holon config set model.default "anthropic@default/claude-sonnet-4-6"
    ```
 
 ## Agent Issues
@@ -157,11 +157,10 @@ holon agent model clear my-agent
 
 ### Config reset to defaults
 
-Check if `HOLON_HOME` or `XDG_CONFIG_HOME` is set, which changes the config file location:
+Check whether `HOLON_HOME` is set, which moves the config file location:
 
 ```bash
 echo $HOLON_HOME
-echo $XDG_CONFIG_HOME
 ```
 
 ## TUI Issues
@@ -222,7 +221,7 @@ cumulative — they cover the entire process lifetime since daemon start.
 ### Retrieving metrics
 
 ```bash
-curl http://127.0.0.1:7878/control/runtime/performance
+curl http://127.0.0.1:7878/api/control/runtime/performance
 ```
 
 The response is a JSON snapshot grouped by category:
@@ -252,14 +251,14 @@ Each metric entry contains:
 ### Common diagnosis patterns
 
 **High `turn.tool_execution`** — A specific tool is dominating turn time. Check
-`ToolLatencyMetrics` on the agent status endpoint to identify the tool.
+`holon debug latency` to identify it.
 
 **Frequent `provider.retry`** — The model provider is returning errors or
 timeouts. Check provider logs (`holon daemon logs`) and network connectivity.
 
 **Growing `turn.context_build`** — Prompt assembly is slowing. This may
-indicate accumulated memory that needs compaction. Check agent
-`compacted_message_count` vs `total_message_count`.
+indicate accumulated history that needs compaction. Check the agent's
+`total_message_count` against the configured compaction thresholds.
 
 **High `scheduler.poll.idle` ratio** — Normal when no agents are awake. If
 agents have pending work, check wake hints and wait conditions.
@@ -270,7 +269,7 @@ Metrics reset on daemon restart. To observe a specific scenario, restart the
 daemon, reproduce the issue, then capture the snapshot:
 
 ```bash
-holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/control/runtime/performance
+holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/api/control/runtime/performance
 ```
 
 ## See Also

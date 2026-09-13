@@ -30,21 +30,23 @@ change where runtime tools operate.
 | `cd /other` in shell | Only affects that command |
 | `AttachWorkspace` | Adds a workspace binding without switching |
 | `SwitchWorkspace` | Changes active workspace for subsequent operations |
-| `holon workspace attach /path` | Attaches and activates through the CLI compatibility flow |
+| `holon workspace attach /path` | Attaches a binding for a path; does not switch the active workspace |
 
 ## Workspace Commands
 
 ### Attach
 
-Attach to a project directory as the active workspace:
+Attach a project directory to an agent:
 
 ```bash
 holon workspace attach /path/to/project
 holon workspace attach --agent my-agent /path/to/project
 ```
 
-This discovers or creates a workspace record for the directory and makes it
-active for the agent. The workspace persists across sessions.
+This discovers or creates a workspace record for the directory and binds it to
+the agent. Attaching does not by itself change the active workspace; activate
+it with `SwitchWorkspace` when you are ready to work there. The binding
+persists across sessions.
 
 ### Exit
 
@@ -94,8 +96,8 @@ Isolated workspaces are useful for:
 | Project workspace | Code and files being worked on | `/path/to/project` |
 
 Every agent starts with its agent home as the active workspace. Use
-`workspace attach` to switch to a project workspace, and `workspace exit` to
-return to agent home.
+`workspace attach` to bind a project workspace and `SwitchWorkspace` to
+activate it, and `workspace exit` to return to agent home.
 
 ## Agent Workspace Tools
 
