@@ -1407,6 +1407,10 @@ impl RuntimeHost {
     /// to fail with `database is locked`, which marks more indexes dirty
     /// and grows the next round's work set (issue #2939).
     const MEMORY_INDEXER_MIN_ROUND_GAP: Duration = Duration::from_millis(500);
+    /// A bounded slice should normally finish well below this threshold.
+    /// Warn while the blocking task is still running so a slow source read or
+    /// SQLite stall is observable instead of only being reported after return.
+    const MEMORY_INDEXER_AGENT_WATCHDOG: Duration = Duration::from_secs(30);
     /// After this many consecutive refresh failures for one agent, request a
     /// full rebuild so a stuck outbox prefix can be acknowledged through the
     /// produced watermark and the agent's debt settles instead of retrying
@@ -1520,7 +1524,7 @@ impl RuntimeHost {
                 };
                 let needs_self_heal = self_heal_agent_ids.contains(agent_id);
                 let self_heal_agent_id = agent_id.clone();
-                let result = tokio::task::spawn_blocking(move || {
+                let mut refresh_task = tokio::task::spawn_blocking(move || {
                     if needs_self_heal {
                         // Make the rebuild durable: the pending intent row
                         // survives daemon restarts and keeps the agent in the
@@ -1538,13 +1542,26 @@ impl RuntimeHost {
                         }
                     }
                     refresh_memory_index_bounded(&storage, None, Self::DAEMON_INDEXER_BATCH)
-                })
-                .await;
+                });
+                let watchdog = tokio::time::sleep(Self::MEMORY_INDEXER_AGENT_WATCHDOG);
+                tokio::pin!(watchdog);
+                let result = tokio::select! {
+                    result = &mut refresh_task => result,
+                    () = &mut watchdog => {
+                        tracing::warn!(
+                            agent_id = %agent_id,
+                            threshold_ms = Self::MEMORY_INDEXER_AGENT_WATCHDOG.as_millis() as u64,
+                            "daemon memory indexer: agent refresh exceeded watchdog threshold"
+                        );
+                        refresh_task.await
+                    }
+                };
                 match result {
                     Ok(Ok(status)) => {
                         agent_retry_not_before.remove(agent_id);
                         did_work |= status.lag > 0
                             || status.consumption_was_limited
+                            || status.rebuild_phase.is_some()
                             // A successful rebuild consumes every pending source
                             // for the agent, so another immediate round is useful.
                             || (pending_source_agent_ids.contains(agent_id)
@@ -1553,6 +1570,9 @@ impl RuntimeHost {
                             agent_id = %agent_id,
                             freshness = %status.freshness,
                             lag = status.lag,
+                            rebuild_phase = status.rebuild_phase.as_deref(),
+                            rebuild_documents_processed = status.rebuild_documents_processed,
+                            rebuild_last_progress_at = ?status.rebuild_last_progress_at,
                             "daemon memory indexer: processed agent"
                         );
                     }
