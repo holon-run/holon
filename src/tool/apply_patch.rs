@@ -331,9 +331,7 @@ fn parse_unified_diff_with_trailing_sentinel(input: &str) -> Result<Option<Vec<F
     let Some(stripped) = without_final_newline.strip_suffix(CODEX_END_PATCH_SENTINEL) else {
         return Err(unexpected_patch_sentinel(sentinel_line + 1));
     };
-    parse_unified_diff_patch(stripped)
-        .map(Some)
-        .map_err(|_| unexpected_patch_sentinel(sentinel_line + 1))
+    parse_unified_diff_patch(stripped).map(Some)
 }
 
 fn parse_unified_diff_patch(input: &str) -> Result<Vec<FilePatch>> {
@@ -2330,6 +2328,36 @@ mod tests {
                 .contains("trailing garbage"));
             assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "old\n");
         }
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_reports_stripped_body_error_without_writes() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ invalid @@
+-old
++new
+*** End Patch
+"#;
+
+        let error = apply_patch(dir.path(), patch).await.unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_patch_syntax");
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["rule"],
+            "invalid_hunk_header"
+        );
+        assert!(!tool_error.message.contains(CODEX_END_PATCH_SENTINEL));
+        assert!(!tool_error
+            .recovery_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains(CODEX_END_PATCH_SENTINEL));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "old\n");
     }
 
     #[tokio::test]

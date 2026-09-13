@@ -362,6 +362,9 @@ Examples:
   tool-call-local state
 - `missing_file`: a delete, modify, or rename source does not exist in the
   current tool-call-local state
+- `unexpected_patch_sentinel`: a patch-format sentinel appears anywhere except
+  the single trailing compatibility position accepted by the UnifiedDiffJson
+  surface
 
 Multiple file patches may resolve to the same normalized path. Holon applies
 them in input order, and errors are determined by the state at the operation
@@ -378,7 +381,21 @@ Hunk count mismatches should not fail the patch when context matching succeeds.
 They should be recorded as advisory diagnostics in the canonical result.
 
 Error receipts shown back to the model should include a compact recovery hint
-that names the specific unified diff rule that failed.
+that names the specific unified diff rule that failed. They must not echo raw
+unexpected input tails or competing-format sentinel text.
+
+### Surface Compatibility
+
+The core unified diff parser remains strict. At the surface boundary,
+UnifiedDiffJson may retry an otherwise unified-diff-shaped input after removing
+exactly one complete, standalone Codex end sentinel from the final line.
+
+The compatibility path must reject a sentinel in the middle of a patch,
+repeated sentinels, a sentinel with trailing text, or a stripped patch body that
+still fails unified diff parsing. Diff content lines are never stripped merely
+because their text contains a sentinel. A successful compatibility retry emits
+the `apply_patch_trailing_sentinel_ignored` advisory diagnostic; rejected
+sentinel placement uses the `unexpected_patch_sentinel` error rule.
 
 ## Prompt Guidance
 
@@ -390,8 +407,8 @@ Recommended wording:
 ```text
 Use ApplyPatch for file mutations.
 
-The patch body must be unified diff text. Do not use the old
-`*** Begin Patch` / `*** Update File:` format.
+The patch body must be unified diff text containing only file headers, hunks,
+and patch content.
 
 For Anthropic-style JSON tools, call ApplyPatch with:
 {"patch":"--- a/path\n+++ b/path\n@@ -1,1 +1,1 @@\n-old\n+new\n"}
