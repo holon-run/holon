@@ -141,6 +141,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/conversation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversation summary snapshot
+         * @description Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.
+         */
+        get: operations["agentConversation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/enqueue": {
         parameters: {
             query?: never;
@@ -535,6 +555,26 @@ export interface paths {
          * @description Return persisted transcript entries for the selected agent. Missing or cross-agent ids are reported in missing_entry_ids.
          */
         post: operations["agentTranscriptBatchGet"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/turns/{turn_id}/activities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversation turn activity snapshot
+         * @description Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.
+         */
+        get: operations["agentConversationActivities"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -3684,10 +3724,378 @@ export interface components {
         ControlWakeRequest: {
             [key: string]: unknown;
         };
+        /** ConversationActivityResponse */
+        ConversationActivityResponse: {
+            activities: ({
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "operator";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "assistant";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "tool";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "wait";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "error";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            })[];
+            coverage: {
+                /** @constant */
+                kind: "complete";
+            } | {
+                /** @constant */
+                kind: "partial";
+                /** @enum {string} */
+                reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+            } | {
+                /** @constant */
+                kind: "unavailable";
+                /** @enum {string} */
+                reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+            } | {
+                /** @constant */
+                kind: "unknown";
+            };
+            /** Format: uint64 */
+            detail_revision: number;
+            /** Format: uint64 */
+            event_head_seq: number;
+            event_log_epoch: string;
+            has_more: boolean;
+            next_before_cursor?: string | null;
+            /** Format: uint64 */
+            oldest_retained_seq: number;
+            /** Format: uint32 */
+            query_version: number;
+            runtime_id: string;
+            /** Format: uint32 */
+            schema_version: number;
+            snapshot_cursor: string;
+            /** Format: uint64 */
+            snapshot_through_seq: number;
+            turn: {
+                attention?: ({
+                    /** @constant */
+                    kind: "failed";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                } | {
+                    /** @constant */
+                    kind: "interrupted";
+                } | {
+                    /** @constant */
+                    kind: "waiting";
+                }) | null;
+                brief_ids: string[];
+                detail_coverage: {
+                    /** @constant */
+                    kind: "complete";
+                } | {
+                    /** @constant */
+                    kind: "partial";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unknown";
+                };
+                execution: {
+                    /** @constant */
+                    kind: "active";
+                } | {
+                    /** @constant */
+                    kind: "terminal";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                };
+                key: {
+                    turn_id: string;
+                    /** Format: uint64 */
+                    turn_index: number;
+                };
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
+                result: {
+                    /** @constant */
+                    kind: "pending";
+                } | {
+                    /** @constant */
+                    kind: "available";
+                } | {
+                    /** @constant */
+                    kind: "none";
+                    reason: {
+                        /** @constant */
+                        kind: "reducer_only";
+                        reason: string;
+                    } | {
+                        /** @constant */
+                        kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "tool_only_wait";
+                    };
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
+                    retryable: boolean;
+                };
+                /** Format: uint64 */
+                revision: number;
+                settled: boolean;
+                turn_id: string;
+            };
+            visibility_scope_id: string;
+        };
+        /** ConversationReadQuery */
+        ConversationReadQuery: {
+            before?: string | null;
+            /** Format: uint */
+            limit?: number | null;
+        };
         /** @description Latest-record anchors for conversation families whose canonical records carry no per-record revision counter. Always present; null fields mean the family has no record at the boundary. */
         ConversationRevisionAnchors: {
             latest_message_id: string | null;
             latest_transcript_entry_id: string | null;
+        };
+        /** ConversationSummaryResponse */
+        ConversationSummaryResponse: {
+            active_turns: {
+                attention?: ({
+                    /** @constant */
+                    kind: "failed";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                } | {
+                    /** @constant */
+                    kind: "interrupted";
+                } | {
+                    /** @constant */
+                    kind: "waiting";
+                }) | null;
+                brief_ids: string[];
+                detail_coverage: {
+                    /** @constant */
+                    kind: "complete";
+                } | {
+                    /** @constant */
+                    kind: "partial";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unknown";
+                };
+                execution: {
+                    /** @constant */
+                    kind: "active";
+                } | {
+                    /** @constant */
+                    kind: "terminal";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                };
+                key: {
+                    turn_id: string;
+                    /** Format: uint64 */
+                    turn_index: number;
+                };
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
+                result: {
+                    /** @constant */
+                    kind: "pending";
+                } | {
+                    /** @constant */
+                    kind: "available";
+                } | {
+                    /** @constant */
+                    kind: "none";
+                    reason: {
+                        /** @constant */
+                        kind: "reducer_only";
+                        reason: string;
+                    } | {
+                        /** @constant */
+                        kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "tool_only_wait";
+                    };
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
+                    retryable: boolean;
+                };
+                /** Format: uint64 */
+                revision: number;
+                settled: boolean;
+                turn_id: string;
+            }[];
+            /** Format: uint64 */
+            event_head_seq: number;
+            event_log_epoch: string;
+            has_more: boolean;
+            next_before_cursor?: string | null;
+            /** Format: uint64 */
+            oldest_retained_seq: number;
+            pending_inputs: {
+                message_id: string;
+                /** Format: uint64 */
+                revision: number;
+                /** @enum {string} */
+                state: "queued" | "assigning";
+            }[];
+            /** Format: uint32 */
+            query_version: number;
+            runtime_id: string;
+            /** Format: uint32 */
+            schema_version: number;
+            snapshot_cursor: string;
+            /** Format: uint64 */
+            snapshot_through_seq: number;
+            turns: {
+                attention?: ({
+                    /** @constant */
+                    kind: "failed";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                } | {
+                    /** @constant */
+                    kind: "interrupted";
+                } | {
+                    /** @constant */
+                    kind: "waiting";
+                }) | null;
+                brief_ids: string[];
+                detail_coverage: {
+                    /** @constant */
+                    kind: "complete";
+                } | {
+                    /** @constant */
+                    kind: "partial";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unknown";
+                };
+                execution: {
+                    /** @constant */
+                    kind: "active";
+                } | {
+                    /** @constant */
+                    kind: "terminal";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                };
+                key: {
+                    turn_id: string;
+                    /** Format: uint64 */
+                    turn_index: number;
+                };
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
+                result: {
+                    /** @constant */
+                    kind: "pending";
+                } | {
+                    /** @constant */
+                    kind: "available";
+                } | {
+                    /** @constant */
+                    kind: "none";
+                    reason: {
+                        /** @constant */
+                        kind: "reducer_only";
+                        reason: string;
+                    } | {
+                        /** @constant */
+                        kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "tool_only_wait";
+                    };
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
+                    retryable: boolean;
+                };
+                /** Format: uint64 */
+                revision: number;
+                settled: boolean;
+                turn_id: string;
+            }[];
+            visibility_scope_id: string;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         CreateAgentRequest: {
@@ -6014,6 +6422,52 @@ export interface operations {
             };
         };
     };
+    agentConversation: {
+        parameters: {
+            query?: {
+                /** @description Bounded page size. */
+                limit?: number;
+                /** @description Opaque pagination cursor returned by the preceding page. */
+                before?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationSummaryResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     enqueueAgent: {
         parameters: {
             query?: never;
@@ -6831,6 +7285,54 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BatchGetTranscriptEntriesResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentConversationActivities: {
+        parameters: {
+            query?: {
+                /** @description Bounded page size. */
+                limit?: number;
+                /** @description Opaque pagination cursor returned by the preceding page. */
+                before?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+                /** @description Native turn id. */
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationActivityResponse"];
                 };
             };
             /** @description Client error JSON response. */
