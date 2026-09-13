@@ -104,6 +104,7 @@ jobs:
               - 'Makefile'
               - 'agent_templates/**'
               - 'builtin_templates/**'
+              - 'docs/website/reference/openapi.json'
             web:
               - 'web-gui/**'
               - '.github/workflows/ci.yml'
@@ -198,7 +199,7 @@ jobs:
     name: Docker
     runs-on: ubuntu-latest
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.docker == 'true' || (github.event_name == 'push' && needs.changes.outputs.rust == 'true')
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.docker == 'true' || (github.event_name == 'push' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'))
     permissions:
       contents: read
       packages: write
