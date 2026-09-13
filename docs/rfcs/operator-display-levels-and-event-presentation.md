@@ -6,6 +6,10 @@ status: implemented
 
 # RFC: Operator Display Levels and Event Presentation
 
+Related draft: [Conversation Read Model](./conversation-read-model.md) proposes
+combining result and activity presentation in the Web GUI while preserving these
+visibility levels and raw event filters. It is not yet an implemented exception.
+
 ## Summary
 
 Holon should separate raw runtime audit events from operator-facing presentation.

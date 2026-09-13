@@ -1,5 +1,9 @@
 # Event Stream Interface Design
 
+Related draft: [Conversation Read Model](./conversation-read-model.md) proposes
+an additional lightweight Web GUI projection. It does not change this raw stream
+contract and is not yet implemented.
+
 ## Summary
 
 This document proposes a native Holon event stream for first-party clients such
