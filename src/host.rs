@@ -1400,6 +1400,18 @@ impl RuntimeHost {
     const MEMORY_INDEXER_RETRY_BASE: Duration = Duration::from_millis(500);
     /// Upper bound for a failing agent's retry delay.
     const MEMORY_INDEXER_RETRY_MAX: Duration = Duration::from_secs(30);
+    /// Minimum spacing between consecutive daemon indexer rounds that did
+    /// work. Discovery plus per-agent rebuilds are expensive: without a
+    /// floor, worked rounds re-enter immediately, keep worker cores busy,
+    /// and hold SQLite write locks long enough for producer-side enqueues
+    /// to fail with `database is locked`, which marks more indexes dirty
+    /// and grows the next round's work set (issue #2939).
+    const MEMORY_INDEXER_MIN_ROUND_GAP: Duration = Duration::from_millis(500);
+    /// After this many consecutive refresh failures for one agent, request a
+    /// full rebuild so a stuck outbox prefix can be acknowledged through the
+    /// produced watermark and the agent's debt settles instead of retrying
+    /// the same head row forever.
+    const MEMORY_INDEXER_REBUILD_AFTER_FAILED_ATTEMPTS: u32 = 6;
 
     async fn run_daemon_memory_indexer(self) {
         use crate::memory::{
@@ -1545,40 +1557,46 @@ impl RuntimeHost {
                         );
                     }
                     Ok(Err(error)) => {
-                        let delay = Self::memory_indexer_retry_delay(
-                            agent_retry_not_before
-                                .get(agent_id)
-                                .map(|(_, attempts)| *attempts)
-                                .unwrap_or(0),
-                        );
+                        let attempts = agent_retry_not_before
+                            .get(agent_id)
+                            .map(|(_, attempts)| *attempts)
+                            .unwrap_or(0);
+                        let delay = Self::memory_indexer_retry_delay(attempts);
                         tracing::warn!(
                             agent_id = %agent_id,
                             retry_in_ms = delay.as_millis() as u64,
-                            error = %error,
+                            error = ?error,
                             "daemon memory indexer: refresh failed; backing off agent"
                         );
                         Self::back_off_memory_indexer_agent(&mut agent_retry_not_before, agent_id);
+                        self.quarantine_repeatedly_failing_agent(agent_id, attempts + 1)
+                            .await;
                     }
                     Err(error) => {
-                        let delay = Self::memory_indexer_retry_delay(
-                            agent_retry_not_before
-                                .get(agent_id)
-                                .map(|(_, attempts)| *attempts)
-                                .unwrap_or(0),
-                        );
+                        let attempts = agent_retry_not_before
+                            .get(agent_id)
+                            .map(|(_, attempts)| *attempts)
+                            .unwrap_or(0);
+                        let delay = Self::memory_indexer_retry_delay(attempts);
                         tracing::warn!(
                             agent_id = %agent_id,
                             retry_in_ms = delay.as_millis() as u64,
-                            error = %error,
+                            error = ?error,
                             "daemon memory indexer: task failed; backing off agent"
                         );
                         Self::back_off_memory_indexer_agent(&mut agent_retry_not_before, agent_id);
+                        self.quarantine_repeatedly_failing_agent(agent_id, attempts + 1)
+                            .await;
                     }
                 }
             }
 
             if did_work {
-                tokio::task::yield_now().await;
+                // Pace worked rounds (issue #2939): unpaced re-entry turned a
+                // large self-heal work set into continuous full rebuilds,
+                // starved producer enqueues of the SQLite write lock, and
+                // kept worker cores busy without ever settling the debt.
+                tokio::time::sleep(Self::MEMORY_INDEXER_MIN_ROUND_GAP).await;
             } else {
                 let next_retry_at = agent_retry_not_before
                     .values()
@@ -1617,6 +1635,59 @@ impl RuntimeHost {
             agent_id.to_string(),
             (tokio::time::Instant::now() + delay, attempts + 1),
         );
+    }
+
+    /// An agent whose refresh keeps failing at the same outbox head row can
+    /// never settle: head-of-line blocking freezes its cursor forever
+    /// (issue #2939). Whenever the backoff attempt counter reaches a
+    /// multiple of `MEMORY_INDEXER_REBUILD_AFTER_FAILED_ATTEMPTS`, request a
+    /// full rebuild: the rebuild re-collects canonical sources and
+    /// acknowledges the outbox through the produced watermark, which clears
+    /// the stuck prefix instead of retrying it indefinitely.
+    async fn quarantine_repeatedly_failing_agent(&self, agent_id: &str, attempts_after: u32) {
+        if !Self::memory_indexer_should_request_rebuild(attempts_after) {
+            return;
+        }
+        let storage = match self.agent_storage(agent_id) {
+            Ok(storage) => storage,
+            Err(error) => {
+                tracing::warn!(
+                    agent_id = %agent_id,
+                    error = %error,
+                    "daemon memory indexer: failed to open storage for failure rebuild"
+                );
+                return;
+            }
+        };
+        let result = tokio::task::spawn_blocking(move || {
+            crate::memory::request_memory_index_rebuild(&storage, None, "repeated_refresh_failure")
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => tracing::info!(
+                agent_id = %agent_id,
+                attempts = attempts_after,
+                "daemon memory indexer: scheduled rebuild for repeatedly failing agent"
+            ),
+            Ok(Err(error)) => tracing::warn!(
+                agent_id = %agent_id,
+                error = ?error,
+                "daemon memory indexer: failed to schedule failure rebuild"
+            ),
+            Err(error) => tracing::warn!(
+                agent_id = %agent_id,
+                error = ?error,
+                "daemon memory indexer: failure rebuild task join failed"
+            ),
+        }
+    }
+
+    /// Rebuild requests fire when the attempt count first reaches the
+    /// threshold and on every threshold-sized multiple afterwards, so a
+    /// rebuild that itself fails is re-requested on later backoff rounds.
+    fn memory_indexer_should_request_rebuild(attempts_after: u32) -> bool {
+        let threshold = Self::MEMORY_INDEXER_REBUILD_AFTER_FAILED_ATTEMPTS;
+        attempts_after >= threshold && attempts_after.is_multiple_of(threshold)
     }
 
     async fn wait_daemon_indexer_round(&self, next_retry_at: Option<tokio::time::Instant>) {
@@ -6339,6 +6410,29 @@ mod memory_indexer_retry_tests {
                 delay
             );
         }
+    }
+
+    #[test]
+    fn memory_indexer_rebuild_quarantine_triggers_on_threshold_multiples() {
+        let threshold = RuntimeHost::MEMORY_INDEXER_REBUILD_AFTER_FAILED_ATTEMPTS;
+        assert!(threshold > 0);
+        for attempts in 0..threshold {
+            assert!(!RuntimeHost::memory_indexer_should_request_rebuild(
+                attempts
+            ));
+        }
+        assert!(RuntimeHost::memory_indexer_should_request_rebuild(
+            threshold
+        ));
+        assert!(!RuntimeHost::memory_indexer_should_request_rebuild(
+            threshold + 1
+        ));
+        assert!(!RuntimeHost::memory_indexer_should_request_rebuild(
+            threshold * 2 - 1
+        ));
+        assert!(RuntimeHost::memory_indexer_should_request_rebuild(
+            threshold * 2
+        ));
     }
 }
 
