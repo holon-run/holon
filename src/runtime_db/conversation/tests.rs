@@ -18,7 +18,7 @@ use crate::types::{
     AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind, MessageBody, MessageEnvelope,
     MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, ToolExecutionRecord,
     ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnNoBriefReason, TurnRecord,
-    TurnTerminalKind, TurnTerminalSummary, TurnTriggerSummary,
+    TurnReplayProvenance, TurnTerminalKind, TurnTerminalSummary, TurnTriggerSummary,
 };
 
 const AGENT_ID: &str = "agent-conversation-test";
@@ -154,6 +154,59 @@ fn history_keyset_preserves_upper_bound_and_legacy_ties() -> Result<()> {
         ["turn-a"]
     );
     assert!(!older.has_more);
+    Ok(())
+}
+
+#[test]
+fn replayed_input_keeps_source_turn_assignment() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "resume work item".into(),
+        },
+    );
+    message.id = "message-replay-source".into();
+    message.turn_id = Some("turn-replay-source".into());
+    message.created_at = timestamp(1);
+    db.evidence().append_message(&message)?;
+
+    let mut source = turn("turn-replay-source", 1);
+    source.trigger = Some(TurnTriggerSummary::from_message(&message));
+    source.input_message_ids = vec![message.id.clone()];
+    source = terminal(
+        source,
+        TurnTerminalKind::Aborted,
+        Some(TurnNoBriefReason::Aborted),
+    );
+    db.turn_records().upsert(&source)?;
+
+    let mut replay = turn("turn-replay-attempt", 2);
+    replay.trigger = Some(TurnTriggerSummary::from_message(&message));
+    replay.input_message_ids = vec![message.id.clone()];
+    replay.replay = Some(TurnReplayProvenance {
+        source_message_id: message.id.clone(),
+        source_turn_id: source.turn_id.clone(),
+        reason: "interrupted_queue_claim_reentry".into(),
+        prior_terminal: source.terminal.clone(),
+    });
+    db.turn_records().upsert(&replay)?;
+
+    let connection = db.connection()?;
+    let assignment = connection.query_row(
+        "SELECT turn_id, revision
+         FROM conversation_input_assignments
+         WHERE message_id = ?1",
+        [&message.id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    assert_eq!(assignment, (source.turn_id, 1));
     Ok(())
 }
 

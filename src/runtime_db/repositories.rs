@@ -5218,11 +5218,18 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
         let _ = settle_turn_result_tx(tx, &stored.agent_id, &stored.turn_id, updated_at)?;
     }
     for message_id in &stored.input_message_ids {
+        let assignment_turn_id = stored
+            .replay
+            .as_ref()
+            .filter(|replay| replay.source_message_id == *message_id)
+            .map_or(stored.turn_id.as_str(), |replay| {
+                replay.source_turn_id.as_str()
+            });
         let _ = assign_input_to_turn_tx(
             tx,
             &stored.agent_id,
             message_id,
-            &stored.turn_id,
+            assignment_turn_id,
             stored.created_at,
         )?;
     }
