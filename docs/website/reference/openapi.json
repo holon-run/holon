@@ -9001,6 +9001,34 @@
                 "format": "int64",
                 "type": "integer"
               },
+              "rebuild_documents_processed": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "rebuild_last_progress_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rebuild_phase": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "rebuild_started_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "results_may_be_incomplete": {
                 "type": "boolean"
               },
@@ -9072,6 +9100,34 @@
                   "description": "Exact pending outbox row count for this agent.",
                   "format": "int64",
                   "type": "integer"
+                },
+                "rebuild_documents_processed": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "rebuild_last_progress_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rebuild_phase": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "rebuild_started_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "results_may_be_incomplete": {
                   "type": "boolean"
