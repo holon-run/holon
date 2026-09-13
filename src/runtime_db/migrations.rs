@@ -3485,6 +3485,14 @@ CREATE TABLE IF NOT EXISTS runtime_index_outbox_watermarks (
 );
 "#,
     },
+    Migration {
+        version: 64,
+        name: "conversation_read_model_phase1",
+        // The tables, backfill, and indexes live in
+        // `ensure_conversation_read_model_phase1_schema` so name-accepted
+        // upgrade paths cannot advertise a partially repaired schema.
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3736,6 +3744,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "turn_owner_identity" {
         ensure_turn_owner_identity_schema(transaction)?;
     }
+    if migration.name == "conversation_read_model_phase1" {
+        ensure_conversation_read_model_phase1_schema(transaction)?;
+    }
     if migration.name == "authentication_login_verifier" {
         ensure_authentication_login_verifier_schema(transaction)?;
     }
@@ -3923,6 +3934,180 @@ fn ensure_turn_owner_identity_schema(transaction: &Transaction<'_>) -> Result<()
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_turn_records_owner
            ON turn_records(agent_id, owner_kind, owner_id, turn_index, created_at);",
+    )?;
+    Ok(())
+}
+
+fn ensure_conversation_read_model_phase1_schema(transaction: &Transaction<'_>) -> Result<()> {
+    transaction.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS conversation_turn_revisions (
+  agent_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  summary_revision INTEGER NOT NULL CHECK (summary_revision > 0),
+  detail_revision INTEGER NOT NULL CHECK (detail_revision > 0),
+  result_settled INTEGER NOT NULL DEFAULT 0 CHECK (result_settled IN (0, 1)),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, turn_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_source_revisions (
+  source_kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT,
+  activity_seq INTEGER,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (source_kind, source_id)
+);
+
+CREATE TABLE IF NOT EXISTS conversation_input_assignments (
+  message_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK (revision > 0),
+  assigned_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_sources_agent_turn
+  ON conversation_source_revisions(agent_id, turn_id, source_kind, source_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversation_sources_activity_seq
+  ON conversation_source_revisions(activity_seq)
+  WHERE activity_seq IS NOT NULL;
+DROP INDEX IF EXISTS idx_conversation_sources_agent_turn_activity;
+CREATE INDEX idx_conversation_sources_agent_turn_activity
+  ON conversation_source_revisions(
+    agent_id, turn_id, activity_seq DESC, (source_kind || ':' || source_id) DESC
+  );
+CREATE INDEX IF NOT EXISTS idx_conversation_input_assignments_agent_turn
+  ON conversation_input_assignments(agent_id, turn_id, message_id);
+"#,
+    )?;
+
+    for (table, sql) in [
+        (
+            "turn_records",
+            "CREATE INDEX IF NOT EXISTS idx_turn_records_agent_keyset
+               ON turn_records(agent_id, turn_index DESC, turn_id DESC);",
+        ),
+        (
+            "messages",
+            "CREATE INDEX IF NOT EXISTS idx_messages_agent_turn_order
+               ON messages(agent_id, turn_id, created_at, evidence_id);",
+        ),
+        (
+            "transcript_entries",
+            "CREATE INDEX IF NOT EXISTS idx_transcript_entries_agent_turn_order
+               ON transcript_entries(agent_id, turn_id, created_at, evidence_id);",
+        ),
+        (
+            "tool_executions",
+            "CREATE INDEX IF NOT EXISTS idx_tool_executions_agent_turn_order
+               ON tool_executions(agent_id, turn_id, created_at, evidence_id);",
+        ),
+        (
+            "wait_conditions",
+            "CREATE INDEX IF NOT EXISTS idx_wait_conditions_agent_turn_order
+               ON wait_conditions(agent_id, last_turn_id, created_at, wait_condition_id);",
+        ),
+        (
+            "queue_entries",
+            "CREATE INDEX IF NOT EXISTS idx_queue_entries_agent_pending
+               ON queue_entries(agent_id, status, created_at, message_id)
+               WHERE status IN ('queued', 'dequeued');",
+        ),
+    ] {
+        if table_exists_tx(transaction, table)? {
+            transaction.execute_batch(sql)?;
+        }
+    }
+
+    let now = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    if table_exists_tx(transaction, "turn_records")? {
+        let result_settled = if table_exists_tx(transaction, "delivery_summaries")? {
+            "json_extract(payload_json, '$.terminal.no_brief_reason') IS NOT NULL
+             OR EXISTS (
+               SELECT 1
+               FROM delivery_summaries
+               WHERE delivery_summaries.agent_id = turn_records.agent_id
+                 AND delivery_summaries.turn_id = turn_records.turn_id
+             )"
+        } else {
+            "json_extract(payload_json, '$.terminal.no_brief_reason') IS NOT NULL"
+        };
+        transaction.execute_batch(&format!(
+            "INSERT OR IGNORE INTO conversation_turn_revisions (
+               agent_id, turn_id, summary_revision, detail_revision, result_settled, updated_at
+             )
+             SELECT agent_id, turn_id, 1, 1,
+                    CASE WHEN {result_settled} THEN 1 ELSE 0 END,
+                    COALESCE(completed_at, created_at)
+             FROM turn_records;
+
+             INSERT OR IGNORE INTO conversation_input_assignments (
+               message_id, agent_id, turn_id, revision, assigned_at
+             )
+             SELECT input.value, turns.agent_id, turns.turn_id, 1, turns.created_at
+             FROM turn_records AS turns,
+                  json_each(turns.payload_json, '$.input_message_ids') AS input
+             WHERE input.type = 'text';"
+        ))?;
+    }
+    for (table, sql) in [
+        (
+            "messages",
+            "SELECT 'operator', messages.evidence_id, messages.agent_id,
+                    assignments.turn_id, NULL, 1, messages.created_at
+             FROM messages
+             LEFT JOIN conversation_input_assignments AS assignments
+               ON assignments.message_id = messages.evidence_id",
+        ),
+        (
+            "queue_entries",
+            "SELECT 'operator', queue_entries.message_id, queue_entries.agent_id,
+                    assignments.turn_id, NULL, 1, queue_entries.updated_at
+             FROM queue_entries
+             LEFT JOIN conversation_input_assignments AS assignments
+               ON assignments.message_id = queue_entries.message_id",
+        ),
+        (
+            "transcript_entries",
+            "SELECT CASE WHEN kind = 'runtime_failure' THEN 'error' ELSE 'assistant' END,
+                    evidence_id, agent_id, turn_id, NULL, 1, created_at
+             FROM transcript_entries
+             WHERE kind IN ('assistant_round', 'subagent_assistant_round', 'runtime_failure')",
+        ),
+        (
+            "tool_executions",
+            "SELECT 'tool', evidence_id, agent_id, turn_id, NULL, 1, created_at
+             FROM tool_executions",
+        ),
+        (
+            "wait_conditions",
+            "SELECT 'wait', wait_condition_id, agent_id, last_turn_id, NULL, 1, updated_at
+             FROM wait_conditions",
+        ),
+    ] {
+        if table_exists_tx(transaction, table)? {
+            transaction.execute_batch(&format!(
+                "INSERT OR IGNORE INTO conversation_source_revisions (
+                   source_kind, source_id, agent_id, turn_id, activity_seq, revision, updated_at
+                 ) {sql};"
+            ))?;
+        }
+    }
+    transaction.execute(
+        "UPDATE conversation_source_revisions
+         SET activity_seq = rowid
+         WHERE activity_seq IS NULL",
+        [],
+    )?;
+    transaction.execute(
+        "UPDATE conversation_turn_revisions
+         SET updated_at = ?1
+         WHERE updated_at = ''",
+        [&now],
     )?;
     Ok(())
 }

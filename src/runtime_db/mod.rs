@@ -15,6 +15,7 @@ pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
 pub mod connection;
+pub mod conversation;
 pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
@@ -60,14 +61,14 @@ pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomain
 pub use crate::runtime_db::types::{
     AgentBootstrapRepository, AgentCanonicalRelationRepository, AgentDeletionRepository,
     AgentIdentityRepository, AgentMessageDeliveryRepository, AgentStateRepository, AuditEventSink,
-    ContextEpisodeRepository, EvidenceRepository, ExecutionRootEntryRepository,
-    ExternalTriggerRepository, MessageRepository, OperatorDeliveryRepository,
-    OperatorNotificationRepository, OperatorTransportBindingRepository, QueueEntryRepository,
-    TaskRepository, TimerCancel, TimerCancelResult, TimerFire, TimerFireResult, TimerRepository,
-    TimerWakeRecord, TimerWakeRecoveryResult, TimerWakeStatus, TranscriptRepository,
-    TurnRecordRepository, WaitConditionRepository, WorkItemContinuationRepository,
-    WorkItemDelegationRepository, WorkItemRepository, WorkspaceEntryRepository,
-    WorkspaceOccupancyRepository,
+    ContextEpisodeRepository, ConversationRepository, EvidenceRepository,
+    ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
+    OperatorDeliveryRepository, OperatorNotificationRepository, OperatorTransportBindingRepository,
+    QueueEntryRepository, TaskRepository, TimerCancel, TimerCancelResult, TimerFire,
+    TimerFireResult, TimerRepository, TimerWakeRecord, TimerWakeRecoveryResult, TimerWakeStatus,
+    TranscriptRepository, TurnRecordRepository, WaitConditionRepository,
+    WorkItemContinuationRepository, WorkItemDelegationRepository, WorkItemRepository,
+    WorkspaceEntryRepository, WorkspaceOccupancyRepository,
 };
 #[cfg(test)]
 mod tests;
@@ -593,6 +594,10 @@ impl RuntimeDb {
 
     pub fn turn_records(&self) -> TurnRecordRepository<'_> {
         TurnRecordRepository { db: self }
+    }
+
+    pub fn conversation(&self) -> ConversationRepository<'_> {
+        ConversationRepository { db: self }
     }
 
     pub fn messages(&self) -> MessageRepository<'_> {
