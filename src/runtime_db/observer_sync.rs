@@ -393,6 +393,7 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
         &now,
         &projection_detail,
     )?;
+    // Keep this Phase 0 inventory aligned with RFC `conversation-read-model` §3.3.
     let conversation_detail = serde_json::json!({
         "verified": false,
         "capability": "agents.conversation-read.v1",
