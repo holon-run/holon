@@ -1603,7 +1603,10 @@ impl MemoryIndex {
             transaction.commit()?;
         }
         if !self.has_stale_source_states_for_agent(&agent_id)? {
-            upsert_index_meta_tx(&self.connection, &agent_id, None)?;
+            let _turn = self.write_turn("memory_index.refresh_stale_meta")?;
+            if !self.has_stale_source_states_for_agent(&agent_id)? {
+                upsert_index_meta_tx(&self.connection, &agent_id, None)?;
+            }
         }
         Ok(())
     }
@@ -4167,6 +4170,32 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(pending_count, 8);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_meta_refresh_waits_for_writer_turn() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let mut waiting_index = MemoryIndex::open(&storage)?;
+        let writer = MemoryIndex::open(&storage)?;
+        let writer_turn = writer.write_turn("test.hold_writer")?;
+        let (sender, receiver) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let result = waiting_index.consume_stale_source_states(&storage, 1);
+            sender
+                .send(result)
+                .expect("stale meta refresh result receiver dropped");
+        });
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(writer_turn);
+        receiver.recv_timeout(Duration::from_secs(2))??;
+        handle.join().expect("stale meta refresh thread panicked");
         Ok(())
     }
 

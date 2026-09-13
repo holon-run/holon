@@ -228,4 +228,76 @@ mod tests {
         }
         Ok(())
     }
+
+    #[test]
+    fn coordinator_releases_turn_when_writer_panics() -> Result<()> {
+        let directory = tempdir()?;
+        let coordinator =
+            memory_index_write_coordinator(&directory.path().join("memory.v2.sqlite3"))?;
+        let first_turn = coordinator.wait_turn("test.first")?;
+
+        let panicking_coordinator = Arc::clone(&coordinator);
+        let panicking_handle = thread::spawn(move || {
+            let _turn = panicking_coordinator
+                .wait_turn("test.panicking")
+                .expect("panicking writer failed to acquire turn");
+            panic!("test writer panic");
+        });
+        for _ in 0..100 {
+            if coordinator
+                .state
+                .lock()
+                .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?
+                .next_ticket
+                >= 2
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            coordinator
+                .state
+                .lock()
+                .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?
+                .next_ticket,
+            2
+        );
+
+        let successor_coordinator = Arc::clone(&coordinator);
+        let (sender, receiver) = mpsc::channel();
+        let successor_handle = thread::spawn(move || -> Result<()> {
+            let _turn = successor_coordinator.wait_turn("test.successor")?;
+            sender.send(())?;
+            Ok(())
+        });
+        for _ in 0..100 {
+            if coordinator
+                .state
+                .lock()
+                .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?
+                .next_ticket
+                >= 3
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            coordinator
+                .state
+                .lock()
+                .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?
+                .next_ticket,
+            3
+        );
+
+        drop(first_turn);
+        assert!(panicking_handle.join().is_err());
+        receiver.recv_timeout(Duration::from_secs(1))?;
+        successor_handle
+            .join()
+            .expect("successor writer thread panicked")?;
+        Ok(())
+    }
 }
