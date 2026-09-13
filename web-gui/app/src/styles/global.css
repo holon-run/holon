@@ -1967,6 +1967,13 @@ code {
   color: var(--danger);
 }
 
+.history-status--reconnecting {
+  /* Transient reconnect with last-known-good data on screen: neutral, not an
+     error state. Dashed border signals in-progress refresh. */
+  border-style: dashed;
+  color: var(--muted);
+}
+
 .sync-recovery-status {
   display: flex;
   align-items: center;
@@ -2119,11 +2126,6 @@ code {
   margin-top: 8px;
   color: var(--muted);
   font-size: 12px;
-}
-
-.brief-hydration-status.is-failed,
-.brief-hydration-status.is-not_found {
-  color: var(--danger);
 }
 
 .brief-hydration-status button {

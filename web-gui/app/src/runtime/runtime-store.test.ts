@@ -257,6 +257,131 @@ describe("abortCurrentRun", () => {
   });
 });
 
+describe("refreshAgentDetail last-known-good", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubWindow() {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+  }
+
+  function lastKnownGoodSummary(): AgentSummary {
+    return {
+      id: "agent-a",
+      badge: "W",
+      profile: "developer",
+      lifecycle: "awake-idle",
+      focusSummary: "Idle",
+      workspace: "workspace-a",
+      attention: "none",
+      model: "test-model-live",
+      footer: "",
+      subtitle: "",
+      lastBrief: "",
+      lastTurnTime: "",
+      pending: 0,
+      activeTaskCount: 0,
+      waitingCount: 0,
+      posture: "idle",
+      postureReason: "",
+      tasks: [],
+      workItems: [],
+    };
+  }
+
+  function failingDetailFetchMock() {
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) {
+        return jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES });
+      }
+      if (url.endsWith("/agents/list")) return jsonResponse([]);
+      if (url.endsWith("/agents/snapshot")) {
+        return jsonResponse({
+          contract_version: 1,
+          runtime_id: "runtime-1",
+          event_log_epoch: "epoch-1",
+          visibility_scope_id: "scope-1",
+          agents: [],
+        });
+      }
+      if (url.endsWith("/agents/agent-a/state")) {
+        return new Response("server error", { status: 500 });
+      }
+      if (url.includes("/agents/agent-a/events")) {
+        return jsonResponse({ events: [], has_older: false });
+      }
+      if (url.includes("/agents/agent-a/work-items")) return jsonResponse([]);
+      throw new Error(`Unexpected request: ${url}`);
+    });
+  }
+
+  it("keeps the last-known-good detail and marks the session reconnecting when the detail fetch fails", async () => {
+    stubWindow();
+    vi.stubGlobal("fetch", failingDetailFetchMock());
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    const previous = useRuntimeStore.getState();
+    try {
+      useRuntimeStore.setState({
+        ...previous,
+        sessionsByAgentId: {
+          "agent-a": sessionState({
+            contentStatus: "available",
+            detail: {
+              agent: lastKnownGoodSummary(),
+              timeline: [],
+              source: "http",
+              events: [],
+            },
+          }),
+        },
+      }, true);
+
+      await useRuntimeStore.getState().refreshAgentDetail("agent-a", "info");
+
+      const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
+      expect(session?.detail?.agent.model).toBe("test-model-live");
+      expect(session?.detail?.agent.badge).toBe("W");
+      expect(session?.syncStatus).toBe("reconnecting");
+      expect(session?.error).toBeTruthy();
+      expect(session?.detail?.error).toBeUndefined();
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it("still renders the disconnected placeholder on a cold start without cached detail", async () => {
+    stubWindow();
+    vi.stubGlobal("fetch", failingDetailFetchMock());
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+
+    const previous = useRuntimeStore.getState();
+    try {
+      useRuntimeStore.setState({
+        ...previous,
+        sessionsByAgentId: { "agent-a": sessionState() },
+      }, true);
+
+      await useRuntimeStore.getState().refreshAgentDetail("agent-a", "info");
+
+      const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
+      expect(session?.detail?.agent.model).toBe("unavailable");
+      expect(session?.detail?.agent.badge).toBe("!");
+      expect(session?.syncStatus).toBe("error");
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+});
+
 describe("credential mutations", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

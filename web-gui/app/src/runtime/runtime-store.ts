@@ -3226,6 +3226,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
           }`,
         }).end(detail.error ? "error" : "ok");
+        if (get().sessionsByAgentId[agentId]?.syncStatus === "reconnecting") {
+          // The detail fetch failed but the merge preserved the last-known-good
+          // detail: retry with bounded backoff instead of hydrating placeholder
+          // data, so the session recovers automatically once the API responds.
+          scheduleAgentDetailRetry(get, agentId, displayLevel);
+          span.end("error", { recovery: "last-known-good" });
+          return;
+        }
         await agentSessionRepository.loadTargetEventWindow(agentId, displayLevel);
         if (
           !isCurrentClientRequest(request) ||
@@ -4660,6 +4668,23 @@ function mergeAgentDetailIntoSession(
   const current = hasEventIdentityConflict(epochSession, pageEvents)
     ? resetSessionForEventConflict(epochSession, detail.eventLogEpoch)
     : epochSession;
+  if (detail.error && current.detail) {
+    // The client returns a disconnected placeholder (error set) when the
+    // detail fetch fails. With a last-known-good detail on hand, keep
+    // rendering it and mark the session reconnecting instead of letting the
+    // placeholder overwrite real data (model "unavailable", "!" badge).
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...current,
+          loading: false,
+          syncStatus: "reconnecting",
+          error: detail.error,
+        },
+      },
+    };
+  }
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
   const agent = liveDetailIsNewer && current.detail ? mergeNewerLiveAgentState(detail.agent, current.detail.agent) : detail.agent;
   const detailBase: AgentDetail = {

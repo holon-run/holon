@@ -30,6 +30,7 @@ import type {
   RuntimeModelCatalog,
   RuntimeModelOption,
 } from "../../runtime/types";
+import type { AgentSyncStatus } from "../../runtime/runtime-store-helpers";
 import type { OperatorPromptAttachment } from "../../runtime/client";
 
 interface AgentPageProps {
@@ -37,7 +38,7 @@ interface AgentPageProps {
   detail: AgentDetail | null;
   detailLoading?: boolean;
   contentStatus?: "unknown" | "available" | "confirmed-empty";
-  syncStatus?: "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
+  syncStatus?: AgentSyncStatus;
   displayLevel: DisplayLevel;
   sendingPrompt: boolean;
   abortingRun?: boolean;
@@ -915,9 +916,19 @@ export function AgentPage({
               />
               ) : null
             ) : null}
-            {timeline.length > 0 && (syncStatus === "refreshing" || syncStatus === "recovering") ? (
-              <div className={`history-status${syncStatus === "recovering" ? " history-status--recovering" : ""}`} role="status">
-                {syncStatus === "refreshing" ? t("common.refreshing") : t("common.recovering")}
+            {timeline.length > 0 &&
+            (syncStatus === "refreshing" || syncStatus === "recovering" || syncStatus === "reconnecting") ? (
+              <div
+                className={`history-status${syncStatus === "recovering" ? " history-status--recovering" : ""}${
+                  syncStatus === "reconnecting" ? " history-status--reconnecting" : ""
+                }`}
+                role="status"
+              >
+                {syncStatus === "refreshing"
+                  ? t("common.refreshing")
+                  : syncStatus === "recovering"
+                    ? t("common.recovering")
+                    : t("common.reconnecting")}
               </div>
             ) : null}
           </div>

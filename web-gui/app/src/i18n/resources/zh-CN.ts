@@ -52,6 +52,8 @@ const zh: Record<string, any> = {
   common: {
     refresh: "刷新",
     refreshing: "刷新中…",
+    recovering: "恢复中…",
+    reconnecting: "重连中…",
     cancel: "取消",
     create: "创建",
     creating: "创建中…",

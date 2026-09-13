@@ -133,32 +133,6 @@ function disconnectedAgentDetail(agentId: string, error: string): AgentDetail {
   };
 }
 
-function disconnectedAgentSummary(agentId: string, error: string): AgentSummary {
-  return {
-    id: agentId,
-    badge: "!",
-    badgeTone: "muted",
-    profile: "unavailable",
-    lifecycle: "unknown",
-    focusSummary: "Runtime API unavailable",
-    workspace: "unavailable",
-    attention: "API disconnected",
-    model: "unavailable",
-    modelReasoningEffort: undefined,
-    footer: "disconnected",
-    subtitle: "Runtime API unavailable",
-    lastBrief: "",
-    lastTurnTime: "",
-    pending: 0,
-    activeTaskCount: 0,
-    waitingCount: 0,
-    posture: "disconnected",
-    postureReason: error,
-    tasks: [],
-    workItems: [],
-  };
-}
-
 async function fetchAgentDetail(
   baseUrl: string,
   fetchImpl: typeof fetch,
@@ -867,15 +841,12 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
     },
     async getAgentState(agentId: string): Promise<AgentSummary> {
       if (!baseUrl) {
-        return disconnectedAgentSummary(agentId, "Holon API base URL is not configured.");
+        throw new Error("Agent state requires a runtime connection.");
       }
-      try {
-        return await fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
-      } catch (error) {
-        if (isProjectionBusyError(error)) throw error;
-        const message = error instanceof Error ? error.message : String(error);
-        return disconnectedAgentSummary(agentId, message);
-      }
+      // Failures propagate instead of returning a synthetic disconnected
+      // summary: a fabricated summary would overwrite the last-known-good
+      // roster row and detail agent held in the store.
+      return fetchAgentState(baseUrl, fetchImpl, requestHeaders, agentId);
     },
     async getAgentWorkItems(agentId: string, options: { limit?: number } = {}): Promise<WorkItemSummary[]> {
       if (!baseUrl) {
