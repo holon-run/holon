@@ -70,6 +70,7 @@ jobs:
         with:
           name: docs-site-cloudflare
           path: docs/website/.tools/dist/cloudflare
+          # The bundle lives under hidden .tools; upload only this generated subtree.
           include-hidden-files: true
 
       - name: Deploy to Cloudflare Workers
