@@ -130,7 +130,7 @@ Start with the product and its WorkItem design, set up continuous PR review, the
 
 Install Holon, configure a model provider, and start the daemon. Open the local Web interface at `http://localhost:7878` or use `holon tui`.
 
-<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.39.0">v0.39.0</a></p>
+<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.40.0">v0.40.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/getting-started/">Setup guide</a>

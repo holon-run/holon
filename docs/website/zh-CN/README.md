@@ -130,7 +130,7 @@ order: 1
 
 安装 Holon、配置模型提供商并启动 daemon。打开本地 Web 界面 `http://localhost:7878`，或使用 `holon tui`。
 
-<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.39.0">v0.39.0</a></p>
+<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.40.0">v0.40.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南</a>
