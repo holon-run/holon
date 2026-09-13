@@ -2728,7 +2728,6 @@ mod tests {
                 name: "ExecCommand".to_string(),
                 input: json!({ "cmd": "printf ok" }),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {
@@ -2977,7 +2976,6 @@ mod tests {
                 name: "ExecCommand".to_string(),
                 input: json!({ "cmd": "printf ok" }),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {

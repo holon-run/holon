@@ -96,7 +96,6 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                         "reason": "wait for background command result"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }],
                 stop_reason: None,
@@ -350,7 +349,6 @@ impl AgentProvider for FastPathWaitProvider {
                         "resource": task_id
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }])
             }

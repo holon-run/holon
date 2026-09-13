@@ -215,7 +215,6 @@ fn chat_completion_message_conversion_handles_tool_calls_in_assistant_message() 
                 name: "get_current_time".to_string(),
                 input: json!({}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             },
         ]),
@@ -250,7 +249,6 @@ fn chat_completion_message_conversion_handles_multiple_tool_calls() {
                 name: "search_news".to_string(),
                 input: json!({"query": "recent"}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             },
             ModelBlock::ToolUse {
@@ -258,7 +256,6 @@ fn chat_completion_message_conversion_handles_multiple_tool_calls() {
                 name: "get_weather".to_string(),
                 input: json!({"location": "Paris"}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             },
         ]),
@@ -296,7 +293,6 @@ fn chat_completion_message_conversion_handles_assistant_text_with_tool_calls() {
                 name: "calculator".to_string(),
                 input: json!({"expression": "2+2"}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             },
         ]),
@@ -434,7 +430,6 @@ fn chat_completion_message_conversion_handles_tool_results() {
             name: "get_current_time".to_string(),
             input: json!({}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
@@ -469,7 +464,6 @@ fn chat_completion_message_conversion_handles_multiple_tool_results() {
                 name: "search_news".to_string(),
                 input: json!({"query": "test"}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             },
             ModelBlock::ToolUse {
@@ -477,7 +471,6 @@ fn chat_completion_message_conversion_handles_multiple_tool_results() {
                 name: "get_weather".to_string(),
                 input: json!({"location": "Paris"}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             },
         ]),
@@ -527,7 +520,6 @@ fn chat_completion_handles_multi_turn_conversation_with_tools() {
             name: "calculator".to_string(),
             input: json!({"expression": "2+2"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         }]),
         // Turn 2: Tool returns result
@@ -1051,7 +1043,6 @@ fn chat_completion_handles_mixed_tool_and_text_messages() {
                 name: "test_tool".to_string(),
                 input: json!({"param": "value"}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             },
         ]),
@@ -1132,7 +1123,6 @@ fn chat_completion_handles_tool_call_with_complex_arguments() {
             name: "complex_tool".to_string(),
             input: complex_input.clone(),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ])];

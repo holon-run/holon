@@ -2872,7 +2872,7 @@ rename to new.txt
         tokio::fs::write(
             dir.path().join("f.rs"),
             "line1
-    let x = 1;
+    let x = 1;   
 line3
 ",
         )
@@ -2896,7 +2896,7 @@ line3
         // Context line should retain original trailing whitespace.
         assert!(
             result.contains(
-                "    let x = 1;
+                "    let x = 1;   
 "
             ),
             "context line should preserve original trailing whitespace: {result:?}"
@@ -2979,9 +2979,9 @@ line3
         // Two identical lines that differ only in trailing whitespace.
         tokio::fs::write(
             dir.path().join("f.rs"),
-            "foo
+            "foo   
 bar
-foo
+foo  
 ",
         )
         .await

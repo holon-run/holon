@@ -527,7 +527,6 @@ fn fixture_round_with_tool(
             name: call.name.clone(),
             input,
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ];
@@ -556,7 +555,6 @@ fn fixture_tool_only_round_with_result(round: usize, follow_up: &str) -> TurnRou
         name: call.name.clone(),
         input: call.input.clone(),
         kind: crate::provider::ModelToolCallKind::Function,
-
         provider_data: None,
     }];
     let tool_results = vec![ToolResultBlock {
@@ -1732,7 +1730,6 @@ fn context_management_eligibility_keeps_recent_and_excludes_risky_results() {
                     name: (*name).to_string(),
                     input: serde_json::json!({}),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 })
                 .collect(),
@@ -1844,7 +1841,6 @@ fn fixture_round_with_large_tool_result(
             name: call.name.clone(),
             input: call.input.clone(),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ];
@@ -2522,7 +2518,6 @@ fn degraded_round_messages_no_trimmable_returns_exact() {
             name: call.name.clone(),
             input: call.input.clone(),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         }],
         text_blocks: Vec::new(),
@@ -2685,7 +2680,6 @@ fn completion_report_texts_captures_text_before_complete_work_item() {
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_123"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ];
@@ -2711,7 +2705,6 @@ fn completion_report_texts_skips_thinking_blocks() {
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_456"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ];
@@ -2745,7 +2738,6 @@ fn completion_report_texts_captures_and_deduplicates_citations() {
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_456"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ];
@@ -2771,7 +2763,6 @@ fn completion_report_texts_clears_pending_on_non_complete_tool() {
             name: "ExecCommand".to_string(),
             input: serde_json::json!({"cmd": "echo hi"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
         ModelBlock::Text {
@@ -2782,7 +2773,6 @@ fn completion_report_texts_clears_pending_on_non_complete_tool() {
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_789"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ];
@@ -2804,7 +2794,6 @@ fn completion_report_texts_multiple_complete_work_items() {
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_a"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
         ModelBlock::Text {
@@ -2815,7 +2804,6 @@ fn completion_report_texts_multiple_complete_work_items() {
             name: "CompleteWorkItem".to_string(),
             input: serde_json::json!({"work_item_id": "work_b"}),
             kind: crate::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         },
     ];
@@ -2835,7 +2823,6 @@ fn completion_report_texts_empty_when_no_text_precedes() {
         name: "CompleteWorkItem".to_string(),
         input: serde_json::json!({"work_item_id": "work_x"}),
         kind: crate::provider::ModelToolCallKind::Function,
-
         provider_data: None,
     }];
 

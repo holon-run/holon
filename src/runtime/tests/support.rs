@@ -452,7 +452,6 @@ impl AgentProvider for OneToolThenTextProvider {
                     "shell": "sh"
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             }]
         } else {
@@ -780,7 +779,6 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "yield_time_ms": 30000
                         }),
                         kind: crate::provider::ModelToolCallKind::Function,
-
                         provider_data: None,
                     },
                 ],
@@ -805,7 +803,6 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "yield_time_ms": 30000
                         }),
                         kind: crate::provider::ModelToolCallKind::Function,
-
                         provider_data: None,
                     },
                 ],
@@ -830,7 +827,6 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "yield_time_ms": 30000
                         }),
                         kind: crate::provider::ModelToolCallKind::Function,
-
                         provider_data: None,
                     },
                 ],
@@ -883,7 +879,6 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
                         "cmd": "printf 'baseline-over-budget'"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }],
                 stop_reason: Some("tool_use".into()),
@@ -913,7 +908,6 @@ impl AgentProvider for LargeBudgetContinuationProbeProvider {
                         "cmd": "printf 'large-budget-continuation'"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }],
                 stop_reason: Some("tool_use".into()),
@@ -963,7 +957,6 @@ impl AgentProvider for SleepOnlyToolProvider {
                     "duration_ms": 250
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             }],
             stop_reason: None,
@@ -1001,7 +994,6 @@ impl AgentProvider for WaitForOnlyToolProvider {
                     "recheck_after_ms": 1800000
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             }],
             stop_reason: None,
@@ -1029,7 +1021,6 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                         "prompt": "removed public task surface"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }],
                 stop_reason: None,
@@ -1088,7 +1079,6 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                         "patch": "--- /dev/null\n+++ b/app.txt\n@@ -0,0 +1 @@\n+should-not-be-written\n"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }],
                 stop_reason: Some("max_tokens".into()),
@@ -1214,7 +1204,6 @@ impl AgentProvider for RecentTurnsRecoveryProbeProvider {
                         "cmd": "printf 'recent-turns-recovery:'; awk 'BEGIN { for (i = 0; i < 1000; i++) printf \"x \" }'"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }],
                 stop_reason: Some("tool_use".into()),
@@ -1515,7 +1504,6 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                         "patch": "--- a/app.txt\n+++ b/app.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 },
                 ModelBlock::ToolUse {
@@ -1526,7 +1514,6 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                         "shell": "sh"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 },
             ],
@@ -1545,7 +1532,6 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                 name: "GetAgent".into(),
                 input: serde_json::json!({}),
                 kind: crate::provider::ModelToolCallKind::Function,
-
                 provider_data: None,
             }],
         };

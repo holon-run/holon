@@ -165,7 +165,6 @@ impl AgentProvider for WaitForDispatchProvider {
                 "resource": "github:holon-run/holon#2237"
             }),
             kind: holon::provider::ModelToolCallKind::Function,
-
             provider_data: None,
         });
 
@@ -249,7 +248,6 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                         "yield_time_ms": 2_000
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
-
                     provider_data: None,
                 }]
             }
