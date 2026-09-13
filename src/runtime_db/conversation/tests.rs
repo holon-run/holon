@@ -1,0 +1,593 @@
+use std::path::PathBuf;
+use std::sync::{Arc, Barrier};
+
+use anyhow::Result;
+use chrono::{Duration, TimeZone, Utc};
+use rusqlite::params;
+use tempfile::TempDir;
+
+use super::{
+    settle_turn_result_tx, CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL,
+};
+use crate::domain::conversation::{
+    ActivityItem, Attention, ConversationActivity, ExecutionState, NoBriefReason,
+    PendingInputState, ResultState, TerminalOutcome, TurnKey,
+};
+use crate::runtime_db::RuntimeDb;
+use crate::types::{
+    AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind, MessageBody, MessageEnvelope,
+    MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, ToolExecutionRecord,
+    ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnNoBriefReason, TurnRecord,
+    TurnTerminalKind, TurnTerminalSummary, TurnTriggerSummary,
+};
+
+const AGENT_ID: &str = "agent-conversation-test";
+
+fn runtime_db() -> Result<(TempDir, PathBuf, PathBuf, RuntimeDb)> {
+    let temp_dir = tempfile::tempdir()?;
+    let db_path = temp_dir.path().join("state/runtime.sqlite");
+    let lock_path = temp_dir.path().join("state/runtime.lock");
+    std::fs::create_dir_all(db_path.parent().expect("database parent"))?;
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    Ok((temp_dir, db_path, lock_path, db))
+}
+
+fn timestamp(offset: i64) -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 9, 13, 12, 0, 0)
+        .single()
+        .expect("valid timestamp")
+        + Duration::seconds(offset)
+}
+
+fn trigger(kind: MessageKind) -> TurnTriggerSummary {
+    TurnTriggerSummary {
+        message_id: Some(format!("trigger-{kind:?}")),
+        kind,
+        origin: MessageOrigin::System {
+            subsystem: "conversation-test".into(),
+        },
+        authority_class: AuthorityClass::RuntimeInstruction,
+        priority: Priority::Normal,
+        trigger_kind: Some(ContinuationTriggerKind::SystemTick),
+        task_id: None,
+    }
+}
+
+fn turn(turn_id: &str, turn_index: u64) -> TurnRecord {
+    let mut record = TurnRecord::new(AGENT_ID, turn_id, turn_index);
+    record.created_at = timestamp(i64::try_from(turn_index).expect("test turn index"));
+    record.trigger = Some(trigger(MessageKind::OperatorPrompt));
+    record
+}
+
+fn terminal(
+    mut record: TurnRecord,
+    kind: TurnTerminalKind,
+    no_brief_reason: Option<TurnNoBriefReason>,
+) -> TurnRecord {
+    record.terminal = Some(TurnTerminalSummary {
+        kind,
+        reason: None,
+        no_brief_reason,
+        completed_at: record.created_at + Duration::seconds(1),
+        duration_ms: 1_000,
+    });
+    record
+}
+
+fn activity_item(activity: &ConversationActivity) -> &ActivityItem {
+    match activity {
+        ConversationActivity::Operator(item)
+        | ConversationActivity::Assistant(item)
+        | ConversationActivity::Tool(item)
+        | ConversationActivity::Wait(item)
+        | ConversationActivity::Error(item) => item,
+    }
+}
+
+#[test]
+fn history_keyset_preserves_upper_bound_and_legacy_ties() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    for record in [
+        terminal(
+            turn("turn-a", 1),
+            TurnTerminalKind::Completed,
+            Some(TurnNoBriefReason::ToolOnlyWait),
+        ),
+        terminal(
+            turn("turn-b", 1),
+            TurnTerminalKind::Completed,
+            Some(TurnNoBriefReason::ToolOnlyWait),
+        ),
+        terminal(
+            turn("turn-c", 2),
+            TurnTerminalKind::Completed,
+            Some(TurnNoBriefReason::ToolOnlyWait),
+        ),
+    ] {
+        db.turn_records().upsert(&record)?;
+    }
+
+    let first = db.conversation().summary_page(AGENT_ID, 2, None, None)?;
+    assert_eq!(
+        first
+            .turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>(),
+        ["turn-b", "turn-c"]
+    );
+    assert_eq!(
+        first.membership_upper_bound,
+        Some(TurnKey {
+            turn_index: 2,
+            turn_id: "turn-c".into(),
+        })
+    );
+    assert_eq!(
+        first.next_before,
+        Some(TurnKey {
+            turn_index: 1,
+            turn_id: "turn-b".into(),
+        })
+    );
+    assert!(first.has_more);
+
+    db.turn_records().upsert(&terminal(
+        turn("turn-new", 3),
+        TurnTerminalKind::Completed,
+        Some(TurnNoBriefReason::ToolOnlyWait),
+    ))?;
+
+    let older = db.conversation().summary_page(
+        AGENT_ID,
+        2,
+        first.next_before.as_ref(),
+        first.membership_upper_bound.as_ref(),
+    )?;
+    assert_eq!(
+        older
+            .turns
+            .iter()
+            .map(|turn| turn.turn_id.as_str())
+            .collect::<Vec<_>>(),
+        ["turn-a"]
+    );
+    assert!(!older.has_more);
+    Ok(())
+}
+
+#[test]
+fn legacy_schema_migration_backfills_visible_activity_sequences() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    let mut message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "legacy operator input".into(),
+        },
+    );
+    message.id = "legacy-message".into();
+    message.created_at = timestamp(1);
+    db.evidence().append_message(&message)?;
+
+    let mut record = turn("legacy-turn", 1);
+    record.input_message_ids = vec![message.id.clone()];
+    record.tool_execution_ids = vec!["legacy-tool".into()];
+    db.turn_records().upsert(&record)?;
+
+    let mut assistant = TranscriptEntry::new(
+        AGENT_ID,
+        TranscriptEntryKind::AssistantRound,
+        Some(1),
+        Some(message.id.clone()),
+        serde_json::json!({
+            "turn_id": "legacy-turn",
+            "text": "legacy assistant activity",
+        }),
+    );
+    assistant.id = "legacy-assistant".into();
+    assistant.created_at = timestamp(2);
+    db.evidence().append_transcript_entry(&assistant)?;
+
+    db.evidence().append_tool_execution(&ToolExecutionRecord {
+        id: "legacy-tool".into(),
+        agent_id: AGENT_ID.into(),
+        work_item_id: None,
+        turn_index: 1,
+        turn_id: Some("legacy-turn".into()),
+        tool_name: "ExecCommand".into(),
+        created_at: timestamp(3),
+        completed_at: None,
+        duration_ms: 0,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Deferred,
+        input: serde_json::json!({ "cmd": "true" }),
+        output: serde_json::Value::Null,
+        summary: "legacy tool".into(),
+        invocation_surface: None,
+    })?;
+    drop(db);
+
+    let connection = rusqlite::Connection::open(&db_path)?;
+    connection.execute_batch(
+        "DROP TABLE conversation_input_assignments;
+         DROP TABLE conversation_source_revisions;
+         DROP TABLE conversation_turn_revisions;
+         DELETE FROM schema_migrations WHERE version = 64;",
+    )?;
+    drop(connection);
+
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let detail = db
+        .conversation()
+        .activities(AGENT_ID, "legacy-turn", 10, None, None)?
+        .expect("legacy turn");
+    assert_eq!(
+        detail
+            .activities
+            .iter()
+            .map(|activity| activity_item(activity).id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "operator:legacy-message",
+            "assistant:legacy-assistant",
+            "tool:legacy-tool",
+        ]
+    );
+    assert!(detail
+        .activities
+        .windows(2)
+        .all(|pair| activity_item(&pair[0]).key < activity_item(&pair[1]).key));
+    Ok(())
+}
+
+#[test]
+fn terminal_result_attention_matrix_is_typed() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let cases = [
+        (TurnTerminalKind::Completed, None),
+        (TurnTerminalKind::Aborted, Some(Attention::Interrupted)),
+        (
+            TurnTerminalKind::BaselineOverBudget,
+            Some(Attention::Failed {
+                outcome: TerminalOutcome::BaselineOverBudget,
+            }),
+        ),
+        (
+            TurnTerminalKind::DeferredToFallback,
+            Some(Attention::Interrupted),
+        ),
+        (
+            TurnTerminalKind::ProviderFailedNeedsRecovery,
+            Some(Attention::Interrupted),
+        ),
+    ];
+    for (index, (kind, _)) in cases.iter().enumerate() {
+        db.turn_records().upsert(&terminal(
+            turn(&format!("turn-{index}"), index as u64 + 1),
+            *kind,
+            None,
+        ))?;
+    }
+    db.turn_records().upsert(&terminal(
+        turn("turn-no-brief", 10),
+        TurnTerminalKind::Completed,
+        Some(TurnNoBriefReason::ToolOnlyWait),
+    ))?;
+
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    for (index, (kind, expected_attention)) in cases.iter().enumerate() {
+        let summary = page
+            .turns
+            .iter()
+            .find(|turn| turn.turn_id == format!("turn-{index}"))
+            .expect("matrix turn");
+        assert_eq!(
+            summary.execution,
+            ExecutionState::Terminal {
+                outcome: (*kind).into(),
+            }
+        );
+        assert_eq!(&summary.attention, expected_attention);
+        assert_eq!(summary.result, ResultState::Pending);
+        assert!(!summary.settled);
+    }
+    let no_brief = page
+        .turns
+        .iter()
+        .find(|turn| turn.turn_id == "turn-no-brief")
+        .expect("no-brief turn");
+    assert_eq!(
+        no_brief.result,
+        ResultState::None {
+            reason: NoBriefReason::ToolOnlyWait,
+        }
+    );
+    assert!(no_brief.settled);
+    Ok(())
+}
+
+#[test]
+fn turn_and_brief_revisions_are_idempotent_under_late_brief_race() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    let active = turn("turn-late-brief", 1);
+    db.turn_records().upsert(&active)?;
+    db.turn_records().upsert(&active)?;
+    let created = db.conversation().summary_page(AGENT_ID, 1, None, None)?;
+    assert_eq!(created.turns[0].revision, 1);
+
+    let completed = terminal(active, TurnTerminalKind::Completed, None);
+    db.turn_records().upsert(&completed)?;
+    let terminal_page = db.conversation().summary_page(AGENT_ID, 1, None, None)?;
+    assert_eq!(terminal_page.turns[0].revision, 2);
+    assert_eq!(terminal_page.turns[0].result, ResultState::Pending);
+    assert!(!terminal_page.turns[0].settled);
+
+    let mut brief = BriefRecord::new(AGENT_ID, BriefKind::Result, "late result", None, None);
+    brief.id = "brief-late".into();
+    brief.turn_id = Some("turn-late-brief".into());
+    brief.turn_index = Some(1);
+    brief.created_at = timestamp(20);
+
+    let barrier = Arc::new(Barrier::new(2));
+    let mut joins = Vec::new();
+    for _ in 0..2 {
+        let barrier = Arc::clone(&barrier);
+        let db_path = db_path.clone();
+        let lock_path = lock_path.clone();
+        let brief = brief.clone();
+        joins.push(std::thread::spawn(move || -> Result<()> {
+            let db = RuntimeDb::open_and_migrate(db_path, lock_path)?;
+            barrier.wait();
+            db.evidence().append_brief(&brief)
+        }));
+    }
+    for join in joins {
+        join.join().expect("late brief writer")?;
+    }
+
+    let available = db.conversation().summary_page(AGENT_ID, 1, None, None)?;
+    assert_eq!(available.turns[0].revision, 3);
+    assert_eq!(available.turns[0].brief_ids, ["brief-late"]);
+    assert_eq!(available.turns[0].result, ResultState::Available);
+    assert!(!available.turns[0].settled);
+
+    db.transaction(|tx| {
+        settle_turn_result_tx(tx, AGENT_ID, "turn-late-brief", timestamp(30)).map(|_| ())
+    })?;
+    db.transaction(|tx| {
+        settle_turn_result_tx(tx, AGENT_ID, "turn-late-brief", timestamp(31)).map(|_| ())
+    })?;
+    let settled = db.conversation().summary_page(AGENT_ID, 1, None, None)?;
+    assert_eq!(settled.turns[0].revision, 4);
+    assert_eq!(settled.turns[0].result, ResultState::Available);
+    assert!(settled.turns[0].settled);
+    Ok(())
+}
+
+#[test]
+fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let queued = QueueEntryRecord {
+        message_id: "message-pending".into(),
+        agent_id: AGENT_ID.into(),
+        priority: Priority::Normal,
+        status: QueueEntryStatus::Queued,
+        created_at: timestamp(1),
+        updated_at: timestamp(1),
+    };
+    db.queue_entries().upsert(&queued)?;
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(page.pending_inputs.len(), 1);
+    assert_eq!(page.pending_inputs[0].revision, 1);
+    assert_eq!(page.pending_inputs[0].state, PendingInputState::Queued);
+
+    let assigning = QueueEntryRecord {
+        status: QueueEntryStatus::Dequeued,
+        updated_at: timestamp(2),
+        ..queued
+    };
+    db.queue_entries().upsert(&assigning)?;
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(page.pending_inputs[0].revision, 2);
+    assert_eq!(page.pending_inputs[0].state, PendingInputState::Assigning);
+
+    let mut assigned = turn("turn-assigned", 1);
+    assigned.input_message_ids = vec!["message-pending".into()];
+    db.turn_records().upsert(&assigned)?;
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert!(page.pending_inputs.is_empty());
+    assert_eq!(page.active_turns[0].turn_id, "turn-assigned");
+    Ok(())
+}
+
+#[test]
+fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "operator input".into(),
+        },
+    );
+    message.id = "message-activity".into();
+    message.created_at = timestamp(1);
+    db.evidence().append_message(&message)?;
+
+    let mut record = turn("turn-activity", 1);
+    record.input_message_ids = vec![message.id.clone()];
+    record.tool_execution_ids = vec!["tool-activity".into()];
+    db.turn_records().upsert(&record)?;
+
+    let mut assistant = TranscriptEntry::new(
+        AGENT_ID,
+        TranscriptEntryKind::AssistantRound,
+        Some(1),
+        Some(message.id.clone()),
+        serde_json::json!({
+            "turn_id": "turn-activity",
+            "text": "assistant activity",
+        }),
+    );
+    assistant.id = "assistant-activity".into();
+    assistant.created_at = timestamp(2);
+    db.evidence().append_transcript_entry(&assistant)?;
+
+    let mut tool = ToolExecutionRecord {
+        id: "tool-activity".into(),
+        agent_id: AGENT_ID.into(),
+        work_item_id: None,
+        turn_index: 1,
+        turn_id: Some("turn-activity".into()),
+        tool_name: "ExecCommand".into(),
+        created_at: timestamp(3),
+        completed_at: None,
+        duration_ms: 0,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Deferred,
+        input: serde_json::json!({ "cmd": "true" }),
+        output: serde_json::Value::Null,
+        summary: "tool pending".into(),
+        invocation_surface: None,
+    };
+    db.evidence().append_tool_execution(&tool)?;
+
+    let first = db
+        .conversation()
+        .activities(AGENT_ID, "turn-activity", 2, None, None)?
+        .expect("activity turn");
+    assert_eq!(
+        first
+            .activities
+            .iter()
+            .map(|activity| activity_item(activity).id.as_str())
+            .collect::<Vec<_>>(),
+        ["assistant:assistant-activity", "tool:tool-activity"]
+    );
+    assert!(first.has_more);
+    let before = first.next_before.clone().expect("older activity cursor");
+    let upper_bound = first
+        .membership_upper_bound
+        .clone()
+        .expect("activity upper bound");
+
+    tool.status = ToolExecutionStatus::Success;
+    tool.completed_at = Some(timestamp(4));
+    tool.duration_ms = 1;
+    tool.summary = "tool complete".into();
+    db.evidence().append_tool_execution(&tool)?;
+    let updated = db
+        .conversation()
+        .activities(AGENT_ID, "turn-activity", 10, None, None)?
+        .expect("updated activity turn");
+    let updated_tool = updated
+        .activities
+        .iter()
+        .find(|activity| activity_item(activity).id == "tool:tool-activity")
+        .expect("updated tool");
+    assert_eq!(activity_item(updated_tool).revision, 2);
+    assert_eq!(
+        activity_item(updated_tool).key.event_seq,
+        upper_bound.event_seq
+    );
+    assert!(updated.detail_revision > first.detail_revision);
+
+    let mut error = TranscriptEntry::new(
+        AGENT_ID,
+        TranscriptEntryKind::RuntimeFailure,
+        Some(2),
+        None,
+        serde_json::json!({
+            "turn_id": "turn-activity",
+            "error": "late error",
+        }),
+    );
+    error.id = "error-late".into();
+    error.created_at = timestamp(5);
+    db.evidence().append_transcript_entry(&error)?;
+
+    let older = db
+        .conversation()
+        .activities(
+            AGENT_ID,
+            "turn-activity",
+            2,
+            Some(&before),
+            Some(&upper_bound),
+        )?
+        .expect("older activities");
+    assert_eq!(
+        older
+            .activities
+            .iter()
+            .map(|activity| activity_item(activity).id.as_str())
+            .collect::<Vec<_>>(),
+        ["operator:message-activity"]
+    );
+    assert!(!older.has_more);
+    Ok(())
+}
+
+#[test]
+fn keyset_queries_use_declared_indexes_without_temp_sorting() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let connection = db.connection()?;
+
+    let history_plan = connection
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {CONVERSATION_HISTORY_BEFORE_SQL}"
+        ))?
+        .query_map(params![AGENT_ID, 10_i64, "z", 5_i64, "m", 10_i64], |row| {
+            row.get::<_, String>(3)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert!(
+        history_plan
+            .iter()
+            .any(|detail| detail.contains("idx_turn_records_agent_keyset")),
+        "history plan did not use keyset index: {history_plan:?}"
+    );
+    assert!(
+        history_plan
+            .iter()
+            .all(|detail| !detail.contains("USE TEMP B-TREE")),
+        "history plan used a temporary sort: {history_plan:?}"
+    );
+
+    let activity_plan = connection
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {CONVERSATION_ACTIVITY_BEFORE_SQL}"
+        ))?
+        .query_map(
+            params![AGENT_ID, "turn", 10_i64, 5_i64, "tool:z", 10_i64],
+            |row| row.get::<_, String>(3),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert!(
+        activity_plan
+            .iter()
+            .any(|detail| detail.contains("idx_conversation_sources_agent_turn_activity")),
+        "activity plan did not use keyset index: {activity_plan:?}"
+    );
+    assert!(
+        activity_plan
+            .iter()
+            .all(|detail| !detail.contains("USE TEMP B-TREE")),
+        "activity plan used a temporary sort: {activity_plan:?}"
+    );
+    Ok(())
+}

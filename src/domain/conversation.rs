@@ -28,6 +28,16 @@ pub struct ConversationTurnSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationSummaryPage {
+    pub turns: Vec<ConversationTurnSummary>,
+    pub active_turns: Vec<ConversationTurnSummary>,
+    pub pending_inputs: Vec<PendingInput>,
+    pub membership_upper_bound: Option<TurnKey>,
+    pub next_before: Option<TurnKey>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingInput {
     pub message_id: String,
     pub revision: u64,
@@ -211,6 +221,17 @@ pub struct ActivityItem {
     pub key: ActivityKey,
     pub revision: u64,
     pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConversationActivityPage {
+    pub turn: ConversationTurnSummary,
+    pub detail_revision: u64,
+    pub activities: Vec<ConversationActivity>,
+    pub coverage: DetailCoverage,
+    pub membership_upper_bound: Option<ActivityKey>,
+    pub next_before: Option<ActivityKey>,
+    pub has_more: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -535,11 +556,41 @@ mod tests {
             Err(CursorDecodeError::BindingMismatch)
         );
 
+        for other in [
+            CursorBinding {
+                runtime_id: "other".into(),
+                ..binding()
+            },
+            CursorBinding {
+                event_log_epoch: "other".into(),
+                ..binding()
+            },
+            CursorBinding {
+                visibility_scope_id: "other".into(),
+                ..binding()
+            },
+        ] {
+            assert_eq!(
+                codec.decode::<StreamCursor>(&encoded, &other),
+                Err(CursorDecodeError::BindingMismatch)
+            );
+        }
+
         let mut other = binding();
         other.schema_version += 1;
         assert_eq!(
             codec.decode::<StreamCursor>(&encoded, &other),
             Err(CursorDecodeError::SchemaVersionMismatch {
+                expected: 2,
+                actual: 1
+            })
+        );
+
+        let mut other = binding();
+        other.query_version += 1;
+        assert_eq!(
+            codec.decode::<StreamCursor>(&encoded, &other),
+            Err(CursorDecodeError::QueryVersionMismatch {
                 expected: 2,
                 actual: 1
             })

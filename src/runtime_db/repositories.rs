@@ -10,6 +10,10 @@ use sha2::{Digest, Sha256};
 use crate::runtime_db::agent_relations::{
     transition_supervision_state_tx, upsert_canonical_record_set_tx,
 };
+use crate::runtime_db::conversation::{
+    assign_input_to_turn_tx, assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx,
+    ensure_turn_revision_tx, settle_turn_result_tx, SOURCE_OPERATOR, SOURCE_WAIT,
+};
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::transitions::{
@@ -4399,7 +4403,7 @@ pub(crate) fn upsert_wait_condition_tx(
         .as_ref()
         .map(serde_json::to_string)
         .transpose()?;
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO wait_conditions (
             wait_condition_id, agent_id, work_item_id, status, kind, source,
             subject_ref, waiting_for, created_at, updated_at, expires_at,
@@ -4448,7 +4452,27 @@ pub(crate) fn upsert_wait_condition_tx(
             payload_json,
         ],
     )?;
-    Ok(true)
+    if changed == 1 {
+        let _ = bump_source_revision_tx(
+            tx,
+            SOURCE_WAIT,
+            &record.id,
+            &record.agent_id,
+            record.turn_id.as_deref(),
+            record.updated_at,
+        )?;
+        if let Some(turn_id) = record.turn_id.as_deref() {
+            let _ = bump_turn_revision_tx(
+                tx,
+                &record.agent_id,
+                turn_id,
+                true,
+                true,
+                record.updated_at,
+            )?;
+        }
+    }
+    Ok(changed == 1)
 }
 
 pub(crate) fn upsert_queue_entry_tx(
@@ -4474,7 +4498,7 @@ pub(crate) fn upsert_queue_entry_tx(
     let payload_json = serde_json::to_string(record)?;
     let priority = enum_string(&record.priority)?;
     let status = enum_string(&record.status)?;
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO queue_entries (
             message_id, agent_id, priority, status, created_at, updated_at, payload_json
          ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -4496,7 +4520,28 @@ pub(crate) fn upsert_queue_entry_tx(
             payload_json,
         ],
     )?;
-    Ok(true)
+    if changed == 1 {
+        let assigned_turn_id = assigned_turn_id_tx(tx, &record.agent_id, &record.message_id)?;
+        let _ = bump_source_revision_tx(
+            tx,
+            SOURCE_OPERATOR,
+            &record.message_id,
+            &record.agent_id,
+            assigned_turn_id.as_deref(),
+            record.updated_at,
+        )?;
+        if let Some(turn_id) = assigned_turn_id.as_deref() {
+            let _ = bump_turn_revision_tx(
+                tx,
+                &record.agent_id,
+                turn_id,
+                true,
+                true,
+                record.updated_at,
+            )?;
+        }
+    }
+    Ok(changed == 1)
 }
 
 pub(crate) fn compare_and_set_queue_entry_tx(
@@ -4536,6 +4581,27 @@ pub(crate) fn compare_and_set_queue_entry_tx(
             expected_payload_json,
         ],
     )?;
+    if changed == 1 {
+        let assigned_turn_id = assigned_turn_id_tx(tx, &record.agent_id, &record.message_id)?;
+        let _ = bump_source_revision_tx(
+            tx,
+            SOURCE_OPERATOR,
+            &record.message_id,
+            &record.agent_id,
+            assigned_turn_id.as_deref(),
+            record.updated_at,
+        )?;
+        if let Some(turn_id) = assigned_turn_id.as_deref() {
+            let _ = bump_turn_revision_tx(
+                tx,
+                &record.agent_id,
+                turn_id,
+                true,
+                true,
+                record.updated_at,
+            )?;
+        }
+    }
     Ok(changed == 1)
 }
 
@@ -4815,6 +4881,27 @@ fn try_transition_claimable_message_tx(
             secondary_status,
         ],
     )?;
+    if changed == 1 {
+        let assigned_turn_id = assigned_turn_id_tx(tx, &claimed.agent_id, &claimed.message_id)?;
+        let _ = bump_source_revision_tx(
+            tx,
+            SOURCE_OPERATOR,
+            &claimed.message_id,
+            &claimed.agent_id,
+            assigned_turn_id.as_deref(),
+            claimed.updated_at,
+        )?;
+        if let Some(turn_id) = assigned_turn_id.as_deref() {
+            let _ = bump_turn_revision_tx(
+                tx,
+                &claimed.agent_id,
+                turn_id,
+                true,
+                true,
+                claimed.updated_at,
+            )?;
+        }
+    }
     Ok(changed == 1)
 }
 
@@ -4964,14 +5051,16 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
             .into());
         }
     }
-    let existing = tx
+    let existing_payload = tx
         .query_row(
             "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
             [&record.turn_id],
             |row| row.get::<_, String>(0),
         )
-        .optional()?
-        .map(|payload| decode_turn_record_payload(&payload))
+        .optional()?;
+    let existing = existing_payload
+        .as_deref()
+        .map(decode_turn_record_payload)
         .transpose()?;
     if let Some(existing) = existing.as_ref() {
         let replay_identity_matches = match (&existing.replay, &record.replay) {
@@ -5092,6 +5181,49 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
                 completed_at,
                 payload_json,
             ],
+        )?;
+    }
+    let stored_payload = tx.query_row(
+        "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
+        [&record.turn_id],
+        |row| row.get::<_, String>(0),
+    )?;
+    let stored = decode_turn_record_payload(&stored_payload)?;
+    let changed = existing_payload.as_deref() != Some(stored_payload.as_str());
+    if changed {
+        let _ = bump_turn_revision_tx(
+            tx,
+            &stored.agent_id,
+            &stored.turn_id,
+            true,
+            false,
+            stored
+                .terminal
+                .as_ref()
+                .map_or(stored.created_at, |terminal| terminal.completed_at),
+        )?;
+    } else {
+        let _ = ensure_turn_revision_tx(tx, &stored.agent_id, &stored.turn_id, stored.created_at)?;
+    }
+    if stored
+        .terminal
+        .as_ref()
+        .and_then(|terminal| terminal.no_brief_reason.as_ref())
+        .is_some()
+    {
+        let updated_at = stored
+            .terminal
+            .as_ref()
+            .map_or(stored.created_at, |terminal| terminal.completed_at);
+        let _ = settle_turn_result_tx(tx, &stored.agent_id, &stored.turn_id, updated_at)?;
+    }
+    for message_id in &stored.input_message_ids {
+        let _ = assign_input_to_turn_tx(
+            tx,
+            &stored.agent_id,
+            message_id,
+            &stored.turn_id,
+            stored.created_at,
         )?;
     }
     Ok(())

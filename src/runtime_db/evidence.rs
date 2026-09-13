@@ -7,6 +7,10 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::runtime_db::conversation::{
+    assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx, settle_turn_result_tx,
+    SOURCE_ASSISTANT, SOURCE_ERROR, SOURCE_OPERATOR, SOURCE_TOOL,
+};
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::EVIDENCE_PREVIEW_LIMIT;
 use crate::types::AgentRegistryStatus;
@@ -131,6 +135,17 @@ pub(crate) struct EvidenceInsert<'a> {
 }
 
 pub(crate) fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<'_>) -> Result<()> {
+    let existing_payload = tx
+        .query_row(
+            &format!(
+                "SELECT payload_json FROM {} WHERE evidence_id = ?1",
+                evidence.table
+            ),
+            [evidence.evidence_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let changed = existing_payload.as_deref() != Some(evidence.payload_json.as_str());
     let content_hash = content_hash(&evidence.payload_json);
     let sql = format!(
         "INSERT INTO {} (
@@ -168,6 +183,49 @@ pub(crate) fn insert_evidence_tx(tx: &Transaction<'_>, evidence: EvidenceInsert<
             evidence.payload_json,
         ],
     )?;
+    if changed {
+        match evidence.table {
+            "tool_executions" => {
+                let _ = bump_source_revision_tx(
+                    tx,
+                    SOURCE_TOOL,
+                    evidence.evidence_id,
+                    evidence.agent_id,
+                    evidence.turn_id,
+                    evidence.created_at,
+                )?;
+                if let Some(turn_id) = evidence.turn_id {
+                    let _ = bump_turn_revision_tx(
+                        tx,
+                        evidence.agent_id,
+                        turn_id,
+                        false,
+                        true,
+                        evidence.created_at,
+                    )?;
+                }
+            }
+            "delivery_summaries" => {
+                if let Some(turn_id) = evidence.turn_id {
+                    let _ =
+                        settle_turn_result_tx(tx, evidence.agent_id, turn_id, evidence.created_at)?;
+                }
+            }
+            "briefs" => {
+                if let Some(turn_id) = evidence.turn_id {
+                    let _ = bump_turn_revision_tx(
+                        tx,
+                        evidence.agent_id,
+                        turn_id,
+                        true,
+                        false,
+                        evidence.created_at,
+                    )?;
+                }
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -540,6 +598,14 @@ pub(crate) fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope)
         )?;
     }
     let payload_json = serde_json::to_string(message)?;
+    let existing_payload = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE evidence_id = ?1",
+            [&message.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let changed = existing_payload.as_deref() != Some(payload_json.as_str());
     let content_hash = content_hash(&payload_json);
     let kind = enum_string(&message.kind)?;
     let preview = evidence_preview(&message.body);
@@ -577,6 +643,27 @@ pub(crate) fn upsert_message_tx(tx: &Transaction<'_>, message: &MessageEnvelope)
             payload_json,
         ],
     )?;
+    if changed {
+        let assigned_turn_id = assigned_turn_id_tx(tx, &message.agent_id, &message.id)?;
+        let _ = bump_source_revision_tx(
+            tx,
+            SOURCE_OPERATOR,
+            &message.id,
+            &message.agent_id,
+            assigned_turn_id.as_deref(),
+            message.created_at,
+        )?;
+        if let Some(turn_id) = assigned_turn_id.as_deref() {
+            let _ = bump_turn_revision_tx(
+                tx,
+                &message.agent_id,
+                turn_id,
+                true,
+                true,
+                message.created_at,
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -605,6 +692,14 @@ pub(crate) fn upsert_transcript_entry_tx(
         .get("work_item_id")
         .and_then(serde_json::Value::as_str);
     let payload_json = serde_json::to_string(entry)?;
+    let existing_payload = tx
+        .query_row(
+            "SELECT payload_json FROM transcript_entries WHERE evidence_id = ?1",
+            [&entry.id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let changed = existing_payload.as_deref() != Some(payload_json.as_str());
     let content_hash = content_hash(&payload_json);
     let kind = enum_string(&entry.kind)?;
     tx.execute(
@@ -641,6 +736,28 @@ pub(crate) fn upsert_transcript_entry_tx(
             payload_json,
         ],
     )?;
+    if changed {
+        let source_kind = match entry.kind {
+            crate::types::TranscriptEntryKind::AssistantRound
+            | crate::types::TranscriptEntryKind::SubagentAssistantRound => Some(SOURCE_ASSISTANT),
+            crate::types::TranscriptEntryKind::RuntimeFailure => Some(SOURCE_ERROR),
+            _ => None,
+        };
+        if let Some(source_kind) = source_kind {
+            let _ = bump_source_revision_tx(
+                tx,
+                source_kind,
+                &entry.id,
+                &entry.agent_id,
+                turn_id,
+                entry.created_at,
+            )?;
+        }
+        if let Some(turn_id) = turn_id {
+            let _ =
+                bump_turn_revision_tx(tx, &entry.agent_id, turn_id, false, true, entry.created_at)?;
+        }
+    }
     Ok(())
 }
 
@@ -756,7 +873,8 @@ pub(crate) fn insert_brief_evidence_tx(tx: &Transaction<'_>, brief: &BriefRecord
             preview: Some(truncate_evidence_string(&brief.text)),
             payload_json: full_payload_json(brief)?,
         },
-    )
+    )?;
+    Ok(())
 }
 
 /// Outcome of the single-transition Brief publication: the stored Brief
@@ -819,6 +937,16 @@ pub(crate) fn upsert_brief_with_created_event_seq_tx(
                 &brief.id
             ],
         )?;
+        if let Some(turn_id) = existing.turn_id.as_deref() {
+            let _ = bump_turn_revision_tx(
+                tx,
+                &existing.agent_id,
+                turn_id,
+                true,
+                false,
+                existing.created_at,
+            )?;
+        }
         return Ok(existing);
     }
     let mut linked = brief.clone();
