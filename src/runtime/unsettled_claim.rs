@@ -12,6 +12,7 @@ pub(crate) struct UnsettledClaimFacts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ReplayFence {
     ExactReplayable,
+    CurrentCanonicalLifecycle,
     Revoked,
     Missing,
     Ambiguous,
@@ -64,13 +65,19 @@ pub(crate) fn plan_unsettled_claim(facts: &UnsettledClaimFacts) -> UnsettledClai
             reason: "task_result_wait_missing",
         };
     }
-    // Recovery lineage takes precedence over a replayable fence so one replay cannot recurse.
-    if facts.recovery_of_attempt_id.is_some() {
+    // Lifecycle delivery moves its canonical activation along a validated recovery
+    // lineage. Other recovery attempts remain bounded to one replay.
+    if facts.recovery_of_attempt_id.is_some()
+        && facts.replay_fence != ReplayFence::CurrentCanonicalLifecycle
+    {
         return UnsettledClaimDecision::InterruptAndQuarantine {
             reason: "bounded_replay_exhausted",
         };
     }
-    if facts.replay_fence == ReplayFence::ExactReplayable {
+    if matches!(
+        facts.replay_fence,
+        ReplayFence::ExactReplayable | ReplayFence::CurrentCanonicalLifecycle
+    ) {
         return UnsettledClaimDecision::InterruptAndRequeue {
             reason: "exact_fence_replay",
         };
@@ -131,6 +138,20 @@ mod tests {
             }),
             UnsettledClaimDecision::InterruptAndQuarantine {
                 reason: "bounded_replay_exhausted",
+            }
+        );
+    }
+
+    #[test]
+    fn current_canonical_lifecycle_attempt_can_continue_its_recovery_lineage() {
+        assert_eq!(
+            plan_unsettled_claim(&UnsettledClaimFacts {
+                replay_fence: ReplayFence::CurrentCanonicalLifecycle,
+                recovery_of_attempt_id: Some("attempt:original".into()),
+                ..facts()
+            }),
+            UnsettledClaimDecision::InterruptAndRequeue {
+                reason: "exact_fence_replay",
             }
         );
     }

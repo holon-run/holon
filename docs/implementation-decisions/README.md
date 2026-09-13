@@ -121,3 +121,4 @@ Current decision notes:
 - [126 Current-Run Abort Modes](./126-current-run-abort-modes.md)
 - [128 Durable Wait Obligation Selection](./128-durable-wait-obligation-selection.md)
 - [129 Linux Jemalloc And Tokio Worker Cap](./129-linux-jemalloc-and-worker-cap.md)
+- [130 Lifecycle Delivery Recovery Follows The Canonical Root](./130-lifecycle-delivery-recovery-follows-canonical-root.md)
