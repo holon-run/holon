@@ -719,6 +719,8 @@ fn provider_nearly_large_window_continuation_with_prompt_frame() -> ProviderTurn
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
             kind: crate::provider::ModelToolCallKind::Function,
+
+            provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-1".into(),
@@ -738,6 +740,8 @@ fn provider_large_window_continuation_with_prompt_frame() -> ProviderTurnRequest
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
             kind: crate::provider::ModelToolCallKind::Function,
+
+            provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-1".into(),
@@ -2507,6 +2511,8 @@ async fn openai_responses_does_not_reuse_without_continuation_scope() {
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
             kind: crate::provider::ModelToolCallKind::Function,
+
+            provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-1".into(),
@@ -2653,6 +2659,8 @@ async fn openai_responses_cache_key_change_preserves_lineage_after_shape_fallbac
             name: "ExecCommand".into(),
             input: json!({ "cmd": "printf ok" }),
             kind: crate::provider::ModelToolCallKind::Function,
+
+            provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "exec-2".into(),

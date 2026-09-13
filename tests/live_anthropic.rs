@@ -156,6 +156,8 @@ async fn live_provider_accepts_tool_result_continuation_with_runtime_tools() -> 
                             "cmd": "gh issue view 565 --json title,body,labels,state,url"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ]),
                 ConversationMessage::UserToolResults(vec![ToolResultBlock {

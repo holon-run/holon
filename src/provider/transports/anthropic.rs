@@ -1926,6 +1926,7 @@ fn api_response_block_to_model(
                 name,
                 input,
                 kind: ModelToolCallKind::Function,
+                provider_data: None,
             })
         }
         "thinking" => Some(ModelBlock::Thinking {
@@ -2727,6 +2728,8 @@ mod tests {
                 name: "ExecCommand".to_string(),
                 input: json!({ "cmd": "printf ok" }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {
                 tool_use_id: "toolu_1".to_string(),
@@ -2974,6 +2977,8 @@ mod tests {
                 name: "ExecCommand".to_string(),
                 input: json!({ "cmd": "printf ok" }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {
                 tool_use_id: "toolu_1".to_string(),

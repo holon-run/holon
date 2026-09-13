@@ -486,6 +486,8 @@ pub enum ModelBlock {
         input: Value,
         #[serde(default)]
         kind: ModelToolCallKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_data: Option<ProviderBlockData>,
     },
     /// A tool call executed by the model provider rather than by Holon.
     ///

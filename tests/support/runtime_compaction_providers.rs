@@ -92,6 +92,8 @@ impl AgentProvider for MaxOutputRecoveryProvider {
                         "reason": "Generated comprehensive technical report covering architecture patterns, data flow strategies, security considerations, performance optimization, and monitoring approaches. All requested sections have been completed."
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -150,6 +152,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                             "max_output_tokens": 12
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -173,6 +177,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                             "max_output_tokens": 12
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -196,6 +202,8 @@ impl AgentProvider for RepeatedCompactionProvider {
                             "max_output_tokens": 12
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -293,6 +301,8 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                             "max_output_tokens": 16
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -317,6 +327,8 @@ impl AgentProvider for MaxOutputThenCompactionProvider {
                             "max_output_tokens": 16
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -449,6 +461,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                             "max_output_tokens": 24
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -482,6 +496,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                                 "block": false
                             }),
                             kind: holon::provider::ModelToolCallKind::Function,
+
+                            provider_data: None,
                         },
                     ],
                     stop_reason: Some("tool_use".into()),
@@ -509,6 +525,8 @@ impl AgentProvider for MultiPassCompactionRecoveryFlowProvider {
                             "max_output_tokens": 24
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),

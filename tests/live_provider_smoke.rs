@@ -27,8 +27,11 @@ use holon::{
     provider::{
         AgentProvider, AnthropicProvider, ConversationMessage, GeminiProvider, ModelBlock,
         OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiProvider, ProviderTurnRequest,
+        ToolResultBlock,
     },
+    tool::ToolSpec,
 };
+use serde_json::json;
 use tempfile::TempDir;
 
 /// Smoke test result for a single provider.
@@ -184,6 +187,103 @@ async fn live_all_providers_smoke() -> Result<()> {
     let any_fail = results.iter().any(|r| r.status == "FAIL");
     assert!(!any_fail, "one or more provider smoke tests failed");
 
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires real Gemini API credentials and network access"]
+async fn live_gemini_tool_continuation_preserves_thought_signature() -> Result<()> {
+    let config = AppConfig::load().context("failed to load holon config")?;
+    let provider_config = config
+        .providers
+        .get(&ProviderId::gemini())
+        .context("Gemini provider is not configured")?;
+    let model = std::env::var("HOLON_LIVE_GEMINI_MODEL")
+        .unwrap_or_else(|_| "gemini-3.1-pro-preview".into());
+    let trace_dir = TempDir::new()?;
+    let provider =
+        GeminiProvider::from_runtime_config(provider_config, &model, 512, trace_dir.path())?;
+    let tools = vec![ToolSpec {
+        name: "RecordGeminiProbe".into(),
+        description: "Record the exact probe token supplied by the user.".into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "token": {
+                    "type": "string",
+                    "description": "The exact probe token supplied by the user."
+                }
+            },
+            "required": ["token"]
+        }),
+        freeform_grammar: None,
+    }];
+    let user = ConversationMessage::UserText(
+        "Call RecordGeminiProbe exactly once with token GEMINI_SIGNATURE_PROBE. \
+         After the tool result, reply with exactly GEMINI_TOOL_CONTINUATION_OK."
+            .into(),
+    );
+
+    let first = provider
+        .complete_turn(ProviderTurnRequest::plain(
+            "Follow the tool instructions exactly.",
+            vec![user.clone()],
+            tools.clone(),
+        ))
+        .await
+        .context("first Gemini live tool request failed")?;
+    let (tool_use_id, provider_data) = first
+        .blocks
+        .iter()
+        .find_map(|block| match block {
+            ModelBlock::ToolUse {
+                id,
+                name,
+                input,
+                provider_data,
+                ..
+            } if name == "RecordGeminiProbe"
+                && input["token"] == json!("GEMINI_SIGNATURE_PROBE") =>
+            {
+                Some((id.clone(), provider_data.as_ref()))
+            }
+            _ => None,
+        })
+        .context("Gemini did not return the required RecordGeminiProbe tool call")?;
+    let provider_data = provider_data.context("Gemini tool call omitted provider metadata")?;
+    assert_eq!(provider_data.format, "gemini.function_call");
+    assert!(
+        provider_data
+            .payload
+            .get("thoughtSignature")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|signature| !signature.is_empty()),
+        "Gemini tool call omitted thoughtSignature"
+    );
+
+    let persisted = serde_json::to_vec(&first.blocks)?;
+    let restored: Vec<ModelBlock> = serde_json::from_slice(&persisted)?;
+    let second = provider
+        .complete_turn(ProviderTurnRequest::plain(
+            "Follow the tool instructions exactly.",
+            vec![
+                user,
+                ConversationMessage::AssistantBlocks(restored),
+                ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                    tool_use_id,
+                    content: "Recorded GEMINI_SIGNATURE_PROBE.".into(),
+                    is_error: false,
+                    error: None,
+                }]),
+            ],
+            tools,
+        ))
+        .await
+        .context("Gemini tool continuation request failed")?;
+    assert_eq!(
+        extract_reply_text(&second.blocks),
+        "GEMINI_TOOL_CONTINUATION_OK"
+    );
     Ok(())
 }
 

@@ -96,6 +96,8 @@ impl AgentProvider for SleepThenRecordTaskResultProvider {
                         "reason": "wait for background command result"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 10,
@@ -324,6 +326,7 @@ impl AgentProvider for FastPathWaitProvider {
                     "yield_time_ms": 500
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }]),
             2 => response(vec![ModelBlock::ToolUse {
                 id: "fastpath-hold".into(),
@@ -333,6 +336,7 @@ impl AgentProvider for FastPathWaitProvider {
                     "yield_time_ms": 30000
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }]),
             3 => {
                 let task_id = first_task_id_in_tool_results(&request)
@@ -346,6 +350,8 @@ impl AgentProvider for FastPathWaitProvider {
                         "resource": task_id
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }])
             }
             4 => response(vec![ModelBlock::Text {

@@ -452,6 +452,8 @@ impl AgentProvider for OneToolThenTextProvider {
                     "shell": "sh"
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }]
         } else {
             vec![ModelBlock::Text {
@@ -778,6 +780,8 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "yield_time_ms": 30000
                         }),
                         kind: crate::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -801,6 +805,8 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "yield_time_ms": 30000
                         }),
                         kind: crate::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -824,6 +830,8 @@ impl AgentProvider for TurnLocalCompactionProbeProvider {
                             "yield_time_ms": 30000
                         }),
                         kind: crate::provider::ModelToolCallKind::Function,
+
+                        provider_data: None,
                     },
                 ],
                 stop_reason: Some("tool_use".into()),
@@ -875,6 +883,8 @@ impl AgentProvider for BaselineOverBudgetProbeProvider {
                         "cmd": "printf 'baseline-over-budget'"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }],
                 stop_reason: Some("tool_use".into()),
                 input_tokens: 0,
@@ -903,6 +913,8 @@ impl AgentProvider for LargeBudgetContinuationProbeProvider {
                         "cmd": "printf 'large-budget-continuation'"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }],
                 stop_reason: Some("tool_use".into()),
                 input_tokens: 0,
@@ -951,6 +963,8 @@ impl AgentProvider for SleepOnlyToolProvider {
                     "duration_ms": 250
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }],
             stop_reason: None,
             input_tokens: 10,
@@ -987,6 +1001,8 @@ impl AgentProvider for WaitForOnlyToolProvider {
                     "recheck_after_ms": 1800000
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }],
             stop_reason: None,
             input_tokens: 10,
@@ -1013,6 +1029,8 @@ impl AgentProvider for DisallowedToolThenTextProvider {
                         "prompt": "removed public task surface"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 10,
@@ -1070,6 +1088,8 @@ impl AgentProvider for MaxOutputMutationToolProvider {
                         "patch": "--- /dev/null\n+++ b/app.txt\n@@ -0,0 +1 @@\n+should-not-be-written\n"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }],
                 stop_reason: Some("max_tokens".into()),
                 input_tokens: 20,
@@ -1194,6 +1214,8 @@ impl AgentProvider for RecentTurnsRecoveryProbeProvider {
                         "cmd": "printf 'recent-turns-recovery:'; awk 'BEGIN { for (i = 0; i < 1000; i++) printf \"x \" }'"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 }],
                 stop_reason: Some("tool_use".into()),
                 input_tokens: 0,
@@ -1493,6 +1515,8 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                         "patch": "--- a/app.txt\n+++ b/app.txt\n@@ -1,1 +1,1 @@\n-before\n+after\n"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 },
                 ModelBlock::ToolUse {
                     id: "verify".into(),
@@ -1502,6 +1526,8 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                         "shell": "sh"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+
+                    provider_data: None,
                 },
             ],
             2 => vec![ModelBlock::ToolUse {
@@ -1512,12 +1538,15 @@ impl AgentProvider for StagnatingAfterVerificationProvider {
                     "workdir": "."
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }],
             _ => vec![ModelBlock::ToolUse {
                 id: "agent".into(),
                 name: "GetAgent".into(),
                 input: serde_json::json!({}),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }],
         };
 
@@ -1549,6 +1578,7 @@ impl AgentProvider for SkillReadProvider {
                     "workdir": "."
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }],
             _ => vec![ModelBlock::Text {
                 text: "Skill loaded and applied.".into(),
@@ -1580,6 +1610,7 @@ impl AgentProvider for SkillActivationCommandProvider {
                 name: self.tool_name.into(),
                 input: self.input.clone(),
                 kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }],
             _ => vec![ModelBlock::Text {
                 text: "Skill activation observed.".into(),

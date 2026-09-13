@@ -413,6 +413,7 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                     name: name.to_string(),
                     input,
                     kind: ModelToolCallKind::Function,
+                    provider_data: None,
                 });
             }
             Some("reasoning") => {
@@ -460,6 +461,7 @@ pub(in super::super) fn parse_openai_response_with_transport_state(
                     name: name.to_string(),
                     input: Value::String(input.to_string()),
                     kind: ModelToolCallKind::Custom,
+                    provider_data: None,
                 });
             }
             _ => saw_nonempty_wire_item = true,

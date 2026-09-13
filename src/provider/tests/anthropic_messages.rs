@@ -587,6 +587,8 @@ async fn anthropic_response_preserves_thinking_blocks_for_round_trip() {
                 name: "ProbeTool".into(),
                 input: json!({ "reason": "round-trip" }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             },
         ]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
@@ -725,6 +727,8 @@ async fn anthropic_response_preserves_redacted_thinking_blocks_for_round_trip() 
                 name: "ProbeTool".into(),
                 input: json!({ "reason": "round-trip" }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             },
         ]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
@@ -905,6 +909,8 @@ async fn anthropic_claude_code_prompt_cache_strategy_does_not_cache_mark_tool_re
                 name: "ExecCommand".into(),
                 input: json!({ "cmd": "gh issue view 565" }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             },
         ]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
@@ -1004,6 +1010,8 @@ async fn ollama_tool_only_round_appends_placeholder_user_text() {
                 name: "ExecCommand".into(),
                 input: json!({ "cmd": "ls /tmp" }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {
                 tool_use_id: "exec-1".into(),
@@ -1072,6 +1080,8 @@ async fn anthropic_tool_only_round_does_not_append_placeholder_user_text() {
                 name: "ExecCommand".into(),
                 input: json!({ "cmd": "ls /tmp" }),
                 kind: crate::provider::ModelToolCallKind::Function,
+
+                provider_data: None,
             }]),
             ConversationMessage::UserToolResults(vec![ToolResultBlock {
                 tool_use_id: "exec-1".into(),
