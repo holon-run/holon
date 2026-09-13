@@ -83,6 +83,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
 
 use crate::runtime_db::connection::{
     configure_new_database_auto_vacuum, configure_persistent_database, flock, open_connection,
@@ -145,6 +146,60 @@ impl fmt::Display for RuntimeDbRetryableError {
 }
 
 impl StdError for RuntimeDbRetryableError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDbProtectionError {
+    path: PathBuf,
+    evidence: String,
+}
+
+impl RuntimeDbProtectionError {
+    pub(crate) fn new(path: &Path, evidence: impl Into<String>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            evidence: evidence.into(),
+        }
+    }
+
+    pub fn evidence(&self) -> &str {
+        &self.evidence
+    }
+}
+
+impl fmt::Display for RuntimeDbProtectionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "runtime database is quarantined after sidecar protection failed for {}: {}; preserve the database, WAL, SHM, and open-FD evidence, then restart or perform offline recovery",
+            self.path.display(),
+            self.evidence
+        )
+    }
+}
+
+impl StdError for RuntimeDbProtectionError {}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeDbProtectionState {
+    Starting,
+    Protected,
+    Unsupported,
+    Quarantined,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeDbProtectionStatus {
+    pub state: RuntimeDbProtectionState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<String>,
+}
+
+impl RuntimeDbProtectionStatus {
+    pub fn is_healthy(&self) -> bool {
+        self.state != RuntimeDbProtectionState::Quarantined
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStateTransitionConflict {
@@ -297,13 +352,14 @@ impl RuntimeDb {
         lock_path: impl Into<PathBuf>,
     ) -> Result<Self> {
         let path = path.into();
-        let writer = RuntimeDbWriter::open(path.clone(), open_connection(&path)?)?;
+        let writer = RuntimeDbWriter::open_starting(path.clone(), open_connection(&path)?)?;
         let db = Self {
             writer,
             path,
             lock_path: lock_path.into(),
         };
         db.migrate()?;
+        db.writer.activate_sidecar_protection()?;
         Ok(db)
     }
 
@@ -323,7 +379,9 @@ impl RuntimeDb {
                 path.display()
             );
         }
-        let writer = RuntimeDbWriter::open(path.clone(), open_connection(&path)?)?;
+        let connection = open_connection(&path)?;
+        configure_persistent_database(&connection)?;
+        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             writer,
             path,
@@ -343,6 +401,7 @@ impl RuntimeDb {
                 current_version
             );
         }
+        db.writer.activate_sidecar_protection()?;
         Ok(db)
     }
 
@@ -359,7 +418,9 @@ impl RuntimeDb {
                 path.display()
             );
         }
-        let writer = RuntimeDbWriter::open(path.clone(), open_connection(&path)?)?;
+        let connection = open_connection(&path)?;
+        configure_persistent_database(&connection)?;
+        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             writer,
             path,
@@ -377,6 +438,7 @@ impl RuntimeDb {
                 current_version
             );
         }
+        db.writer.activate_sidecar_protection()?;
         Ok(db)
     }
 
@@ -389,7 +451,11 @@ impl RuntimeDb {
     }
 
     pub fn connection(&self) -> Result<Connection> {
-        open_connection(&self.path)
+        self.writer.open_connection()
+    }
+
+    pub fn protection_status(&self) -> RuntimeDbProtectionStatus {
+        self.writer.protection_status()
     }
 
     pub(crate) fn create_verified_backup(&self, label: &str) -> Result<PathBuf> {

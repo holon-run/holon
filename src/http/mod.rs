@@ -16,7 +16,7 @@ pub(crate) use axum::{
         HeaderMap, HeaderName, HeaderValue, Method, Request as AxumRequest, Response, StatusCode,
         Uri,
     },
-    middleware::{from_fn_with_state, Next},
+    middleware::{from_fn_with_state, map_response, Next},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Response as AxumResponse,
@@ -721,6 +721,7 @@ pub fn router(state: AppState) -> Router {
         .fallback(web::web_or_not_found_handler)
         .layer(api_cors_layer(&config.api_cors))
         .layer(CompressionLayer::new())
+        .layer(map_response(add_retry_after_to_service_unavailable))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(|request: &AxumRequest<axum::body::Body>| {
@@ -802,6 +803,20 @@ pub fn router(state: AppState) -> Router {
                 ),
         )
         .with_state(Arc::new(state))
+}
+
+async fn add_retry_after_to_service_unavailable(mut response: AxumResponse) -> AxumResponse {
+    if response.status() == StatusCode::SERVICE_UNAVAILABLE
+        && !response
+            .headers()
+            .contains_key(axum::http::header::RETRY_AFTER)
+    {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            HeaderValue::from_static("1"),
+        );
+    }
+    response
 }
 
 fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
@@ -1467,6 +1482,9 @@ pub(crate) fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) 
 }
 
 fn runtime_error_status(descriptor: &RuntimeErrorDescriptor) -> StatusCode {
+    if descriptor.code == "runtime_db_quarantined" {
+        return StatusCode::SERVICE_UNAVAILABLE;
+    }
     match descriptor.domain {
         RuntimeErrorDomain::Validation => StatusCode::BAD_REQUEST,
         RuntimeErrorDomain::NotFound => StatusCode::NOT_FOUND,
@@ -1550,8 +1568,9 @@ pub async fn serve_unix(
 #[cfg(test)]
 mod tests {
     use super::{
-        authenticate_session, error_response, projection_gate_error_response, router,
-        session_credential, AppState, ProjectionGate, ProjectionGateError,
+        add_retry_after_to_service_unavailable, authenticate_session, error_response,
+        projection_gate_error_response, router, session_credential, AppState, ProjectionGate,
+        ProjectionGateError,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -1560,6 +1579,7 @@ mod tests {
             completed_span, record_span, TraceAttributes, TraceContext, TraceSpanStatus,
         },
         provider::StubProvider,
+        runtime_db::RuntimeDbProtectionError,
         runtime_error::{RuntimeError, RuntimeErrorDomain},
         types::{
             AgentListEntry, AgentTreeProjection, AuthorityClass, ChildAgentWorkspaceMode,
@@ -1569,8 +1589,9 @@ mod tests {
     use axum::{
         body::{to_bytes, Body},
         http::{header, HeaderMap, HeaderValue, Request, StatusCode},
+        response::IntoResponse,
     };
-    use std::{fs, sync::Arc, time::Duration};
+    use std::{fs, path::Path, sync::Arc, time::Duration};
     use tempfile::tempdir;
     use tower::ServiceExt;
 
@@ -2150,6 +2171,26 @@ mod tests {
             serde_json::from_value::<RuntimeErrorDomain>(body["domain"].clone()).unwrap(),
             RuntimeErrorDomain::NotFound
         );
+    }
+
+    #[tokio::test]
+    async fn quarantined_runtime_db_maps_to_typed_503_with_retry_after() {
+        let response = error_response(
+            RuntimeDbProtectionError::new(Path::new("/tmp/runtime.sqlite"), "deleted-open sidecar")
+                .into(),
+        )
+        .into_response();
+        let response = add_retry_after_to_service_unavailable(response).await;
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(body["code"], "runtime_db_quarantined");
+        assert_eq!(body["domain"], "storage");
+        assert_eq!(body["retryable"], false);
+        assert_eq!(body["context"]["protection_state"], "quarantined");
     }
 
     #[test]

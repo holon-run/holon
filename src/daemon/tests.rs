@@ -648,6 +648,7 @@ fn effective_config_mismatch_summary_lists_actionable_differences() {
         }),
         runtime_surface: Some(actual_surface),
         last_failure: None,
+        runtime_db_protection: None,
     };
 
     let summary = effective_config_mismatch_summary(&expected, &status);
@@ -916,6 +917,7 @@ fn runtime_status_metadata_match_rejects_foreign_runtime() {
         startup_surface: None,
         runtime_surface: None,
         last_failure: None,
+        runtime_db_protection: None,
     };
     assert!(runtime_status_matches_metadata(&matching_status, &metadata));
 

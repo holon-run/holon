@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     provider::{provider_attempt_timeline, provider_transport_diagnostics, ProviderTransportError},
-    runtime_db::{RuntimeDbRetryableError, RuntimeStateTransitionConflict},
+    runtime_db::{
+        RuntimeDbProtectionError, RuntimeDbRetryableError, RuntimeStateTransitionConflict,
+    },
     tool::ToolError,
 };
 
@@ -235,6 +237,27 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
                 .then(|| "retry with fresh state".into()),
             safe_context,
             source_chain,
+        };
+    }
+
+    if let Some(db_error) = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<RuntimeDbProtectionError>())
+    {
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Storage,
+            code: "runtime_db_quarantined".into(),
+            retryable: false,
+            operator_message: sanitize_runtime_error_text(&db_error.to_string()),
+            recovery_hint: Some(
+                "preserve the runtime database sidecars and open-FD evidence, then restart or perform offline recovery"
+                    .into(),
+            ),
+            safe_context: BTreeMap::from([(
+                "protection_state".into(),
+                "quarantined".into(),
+            )]),
+            source_chain: vec![sanitize_runtime_error_text(db_error.evidence())],
         };
     }
 

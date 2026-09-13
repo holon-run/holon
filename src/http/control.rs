@@ -1,4 +1,5 @@
 use super::*;
+use crate::{daemon::RuntimeStatusResponse, runtime_db::RuntimeDbProtectionStatus};
 use anyhow::Context as _;
 
 const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
@@ -26,12 +27,12 @@ pub async fn runtime_status(
         .filter_map(|agent| agent.last_runtime_failure)
         .max_by(|left, right| left.occurred_at.cmp(&right.occurred_at));
     let (startup_surface, runtime_surface) = runtime_surfaces(&state);
-    Ok(Json(runtime_service.status_response(
-        activity,
-        last_failure,
-        startup_surface,
-        runtime_surface,
-    )))
+    let protection = state.host.runtime_db().protection_status();
+    let response = apply_runtime_db_protection(
+        runtime_service.status_response(activity, last_failure, startup_surface, runtime_surface),
+        protection,
+    );
+    Ok(Json(response))
 }
 
 pub async fn runtime_readiness(
@@ -44,9 +45,21 @@ pub async fn runtime_readiness(
         .as_ref()
         .ok_or_else(|| service_unavailable("runtime service metadata is unavailable"))?;
     let (startup_surface, runtime_surface) = runtime_surfaces(&state);
-    Ok(Json(
+    let protection = state.host.runtime_db().protection_status();
+    let response = apply_runtime_db_protection(
         runtime_service.readiness_response(startup_surface, runtime_surface),
-    ))
+        protection,
+    );
+    Ok(Json(response))
+}
+
+fn apply_runtime_db_protection(
+    mut response: RuntimeStatusResponse,
+    protection: RuntimeDbProtectionStatus,
+) -> RuntimeStatusResponse {
+    response.healthy &= protection.is_healthy();
+    response.runtime_db_protection = Some(protection);
+    response
 }
 
 pub async fn runtime_performance(
@@ -1296,6 +1309,39 @@ mod tests {
                 .filter(|trace| trace.trace_id == "recent-50")
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn quarantined_runtime_db_degrades_runtime_status() {
+        use crate::runtime_db::RuntimeDbProtectionState;
+
+        let response: RuntimeStatusResponse = serde_json::from_value(json!({
+            "ok": true,
+            "healthy": true,
+            "pid": 42,
+            "home_dir": "/tmp/holon",
+            "socket_path": "/tmp/holon.sock",
+            "http_addr": "127.0.0.1:7878",
+            "started_at": "2026-09-13T00:00:00Z",
+            "config_fingerprint": "test"
+        }))
+        .unwrap();
+        let response = apply_runtime_db_protection(
+            response,
+            RuntimeDbProtectionStatus {
+                state: RuntimeDbProtectionState::Quarantined,
+                evidence: Some("deleted-open sidecar".into()),
+            },
+        );
+
+        assert!(!response.healthy);
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["runtime_db_protection"],
+            json!({
+                "state": "quarantined",
+                "evidence": "deleted-open sidecar"
+            })
         );
     }
 

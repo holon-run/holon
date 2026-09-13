@@ -24,13 +24,87 @@ use rusqlite::{ffi::ErrorCode, Connection, Transaction, TransactionBehavior};
 
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::runtime_db::{
-    RuntimeDbRetryableError, RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL, RUNTIME_DB_BUSY_TIMEOUT,
-    RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY, RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
+    RuntimeDbProtectionError, RuntimeDbRetryableError, RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL,
+    RUNTIME_DB_BUSY_TIMEOUT, RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY,
+    RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
 };
 
 pub(crate) enum LockMode {
     Blocking,
     NonBlocking,
+}
+
+#[cfg(target_os = "linux")]
+const SQLITE_PENDING_BYTE: libc::off_t = 0x4000_0000;
+#[cfg(target_os = "linux")]
+const SQLITE_SHARED_FIRST: libc::off_t = SQLITE_PENDING_BYTE + 2;
+#[cfg(target_os = "linux")]
+const SQLITE_SHARED_SIZE: libc::off_t = 510;
+
+#[cfg(target_os = "linux")]
+pub(crate) struct RuntimeDbSidecarGuard {
+    _file: File,
+}
+
+#[cfg(target_os = "linux")]
+impl RuntimeDbSidecarGuard {
+    pub(crate) fn acquire(path: &Path) -> Result<Self> {
+        let canonical_path = path.canonicalize().with_context(|| {
+            format!("resolving runtime db sidecar guard path {}", path.display())
+        })?;
+        let file = OpenOptions::new()
+            .read(true)
+            .open(&canonical_path)
+            .with_context(|| {
+                format!(
+                    "opening runtime db sidecar guard {}",
+                    canonical_path.display()
+                )
+            })?;
+        let expected = fs::metadata(&canonical_path).with_context(|| {
+            format!(
+                "reading runtime db sidecar guard identity {}",
+                canonical_path.display()
+            )
+        })?;
+        let actual = file.metadata().with_context(|| {
+            format!(
+                "reading opened runtime db sidecar guard identity {}",
+                canonical_path.display()
+            )
+        })?;
+        if (expected.dev(), expected.ino()) != (actual.dev(), actual.ino()) {
+            anyhow::bail!(
+                "runtime db changed while acquiring sidecar guard {}: expected={}:{} opened={}:{}",
+                canonical_path.display(),
+                expected.dev(),
+                expected.ino(),
+                actual.dev(),
+                actual.ino()
+            );
+        }
+
+        let lock = libc::flock {
+            l_type: libc::F_RDLCK as libc::c_short,
+            l_whence: libc::SEEK_SET as libc::c_short,
+            l_start: SQLITE_SHARED_FIRST,
+            l_len: SQLITE_SHARED_SIZE,
+            l_pid: 0,
+        };
+        // SAFETY: `file` owns a valid descriptor and `lock` remains valid for
+        // the duration of this non-blocking fcntl call.
+        let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_OFD_SETLK, &lock) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!(
+                    "acquiring Linux OFD sidecar guard for runtime db {}",
+                    canonical_path.display()
+                )
+            });
+        }
+
+        Ok(Self { _file: file })
+    }
 }
 
 pub(crate) fn open_connection(path: &Path) -> Result<Connection> {
@@ -111,7 +185,7 @@ fn bail_persistent_wal_not_enabled(path: &Path, current: i32) -> Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
+pub(crate) fn ensure_runtime_db_sidecars_are_consistent(path: &Path) -> Result<()> {
     ensure_runtime_db_sidecars_are_consistent_with(path, inspect_runtime_db_sidecar_fd)
 }
 
@@ -414,18 +488,20 @@ fn runtime_db_sidecar_divergence(
     canonical_identity: Option<(u64, u64)>,
     reason: &str,
 ) -> Result<()> {
-    let error = anyhow!(
-        "runtime db sidecar divergence detected ({reason}); refusing a new connection: db={}, sidecar={suffix}, fd={fd}, open_dev={}, open_inode={}, canonical_identity={canonical_identity:?}; preserve the files and FD/inode evidence, then perform offline recovery or restart",
-        db_path.display(),
-        open_identity.0,
-        open_identity.1,
-    );
-    tracing::error!(error = %error, "runtime db sidecar divergence");
-    Err(error)
+    Err(RuntimeDbProtectionError::new(
+        db_path,
+        format!(
+            "runtime db sidecar divergence detected ({reason}); refusing a new connection: db={}, sidecar={suffix}, fd={fd}, open_dev={}, open_inode={}, canonical_identity={canonical_identity:?}; preserve the files and FD/inode evidence, then perform offline recovery or restart",
+            db_path.display(),
+            open_identity.0,
+            open_identity.1,
+        ),
+    )
+    .into())
 }
 
 #[cfg(not(target_os = "linux"))]
-fn ensure_runtime_db_sidecars_are_consistent(_path: &Path) -> Result<()> {
+pub(crate) fn ensure_runtime_db_sidecars_are_consistent(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -668,7 +744,7 @@ pub(crate) fn unlock(_file: &File) -> Result<()> {
 mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
-    use rusqlite::OpenFlags;
+    use crate::runtime_db::write_queue::RuntimeDbWriter;
     use std::ffi::OsString;
     #[cfg(target_os = "linux")]
     use std::os::fd::IntoRawFd;
@@ -684,7 +760,7 @@ mod tests {
     const OBSERVER_CHILD_RELEASE_ENV: &str = "HOLON_RUNTIME_DB_OBSERVER_CHILD_RELEASE";
     #[cfg(target_os = "linux")]
     const OBSERVER_TEST_NAME: &str =
-        "runtime_db::connection::tests::external_observer_does_not_replace_runtime_db_sidecars";
+        "runtime_db::connection::tests::external_read_write_observer_does_not_replace_runtime_db_sidecars";
     #[cfg(target_os = "linux")]
     const LOCK_PROBE_PATH_ENV: &str = "HOLON_RUNTIME_DB_LOCK_PROBE_PATH";
     #[cfg(target_os = "linux")]
@@ -1193,10 +1269,9 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn external_observer_does_not_replace_runtime_db_sidecars() -> Result<()> {
+    fn external_read_write_observer_does_not_replace_runtime_db_sidecars() -> Result<()> {
         if let Some(db_path) = std::env::var_os(OBSERVER_CHILD_DB_ENV) {
-            let connection =
-                Connection::open_with_flags(Path::new(&db_path), OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            let connection = Connection::open(Path::new(&db_path))?;
             let max_value =
                 connection.query_row("SELECT MAX(value) FROM values_seen", [], |row| {
                     row.get::<_, i64>(0)
@@ -1215,6 +1290,35 @@ mod tests {
                 thread::sleep(Duration::from_millis(10));
             }
             drop(connection);
+
+            for _ in 0..2 {
+                let connection = Connection::open(Path::new(&db_path))?;
+                let max_value =
+                    connection.query_row("SELECT MAX(value) FROM values_seen", [], |row| {
+                        row.get::<_, i64>(0)
+                    })?;
+                assert_eq!(max_value, 2);
+            }
+
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(Path::new(&db_path))?;
+            let exclusive = libc::flock {
+                l_type: libc::F_WRLCK as libc::c_short,
+                l_whence: libc::SEEK_SET as libc::c_short,
+                l_start: SQLITE_SHARED_FIRST,
+                l_len: SQLITE_SHARED_SIZE,
+                l_pid: 0,
+            };
+            // SAFETY: `file` owns a valid descriptor and `exclusive` remains
+            // valid for the duration of this non-blocking fcntl call.
+            let result = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &exclusive) };
+            assert_eq!(result, -1, "external exclusive lock must be refused");
+            assert!(matches!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EACCES | libc::EAGAIN)
+            ));
             return Ok(());
         }
 
@@ -1222,17 +1326,22 @@ mod tests {
         let db_path = directory.path().join("runtime.sqlite");
         let ready_path = directory.path().join("observer-ready");
         let release_path = directory.path().join("observer-release");
-        let writer = open_connection(&db_path)?;
-        configure_persistent_database(&writer)?;
-        writer.execute_batch(
+        let connection = open_connection(&db_path)?;
+        configure_persistent_database(&connection)?;
+        connection.execute_batch(
             "CREATE TABLE values_seen(value INTEGER NOT NULL);
              INSERT INTO values_seen(value) VALUES (1);",
         )?;
+        let writer = RuntimeDbWriter::open(db_path.clone(), connection)?;
 
         let wal_path = sidecar_path(&db_path, "-wal");
         let shm_path = sidecar_path(&db_path, "-shm");
         let wal_identity = fs::metadata(&wal_path)?.ino();
         let shm_identity = fs::metadata(&shm_path)?.ino();
+        // SQLite's default Unix VFS uses process-associated POSIX locks. Closing
+        // any descriptor for the same inode releases all of this process's locks,
+        // including the writer connection's shared lock.
+        drop(File::open(&db_path)?);
         let child = Command::new(std::env::current_exe()?)
             .arg("--exact")
             .arg(OBSERVER_TEST_NAME)
@@ -1253,7 +1362,10 @@ mod tests {
                 &inspect_runtime_db_sidecar_fd,
             )?;
         }
-        writer.execute("INSERT INTO values_seen(value) VALUES (2)", [])?;
+        writer.append_wait_once(|transaction| {
+            transaction.execute("INSERT INTO values_seen(value) VALUES (2)", [])?;
+            Ok(())
+        })?;
 
         File::create(&release_path)?;
         let output = wait_for_child_exit(child, "runtime db observer")?;
@@ -1263,10 +1375,13 @@ mod tests {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        writer.execute("INSERT INTO values_seen(value) VALUES (3)", [])?;
-
         assert_eq!(fs::metadata(&wal_path)?.ino(), wal_identity);
         assert_eq!(fs::metadata(&shm_path)?.ino(), shm_identity);
+        writer.append_wait_once(|transaction| {
+            transaction.execute("INSERT INTO values_seen(value) VALUES (3)", [])?;
+            Ok(())
+        })?;
+
         ensure_runtime_db_sidecars_are_consistent(&db_path)?;
         drop(writer);
 
