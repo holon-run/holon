@@ -102,10 +102,10 @@ invalidates its URL immediately; future requests to that URL are rejected.
 
 ### Reset callback token
 
-The `POST /control/agents/:agent_id/external-triggers/:id/reset-callback`
-endpoint rotates the callback token for an existing trigger. The old token
-is invalidated immediately and a new token is returned. Use this when a
-token has been exposed or as a periodic security rotation.
+The `POST /api/control/agents/:agent_id/reset-callback` control endpoint
+revokes the agent's current external trigger and provisions a fresh one with
+a new token. The old token stops working immediately. Use this when a token
+has been exposed, or as periodic security rotation.
 
 ## Default ingress capability
 
