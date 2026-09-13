@@ -4848,6 +4848,13 @@ export interface components {
                  * @description Exact pending outbox row count for this agent.
                  */
                 pending_count?: number;
+                /** Format: uint64 */
+                rebuild_documents_processed?: number | null;
+                /** Format: date-time */
+                rebuild_last_progress_at?: string | null;
+                rebuild_phase?: string | null;
+                /** Format: date-time */
+                rebuild_started_at?: string | null;
                 results_may_be_incomplete?: boolean;
                 /**
                  * Format: uint
@@ -4899,6 +4906,13 @@ export interface components {
                      * @description Exact pending outbox row count for this agent.
                      */
                     pending_count?: number;
+                    /** Format: uint64 */
+                    rebuild_documents_processed?: number | null;
+                    /** Format: date-time */
+                    rebuild_last_progress_at?: string | null;
+                    rebuild_phase?: string | null;
+                    /** Format: date-time */
+                    rebuild_started_at?: string | null;
                     results_may_be_incomplete?: boolean;
                     /**
                      * Format: uint
