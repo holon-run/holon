@@ -828,6 +828,8 @@ mod tests {
         assert!(!apply_patch
             .content
             .contains("Current ApplyPatch surface is Codex DSL freeform"));
+        assert!(!apply_patch.content.contains("*** Begin Patch"));
+        assert!(!apply_patch.content.contains("*** End Patch"));
         let section = sections
             .iter()
             .find(|s| s.name == "tool_file_mutation")

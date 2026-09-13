@@ -12,6 +12,7 @@ use crate::{
 };
 
 const DIFF_PREVIEW_MAX_LINES: usize = 80;
+const CODEX_END_PATCH_SENTINEL: &str = "*** End Patch";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ApplyPatchOutcome {
@@ -59,6 +60,17 @@ pub(crate) enum PatchFormat {
     CodexDsl,
     UnifiedDiff,
     Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PatchCompatibility {
+    CrossFormat {
+        detected_format: PatchFormat,
+        strict_failure_kind: String,
+    },
+    TrailingSentinel {
+        strict_failure_kind: String,
+    },
 }
 
 impl PatchFormat {
@@ -166,19 +178,38 @@ pub(crate) async fn apply_patch(
     let expected_format = surface.expected_format();
     let patch_bytes = input.len();
     let parse = parse_patch_for_format(input, expected_format);
-    let (patches, parser_mode, detected_format, strict_failure_kind) = match parse {
-        Ok(patches) => (patches, "strict", expected_format, None),
+    let (patches, compatibility) = match parse {
+        Ok(patches) => (patches, None),
         Err(strict_error) => {
             let detected = detect_patch_format(input);
             if detected != PatchFormat::Unknown && detected != expected_format {
                 match parse_patch_for_format(input, detected) {
-                    Ok(patches) => (
-                        patches,
-                        "compatibility",
-                        detected,
-                        Some(ToolError::from_anyhow(&strict_error).kind),
-                    ),
+                    Ok(patches) => {
+                        let strict_failure_kind = ToolError::from_anyhow(&strict_error).kind;
+                        (
+                            patches,
+                            Some(PatchCompatibility::CrossFormat {
+                                detected_format: detected,
+                                strict_failure_kind,
+                            }),
+                        )
+                    }
                     Err(_) => return Err(strict_error),
+                }
+            } else if surface == ApplyPatchSurface::UnifiedDiffJson
+                && detected == PatchFormat::UnifiedDiff
+            {
+                match parse_unified_diff_with_trailing_sentinel(input)? {
+                    Some(patches) => {
+                        let strict_failure_kind = ToolError::from_anyhow(&strict_error).kind;
+                        (
+                            patches,
+                            Some(PatchCompatibility::TrailingSentinel {
+                                strict_failure_kind,
+                            }),
+                        )
+                    }
+                    None => return Err(strict_error),
                 }
             } else {
                 return Err(strict_error);
@@ -190,24 +221,44 @@ pub(crate) async fn apply_patch(
     let (changed_files, touched, ignored_metadata, diagnostics) =
         apply_file_patches(workspace_root, &patches).await?;
     let mut diagnostics = diagnostics;
-    if let Some(kind) = strict_failure_kind {
-        diagnostics.push(ApplyPatchDiagnostic {
-            path: String::new(),
-            kind: "apply_patch_compatibility_fallback".to_string(),
-            message: format!(
-                "ApplyPatch succeeded using {}, but this turn expects {}. Continue using {} for future ApplyPatch calls. surface={}, expected_format={}, detected_format={}, parser_mode={}, compatibility_fallback_used=true, patch_bytes={}, file_count={}, hunk_count={}, strict_parse_failure_kind={kind}",
-                detected_format.label(),
-                expected_format.label(),
-                expected_format.label(),
-                surface.label(),
-                expected_format.label(),
-                detected_format.label(),
-                parser_mode,
-                patch_bytes,
-                file_count,
-                hunk_count,
-            ),
-        });
+    if let Some(compatibility) = compatibility {
+        let diagnostic = match compatibility {
+            PatchCompatibility::CrossFormat {
+                detected_format,
+                strict_failure_kind,
+            } => ApplyPatchDiagnostic {
+                path: String::new(),
+                kind: "apply_patch_compatibility_fallback".to_string(),
+                message: format!(
+                    "ApplyPatch succeeded using {}, but this turn expects {}. Continue using {} for future ApplyPatch calls. surface={}, expected_format={}, detected_format={}, parser_mode=compatibility, compatibility_fallback_used=true, patch_bytes={}, file_count={}, hunk_count={}, strict_parse_failure_kind={strict_failure_kind}",
+                    detected_format.label(),
+                    expected_format.label(),
+                    expected_format.label(),
+                    surface.label(),
+                    expected_format.label(),
+                    detected_format.label(),
+                    patch_bytes,
+                    file_count,
+                    hunk_count,
+                ),
+            },
+            PatchCompatibility::TrailingSentinel {
+                strict_failure_kind,
+            } => ApplyPatchDiagnostic {
+                path: String::new(),
+                kind: "apply_patch_trailing_sentinel_ignored".to_string(),
+                message: format!(
+                    "ApplyPatch ignored one trailing patch sentinel. surface={}, expected_format={}, detected_format={}, parser_mode=trailing_sentinel_compatibility, trailing_sentinel_ignored=true, patch_bytes={}, file_count={}, hunk_count={}, strict_parse_failure_kind={strict_failure_kind}",
+                    surface.label(),
+                    expected_format.label(),
+                    PatchFormat::UnifiedDiff.label(),
+                    patch_bytes,
+                    file_count,
+                    hunk_count,
+                ),
+            },
+        };
+        diagnostics.push(diagnostic);
     }
     Ok(ApplyPatchOutcome {
         changed_files,
@@ -254,11 +305,42 @@ fn detect_patch_format(input: &str) -> PatchFormat {
     }
 }
 
+fn parse_unified_diff_with_trailing_sentinel(input: &str) -> Result<Option<Vec<FilePatch>>> {
+    let lines = input.lines().collect::<Vec<_>>();
+    let candidate_lines = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with(CODEX_END_PATCH_SENTINEL).then_some(index))
+        .collect::<Vec<_>>();
+    if candidate_lines.is_empty() {
+        return Ok(None);
+    }
+
+    let sentinel_line = candidate_lines[0];
+    let is_unique_exact_trailing_sentinel = candidate_lines.len() == 1
+        && lines[sentinel_line] == CODEX_END_PATCH_SENTINEL
+        && sentinel_line + 1 == lines.len();
+    if !is_unique_exact_trailing_sentinel {
+        return Err(unexpected_patch_sentinel(sentinel_line + 1));
+    }
+
+    let without_final_newline = input
+        .strip_suffix("\r\n")
+        .or_else(|| input.strip_suffix('\n'))
+        .unwrap_or(input);
+    let Some(stripped) = without_final_newline.strip_suffix(CODEX_END_PATCH_SENTINEL) else {
+        return Err(unexpected_patch_sentinel(sentinel_line + 1));
+    };
+    parse_unified_diff_patch(stripped)
+        .map(Some)
+        .map_err(|_| unexpected_patch_sentinel(sentinel_line + 1))
+}
+
 fn parse_unified_diff_patch(input: &str) -> Result<Vec<FilePatch>> {
     if detect_patch_format(input) == PatchFormat::CodexDsl {
         return Err(syntax_error(
             "wrong_patch_format",
-            "this turn expects unified diff JSON, not Codex *** Begin Patch DSL",
+            "this turn expects a unified diff in the JSON patch field",
             None,
             "submit unified diff with --- old_path, +++ new_path, and @@ hunks",
         ));
@@ -1652,6 +1734,16 @@ fn syntax_error_at(
     )
 }
 
+fn unexpected_patch_sentinel(line: usize) -> anyhow::Error {
+    syntax_error_at(
+        "unexpected_patch_sentinel",
+        "unified diff contains a standalone patch sentinel that is not allowed in this position",
+        None,
+        Some(line),
+        "submit only the unified diff content and remove standalone wrapper or sentinel lines",
+    )
+}
+
 fn unsupported_git_patch_feature(line: &str, path: Option<&str>) -> anyhow::Error {
     let mut details = serde_json::json!({
         "line": line,
@@ -2119,6 +2211,7 @@ mod tests {
             "keep\nnew\n"
         );
         assert_eq!(outcome.changed_files.len(), 2);
+        assert!(outcome.diagnostics.is_empty());
     }
 
     #[tokio::test]
@@ -2135,15 +2228,158 @@ mod tests {
  before
  *** Begin Patch
 -after
-+AFTER
++*** End Patch
 "#;
 
         let outcome = apply_patch(dir.path(), patch).await.unwrap();
         assert_eq!(
             tokio::fs::read_to_string(&file).await.unwrap(),
-            "before\n*** Begin Patch\nAFTER\n"
+            "before\n*** Begin Patch\n*** End Patch\n"
         );
         assert_eq!(outcome.changed_files[0].action, ApplyPatchAction::Modify);
+        assert!(outcome.diagnostics.is_empty());
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_ignores_one_trailing_sentinel_at_surface_boundary() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1 +1 @@
+-old
++new
+*** End Patch
+"#;
+
+        assert!(parse_patch(patch).is_err());
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        let diagnostic = outcome
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == "apply_patch_trailing_sentinel_ignored")
+            .expect("trailing sentinel diagnostic");
+        assert!(diagnostic
+            .message
+            .contains("parser_mode=trailing_sentinel_compatibility"));
+        assert!(diagnostic
+            .message
+            .contains("trailing_sentinel_ignored=true"));
+        assert!(!diagnostic.message.contains(CODEX_END_PATCH_SENTINEL));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_rejects_non_trailing_or_repeated_sentinel_without_writes() {
+        let patches = [
+            r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1 +1 @@
+-old
++new
+*** End Patch
+--- a/other.txt
++++ b/other.txt
+@@ -1 +1 @@
+-before
++after
+"#,
+            r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1 +1 @@
+-old
++new
+*** End Patch
+*** End Patch
+"#,
+            r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1 +1 @@
+-old
++new
+*** End Patch trailing garbage
+"#,
+        ];
+
+        for patch in patches {
+            let dir = tempdir().unwrap();
+            let file = dir.path().join("sample.txt");
+            tokio::fs::write(&file, "old\n").await.unwrap();
+
+            let error = apply_patch(dir.path(), patch).await.unwrap_err();
+            let tool_error = ToolError::from_anyhow(&error);
+            assert_eq!(tool_error.kind, "invalid_patch_syntax");
+            assert_eq!(
+                tool_error.details.as_ref().unwrap()["rule"],
+                "unexpected_patch_sentinel"
+            );
+            assert!(!tool_error.message.contains(CODEX_END_PATCH_SENTINEL));
+            assert!(!tool_error
+                .recovery_hint
+                .as_deref()
+                .unwrap_or_default()
+                .contains(CODEX_END_PATCH_SENTINEL));
+            assert!(!tool_error
+                .details
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("trailing garbage"));
+            assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "old\n");
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_patch_unified_diff_keeps_full_codex_wrapper_on_cross_format_fallback() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+
+        let patch = r#"*** Begin Patch
+*** Update File: sample.txt
+-old
++new
+*** End Patch
+"#;
+
+        let outcome = apply_patch(dir.path(), patch).await.unwrap();
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "new\n");
+        assert!(outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "apply_patch_compatibility_fallback"));
+        assert!(!outcome
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "apply_patch_trailing_sentinel_ignored"));
+    }
+
+    #[test]
+    fn parse_unified_diff_wrong_format_error_does_not_echo_competing_markers() {
+        let malformed = "*** Begin Patch\nnot a complete patch\n";
+        let error = parse_patch(malformed).unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+
+        assert_eq!(tool_error.kind, "invalid_patch_syntax");
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["rule"],
+            "wrong_patch_format"
+        );
+        assert!(!tool_error.message.contains("*** Begin Patch"));
+        assert!(!tool_error
+            .recovery_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("*** Begin Patch"));
+        assert!(!tool_error
+            .details
+            .as_ref()
+            .unwrap()
+            .to_string()
+            .contains("*** Begin Patch"));
     }
 
     #[tokio::test]

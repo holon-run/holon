@@ -446,6 +446,14 @@ fn openai_request_uses_function_tool_shape_for_generic_apply_patch() {
         "string"
     );
     assert!(body["tools"][0].get("format").is_none());
+    let description = body["tools"][0]["description"]
+        .as_str()
+        .expect("ApplyPatch description should be a string");
+    assert!(!description.contains("*** Begin Patch"));
+    assert!(!description.contains("*** End Patch"));
+    let parameters = body["tools"][0]["parameters"].to_string();
+    assert!(!parameters.contains("*** Begin Patch"));
+    assert!(!parameters.contains("*** End Patch"));
 }
 
 #[test]
