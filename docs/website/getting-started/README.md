@@ -10,6 +10,23 @@ Holon ships as an installable release. This section gives you
 the shortest path from install to a running agent, then shows where to branch
 based on what you want to do next.
 
+## Fastest path
+
+```bash
+brew tap holon-run/tap && brew install holon
+holon onboard
+holon daemon start
+```
+
+Open <http://localhost:7878> or run `holon tui`. A successful first session
+means you can:
+
+1. send a bounded request to the default main agent;
+2. see the agent inspect a real workspace or run an approved tool;
+3. receive a concise result or an explicit request for the next decision.
+
+Use [Create your first agent](first-agent.md) when you want the full walkthrough.
+
 ## New to Holon?
 
 If this is your first time using Holon:
@@ -23,6 +40,10 @@ The tutorial covers:
 - Connecting with the Terminal UI
 - Creating an agent and sending your first prompt
 - Configuring models and providers
+
+For the first durable workflow, choose a responsibility with a natural wait:
+following a pull request through CI, investigating an issue while waiting for
+evidence, or coordinating a release with explicit human approval.
 
 ## Which runtime mode should I use?
 

@@ -5,8 +5,9 @@ Checks README.md and docs/website/ for broken relative/absolute .md links.
 Site-root-absolute links (starting with /) in docs/website/ resolve relative
 to the website content root (docs/website/), matching mdorigin behavior.
 
-Also validates navigation links in mdorigin.config.json and catches
-trailing-slash mismatches (file-page URLs must not end with /).
+Also validates default and localized navigation links in
+mdorigin.config.json and catches trailing-slash mismatches (file-page URLs
+must not end with /).
 
 Run from the repository root:
     python3 docs/website/.tools/check-links.py
@@ -115,23 +116,29 @@ def check_nav_config():
     dir_pages = collect_dir_pages()
     with open(config_path) as f:
         config = json.load(f)
-    for nav in config.get('topNav', []):
-        href = nav['href']
-        clean = href.split('#')[0].split('?')[0]
-        # Skip external links
-        if href.startswith('http'):
-            continue
-        # Accept directory-backed routes
-        if clean in dir_pages:
-            continue
-        # Accept file-backed routes (non-trailing-slash .md files)
-        if not clean.endswith('/'):
-            file_path = os.path.join(
-                WEBSITE_DIR, clean.lstrip('/') + '.md')
-            if os.path.exists(file_path):
+    nav_groups = [config.get('topNav', [])]
+    nav_groups.extend(
+        locale.get('topNav', [])
+        for locale in config.get('locales', [])
+    )
+    for nav_group in nav_groups:
+        for nav in nav_group:
+            href = nav['href']
+            clean = href.split('#')[0].split('?')[0]
+            # Skip external links
+            if href.startswith('http'):
                 continue
-        print(f"  BROKEN-NAV: {href} ({nav['label']})")
-        broken += 1
+            # Accept directory-backed routes
+            if clean in dir_pages:
+                continue
+            # Accept file-backed routes (non-trailing-slash .md files)
+            if not clean.endswith('/'):
+                file_path = os.path.join(
+                    WEBSITE_DIR, clean.lstrip('/') + '.md')
+                if os.path.exists(file_path):
+                    continue
+            print(f"  BROKEN-NAV: {href} ({nav['label']})")
+            broken += 1
 
 
 print("=== Holon docs link check ===")

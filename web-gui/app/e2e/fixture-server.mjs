@@ -1,5 +1,8 @@
 import http from "node:http";
 import { createServer as createViteServer } from "vite";
+import { tourAgents, tourApi, seedTour } from "./tour/scenario.mjs";
+
+const tour = process.argv.includes("--tour");
 
 const requestedPort = Number(process.argv[process.argv.indexOf("--port") + 1]);
 if (!Number.isInteger(requestedPort) || requestedPort <= 0) {
@@ -40,7 +43,7 @@ function sessionFor(req, url) {
       abortResponse: null,
       globalStreams: new Set(),
       agentStreams: new Set(),
-      visibleAgentIds: ["bootstrap-agent"],
+      visibleAgentIds: tour ? tourAgents.map((agent) => agent.id) : ["bootstrap-agent"],
       ledgerEnabledAgentIds: new Set(),
       eventsByAgentId: new Map(),
       briefsById: new Map(),
@@ -54,6 +57,7 @@ function sessionFor(req, url) {
       snapshotThroughSeqByAgentId: new Map(),
       projectionLatestBriefByAgentId: new Map(),
     };
+    if (tour) seedTour(session);
     sessions.set(id, session);
   }
   return session;
@@ -93,6 +97,7 @@ function eventHead(session, agentId) {
 }
 
 function listEntry(agentId, session) {
+  if (tour) return tourAgents.find((agent) => agent.id === agentId)?.entry;
   const currentRunId = session ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null;
   return {
     identity: {
@@ -108,6 +113,7 @@ function listEntry(agentId, session) {
 }
 
 function agentState(agentId, session) {
+  if (tour) return tourAgents.find((agent) => agent.id === agentId)?.state;
   const running = Boolean(session?.currentRunIdByAgentId.get(agentId));
   return {
     agent: {
@@ -365,6 +371,13 @@ async function handleControl(req, res, url) {
 async function handleApi(req, res, url) {
   record(req, url);
   const session = sessionFor(req, url);
+  if (tour) {
+    const body = tourApi(url.pathname);
+    if (body !== undefined) {
+      json(res, body);
+      return true;
+    }
+  }
   if (url.pathname === "/api/handshake") {
     json(res, {
       auth: { mode: "none" },

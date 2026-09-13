@@ -9,6 +9,22 @@ order: 10
 Holon 以可安装的发布形式分发。本节给出从安装到运行 Agent 的最短路径，
 并告诉你接下来该往哪里走。
 
+## 最短路径
+
+```bash
+brew tap holon-run/tap && brew install holon
+holon onboard
+holon daemon start
+```
+
+打开 <http://localhost:7878>，或运行 `holon tui`。第一次使用成功意味着你能够：
+
+1. 向默认 main agent 发送一项有明确边界的请求；
+2. 看到 Agent 检查真实工作区或运行已获允许的工具；
+3. 收到精炼结果，或一项明确的下一步决策请求。
+
+需要完整分步说明时，进入[创建你的第一个 Agent](first-agent.md)。
+
 ## 第一次接触 Holon？
 
 如果你是第一次使用 Holon：
@@ -22,6 +38,9 @@ Holon 以可安装的发布形式分发。本节给出从安装到运行 Agent �
 - 用终端 UI（TUI）连接
 - 创建 Agent 并发送第一条提示
 - 配置模型和提供商
+
+第一条持续工作流可以选择一项天然需要等待的职责：跟进 PR 与 CI、等待证据的问题分析，
+或保留明确人工审批点的发布协调。
 
 ## 该用哪种运行模式？
 

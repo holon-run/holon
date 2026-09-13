@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="1700" viewBox="0 0 480 1700" role="img" aria-labelledby="title desc">
+<title id="title">Issue 关闭之后，按版本持续跟进验收</title><desc id="desc">PR 合并、关联 Issue 关闭不等于已部署、已发包或验收通过。测试 Agent 等待部署和发布事件，按每项变更的依赖核对实际交付版本，整理变更与已关闭 Issue 的验收清单；未进入版本的修复继续等待。自动检查或人工实测之后，注明版本、范围和来源，写回 Issue 与版本验收记录。</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8" fill="none" stroke="#285fa7" stroke-width="1.5"/></marker></defs>
+<rect width="480" height="1700" rx="16" fill="#f7faff"/>
+<g font-family="Noto Sans CJK SC, sans-serif" fill="#183457">
+<text x="28" y="48" font-size="28" fill="#183457" font-weight="600" text-anchor="start">Issue 关闭，验收还没结束</text>
+<text x="28" y="84" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">跟进一个版本周期，而非一次合并</text>
+<rect x="28" y="116" width="424" height="118" rx="10" fill="white" stroke="#c4d3e6" stroke-width="1.5"/>
+<text x="48" y="153" font-size="23" fill="#183457" font-weight="600" text-anchor="start">多个 PR 合并 → 关联 Issue 关闭</text>
+<text x="48" y="190" font-size="22" fill="#183457" font-weight="400" text-anchor="start">代码已合并，修复尚未部署或发包</text>
+<path d="M240 234 V274" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="28" y="280" width="424" height="426" rx="10" fill="#edf4ff" stroke="#285fa7" stroke-width="1.5"/>
+<text x="48" y="319" font-size="25" fill="#285fa7" font-weight="600" text-anchor="start">测试 Agent 持续跟进</text>
+<text x="48" y="355" font-size="22" fill="#183457" font-weight="400" text-anchor="start">等待部署 / 发布事件，工作仍保留</text>
+<rect x="48" y="378" width="384" height="88" rx="10" fill="white" stroke="#c4d3e6" stroke-width="1.5"/>
+<text x="68" y="413" font-size="24" fill="#183457" font-weight="600" text-anchor="start">服务器部署完成</text>
+<text x="68" y="447" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">服务器改动：核对对应部署</text>
+<rect x="48" y="482" width="384" height="88" rx="10" fill="white" stroke="#c4d3e6" stroke-width="1.5"/>
+<text x="68" y="517" font-size="24" fill="#183457" font-weight="600" text-anchor="start">客户端版本发布</text>
+<text x="68" y="551" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">客户端改动：核对对应版本</text>
+<text x="48" y="611" font-size="23" fill="#285fa7" font-weight="600" text-anchor="start">按每项变更的依赖等待</text>
+<text x="48" y="647" font-size="22" fill="#183457" font-weight="400" text-anchor="start">不是每项都要同时等两个事件</text>
+<text x="48" y="681" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">跨端问题核对两端条件</text>
+<path d="M240 706 V744" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="28" y="750" width="424" height="180" rx="10" fill="white" stroke="#c4d3e6" stroke-width="1.5"/>
+<text x="48" y="790" font-size="25" fill="#183457" font-weight="600" text-anchor="start">核对版本，形成验收清单</text>
+<text x="48" y="830" font-size="22" fill="#183457" font-weight="400" text-anchor="start">本次实际交付的变更</text>
+<text x="48" y="864" font-size="22" fill="#183457" font-weight="400" text-anchor="start">+ 这些变更关联的已关闭 Issue</text>
+<text x="48" y="904" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">不按 Issue 关闭日期机械归集</text>
+<text x="28" y="966" font-size="23" fill="#285fa7" font-weight="600" text-anchor="start">已进入可测版本的清单项</text>
+<path d="M240 986 V1030" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<text x="28" y="1068" font-size="25" fill="#183457" font-weight="600" text-anchor="start">清单内的两种验证方式</text>
+<rect x="28" y="1092" width="424" height="140" rx="10" fill="white" stroke="#c4d3e6" stroke-width="1.5"/>
+<text x="48" y="1130" font-size="24" fill="#285fa7" font-weight="600" text-anchor="start">Agent 自动检查</text>
+<text x="48" y="1168" font-size="22" fill="#183457" font-weight="400" text-anchor="start">如后台跳转：4 类请求 → 响应</text>
+<text x="48" y="1203" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">记录检查范围，不外推其他功能</text>
+<rect x="28" y="1250" width="424" height="140" rx="10" fill="white" stroke="#c4d3e6" stroke-width="1.5"/>
+<text x="48" y="1288" font-size="24" fill="#936022" font-weight="600" text-anchor="start">人工实测，Agent 接回结果</text>
+<text x="48" y="1326" font-size="22" fill="#183457" font-weight="400" text-anchor="start">如琴键发声：修复包 + 对应固件</text>
+<text x="48" y="1361" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">人工可先完成，无需重复派测</text>
+<path d="M240 1390 V1430" fill="none" stroke="#285fa7" stroke-width="2" marker-end="url(#arrow)"/>
+<rect x="28" y="1436" width="424" height="144" rx="10" fill="#edf4ff" stroke="#285fa7" stroke-width="1.5"/>
+<text x="48" y="1477" font-size="24" fill="#285fa7" font-weight="600" text-anchor="start">回写原 Issue 与版本验收记录</text>
+<text x="48" y="1516" font-size="22" fill="#183457" font-weight="400" text-anchor="start">版本 · 检查范围 · 结果来源</text>
+<text x="48" y="1552" font-size="22" fill="#183457" font-weight="400" text-anchor="start">分别记录自动检查和人工结论</text>
+<text x="28" y="1624" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">未进入可测版本的修复继续等待；</text>
+<text x="28" y="1660" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">缺少必要反馈，也不能判定通过。</text>
+</g></svg>

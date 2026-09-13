@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="480" height="890" viewBox="0 0 480 890" role="img" aria-labelledby="title desc">
+<title id="title">77 天累计 Token 用量与角色占比</title><desc id="desc">2026年6月25日至9月9日，六类共享Agent累计77.64亿Token，含缓存输入。饼图按角色划分，不代表费用或成果。</desc>
+<defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M1 1 L8 4.5 L1 8" fill="none" stroke="#285fa7" stroke-width="1.5"/></marker></defs>
+<rect width="480" height="890" rx="16" fill="#f7faff"/>
+<g font-family="Noto Sans CJK SC, sans-serif" fill="#183457">
+<text x="30" y="48" font-size="26" fill="#183457" font-weight="600" text-anchor="start">77 天，共享 Agent 的累计用量</text>
+<text x="30" y="82" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">2026.06.25 至 09.09 · 北京时间</text>
+<text x="30" y="146" font-size="42" fill="#183457" font-weight="600" text-anchor="start">77.64 亿 Token</text>
+<text x="30" y="183" font-size="22" fill="#183457" font-weight="400" text-anchor="start">输入 76.94 亿 · 输出 0.70 亿</text>
+<text x="30" y="215" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">含缓存读取 62.59 亿，已计入输入</text>
+<path d="M240 395 L240.000 255.000 A140 140 0 1 1 221.062 533.713 Z" fill="#285fa7" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 395 L221.062 533.713 A140 140 0 0 1 101.020 378.128 Z" fill="#398a88" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 395 L101.020 378.128 A140 140 0 0 1 141.406 295.606 Z" fill="#bd8131" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 395 L141.406 295.606 A140 140 0 0 1 171.595 272.850 Z" fill="#56643e" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 395 L171.595 272.850 A140 140 0 0 1 206.750 259.006 Z" fill="#c35672" stroke="#f7faff" stroke-width="2"/>
+<path d="M240 395 L206.750 259.006 A140 140 0 0 1 240.000 255.000 Z" fill="#75579d" stroke="#f7faff" stroke-width="2"/>
+<rect x="30" y="563" width="17" height="17" rx="3" fill="#285fa7" stroke="#285fa7" stroke-width="1.5"/>
+<text x="60" y="580" font-size="22" fill="#183457" font-weight="400" text-anchor="start">代码审阅</text>
+<text x="325" y="580" font-size="22" fill="#183457" font-weight="400" text-anchor="end">40.50</text>
+<text x="450" y="580" font-size="22" fill="#183457" font-weight="400" text-anchor="end">52.16%</text>
+<rect x="30" y="602" width="17" height="17" rx="3" fill="#398a88" stroke="#398a88" stroke-width="1.5"/>
+<text x="60" y="619" font-size="22" fill="#183457" font-weight="400" text-anchor="start">现场调查</text>
+<text x="325" y="619" font-size="22" fill="#183457" font-weight="400" text-anchor="end">19.23</text>
+<text x="450" y="619" font-size="22" fill="#183457" font-weight="400" text-anchor="end">24.76%</text>
+<rect x="30" y="641" width="17" height="17" rx="3" fill="#bd8131" stroke="#bd8131" stroke-width="1.5"/>
+<text x="60" y="658" font-size="22" fill="#183457" font-weight="400" text-anchor="start">测试验收</text>
+<text x="325" y="658" font-size="22" fill="#183457" font-weight="400" text-anchor="end">8.26</text>
+<text x="450" y="658" font-size="22" fill="#183457" font-weight="400" text-anchor="end">10.64%</text>
+<rect x="30" y="680" width="17" height="17" rx="3" fill="#56643e" stroke="#56643e" stroke-width="1.5"/>
+<text x="60" y="697" font-size="22" fill="#183457" font-weight="400" text-anchor="start">协作助手</text>
+<text x="325" y="697" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.35</text>
+<text x="450" y="697" font-size="22" fill="#183457" font-weight="400" text-anchor="end">4.31%</text>
+<rect x="30" y="719" width="17" height="17" rx="3" fill="#c35672" stroke="#c35672" stroke-width="1.5"/>
+<text x="60" y="736" font-size="22" fill="#183457" font-weight="400" text-anchor="start">数据分析</text>
+<text x="325" y="736" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.35</text>
+<text x="450" y="736" font-size="22" fill="#183457" font-weight="400" text-anchor="end">4.31%</text>
+<rect x="30" y="758" width="17" height="17" rx="3" fill="#75579d" stroke="#75579d" stroke-width="1.5"/>
+<text x="60" y="775" font-size="22" fill="#183457" font-weight="400" text-anchor="start">产品运维</text>
+<text x="325" y="775" font-size="22" fill="#183457" font-weight="400" text-anchor="end">2.96</text>
+<text x="450" y="775" font-size="22" fill="#183457" font-weight="400" text-anchor="end">3.82%</text>
+<text x="30" y="826" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">图例数值：亿 Token / 占比</text>
+<text x="30" y="866" font-size="22" fill="#536b87" font-weight="400" text-anchor="start">仅留存轮次；不代表费用或成果</text>
+</g></svg>
