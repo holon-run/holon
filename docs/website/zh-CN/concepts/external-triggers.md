@@ -1,10 +1,10 @@
 ---
-title: 外部触发
+title: 外部触发器
 summary: Holon Agent 如何通过 webhook 唤醒端点和回调 URL 等待并接收外部事件。
 order: 25
 ---
 
-# 外部触发
+# 外部触发器
 
 外部触发让 Holon Agent 等待运行时之外的事件——比如 CI 流水线完成、GitHub
 webhook，或定时器触发。每个 Agent 在启动时都会拿到一个默认入站回调 URL。
@@ -16,7 +16,7 @@ Holon 把外部事件当作一等运行时概念。模型分三部分：
 
 1. **默认入站** — 每个 Agent 在启动时拿到一个带能力密钥的默认入站回调 URL。
 2. **在触发上等待** — Agent 用 `wake=external` 和外部对象引用调用 `WaitFor`。
-   运行时记录等待并让出回合。
+   运行时记录等待并让出轮次。
 3. **外部投递** — 外部系统向回调 URL POST 时，运行时唤醒 Agent 并投递载荷。
 
 ## 投递模式
@@ -63,7 +63,7 @@ curl -X POST http://localhost:8787/callbacks/enqueue/CALLBACK_TOKEN \
   -d '{"text": "CI build #42 completed: success"}'
 ```
 
-载荷作为消息入队到 Agent。Agent 在下一个回合处理它。
+载荷作为消息入队到 Agent。Agent 在下一个轮次处理它。
 
 ## Agent 的 WaitFor 循环
 
@@ -71,7 +71,7 @@ curl -X POST http://localhost:8787/callbacks/enqueue/CALLBACK_TOKEN \
 
 1. Agent 使用自己的默认入站能力（暴露在执行环境上下文中）
 2. Agent 调用 `WaitFor(wake=external, resource=<object>)`
-3. 运行时记录等待、让出回合，Agent 进入休眠
+3. 运行时记录等待、让出轮次，Agent 进入休眠
 4. 外部系统通过回调 URL 投递事件
 5. 运行时唤醒 Agent，从 WaitFor 处恢复
 
@@ -131,14 +131,14 @@ Agent 被停止（`holon agent stop`）时，它的所有外部触发器都会�
 ### GitHub webhook
 
 把 GitHub webhook 指向入队回调。Agent 会把仓库事件（issue、PR、push）当作
-入队消息接收，并在下一个回合处理。
+入队消息接收，并在下一个轮次处理。
 
 ### 定时器
 
 Holon 的定时器生命周期可以用 `holon timer create`、`list`、`cancel` 管理；
 旧式创建写法 `holon timer --after-ms 60000` 仍然支持。Agent 可以使用仅限当前
 Agent 的 `CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer` 工具。创建
-定时器不会暂停当前回合；当当前工作必须等该定时器时，配合
+定时器不会暂停当前轮次；当当前工作必须等该定时器时，配合
 `WaitFor(wake=timer, resource=<timer-id>)` 使用。
 
 ## 另见
