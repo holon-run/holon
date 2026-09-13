@@ -158,7 +158,7 @@ export interface BootstrapRefreshOptions {
 }
 
 export interface AgentDetailRefreshOptions {
-  force?: boolean;
+  retry?: boolean;
   trace?: RuntimeTraceContext;
   trigger?: string;
 }
@@ -3190,7 +3190,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         agentId,
         trigger: options.trigger ?? "manual.refresh",
       });
-    const span = startRuntimeSpan(trace, "agent.detail", { force: Boolean(options.force) });
+    const span = startRuntimeSpan(trace, "agent.detail", { retry: Boolean(options.retry) });
     const key = `${agentId}:${displayLevel}`;
     const existing = agentDetailRefreshInFlight.get(key);
     if (existing?.generation === request.generation) {
@@ -3777,7 +3777,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     try {
       await request.client.renameAgent(agentId, name);
       if (!isCurrentClientRequest(request)) return;
-      await get().refreshAgentDetail(agentId, get().displayLevel, { force: true });
+      await get().refreshAgentDetail(agentId, get().displayLevel, { trigger: "agent.rename" });
       if (get().discovery.mode === "authoritative") {
         // The authoritative roster owns the displayed identity; one snapshot
         // refresh applies the new name (and any concurrent roster change).
@@ -4037,7 +4037,7 @@ function scheduleAgentDetailRetry(
   agentDetailRetryAttempts.set(agentId, attempt + 1);
   const timer = window.setTimeout(() => {
     agentDetailRetryTimers.delete(agentId);
-    void get().refreshAgentDetail(agentId, displayLevel, { force: true });
+    void get().refreshAgentDetail(agentId, displayLevel, { retry: true });
   }, delay);
   agentDetailRetryTimers.set(agentId, timer);
 }
