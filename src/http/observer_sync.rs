@@ -71,7 +71,7 @@ pub(crate) struct ObserverSyncCapabilityVerification {
     pub(crate) conversation_read_verified: bool,
 }
 
-/// Evaluates the four observer-sync capabilities independently. Snapshot
+/// Evaluates the five observer-sync capabilities independently. Snapshot
 /// capabilities additionally require stable runtime and Agent identity
 /// verification because their responses anchor browser cache partitions to
 /// `(runtime_id, visibility_scope_id, event_log_epoch)`.
