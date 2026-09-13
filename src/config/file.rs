@@ -313,6 +313,11 @@ pub struct RuntimeConfigFile {
         skip_serializing_if = "RuntimeDiagnosticsConfigFile::is_empty"
     )]
     pub diagnostics: RuntimeDiagnosticsConfigFile,
+    #[serde(
+        default,
+        skip_serializing_if = "RuntimeObservabilityConfigFile::is_empty"
+    )]
+    pub observability: RuntimeObservabilityConfigFile,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -331,6 +336,32 @@ pub struct RuntimeDiagnosticsConfigFile {
     pub retention_min_traces: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retention_delete_batch: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuntimeObservabilityConfigFile {
+    #[serde(default, skip_serializing_if = "OtlpExporterConfigFile::is_empty")]
+    pub otlp: OtlpExporterConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct OtlpExporterConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_capacity: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_size: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub batch_interval_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -542,6 +573,7 @@ impl RuntimeConfigFile {
             && self.scheduler.is_none()
             && self.retention.is_empty()
             && self.diagnostics.is_empty()
+            && self.observability.is_empty()
     }
 }
 
@@ -554,6 +586,25 @@ impl RuntimeDiagnosticsConfigFile {
             && self.retention_max_traces.is_none()
             && self.retention_min_traces.is_none()
             && self.retention_delete_batch.is_none()
+    }
+}
+
+impl RuntimeObservabilityConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.otlp.is_empty()
+    }
+}
+
+impl OtlpExporterConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.endpoint.is_none()
+            && self.headers.is_empty()
+            && self.credential_profile.is_none()
+            && self.queue_capacity.is_none()
+            && self.batch_size.is_none()
+            && self.batch_interval_ms.is_none()
+            && self.timeout_ms.is_none()
     }
 }
 

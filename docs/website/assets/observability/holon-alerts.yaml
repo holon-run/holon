@@ -1,0 +1,47 @@
+groups:
+  - name: holon-runtime
+    rules:
+      - alert: HolonMetricsMissing
+        expr: absent(holon_process_uptime_seconds)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Holon metrics are unavailable
+          description: Prometheus has not received the Holon runtime uptime series for five minutes.
+
+      - alert: HolonDiagnosticsWriterDroppingTraces
+        expr: increase(holon_diagnostics_writer_dropped_traces_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Holon is dropping diagnostic traces
+          description: The bounded diagnostics writer queue has dropped traces during the last ten minutes.
+
+      - alert: HolonOtlpExporterDroppingSpans
+        expr: increase(holon_otlp_exporter_dropped_spans_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Holon is dropping OTLP spans
+          description: The bounded OTLP exporter queue has dropped spans during the last ten minutes.
+
+      - alert: HolonOtlpExporterFailing
+        expr: increase(holon_otlp_exporter_failed_batches_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Holon OTLP batches are failing
+          description: OTLP exports have continued to fail; inspect collector reachability, credentials, and exporter logs.
+
+      - alert: HolonTurnLatencyHigh
+        expr: holon_turn_total_duration_milliseconds_p95 > 30000
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Holon turn p95 latency is high
+          description: The bounded in-process turn latency histogram has remained above 30 seconds.

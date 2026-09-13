@@ -1,0 +1,212 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "targets": [
+        {
+          "expr": "holon_process_uptime_seconds",
+          "legendFormat": "uptime",
+          "refId": "A"
+        }
+      ],
+      "title": "Process uptime",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "targets": [
+        {
+          "expr": "holon_turn_total_duration_milliseconds_p50",
+          "legendFormat": "p50",
+          "refId": "A"
+        },
+        {
+          "expr": "holon_turn_total_duration_milliseconds_p95",
+          "legendFormat": "p95",
+          "refId": "B"
+        },
+        {
+          "expr": "holon_turn_total_duration_milliseconds_p99",
+          "legendFormat": "p99",
+          "refId": "C"
+        }
+      ],
+      "title": "Turn latency",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 9,
+        "x": 15,
+        "y": 0
+      },
+      "id": 3,
+      "targets": [
+        {
+          "expr": "holon_projection_gate_active_permits",
+          "legendFormat": "active permits",
+          "refId": "A"
+        },
+        {
+          "expr": "holon_projection_gate_joined_waiters_total",
+          "legendFormat": "joined waiters total",
+          "refId": "B"
+        },
+        {
+          "expr": "holon_projection_gate_rejected_total",
+          "legendFormat": "rejected total",
+          "refId": "C"
+        }
+      ],
+      "title": "Projection gate",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 8
+      },
+      "id": 4,
+      "targets": [
+        {
+          "expr": "holon_diagnostics_writer_queue_depth",
+          "legendFormat": "queue depth",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(holon_diagnostics_writer_dropped_traces_total[5m])",
+          "legendFormat": "dropped / 5m",
+          "refId": "B"
+        },
+        {
+          "expr": "increase(holon_diagnostics_writer_failures_total[5m])",
+          "legendFormat": "failures / 5m",
+          "refId": "C"
+        }
+      ],
+      "title": "Diagnostics persistence",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 8
+      },
+      "id": 5,
+      "targets": [
+        {
+          "expr": "holon_otlp_exporter_queue_depth",
+          "legendFormat": "queue depth",
+          "refId": "A"
+        },
+        {
+          "expr": "increase(holon_otlp_exporter_exported_spans_total[5m])",
+          "legendFormat": "exported / 5m",
+          "refId": "B"
+        },
+        {
+          "expr": "increase(holon_otlp_exporter_dropped_spans_total[5m])",
+          "legendFormat": "dropped / 5m",
+          "refId": "C"
+        },
+        {
+          "expr": "increase(holon_otlp_exporter_failed_batches_total[5m])",
+          "legendFormat": "failed batches / 5m",
+          "refId": "D"
+        }
+      ],
+      "title": "OTLP exporter",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": [
+    "holon",
+    "runtime"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {},
+        "label": "Prometheus",
+        "name": "DS_PROMETHEUS",
+        "query": "prometheus",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timezone": "browser",
+  "title": "Holon runtime observability",
+  "uid": "holon-runtime-observability",
+  "version": 1
+}

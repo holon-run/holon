@@ -3847,3 +3847,74 @@ fn diagnostics_writer_config_rejects_out_of_range_retention_age() {
         .to_string()
         .contains("diagnostics retention age is out of range"));
 }
+
+#[test]
+fn otlp_exporter_config_is_disabled_by_default_and_validates_bounds() {
+    let mut config = HolonConfigFile::default();
+    let credentials = CredentialStoreFile::default();
+
+    assert!(super::resolve_otlp_exporter_config(&config, &credentials)
+        .unwrap()
+        .is_none());
+
+    config.runtime.observability.otlp.enabled = Some(true);
+    let error = super::resolve_otlp_exporter_config(&config, &credentials).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("OTLP endpoint must not be empty"));
+
+    config.runtime.observability.otlp.endpoint =
+        Some("http://127.0.0.1:4318/v1/traces".to_string());
+    config.runtime.observability.otlp.queue_capacity = Some(0);
+    let error = super::resolve_otlp_exporter_config(&config, &credentials).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("OTLP queue capacity must be greater than zero"));
+}
+
+#[test]
+fn otlp_exporter_config_loads_authorization_from_credential_profile() {
+    let mut config = HolonConfigFile::default();
+    config.runtime.observability.otlp.enabled = Some(true);
+    config.runtime.observability.otlp.endpoint =
+        Some("http://127.0.0.1:4318/v1/traces".to_string());
+    config.runtime.observability.otlp.credential_profile = Some("collector".to_string());
+    config
+        .runtime
+        .observability
+        .otlp
+        .headers
+        .insert("x-tenant".to_string(), "test".to_string());
+
+    let mut credentials = CredentialStoreFile::default();
+    credentials.profiles.insert(
+        "collector".to_string(),
+        crate::config::CredentialProfileFile {
+            kind: CredentialKind::BearerToken,
+            material: "secret-token".to_string(),
+        },
+    );
+
+    let resolved = super::resolve_otlp_exporter_config(&config, &credentials)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        resolved.headers.get("authorization").map(String::as_str),
+        Some("Bearer secret-token")
+    );
+    assert_eq!(
+        resolved.headers.get("x-tenant").map(String::as_str),
+        Some("test")
+    );
+
+    config
+        .runtime
+        .observability
+        .otlp
+        .headers
+        .insert("Authorization".to_string(), "inline-secret".to_string());
+    let error = super::resolve_otlp_exporter_config(&config, &credentials).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("must not configure authorization when credential_profile is set"));
+}
