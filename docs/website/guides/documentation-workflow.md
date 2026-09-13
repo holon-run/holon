@@ -125,6 +125,14 @@ source page. Docs CI runs the same script with `--check` and fails when a
 generated page and its copies disagree, so a regeneration needs one extra
 command — never a new translation.
 
+## Language detection
+
+The site ships two locales: `en` (default) and `zh-CN`. `mdorigin.config.json`
+enables `localeDetection`, so a request to `/` redirects once to the visitor's
+preferred locale root. Deep links are never redirected, an explicit choice made
+with the header language switcher wins, and crawler traffic stays on the default
+root.
+
 ## Refresh generated contract snapshots
 
 OpenAPI, HTTP route, CLI, runtime status enum, and model tool schema snapshots

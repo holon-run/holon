@@ -36,6 +36,10 @@
       ]
     }
   ],
+  "localeDetection": {
+    "enabled": true,
+    "redirect": "root"
+  },
   "favicon": "/favicon.svg",
   "socialImage": "/assets/social-card.png",
   "stylesheet": "./assets/site.css",

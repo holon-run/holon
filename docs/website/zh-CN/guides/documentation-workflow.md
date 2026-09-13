@@ -112,6 +112,12 @@ npm --prefix .tools run sync:generated
 运行同一脚本，一旦生成页面与其副本不一致就失败，因此重新生成后只需多跑一条命令，
 不需要重新翻译。
 
+## 语言自动检测
+
+站点包含两个语言：`en`（默认）与 `zh-CN`。`mdorigin.config.json` 启用了
+`localeDetection`，因此访问 `/` 时会按访问者偏好语言重定向一次到对应语言根路径。
+深层链接不会被重定向，通过页头语言切换器做出的选择优先，爬虫始终停留在默认语言根路径。
+
 ## 刷新生成的契约快照
 
 OpenAPI、HTTP 路由、CLI、运行时状态枚举和模型工具 schema 快照由主 CI 单独检查。发布契约变更前运行 `make snapshots-check`。如果变更是有意为之，运行 `make snapshots-refresh`，审阅生成的 diff，然后重新运行 `make snapshots-check`。
