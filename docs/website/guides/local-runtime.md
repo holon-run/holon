@@ -46,7 +46,8 @@ them to model prompt trials.
 The default Rust checks are:
 
 ```bash
-cargo fmt --check
+cargo fmt --all -- --check
+RUSTFLAGS="-D warnings" cargo check --all-targets
 cargo test
 ```
 

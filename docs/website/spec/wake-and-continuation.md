@@ -9,11 +9,11 @@ order: 40
 This page defines the current contract for how Holon agents wake from sleep,
 receive external events, and resolve continuation decisions.
 
-> **Last verified:** 2026-05-23 against `src/types.rs`
+> **Last verified:** 2026-09-13 against `src/types.rs`
 > `ContinuationTriggerKind`, `ContinuationClass`, `ContinuationResolution`,
 > `PendingWakeHint`, `ExternalTriggerScope`, `CallbackDeliveryMode`,
 > `ExternalTriggerSummary`, `ExternalTriggerCapability`,
-> `WaitingIntentRecord`, and `src/runtime/waiting.rs`.
+> `WaitConditionRecord`, and `src/runtime/waiting.rs`.
 
 ## Source RFCs
 
@@ -50,6 +50,7 @@ promoted `CompleteWorkItem` report ends the current turn.
 | `ResumeExpectedWait` | The trigger matched the prior waiting reason exactly |
 | `ResumeOverride` | The trigger overrides the prior wait (e.g., operator interrupt) |
 | `LocalContinuation` | The agent continued without sleeping (same-turn follow-up) |
+| `TaskResultReentry` | A terminal task result re-entered the same WorkItem while the prior turn was not waiting |
 | `LivenessOnly` | Wake hint — does not carry model-visible content |
 
 ## Wake hints vs contentful events
@@ -119,10 +120,10 @@ occurred:
 
 ## Known gaps
 
-- `WaitingIntentRecord` retains an internal `scope` field for scheduler
-  accounting of agent-level versus WorkItem-bound waiting state. External
-  trigger capabilities themselves are agent-scoped and partitioned only by
-  delivery mode.
+- Waiting state is scoped by `WaitConditionRecord.work_item_id`: a value marks
+  WorkItem-bound waiting, `None` marks agent-level waiting. External trigger
+  capabilities themselves are agent-scoped and partitioned only by delivery
+  mode.
 - `WakeHint` idempotency is implemented via `PendingWakeHint` deduplication
   but the contract for when duplicate hints are silently dropped vs surfaced
   as diagnostics is not yet a stable API.

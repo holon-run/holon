@@ -53,6 +53,7 @@ Work item lifecycle:
 [Created] -> [Draft plan] -> [Ready] -> [In progress] -> [Completed]
                 ^                            |
                 +--- [Needs input] <-- [Blocked]
+```
 
 When a work item is completed, the runtime promotes the agent's completion
 text as a **completion report**. The pattern is:
@@ -75,7 +76,6 @@ same report as a second final brief. If the turn contains further assistant
 output, tool calls, or additional WorkItem completions, those continuation
 actions belong to the same turn and do not overwrite the already-promoted
 completion report.
-```
 
 ### Tasks
 

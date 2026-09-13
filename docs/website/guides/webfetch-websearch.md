@@ -75,14 +75,16 @@ structured results with citations.
 Holon uses a provider-based search model with multiple provider options:
 
 - **DuckDuckGo (managed)** — Holon's built-in managed search provider. No
-  API key required. Enabled during onboarding with "Managed DuckDuckGo" or
-  "Auto" mode.
+  API key required. Enabled during onboarding with "Managed WebSearch:
+  DuckDuckGo" or "Auto" mode.
 - **Tencent Cloud WSA** — Tencent Cloud SearchPro / Web Search API. Requires an
   API key set via credential profile. Configure with
-  `holon config providers set tencent --kind tencent_cloud_wsa --credential-profile <profile>`.
+  `holon config set web.providers.tencent.kind tencent_cloud_wsa` and
+  `holon config set web.providers.tencent.credential_profile <profile>`.
 - **Bocha AI Search** — Bocha AI Web Search API. Requires an API key set via
   credential profile. Configure with
-  `holon config providers set bocha --kind bocha --credential-profile <profile>`.
+  `holon config set web.providers.bocha.kind bocha` and
+  `holon config set web.providers.bocha.credential_profile <profile>`.
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these when available.
@@ -210,10 +212,11 @@ Web tools are controlled through Holon's web configuration section:
 
 ```bash
 # Check current web configuration
-holon config get web
+holon config get web.search.enabled
 
 # Disable web tools entirely
-holon config set web.enabled false
+holon config set web.fetch.enabled false
+holon config set web.search.enabled false
 ```
 
 See [Configuration reference](/reference/configuration.md) for the full web

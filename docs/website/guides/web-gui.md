@@ -16,7 +16,7 @@ frontend build or deployment is needed — start the daemon and open a browser.
 holon daemon start
 ```
 
-Then open [http://127.0.0.1:7878/app/](http://127.0.0.1:7878/app/) in a
+Then open [http://127.0.0.1:7878/](http://127.0.0.1:7878/) in a
 browser.
 
 The Web GUI is served from embedded assets compiled into the `holon` binary.
@@ -79,7 +79,7 @@ Results include:
 ### Agent Templates
 
 Browse, install, and create agents from templates directly in the Web GUI.
-Available at `/app/templates`:
+Available at `/templates`:
 
 - **Template catalog** — Browse installed templates with display name,
   description, and source information (local, remote URL, or synced source).
@@ -109,7 +109,7 @@ Manage the Skill Library and agent skills from the browser:
 - **Skill detail** — Click a skill to view its full metadata including
   scope, source root, and discovery path.
 
-The Skill Management page is available at `/app/skills` in the Web GUI.
+The Skill Management page is available at `/skills` in the Web GUI.
 It is also accessible from the navigation sidebar when the daemon is
 running with the embedded GUI.
 
@@ -245,7 +245,7 @@ through the same endpoint:
 
 ```bash
 # Example: LAN access from another machine on the same network
-http://<daemon-host>:7878/app/
+http://<daemon-host>:7878/
 ```
 
 Configure CORS if accessing from a different origin. See
@@ -256,7 +256,7 @@ Configure CORS if accessing from a different origin. See
 
 | Mode | How to access | When to use |
 |------|--------------|-------------|
-| **Embedded** (default) | `holon daemon start` → `/app/` | Normal use |
+| **Embedded** (default) | `holon daemon start` → `/` | Normal use |
 | **Dev server** | `cd web-gui/app && npm run dev` | UI development |
 
 The embedded build is compiled into the `holon` binary at release time via
@@ -272,13 +272,13 @@ npm run dev
 ```
 
 The dev server includes hot reload and uses fixture data when no Holon server
-is running. Set `VITE_HOLON_API_BASE=/holon-api` to proxy through the Vite dev
-server to a running Holon daemon.
+is running. Set `HOLON_API_PROXY_TARGET` to point the dev server's `/api`
+proxy at a running Holon daemon (it defaults to `http://127.0.0.1:7878`).
 
 ## Performance Diagnostics
 
 The Web GUI exposes runtime performance metrics at
-`/control/runtime/performance`. This endpoint returns granular timing data
+`/api/control/runtime/performance`. This endpoint returns granular timing data
 grouped by phase:
 
 | Group | Metrics |
@@ -297,12 +297,13 @@ time.
 
 ### Job Monitoring
 
-Long-running operations such as skill installation run as tracked jobs:
+Long-running operations such as skill installation run as tracked jobs
+instead of blocking the request:
 
-- **Job list** — View active and recent jobs with status, phase, and
-  progress at `/app/jobs`.
-- **Job detail** — Click a job to see progress items, result summary,
-  and timestamps.
+- **Inline progress** — the Skills page shows a progress indicator for the
+  running job, with success or error feedback when it finishes.
+- **Job API** — the runtime exposes the job read model at
+  `/api/jobs/{job_id}` for status, phase, and progress items.
 
 ## See Also
 

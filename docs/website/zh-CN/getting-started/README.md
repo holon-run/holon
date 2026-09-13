@@ -53,25 +53,25 @@ Holon 提供三种与运行时交互的方式：
 | **Daemon + HTTP** | `holon daemon start` + HTTP 客户端 | 集成、自动化、控制平面消费方 |
 
 [第一个 Agent 教程](first-agent.md)使用 daemon + TUI，因为它提供完整的交互体验。
-单次执行参见[快速示例](/guides/quick-examples)（英文）。
+单次执行参见[快速示例](/zh-CN/guides/quick-examples)。
 
 ## 评估或探索？
 
 如果你已经熟悉 Holon，或想直接深入细节：
 
-- **[快速示例](/guides/quick-examples)**（英文）— 单次执行与常见任务模式
-- **[持久 Agent 工作流](/guides/durable-agent-workflow)**（英文）— 持久 Agent 工作的完整生命周期
+- **[快速示例](/zh-CN/guides/quick-examples)** — 单次执行与常见任务模式
+- **[持久 Agent 工作流](/zh-CN/guides/durable-agent-workflow)** — 持久 Agent 工作的完整生命周期
 - **[概念](/zh-CN/concepts/)** — 深入内部机制前的心智模型
-- **[CLI 参考](/reference/cli.md)**（英文）— 完整命令面
-- **[故障排查](/guides/troubleshooting)**（英文）— 诊断常见安装问题
+- **[CLI 参考](/zh-CN/reference/cli.md)** — 完整命令面
+- **[故障排查](/zh-CN/guides/troubleshooting)** — 诊断常见安装问题
 
 ## 贡献或开发？
 
 如果你打算修改 Holon 本身或为其做贡献：
 
-- **[本地运行时指南](/guides/local-runtime)**（英文）— 保守的开发工作流
-- **[文档工作流](/guides/documentation-workflow)**（英文）— 如何构建和预览本站
-- **[集成指南](/guides/integration)**（英文）— 把 Holon 接入外部系统
+- **[本地运行时指南](/zh-CN/guides/local-runtime)** — 保守的开发工作流
+- **[文档工作流](/zh-CN/guides/documentation-workflow)** — 如何构建和预览本站
+- **[集成指南](/zh-CN/guides/integration)** — 把 Holon 接入外部系统
 - 仓库 `docs/` 目录 — RFC、实现决策和架构笔记
 
 ## 环境要求

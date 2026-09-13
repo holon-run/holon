@@ -34,6 +34,7 @@ Every inbound event carries an `origin` that records its source:
 | `task` | Child task completion | Command task finished, child agent result |
 | `channel` | External integration | Slack message, CI notification |
 | `webhook` | Third-party callback | GitHub webhook, deployment hook |
+| `callback` | External trigger callback admitted by a capability secret | External trigger wake hint |
 | `timer` | Scheduled trigger | Cron-like timer fire |
 
 The runtime can distinguish "operator told me to do X" from "a web page

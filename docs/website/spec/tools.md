@@ -35,16 +35,19 @@ Tools are grouped by capability family for authority gating:
 
 | Family | Tools | Authority |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`, `GetAgent`, `Enqueue`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
-| `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
+| `CoreAgent` | `WaitFor`, `GetAgent`, `Enqueue`, `CreateTimer`, `ListTimers`, `GetTimer`, `CancelTimer`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, `TaskStop`, `ListModelProviders`, `ListProviderModels`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
+| `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `ViewImage`, `GenerateImage`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
-| `Web` | `WebFetch`, `WebSearch` | All profiles |
-| `AgentCreation` | `CreateAgent`, `InvokeAgent` | All profiles |
+| `Web` | `WebFetch`, `WebSearch`, `XSearch` | All profiles |
+| `AgentCreation` | `CreateAgent`, `InvokeAgent` | Public named agents |
+| `ExternalTrigger` | `CreateExternalTrigger`, `CancelExternalTrigger` | All profiles |
 
 Operator notification records, delivery callbacks, and UI rendering remain
 runtime-owned capabilities. They are not part of the model-facing tool
 inventory; `NotifyOperator` is intentionally absent from the built-in tool
-registry and machine-readable schema inventory.
+registry and machine-readable schema inventory. The `ExternalTrigger` tools
+follow the same pattern today: they are dispatchable in the registry but kept
+out of the model-facing surface.
 
 ## Complete tool listing
 
@@ -82,6 +85,29 @@ registry and machine-readable schema inventory.
 | `CreateAgent` | Create a long-lived, addressable agent |
 | `InvokeAgent` | Delegate work through a parent-supervised task handle |
 
+### Timer plane
+
+| Tool | Purpose |
+|------|---------|
+| `CreateTimer` | Create an independent or repeating timer |
+| `ListTimers` | List this agent's recent timers |
+| `GetTimer` | Read one timer by id |
+| `CancelTimer` | Cancel an active timer |
+
+### Model plane
+
+| Tool | Purpose |
+|------|---------|
+| `ListModelProviders` | List configured or discovered model providers |
+| `ListProviderModels` | List selectable models for a provider |
+
+### Image plane
+
+| Tool | Purpose |
+|------|---------|
+| `GenerateImage` | Generate one image from a text prompt |
+| `ViewImage` | Validate a local image and record its metadata |
+
 ### Workspace plane
 
 | Tool | Purpose |
@@ -107,6 +133,7 @@ registry and machine-readable schema inventory.
 |------|---------|
 | `WebFetch` | Fetch HTTP/HTTPS URL |
 | `WebSearch` | Web search |
+| `XSearch` | Search public X posts |
 
 ## Tool definition contract
 
@@ -115,7 +142,7 @@ Each tool is defined by a `BuiltinToolDefinition`:
 ```text
 BuiltinToolDefinition {
     family: ToolCapabilityFamily,
-    spec: ToolSpec { name, description, parameters },
+    spec: ToolSpec { name, description, input_schema, freeform_grammar },
 }
 ```
 
@@ -132,7 +159,7 @@ BuiltinToolDefinition {
 Holon strictly separates tool **startup input** from **result metadata**:
 
 - Startup input: `cmd`, `workdir`, `shell`, `login`, `tty`,
-  `accepts_input`, `yield_time_ms`, `max_output_tokens`.
+  `duplicate_policy`, `accepts_input`, `yield_time_ms`, `max_output_tokens`.
 - Result metadata (not valid in startup input): `status`, `task_handle`,
   `disposition`, `exit_status`, `output_preview`.
 
@@ -152,8 +179,8 @@ rendered as a human-readable receipt:
 - **Human-readable receipt:** rendered text shown to the model; may omit
   internal fields but must preserve semantically meaningful content.
 
-`ExecCommand` results carry additional fields: `disposition`,
-`initial_output_preview`, `task_handle` (when promoted to command_task).
+`ExecCommand` results carry additional fields: `disposition`, `exit_status`,
+`initial_output_preview`, and `task_handle` (when promoted to command_task).
 
 ## Known gaps
 

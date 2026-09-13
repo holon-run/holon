@@ -10,12 +10,13 @@ This page defines the current contract for how Holon classifies message
 provenance, admission/authentication, instruction authority, and execution
 policy — and how those labels flow through the runtime.
 
-> **Last verified:** 2026-05-27 against `src/types.rs` `MessageEnvelope`,
+> **Last verified:** 2026-09-13 against `src/types.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
 > `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
-> `src/context/mod.rs`, `src/prompt/mod.rs`, `src/operator_event.rs`,
-> `src/presentation.rs`, `src/runtime/message_dispatch.rs`, and
-> `src/runtime/operator_dispatch.rs`.
+> `src/http/state.rs`, `src/context/mod.rs`, `src/context/render.rs`,
+> `src/prompt/mod.rs`, `src/operator_event.rs`, `src/presentation.rs`,
+> `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
+> `src/runtime/turn/execution.rs`.
 
 ## Source RFCs
 
@@ -73,10 +74,11 @@ the ingress was authenticated and does not by itself grant tool authority.
 | `Task { task_id }` | Task status/result from a supervised command or child agent. | `TaskStatus`, `TaskResult` |
 
 `MessageEnvelope::normalize_admission_fields` derives `trigger_kind`, `task_id`
-for task-origin messages, and `source_refs` such as `task_id`, `timer_id`,
-`external_trigger_id`, `waiting_intent_id`, `callback_delivery_id`, and
-`queued_event_id`. Binding fields such as `work_item_id` and `task_id` are
-projected from metadata only for runtime-owned messages admitted through
+for task-origin messages, and `source_refs` such as `task_id`, `task_result_id`,
+`timer_id`, `external_trigger_id`, `wait_id`, `wait_generation`,
+`callback_delivery_id`, and `queued_event_id`. Binding fields such as
+`work_item_id` and `task_id` are projected from metadata only for runtime-owned
+messages admitted through
 `RuntimeSystem` or `TaskRejoin`; untrusted external metadata remains evidence.
 
 ## Admission/authentication: delivery surface and admission context
@@ -148,10 +150,11 @@ public contract. Current code keeps compatibility in two places:
   `trusted_operator`, `trusted_system`, `trusted_integration`, and
   `untrusted_external`.
 
-[`src/context/mod.rs`](../../../src/context/mod.rs) still renders a `trust=`
-label in model context for backward
-readability, but it is derived from `authority_class`. New docs and new
-contracts should name `authority_class` directly.
+[`src/context/render.rs`](../../../src/context/render.rs) keeps a legacy
+`trust_label` mapping from `authority_class` to the old `trusted_*` /
+`untrusted_*` names, but current model-context message headers label messages
+with `authority_class_label` (`operator_instruction`, `runtime_instruction`,
+and so on). New docs and new contracts should name `authority_class` directly.
 
 ## Current classification matrix
 
@@ -204,10 +207,10 @@ Holon's provenance contract:
   delegated task as bounded operator/runtime context according to the supervising
   runtime surface; it must not silently merge later external channel content into
   operator instruction.
-- Model context renders the current message's origin, authority, delivery
-  surface, admission context, and legacy derived trust label. Operator
-  interjections include explicit `origin`, `authority_class`, `delivery_surface`,
-  and `admission_context` metadata in the turn prompt.
+- Model context renders the current message's origin, authority class, delivery
+  surface, admission context, trigger kind, binding ids, and message kind.
+  Operator interjections include explicit `origin`, `authority_class`,
+  `delivery_surface`, and `admission_context` metadata in the turn prompt.
 - TUI and first-party presentation use raw projection/runtime events and reduce
   them client-side. User-message presentation renders only messages whose origin
   is `Operator`; external events do not become user chat messages merely because
@@ -226,7 +229,7 @@ Validated implementation points:
   compatibility.
 - `src/policy.rs` defines default authority by origin and kind/origin admission
   checks.
-- [`src/http/mod.rs`](../../../src/http/mod.rs) prevents public enqueue from
+- [`src/http/state.rs`](../../../src/http/state.rs) prevents public enqueue from
   using runtime-owned kinds,
   `Interject` priority, privileged origins, or authority overrides.
 - [`src/context/mod.rs`](../../../src/context/mod.rs) and
@@ -246,8 +249,7 @@ Validated implementation points:
 - **Stale RFC wording:** `docs/rfcs/default-trust-auth-and-control.md` says
   `TrustLevel` may remain as a transitional implementation detail. The current
   implementation has already removed the `TrustLevel` enum/field from the
-  public `MessageEnvelope`; only legacy aliases and a derived model-context
-  `trust` label remain.
+  public `MessageEnvelope`; only legacy serde/CLI aliases remain.
 - **Unresolved design decision:** `signed_integration` appears in the RFC as a
   possible admission context, but there is no `AdmissionContext::SignedIntegration`
   variant yet.

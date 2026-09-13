@@ -97,7 +97,7 @@ The same token authenticates HTTP control plane requests:
 
 ```bash
 curl -H "Authorization: Bearer your-token" \
-  https://your-server:8787/v1/agents/list
+  https://your-server:8787/api/agents/list
 ```
 
 See the [HTTP Control Plane reference](/reference/http-control-plane.md) for
@@ -105,23 +105,24 @@ the full API surface.
 
 ## Token Management
 
-### Generating a Token
+### Providing a Token
 
-Tokens are generated when the server starts. Capture the token from the
-startup output or create a dedicated file:
+Holon does not generate control tokens for you. Pick a secret yourself, then
+hand it to the server with `--token`, `--token-file`, or the
+`HOLON_CONTROL_TOKEN` environment variable:
 
 ```bash
-# On the server, save the token
+# Read the control token from a file
 holon daemon start --access tunnel --token-file ~/.holon/remote.token
 ```
 
 ### Token Profiles
 
-Store multiple tokens as named profiles in your configuration:
+Store multiple tokens as named credential profiles, then select one by name:
 
 ```bash
-holon config set tokens.office "token-for-office-server"
-holon config set tokens.home "token-for-home-server"
+holon config credentials set office --kind bearer_token --stdin
+holon config credentials set home --kind bearer_token --stdin
 ```
 
 Then connect by profile name:
@@ -144,8 +145,9 @@ holon daemon stop
 
 ## Security Considerations
 
-- **Always use a token**. Remote connections without a token are rejected for
-  non-local access modes.
+- **Always use a token**. Holon refuses to start with a non-loopback listen
+  address, or with `--access lan`/`--access tailnet`, unless a token is set.
+  Set a token for `--access tunnel` too: the tunnel is publicly reachable.
 - **Prefer tunnel or tailnet** over LAN mode when connecting across the
   internet. These provide encryption and authentication without exposing raw
   ports.

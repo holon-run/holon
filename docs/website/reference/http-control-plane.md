@@ -19,13 +19,13 @@ until the Phase 2 route/type metadata and DTO contracts are stabilized.
 
 When a control token is configured (e.g. `--token`, `--token-file`, or the
 `control_token` config key), the HTTP server operates in **bearer mode**.
-All `/control/*` routes require an `Authorization: Bearer <token>` header,
+All `/api/control/*` routes require an `Authorization: Bearer <token>` header,
 and read-only routes (agent state, events, tasks) require it for remote
 access as well. Without a control token, the server runs in **local mode**
 and trusts the local process boundary.
 
 ```
-GET /handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
+GET /api/handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
 ```
 
 ## Ingress trust and auth boundaries
@@ -38,16 +38,16 @@ trusting caller-supplied provenance fields.
 | Ingress class | Routes | Auth boundary | Origin/trust/authority | Priority | Supported posture |
 |---------------|--------|---------------|------------------------|----------|-------------------|
 | Public enqueue | `POST /api/enqueue`, `POST /api/agents/:id/enqueue` | Bearer token in bearer mode; local process boundary in local mode. | Caller may provide only channel or webhook origin. Caller-provided `trust` is rejected. Channel origins become untrusted external evidence; webhook origins become integration signals. Runtime-owned kinds such as `system_tick` and `callback_event` are rejected. | `next`, `normal`, or `background`; `interject` is rejected. | Candidate stable external ingress for non-operator evidence. |
-| Callback capability | `POST /callbacks/wake/:callback_token`, `POST /callbacks/enqueue/:callback_token` | Capability token in the URL path resolves to an active external trigger and matching delivery mode. Do not log, repeat, or publish full callback URLs. | Delivery is admitted as an external-trigger capability and an integration signal. Wake callbacks enqueue runtime-owned inspection ticks; callback payload text is untrusted evidence for the agent to inspect. | Runtime-selected by delivery mode; callers do not choose queue priority. | Capability surface for durable external systems that need to wake or notify an agent. |
+| Callback capability | `POST /api/callbacks/wake/:callback_token`, `POST /api/callbacks/enqueue/:callback_token` | Capability token in the URL path resolves to an active external trigger and matching delivery mode. Do not log, repeat, or publish full callback URLs. | Delivery is admitted as an external-trigger capability and an integration signal. Wake callbacks enqueue runtime-owned inspection ticks; callback payload text is untrusted evidence for the agent to inspect. | Runtime-selected by delivery mode; callers do not choose queue priority. | Capability surface for durable external systems that need to wake or notify an agent. |
 | Operator transport binding | `POST /api/control/agents/:id/operator-bindings` | Control-plane auth. Delivery credentials are stored on the binding and redacted from audit events. | Creates or updates the binding that later authorizes remote operator ingress. | N/A. | Experimental operator adapter setup surface. |
 | Operator transport ingress | `POST /api/control/agents/:id/operator-ingress` | Control-plane auth plus active binding, matching target agent, matching operator actor, and matching provider when supplied. | Enqueues a `trusted_operator` `operator_prompt` with `operator_instruction` authority and remote-operator transport metadata. | Always `interject`. | Experimental authenticated operator adapter ingress. |
-| Generic webhook compatibility | `POST /webhooks/generic/:agent_id` | Bearer token in bearer mode; local process boundary in local mode. | Converts JSON payload into a trusted-integration webhook event with `generic_webhook` origin. Callers cannot set origin, trust, or priority through this route. | Always `normal`. | Internal/debug compatibility route; prefer public enqueue or a dedicated capability callback for new external integrations. |
+| Generic webhook compatibility | `POST /api/webhooks/generic/:agent_id` | Bearer token in bearer mode; local process boundary in local mode. | Converts JSON payload into a trusted-integration webhook event with `generic_webhook` origin. Callers cannot set origin, trust, or priority through this route. | Always `normal`. | Internal/debug compatibility route; prefer public enqueue or a dedicated capability callback for new external integrations. |
 
 ## Endpoint reference
 
 ### Discovery
 
-**`GET /`** — Root
+**`GET /api/`** — Root
 
 Returns the default agent ID.
 
@@ -55,7 +55,7 @@ Returns the default agent ID.
 { "ok": true, "default_agent": "main" }
 ```
 
-**`GET /handshake`** — Protocol handshake
+**`GET /api/handshake`** — Protocol handshake
 
 Returns auth mode, capabilities, and runtime info.
 
@@ -69,21 +69,21 @@ Returns auth mode, capabilities, and runtime info.
     "default_agent": "main",
     "workspace_dir": "/path/to/workspace",
     "home_dir": "/path/to/holon/home",
-    "listen": "127.0.0.1:9101",
+    "listen": "127.0.0.1:7878",
     "advertise_url": null
   }
 }
 ```
 
-**`GET /models`** — Available models
+**`GET /api/models`** — Available models
 
 Returns the cached model catalog and runtime availability without contacting
 providers.
 
-**`POST /models/refresh`** — Refresh available models
+**`POST /api/models/refresh`** — Refresh available models
 
 Discovers models for providers whose discovery cache is missing or expired,
-then returns the same catalog shape as `GET /models`. A discovery failure for
+then returns the same catalog shape as `GET /api/models`. A discovery failure for
 one provider does not prevent other available models from being returned.
 
 ```json
@@ -209,8 +209,8 @@ last contiguous `event_seq` before reopening the global stream.
 Filtering behavior:
 
 - Event payloads are always included in full.
-- `/agents/:id/events` may use `max_level` to filter which events are returned.
-- `/agents/:id/events/stream` is raw and does not support `max_level`.
+- `/api/agents/:id/events` may use `max_level` to filter which events are returned.
+- `/api/agents/:id/events/stream` is raw and does not support `max_level`.
 
 Migration note:
 
@@ -220,8 +220,8 @@ Migration note:
   `projection.raw_payload_included` should treat all event envelopes as
   full-payload envelopes.
 - To reproduce the old operator-facing page density, request
-  `/agents/:id/events?max_level=info`. Stream clients should keep subscribing
-  to `/agents/:id/events/stream` and apply any presentation filtering locally.
+  `/api/agents/:id/events?max_level=info`. Stream clients should keep subscribing
+  to `/api/agents/:id/events/stream` and apply any presentation filtering locally.
 
 **`GET /api/agents/:id/transcript`** — Turn transcript
 
@@ -270,7 +270,7 @@ Response:
 
 **`POST /api/enqueue`** (no agent in path) — Enqueue to default agent.
 
-**`POST /webhooks/generic/:agent_id`** — Generic webhook compatibility
+**`POST /api/webhooks/generic/:agent_id`** — Generic webhook compatibility
 
 Accepts a JSON payload and converts it to a `webhook_event` from
 `generic_webhook`. This route is kept for local/debug compatibility and simple
@@ -283,7 +283,7 @@ needs a secret URL.
 
 ### Control plane (authenticated)
 
-All `/control/*` routes require a control token when the server is in bearer
+All `/api/control/*` routes require a control token when the server is in bearer
 mode.
 
 **`POST /api/control/agents/:id/prompt`** — Send an operator prompt
@@ -588,17 +588,17 @@ Shuts down the runtime and daemon gracefully.
 
 ### Webhooks & callbacks
 
-**`POST /webhooks/generic/:agent_id`** — Generic webhook
+**`POST /api/webhooks/generic/:agent_id`** — Generic webhook
 
 Accepts arbitrary JSON payloads and enqueues them as `WebhookEvent` messages
 to the named agent. Useful for GitHub webhooks, CI notifications, and external
 service integrations.
 
-**`POST /callbacks/enqueue/:callback_token`** — Callback enqueue
+**`POST /api/callbacks/enqueue/:callback_token`** — Callback enqueue
 
 Receives enqueue callbacks from registered callback URLs. Body limit: 256 KB.
 
-**`POST /callbacks/wake/:callback_token`** — Callback wake
+**`POST /api/callbacks/wake/:callback_token`** — Callback wake
 
 Receives wake callbacks from registered callback URLs.
 
@@ -677,8 +677,8 @@ on this reference page:
 - `GET /api/agents/:id/skills`
 - `POST /api/control/agents/:id/skills/install`
 - `POST /api/control/agents/:id/skills/uninstall`
-- Default-agent aliases: `/status`, `/briefs`, `/state`, `/transcript`,
-  `/worktree-summary`
+- Default-agent aliases: `/api/status`, `/api/briefs`, `/api/state`, `/api/transcript`,
+  `/api/worktree-summary`
 
 These will be added as the surface stabilizes.
 
@@ -686,25 +686,25 @@ These will be added as the surface stabilizes.
 
 ```bash
 # Check server health
-curl http://127.0.0.1:9101/handshake
+curl http://127.0.0.1:7878/api/handshake
 
 # List agents
-curl http://127.0.0.1:9101/agents/list
+curl http://127.0.0.1:7878/api/agents/list
 
 # Get agent state
-curl http://127.0.0.1:9101/agents/main/state
+curl http://127.0.0.1:7878/api/agents/main/state
 
 # Send a prompt (control token required)
-curl -X POST http://127.0.0.1:9101/control/agents/main/prompt \
+curl -X POST http://127.0.0.1:7878/api/control/agents/main/prompt \
   -H "Authorization: Bearer $HOLON_CONTROL_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"text": "Run cargo check"}'
 
 # Enqueue via webhook (public)
-curl -X POST http://127.0.0.1:9101/webhooks/generic/main \
+curl -X POST http://127.0.0.1:7878/api/webhooks/generic/main \
   -H "Content-Type: application/json" \
   -d '{"event": "ci-complete", "status": "success"}'
 
 # Stream agent events
-curl -N http://127.0.0.1:9101/agents/main/events/stream
+curl -N http://127.0.0.1:7878/api/agents/main/events/stream
 ```

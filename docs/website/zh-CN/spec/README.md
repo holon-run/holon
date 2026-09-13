@@ -16,7 +16,7 @@ order: 1
 
 | 层 | 内容 | 读者 |
 |-------|------|----------|
-| [指南](/guides/) | 任务导向的工作流 | 用户 |
+| [指南](/zh-CN/guides/) | 任务导向的工作流 | 用户 |
 | [概念](/zh-CN/concepts/) | 心智模型 | 用户、评估者 |
 | [参考](/zh-CN/reference/) | CLI、配置、控制平面快照 | 用户、集成方 |
 | **规格**（本节） | 当前运行时契约 | 维护者、贡献者 |
@@ -24,8 +24,6 @@ order: 1
 
 规格桥接用户文档和 RFC 设计历史之间的空隙。当 RFC 稳定为运行时行为后，
 当前契约会被提取到这里。RFC 保留为设计记录；规格是活契约。
-
-> 本节除本页外暂为英文，链接会跳转到对应英文页面。中文翻译在逐步补充中。
 
 ## 如何阅读规格
 
@@ -38,28 +36,28 @@ order: 1
 
 ## 当前规格页面
 
-- [Agent 状态](/spec/agent-state.md)（英文）
+- [Agent 状态](/zh-CN/spec/agent-state.md)
   当前 Agent 状态、生命周期标签、运行时投影和用户可见的展示契约。
 
-- [工作项](/spec/work-items.md)（英文）
+- [工作项](/zh-CN/spec/work-items.md)
   当前 WorkItem 生命周期、focus、readiness、规划、阻塞和完成契约。
 
-- [调度器](/spec/scheduler.md)（英文）
+- [调度器](/zh-CN/spec/scheduler.md)
   当前调度器输入、runnable/waiting 决策、WorkItem readiness 和 wake/sleep 边界。
 
-- [唤醒与延续](/spec/wake-and-continuation.md)（英文）
+- [唤醒与延续](/zh-CN/spec/wake-and-continuation.md)
   当前触发器分类、外部 ingress 能力、continuation 解析和 wake/sleep 生命周期。
 
-- [任务](/spec/tasks.md)（英文）
+- [任务](/zh-CN/spec/tasks.md)
   当前任务生命周期、terminal re-entry 和命令/子 Agent 监督契约。
 
-- [工具](/spec/tools.md)（英文）
+- [工具](/zh-CN/spec/tools.md)
   当前面向模型的工具家族、权限边界、输入/结果契约和已废弃接口。
 
-- [Workspace 与执行](/spec/workspace-and-execution.md)（英文）
+- [Workspace 与执行](/zh-CN/spec/workspace-and-execution.md)
   当前 workspace 身份、agent home、execution root、worktree 和 host-local 策略契约。
 
-- [信任与来源](/spec/trust-and-provenance.md)（英文）
+- [信任与来源](/zh-CN/spec/trust-and-provenance.md)
   当前 provenance、admission/authentication、指令权威和执行策略契约。
 
 ## 与 `docs/runtime-spec.md` 的关系
@@ -77,5 +75,37 @@ order: 1
 如果实现和规格不一致，修复错误的一方，并为另一方开 issue。
 
 <!-- INDEX:START -->
+
+- [Agent 状态](./agent-state.md)
+  当前的 Agent 状态、生命周期标签、运行时投影，以及面向用户的展示契约。
+  <!-- mdorigin:index kind=article -->
+
+- [工作项](./work-items.md)
+  当前 WorkItem 生命周期、focus、readiness、规划、阻塞和完成契约。
+  <!-- mdorigin:index kind=article -->
+
+- [调度器](./scheduler.md)
+  当前调度器输入、runnable/waiting 决策、WorkItem readiness 和 wake/sleep 边界。
+  <!-- mdorigin:index kind=article -->
+
+- [唤醒与延续](./wake-and-continuation.md)
+  当前触发器分类、外部 ingress 能力、延续解析和 wake/sleep 生命周期。
+  <!-- mdorigin:index kind=article -->
+
+- [任务](./tasks.md)
+  当前任务生命周期、终态重入，以及命令/子 Agent 监督契约。
+  <!-- mdorigin:index kind=article -->
+
+- [工具](./tools.md)
+  当前面向模型的工具家族、权限边界、输入/结果契约和已废弃接口。
+  <!-- mdorigin:index kind=article -->
+
+- [Workspace 与执行](./workspace-and-execution.md)
+  当前 workspace 身份、agent home、execution root、worktree 和 host-local 策略契约。
+  <!-- mdorigin:index kind=article -->
+
+- [信任与来源](./trust-and-provenance.md)
+  当前 provenance、admission/authentication、指令权威和执行策略契约。
+  <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -44,20 +44,20 @@ Agent（谁）
 
 ## 深入阅读
 
-**记忆系统**页面解释 Holon 如何通过工作项、work refs、episode 归档和索引搜索，
-跨轮次保持连续性。（[英文](/concepts/memory)）
+**[记忆系统](/zh-CN/concepts/memory)** 页面解释 Holon 如何通过工作项、work refs、episode 归档和索引搜索，
+跨轮次保持连续性。
 
-**上下文连续性**页面解释 Holon 如何从轮次、工作项、任务结果、简报和结构化
-episode 中组装有界的提示上下文，而不依赖原始对话回放。（[英文](/concepts/context-continuity)）
+**[上下文连续性](/zh-CN/concepts/context-continuity)** 页面解释 Holon 如何从轮次、工作项、任务结果、简报和结构化
+episode 中组装有界的提示上下文，而不依赖原始对话回放。
 
-**运行时模型**页面把四对象心智模型展开为精确的生命周期词汇：Agent profile、
-工作项状态、任务种类、队列语义、触发器和 workspace 隔离。（[英文](/concepts/runtime-model)）
+**[运行时模型](/zh-CN/concepts/runtime-model)** 页面把四对象心智模型展开为精确的生命周期词汇：Agent profile、
+工作项状态、任务种类、队列语义、触发器和 workspace 隔离。
 
-**信任边界**页面面向产品：它解释 origin 和 trust 对真实集成为什么重要，
-而不只是安全理论。（[英文](/concepts/trust-boundaries)）
+**[信任边界](/zh-CN/concepts/trust-boundaries)** 页面面向产品：它解释 origin 和 trust 对真实集成为什么重要，
+而不只是安全理论。
 
-**文档分层**页面解释 Holon 如何区分产品文档、当前契约参考和维护者设计记录——
-让你知道哪类文档在哪种用途下是权威的。（[英文](/concepts/documentation-layers)）
+**[文档分层](/zh-CN/concepts/documentation-layers)** 页面解释 Holon 如何区分产品文档、当前契约参考和维护者设计记录——
+让你知道哪类文档在哪种用途下是权威的。
 
 这些概念背后的权威设计契约，见仓库的
 [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) 和
@@ -66,27 +66,55 @@ episode 中组装有界的提示上下文，而不依赖原始对话回放。（
 
 ## 本节页面
 
-- [运行时模型](/concepts/runtime-model.md)（英文）
+- [运行时模型](/zh-CN/concepts/runtime-model.md)
   Agent、任务、工作项、工作区，以及构成 Holon 运行时的执行循环。
 
-- [上下文连续性](/concepts/context-continuity.md)（英文）
+- [上下文连续性](/zh-CN/concepts/context-continuity.md)
   Holon 如何在不回放每一轮对话的情况下保持长生命周期的 Agent 上下文连贯。
 
-- [记忆系统](/concepts/memory.md)（英文）
+- [记忆系统](/zh-CN/concepts/memory.md)
   Holon 的记忆分层如何跨轮次保持连续性——工作项、work refs、episode、持久账本和索引搜索。
 
-- [文档分层](/concepts/documentation-layers.md)（英文）
+- [文档分层](/zh-CN/concepts/documentation-layers.md)
   Holon 如何区分产品文档、当前契约参考和维护者设计记录。
 
-- [信任边界](/concepts/trust-boundaries.md)（英文）
+- [信任边界](/zh-CN/concepts/trust-boundaries.md)
   Holon 如何分类 origin、trust 和 priority，保障长生命周期 Agent 的安全。
 
-- [外部触发器](/concepts/external-triggers.md)（英文）
+- [外部触发器](/zh-CN/concepts/external-triggers.md)
   Holon Agent 如何通过 webhook 唤醒端点和回调 URL 等待并接收外部事件。
 
-- [安全与执行边界](/concepts/security-and-execution-boundaries.md)（英文）
+- [安全与执行边界](/zh-CN/concepts/security-and-execution-boundaries.md)
   Holon 沙箱化什么、不沙箱化什么：本地执行、workspace 绑定、远程访问、能力密钥和信任元数据。
 
 <!-- INDEX:START -->
+
+- [运行时模型](./runtime-model.md)
+  Agent、任务、工作项、工作区，以及构成 Holon 运行时的执行循环。
+  <!-- mdorigin:index kind=article -->
+
+- [上下文连续性](./context-continuity.md)
+  Holon 如何在不重放全部对话记录的前提下，让长期 Agent 的上下文保持连贯。
+  <!-- mdorigin:index kind=article -->
+
+- [记忆系统](./memory.md)
+  Holon 的记忆分层如何跨轮次保持连续性——工作项、work refs、片段、持久账本和索引搜索。
+  <!-- mdorigin:index kind=article -->
+
+- [信任边界](./trust-boundaries.md)
+  Holon 如何对来源、信任和优先级分类，让长期 Agent 保持安全。
+  <!-- mdorigin:index kind=article -->
+
+- [文档分层](./documentation-layers.md)
+  Holon 如何区分产品文档、当前契约参考和维护者设计记录。
+  <!-- mdorigin:index kind=article -->
+
+- [外部触发器](./external-triggers.md)
+  Holon Agent 如何通过 webhook 唤醒端点和回调 URL 等待并接收外部事件。
+  <!-- mdorigin:index kind=article -->
+
+- [安全与执行边界](./security-and-execution-boundaries.md)
+  Holon 沙箱化与不沙箱化的部分：本地执行、工作区绑定、远程访问、能力密钥和信任元数据。
+  <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

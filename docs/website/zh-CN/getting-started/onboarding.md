@@ -148,6 +148,6 @@ holon onboard [--json]
 ## 相关阅读
 
 - [创建你的第一个 Agent](first-agent.md) — 从安装到第一条提示的完整流程
-- [配置参考](/reference/configuration.md)（英文）— 配置文件结构与凭据管理
-- [模型参考](/reference/models.md)（英文）— 支持的模型与提供商详情
-- [故障排查](/guides/troubleshooting.md)（英文）— 诊断常见安装问题
+- [配置参考](/zh-CN/reference/configuration.md) — 配置文件结构与凭据管理
+- [模型参考](/zh-CN/reference/models.md)（正文由源码生成，随英文版同步）— 支持的模型与提供商详情
+- [故障排查](/zh-CN/guides/troubleshooting.md) — 诊断常见安装问题

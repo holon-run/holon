@@ -66,6 +66,7 @@ and `Enter` to select. Press `Esc` to dismiss.
 | Command | Description |
 |---------|-------------|
 | `/agents` | Open agent picker overlay |
+| `/templates` | Open agent template catalog overlay |
 | `/agent switch <id>` | Switch to a different agent |
 | `/agent create <name>` | Create a new agent |
 | `/agent start [id]` | Start an agent |
@@ -90,7 +91,9 @@ and `Enter` to select. Press `Esc` to dismiss.
 | `/tasks` | Open task overlay |
 | `/refresh` | Refresh selected agent |
 | `/clear-status` | Clear local status line |
-| `/display <mode>` | Set chat display mode (`info`, `verbose`, `debug`, or numeric 3–5) |
+| `/onboard` | Configure the runtime default model through daemon config |
+| `/vim` | Toggle vim composer editing |
+| `/display <mode>` | Set or reset chat display mode (`info`, `verbose`, `debug`, `3`–`5`, or `reset`) |
 
 ### Skills Commands
 
@@ -157,7 +160,8 @@ holon tui --connect https://your-server:8787 --token "your-token"
 ```
 
 The daemon must be started with an access mode that accepts remote connections
-(`tunnel` or `public`). Use `--access local` for local-only TUI connections.
+(`tunnel`, `lan`, or `tailnet`). Use `--access local` for local-only TUI
+connections.
 
 ## Agent Templates
 
@@ -165,7 +169,7 @@ The TUI supports browsing, installing, and creating agents from templates
 directly within the terminal. This avoids switching to the Web GUI or CLI
 for common template workflows.
 
-- **Browse templates** — Press `Ctrl+O` then `T` to open the template catalog
+- **Browse templates** — Run `/templates` to open the template catalog
   overlay. Navigate installed templates with `↑`/`↓` and press `Enter` to
   select a template for agent creation.
 - **Install from URL** — Press `g` inside the templates overlay to enter a
@@ -188,20 +192,22 @@ target key to open the corresponding overlay:
 |-----|---------|
 | `H` | Help |
 | `A` | Agent picker |
+| `T` | Tasks |
+| `S` | Agent state |
+| `C` | Transcript |
 | `E` | Event log |
 | `M` | Model picker |
-| `T` | Template catalog |
-| `R` | Transcript |
-| `S` | Agent state |
+| `K` | Selected-agent skills |
 
 Press `Esc` to cancel the prefix and continue typing.
 
 ## Persistent Display State
 
 The TUI remembers your last display mode and restores it on restart. Display
-mode is stored per agent in `~/.holon/tui_state.json`, so each agent
-maintains its own preference. This applies to the chat display mode (info,
-verbose, debug) set via `/display <mode>`.
+mode is stored per agent under `~/.holon/state/tui/` in `local.json` (or
+`remote-<hash>.json` for remote connections), so each agent maintains its own
+preference. This applies to the chat display mode (info, verbose, debug) set
+via `/display <mode>`.
 
 ## Troubleshooting
 

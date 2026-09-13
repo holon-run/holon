@@ -271,7 +271,7 @@ holon config set model.default "anthropic@default/claude-sonnet-4-6"
 holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 ```
 
-Agent 模型覆盖的更多细节见[配置参考](/reference/configuration.md)（英文）。
+Agent 模型覆盖的更多细节见[配置参考](/zh-CN/reference/configuration.md)。
 
 ### 验证模型配置
 
@@ -290,10 +290,10 @@ holon config models list
 
 你的第一个 Agent 已经跑起来了，接下来可以：
 
-- **了解概念**：阅读[运行时模型](/concepts/runtime-model.md)（英文）和[信任边界](/concepts/trust-boundaries.md)（英文）
-- **试试示例**：参见[快速示例](/guides/quick-examples.md)（英文）
-- **构建集成**：查看[集成指南](/guides/integration.md)（英文）
-- **参考文档**：[CLI 参考](/reference/cli.md)、[HTTP 控制平面](/reference/http-control-plane.md)、[配置参考](/reference/configuration.md)（英文）
+- **了解概念**：阅读[运行时模型](/zh-CN/concepts/runtime-model.md)和[信任边界](/zh-CN/concepts/trust-boundaries.md)
+- **试试示例**：参见[快速示例](/zh-CN/guides/quick-examples.md)
+- **构建集成**：查看[集成指南](/zh-CN/guides/integration.md)
+- **参考文档**：[CLI 参考](/zh-CN/reference/cli.md)、[HTTP 控制平面](/zh-CN/reference/http-control-plane.md)、[配置参考](/zh-CN/reference/configuration.md)
 
 ## 故障排查
 
@@ -325,4 +325,4 @@ echo $ANTHROPIC_AUTH_TOKEN
 holon config get model.default
 ```
 
-更多帮助见[故障排查指南](/guides/troubleshooting.md)（英文）。
+更多帮助见[故障排查指南](/zh-CN/guides/troubleshooting.md)。

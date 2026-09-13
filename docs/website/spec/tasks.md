@@ -12,7 +12,7 @@ terminal re-entry, and supervision surfaces.
 > **Last verified:** 2026-05-25 against `src/types.rs` `TaskRecord`,
 > `TaskStatus`, `TaskKind`, `TaskHandle`, `TaskWaitPolicy`, and the tool
 > implementations in `src/tool/tools/{exec_command,task_list,task_status,
-> task_output,task_input,task_stop,spawn_agent}.rs`.
+> task_output,task_input,task_stop,invoke_agent}.rs`.
 
 ## Source RFCs
 
@@ -28,7 +28,8 @@ terminal re-entry, and supervision surfaces.
 | `TaskKind` | Description |
 |------------|-------------|
 | `CommandTask` | Shell command execution via `ExecCommand` |
-| `ChildAgentTask` | Parent-supervised delegated agent via `InvokeAgent` |
+| `ChildAgentTask` | Parent-supervised child agent task |
+| `ActorInvocation` | Canonical agent invocation task created by `InvokeAgent` |
 | `SleepJob` | Internal sleep timer (not model-visible) |
 | `SubagentTask` | Legacy child agent kind (migrating to `ChildAgentTask`) |
 | `WorktreeSubagentTask` | Legacy worktree-isolated child agent (migrating) |

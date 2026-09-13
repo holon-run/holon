@@ -7,7 +7,7 @@ order: 11
 # CLI Contract Inventory
 
 This inventory captures Holon's current CLI surface as compiled from
-`src/main.rs` and checked against `target/debug/holon --help` for `holon 0.14.1`.
+`src/main.rs` and checked against `target/debug/holon --help` for `holon 0.39.0`.
 It is a stability planning document, not a promise that every listed command is
 already stable.
 
@@ -113,8 +113,8 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon task output` | `<TASK_ID>` | `--block`; `--timeout-ms <MS>`; `--agent <AGENT>` | pretty JSON `TaskOutputResult` | `experimental` | Output preview length follows the task's creation-time `--max-output-tokens`; this command controls readiness waiting only. |
 | `holon task input` | `<TASK_ID>` | required `--text <TEXT>`; `--agent <AGENT>` | pretty JSON `TaskInputResult` | `experimental` | Sends trusted operator text to command-task stdin/TTY or supervised child-agent follow-up input. |
 | `holon task stop` | `<TASK_ID>` | `--agent <AGENT>` | pretty JSON `TaskStopResult` | `experimental` | Requests managed-task cancellation through the control plane. |
-| `holon work-item list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `WorkItemRecord` | `experimental` | Initial WorkItem CLI surface is read-only. The JSON schema owner is the HTTP/API `WorkItemRecord` read model returned by `/agents/:agent_id/work-items`. |
-| `holon work-item get` | `<WORK_ITEM_ID>` | `--agent <AGENT>` | pretty JSON `WorkItemRecord` | `experimental` | Reads a single work item through `/agents/:agent_id/work-items/:work_item_id`; create/update/pick/complete commands are deferred until those mutation API contracts are stabilized. |
+| `holon work-item list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `WorkItemRecord` | `experimental` | The JSON schema owner is the HTTP/API `WorkItemRecord` read model returned by `/agents/:agent_id/work-items`. |
+| `holon work-item get` | `<WORK_ITEM_ID>` | `--agent <AGENT>` | pretty JSON `WorkItemRecord` | `experimental` | Reads a single work item through `/agents/:agent_id/work-items/:work_item_id`; `create`, `pick`, `update`, and `complete` subcommands exist, but their mutation API contracts are still being stabilized. |
 | `holon timer` | none | legacy create syntax: required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Backward-compatible alias for `holon timer create`. |
 | `holon timer create` | none | required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Creates a one-shot or repeating timer through the control plane. |
 | `holon timer list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `TimerRecord` | `experimental` | Reads recent timers through the agent timer API. |
@@ -163,8 +163,8 @@ Skill management is split into library operations and agent enablement:
 
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
-| `holon run` | `<TEXT>` | `--trust <TRUST>` default `trusted-operator`; `--json`; `--agent <AGENT>`; `--create-agent`; `--template <TEMPLATE>`; `--max-turns <N>`; `--no-wait-for-tasks`; `--home <HOME>`; `--workspace-root <PATH>`; `--cwd <PATH>` | human `render_text()` by default; pretty JSON with `--json` | `stable` candidate for command shape; `experimental` for output | Core user entry point. JSON response shape should be locked before stable automation guidance. |
-| `holon solve` | `<REF>` | `--repo <REPO>`; `--base <BASE>`; `--goal <GOAL>`; `--role <ROLE>`; `--agent <AGENT>`; `--template <TEMPLATE>`; `--model <MODEL>`; `--max-turns <N>`; `--trust <TRUST>` default `trusted-operator`; `--json`; `--home <HOME>`; `--workspace <PATH>`; `--workspace-root <PATH>`; `--cwd <PATH>`; `--input <INPUT>`; `--output <OUTPUT>` | human `render_text()` by default; pretty JSON with `--json` | `experimental` | GitHub/task workflow surface. `--workspace` and `--workspace-root` are currently coalesced. |
+| `holon run` | `<TEXT>` | `--authority-class <AUTHORITY_CLASS>` default `operator-instruction`; `--json`; `--agent <AGENT>`; `--create-agent`; `--template <TEMPLATE>`; `--max-turns <N>`; `--no-wait-for-tasks`; `--home <HOME>`; `--workspace-root <PATH>`; `--cwd <PATH>` | human `render_text()` by default; pretty JSON with `--json` | `stable` candidate for command shape; `experimental` for output | Core user entry point. JSON response shape should be locked before stable automation guidance. |
+| `holon solve` | `<REF>` | `--repo <REPO>`; `--base <BASE>`; `--goal <GOAL>`; `--role <ROLE>`; `--agent <AGENT>`; `--template <TEMPLATE>`; `--model <MODEL>`; `--max-turns <N>`; `--authority-class <AUTHORITY_CLASS>` default `operator-instruction`; `--json`; `--home <HOME>`; `--workspace <PATH>`; `--workspace-root <PATH>`; `--cwd <PATH>`; `--input <INPUT>`; `--output <OUTPUT>` | human `render_text()` by default; pretty JSON with `--json` | `experimental` | GitHub/task workflow surface. `--workspace` and `--workspace-root` are currently coalesced. |
 
 ### Workspace
 
@@ -184,7 +184,7 @@ Skill management is split into library operations and agent enablement:
 
 | Command | Args | Options | Output | Initial stability | Notes |
 |---|---|---|---|---:|---|
-| `holon debug prompt` | `<TEXT>` | `--agent <AGENT>`; `--trust <TRUST>` default `trusted-operator` | human prompt dump | `internal` | Debug-only prompt inspection. |
+| `holon debug prompt` | `<TEXT>` | `--agent <AGENT>`; `--authority-class <AUTHORITY_CLASS>` default `operator-instruction` | human prompt dump | `internal` | Debug-only prompt inspection. |
 | `holon debug latency` | none | `--agent <AGENT>`; `--limit <LIMIT>` default `10`; `--events-limit <EVENTS_LIMIT>` default `5000` | human latency report | `internal` | Useful diagnostics; prose should not be machine contract. |
 | `holon debug scheduler-fixture` | none | `--agent <AGENT>`; required `--output <OUTPUT>` | writes JSON/JSONL fixture files; prints export summary | `internal` | Fixture file shape may be useful for tests but should be documented separately if stabilized. |
 | `holon debug scheduler-recovery` | none | `--agent <AGENT>`; `--json`; `--apply`; `--no-backup` (requires `--apply`) | read-only canonical recovery diagnosis; optional typed apply result | `internal` | Default is read-only. It is the only current-binary command permitted to open the immediately preceding scheduler schema without migrating it, so blocked cleanup migrations remain recoverable. `--json` emits `{ "report": ..., "apply": null | { "changed": ..., "backup_path": ..., "backup_policy": ..., "backup_created": ... } }`. `--apply` requires the daemon to be stopped and creates a verified SQLite backup by default. Explicit `--no-backup` skips only that backup; typed source fences, recovery commands, and audit evidence remain required. |

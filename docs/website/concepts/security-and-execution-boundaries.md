@@ -37,6 +37,7 @@ describes the current policy snapshot and what is enforced:
 | `write_confinement` | not_enforced | Write operations are not restricted to the workspace |
 | `network_confinement` | not_enforced | Network access is unrestricted by default |
 | `secret_isolation` | not_enforced | The runtime does not isolate secrets from agent commands |
+| `child_process_containment` | not_enforced | Spawned child processes are not confined by the runtime |
 
 **Key takeaway:** boundaries marked `hard_enforced` are runtime guarantees.
 Boundaries marked `not_enforced` rely on the operator's host configuration

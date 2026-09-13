@@ -227,7 +227,7 @@ The HTTP control plane separates library and agent operations:
 | `POST` | `/api/skills/catalog/remove` | Remove from the library |
 | `POST` | `/api/skills/catalog/reconcile` | Reconcile with lock file |
 | `POST` | `/api/skills/catalog/check` | Check consistency |
-| `POST` | `/api/skills/_update` | Update skills from remote sources |
+| `POST` | `/api/skills/catalog/update` | Update skills from remote sources |
 
 ### Agent endpoints
 
