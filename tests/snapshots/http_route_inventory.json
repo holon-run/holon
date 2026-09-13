@@ -802,6 +802,23 @@
   },
   {
     "method": "get",
+    "path": "/api/control/runtime/metrics",
+    "handler": "runtime_metrics",
+    "operation_id": "runtimeMetrics",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json",
+      "application/openmetrics-text; version=1.0.0; charset=utf-8"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/control/runtime/performance",
     "handler": "runtime_performance",
     "operation_id": "runtimePerformance",

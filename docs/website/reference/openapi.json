@@ -17273,6 +17273,54 @@
         ]
       }
     },
+    "/api/control/runtime/metrics": {
+      "get": {
+        "description": "Return a bounded, label-free OpenMetrics snapshot for runtime performance and diagnostics.",
+        "operationId": "runtimeMetrics",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/openmetrics-text; version=1.0.0; charset=utf-8": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "OpenMetrics 1.0 text exposition."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Runtime OpenMetrics",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
     "/api/control/runtime/performance": {
       "get": {
         "description": "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.",

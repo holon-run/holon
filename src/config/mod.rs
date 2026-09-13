@@ -405,6 +405,11 @@ impl AppConfig {
         resolve_diagnostics_writer_config(&self.stored_config)
     }
 
+    pub fn otlp_exporter_config(&self) -> Result<Option<crate::otlp_exporter::OtlpExporterConfig>> {
+        let credential_store = load_credential_store_at(&credential_store_path(&self.home_dir))?;
+        resolve_otlp_exporter_config(&self.stored_config, &credential_store)
+    }
+
     pub fn runtime_db_lock_path(&self) -> PathBuf {
         self.data_dir.join("state").join("runtime.lock")
     }
@@ -659,6 +664,72 @@ fn resolve_diagnostics_writer_config(
             .unwrap_or(defaults.retention_delete_batch),
     }
     .validate()
+}
+
+fn resolve_otlp_exporter_config(
+    stored_config: &HolonConfigFile,
+    credential_store: &CredentialStoreFile,
+) -> Result<Option<crate::otlp_exporter::OtlpExporterConfig>> {
+    let configured = &stored_config.runtime.observability.otlp;
+    if !configured.enabled.unwrap_or(false) {
+        return Ok(None);
+    }
+
+    let defaults = crate::otlp_exporter::OtlpExporterConfig::default();
+    let mut headers = configured.headers.clone();
+    if let Some(profile) = configured.credential_profile.as_deref() {
+        let profile = normalize_credential_profile_id(profile)?;
+        let credential = credential_store
+            .profiles
+            .get(&profile)
+            .ok_or_else(|| anyhow!("OTLP credential profile {profile} is not configured"))?;
+        if headers
+            .keys()
+            .any(|name| name.eq_ignore_ascii_case("authorization"))
+        {
+            return Err(anyhow!(
+                "OTLP headers must not configure authorization when credential_profile is set"
+            ));
+        }
+        if credential.material.trim().is_empty() {
+            return Err(anyhow!("OTLP credential profile {profile} is empty"));
+        }
+        match credential.kind {
+            CredentialKind::ApiKey
+            | CredentialKind::BearerToken
+            | CredentialKind::OAuth
+            | CredentialKind::SessionToken => {
+                headers.insert(
+                    "authorization".to_string(),
+                    format!("Bearer {}", credential.material),
+                );
+            }
+            CredentialKind::AwsSdk | CredentialKind::None => {
+                return Err(anyhow!(
+                    "OTLP credential profile {profile} must use api_key, bearer_token, oauth, or session_token"
+                ));
+            }
+        }
+    }
+
+    let config = crate::otlp_exporter::OtlpExporterConfig {
+        endpoint: configured.endpoint.clone().unwrap_or_default(),
+        headers,
+        queue_capacity: configured.queue_capacity.unwrap_or(defaults.queue_capacity),
+        batch_size: configured.batch_size.unwrap_or(defaults.batch_size),
+        batch_interval: Duration::from_millis(
+            configured
+                .batch_interval_ms
+                .unwrap_or(defaults.batch_interval.as_millis() as u64),
+        ),
+        timeout: Duration::from_millis(
+            configured
+                .timeout_ms
+                .unwrap_or(defaults.timeout.as_millis() as u64),
+        ),
+    };
+    config.validate()?;
+    Ok(Some(config))
 }
 
 fn resolve_disable_provider_fallback_override(

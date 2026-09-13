@@ -57,6 +57,17 @@ pub async fn runtime_performance(
     Ok(Json(diagnostics::performance_snapshot()))
 }
 
+pub async fn runtime_metrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    Ok((
+        [(CONTENT_TYPE, crate::openmetrics::CONTENT_TYPE)],
+        crate::openmetrics::render(&diagnostics::performance_snapshot()),
+    ))
+}
+
 pub async fn runtime_traces(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

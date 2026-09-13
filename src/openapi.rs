@@ -48,6 +48,7 @@ struct RouteSpec {
 enum ResponseKind {
     Json,
     EventStream,
+    OpenMetrics,
 }
 
 #[derive(Clone, Copy)]
@@ -156,6 +157,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/control/runtime/readiness", "runtimeReadiness", "runtime", "Runtime readiness", "Return daemon readiness metadata.", None, AuthKind::Control),
     route("get", "/control/runtime/status", "runtimeStatus", "runtime", "Runtime status", "Return daemon status and runtime activity metadata.", None, AuthKind::Control),
     route_with_response("get", "/control/runtime/performance", "runtimePerformance", "runtime", "Runtime performance diagnostics", "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.", None, "PerformanceDiagnosticsSnapshot", AuthKind::Control),
+    openmetrics_route("get", "/control/runtime/metrics", "runtimeMetrics", "runtime", "Runtime OpenMetrics", "Return a bounded, label-free OpenMetrics snapshot for runtime performance and diagnostics.", AuthKind::Control),
     route_with_response("get", "/control/runtime/traces", "runtimeTraces", "runtime", "Recent runtime traces", "Return summaries for the bounded in-memory recent trace ring.", None, "RecentTraceSummaryList", AuthKind::Control),
     route_with_response("get", "/control/runtime/traces/search", "runtimeTraceSearch", "runtime", "Search runtime traces", "Search the bounded in-memory recent trace ring and retained persistent diagnostics by trace or span attributes.", None, "RecentTraceSummaryList", AuthKind::Control),
     route_with_response("get", "/control/runtime/traces/{trace_id}", "runtimeTrace", "runtime", "Runtime trace waterfall", "Return the recorded span waterfall for a recent or retained persistent trace.", None, "RecentTrace", AuthKind::Control),
@@ -283,6 +285,30 @@ const fn event_stream_route(
         request_schema,
         response_schema: None,
         response_kind: ResponseKind::EventStream,
+        auth,
+        metadata_source: MetadataSource::Manual,
+    }
+}
+
+const fn openmetrics_route(
+    method: &'static str,
+    path: &'static str,
+    operation_id: &'static str,
+    tag: &'static str,
+    summary: &'static str,
+    description: &'static str,
+    auth: AuthKind,
+) -> RouteSpec {
+    RouteSpec {
+        method,
+        path,
+        operation_id,
+        tag,
+        summary,
+        description,
+        request_schema: None,
+        response_schema: None,
+        response_kind: ResponseKind::OpenMetrics,
         auth,
         metadata_source: MetadataSource::Manual,
     }
@@ -535,6 +561,24 @@ fn responses(kind: ResponseKind, response_schema: Option<&str>) -> Value {
             },
             "4XX": {
                 "description": "Client error before stream establishment.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+            }
+        }),
+        ResponseKind::OpenMetrics => json!({
+            "200": {
+                "description": "OpenMetrics 1.0 text exposition.",
+                "content": {
+                    "application/openmetrics-text; version=1.0.0; charset=utf-8": {
+                        "schema": { "type": "string" }
+                    }
+                }
+            },
+            "4XX": {
+                "description": "Client error JSON response.",
+                "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+            },
+            "5XX": {
+                "description": "Server error JSON response.",
                 "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
             }
         }),

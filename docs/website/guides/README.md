@@ -33,6 +33,8 @@ Keep a running Holon instance healthy and configured.
 
 - **[Troubleshooting](/guides/troubleshooting)** — diagnose daemon, model,
   configuration, and TUI issues in likely encounter order.
+- **[Runtime observability](/guides/observability)** — export OTLP traces,
+  scrape protected OpenMetrics, and install baseline dashboards and alerts.
 
 ## Integrate and automate
 

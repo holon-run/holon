@@ -204,4 +204,10 @@ pub(crate) fn config_uses_credential_profiles(config: &HolonConfigFile) -> bool 
             .remote_sources
             .values()
             .any(|source| source.credential_profile.is_some())
+        || config
+            .runtime
+            .observability
+            .otlp
+            .credential_profile
+            .is_some()
 }

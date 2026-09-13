@@ -178,6 +178,9 @@ pub fn record_span(context: &TraceContext, span: TraceSpan) {
         store.traces.truncate(RECENT_TRACE_LIMIT);
         trace
     };
+    if let Some(span) = trace.spans.last() {
+        crate::otlp_exporter::try_record_span(context, span);
+    }
     crate::diagnostics_store::try_record_trace(trace);
 }
 

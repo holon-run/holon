@@ -359,6 +359,27 @@ TUI debug instrumentation is controlled by environment variables:
 | `HOLON_TUI_PRESENTATION_LOG` | `1`, `true`, `yes`, `on`, `debug` | unset | Enable `<HOLON_HOME>/logs/tui/presentation.jsonl` debug logging for stream-driven presentation decisions |
 | `HOLON_TUI_PRESENTATION_LOG_MAX_BYTES` | positive integer bytes | `5242880` | Rotate the presentation debug log when it reaches this size |
 
+## Runtime Observability
+
+OTLP trace export is optional and disabled by default. OpenMetrics is exposed
+through the protected `/api/control/runtime/metrics` endpoint whenever the
+control API is running.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `runtime.observability.otlp.enabled` | boolean | `false` | Enable the bounded OTLP/HTTP JSON trace exporter |
+| `runtime.observability.otlp.endpoint` | string | unset | Full HTTP or HTTPS OTLP trace endpoint, commonly ending in `/v1/traces` |
+| `runtime.observability.otlp.headers` | json_object | `{}` | Static non-secret request headers |
+| `runtime.observability.otlp.credential_profile` | string | unset | Credential profile materialized as a bearer authorization header |
+| `runtime.observability.otlp.queue_capacity` | positive integer | `1024` | Maximum spans waiting in the non-blocking exporter queue |
+| `runtime.observability.otlp.batch_size` | positive integer | `128` | Maximum spans in one export request |
+| `runtime.observability.otlp.batch_interval_ms` | positive integer | `1000` | Maximum batching delay |
+| `runtime.observability.otlp.timeout_ms` | positive integer | `5000` | Per-request export timeout |
+
+OTLP settings take effect when the daemon starts. See the
+[runtime observability guide](/guides/observability) for Collector,
+Prometheus, Grafana, alerting, and troubleshooting examples.
+
 ## Web Fetch/Search Settings
 
 | Key | Type | Default | Description |

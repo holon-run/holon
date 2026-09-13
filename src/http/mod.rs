@@ -564,6 +564,7 @@ pub fn router(state: AppState) -> Router {
             "/control/runtime/performance",
             get(control::runtime_performance),
         )
+        .route("/control/runtime/metrics", get(control::runtime_metrics))
         .route("/control/runtime/traces", get(control::runtime_traces))
         .route(
             "/control/runtime/traces/search",

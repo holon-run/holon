@@ -43,6 +43,7 @@ use holon::{
         OnboardingSearchSelection, OnboardingWizardSubmission,
     },
     onboarding_tui::run_onboarding_tui,
+    otlp_exporter::OtlpExporter,
     provider::{provider_doctor, resolved_model_availability},
     resource_policy::{apply_startup_policy, startup_report},
     run_once::{run_once, RunOnceRequest},
@@ -898,6 +899,13 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         config.diagnostics_writer_config()?,
     )?;
     diagnostics_writer.install();
+    let otlp_exporter = config
+        .otlp_exporter_config()?
+        .map(OtlpExporter::start)
+        .transpose()?;
+    if let Some(exporter) = otlp_exporter.as_ref() {
+        exporter.install();
+    }
     let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
     #[cfg(unix)]
     let unix_server = {
@@ -999,6 +1007,9 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         };
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
+        if let Some(exporter) = otlp_exporter {
+            exporter.shutdown()?;
+        }
         diagnostics_writer.shutdown()?;
         return result;
     }
@@ -1027,6 +1038,9 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         }
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
+        if let Some(exporter) = otlp_exporter {
+            exporter.shutdown()?;
+        }
         diagnostics_writer.shutdown()?;
         Ok(())
     }
