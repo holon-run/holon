@@ -107,16 +107,27 @@ Follow `code-review`'s scope, priority, candidate verification, classification,
 and degradation rules. Review every changed file and materially changed hunk
 before concluding that there are no findings.
 
-For each publishable finding, require:
+Validate findings independently of whether GitHub can publish them inline. For
+each actionable finding, require:
 
-- repository-relative `path`
-- a valid changed-line range for inline publication
 - `severity`, `confidence`, and `category`
 - concrete evidence and impact
 - confirmation that the issue is introduced or materially worsened by this PR
+- the best repository-relative location when one exists
 
-Findings that cannot be mapped to a changed line remain in the brief as
-non-inline findings or `needs-context`; never attach them to an arbitrary line.
+After validation, perform an explicit inline-localization pass for every open
+finding:
+
+1. Identify the causal changed hunk.
+2. Select the smallest changed-line range that directly supports the finding.
+3. Mark the finding inline-eligible when that range is valid for the current
+   diff.
+4. If no valid changed-line range exists, keep the finding body-only with its
+   best location and the reason it could not be published inline.
+
+Do not attach findings to an arbitrary line. Do not demote a validated finding
+to `needs-context`, lower its severity or confidence, or omit it solely because
+it is not inline-eligible.
 
 ### 3. Deduplicate historical feedback
 
@@ -135,13 +146,17 @@ Always provide a conclusion-first user-facing brief with:
 - context and instruction coverage
 - verification commands and outcomes
 - limitations and publish outcome
+- finding and publication counts: candidates, validated findings,
+  inline-eligible findings, inline comments published, body-only findings,
+  `needs-context` findings, and findings skipped by deduplication or a cap
 
 Only when the caller explicitly provides an artifact directory and requests
 exports, write:
 
 - `review.md`: human-readable review report
 - `review-result.json`: the platform-neutral structured result
-- `review-publish.json`: the GitHub publish receipt, if a publish was attempted
+- `review-publish.json`: the GitHub publish receipt and the publication counts
+  above, if a publish was attempted
 
 Do not require or create `summary.md`, `manifest.json`, or any other fixed
 review output file. Do not require `GITHUB_OUTPUT_DIR`,
@@ -171,8 +186,11 @@ Use a JSON payload file with `gh api`:
 gh api repos/<owner>/<repo>/pulls/<pr_number>/reviews -X POST --input <review-payload.json>
 ```
 
-When inline comments are requested, include only validated findings with
-precise changed-line locations. Put non-inline findings in the review body.
+When publishing a review, include validated inline-eligible findings as inline
+comments by default. The caller may explicitly request a body-only review or
+set `MAX_INLINE=0`. Put body-only findings in the review body, and when a cap
+excludes an otherwise eligible finding, keep it in the body and report that it
+was capped rather than unlocatable.
 
 ## Configuration
 
