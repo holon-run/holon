@@ -180,8 +180,12 @@ export function evaluateLedgerReadMarkerGate(
   if (input.readiness.readyThroughSeq < head) {
     return { mayAdvance: false, reason: "blocked_by_invalidation" };
   }
+  // Mirrors the restart-scan rule: blockers at or below the readiness
+  // cursor are satisfied by definition, so only unresolved demand above it
+  // can block the marker. Already-read history below the boundary cannot
+  // affect unread exactness.
   const blockedAt = input.readiness.blockedByEventSeq;
-  if (blockedAt != null && blockedAt <= head) {
+  if (blockedAt != null && blockedAt > input.readiness.readyThroughSeq) {
     return { mayAdvance: false, reason: "blocked_by_invalidation" };
   }
   return { mayAdvance: true, candidateSeq: head };

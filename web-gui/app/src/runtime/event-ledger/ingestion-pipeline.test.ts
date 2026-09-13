@@ -592,6 +592,52 @@ describe("ledger ingestion pipeline", () => {
     ledger.close();
   });
 
+  it("schedules hydration retries so asleep agents still reach repair", async () => {
+    const repairFetch = vi.fn(async () => ({
+      snapshotThroughSeq: 2,
+      canonicalRecords: [
+        { recordKind: "brief" as const, recordId: "brief-1", record: { id: "brief-1" } },
+      ],
+    }));
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: {
+        // The brief was dropped from retention: never served, never
+        // reported as anything but missing.
+        fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
+      },
+      snapshotRepair: { fetchProjectionSnapshot: repairFetch },
+      maxHydrationAttempts: 2,
+      hydrationRetryDelayMs: 5,
+    });
+    await pipeline.open();
+    const scope = makeScope();
+
+    // One ingest-driven drain leaves the job pending at attempt 1, and no
+    // further events ever arrive for this asleep agent.
+    await pipeline.ingest(scope, [envelope(1), briefEvent(2, "brief-1")]);
+
+    // The scheduled retry rounds must drive the bounded ladder to snapshot
+    // repair on their own, without any external drainHydration call.
+    await vi.waitFor(
+      () => {
+        expect(pipeline.status(scope)!.pendingHydrationJobs).toBe(0);
+      },
+      { timeout: 2000, interval: 10 },
+    );
+    const status = pipeline.status(scope)!;
+    expect(status.state).toBe("idle");
+    expect(status.projectionReadyThroughSeq).toBe(2);
+    expect(repairFetch.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    const gate = pipeline.readinessGate(scope);
+    expect(gate.blockedByEventSeq).toBeUndefined();
+
+    const ledger = await openLedgerHandle();
+    expect(await ledger.getPendingHydrationJobs(scope)).toEqual([]);
+    ledger.close();
+    pipeline.dispose();
+  });
+
   it("reports sync_error when repair cannot explain the divergence", async () => {
     const statuses: string[] = [];
     const pipeline = new LedgerIngestionPipeline({
