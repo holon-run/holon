@@ -294,6 +294,19 @@ describe("ledger read-marker gate", () => {
     expect(decision.reason).toBe("blocked_by_invalidation");
   });
 
+  it("does not block on blockers the readiness cursor already covers", () => {
+    // A stale pending job far below the cursor (e.g. a retention-dropped
+    // brief from backfilled history) is satisfied by definition, exactly
+    // like the restart scan treats it, and must not pin the marker.
+    const decision = evaluateLedgerReadMarkerGate(
+      gateInput({
+        readiness: { ...readiness, blockedByEventSeq: 3 },
+      }),
+      "agent-a",
+    );
+    expect(decision).toEqual({ mayAdvance: true, candidateSeq: 12 });
+  });
+
   it("blocks without an observed head", () => {
     const decision = evaluateLedgerReadMarkerGate(
       gateInput({ readiness: { ...readiness, observedHeadSeq: undefined } }),

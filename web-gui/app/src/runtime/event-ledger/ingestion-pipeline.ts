@@ -43,6 +43,7 @@ import type { LedgerRecordKind, LedgerScopeKey } from "./keys";
 const RESUME_LOOKAHEAD_SEQ = 1_000;
 const DEFAULT_MAX_HYDRATION_ATTEMPTS = 5;
 const DEFAULT_HYDRATION_BATCH_SIZE = 64;
+const DEFAULT_HYDRATION_RETRY_DELAY_MS = 500;
 
 export interface LedgerHydrationFetchers {
   /**
@@ -146,6 +147,11 @@ export interface IngestionPipelineDependencies {
   maxHydrationAttempts?: number;
   hydrationBatchSize?: number;
   /**
+   * Delay before a scheduled hydration retry round. Production uses the
+   * default; tests inject a small value to observe the ladder.
+   */
+  hydrationRetryDelayMs?: number;
+  /**
    * Ledger handle factory. Production uses the default `EventLedger.open`;
    * tests inject a controllable opener to observe explicit rebuilds after a
    * degraded handle is discarded.
@@ -247,10 +253,14 @@ export class LedgerIngestionPipeline {
   private readonly trackers = new Map<string, ScopeTracker>();
   private readonly maxAttempts: number;
   private readonly batchSize: number;
+  private readonly hydrationRetryDelayMs: number;
+  private readonly hydrationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(private readonly dependencies: IngestionPipelineDependencies) {
     this.maxAttempts = dependencies.maxHydrationAttempts ?? DEFAULT_MAX_HYDRATION_ATTEMPTS;
     this.batchSize = dependencies.hydrationBatchSize ?? DEFAULT_HYDRATION_BATCH_SIZE;
+    this.hydrationRetryDelayMs =
+      dependencies.hydrationRetryDelayMs ?? DEFAULT_HYDRATION_RETRY_DELAY_MS;
   }
 
   /** Open the ledger handle. Returns false when only memory remains. */
@@ -264,6 +274,8 @@ export class LedgerIngestionPipeline {
 
   /** Close the handle and forget in-memory trackers. */
   dispose(): void {
+    for (const timer of this.hydrationRetryTimers.values()) clearTimeout(timer);
+    this.hydrationRetryTimers.clear();
     this.ledger?.close();
     this.ledger = null;
     this.trackers.clear();
@@ -842,7 +854,35 @@ export class LedgerIngestionPipeline {
     if (pending().length === 0 && !hasFailedJobs) {
       tracker.state = "idle";
     }
+    if (pending().length > 0) {
+      // Retryable demand remains (e.g. the server could not yet serve the
+      // records, or they were dropped from retention). Asleep agents emit
+      // no further events, so no ingest would ever drive the bounded retry
+      // ladder again; schedule the next round explicitly.
+      this.scheduleHydrationRetry(scope);
+    } else {
+      this.cancelHydrationRetry(scope);
+    }
     this.emit(scope, tracker);
+  }
+
+  /** Schedule one delayed retry round; at most one pending timer per scope. */
+  private scheduleHydrationRetry(scope: LedgerScopeKey): void {
+    const key = this.trackerKey(scope);
+    if (this.hydrationRetryTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      this.hydrationRetryTimers.delete(key);
+      void this.drainHydration(scope).catch(() => undefined);
+    }, this.hydrationRetryDelayMs);
+    this.hydrationRetryTimers.set(key, timer);
+  }
+
+  private cancelHydrationRetry(scope: LedgerScopeKey): void {
+    const key = this.trackerKey(scope);
+    const timer = this.hydrationRetryTimers.get(key);
+    if (timer == null) return;
+    clearTimeout(timer);
+    this.hydrationRetryTimers.delete(key);
   }
 
   /**
