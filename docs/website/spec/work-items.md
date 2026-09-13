@@ -30,7 +30,7 @@ A WorkItem is a durable objective record owned by an agent. It tracks:
 | Field | Purpose |
 |-------|---------|
 | `objective` | Short human-readable target (required) |
-| `state` | `Open` or `Completed` |
+| `state` | `Open`, legacy `Completing`, or `Completed` |
 | `plan_status` | `draft`, `ready`, or `needs_input` |
 | `plan_artifact` | Path to the durable plan.md artifact in agent home |
 | `todo_list` | Progress checklist snapshot |
@@ -71,29 +71,33 @@ The Rust enum `WorkItemPlanStatus` uses PascalCase variants (`Draft`, `Ready`,
 
 **Key contract:**
 
-- `state` is the hard lifecycle boundary: `Open` or `Completed`.
+- `state` is the hard lifecycle boundary: `Open` or `Completed`. `Completing`
+  is a legacy intermediate state that new agent-tool completions no longer
+  enter.
 - `plan_status` is the planning/coordination posture: whether the plan is
   still being drafted, ready for execution, or waiting for operator input.
 - `plan_status=NeedsInput` makes the WorkItem **non-runnable** and means the
   scheduler must wait for operator input.
 - `WaitFor` is the agent-facing way to mark a WorkItem waiting on operator
-  input, a task result, or an external resource. It sets `blocked_by` for
-  display and records the structured active wait.
+  input, a task result, an external resource, a timer, or a system tick. It
+  sets `blocked_by` for display and records the structured active wait.
 
 ## Readiness and scheduling
 
-WorkItem readiness is derived from `state`, `plan_status`, `blocked_by`, and
-active wait state:
+WorkItem readiness is derived from `state`, `plan_status`, `blocked_by`, active
+wait state, and continuation-yield state:
 
 | `WorkItemSchedulingState` | Condition |
 |---------------------------|-----------|
 | `Runnable` | Open, plan not `NeedsInput`, no blocker, no active wait |
-| `WaitingOperator` | `plan_status=NeedsInput` or active operator wait |
+| `YieldedToWorkItem` | Parking continuation suspended this WorkItem for another |
+| `WaitingOperator` | Active operator wait, or `plan_status=NeedsInput` with no blocker or wait |
 | `WaitingTask` | Active wait on a task result |
 | `WaitingExternal` | Active wait on an external event |
 | `WaitingTimer` | Active wait on a timer |
 | `WaitingSystem` | Active wait on a system tick |
-| `Blocked` | `blocked_by` is set |
+| `Blocked` | `blocked_by` is set with no active wait |
+| `Completing` | `state=Completing` |
 | `Completed` | `state=Completed` |
 
 `WorkItemReadiness` is the reduced view used by scheduler and user display:
@@ -101,8 +105,10 @@ active wait state:
 | `WorkItemReadiness` | Maps from |
 |---------------------|-----------|
 | `Runnable` | `WorkItemSchedulingState::Runnable` |
+| `Yielded` | `WorkItemSchedulingState::YieldedToWorkItem` |
 | `WaitingForOperator` | `WorkItemSchedulingState::WaitingOperator` |
-| `Blocked` | All other non-completed scheduling states |
+| `Blocked` | `WaitingTask`, `WaitingExternal`, `WaitingTimer`, `WaitingSystem`, `Blocked` |
+| `Completing` | `WorkItemSchedulingState::Completing` |
 | `Completed` | `WorkItemSchedulingState::Completed` |
 
 **Key contract:**
@@ -137,9 +143,9 @@ current WorkItem is the focus for the current turn:
 | `UpdateWorkItem` | Mutate objective, plan_status, todo_list |
 | `PickWorkItem` | Set current focus to an existing open WorkItem; optionally clear a resolved blocker |
 | `GetWorkItem` | Read a single WorkItem with plan preview |
-| `ListWorkItems` | Query with filters: all, open, completed, current, queued, blocked, waiting_for_operator, runnable |
+| `ListWorkItems` | Query with filters: all, open, completing, completed, current, queued, yielded, blocked, waiting_for_operator, runnable |
 | `CompleteWorkItem` | Complete an owned target by ID; bound assistant text is promoted as its completion report |
-| `WaitFor` | Attach a task, external, or operator wait to the current WorkItem and yield |
+| `WaitFor` | Attach a task, external, operator, timer, or system wait to the current WorkItem and yield |
 
 **Key contract:**
 

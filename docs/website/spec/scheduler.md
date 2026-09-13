@@ -12,7 +12,7 @@ It also documents the additive protocol transition layer that wraps scheduler
 decisions in atomic transactions with replay protection, explicit activation
 ownership, terminal settlement, and a public diagnostic event stream.
 
-> **Last verified:** 2026-08-18 against `src/runtime/scheduler.rs`,
+> **Last verified:** 2026-09-13 against `src/runtime/scheduler.rs`,
 > `src/runtime/scheduler_executor.rs`, `src/runtime/waiting.rs`,
 > `src/runtime/closure.rs`, `src/runtime/turn/execution.rs`,
 > `src/runtime_db/transitions.rs`, `src/runtime_event.rs`, and `src/types.rs`.
@@ -43,7 +43,7 @@ It consumes a `SchedulerProjection` — a snapshot assembled from:
 | Current WorkItem | `current_work_item_id` → `WorkItemRecord` |
 | Runnable WorkItems | Open WorkItems with `is_runnable()=true` |
 | Wait conditions | Active `WaitConditionRecord`s |
-| Waiting intents | Active `WaitingIntentRecord`s |
+| Waiting intents | Active `WaitConditionRecord`s, split by agent and WorkItem scope |
 | Wake hints | `PendingWakeHint` |
 | Turn state | `turn_in_progress`, `last_turn_terminal` |
 | Runtime errors | `runtime_error_active()` |
@@ -182,7 +182,7 @@ boundary records the canonical facts required by the next boundary:
 | Wait resume | `Claim` | exact wait id and generation, consuming activation |
 | Settlement (`runtime::commit_queue_settlement`) | `Settle` | matching activation, terminal Turn, WorkItem disposition |
 | Delivery disposition | `Settle` | settlement-bound brief or delivery evidence |
-| Operator interjection | `Admit` | running activation and safe-point identity |
+| Operator interjection | `Interject` | running activation and safe-point identity |
 | Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | runnable WorkItem identity, generation, and source revision |
 
 The semantic decision plane is not part of production admission. Its production
@@ -199,11 +199,11 @@ decision that passes through `append_scheduler_decision`. This event carries:
 | `decision` | `SchedulerDecisionKind` variant |
 | `reason` | Human-readable decision reason |
 | `boundary` | Where the decision was made (e.g. `run_loop`, `after_provider_round`) |
+| `work_item_id` | Optional WorkItem bound to the decision |
 | `message_id` | Optional message that triggered the decision |
+| `task_id` | Optional task bound to the decision |
 | `evidence` | Evidence strings used by the decision |
 | `scenario_class` | Optional scenario classification (e.g. `operator_interjection`) |
-| `shadow_matched` | Historical compatibility field; production does not require shadow comparison |
-| `divergence_code` | Historical compatibility field for previously recorded comparisons |
 
 The event is emitted via `RuntimeEventKind::SchedulerDiagnostic` alongside
 the legacy `scheduler_decision` audit event. Both are persisted in the same

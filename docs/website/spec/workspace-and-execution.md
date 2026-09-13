@@ -9,9 +9,9 @@ order: 70
 This page defines the current contract for workspace identity, execution
 roots, worktree isolation, and host-local execution policy.
 
-> **Last verified:** 2026-07-18 against `src/types.rs`
+> **Last verified:** 2026-09-13 against `src/types.rs`
 > `ActiveWorkspaceEntry`, `WorkspaceOccupancyRecord`, `WorktreeSession`,
-> `ExecutionSnapshot`, and `src/runtime/workspace.rs`.
+> `src/system/types.rs` `ExecutionSnapshot`, and `src/runtime/workspace.rs`.
 
 ## Source RFCs
 
@@ -93,19 +93,24 @@ reuses a runtime-managed linked worktree from an explicit `branch` and
 - Switching away retains the worktree artifact.
 - `RemoveWorktree` performs clean-only removal and optional
   merge-proven branch deletion.
-- Worktrees use the host-local filesystem (git worktrees or temp directories);
-  they are not containerized sandboxes.
+- Worktrees use git worktrees on the host-local filesystem; they are not
+  containerized sandboxes.
 
 ## Execution snapshot (`ExecutionSnapshot`)
 
 The `ExecutionSnapshot` in `AgentSummary` captures the current execution
 context:
 
-- Active run id
-- Active workspace id and occupancy
-- Execution root and cwd
-- Worktree session (if applicable)
-- Host-local policy flags
+- Execution profile and policy snapshot (backend, process-execution,
+  background-task, and managed-worktree flags)
+- Attached workspaces and registered execution roots
+- Active workspace id, anchor, execution root, execution root id, and cwd
+- Projection kind and access mode
+- Worktree root when the execution root is a worktree
+
+The surrounding `AgentSummary` also reports the active run id
+(`agent.current_run_id`), the active workspace occupancy, and the worktree
+session.
 
 ## Host-local policy
 
@@ -124,5 +129,6 @@ filesystem with the agent user's permissions. Key constraints:
   use separate orchestration paths.
 - Workspace occupancy is advisory; the runtime does not enforce exclusive
   write access at the filesystem level.
-- Isolated worktrees use git worktrees; non-git workspaces fall back to temp
-  directories with weaker cleanup guarantees.
+- Managed worktrees require a git workspace and are created with
+  `git worktree add`; the runtime has no isolated-workspace path for non-git
+  directories.
