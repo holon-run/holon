@@ -274,6 +274,9 @@ jobs:
       - name: Audit test temp resources
         run: make test-resource-lint
 
+      - name: Test CI timing tooling
+        run: python3 -m unittest tests.test_ci_timing
+
       - name: Test
         run: |
           set -o pipefail
@@ -282,7 +285,9 @@ jobs:
 
       - name: Summarize Rust test targets
         if: always()
+        continue-on-error: true
         run: |
+          set -euo pipefail
           python3 scripts/ci_timing.py parse-test-log \
             --input target/ci-timing/rust-test.log \
             --output target/ci-timing/rust-test-targets.json
@@ -546,6 +551,7 @@ jobs:
           path: target/ci-timing
 
       - name: Collect workflow timing
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -559,6 +565,7 @@ jobs:
             --jq '.workflow_runs[].id' \
             > target/ci-timing/history-run-ids.txt
           export GITHUB_REPOSITORY GH_TOKEN
+          # shellcheck disable=SC2016
           xargs -r -P 10 -I {} sh -c '
             gh api --paginate --slurp \
               "repos/${GITHUB_REPOSITORY}/actions/runs/{}/jobs?per_page=100" \

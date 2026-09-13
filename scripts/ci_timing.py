@@ -267,6 +267,7 @@ def format_minutes(seconds: float | None) -> str:
 def render_summary(report: dict[str, Any]) -> str:
     current = report["current"]
     history = report["history"]["metrics"]
+    test_target_budget = DEFAULT_BUDGETS_SECONDS["test_target"]
     lines = [
         "# CI Timing",
         "",
@@ -305,14 +306,14 @@ def render_summary(report: dict[str, Any]) -> str:
                 "",
                 "## Slow Rust test targets",
                 "",
-                "| Target | Seconds | Over 90s budget |",
+                f"| Target | Seconds | Over {test_target_budget}s budget |",
                 "|---|---:|---|",
             ]
         )
         for target in targets[:20]:
             lines.append(
                 f"| `{target['name']}` | {target['seconds']:.2f} | "
-                f"{'yes' if target['seconds'] > 90 else 'no'} |"
+                f"{'yes' if target['seconds'] > test_target_budget else 'no'} |"
             )
 
     warnings = [
@@ -321,9 +322,16 @@ def render_summary(report: dict[str, Any]) -> str:
     if warnings:
         lines.extend(["", "## Budget warnings", ""])
         for warning in warnings:
+            target_count = len(warning.get("targets", []))
+            target_detail = (
+                f" ({target_count} target{'s' if target_count != 1 else ''})"
+                if target_count
+                else ""
+            )
             lines.append(
                 f"- `{warning['metric']}` exceeded "
-                f"`{warning['budget_seconds']}s`; this phase does not block CI."
+                f"`{warning['budget_seconds']}s`{target_detail}; "
+                "this phase does not block CI."
             )
     return "\n".join(lines) + "\n"
 
