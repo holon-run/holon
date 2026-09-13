@@ -15,7 +15,7 @@ order: 1
 <p class="home-hero__lede">Give recurring reviews, investigations, and tests to agents with ongoing roles. Holon runs them in your repositories and toolchains, saves their progress, and resumes work when a commit, check result, or your approval arrives.</p>
 
 <div class="home-actions">
-<a class="home-button home-button--primary" href="/getting-started/">Get started</a>
+<a class="home-button home-button--primary" href="#install">Install Holon</a>
 <a class="home-button home-button--quiet" href="https://github.com/holon-run/holon">View on GitHub ↗</a>
 </div>
 
@@ -121,7 +121,7 @@ Start with the product and its WorkItem design, set up continuous PR review, the
 </div>
 </section>
 
-<section class="home-section home-start-section">
+<section class="home-section home-start-section" id="install">
 <div class="home-start">
 <div class="home-start__copy">
 <p class="home-kicker">Local-first by design</p>
@@ -132,7 +132,10 @@ Install Holon, configure a model provider, and start the daemon. Open the local 
 
 <p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.39.0">v0.39.0</a> · early-stage software · explicit trust boundaries</p>
 
-<div class="home-actions"><a class="home-button home-button--primary" href="/getting-started/">Follow the complete setup</a></div>
+<div class="home-actions">
+<a class="home-button home-button--primary" href="/getting-started/">Setup guide</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases">Download binaries ↗</a>
+</div>
 
 </div>
 
@@ -155,7 +158,7 @@ Start locally, keep the first workflow bounded, and let Holon preserve the work 
 
 </div>
 <div class="home-final__actions">
-<a class="home-button" href="/getting-started/">Get started</a>
+<a class="home-button" href="/getting-started/first-agent">Create your first agent</a>
 <a href="/blog/">Read the field notes →</a>
 </div>
 </section>

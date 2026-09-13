@@ -15,7 +15,7 @@ order: 1
 <p class="home-hero__lede">把审阅、调查、测试等反复发生的工作交给固定角色。Holon 让多个 Agent 在你的仓库和工具链中工作，保存进度，等到新提交、检查结果或你的确认，再接着推进。</p>
 
 <div class="home-actions">
-<a class="home-button home-button--primary" href="/zh-CN/getting-started/">开始使用</a>
+<a class="home-button home-button--primary" href="#install">安装 Holon</a>
 <a class="home-button home-button--quiet" href="https://github.com/holon-run/holon">在 GitHub 查看 ↗</a>
 </div>
 
@@ -121,7 +121,7 @@ order: 1
 </div>
 </section>
 
-<section class="home-section home-start-section">
+<section class="home-section home-start-section" id="install">
 <div class="home-start">
 <div class="home-start__copy">
 <p class="home-kicker">从本地开始</p>
@@ -132,7 +132,10 @@ order: 1
 
 <p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.39.0">v0.39.0</a> · 早期软件 · 显式信任边界</p>
 
-<div class="home-actions"><a class="home-button home-button--primary" href="/zh-CN/getting-started/">查看完整开始路径</a></div>
+<div class="home-actions">
+<a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases">下载二进制 ↗</a>
+</div>
 
 </div>
 
@@ -157,7 +160,7 @@ holon daemon start
 
 </div>
 <div class="home-final__actions">
-<a class="home-button" href="/zh-CN/getting-started/">开始使用</a>
+<a class="home-button" href="/zh-CN/getting-started/first-agent">创建第一个 Agent</a>
 <a href="/zh-CN/blog/">阅读实践文章 →</a>
 </div>
 </section>
