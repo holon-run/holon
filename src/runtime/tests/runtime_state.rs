@@ -2351,6 +2351,280 @@ async fn bootstrap_recovery_interrupts_open_attempt_and_releases_message_for_ree
         }));
 }
 
+async fn enqueue_lifecycle_delivery(
+    runtime: &RuntimeHandle,
+    idempotency_key: &str,
+) -> MessageEnvelope {
+    let prepared = AgentMessageDeliveryService::prepare(
+        crate::types::AgentMessageSendRequest {
+            target_agent_id: "default".into(),
+            content: MessageBody::Text {
+                text: format!("lifecycle delivery {idempotency_key}"),
+            },
+            client_idempotency_key: idempotency_key.into(),
+            correlation_id: None,
+            causation_id: None,
+            requested_priority: None,
+        },
+        crate::types::AgentMessageCallerContext {
+            caller_principal: "runtime:agent-invocation".into(),
+            caller_agent_id: Some("caller-agent".into()),
+            principal_kind: crate::types::AgentMessagePrincipalKind::RuntimeCapability,
+            route: "agent_invocation".into(),
+            origin: MessageOrigin::Task {
+                task_id: format!("task-{idempotency_key}"),
+            },
+            authority_class: AuthorityClass::RuntimeInstruction,
+            delivery_surface: MessageDeliverySurface::RuntimeSystem,
+            admission_context: AdmissionContext::RuntimeOwned,
+            current_turn_id: None,
+            current_task_id: None,
+            current_work_item_id: None,
+        },
+    )
+    .unwrap();
+    runtime
+        .agent_message_delivery_service()
+        .deliver(&prepared)
+        .await
+        .unwrap();
+    prepared.message
+}
+
+async fn claim_lifecycle_delivery(runtime: &RuntimeHandle, message_id: &str) {
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        let delivery = runtime
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message(message_id)
+            .unwrap();
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap();
+        let queue = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(message_id)
+            .unwrap();
+        let events = runtime.storage().read_recent_events(8).unwrap();
+        panic!(
+            "lifecycle delivery should be claimed: delivery={delivery:?}, execution={execution:?}, queue={queue:?}, events={events:?}"
+        );
+    };
+    assert_eq!(scheduled.message.id, message_id);
+    finish_claimed_test_run(runtime).await;
+}
+
+#[tokio::test]
+async fn lifecycle_delivery_reentry_tracks_the_current_canonical_activation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = enqueue_lifecycle_delivery(&runtime, "lifecycle-reentry-chain").await;
+    let first_attempt_id = scheduler_executor::canonical_activation_id(&message.id);
+
+    claim_lifecycle_delivery(&runtime, &message.id).await;
+    let first_delivery = runtime
+        .inner
+        .runtime_db
+        .agent_message_deliveries()
+        .latest_for_message(&message.id)
+        .unwrap()
+        .expect("lifecycle delivery");
+    assert_eq!(
+        first_delivery.state,
+        crate::types::AgentMessageDeliveryState::Dispatched
+    );
+    assert_eq!(
+        first_delivery.activation_id.as_deref(),
+        Some(first_attempt_id.as_str())
+    );
+
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    claim_lifecycle_delivery(&runtime, &message.id).await;
+    let second_attempt_id = format!("{first_attempt_id}:attempt:2");
+    let second_execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("second lifecycle execution");
+    assert_eq!(
+        second_execution.attempts[&second_attempt_id]
+            .recovery_of_attempt_id
+            .as_deref(),
+        Some(first_attempt_id.as_str())
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message(&message.id)
+            .unwrap()
+            .and_then(|delivery| delivery.activation_id),
+        Some(second_attempt_id.clone())
+    );
+
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    claim_lifecycle_delivery(&runtime, &message.id).await;
+    let third_attempt_id = format!("{first_attempt_id}:attempt:3");
+    let third_execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("third lifecycle execution");
+    assert_eq!(
+        third_execution.attempts[&third_attempt_id]
+            .recovery_of_attempt_id
+            .as_deref(),
+        Some(second_attempt_id.as_str())
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message(&message.id)
+            .unwrap()
+            .and_then(|delivery| delivery.activation_id),
+        Some(third_attempt_id)
+    );
+}
+
+#[tokio::test]
+async fn lifecycle_delivery_reentry_rejects_an_invalid_canonical_predecessor() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = enqueue_lifecycle_delivery(&runtime, "lifecycle-invalid-predecessor").await;
+    let first_attempt_id = scheduler_executor::canonical_activation_id(&message.id);
+    claim_lifecycle_delivery(&runtime, &message.id).await;
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+
+    let mut delivery = runtime
+        .inner
+        .runtime_db
+        .agent_message_deliveries()
+        .latest_for_message(&message.id)
+        .unwrap()
+        .expect("lifecycle delivery");
+    let expected_state = delivery.state;
+    delivery.activation_id = Some("activation:message:missing".into());
+    delivery.state_version += 1;
+    delivery.updated_at = runtime.now();
+    assert!(runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            crate::runtime_db::agent_message_delivery::compare_and_set_delivery_state_tx(
+                tx,
+                &delivery.delivery_id,
+                expected_state,
+                &delivery,
+            )
+        })
+        .unwrap());
+
+    let valid = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "continue after invalid lifecycle predecessor",
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Dropped)
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("lifecycle execution");
+    assert_eq!(execution.attempts.len(), 1);
+    assert!(execution.attempts.contains_key(&first_attempt_id));
+    assert!(runtime
+        .storage()
+        .read_recent_events(usize::MAX)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "scheduler_authority_input_rejected"
+                && event.data["message_id"] == message.id
+                && event.data["reason"] == "canonical_lifecycle_recovery_source_invalid"
+        }));
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("valid message should advance after invalid lifecycle predecessor");
+    };
+    assert_eq!(scheduled.message.id, valid.id);
+}
+
 #[tokio::test]
 async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_sync() {
     use crate::domain::execution_protocol::{

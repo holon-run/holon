@@ -129,6 +129,12 @@ enum CanonicalClaimOutcome {
     HardBlocker(CanonicalClaimHardBlocker),
 }
 
+enum CanonicalLifecycleRecovery {
+    None,
+    RecoverFrom(String),
+    Invalid,
+}
+
 struct CanonicalClaimHardBlocker {
     scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
     blocker_code: &'static str,
@@ -1524,13 +1530,27 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 reason: "canonical_execution_attempt_replay_conflict",
             });
         }
+        let recovery_of_attempt_id = match self.canonical_lifecycle_recovery(
+            message,
+            &scenario,
+            existing_execution.as_ref(),
+        )? {
+            CanonicalLifecycleRecovery::None => None,
+            CanonicalLifecycleRecovery::RecoverFrom(attempt_id) => Some(attempt_id),
+            CanonicalLifecycleRecovery::Invalid => {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_lifecycle_recovery_source_invalid",
+                });
+            }
+        };
         let execution_protocol = self.plan_execution_protocol_claim(
             message,
             &scenario,
             &activation_id,
             None,
             wait_id,
-            None,
+            recovery_of_attempt_id,
         )?;
         Ok(CanonicalClaimOutcome::Plan(CanonicalClaimPlan {
             activation_id,
@@ -1539,6 +1559,52 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             work_item_expectation: None,
             execution_protocol,
         }))
+    }
+
+    fn canonical_lifecycle_recovery(
+        &self,
+        message: &MessageEnvelope,
+        scenario: &scheduler::CanonicalActivationScenario,
+        existing_execution: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
+    ) -> Result<CanonicalLifecycleRecovery> {
+        let Some(delivery) = self
+            .runtime
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message(&message.id)?
+        else {
+            return Ok(CanonicalLifecycleRecovery::None);
+        };
+        let Some(predecessor_id) = delivery.activation_id.as_deref() else {
+            return Ok(CanonicalLifecycleRecovery::None);
+        };
+        if delivery.target_agent_id != message.agent_id
+            || delivery.message_id.as_deref() != Some(message.id.as_str())
+        {
+            return Ok(CanonicalLifecycleRecovery::Invalid);
+        }
+        let Some(predecessor) =
+            existing_execution.and_then(|state| state.attempts.get(predecessor_id))
+        else {
+            return Ok(CanonicalLifecycleRecovery::Invalid);
+        };
+        if predecessor.state
+            != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+            || !existing_execution.is_some_and(|state| {
+                canonical_lifecycle_attempt_lineage_is_valid(
+                    state,
+                    message,
+                    scenario,
+                    predecessor_id,
+                )
+            })
+        {
+            return Ok(CanonicalLifecycleRecovery::Invalid);
+        }
+        Ok(CanonicalLifecycleRecovery::RecoverFrom(
+            predecessor_id.to_owned(),
+        ))
     }
 
     async fn terminalize_rejected_queue_head(
@@ -2265,6 +2331,74 @@ fn execution_attempt_matches_scenario(
                 && work_item_id == expected
         }
         _ => false,
+    }
+}
+
+pub(super) fn canonical_lifecycle_scenario_for_attempt(
+    message: &MessageEnvelope,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+) -> Option<scheduler::CanonicalActivationScenario> {
+    use crate::domain::execution_protocol::{ExecutionBinding, ExecutionSourceIdentity};
+
+    match (&attempt.source.identity, &attempt.binding) {
+        (
+            ExecutionSourceIdentity::TriggeredWait { wait_id, .. },
+            ExecutionBinding::AgentLifecycle { agent_id },
+        ) => Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: crate::domain::scheduler::SchedulerOwner::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            wait_id: wait_id.clone(),
+        }),
+        (
+            ExecutionSourceIdentity::QueueMessage { .. }
+            | ExecutionSourceIdentity::InternalFollowup { .. },
+            ExecutionBinding::AgentLifecycle { agent_id },
+        ) => Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: agent_id.clone(),
+            },
+        ),
+        _ => None,
+    }
+    .filter(|scenario| execution_attempt_matches_scenario(attempt, message, scenario))
+}
+
+pub(super) fn canonical_lifecycle_attempt_lineage_is_valid(
+    state: &crate::domain::execution_protocol::ExecutionProtocolState,
+    message: &MessageEnvelope,
+    scenario: &scheduler::CanonicalActivationScenario,
+    leaf_attempt_id: &str,
+) -> bool {
+    let canonical_root = canonical_activation_id(&message.id);
+    let mut current_id = leaf_attempt_id;
+    let mut visited = std::collections::BTreeSet::new();
+
+    loop {
+        if !visited.insert(current_id) {
+            return false;
+        }
+        let Some(current) = state.attempts.get(current_id) else {
+            return false;
+        };
+        if !execution_attempt_matches_scenario(current, message, scenario) {
+            return false;
+        }
+        if current.attempt_id == canonical_root {
+            return current.recovery_of_attempt_id.is_none();
+        }
+        let Some(predecessor_id) = current.recovery_of_attempt_id.as_deref() else {
+            return false;
+        };
+        let Some(predecessor) = state.attempts.get(predecessor_id) else {
+            return false;
+        };
+        if predecessor.state
+            != crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+        {
+            return false;
+        }
+        current_id = predecessor_id;
     }
 }
 

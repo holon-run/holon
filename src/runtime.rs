@@ -5433,6 +5433,36 @@ impl RuntimeHandle {
             });
             let canonical_first_attempt = attempt.attempt_id
                 == scheduler_executor::canonical_activation_id(&entry.message_id);
+            let current_canonical_lifecycle = if matches!(
+                &attempt.binding,
+                crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle { .. }
+            ) {
+                let delivery = self
+                    .inner
+                    .runtime_db
+                    .agent_message_deliveries()
+                    .latest_for_message(&message.id)?;
+                let scenario = scheduler_executor::canonical_lifecycle_scenario_for_attempt(
+                    &message, &attempt,
+                );
+                delivery.is_some_and(|delivery| {
+                    delivery.target_agent_id == agent_id
+                        && delivery.message_id.as_deref() == Some(message.id.as_str())
+                        && delivery.activation_id.as_deref() == Some(attempt.attempt_id.as_str())
+                        && scenario.as_ref().is_some_and(|scenario| {
+                            execution_state.as_ref().is_some_and(|state| {
+                                scheduler_executor::canonical_lifecycle_attempt_lineage_is_valid(
+                                    state,
+                                    &message,
+                                    scenario,
+                                    &attempt.attempt_id,
+                                )
+                            })
+                        })
+                })
+            } else {
+                false
+            };
             let decision =
                 unsettled_claim::plan_unsettled_claim(&unsettled_claim::UnsettledClaimFacts {
                     queue_status: entry.status.clone(),
@@ -5442,6 +5472,8 @@ impl RuntimeHandle {
                         == unsettled_claim::ReplayFence::Revoked
                     {
                         unsettled_claim::ReplayFence::Revoked
+                    } else if current_canonical_lifecycle {
+                        unsettled_claim::ReplayFence::CurrentCanonicalLifecycle
                     } else if work_queue_claim || canonical_first_attempt {
                         unsettled_claim::ReplayFence::ExactReplayable
                     } else {
