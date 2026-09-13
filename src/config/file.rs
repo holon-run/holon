@@ -308,6 +308,29 @@ pub struct RuntimeConfigFile {
     pub scheduler: Option<String>,
     #[serde(default, skip_serializing_if = "RuntimeRetentionConfigFile::is_empty")]
     pub retention: RuntimeRetentionConfigFile,
+    #[serde(
+        default,
+        skip_serializing_if = "RuntimeDiagnosticsConfigFile::is_empty"
+    )]
+    pub diagnostics: RuntimeDiagnosticsConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RuntimeDiagnosticsConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_capacity: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slow_trace_threshold_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate_permyriad: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_age_days: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_max_traces: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_min_traces: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_delete_batch: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -518,6 +541,19 @@ impl RuntimeConfigFile {
             && self.disable_provider_fallback.is_none()
             && self.scheduler.is_none()
             && self.retention.is_empty()
+            && self.diagnostics.is_empty()
+    }
+}
+
+impl RuntimeDiagnosticsConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.queue_capacity.is_none()
+            && self.slow_trace_threshold_ms.is_none()
+            && self.sample_rate_permyriad.is_none()
+            && self.retention_age_days.is_none()
+            && self.retention_max_traces.is_none()
+            && self.retention_min_traces.is_none()
+            && self.retention_delete_batch.is_none()
     }
 }
 

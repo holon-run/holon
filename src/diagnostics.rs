@@ -8,6 +8,27 @@ use serde::{Deserialize, Serialize};
 
 pub mod attribution;
 
+const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 18] = [
+    0,
+    1,
+    2,
+    4,
+    8,
+    16,
+    32,
+    64,
+    128,
+    256,
+    512,
+    1_000,
+    2_000,
+    5_000,
+    10_000,
+    30_000,
+    60_000,
+    u64::MAX,
+];
+
 static PROCESS_STARTED_AT: OnceLock<Instant> = OnceLock::new();
 
 static HTTP_ALL: MetricAccumulator = MetricAccumulator::new("http.json.all");
@@ -118,6 +139,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
     #[serde(default)]
+    pub diagnostics_writer: crate::diagnostics_store::DiagnosticsWriterStats,
+    #[serde(default)]
     pub attribution: Vec<attribution::StageSnapshot>,
 }
 
@@ -141,6 +164,12 @@ pub struct MetricSnapshot {
     pub total_ms: u64,
     pub max_ms: u64,
     pub avg_ms: f64,
+    #[serde(default)]
+    pub p50_ms: u64,
+    #[serde(default)]
+    pub p95_ms: u64,
+    #[serde(default)]
+    pub p99_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -153,6 +182,7 @@ struct MetricAccumulator {
     total_ms: AtomicU64,
     max_ms: AtomicU64,
     total_bytes: AtomicU64,
+    histogram: [AtomicU64; HISTOGRAM_UPPER_BOUNDS_MS.len()],
 }
 
 impl MetricAccumulator {
@@ -163,6 +193,7 @@ impl MetricAccumulator {
             total_ms: AtomicU64::new(0),
             max_ms: AtomicU64::new(0),
             total_bytes: AtomicU64::new(0),
+            histogram: [const { AtomicU64::new(0) }; HISTOGRAM_UPPER_BOUNDS_MS.len()],
         }
     }
 
@@ -170,6 +201,9 @@ impl MetricAccumulator {
         let elapsed_ms = elapsed.as_millis().min(u128::from(u64::MAX)) as u64;
         self.count.fetch_add(1, Ordering::Relaxed);
         self.total_ms.fetch_add(elapsed_ms, Ordering::Relaxed);
+        let bucket =
+            HISTOGRAM_UPPER_BOUNDS_MS.partition_point(|upper_bound| *upper_bound < elapsed_ms);
+        self.histogram[bucket].fetch_add(1, Ordering::Relaxed);
         if let Some(bytes) = bytes {
             self.total_bytes
                 .fetch_add(bytes.min(u64::MAX as usize) as u64, Ordering::Relaxed);
@@ -188,16 +222,20 @@ impl MetricAccumulator {
         }
     }
 
-    fn snapshot(&'static self, include_bytes: bool) -> MetricSnapshot {
+    fn snapshot(&self, include_bytes: bool) -> MetricSnapshot {
         let count = self.count.load(Ordering::Relaxed);
         let total_ms = self.total_ms.load(Ordering::Relaxed);
         let total_bytes = self.total_bytes.load(Ordering::Relaxed);
+        let histogram = std::array::from_fn(|index| self.histogram[index].load(Ordering::Relaxed));
         MetricSnapshot {
             name: self.name.to_string(),
             count,
             total_ms,
             max_ms: self.max_ms.load(Ordering::Relaxed),
             avg_ms: average(total_ms, count),
+            p50_ms: histogram_quantile(&histogram, 50),
+            p95_ms: histogram_quantile(&histogram, 95),
+            p99_ms: histogram_quantile(&histogram, 99),
             total_bytes: include_bytes.then_some(total_bytes),
             avg_bytes: include_bytes.then_some(average(total_bytes, count)),
         }
@@ -482,6 +520,7 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
     let started_at = process_started_at();
     PerformanceDiagnosticsSnapshot {
         attribution: attribution::snapshot(),
+        diagnostics_writer: crate::diagnostics_store::writer_stats(),
         captured_at: Utc::now().to_rfc3339(),
         process_uptime_ms: started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         http: vec![
@@ -594,9 +633,60 @@ fn average(total: u64, count: u64) -> f64 {
     }
 }
 
+fn histogram_quantile(histogram: &[u64; HISTOGRAM_UPPER_BOUNDS_MS.len()], percentile: u64) -> u64 {
+    let count = histogram.iter().sum::<u64>();
+    if count == 0 {
+        return 0;
+    }
+    let rank = count
+        .saturating_mul(percentile)
+        .saturating_add(99)
+        .saturating_div(100)
+        .max(1);
+    let mut cumulative = 0_u64;
+    for (index, bucket_count) in histogram.iter().enumerate() {
+        cumulative = cumulative.saturating_add(*bucket_count);
+        if cumulative >= rank {
+            return HISTOGRAM_UPPER_BOUNDS_MS[index];
+        }
+    }
+    u64::MAX
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metric_snapshot_reports_bounded_histogram_quantiles() {
+        let metric = MetricAccumulator::new("test.metric");
+        for elapsed_ms in [1, 2, 3, 4, 5, 100, 1_500, 70_000] {
+            metric.record(Duration::from_millis(elapsed_ms), None);
+        }
+
+        let snapshot = metric.snapshot(false);
+
+        assert_eq!(snapshot.count, 8);
+        assert_eq!(snapshot.p50_ms, 4);
+        assert_eq!(snapshot.p95_ms, u64::MAX);
+        assert_eq!(snapshot.p99_ms, u64::MAX);
+    }
+
+    #[test]
+    fn metric_snapshot_deserializes_without_quantiles() {
+        let snapshot: MetricSnapshot = serde_json::from_value(serde_json::json!({
+            "name": "legacy.metric",
+            "count": 1,
+            "total_ms": 3,
+            "max_ms": 3,
+            "avg_ms": 3.0
+        }))
+        .expect("legacy metric snapshot should deserialize");
+
+        assert_eq!(snapshot.p50_ms, 0);
+        assert_eq!(snapshot.p95_ms, 0);
+        assert_eq!(snapshot.p99_ms, 0);
+    }
 
     #[test]
     fn snapshot_includes_bounded_runtime_hotspot_groups() {
@@ -609,6 +699,10 @@ mod tests {
 
         let snapshot = performance_snapshot();
 
+        assert_eq!(
+            snapshot.diagnostics_writer,
+            crate::diagnostics_store::writer_stats()
+        );
         assert!(
             snapshot
                 .http

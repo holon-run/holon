@@ -15,6 +15,7 @@ pub mod contract_inventory;
 pub mod daemon;
 pub mod deletion;
 pub mod diagnostics;
+pub mod diagnostics_store;
 pub mod domain;
 pub mod fd_limit;
 pub mod host;

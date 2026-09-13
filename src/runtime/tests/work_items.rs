@@ -3945,7 +3945,12 @@ async fn complete_work_item_uses_followup_report_after_text_before_other_tool() 
 
     let mut runtime_task = tokio::spawn(runtime.clone().run());
     runtime.enqueue(message).await.unwrap();
-    let completion = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let completion_timeout = if std::env::var_os("CARGO_LLVM_COV").is_some() {
+        std::time::Duration::from_secs(180)
+    } else {
+        std::time::Duration::from_secs(10)
+    };
+    let completion = tokio::time::timeout(completion_timeout, async {
         loop {
             if runtime
                 .latest_work_item(&work_item.id)

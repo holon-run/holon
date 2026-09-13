@@ -137,44 +137,48 @@ struct RecentTraceStore {
 }
 
 pub fn record_span(context: &TraceContext, span: TraceSpan) {
-    let mut store = recent_traces()
-        .lock()
-        .expect("recent trace store lock poisoned");
-    let mut trace = if let Some(index) = store
-        .traces
-        .iter()
-        .position(|trace| trace.trace_id == context.trace_id)
-    {
-        store
+    let trace = {
+        let mut store = recent_traces()
+            .lock()
+            .expect("recent trace store lock poisoned");
+        let mut trace = if let Some(index) = store
             .traces
-            .remove(index)
-            .expect("trace index should remain valid")
-    } else {
-        RecentTrace {
-            trace_id: context.trace_id.clone(),
-            started_at: span.started_at,
-            completed_at: span.completed_at,
-            duration_us: span.duration_us,
-            span_count: 0,
-            dropped_spans: 0,
-            error_count: 0,
-            spans: Vec::new(),
+            .iter()
+            .position(|trace| trace.trace_id == context.trace_id)
+        {
+            store
+                .traces
+                .remove(index)
+                .expect("trace index should remain valid")
+        } else {
+            RecentTrace {
+                trace_id: context.trace_id.clone(),
+                started_at: span.started_at,
+                completed_at: span.completed_at,
+                duration_us: span.duration_us,
+                span_count: 0,
+                dropped_spans: 0,
+                error_count: 0,
+                spans: Vec::new(),
+            }
+        };
+        trace.started_at = trace.started_at.min(span.started_at);
+        trace.completed_at = trace.completed_at.max(span.completed_at);
+        trace.duration_us = elapsed_us(trace.started_at, trace.completed_at);
+        trace.span_count = trace.span_count.saturating_add(1);
+        if span.status == TraceSpanStatus::Error {
+            trace.error_count = trace.error_count.saturating_add(1);
         }
+        if trace.spans.len() == SPANS_PER_TRACE_LIMIT {
+            trace.spans.remove(0);
+            trace.dropped_spans = trace.dropped_spans.saturating_add(1);
+        }
+        trace.spans.push(span);
+        store.traces.push_front(trace.clone());
+        store.traces.truncate(RECENT_TRACE_LIMIT);
+        trace
     };
-    trace.started_at = trace.started_at.min(span.started_at);
-    trace.completed_at = trace.completed_at.max(span.completed_at);
-    trace.duration_us = elapsed_us(trace.started_at, trace.completed_at);
-    trace.span_count = trace.span_count.saturating_add(1);
-    if span.status == TraceSpanStatus::Error {
-        trace.error_count = trace.error_count.saturating_add(1);
-    }
-    if trace.spans.len() == SPANS_PER_TRACE_LIMIT {
-        trace.spans.remove(0);
-        trace.dropped_spans = trace.dropped_spans.saturating_add(1);
-    }
-    trace.spans.push(span);
-    store.traces.push_front(trace);
-    store.traces.truncate(RECENT_TRACE_LIMIT);
+    crate::diagnostics_store::try_record_trace(trace);
 }
 
 pub fn recent_trace_summaries() -> Vec<RecentTraceSummary> {

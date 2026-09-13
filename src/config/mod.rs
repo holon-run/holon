@@ -3,6 +3,7 @@ use std::{
     env, fs,
     io::Write,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use anyhow::{anyhow, Context, Result};
@@ -394,6 +395,16 @@ impl AppConfig {
         self.data_dir.join("state").join("runtime.sqlite")
     }
 
+    pub fn diagnostics_db_path(&self) -> PathBuf {
+        self.home_dir.join("diagnostics.sqlite")
+    }
+
+    pub fn diagnostics_writer_config(
+        &self,
+    ) -> Result<crate::diagnostics_store::DiagnosticsWriterConfig> {
+        resolve_diagnostics_writer_config(&self.stored_config)
+    }
+
     pub fn runtime_db_lock_path(&self) -> PathBuf {
         self.data_dir.join("state").join("runtime.lock")
     }
@@ -612,6 +623,40 @@ fn resolve_runtime_db_retention_policy(
         incremental_vacuum_pages: configured
             .incremental_vacuum_pages
             .unwrap_or(defaults.incremental_vacuum_pages),
+    }
+    .validate()
+}
+
+fn resolve_diagnostics_writer_config(
+    stored_config: &HolonConfigFile,
+) -> Result<crate::diagnostics_store::DiagnosticsWriterConfig> {
+    let configured = &stored_config.runtime.diagnostics;
+    let defaults = crate::diagnostics_store::DiagnosticsWriterConfig::default();
+    crate::diagnostics_store::DiagnosticsWriterConfig {
+        queue_capacity: configured.queue_capacity.unwrap_or(defaults.queue_capacity),
+        slow_trace_threshold: Duration::from_millis(
+            configured
+                .slow_trace_threshold_ms
+                .unwrap_or(defaults.slow_trace_threshold.as_millis() as u64),
+        ),
+        sample_rate_permyriad: configured
+            .sample_rate_permyriad
+            .unwrap_or(defaults.sample_rate_permyriad),
+        retention_age: Duration::from_secs(
+            configured
+                .retention_age_days
+                .unwrap_or(defaults.retention_age.as_secs() / (24 * 60 * 60))
+                .saturating_mul(24 * 60 * 60),
+        ),
+        retention_max_traces: configured
+            .retention_max_traces
+            .unwrap_or(defaults.retention_max_traces),
+        retention_min_traces: configured
+            .retention_min_traces
+            .unwrap_or(defaults.retention_min_traces),
+        retention_delete_batch: configured
+            .retention_delete_batch
+            .unwrap_or(defaults.retention_delete_batch),
     }
     .validate()
 }
