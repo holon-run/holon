@@ -1,13 +1,14 @@
 import { useEffect, useRef } from "react";
 
 import { useRuntimeStore } from "./runtime-store";
+import type { AgentSyncStatus } from "./runtime-store-helpers";
 import type { AgentDetail, DisplayLevel } from "./types";
 
 interface AgentDetailState {
   detail: AgentDetail | null;
   loading: boolean;
   contentStatus: "unknown" | "available" | "confirmed-empty";
-  syncStatus: "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
+  syncStatus: AgentSyncStatus;
   refresh: () => Promise<void>;
 }
 
@@ -27,7 +28,7 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
   const registerAgentForEvents = useRuntimeStore((state) => state.registerAgentForEvents);
   const refresh = async () => {
-    await refreshAgentDetail(agentId, displayLevel, { force: true, trigger: "manual.refresh" });
+    await refreshAgentDetail(agentId, displayLevel, { trigger: "manual.refresh" });
   };
 
   useEffect(() => {

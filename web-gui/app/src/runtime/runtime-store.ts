@@ -158,7 +158,7 @@ export interface BootstrapRefreshOptions {
 }
 
 export interface AgentDetailRefreshOptions {
-  force?: boolean;
+  retry?: boolean;
   trace?: RuntimeTraceContext;
   trigger?: string;
 }
@@ -3190,7 +3190,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         agentId,
         trigger: options.trigger ?? "manual.refresh",
       });
-    const span = startRuntimeSpan(trace, "agent.detail", { force: Boolean(options.force) });
+    const span = startRuntimeSpan(trace, "agent.detail", { retry: Boolean(options.retry) });
     const key = `${agentId}:${displayLevel}`;
     const existing = agentDetailRefreshInFlight.get(key);
     if (existing?.generation === request.generation) {
@@ -3226,6 +3226,14 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
           }`,
         }).end(detail.error ? "error" : "ok");
+        if (get().sessionsByAgentId[agentId]?.syncStatus === "reconnecting") {
+          // The detail fetch failed but the merge preserved the last-known-good
+          // detail: retry with bounded backoff instead of hydrating placeholder
+          // data, so the session recovers automatically once the API responds.
+          scheduleAgentDetailRetry(get, agentId, displayLevel);
+          span.end("error", { recovery: "last-known-good" });
+          return;
+        }
         await agentSessionRepository.loadTargetEventWindow(agentId, displayLevel);
         if (
           !isCurrentClientRequest(request) ||
@@ -3769,7 +3777,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     try {
       await request.client.renameAgent(agentId, name);
       if (!isCurrentClientRequest(request)) return;
-      await get().refreshAgentDetail(agentId, get().displayLevel, { force: true });
+      await get().refreshAgentDetail(agentId, get().displayLevel, { trigger: "agent.rename" });
       if (get().discovery.mode === "authoritative") {
         // The authoritative roster owns the displayed identity; one snapshot
         // refresh applies the new name (and any concurrent roster change).
@@ -4029,7 +4037,7 @@ function scheduleAgentDetailRetry(
   agentDetailRetryAttempts.set(agentId, attempt + 1);
   const timer = window.setTimeout(() => {
     agentDetailRetryTimers.delete(agentId);
-    void get().refreshAgentDetail(agentId, displayLevel, { force: true });
+    void get().refreshAgentDetail(agentId, displayLevel, { retry: true });
   }, delay);
   agentDetailRetryTimers.set(agentId, timer);
 }
@@ -4660,6 +4668,23 @@ function mergeAgentDetailIntoSession(
   const current = hasEventIdentityConflict(epochSession, pageEvents)
     ? resetSessionForEventConflict(epochSession, detail.eventLogEpoch)
     : epochSession;
+  if (detail.error && current.detail) {
+    // The client returns a disconnected placeholder (error set) when the
+    // detail fetch fails. With a last-known-good detail on hand, keep
+    // rendering it and mark the session reconnecting instead of letting the
+    // placeholder overwrite real data (model "unavailable", "!" badge).
+    return {
+      sessionsByAgentId: {
+        ...state.sessionsByAgentId,
+        [agentId]: {
+          ...current,
+          loading: false,
+          syncStatus: "reconnecting",
+          error: detail.error,
+        },
+      },
+    };
+  }
   const liveDetailIsNewer = (current.newestSeq ?? 0) > Math.max(detail.eventCursorSeq ?? 0, detail.newestEventSeq ?? 0);
   const agent = liveDetailIsNewer && current.detail ? mergeNewerLiveAgentState(detail.agent, current.detail.agent) : detail.agent;
   const detailBase: AgentDetail = {

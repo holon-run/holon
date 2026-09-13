@@ -50,6 +50,8 @@ const en = {
   common: {
     refresh: "Refresh",
     refreshing: "Refreshing…",
+    recovering: "Recovering…",
+    reconnecting: "Reconnecting…",
     cancel: "Cancel",
     create: "Create",
     creating: "Creating…",

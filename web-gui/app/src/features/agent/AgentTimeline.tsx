@@ -4,6 +4,7 @@ import {
   Circle,
   CircleAlert,
   CircleCheck,
+  CircleDashed,
   CircleStop,
   CircleX,
   Clock,
@@ -233,7 +234,7 @@ export function BriefHydrationStatus({
       : t("agentPage.briefLoading");
   return (
     <div className={`brief-hydration-status is-${hydration.status}`} role="status">
-      {showSpinner ? <LoaderCircle className="is-spinning" size={14} /> : showError ? <CircleAlert size={14} /> : null}
+      {showSpinner ? <LoaderCircle className="is-spinning" size={14} /> : showError ? <CircleDashed size={14} /> : null}
       <span>{label}</span>
       {showError ? (
         <button type="button" onClick={onRetry}>

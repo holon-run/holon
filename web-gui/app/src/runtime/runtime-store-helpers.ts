@@ -22,7 +22,14 @@ export type { WorkItemDetailState, TaskDetailState, ToolExecutionDetailState };
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 export type AgentCacheStatus = "unchecked" | "loading" | "hit" | "miss" | "unavailable";
 export type AgentContentStatus = "unknown" | "available" | "confirmed-empty";
-export type AgentSyncStatus = "idle" | "refreshing" | "streaming" | "recovering" | "stale" | "error";
+export type AgentSyncStatus =
+  | "idle"
+  | "refreshing"
+  | "streaming"
+  | "recovering"
+  | "reconnecting"
+  | "stale"
+  | "error";
 
 export interface SemanticHistoryState {
   eventLogEpoch?: string;

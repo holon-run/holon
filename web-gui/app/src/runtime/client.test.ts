@@ -477,6 +477,13 @@ describe("createRuntimeClient", () => {
     expect(httpRetryAfterMs(error)).toBe(1_000);
   });
 
+  it("rejects agent state when no runtime connection is configured", async () => {
+    const client = createRuntimeClient({ mode: "remote", baseUrl: "" });
+    await expect(client.getAgentState("agent-one")).rejects.toThrow(
+      "Agent state requires a runtime connection.",
+    );
+  });
+
   it("loads agent detail without fetching the full roster", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({
