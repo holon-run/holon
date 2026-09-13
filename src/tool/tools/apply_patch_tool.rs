@@ -355,6 +355,7 @@ mod tests {
     use super::*;
     use crate::tool::ToolError;
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn apply_patch_renders_text_receipt() {
@@ -606,6 +607,37 @@ mod tests {
         assert!(spec.input_schema["properties"]["patch"].is_object());
         assert!(spec.input_schema["properties"]["input"].is_null());
         assert!(spec.freeform_grammar.is_none());
+        assert!(!spec.description.contains("*** Begin Patch"));
+        assert!(!spec.description.contains("*** End Patch"));
+        assert!(!spec.input_schema.to_string().contains("*** Begin Patch"));
+        assert!(!spec.input_schema.to_string().contains("*** End Patch"));
+    }
+
+    #[tokio::test]
+    async fn apply_patch_sentinel_failure_receipt_does_not_echo_raw_tail() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("sample.txt");
+        tokio::fs::write(&file, "old\n").await.unwrap();
+        let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ -1 +1 @@
+-old
++new
+*** End Patch trailing garbage
+"#;
+
+        let error = apply_patch::apply_patch(dir.path(), patch, ApplyPatchSurface::UnifiedDiffJson)
+            .await
+            .unwrap_err();
+        let result = ToolResult::error(NAME, ToolError::from_anyhow(&error));
+        let rendered = render_for_model(&result).unwrap();
+
+        assert!(rendered.contains("- kind: invalid_patch_syntax"));
+        assert!(rendered.contains("standalone patch sentinel"));
+        assert!(rendered.contains("- details: omitted from model-visible receipt"));
+        assert!(!rendered.contains("*** End Patch"));
+        assert!(!rendered.contains("trailing garbage"));
+        assert_eq!(tokio::fs::read_to_string(&file).await.unwrap(), "old\n");
     }
 
     #[test]

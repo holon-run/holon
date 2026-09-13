@@ -253,6 +253,8 @@ async fn preview_prompt_lowers_apply_patch_contract_for_json_tool_providers() {
     assert!(!preview
         .rendered_system_prompt
         .contains("Current ApplyPatch surface is Codex DSL freeform"));
+    assert!(!preview.rendered_system_prompt.contains("*** Begin Patch"));
+    assert!(!preview.rendered_system_prompt.contains("*** End Patch"));
 }
 
 #[tokio::test]
