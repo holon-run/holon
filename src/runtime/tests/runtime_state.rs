@@ -599,6 +599,7 @@ impl AgentProvider for CanonicalCompletionProvider {
                         "work_item_id": self.work_item_id
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
             ]
         } else {
@@ -1450,6 +1451,7 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
                         "duration_ms": 1,
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 10,

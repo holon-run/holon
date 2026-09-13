@@ -90,6 +90,7 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
                 name: name.to_string(),
                 input: arguments,
                 kind: ModelToolCallKind::Function,
+                provider_data: None,
             });
         }
     }

@@ -230,6 +230,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
                             "work_item_id": work_item_id.clone()
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                 ],
                 stop_reason: None,
@@ -256,6 +257,7 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
                         "blocked_by": "Main implementation is in place; annotations still need cleanup."
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
             ],
             _ => vec![ModelBlock::Text {
@@ -410,6 +412,7 @@ impl AgentProvider for FileEditingProvider {
                             "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+hello from holon\n"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                     ModelBlock::ToolUse {
                         id: "read-1".into(),
@@ -419,6 +422,7 @@ impl AgentProvider for FileEditingProvider {
                             "workdir": "."
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                 ],
                 stop_reason: None,
@@ -491,6 +495,7 @@ impl AgentProvider for MultiMutatingToolsProvider {
                             "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+alpha\n"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                     ModelBlock::ToolUse {
                         id: "patch-2".into(),
@@ -499,6 +504,7 @@ impl AgentProvider for MultiMutatingToolsProvider {
                             "patch": "--- a/notes/result.txt\n+++ b/notes/result.txt\n@@ -1,1 +1,1 @@\n-alpha\n+beta\n"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                     ModelBlock::ToolUse {
                         id: "patch-3".into(),
@@ -507,6 +513,7 @@ impl AgentProvider for MultiMutatingToolsProvider {
                             "patch": "--- /dev/null\n+++ b/notes/extra.txt\n@@ -0,0 +1,1 @@\n+gamma\n"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                 ],
                 stop_reason: None,
@@ -602,6 +609,7 @@ impl AgentProvider for TerminalDeliveryProvider {
                             "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+hello from holon\n"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                     ModelBlock::ToolUse {
                         id: "verify-1".into(),
@@ -611,6 +619,7 @@ impl AgentProvider for TerminalDeliveryProvider {
                             "login": false
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                 ],
                 stop_reason: None,
@@ -633,6 +642,7 @@ impl AgentProvider for TerminalDeliveryProvider {
                             "reason": "sleep requested"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                 ],
                 stop_reason: None,
@@ -687,6 +697,7 @@ impl AgentProvider for SleepOnlyTerminalProvider {
                         "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+hello from holon\n"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -704,6 +715,7 @@ impl AgentProvider for SleepOnlyTerminalProvider {
                         "reason": "sleep requested"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -734,6 +746,7 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
                             "patch": "--- /dev/null\n+++ b/notes/result.txt\n@@ -0,0 +1,1 @@\n+hello from holon\n"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                     ModelBlock::ToolUse {
                         id: "verify-1".into(),
@@ -743,6 +756,7 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
                             "login": false
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                 ],
                 stop_reason: None,
@@ -765,6 +779,7 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
                             "reason": "sleep requested"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,
+                        provider_data: None,
                     },
                 ],
                 stop_reason: None,
@@ -862,6 +877,7 @@ impl AgentProvider for SleepTaskProvider {
                         "duration_ms": self.duration_ms
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -939,6 +955,7 @@ impl AgentProvider for CommandTaskProvider {
                         "max_output_tokens": 256
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -1172,6 +1189,7 @@ impl AgentProvider for DelegatedRunOnceProvider {
                         "initial_message": "delegated-child"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -1218,6 +1236,7 @@ impl AgentProvider for TwoRoundProvider {
                     name: "GetAgent".into(),
                     input: json!({}),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,
@@ -1437,6 +1456,7 @@ impl AgentProvider for BudgetWarningCheckProvider {
                         "yield_time_ms": 0,
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 50,
@@ -1515,6 +1535,7 @@ impl AgentProvider for WorktreeTaskProvider {
                         "initial_message": "inspect this worktree"
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }],
                 stop_reason: None,
                 input_tokens: 100,

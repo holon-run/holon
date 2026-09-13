@@ -449,6 +449,7 @@ fn build_openai_input_for_contract(
                             name,
                             input,
                             kind,
+                            ..
                         } => {
                             flush_assistant_text(&mut items, &mut pending_text);
                             tool_call_kinds.insert(id.clone(), *kind);

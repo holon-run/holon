@@ -271,6 +271,7 @@ impl AgentProvider for PickThenExecProvider {
                         "work_item_id": self.target_work_item_id,
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
                 ModelBlock::ToolUse {
                     id: "must-not-run".into(),
@@ -279,6 +280,7 @@ impl AgentProvider for PickThenExecProvider {
                         "cmd": "printf should-not-run",
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
             ],
             stop_reason: Some("tool_use".into()),

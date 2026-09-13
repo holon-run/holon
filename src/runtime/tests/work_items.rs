@@ -86,6 +86,7 @@ impl AgentProvider for CompleteWorkItemReportProvider {
                     "work_item_id": self.work_item_id.clone()
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
             });
             blocks
         } else {
@@ -387,6 +388,7 @@ impl AgentProvider for AbandonCompletionReportProvider {
                     "work_item_id": self.work_item_id.clone()
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }],
             stop_reason: None,
             input_tokens: 10,
@@ -421,6 +423,7 @@ impl AgentProvider for RevisionChangeCompletionReportProvider {
                     "work_item_id": self.work_item_id.clone()
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }]
         } else {
             self.followup_started.notify_one();
@@ -464,6 +467,7 @@ impl AgentProvider for CompleteThenExecProvider {
                         "work_item_id": self.work_item_id.clone()
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
                 ModelBlock::ToolUse {
                     id: "verify".into(),
@@ -473,6 +477,7 @@ impl AgentProvider for CompleteThenExecProvider {
                         "shell": "sh"
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
             ]
         } else {
@@ -513,6 +518,7 @@ impl AgentProvider for StaleTextThenCompleteProvider {
                     name: "GetAgent".into(),
                     input: serde_json::json!({}),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
                 ModelBlock::ToolUse {
                     id: "complete-work".into(),
@@ -521,6 +527,7 @@ impl AgentProvider for StaleTextThenCompleteProvider {
                         "work_item_id": self.work_item_id.clone()
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 },
             ]
         } else {
@@ -567,6 +574,7 @@ impl AgentProvider for MultiCompleteWorkItemReportProvider {
                         "work_item_id": work_item_id
                     }),
                     kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 });
             }
             blocks

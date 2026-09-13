@@ -92,6 +92,7 @@ async fn live_openai_apply_patch_function_call_kind_survives_continuation() -> R
                 name,
                 input,
                 kind,
+                ..
             } if name == "ApplyPatch" => Some((id.clone(), input.clone(), *kind)),
             _ => None,
         })

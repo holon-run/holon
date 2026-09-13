@@ -53,6 +53,7 @@ impl ScriptedProviderStep {
             name: name.into(),
             input,
             kind: ModelToolCallKind::Function,
+            provider_data: None,
         }])
     }
 

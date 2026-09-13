@@ -165,6 +165,7 @@ impl AgentProvider for WaitForDispatchProvider {
                 "resource": "github:holon-run/holon#2237"
             }),
             kind: holon::provider::ModelToolCallKind::Function,
+            provider_data: None,
         });
 
         Ok(ProviderTurnResponse {
@@ -219,6 +220,7 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                     "yield_time_ms": 100
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }],
             2 => {
                 let task_id = request
@@ -246,6 +248,7 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                         "yield_time_ms": 2_000
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,
+                    provider_data: None,
                 }]
             }
             3 => vec![ModelBlock::ToolUse {
@@ -262,6 +265,7 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                         .expect("task id should be captured before WaitFor")
                 }),
                 kind: holon::provider::ModelToolCallKind::Function,
+                provider_data: None,
             }],
             4 => vec![ModelBlock::Text {
                 text: "background command result observed".into(),

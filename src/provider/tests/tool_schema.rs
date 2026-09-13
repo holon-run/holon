@@ -63,6 +63,7 @@ fn openai_input_preserves_tool_results() {
             name: "ExecCommand".into(),
             input: json!({"cmd": "sed -n '1,40p' src/main.rs", "workdir": "."}),
             kind: crate::provider::ModelToolCallKind::Function,
+            provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "call_1".into(),
@@ -85,6 +86,7 @@ fn openai_input_preserves_apply_patch_function_tool_results() {
             name: "ApplyPatch".into(),
             input: json!("--- /dev/null\n+++ b/note.txt\n@@ -0,0 +1,1 @@\n+hi\n"),
             kind: crate::provider::ModelToolCallKind::Function,
+            provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "call_1".into(),
@@ -107,6 +109,7 @@ fn openai_input_preserves_apply_patch_custom_tool_results() {
             name: "ApplyPatch".into(),
             input: json!("--- /dev/null\n+++ b/note.txt\n@@ -0,0 +1,1 @@\n+hi\n"),
             kind: crate::provider::ModelToolCallKind::Custom,
+            provider_data: None,
         }]),
         ConversationMessage::UserToolResults(vec![ToolResultBlock {
             tool_use_id: "call_1".into(),
@@ -193,6 +196,7 @@ fn model_tool_call_kind_preserves_custom_across_serialization() {
         name: "ApplyPatch".into(),
         input: json!("custom patch probe"),
         kind: crate::provider::ModelToolCallKind::Custom,
+        provider_data: None,
     };
     let serialized = serde_json::to_value(&block).unwrap();
     assert_eq!(serialized["kind"], json!("custom"));
@@ -204,6 +208,7 @@ fn model_tool_call_kind_preserves_custom_across_serialization() {
             name,
             input,
             kind: crate::provider::ModelToolCallKind::Custom,
+            provider_data: None,
         } if id == "call_custom" && name == "ApplyPatch" && input == json!("custom patch probe")
     ));
 }
@@ -229,6 +234,7 @@ fn parse_openai_response_handles_custom_tool_calls() {
             name,
             input,
             kind,
+            ..
         } => {
             assert_eq!(id, "call_patch");
             assert_eq!(name, "ApplyPatch");

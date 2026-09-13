@@ -10,7 +10,7 @@ use crate::{
     config::ProviderRuntimeConfig,
     provider::{
         http_trace::ProviderHttpTrace, AgentProvider, ConversationMessage, ModelBlock,
-        ModelToolCallKind, ProviderCacheUsage, ProviderPromptCapability,
+        ModelToolCallKind, ProviderBlockData, ProviderCacheUsage, ProviderPromptCapability,
         ProviderRequestDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
         ProviderTurnResponse,
     },
@@ -50,6 +50,7 @@ struct GeminiGenerationConfig {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct GeminiContent {
+    #[serde(default)]
     role: String,
     parts: Vec<GeminiPart>,
 }
@@ -63,6 +64,8 @@ struct GeminiPart {
     function_call: Option<GeminiFunctionCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     function_response: Option<GeminiFunctionResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thought_signature: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -290,6 +293,7 @@ fn build_system_instruction(request: &ProviderTurnRequest) -> GeminiContent {
             text: Some(text),
             function_call: None,
             function_response: None,
+            thought_signature: None,
         }],
     }
 }
@@ -320,6 +324,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                 text: Some(text.clone()),
                 function_call: None,
                 function_response: None,
+                thought_signature: None,
             }],
         }),
         ConversationMessage::UserBlocks(blocks) => {
@@ -330,6 +335,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                     text: Some(block.text.clone()),
                     function_call: None,
                     function_response: None,
+                    thought_signature: None,
                 })
                 .collect::<Vec<_>>();
             (!parts.is_empty()).then(|| GeminiContent {
@@ -346,6 +352,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                     )),
                     function_call: None,
                     function_response: None,
+                    thought_signature: None,
                 }],
             }
         }),
@@ -357,14 +364,21 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                         text: Some(text.clone()),
                         function_call: None,
                         function_response: None,
+                        thought_signature: None,
                     },
-                    ModelBlock::ToolUse { name, input, .. } => GeminiPart {
+                    ModelBlock::ToolUse {
+                        name,
+                        input,
+                        provider_data,
+                        ..
+                    } => GeminiPart {
                         text: None,
                         function_call: Some(GeminiFunctionCall {
                             name: name.clone(),
                             args: input.clone(),
                         }),
                         function_response: None,
+                        thought_signature: gemini_thought_signature(provider_data),
                     },
                     ModelBlock::Thinking { .. }
                     | ModelBlock::ReasoningText { .. }
@@ -375,12 +389,14 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                             text: None,
                             function_call: None,
                             function_response: None,
+                            thought_signature: None,
                         }
                     }
                     ModelBlock::Citations { .. } => GeminiPart {
                         text: None,
                         function_call: None,
                         function_response: None,
+                        thought_signature: None,
                     },
                 })
                 .filter(|part| part.text.is_some() || part.function_call.is_some())
@@ -405,6 +421,7 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
                                 "is_error": result.is_error,
                             }),
                         }),
+                        thought_signature: None,
                     }
                 })
                 .collect::<Vec<_>>();
@@ -581,6 +598,16 @@ fn gemini_safe_schema(schema: &Value) -> Value {
 }
 
 const GEMINI_TOOL_USE_ID_SEPARATOR: &str = "__holon_gemini_call_";
+const GEMINI_TOOL_USE_PROVIDER_DATA_FORMAT: &str = "gemini.function_call";
+
+fn gemini_thought_signature(provider_data: &Option<ProviderBlockData>) -> Option<String> {
+    provider_data
+        .as_ref()
+        .filter(|data| data.format == GEMINI_TOOL_USE_PROVIDER_DATA_FORMAT)
+        .and_then(|data| data.payload.get("thoughtSignature"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
 
 fn gemini_parts_to_model_blocks(parts: Vec<GeminiPart>) -> Vec<ModelBlock> {
     parts
@@ -590,11 +617,20 @@ fn gemini_parts_to_model_blocks(parts: Vec<GeminiPart>) -> Vec<ModelBlock> {
             if let Some(text) = part.text {
                 return Some(ModelBlock::Text { text });
             }
-            part.function_call.map(|call| ModelBlock::ToolUse {
-                id: gemini_tool_use_id(&call.name, index),
-                name: call.name,
-                input: call.args,
-                kind: ModelToolCallKind::Function,
+            part.function_call.map(|call| {
+                let provider_data =
+                    part.thought_signature
+                        .map(|thought_signature| ProviderBlockData {
+                            format: GEMINI_TOOL_USE_PROVIDER_DATA_FORMAT.to_string(),
+                            payload: json!({"thoughtSignature": thought_signature}),
+                        });
+                ModelBlock::ToolUse {
+                    id: gemini_tool_use_id(&call.name, index),
+                    name: call.name,
+                    input: call.args,
+                    kind: ModelToolCallKind::Function,
+                    provider_data,
+                }
             })
         })
         .collect()
@@ -649,6 +685,7 @@ mod tests {
                     args: json!({"first": true}),
                 }),
                 function_response: None,
+                thought_signature: None,
             },
             GeminiPart {
                 text: None,
@@ -657,6 +694,7 @@ mod tests {
                     args: json!({"second": true}),
                 }),
                 function_response: None,
+                thought_signature: None,
             },
         ]);
 
@@ -678,6 +716,82 @@ mod tests {
         assert_ne!(first_id, second_id);
         assert_eq!(gemini_function_response_name(&first_id), "ProbeTool");
         assert_eq!(gemini_function_response_name(&second_id), "ProbeTool");
+    }
+
+    #[test]
+    fn gemini_response_content_role_is_optional() {
+        let response: GenerateContentResponse = serde_json::from_value(json!({
+            "candidates": [{
+                "content": {
+                    "parts": [{
+                        "functionCall": {
+                            "name": "ProbeTool",
+                            "args": {"token": "probe"}
+                        },
+                        "thoughtSignature": "opaque-signature"
+                    }]
+                },
+                "finishReason": "STOP"
+            }]
+        }))
+        .expect("Gemini response content should not require role");
+
+        let content = response.candidates[0]
+            .content
+            .as_ref()
+            .expect("candidate should include content");
+        assert!(content.role.is_empty());
+        assert_eq!(
+            content.parts[0].thought_signature.as_deref(),
+            Some("opaque-signature")
+        );
+    }
+
+    #[test]
+    fn gemini_tool_use_thought_signature_survives_persistence_and_replay() {
+        let signature = "opaque-thought-signature";
+        let blocks = gemini_parts_to_model_blocks(vec![GeminiPart {
+            text: None,
+            function_call: Some(GeminiFunctionCall {
+                name: "ProbeTool".to_string(),
+                args: json!({"probe": true}),
+            }),
+            function_response: None,
+            thought_signature: Some(signature.to_string()),
+        }]);
+
+        let persisted = serde_json::to_vec(&blocks).expect("tool use should serialize");
+        let restored: Vec<ModelBlock> =
+            serde_json::from_slice(&persisted).expect("tool use should deserialize");
+        let content =
+            conversation_message_to_gemini_content(&ConversationMessage::AssistantBlocks(restored))
+                .expect("assistant tool use should produce Gemini content");
+        let payload = serde_json::to_value(content).expect("Gemini content should serialize");
+
+        assert_eq!(payload["parts"][0]["functionCall"]["name"], "ProbeTool");
+        assert_eq!(
+            payload["parts"][0]["functionCall"]["args"],
+            json!({"probe": true})
+        );
+        assert_eq!(payload["parts"][0]["thoughtSignature"], signature);
+    }
+
+    #[test]
+    fn gemini_tool_use_without_provider_data_omits_thought_signature() {
+        let content =
+            conversation_message_to_gemini_content(&ConversationMessage::AssistantBlocks(vec![
+                ModelBlock::ToolUse {
+                    id: "call-1".to_string(),
+                    name: "ProbeTool".to_string(),
+                    input: json!({"probe": true}),
+                    kind: ModelToolCallKind::Function,
+                    provider_data: None,
+                },
+            ]))
+            .expect("assistant tool use should produce Gemini content");
+        let payload = serde_json::to_value(content).expect("Gemini content should serialize");
+
+        assert!(payload["parts"][0].get("thoughtSignature").is_none());
     }
 
     #[test]
