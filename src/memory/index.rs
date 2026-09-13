@@ -2,6 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result};
@@ -9,7 +10,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{
     params, params_from_iter,
     types::{Type, Value as SqlValue},
-    Connection, OptionalExtension,
+    Connection, OpenFlags, OptionalExtension,
 };
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -20,6 +21,9 @@ use uuid::Uuid;
 use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
     memory::refs::{RuntimeRef, ToolExecutionRefSelector, ToolOutputSelector},
+    memory::write_coordinator::{
+        memory_index_write_coordinator, MemoryIndexWriteCoordinator, MemoryIndexWriteTurn,
+    },
     object_resolver::RuntimeObjectResolver,
     runtime_db::{EvidenceKind, RuntimeDb, RuntimeIndexOperation, RuntimeIndexOutboxRow},
     storage::AppStorage,
@@ -180,7 +184,12 @@ pub fn rebuild_memory_index(storage: &AppStorage, active_workspace_id: Option<&s
         active_workspace_id,
         "explicit_rebuild",
     )?;
-    while index.advance_rebuild(storage, MEMORY_INDEX_REBUILD_DEFAULT_SLICE)? {}
+    loop {
+        let result = index.advance_rebuild(storage, MEMORY_INDEX_REBUILD_DEFAULT_SLICE);
+        if !index.finish_write("memory_index.advance_rebuild", result)? {
+            break;
+        }
+    }
     Ok(())
 }
 
@@ -204,7 +213,8 @@ pub fn repair_memory_index_for_paths(storage: &AppStorage, changed_paths: &[Stri
         return Ok(());
     }
     let index = MemoryIndex::open(storage)?;
-    repair_known_markdown_sources(storage, &index)
+    let result = repair_known_markdown_sources(storage, &index);
+    index.finish_write("memory_index.repair_changed_paths", result)
 }
 
 pub fn search_memory(
@@ -274,7 +284,7 @@ pub fn search_memory_query_for_agent_storages(
     let agent_id = storage_agent_id(storage);
     let agent_filter = normalize_memory_search_agent_filter(&agent_id, agent_ids);
     log_legacy_index_deprecation(storage);
-    let index = MemoryIndex::open(storage)?;
+    let index = MemoryIndex::open_reader(storage)?;
     let results = index.search(
         query,
         limit,
@@ -377,7 +387,8 @@ pub fn refresh_memory_index_bounded(
     let agent_id = storage_agent_id(storage);
     let handled_rebuild = index.rebuild_job(&agent_id)?.is_some()
         || !index.rebuild_intents_for_agent(&agent_id)?.is_empty();
-    index.advance_rebuild(storage, batch_limit.max(1))?;
+    let result = index.advance_rebuild(storage, batch_limit.max(1));
+    index.finish_write("memory_index.advance_rebuild", result)?;
     if !handled_rebuild {
         refresh_memory_index_for_storage(&mut index, storage, active_workspace_id, batch_limit)?;
     }
@@ -385,7 +396,7 @@ pub fn refresh_memory_index_bounded(
 }
 
 pub fn memory_index_agent_ids_with_pending(storage: &AppStorage) -> Result<Vec<String>> {
-    let index = MemoryIndex::open(storage)?;
+    let index = MemoryIndex::open_reader(storage)?;
     index.agent_ids_with_pending_sources()
 }
 
@@ -402,7 +413,7 @@ pub fn memory_index_agent_ids_needing_backfill(
     storage: &AppStorage,
     extra_agent_ids: &[String],
 ) -> Result<Vec<String>> {
-    let index = MemoryIndex::open(storage)?;
+    let index = MemoryIndex::open_reader(storage)?;
     let mut candidates = std::collections::BTreeSet::new();
     candidates.extend(extra_agent_ids.iter().cloned());
     candidates.extend(index.agent_ids_with_cursors()?);
@@ -539,7 +550,7 @@ fn get_memory_with_limit(
                 error = %error,
                 "memory index refresh failed before lookup; querying current index snapshot"
             );
-            MemoryIndex::open(storage)?
+            MemoryIndex::open_reader(storage)?
         }
     };
     index.get(source_ref, max_chars, &agent_id, active_workspace_id)
@@ -630,10 +641,14 @@ fn refresh_memory_index_for_storage(
     active_workspace_id: Option<&str>,
     batch_limit: usize,
 ) -> Result<()> {
-    index.consume_runtime_outbox(storage, batch_limit)?;
-    index.consume_pending_sources(storage, batch_limit)?;
-    index.consume_stale_source_states(storage, batch_limit)?;
-    repair_known_markdown_sources(storage, index)?;
+    let result = index.consume_runtime_outbox(storage, batch_limit);
+    index.finish_write("memory_index.refresh_runtime_outbox", result)?;
+    let result = index.consume_pending_sources(storage, batch_limit);
+    index.finish_write("memory_index.refresh_pending_sources", result)?;
+    let result = index.consume_stale_source_states(storage, batch_limit);
+    index.finish_write("memory_index.refresh_stale_sources", result)?;
+    let result = repair_known_markdown_sources(storage, index);
+    index.finish_write("memory_index.repair_markdown_sources", result)?;
     if memory_index_is_dirty(storage) {
         let agent_id = storage_agent_id(storage);
         tracing::debug!(
@@ -732,8 +747,16 @@ fn dirty_filename_for_agent(agent_id: &str) -> String {
 /// source per canonical write must hold one handle open instead of reopening.
 pub(crate) struct MemoryIndex {
     connection: Connection,
+    access: MemoryIndexAccess,
+    write_coordinator: Arc<MemoryIndexWriteCoordinator>,
     last_outbox_consume_reached_limit: bool,
     last_outbox_error_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MemoryIndexAccess {
+    Reader,
+    Writer,
 }
 
 #[derive(Debug, Clone)]
@@ -758,6 +781,37 @@ struct RebuildSourceRecord {
     total_documents: usize,
 }
 
+fn log_memory_index_write_error<T>(
+    coordinator: &MemoryIndexWriteCoordinator,
+    operation: &'static str,
+    result: &Result<T>,
+) {
+    let Err(error) = result else {
+        return;
+    };
+    let sqlite_error = error
+        .chain()
+        .find_map(|source| source.downcast_ref::<rusqlite::Error>());
+    match sqlite_error {
+        Some(rusqlite::Error::SqliteFailure(code, _)) => tracing::warn!(
+            db_role = "index",
+            db_path_hash = %coordinator.db_path_hash(),
+            operation,
+            sqlite_primary_code = ?code.code,
+            sqlite_extended_code = code.extended_code,
+            error = %error,
+            "memory index write failed"
+        ),
+        _ => tracing::warn!(
+            db_role = "index",
+            db_path_hash = %coordinator.db_path_hash(),
+            operation,
+            error = %error,
+            "memory index write failed"
+        ),
+    }
+}
+
 impl MemoryIndex {
     fn open(storage: &AppStorage) -> Result<Self> {
         Self::open_in(&storage.shared_indexes_dir())
@@ -766,28 +820,105 @@ impl MemoryIndex {
     fn open_in(shared_indexes_dir: &Path) -> Result<Self> {
         fs::create_dir_all(shared_indexes_dir)
             .with_context(|| format!("failed to create {}", shared_indexes_dir.display()))?;
-        let connection = Connection::open(shared_indexes_dir.join(INDEX_FILENAME))?;
-        let index = Self {
-            connection,
-            last_outbox_consume_reached_limit: false,
-            last_outbox_error_count: 0,
-        };
-        index.connection.execute_batch(
+        let index_path = shared_indexes_dir.join(INDEX_FILENAME);
+        let write_coordinator = memory_index_write_coordinator(&index_path)?;
+        let _turn = write_coordinator.wait_turn("memory_index.open_writer")?;
+        let result = (|| {
+            let connection = Connection::open(&index_path)?;
+            let index = Self {
+                connection,
+                access: MemoryIndexAccess::Writer,
+                write_coordinator: Arc::clone(&write_coordinator),
+                last_outbox_consume_reached_limit: false,
+                last_outbox_error_count: 0,
+            };
+            index.connection.execute_batch(
+                r#"
+                PRAGMA journal_mode = WAL;
+                PRAGMA busy_timeout = 5000;
+                PRAGMA synchronous = NORMAL;
+                PRAGMA wal_autocheckpoint = 10000;
+                PRAGMA mmap_size = 268435456;
+                "#,
+            )?;
+            index.ensure_schema()?;
+            Ok(index)
+        })();
+        log_memory_index_write_error(&write_coordinator, "memory_index.open_writer", &result);
+        result
+    }
+
+    fn open_reader(storage: &AppStorage) -> Result<Self> {
+        Self::open_reader_in(&storage.shared_indexes_dir())
+    }
+
+    fn open_reader_in(shared_indexes_dir: &Path) -> Result<Self> {
+        let index_path = shared_indexes_dir.join(INDEX_FILENAME);
+        if index_path.exists() {
+            if let Ok(reader) = Self::open_existing_reader(&index_path) {
+                if reader.schema_is_ready().unwrap_or(false) {
+                    return Ok(reader);
+                }
+            }
+        }
+        drop(Self::open_in(shared_indexes_dir)?);
+        let reader = Self::open_existing_reader(&index_path)?;
+        anyhow::ensure!(
+            reader.schema_is_ready()?,
+            "memory index schema is incomplete after writer initialization"
+        );
+        Ok(reader)
+    }
+
+    fn open_existing_reader(index_path: &Path) -> Result<Self> {
+        let write_coordinator = memory_index_write_coordinator(&index_path)?;
+        let connection =
+            Connection::open_with_flags(&index_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        connection.execute_batch(
             r#"
-            PRAGMA journal_mode = WAL;
+            PRAGMA query_only = ON;
             PRAGMA busy_timeout = 5000;
-            PRAGMA synchronous = NORMAL;
-            PRAGMA wal_autocheckpoint = 10000;
             PRAGMA mmap_size = 268435456;
             "#,
         )?;
-        index.ensure_schema()?;
-        Ok(index)
+        Ok(Self {
+            connection,
+            access: MemoryIndexAccess::Reader,
+            write_coordinator,
+            last_outbox_consume_reached_limit: false,
+            last_outbox_error_count: 0,
+        })
+    }
+
+    fn schema_is_ready(&self) -> Result<bool> {
+        Ok(self.table_exists("memory_documents")?
+            && self.table_exists("memory_documents_fts")?
+            && self.table_exists("memory_index_pending_sources")?
+            && self.table_exists("memory_index_source_state")?
+            && self.table_has_column("memory_index_source_state", "projection_version")?
+            && self.table_exists("memory_index_meta")?
+            && self.table_exists("memory_index_checkpoints")?
+            && self.table_exists("memory_index_cursors")?
+            && self.table_exists("memory_index_rebuild_jobs")?
+            && self.table_exists("memory_index_rebuild_seen")?)
     }
 
     /// Opens the shared memory index for a long-lived cached connection.
     pub(crate) fn open_shared(shared_indexes_dir: &Path) -> Result<Self> {
         Self::open_in(shared_indexes_dir)
+    }
+
+    fn write_turn(&self, operation: &'static str) -> Result<MemoryIndexWriteTurn> {
+        anyhow::ensure!(
+            self.access == MemoryIndexAccess::Writer,
+            "cannot write through read-only memory index connection"
+        );
+        self.write_coordinator.wait_turn(operation)
+    }
+
+    fn finish_write<T>(&self, operation: &'static str, result: Result<T>) -> Result<T> {
+        log_memory_index_write_error(&self.write_coordinator, operation, &result);
+        result
     }
 
     /// Enqueues one pending upsert on an already-open connection.
@@ -798,7 +929,7 @@ impl MemoryIndex {
         source_id: &str,
         source_ref: &str,
     ) -> Result<()> {
-        self.enqueue_source(
+        let result = self.enqueue_source(
             agent_id,
             source_kind,
             source_id,
@@ -806,7 +937,8 @@ impl MemoryIndex {
             "upsert",
             None,
             "source_write",
-        )
+        );
+        self.finish_write("memory_index.enqueue_upsert", result)
     }
 
     fn ensure_schema(&self) -> Result<()> {
@@ -999,6 +1131,7 @@ impl MemoryIndex {
             .produced_watermark_for_agent(&agent_id)?;
         let generation = Uuid::new_v4().simple().to_string();
         let now = Utc::now();
+        let _turn = self.write_turn("memory_index.start_rebuild")?;
         self.connection.execute(
             "INSERT INTO memory_index_rebuild_jobs (
                 agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
@@ -1067,6 +1200,7 @@ impl MemoryIndex {
             } else {
                 MEMORY_INDEX_REBUILD_PHASE_SCAN
             };
+            let _turn = self.write_turn("memory_index.advance_rebuild_cursor")?;
             self.connection.execute(
                 "UPDATE memory_index_rebuild_jobs
                  SET phase = ?1, source_kind_index = ?2, source_cursor = '',
@@ -1106,6 +1240,7 @@ impl MemoryIndex {
         }
 
         let now = Utc::now();
+        let _turn = self.write_turn("memory_index.rebuild_scan")?;
         let transaction = self.connection.transaction()?;
         for document in &documents {
             upsert_document_tx(&transaction, document)?;
@@ -1182,6 +1317,7 @@ impl MemoryIndex {
             self.update_rebuild_phase(job, MEMORY_INDEX_REBUILD_PHASE_FINALIZE)?;
             return Ok(0);
         }
+        let _turn = self.write_turn("memory_index.rebuild_prune")?;
         let transaction = self.connection.transaction()?;
         for document_key in &keys {
             delete_document_tx(&transaction, document_key)?;
@@ -1208,6 +1344,7 @@ impl MemoryIndex {
             .context("runtime database is required for memory index rebuild")?;
         let runtime_id = runtime_index_runtime_id(&runtime_db);
         let now = Utc::now();
+        let _turn = self.write_turn("memory_index.rebuild_finalize")?;
         let transaction = self.connection.transaction()?;
         for source_kind in all_backfill_source_kinds() {
             transaction.execute(
@@ -1249,6 +1386,7 @@ impl MemoryIndex {
             params![job.agent_id, job.generation],
         )?;
         transaction.commit()?;
+        drop(_turn);
         if job.runtime_high_watermark > 0 {
             if let Err(error) = runtime_db
                 .runtime_index_outbox()
@@ -1273,6 +1411,7 @@ impl MemoryIndex {
     }
 
     fn update_rebuild_phase(&self, job: &RebuildJob, phase: &str) -> Result<()> {
+        let _turn = self.write_turn("memory_index.update_rebuild_phase")?;
         self.connection.execute(
             "UPDATE memory_index_rebuild_jobs
              SET phase = ?1, last_progress_at = ?2
@@ -1320,6 +1459,7 @@ impl MemoryIndex {
     }
 
     fn upsert_document(&self, document: &MemoryDocument) -> Result<()> {
+        let _turn = self.write_turn("memory_index.upsert_document")?;
         upsert_document_tx(&self.connection, document)?;
         upsert_source_state_tx(
             &self.connection,
@@ -1329,6 +1469,7 @@ impl MemoryIndex {
     }
 
     fn delete_document(&self, agent_id: &str, source_ref: &str) -> Result<()> {
+        let _turn = self.write_turn("memory_index.delete_document")?;
         let document_key = document_key_for(agent_id, source_ref);
         self.connection.execute(
             "DELETE FROM memory_documents_fts WHERE document_key = ?1",
@@ -1355,6 +1496,7 @@ impl MemoryIndex {
         source_updated_at: Option<DateTime<Utc>>,
         reason: &str,
     ) -> Result<()> {
+        let _turn = self.write_turn("memory_index.enqueue_source")?;
         let document_key = document_key_for(agent_id, source_ref);
         self.connection.execute(
             r#"
@@ -1393,19 +1535,22 @@ impl MemoryIndex {
         active_workspace_id: Option<&str>,
         reason: &str,
     ) -> Result<()> {
-        if reason.starts_with("self_heal") && self.rebuild_job(agent_id)?.is_some() {
-            return Ok(());
-        }
-        let source_ref = rebuild_intent_source_ref(agent_id);
-        self.enqueue_source(
-            agent_id,
-            MEMORY_INDEX_REBUILD_SOURCE_KIND,
-            active_workspace_id.unwrap_or(MEMORY_INDEX_REBUILD_SOURCE_ID),
-            &source_ref,
-            "rebuild",
-            None,
-            reason,
-        )
+        let result = (|| {
+            if reason.starts_with("self_heal") && self.rebuild_job(agent_id)?.is_some() {
+                return Ok(());
+            }
+            let source_ref = rebuild_intent_source_ref(agent_id);
+            self.enqueue_source(
+                agent_id,
+                MEMORY_INDEX_REBUILD_SOURCE_KIND,
+                active_workspace_id.unwrap_or(MEMORY_INDEX_REBUILD_SOURCE_ID),
+                &source_ref,
+                "rebuild",
+                None,
+                reason,
+            )
+        })();
+        self.finish_write("memory_index.enqueue_rebuild_intent", result)
     }
 
     fn consume_pending_sources(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
@@ -1415,6 +1560,7 @@ impl MemoryIndex {
             if source.source_kind == MEMORY_INDEX_REBUILD_SOURCE_KIND {
                 continue;
             }
+            let _turn = self.write_turn("memory_index.consume_pending_source")?;
             let transaction = self.connection.transaction()?;
             let result = apply_pending_source_tx(&transaction, storage, &source);
             match result {
@@ -1443,6 +1589,7 @@ impl MemoryIndex {
         let agent_id = storage_agent_id(storage);
         let stale_sources = self.stale_source_states_for_agent_with_limit(&agent_id, limit)?;
         for source in stale_sources {
+            let _turn = self.write_turn("memory_index.consume_stale_source")?;
             let transaction = self.connection.transaction()?;
             if let Err(error) = apply_pending_source_tx(&transaction, storage, &source) {
                 tracing::warn!(
@@ -1481,6 +1628,7 @@ impl MemoryIndex {
         let mut consume_error: Option<anyhow::Error> = None;
         for row in rows {
             let source = pending_source_from_outbox_row(&row);
+            let _turn = self.write_turn("memory_index.consume_runtime_outbox")?;
             let transaction = self.connection.transaction()?;
             let applied = apply_pending_source_tx(&transaction, storage, &source).and_then(|()| {
                 upsert_cursor_tx(
@@ -3886,6 +4034,12 @@ fn is_zero_i64(value: &i64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::{
+        sync::{mpsc, Arc, Barrier},
+        thread,
+        time::Duration,
+    };
+
     use tempfile::tempdir;
 
     use super::*;
@@ -3899,6 +4053,122 @@ mod tests {
         },
     };
     use serde_json::json;
+
+    #[test]
+    fn existing_reader_open_does_not_reapply_schema_or_allow_writes() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        drop(MemoryIndex::open(&storage)?);
+
+        let connection = Connection::open(memory_index_path(&storage))?;
+        connection.execute("DROP TABLE memory_index_rebuild_seen", [])?;
+        drop(connection);
+
+        let reader = MemoryIndex::open_existing_reader(&memory_index_path(&storage))?;
+        assert!(!reader.table_exists("memory_index_rebuild_seen")?);
+        let error = reader
+            .enqueue_source(
+                "default",
+                "message",
+                "msg-reader",
+                "message:msg-reader",
+                "upsert",
+                None,
+                "test",
+            )
+            .expect_err("reader connection must reject index writes");
+        assert!(error
+            .to_string()
+            .contains("cannot write through read-only memory index connection"));
+        Ok(())
+    }
+
+    #[test]
+    fn reader_open_does_not_wait_for_writer_turn() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let writer = MemoryIndex::open(&storage)?;
+        let _turn = writer.write_turn("test.hold_writer")?;
+        let shared_indexes_dir = storage.shared_indexes_dir();
+        let (sender, receiver) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let result = MemoryIndex::open_reader_in(&shared_indexes_dir)
+                .and_then(|reader| reader.table_exists("memory_documents"));
+            sender.send(result).expect("reader result receiver dropped");
+        });
+
+        assert!(receiver.recv_timeout(Duration::from_secs(1))??);
+        handle.join().expect("reader thread panicked");
+        Ok(())
+    }
+
+    #[test]
+    fn reader_waits_for_incomplete_schema_initialization() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let shared_indexes_dir = storage.shared_indexes_dir();
+        fs::create_dir_all(&shared_indexes_dir)?;
+        let index_path = shared_indexes_dir.join(INDEX_FILENAME);
+        drop(Connection::open(&index_path)?);
+        let coordinator = memory_index_write_coordinator(&index_path)?;
+        let writer_turn = coordinator.wait_turn("test.schema_initialization")?;
+        let (sender, receiver) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            let result = MemoryIndex::open_reader_in(&shared_indexes_dir)
+                .and_then(|reader| reader.schema_is_ready());
+            sender.send(result).expect("reader result receiver dropped");
+        });
+
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(writer_turn);
+        assert!(receiver.recv_timeout(Duration::from_secs(2))??);
+        handle.join().expect("reader thread panicked");
+        Ok(())
+    }
+
+    #[test]
+    fn independent_connections_serialize_concurrent_enqueues() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        drop(MemoryIndex::open(&storage)?);
+        let shared_indexes_dir = storage.shared_indexes_dir();
+        let barrier = Arc::new(Barrier::new(9));
+        let mut handles = Vec::new();
+
+        for index in 0..8 {
+            let shared_indexes_dir = shared_indexes_dir.clone();
+            let barrier = Arc::clone(&barrier);
+            handles.push(thread::spawn(move || -> Result<()> {
+                let mut memory_index = MemoryIndex::open_shared(&shared_indexes_dir)?;
+                barrier.wait();
+                memory_index.enqueue_upsert(
+                    "default",
+                    "message",
+                    &format!("msg-{index}"),
+                    &format!("message:msg-{index}"),
+                )
+            }));
+        }
+        barrier.wait();
+        for handle in handles {
+            handle.join().expect("writer thread panicked")?;
+        }
+
+        let reader = MemoryIndex::open_reader(&storage)?;
+        let pending_count: i64 = reader.connection.query_row(
+            "SELECT COUNT(*) FROM memory_index_pending_sources
+             WHERE agent_id = 'default'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(pending_count, 8);
+        Ok(())
+    }
 
     fn brief_with_workspace(
         agent_id: &str,
