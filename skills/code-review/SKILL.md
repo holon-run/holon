@@ -51,7 +51,8 @@ unavailable entries in the coverage summary.
 
 ### 2. Generate candidates
 
-Review changed files and materially changed hunks in this order:
+Perform an explicit hunk-level risk scan. For every changed file and materially
+changed hunk, consider each applicable category before moving on:
 
 1. Correctness and data integrity
 2. Security, authorization, trust boundaries, and secret handling
@@ -60,6 +61,11 @@ Review changed files and materially changed hunks in this order:
 5. Compatibility, migrations, and public contract changes
 6. Resource usage and performance
 7. Tests, observability, and maintainability when they affect behavior
+
+Do not stop at summarizing the apparent intent. Inspect changed conditions,
+state transitions, error paths, call sites, tests, documentation, and generated
+contracts as applicable. Record the causal changed hunk and the best actionable
+location for every candidate while the context is fresh.
 
 Follow important control flow into surrounding code when needed to establish
 impact, but avoid speculative project-wide criticism.
@@ -72,11 +78,16 @@ For every candidate finding:
 - Run a focused test, type check, lint, query, or other available verification
   when it can distinguish a real issue from a false positive.
 - Confirm that the issue is introduced or materially worsened by the change.
-- Confirm that the finding can be located precisely in the changed code.
+- Confirm that the evidence and impact can be located precisely enough for the
+  author to act. Prefer a changed-line location; when the impact appears in
+  unchanged code, CI, generated output, or a cross-file interaction, record the
+  best location and its causal relationship to the change.
 - Lower confidence or omit the finding when evidence remains inconclusive.
 
 Do not publish a high-severity finding based only on a pattern match, naming
 preference, or an unverified hypothesis.
+Do not lower confidence, severity, or omit an otherwise valid finding solely
+because a hosting platform cannot attach it to an inline changed-line range.
 
 ### 4. Classify and deduplicate
 
@@ -134,9 +145,10 @@ Represent each finding with this platform-neutral shape:
 ```
 
 Use repository-relative paths and changed-line locations when available.
-`location` may be omitted for a valid non-inline finding, but then explain why
-the issue cannot be mapped precisely and keep it in the brief rather than
-silently mapping it to an unrelated line.
+`location` should identify the best actionable location even when it is not a
+changed line. It may be omitted for a valid repository- or check-level finding,
+but then explain why the issue cannot be mapped precisely and keep it in the
+brief rather than silently mapping it to an unrelated line.
 
 ## Degradation Rules
 
