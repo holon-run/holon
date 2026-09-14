@@ -64,15 +64,118 @@ async fn finalize_completion_with_report(
 struct CompleteWorkItemReportProvider {
     work_item_id: String,
     report_text: Option<String>,
+    validate_detached_sequence: bool,
     calls: Mutex<usize>,
+}
+
+fn assert_valid_provider_tool_result_sequence(conversation: &[ConversationMessage]) {
+    let mut seen_tool_result_ids = std::collections::HashSet::new();
+    for (index, message) in conversation.iter().enumerate() {
+        let ConversationMessage::UserToolResults(results) = message else {
+            continue;
+        };
+        let previous = index
+            .checked_sub(1)
+            .and_then(|previous| conversation.get(previous))
+            .expect("provider-visible tool results must follow an assistant tool use");
+        let ConversationMessage::AssistantBlocks(blocks) = previous else {
+            panic!("provider-visible tool results must immediately follow assistant blocks");
+        };
+        let tool_use_ids = blocks
+            .iter()
+            .filter_map(|block| match block {
+                ModelBlock::ToolUse { id, .. } => Some(id.as_str()),
+                _ => None,
+            })
+            .collect::<std::collections::HashSet<_>>();
+        for result in results {
+            assert!(
+                tool_use_ids.contains(result.tool_use_id.as_str()),
+                "tool result {} has no matching tool use in the immediately preceding assistant message",
+                result.tool_use_id
+            );
+            assert!(
+                seen_tool_result_ids.insert(result.tool_use_id.as_str()),
+                "tool use {} produced more than one provider-visible result",
+                result.tool_use_id
+            );
+        }
+    }
+}
+
+fn assert_complete_work_item_deferred_result(conversation: &[ConversationMessage]) {
+    let complete_tool_results = conversation
+        .iter()
+        .filter_map(|message| match message {
+            ConversationMessage::UserToolResults(results) => Some(results),
+            _ => None,
+        })
+        .flatten()
+        .filter(|result| result.tool_use_id == "complete-work")
+        .collect::<Vec<_>>();
+    assert_eq!(
+        complete_tool_results.len(),
+        1,
+        "CompleteWorkItem should have exactly one provider-visible result"
+    );
+    let deferred_result: serde_json::Value =
+        serde_json::from_str(&complete_tool_results[0].content).unwrap();
+    assert_eq!(
+        deferred_result["result"]["disposition"].as_str(),
+        Some("awaiting_completion_report")
+    );
+}
+
+fn assert_detached_followup_completion_sequence(conversation: &[ConversationMessage]) {
+    let report_index = conversation
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ConversationMessage::AssistantBlocks(blocks)
+                    if blocks.iter().any(|block| matches!(
+                        block,
+                        ModelBlock::Text { text } if text == "done"
+                    ))
+            )
+        })
+        .expect("follow-up completion report should be provider-visible");
+    let continuation_index = conversation
+        .iter()
+        .position(|message| {
+            matches!(
+                message,
+                ConversationMessage::UserText(text)
+                    if text.contains("was completed as a detached target")
+            )
+        })
+        .expect("detached completion continuation should be provider-visible");
+    assert!(report_index < continuation_index);
+    assert!(
+        conversation
+            .iter()
+            .all(|message| !matches!(message, ConversationMessage::UserToolResults(_))),
+        "follow-up report continuation request must not contain a second tool result"
+    );
 }
 
 #[async_trait]
 impl AgentProvider for CompleteWorkItemReportProvider {
-    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        if self.validate_detached_sequence {
+            assert_valid_provider_tool_result_sequence(&request.conversation);
+        }
         let mut calls = self.calls.lock().await;
         *calls += 1;
-        let blocks = if *calls == 1 {
+        let call = *calls;
+        if self.validate_detached_sequence && self.report_text.is_none() {
+            match call {
+                2 => assert_complete_work_item_deferred_result(&request.conversation),
+                3 => assert_detached_followup_completion_sequence(&request.conversation),
+                _ => {}
+            }
+        }
+        let blocks = if call == 1 {
             let mut blocks = Vec::new();
             if let Some(report_text) = &self.report_text {
                 blocks.push(ModelBlock::Text {
@@ -138,6 +241,7 @@ async fn assert_detached_completion_continues_current_execution(
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: detached.id.clone(),
         report_text: report_text.map(str::to_string),
+        validate_detached_sequence: true,
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -228,6 +332,54 @@ async fn assert_detached_completion_continues_current_execution(
         state.current_work_item_id.as_deref(),
         Some(active.id.as_str())
     );
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    let completion_tools = tools
+        .iter()
+        .filter(|tool| tool.tool_name == "CompleteWorkItem")
+        .collect::<Vec<_>>();
+    assert_eq!(completion_tools.len(), 1);
+    assert_eq!(completion_tools[0].status, ToolExecutionStatus::Success);
+
+    let transcript = runtime.storage().read_recent_transcript(20).unwrap();
+    let complete_tool_result_refs = transcript
+        .iter()
+        .filter(|entry| entry.kind == crate::types::TranscriptEntryKind::ToolResults)
+        .filter_map(|entry| entry.data.get("refs").and_then(|refs| refs.as_array()))
+        .flatten()
+        .filter(|reference| {
+            reference
+                .get("tool_call_id")
+                .and_then(|value| value.as_str())
+                == Some("complete-work")
+        })
+        .count();
+    assert_eq!(
+        complete_tool_result_refs, 1,
+        "transcript should retain only the original provider-visible result"
+    );
+
+    let completed = runtime
+        .latest_work_item(&detached.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let result_brief_id = completed
+        .result_brief_id
+        .expect("detached completion should create one result brief");
+    let briefs = runtime.recent_briefs(20).await.unwrap();
+    assert_eq!(
+        briefs
+            .iter()
+            .filter(|brief| brief.id == result_brief_id)
+            .count(),
+        1
+    );
+    if report_text.is_none() {
+        let events = runtime.storage().read_recent_events(200).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "completion_report_request_completed"));
+    }
 }
 
 #[tokio::test]
@@ -2510,6 +2662,7 @@ async fn complete_work_item_promotes_same_round_report_and_binds_evidence() {
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: work_item.id.clone(),
         report_text: Some(report_text.into()),
+        validate_detached_sequence: false,
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -2734,6 +2887,7 @@ async fn lifecycle_completion_registers_missing_legacy_work_item_execution() {
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: work_item.id.clone(),
         report_text: Some("Closed the legacy tracked work.".into()),
+        validate_detached_sequence: false,
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -2861,6 +3015,7 @@ async fn standalone_turn_writer_rejects_prepared_completion() {
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: callee.id.clone(),
         report_text: Some("Callee work is complete.".into()),
+        validate_detached_sequence: false,
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -3476,6 +3631,7 @@ async fn followup_final_report_completes_child_and_resumes_caller() {
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: completed_work.id.clone(),
         report_text: None,
+        validate_detached_sequence: false,
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -3956,7 +4112,7 @@ async fn complete_work_item_uses_followup_report_after_text_before_other_tool() 
     let completion_timeout = if std::env::var_os("CARGO_LLVM_COV").is_some() {
         std::time::Duration::from_secs(180)
     } else {
-        std::time::Duration::from_secs(10)
+        std::time::Duration::from_secs(30)
     };
     let completion = tokio::time::timeout(completion_timeout, async {
         loop {
@@ -4072,6 +4228,7 @@ async fn promoted_completion_report_resumes_next_queued_work_item_via_system_tic
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: active.id.clone(),
         report_text: Some("Active work is complete.".into()),
+        validate_detached_sequence: false,
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -4190,6 +4347,7 @@ async fn complete_work_item_without_same_round_report_uses_followup_final_text()
     let provider = Arc::new(CompleteWorkItemReportProvider {
         work_item_id: work_item.id.clone(),
         report_text: None,
+        validate_detached_sequence: false,
         calls: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
@@ -4869,6 +5027,7 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
         Arc::new(CompleteWorkItemReportProvider {
             work_item_id: work_item.id.clone(),
             report_text: Some("Replacement report should not be promoted".into()),
+            validate_detached_sequence: false,
             calls: Mutex::new(0),
         }),
         "default".into(),

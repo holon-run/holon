@@ -3493,6 +3493,63 @@ CREATE TABLE IF NOT EXISTS runtime_index_outbox_watermarks (
         // upgrade paths cannot advertise a partially repaired schema.
         sql: "",
     },
+    Migration {
+        version: 65,
+        name: "task_result_settlements",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS task_result_settlements (
+  result_identity TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  message_id TEXT NOT NULL UNIQUE,
+  work_item_id TEXT NOT NULL,
+  rejoin_generation INTEGER NOT NULL CHECK (rejoin_generation > 0),
+  parent_turn_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (
+    state IN ('persisted_pending', 'caller_admitted', 'settled')
+  ),
+  activation_id TEXT,
+  disposition TEXT CHECK (
+    disposition IS NULL OR disposition IN (
+      'model_delivered', 'owner_closed', 'owner_missing'
+    )
+  ),
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  admitted_at TEXT,
+  settled_at TEXT,
+  payload_json TEXT NOT NULL,
+  CHECK (
+    (
+      state = 'persisted_pending'
+      AND activation_id IS NULL
+      AND disposition IS NULL
+      AND admitted_at IS NULL
+      AND settled_at IS NULL
+    )
+    OR (
+      state = 'caller_admitted'
+      AND activation_id IS NOT NULL
+      AND disposition IS NULL
+      AND admitted_at IS NOT NULL
+      AND settled_at IS NULL
+    )
+    OR (
+      state = 'settled'
+      AND disposition IS NOT NULL
+      AND settled_at IS NOT NULL
+    )
+  )
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_result_settlements_owner_state
+  ON task_result_settlements(agent_id, work_item_id, state, created_at);
+
+CREATE INDEX IF NOT EXISTS idx_task_result_settlements_activation
+  ON task_result_settlements(agent_id, activation_id, state, created_at)
+  WHERE activation_id IS NOT NULL;
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -756,6 +756,11 @@ That means:
 The provider-facing tool-result string may differ from the canonical envelope's
 JSON serialization as long as both are derived from the same canonical result.
 
+A provider-visible tool call must produce exactly one provider-visible tool
+result in conversation history. Internal lifecycle changes, including promotion
+from a deferred receipt to a terminal tool execution state, remain runtime
+facts and must not be projected as a second result for the same tool call ID.
+
 ## Compaction Contract
 
 The canonical result gives deterministic compaction rules:

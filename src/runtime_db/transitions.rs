@@ -296,6 +296,8 @@ pub(crate) struct ExecutionAuthorityFences {
 pub(crate) struct TaskTransitionCommand {
     pub agent_id: String,
     pub task: TaskRecord,
+    pub task_result_settlement:
+        Option<crate::runtime_db::task_result_settlement::TaskResultSettlementRecord>,
     pub queue_entry: Option<QueueEntryRecord>,
     pub work_items: Vec<WorkItemMutation>,
     pub expected_wait_conditions: Vec<WaitConditionExpectation>,
@@ -1054,6 +1056,7 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             &[],
             None,
+            None,
         )
     }
 
@@ -1070,6 +1073,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             &[],
             &[],
+            None,
             None,
         )
     }
@@ -1090,24 +1094,30 @@ impl RuntimeTransitionRepository<'_> {
             None,
             DeliverySynchronization::IfAvailable,
             None,
+            None,
         )
     }
 
-    pub fn commit_queue_with_execution_protocol_and_terminal_tool_executions(
+    pub fn commit_queue_terminal(
         &self,
         command: &QueueTransitionCommand,
         execution_protocol: &ExecutionProtocolTransition,
+        completion: Option<&CompletionTransition>,
         terminal_tool_executions: &[ToolExecutionRecord],
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
     ) -> Result<TransitionCommit> {
         self.commit_queue_transaction(
             command,
             execution_protocol,
             None,
             None,
-            None,
+            completion,
             terminal_tool_executions,
             &[],
             None,
+            task_result_settlement,
         )
     }
 
@@ -1124,6 +1134,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             &[],
             &[],
+            None,
             None,
         )
     }
@@ -1144,6 +1155,7 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             &[],
             timer_wake_claim,
+            None,
         )
     }
 
@@ -1163,9 +1175,11 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             wait_conditions,
             None,
+            None,
         )
     }
 
+    #[cfg(test)]
     pub fn commit_queue_with_completion(
         &self,
         command: &QueueTransitionCommand,
@@ -1180,6 +1194,7 @@ impl RuntimeTransitionRepository<'_> {
             Some(completion),
             &[],
             &[],
+            None,
             None,
         )
     }
@@ -1201,6 +1216,7 @@ impl RuntimeTransitionRepository<'_> {
             Some(delivery),
             DeliverySynchronization::Required,
             None,
+            None,
         )
     }
 
@@ -1214,6 +1230,9 @@ impl RuntimeTransitionRepository<'_> {
         terminal_tool_executions: &[ToolExecutionRecord],
         extra_wait_conditions: &[crate::types::WaitConditionRecord],
         timer_wake_claim: Option<&TimerWakeClaim>,
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
     ) -> Result<TransitionCommit> {
         self.commit_queue_transaction_with_delivery(
             command,
@@ -1226,6 +1245,7 @@ impl RuntimeTransitionRepository<'_> {
             None,
             DeliverySynchronization::Required,
             timer_wake_claim,
+            task_result_settlement,
         )
     }
 
@@ -1242,6 +1262,9 @@ impl RuntimeTransitionRepository<'_> {
         delivery: Option<&AgentMessageDeliveryRecord>,
         delivery_synchronization: DeliverySynchronization,
         timer_wake_claim: Option<&TimerWakeClaim>,
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
     ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             let synchronize_delivery = match delivery_synchronization {
@@ -1553,6 +1576,15 @@ impl RuntimeTransitionRepository<'_> {
                 || wait_work_item_applied
                 || completion_applied
                 || terminal_tool_execution_applied;
+            if let Some(settlement) = task_result_settlement {
+                applied |= crate::runtime_db::task_result_settlement::settle_activation_tx(
+                    tx,
+                    &command.agent_id,
+                    &settlement.activation_id,
+                    settlement.disposition,
+                    settlement.settled_at,
+                )? > 0;
+            }
             if let Some(decision) = delivery.as_ref() {
                 persist_queued_admission_tx(tx, decision)?;
                 applied = true;
@@ -1672,6 +1704,10 @@ impl RuntimeTransitionRepository<'_> {
 
             let task_applied = upsert_task_tx(tx, &command.task)?;
             let mut applied = task_applied;
+            if let Some(settlement) = command.task_result_settlement.as_ref() {
+                applied |=
+                    crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, settlement)?;
+            }
             if let Some(queue_entry) = command.queue_entry.as_ref() {
                 applied |= upsert_queue_entry_tx(tx, queue_entry)?;
             }
@@ -2845,6 +2881,7 @@ mod tests {
             let command = TaskTransitionCommand {
                 agent_id: "agent-a".into(),
                 task: task("task-message-index", TaskStatus::Completed),
+                task_result_settlement: None,
                 queue_entry: None,
                 work_items: Vec::new(),
                 expected_wait_conditions: Vec::new(),
@@ -4201,6 +4238,7 @@ mod tests {
         let command = TaskTransitionCommand {
             agent_id: "agent-a".into(),
             task: terminal.clone(),
+            task_result_settlement: None,
             queue_entry: None,
             work_items: vec![WorkItemMutation::Update {
                 record: cleared.clone(),
@@ -4313,6 +4351,7 @@ mod tests {
             let command = TaskTransitionCommand {
                 agent_id: "agent-a".into(),
                 task: terminal,
+                task_result_settlement: None,
                 queue_entry: None,
                 work_items: vec![WorkItemMutation::Update {
                     record: cleared,

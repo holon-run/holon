@@ -1,7 +1,8 @@
-.PHONY: help web web-ci macos-menu-test macos-menu-package transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
+CONVERSATION_SDK_DIR := packages/conversation-sdk
 CONCURRENT_REPEATS ?= 3
 DOCKER_IMAGE ?= holon:dev
 CONCURRENT_LIFECYCLE_TESTS := \
@@ -34,6 +35,15 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
 	cd $(OPENAPI_TOOLS_DIR) && npm ci && npm run check && \
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
+
+conversation-sdk-ci: ## Test the TypeScript conversation SDK against the real Rust HTTP/SSE server
+	@bash -c 'set -e; \
+		if ! node -e '\''process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)'\''; then \
+			. "$$HOME/.nvm/nvm.sh" && nvm use; \
+		fi; \
+		cd $(CONVERSATION_SDK_DIR) && \
+		npm_config_engine_strict=true npm ci && npm test && \
+		cd ../.. && cargo test --test conversation_sdk_e2e typescript_sdk_runs_against_real_conversation_server -- --ignored'
 
 macos-menu-test: ## Build and test the native macOS menu app
 	swift test --package-path apps/macos/HolonMenu
@@ -188,7 +198,7 @@ lint: ## Run clippy
 check: ## Quick local check (formatting + clippy + compile check)
 	RUSTFLAGS="-D warnings" cargo check --all-targets
 
-ci: web-ci fmt-check lint build snapshots-check test-resource-lint test ## Run the full CI checks locally
+ci: web-ci conversation-sdk-ci fmt-check lint build snapshots-check test-resource-lint test ## Run the full CI checks locally
 
 run:
 	cargo run -- serve

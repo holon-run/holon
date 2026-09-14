@@ -113,6 +113,7 @@ static RUNTIME_DB_WRITE_QUEUES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<RuntimeDbWr
 
 impl RuntimeDbWriter {
     #[cfg(test)]
+    #[allow(dead_code)]
     pub(crate) fn open(path: PathBuf, connection: Connection) -> Result<Self> {
         let writer = Self::open_starting(path, connection)?;
         writer.activate_sidecar_protection()?;
