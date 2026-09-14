@@ -195,6 +195,13 @@ main:has(.home-page) .catalog-page {
   letter-spacing: -0.03em;
 }
 
+/* Fit the English proposition without crowding the shared follow-up diagram. */
+.home-page--en .home-hero h1 {
+  font-size: clamp(1.35rem, 3.1vw, 2.8rem);
+  line-height: 1.2;
+  letter-spacing: -0.03em;
+}
+
 .home-page--zh h2 {
   line-height: 1.2;
 }
@@ -303,22 +310,26 @@ main:has(.home-page) .catalog-page {
   font-size: 0.84rem;
 }
 
-/* Tighten the Chinese hero without compressing its follow-up diagram. */
-.home-page--zh .home-hero {
+/* Keep both heroes compact without compressing their follow-up diagrams. */
+.home-page--zh .home-hero,
+.home-page--en .home-hero {
   min-height: 37rem;
   padding-block: clamp(1rem, calc(5vw - 1.5rem), 3.25rem);
   row-gap: 2rem;
 }
 
-.home-page--zh .home-hero__lede {
+.home-page--zh .home-hero__lede,
+.home-page--en .home-hero__lede {
   margin-top: 1.2rem;
 }
 
-.home-page--zh .home-hero .home-actions {
+.home-page--zh .home-hero .home-actions,
+.home-page--en .home-hero .home-actions {
   margin-top: 1.5rem;
 }
 
-.home-page--zh .home-hero__note {
+.home-page--zh .home-hero__note,
+.home-page--en .home-hero__note {
   margin-top: 0.9rem;
 }
 
@@ -959,7 +970,8 @@ img.article-architecture {
     padding: 2.1rem 1.2rem 1.2rem;
   }
 
-  .home-page--zh .home-hero {
+  .home-page--zh .home-hero,
+  .home-page--en .home-hero {
     min-height: 0;
     padding-block: 1.6rem 1.2rem;
   }
