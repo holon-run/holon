@@ -6777,35 +6777,6 @@
         ],
         "title": "ConversationStreamMessage"
       },
-      "ConversationStreamQuery": {
-        "additionalProperties": false,
-        "properties": {
-          "activity_limit": {
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "after": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "limit": {
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "title": "ConversationStreamQuery",
-        "type": "object"
-      },
       "ConversationSummaryResponse": {
         "properties": {
           "active_turns": {
@@ -15328,18 +15299,52 @@
             "schema": {
               "type": "string"
             }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConversationStreamQuery"
-              }
+          },
+          {
+            "description": "Opaque conversation checkpoint. Last-Event-ID takes precedence when both are supplied.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
             }
           },
-          "required": true
-        },
+          {
+            "description": "Maximum canonical ledger events recovered in one batch.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 256,
+              "maximum": 256,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Maximum active-turn activity items recovered across one batch.",
+            "in": "query",
+            "name": "activity_limit",
+            "required": false,
+            "schema": {
+              "default": 64,
+              "maximum": 64,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque conversation checkpoint from the last fully consumed checkpoint event.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {

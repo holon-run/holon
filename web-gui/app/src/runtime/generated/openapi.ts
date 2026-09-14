@@ -4147,14 +4147,6 @@ export interface components {
             /** @constant */
             type: "reset_required";
         };
-        /** ConversationStreamQuery */
-        ConversationStreamQuery: {
-            /** Format: uint */
-            activity_limit?: number | null;
-            after?: string | null;
-            /** Format: uint */
-            limit?: number | null;
-        };
         /** ConversationSummaryResponse */
         ConversationSummaryResponse: {
             active_turns: {
@@ -6712,19 +6704,25 @@ export interface operations {
     };
     agentConversationStream: {
         parameters: {
-            query?: never;
-            header?: never;
+            query?: {
+                /** @description Opaque conversation checkpoint. Last-Event-ID takes precedence when both are supplied. */
+                after?: string;
+                /** @description Maximum canonical ledger events recovered in one batch. */
+                limit?: number;
+                /** @description Maximum active-turn activity items recovered across one batch. */
+                activity_limit?: number;
+            };
+            header?: {
+                /** @description Opaque conversation checkpoint from the last fully consumed checkpoint event. */
+                "Last-Event-ID"?: string;
+            };
             path: {
                 /** @description Agent id. */
                 agent_id: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConversationStreamQuery"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description Server-Sent Events stream. Each data frame contains a StreamEventEnvelope JSON object. */
             200: {

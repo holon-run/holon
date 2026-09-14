@@ -116,7 +116,7 @@ mod workspace_files;
 pub(crate) use agents::load_observer_sync_verification;
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationStreamMessage,
-    ConversationStreamQuery, ConversationSummaryResponse,
+    ConversationSummaryResponse,
 };
 pub(crate) use observer_sync::{
     advertised_observer_sync_capabilities, ObserverSyncCapabilityVerification,

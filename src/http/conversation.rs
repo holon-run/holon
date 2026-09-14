@@ -164,6 +164,27 @@ impl ConversationStreamMessage {
     }
 }
 
+#[derive(Debug)]
+enum BoundedBlockingReadError {
+    Timeout,
+    Join(tokio::task::JoinError),
+}
+
+async fn bounded_blocking_read<T, F>(
+    timeout: Duration,
+    read: F,
+) -> std::result::Result<T, BoundedBlockingReadError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    match tokio::time::timeout(timeout, tokio::task::spawn_blocking(read)).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(BoundedBlockingReadError::Join(error)),
+        Err(_) => Err(BoundedBlockingReadError::Timeout),
+    }
+}
+
 pub async fn stream(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -201,28 +222,27 @@ pub async fn stream(
     let mut live_rx = host.subscribe_events();
     let initial_agent_id = agent_id.clone();
     let initial_after = after.clone();
-    let initial = match tokio::time::timeout(
-        state.conversation_read_limits.timeout,
-        tokio::task::spawn_blocking(move || {
-            host.runtime_db().conversation().change_batch(
-                &initial_agent_id,
-                initial_after.as_deref(),
-                event_limit,
-                activity_limit,
-                scope_principal,
-                scope_entitlement,
-            )
-        }),
-    )
+    let read_timeout = state.conversation_read_limits.timeout;
+    let initial = match bounded_blocking_read(read_timeout, move || {
+        host.runtime_db().conversation().change_batch(
+            &initial_agent_id,
+            initial_after.as_deref(),
+            event_limit,
+            activity_limit,
+            scope_principal,
+            scope_entitlement,
+        )
+    })
     .await
     {
-        Ok(Ok(Ok(Some(batch)))) => batch,
-        Ok(Ok(Ok(None))) => return agent_not_found().into_response(),
-        Ok(Ok(Err(error))) => return conversation_stream_error(error).into_response(),
-        Ok(Err(error)) => return error_response(error.into()).into_response(),
-        Err(_) => {
-            return timeout_error("stream recovery", state.conversation_read_limits.timeout)
-                .into_response()
+        Ok(Ok(Some(batch))) => batch,
+        Ok(Ok(None)) => return agent_not_found().into_response(),
+        Ok(Err(error)) => return conversation_stream_error(error).into_response(),
+        Err(BoundedBlockingReadError::Join(error)) => {
+            return error_response(error.into()).into_response()
+        }
+        Err(BoundedBlockingReadError::Timeout) => {
+            return timeout_error("stream recovery", read_timeout).into_response()
         }
     };
 
@@ -247,7 +267,7 @@ pub async fn stream(
                     let host = host.clone();
                     let agent_id_for_read = agent_id.clone();
                     let after = checkpoint.clone();
-                    let batch = tokio::task::spawn_blocking(move || {
+                    let batch = bounded_blocking_read(read_timeout, move || {
                         host.runtime_db().conversation().change_batch(
                             &agent_id_for_read,
                             Some(&after),
@@ -285,8 +305,23 @@ pub async fn stream(
                                 .await;
                             return;
                         }
-                        Err(error) => {
+                        Err(BoundedBlockingReadError::Join(error)) => {
                             warn!(%error, "conversation stream recovery task failed");
+                            return;
+                        }
+                        Err(BoundedBlockingReadError::Timeout) => {
+                            warn!(?read_timeout, %agent_id, "conversation stream recovery timed out");
+                            let _ = send_stream_message(
+                                &tx,
+                                ConversationStreamMessage::ResetRequired {
+                                    reason: "stream_recovery_failed".to_string(),
+                                    oldest_retained_seq: None,
+                                    event_head_seq: None,
+                                    hint: "bootstrap a fresh conversation snapshot".to_string(),
+                                },
+                                None,
+                            )
+                            .await;
                             return;
                         }
                     }
@@ -1442,6 +1477,19 @@ mod tests {
         .expect("idle stream wait should notice the disconnected client");
 
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn conversation_stream_recovery_read_obeys_timeout() {
+        let started = std::time::Instant::now();
+        let result = bounded_blocking_read(Duration::from_millis(10), || {
+            std::thread::sleep(Duration::from_millis(100));
+            1
+        })
+        .await;
+
+        assert!(matches!(result, Err(BoundedBlockingReadError::Timeout)));
+        assert!(started.elapsed() < Duration::from_millis(80));
     }
 
     #[tokio::test]
