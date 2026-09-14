@@ -303,6 +303,25 @@ main:has(.home-page) .catalog-page {
   font-size: 0.84rem;
 }
 
+/* Tighten the Chinese hero without compressing its follow-up diagram. */
+.home-page--zh .home-hero {
+  min-height: 37rem;
+  padding-block: clamp(1rem, calc(5vw - 1.5rem), 3.25rem);
+  row-gap: 2rem;
+}
+
+.home-page--zh .home-hero__lede {
+  margin-top: 1.2rem;
+}
+
+.home-page--zh .home-hero .home-actions {
+  margin-top: 1.5rem;
+}
+
+.home-page--zh .home-hero__note {
+  margin-top: 0.9rem;
+}
+
 .home-runtime {
   padding: 1rem;
   border: 1px solid rgba(163, 188, 222, 0.9);
@@ -938,6 +957,11 @@ img.article-architecture {
   .home-hero {
     min-height: 0;
     padding: 2.1rem 1.2rem 1.2rem;
+  }
+
+  .home-page--zh .home-hero {
+    min-height: 0;
+    padding-block: 1.6rem 1.2rem;
   }
 
   .home-hero h1 {
