@@ -6760,6 +6760,18 @@
                 ]
               },
               "reason": {
+                "enum": [
+                  "retention_expired",
+                  "cursor_ahead",
+                  "replay_limit_exceeded",
+                  "schema_version_mismatch",
+                  "query_version_mismatch",
+                  "event_log_epoch_mismatch",
+                  "cursor_rejected",
+                  "agent_not_found",
+                  "stream_recovery_failed",
+                  "slow_consumer"
+                ],
                 "type": "string"
               },
               "type": {

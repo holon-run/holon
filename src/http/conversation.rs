@@ -142,11 +142,26 @@ pub(crate) enum ConversationStreamMessage {
         checkpoint: String,
     },
     ResetRequired {
-        reason: String,
+        reason: ConversationStreamResetReason,
         oldest_retained_seq: Option<u64>,
         event_head_seq: Option<u64>,
         hint: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ConversationStreamResetReason {
+    RetentionExpired,
+    CursorAhead,
+    ReplayLimitExceeded,
+    SchemaVersionMismatch,
+    QueryVersionMismatch,
+    EventLogEpochMismatch,
+    CursorRejected,
+    AgentNotFound,
+    StreamRecoveryFailed,
+    SlowConsumer,
 }
 
 impl ConversationStreamMessage {
@@ -290,7 +305,7 @@ pub async fn stream(
                             let _ = send_stream_message(
                                 &tx,
                                 ConversationStreamMessage::ResetRequired {
-                                    reason: "agent_not_found".to_string(),
+                                    reason: ConversationStreamResetReason::AgentNotFound,
                                     oldest_retained_seq: None,
                                     event_head_seq: None,
                                     hint: "bootstrap a fresh conversation snapshot".to_string(),
@@ -314,7 +329,7 @@ pub async fn stream(
                             let _ = send_stream_message(
                                 &tx,
                                 ConversationStreamMessage::ResetRequired {
-                                    reason: "stream_recovery_failed".to_string(),
+                                    reason: ConversationStreamResetReason::StreamRecoveryFailed,
                                     oldest_retained_seq: None,
                                     event_head_seq: None,
                                     hint: "bootstrap a fresh conversation snapshot".to_string(),
@@ -332,7 +347,7 @@ pub async fn stream(
                     let _ = send_stream_message(
                         &tx,
                         ConversationStreamMessage::ResetRequired {
-                            reason: "slow_consumer".to_string(),
+                            reason: ConversationStreamResetReason::SlowConsumer,
                             oldest_retained_seq: None,
                             event_head_seq: None,
                             hint: "bootstrap a fresh conversation snapshot".to_string(),
@@ -481,11 +496,15 @@ async fn send_stream_message_with_timeout(
     )
 }
 
-fn reset_reason_name(reason: ConversationResetReason) -> &'static str {
+fn stream_reset_reason(reason: ConversationResetReason) -> ConversationStreamResetReason {
     match reason {
-        ConversationResetReason::RetentionExpired => "retention_expired",
-        ConversationResetReason::CursorAhead => "cursor_ahead",
-        ConversationResetReason::ReplayLimitExceeded => "replay_limit_exceeded",
+        ConversationResetReason::RetentionExpired => {
+            ConversationStreamResetReason::RetentionExpired
+        }
+        ConversationResetReason::CursorAhead => ConversationStreamResetReason::CursorAhead,
+        ConversationResetReason::ReplayLimitExceeded => {
+            ConversationStreamResetReason::ReplayLimitExceeded
+        }
     }
 }
 
@@ -498,7 +517,7 @@ fn reset_message_for_error(error: &anyhow::Error) -> ConversationStreamMessage {
     }) = error.downcast_ref::<ConversationReadError>()
     {
         return ConversationStreamMessage::ResetRequired {
-            reason: reset_reason_name(*reason).to_string(),
+            reason: stream_reset_reason(*reason),
             oldest_retained_seq: Some(*oldest_retained_seq),
             event_head_seq: Some(*event_head_seq),
             hint: "bootstrap a fresh conversation snapshot".to_string(),
@@ -509,25 +528,25 @@ fn reset_message_for_error(error: &anyhow::Error) -> ConversationStreamMessage {
     {
         let reason = match cursor_error {
             crate::domain::conversation::CursorDecodeError::SchemaVersionMismatch { .. } => {
-                "schema_version_mismatch"
+                ConversationStreamResetReason::SchemaVersionMismatch
             }
             crate::domain::conversation::CursorDecodeError::QueryVersionMismatch { .. } => {
-                "query_version_mismatch"
+                ConversationStreamResetReason::QueryVersionMismatch
             }
             crate::domain::conversation::CursorDecodeError::EventLogEpochMismatch => {
-                "event_log_epoch_mismatch"
+                ConversationStreamResetReason::EventLogEpochMismatch
             }
-            _ => "cursor_rejected",
+            _ => ConversationStreamResetReason::CursorRejected,
         };
         return ConversationStreamMessage::ResetRequired {
-            reason: reason.to_string(),
+            reason,
             oldest_retained_seq: None,
             event_head_seq: None,
             hint: "bootstrap a fresh conversation snapshot".to_string(),
         };
     }
     ConversationStreamMessage::ResetRequired {
-        reason: "stream_recovery_failed".to_string(),
+        reason: ConversationStreamResetReason::StreamRecoveryFailed,
         oldest_retained_seq: None,
         event_head_seq: None,
         hint: "bootstrap a fresh conversation snapshot".to_string(),
@@ -824,7 +843,11 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
             HttpErrorEnvelope::new(error.to_string())
                 .code("conversation_reset_required")
                 .hint("restart from a fresh conversation snapshot")
-                .extension("reason", reset_reason_name(*reason))
+                .extension(
+                    "reason",
+                    serde_json::to_value(stream_reset_reason(*reason))
+                        .expect("conversation reset reason must serialize"),
+                )
                 .extension("requested_seq", *requested_seq)
                 .extension("oldest_retained_seq", *oldest_retained_seq)
                 .extension("event_head_seq", *event_head_seq),

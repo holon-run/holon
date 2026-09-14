@@ -4143,7 +4143,8 @@ export interface components {
             hint: string;
             /** Format: uint64 */
             oldest_retained_seq?: number | null;
-            reason: string;
+            /** @enum {string} */
+            reason: "retention_expired" | "cursor_ahead" | "replay_limit_exceeded" | "schema_version_mismatch" | "query_version_mismatch" | "event_log_epoch_mismatch" | "cursor_rejected" | "agent_not_found" | "stream_recovery_failed" | "slow_consumer";
             /** @constant */
             type: "reset_required";
         };
