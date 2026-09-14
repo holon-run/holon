@@ -328,7 +328,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release advances runtime observability, lifecycle recovery, memory durability, provider compatibility, and Web GUI resilience while improving Linux runtime performance and release validation.
+          This release introduces the conversation read model stack with its protocol SDK, change stream, and snapshot HTTP API, advances runtime observability, lifecycle recovery, memory durability, provider compatibility, and Web GUI resilience, and improves Linux runtime performance, bilingual documentation, and release validation.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
@@ -342,6 +342,13 @@ jobs:
           - Improve runtime performance with jemalloc on Linux, capped Tokio workers, and read-side attribution ([#2889](https://github.com/holon-run/holon/pull/2889), [#2935](https://github.com/holon-run/holon/pull/2935)).
           - Normalize agent template names and update the bilingual website and demonstration materials ([#2932](https://github.com/holon-run/holon/pull/2932), [#2946](https://github.com/holon-run/holon/pull/2946)).
           - Tighten CI and release validation by regenerating web transport types, skipping unnecessary Rust jobs, adding timing baselines, and protecting runtime database WAL sidecars ([#2929](https://github.com/holon-run/holon/pull/2929), [#2934](https://github.com/holon-run/holon/pull/2934), [#2955](https://github.com/holon-run/holon/pull/2955), [#2957](https://github.com/holon-run/holon/pull/2957), [#2958](https://github.com/holon-run/holon/pull/2958)).
+          - Add the conversation read model phase 1 with the protocol SDK, change stream, snapshot HTTP read API, and the frozen v1 contract ([#2961](https://github.com/holon-run/holon/pull/2961), [#2965](https://github.com/holon-run/holon/pull/2965), [#2966](https://github.com/holon-run/holon/pull/2966), [#2971](https://github.com/holon-run/holon/pull/2971), [#2976](https://github.com/holon-run/holon/pull/2976)).
+          - Harden task result delivery by preserving concurrent task results, avoiding duplicate detached completion tool results, and covering pending task result recovery ([#2979](https://github.com/holon-run/holon/pull/2979), [#2980](https://github.com/holon-run/holon/pull/2980), [#2981](https://github.com/holon-run/holon/pull/2981)).
+          - Make the memory index more robust under concurrency with per-database writer coordination, bounded index transaction retries, and FTS scan avoidance during rebuilds ([#2962](https://github.com/holon-run/holon/pull/2962), [#2968](https://github.com/holon-run/holon/pull/2968), [#2974](https://github.com/holon-run/holon/pull/2974)).
+          - Improve provider compatibility by preserving Gemini thought signatures across tool turns and avoiding cross-transport local client retries ([#2960](https://github.com/holon-run/holon/pull/2960), [#2975](https://github.com/holon-run/holon/pull/2975)).
+          - Add the video-producer agent template with a local media production skill ([#2973](https://github.com/holon-run/holon/pull/2973)).
+          - Ship bilingual documentation by translating the website to zh-CN, deduplicating bilingual navigation, and upgrading the docs site with locale detection ([#2959](https://github.com/holon-run/holon/pull/2959), [#2972](https://github.com/holon-run/holon/pull/2972), [#2963](https://github.com/holon-run/holon/pull/2963)).
+          - Streamline CI with isolated Rust build target caching and reduced duplicate test work, and refresh the models.dev snapshot, artifact, and supplements ([#2970](https://github.com/holon-run/holon/pull/2970), [#2978](https://github.com/holon-run/holon/pull/2978), [#2982](https://github.com/holon-run/holon/pull/2982)).
 
           ## Install
 
