@@ -58,14 +58,59 @@ class ProductionTests(unittest.TestCase):
 
     def test_frame_quantized_timeline(self):
         del self.data['audio'], self.data['subtitles']
-        self.data['clips'] = [{'path': 'still.png', 'kind': 'image', 'duration': duration}
-                              for duration in (.01, .42, .42)]
-        self.write()
-        video = p.produce(self.manifest, self.root / 'quantized', 'preview')
-        report = json.loads((video.parent / 'report.json').read_text())
-        self.assertEqual(report['timeline']['clip_durations'], [.04, .44, .44])
-        self.assertAlmostEqual(report['timeline']['duration'], .92)
-        self.assertAlmostEqual(float(p.probe(video)['format']['duration']), .92, places=2)
+        for kind, name in [('image', 'still.png'), ('video', 'clip.mp4')]:
+            with self.subTest(kind=kind):
+                self.data['clips'] = [{'path': name, 'kind': kind, 'duration': duration}
+                                      for duration in (.01, .42, .42)]
+                self.write()
+                video = p.produce(self.manifest, self.root / f'quantized-{kind}', 'preview')
+                report = json.loads((video.parent / 'report.json').read_text())
+                self.assertEqual(report['timeline']['clip_durations'], [.04, .44, .44])
+                self.assertAlmostEqual(report['timeline']['duration'], .92)
+                info = p.probe(video, count_frames=True)
+                visual = info['streams'][0]
+                self.assertEqual(int(visual['nb_read_frames']), 23)
+                self.assertAlmostEqual(float(visual['duration']), .92, places=6)
+                self.assertAlmostEqual(float(info['format']['duration']), .92, places=2)
+
+    def test_qc_rejects_missing_frame(self):
+        probe = p.probe
+
+        def missing_frame(path, count_frames=False):
+            info = probe(path, count_frames=count_frames)
+            if count_frames:
+                visual = next(s for s in info['streams'] if s['codec_type'] == 'video')
+                visual['nb_read_frames'] = str(int(visual['nb_read_frames']) - 1)
+            return info
+
+        out = self.root / 'bad-qc'
+        with patch.object(p, 'probe', side_effect=missing_frame):
+            with self.assertRaisesRegex(p.ProductionError, 'frame count'):
+                p.produce(self.manifest, out, 'preview')
+        self.assertFalse(out.exists())
+
+    def test_failed_delivery_can_be_retried(self):
+        write_text = Path.write_text
+
+        def fail_report(path, *args, **kwargs):
+            if path.name == 'report.json':
+                raise OSError('simulated report write failure')
+            return write_text(path, *args, **kwargs)
+
+        out = self.root / 'retry'
+        with patch.object(Path, 'write_text', new=fail_report):
+            with self.assertRaisesRegex(OSError, 'report write failure'):
+                p.produce(self.manifest, out, 'preview')
+        self.assertFalse(out.exists())
+        self.assertFalse(list(self.root.glob('.video-production-*')))
+        with patch.object(Path, 'replace', side_effect=OSError('simulated rename failure')):
+            with self.assertRaisesRegex(OSError, 'rename failure'):
+                p.produce(self.manifest, out, 'preview')
+        self.assertFalse(out.exists())
+        self.assertFalse(list(self.root.glob('.video-production-*')))
+        p.produce(self.manifest, out, 'preview')
+        self.assertTrue((out / 'preview.mp4').is_file())
+        self.assertTrue((out / 'report.json').is_file())
 
     def test_reject_bad_inputs(self):
         baseline = json.loads(json.dumps(self.data))

@@ -28,9 +28,10 @@ def dependencies():
         raise ProductionError('Missing required dependencies: ' + ', '.join(missing))
 
 
-def probe(path):
+def probe(path, count_frames=False):
     return json.loads(run(['ffprobe', '-v', 'error', '-protocol_whitelist', 'file',
-                           '-show_format', '-show_streams', '-of', 'json', str(path)]))
+                           '-show_format', '-show_streams', '-of', 'json']
+                          + (['-count_frames'] if count_frames else []) + [str(path)]))
 
 
 def keys(value, required, optional=()):
@@ -127,9 +128,11 @@ def produce(manifest, output, mode):
             args = ['ffmpeg', '-v', 'error', '-nostdin', '-n', '-protocol_whitelist', 'file']
             if kind == 'image':
                 args += ['-loop', '1']
-            args += ['-i', str(path), '-t', str(duration), '-map', '0:v:0', '-an',
+            args += ['-i', str(path), '-frames:v', str(round(duration * 25)), '-map', '0:v:0', '-an',
                      '-vf', f'scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=25',
-                     '-c:v', 'libx264', '-preset', 'fast', '-pix_fmt', 'yuv420p', str(work / f'{i}.mp4')]
+                     # No frame reordering: even one-frame segments share PTS=DTS
+                     # and concatenate without overlapping decode timestamps.
+                     '-c:v', 'libx264', '-bf', '0', '-preset', 'fast', '-pix_fmt', 'yuv420p', str(work / f'{i}.mp4')]
             run(args)
         (work / 'clips.txt').write_text(''.join(f"file '{i}.mp4'\n" for i in range(len(clips))))
         args = ['ffmpeg', '-v', 'error', '-nostdin', '-n', '-f', 'concat', '-safe', '1',
@@ -145,12 +148,15 @@ def produce(manifest, output, mode):
         video = work / f'{mode}.mp4'
         args += ['-t', str(total), '-movflags', '+faststart', str(video)]
         run(args)
-        info = probe(video)
+        info = probe(video, count_frames=True)
         streams = info['streams']
         actual = float(info['format']['duration'])
-        if abs(actual - total) > .12:
+        if abs(actual - total) > .04:
             raise ProductionError(f'QC duration mismatch: {actual} vs {total}')
         visual = next(s for s in streams if s['codec_type'] == 'video')
+        expected_frames = sum(round(c[2] * 25) for c in clips)
+        if int(visual.get('nb_read_frames', 0)) != expected_frames or abs(float(visual.get('duration', 0)) - total) > .000001:
+            raise ProductionError('QC video frame count/duration mismatch')
         if (visual['width'], visual['height'], visual['pix_fmt']) != (width, height, 'yuv420p'):
             raise ProductionError('QC video format mismatch')
         if bool(audio) != any(s['codec_type'] == 'audio' for s in streams) or bool(subtitles) != any(s['codec_type'] == 'subtitle' for s in streams):
@@ -161,10 +167,18 @@ def produce(manifest, output, mode):
                   'output_sha256': digest(video), 'probe': info, 'full_decode': 'passed',
                   'tools': {n: run([n, '-version']).splitlines()[0] for n in ('ffmpeg', 'ffprobe')},
                   'limitations': ['Visual/editorial QC requires human review', 'Clip audio discarded; optional audio replaces it', 'Subtitles are selectable, not burned in']}
-        # Exclusive directory creation prevents accidentally replacing an existing delivery.
+        delivery = work / 'delivery'
+        delivery.mkdir()
+        shutil.copyfile(video, delivery / video.name)
+        (delivery / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+        # Reserve exclusively, then atomically replace our empty reservation.
+        # A failed staging write never creates a final delivery directory.
         output.mkdir()
-        shutil.copyfile(video, output / video.name)
-        (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
+        try:
+            delivery.replace(output)
+        except OSError:
+            output.rmdir()
+            raise
     return output / f'{mode}.mp4'
 
 

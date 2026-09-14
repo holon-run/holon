@@ -74,7 +74,8 @@ licenses and generation details to the production checklist when known.
 
 Inspect the preview visually and audibly: framing, pacing, text legibility,
 caption timing, pronunciation, transitions, silence and clipping. Technical QC
-checks streams, dimensions/pixel format, duration and complete decoding; it does
+checks streams, dimensions/pixel format, exact video frame count and duration,
+and complete decoding; it does
 not prove editorial quality, loudness compliance, accessibility or rights.
 Resolve issues before final rendering and inspect the final too. Deliver source
 manifest/checklist, preview/final and QC report, noting limitations and any
