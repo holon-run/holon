@@ -893,6 +893,7 @@ impl MemoryIndex {
     fn schema_is_ready(&self) -> Result<bool> {
         Ok(self.table_exists("memory_documents")?
             && self.table_exists("memory_documents_fts")?
+            && self.table_exists("memory_documents_fts_rows")?
             && self.table_exists("memory_index_pending_sources")?
             && self.table_exists("memory_index_source_state")?
             && self.table_has_column("memory_index_source_state", "projection_version")?
@@ -948,6 +949,7 @@ impl MemoryIndex {
         {
             self.connection.execute_batch(
                 r#"
+                DROP TABLE IF EXISTS memory_documents_fts_rows;
                 DROP TABLE IF EXISTS memory_documents_fts;
                 DROP TABLE IF EXISTS memory_documents;
                 "#,
@@ -1041,6 +1043,20 @@ impl MemoryIndex {
                 ON memory_index_rebuild_seen(agent_id, generation);
             "#,
         )?;
+        if !self.table_exists("memory_documents_fts_rows")? {
+            self.connection.execute_batch(
+                r#"
+                BEGIN IMMEDIATE;
+                CREATE TABLE memory_documents_fts_rows (
+                    document_key TEXT PRIMARY KEY,
+                    fts_rowid INTEGER NOT NULL UNIQUE
+                );
+                INSERT INTO memory_documents_fts_rows (document_key, fts_rowid)
+                    SELECT document_key, rowid FROM memory_documents_fts;
+                COMMIT;
+                "#,
+            )?;
+        }
         if !self.table_has_column("memory_index_source_state", "projection_version")? {
             self.connection.execute_batch(
                 "ALTER TABLE memory_index_source_state
@@ -1243,7 +1259,7 @@ impl MemoryIndex {
         let _turn = self.write_turn("memory_index.rebuild_scan")?;
         let transaction = self.connection.transaction()?;
         for document in &documents {
-            upsert_document_tx(&transaction, document)?;
+            upsert_document_if_needed_tx(&transaction, document)?;
             upsert_source_state_tx(
                 &transaction,
                 document,
@@ -1471,19 +1487,7 @@ impl MemoryIndex {
     fn delete_document(&self, agent_id: &str, source_ref: &str) -> Result<()> {
         let _turn = self.write_turn("memory_index.delete_document")?;
         let document_key = document_key_for(agent_id, source_ref);
-        self.connection.execute(
-            "DELETE FROM memory_documents_fts WHERE document_key = ?1",
-            [document_key.as_str()],
-        )?;
-        self.connection.execute(
-            "DELETE FROM memory_documents WHERE document_key = ?1",
-            [document_key.as_str()],
-        )?;
-        self.connection.execute(
-            "DELETE FROM memory_index_source_state WHERE document_key = ?1",
-            [document_key.as_str()],
-        )?;
-        Ok(())
+        delete_document_tx(&self.connection, &document_key)
     }
 
     fn enqueue_source(
@@ -2275,8 +2279,16 @@ fn upsert_cursor_tx(
 fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Result<()> {
     let metadata_json = serde_json::to_string(&document.metadata)?;
     let hash = projection_hash(document)?;
-    let search_text = indexed_text(&bounded_search_text(&document.body));
     let document_key = document_key(document);
+    let document_exists = connection
+        .query_row(
+            "SELECT 1 FROM memory_documents WHERE document_key = ?1",
+            [&document_key],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    let search_text = indexed_text(&bounded_search_text(&document.body));
     let source_path = document
         .source_path
         .as_ref()
@@ -2317,10 +2329,9 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
             document.updated_at.to_rfc3339(),
         ],
     )?;
-    connection.execute(
-        "DELETE FROM memory_documents_fts WHERE document_key = ?1",
-        [document_key.as_str()],
-    )?;
+    if document_exists {
+        delete_fts_document_tx(connection, &document_key)?;
+    }
     connection.execute(
         "INSERT INTO memory_documents_fts(document_key, title, body, sanitized_excerpt) VALUES (?1, ?2, ?3, ?4)",
         params![
@@ -2330,6 +2341,43 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
             indexed_text(&document.sanitized_excerpt)
         ],
     )?;
+    connection.execute(
+        "INSERT INTO memory_documents_fts_rows (document_key, fts_rowid)
+         VALUES (?1, ?2)
+         ON CONFLICT(document_key) DO UPDATE SET fts_rowid=excluded.fts_rowid",
+        params![document_key, connection.last_insert_rowid()],
+    )?;
+    Ok(())
+}
+
+fn upsert_document_if_needed_tx(connection: &Connection, document: &MemoryDocument) -> Result<()> {
+    let hash = projection_hash(document)?;
+    let document_key = document_key(document);
+    let existing_state = connection
+        .query_row(
+            "SELECT content_hash, index_schema_version, projection_version
+             FROM memory_index_source_state
+             WHERE document_key = ?1",
+            [&document_key],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let needs_projection_refresh = existing_state.as_ref().is_none_or(
+        |(existing_hash, schema_version, projection_version)| {
+            existing_hash != &hash
+                || *schema_version != MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION
+                || *projection_version != MEMORY_INDEX_DOCUMENT_PROJECTION_VERSION
+        },
+    );
+    if needs_projection_refresh {
+        upsert_document_tx(connection, document)?;
+    }
     Ok(())
 }
 
@@ -2404,10 +2452,7 @@ fn upsert_index_meta_tx(
 }
 
 fn delete_document_tx(connection: &Connection, document_key: &str) -> Result<()> {
-    connection.execute(
-        "DELETE FROM memory_documents_fts WHERE document_key = ?1",
-        [document_key],
-    )?;
+    delete_fts_document_tx(connection, document_key)?;
     connection.execute(
         "DELETE FROM memory_documents WHERE document_key = ?1",
         [document_key],
@@ -2416,6 +2461,27 @@ fn delete_document_tx(connection: &Connection, document_key: &str) -> Result<()>
         "DELETE FROM memory_index_source_state WHERE document_key = ?1",
         [document_key],
     )?;
+    Ok(())
+}
+
+fn delete_fts_document_tx(connection: &Connection, document_key: &str) -> Result<()> {
+    let fts_rowid = connection
+        .query_row(
+            "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [document_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    if let Some(fts_rowid) = fts_rowid {
+        connection.execute(
+            "DELETE FROM memory_documents_fts WHERE rowid = ?1",
+            [fts_rowid],
+        )?;
+        connection.execute(
+            "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [document_key],
+        )?;
+    }
     Ok(())
 }
 
@@ -4083,6 +4149,161 @@ mod tests {
         assert!(error
             .to_string()
             .contains("cannot write through read-only memory index connection"));
+        Ok(())
+    }
+
+    #[test]
+    fn unchanged_document_upsert_preserves_fts_row() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        let document = MemoryDocument {
+            source_ref: "message:stable".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "default".into(),
+            source_path: None,
+            title: "stable title".into(),
+            body: "stable body".into(),
+            sanitized_excerpt: "stable excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now(),
+        };
+        index.upsert_document(&document)?;
+        index.upsert_document(&MemoryDocument {
+            source_ref: "message:sentinel".into(),
+            ..document.clone()
+        })?;
+
+        let document_key = document_key(&document);
+        let rowid_before: i64 = index.connection.query_row(
+            "SELECT rowid FROM memory_documents_fts WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+        upsert_document_if_needed_tx(&index.connection, &document)?;
+        let rowid_after: i64 = index.connection.query_row(
+            "SELECT rowid FROM memory_documents_fts WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(rowid_after, rowid_before);
+        Ok(())
+    }
+
+    #[test]
+    fn changed_document_upsert_replaces_mapped_fts_row() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        let document = MemoryDocument {
+            source_ref: "message:changed".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "default".into(),
+            source_path: None,
+            title: "old title".into(),
+            body: "old body".into(),
+            sanitized_excerpt: "old excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now(),
+        };
+        index.upsert_document(&document)?;
+        index.upsert_document(&MemoryDocument {
+            source_ref: "message:sentinel".into(),
+            ..document.clone()
+        })?;
+        let document_key = document_key(&document);
+        let old_rowid: i64 = index.connection.query_row(
+            "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+
+        index.upsert_document(&MemoryDocument {
+            title: "new title".into(),
+            body: "new body".into(),
+            sanitized_excerpt: "new excerpt".into(),
+            ..document
+        })?;
+
+        let new_rowid: i64 = index.connection.query_row(
+            "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+        let old_row_count: i64 = index.connection.query_row(
+            "SELECT COUNT(*) FROM memory_documents_fts WHERE rowid = ?1",
+            [old_rowid],
+            |row| row.get(0),
+        )?;
+        let new_title: String = index.connection.query_row(
+            "SELECT title FROM memory_documents_fts WHERE rowid = ?1",
+            [new_rowid],
+            |row| row.get(0),
+        )?;
+
+        assert_ne!(new_rowid, old_rowid);
+        assert_eq!(old_row_count, 0);
+        assert_eq!(new_title.trim_end(), "new title");
+
+        index.delete_document("default", "message:changed")?;
+        let mapped_row_count: i64 = index.connection.query_row(
+            "SELECT COUNT(*) FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+        let current_row_count: i64 = index.connection.query_row(
+            "SELECT COUNT(*) FROM memory_documents_fts WHERE rowid = ?1",
+            [new_rowid],
+            |row| row.get(0),
+        )?;
+        assert_eq!(mapped_row_count, 0);
+        assert_eq!(current_row_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn opening_existing_index_backfills_fts_row_map() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        let document = MemoryDocument {
+            source_ref: "message:legacy".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "default".into(),
+            source_path: None,
+            title: "legacy title".into(),
+            body: "legacy body".into(),
+            sanitized_excerpt: "legacy excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now(),
+        };
+        index.upsert_document(&document)?;
+        index
+            .connection
+            .execute("DROP TABLE memory_documents_fts_rows", [])?;
+        drop(index);
+
+        let reopened = MemoryIndex::open(&storage)?;
+        let document_key = document_key(&document);
+        let mapped_rowid: i64 = reopened.connection.query_row(
+            "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+        let fts_rowid: i64 = reopened.connection.query_row(
+            "SELECT rowid FROM memory_documents_fts WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+
+        assert_eq!(mapped_rowid, fts_rowid);
         Ok(())
     }
 
