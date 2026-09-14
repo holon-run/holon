@@ -1,14 +1,16 @@
 //! Durable revision and linkage metadata for the conversation read model.
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 
 use crate::domain::conversation::{
     map_result, presentation_class, ActivityItem, ActivityKey, Attention, ConversationActivity,
-    ConversationActivityPage, ConversationSummaryPage, ConversationTurnSummary, DetailCoverage,
-    DetailCoverageReason, ExecutionState, PendingInput, PendingInputState, PresentationClass,
-    TerminalOutcome, TurnKey,
+    ConversationActivityPage, ConversationSummaryPage, ConversationTurnSummary, CursorBinding,
+    CursorCodec, CursorDecodeError, DetailCoverage, DetailCoverageReason, DetailCursor,
+    ExecutionState, HistoryCursor, PendingInput, PendingInputState, PresentationClass,
+    StreamCursor, TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION,
+    CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::types::ConversationRepository;
 use crate::types::{TurnRecord, TurnTerminalKind};
@@ -18,6 +20,41 @@ pub(crate) const SOURCE_ASSISTANT: &str = "assistant";
 pub(crate) const SOURCE_TOOL: &str = "tool";
 pub(crate) const SOURCE_WAIT: &str = "wait";
 pub(crate) const SOURCE_ERROR: &str = "error";
+
+pub const MAX_HISTORY_PAGE_LIMIT: usize = 100;
+pub const MAX_ACTIVITIES_PAGE_LIMIT: usize = 200;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationSnapshot<T> {
+    pub runtime_id: String,
+    pub event_log_epoch: String,
+    pub visibility_scope_id: String,
+    pub event_head_seq: u64,
+    pub oldest_retained_seq: u64,
+    pub snapshot_cursor: String,
+    pub next_before_cursor: Option<String>,
+    pub value: T,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConversationReadError {
+    #[error("{resource} limit must be between {minimum} and {maximum}, got {actual}")]
+    InvalidLimit {
+        resource: &'static str,
+        minimum: usize,
+        maximum: usize,
+        actual: usize,
+    },
+    #[error("{resource} exceeds the bounded count limit {limit}")]
+    CountLimitExceeded {
+        resource: &'static str,
+        limit: usize,
+    },
+    #[error("conversation cursor ordering is outside its fixed membership boundary")]
+    CursorOutsideCoverage,
+    #[error("conversation cursor rejected: {0}")]
+    Cursor(#[from] CursorDecodeError),
+}
 
 pub(crate) const CONVERSATION_HISTORY_FIRST_SQL: &str = "
 SELECT turns.payload_json,
@@ -128,10 +165,8 @@ WHERE sources.agent_id = ?1
 ORDER BY sources.activity_seq DESC, (sources.source_kind || ':' || sources.source_id) DESC
 LIMIT ?6";
 
-const MAX_HISTORY_PAGE_LIMIT: usize = 100;
 const MAX_ACTIVE_TURNS: usize = 32;
 const MAX_PENDING_INPUTS: usize = 100;
-const MAX_ACTIVITIES_PAGE_LIMIT: usize = 200;
 const MAX_BRIEFS_PER_TURN: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -371,46 +406,99 @@ impl ConversationRepository<'_> {
         before: Option<&TurnKey>,
         membership_upper_bound: Option<&TurnKey>,
     ) -> Result<ConversationSummaryPage> {
-        anyhow::ensure!(
-            (1..=MAX_HISTORY_PAGE_LIMIT).contains(&limit),
-            "conversation history limit must be between 1 and {MAX_HISTORY_PAGE_LIMIT}"
-        );
+        validate_limit("conversation history", limit, MAX_HISTORY_PAGE_LIMIT)?;
         let mut connection = self.db.connection()?;
-        let transaction = connection.transaction()?;
-        let membership_upper_bound = membership_upper_bound
-            .cloned()
-            .or(latest_turn_key(&transaction, agent_id)?);
-        if let (Some(before), Some(upper_bound)) = (before, membership_upper_bound.as_ref()) {
-            anyhow::ensure!(
-                before <= upper_bound,
-                "conversation history cursor is newer than its membership upper bound"
-            );
-        }
-        let mut turns = match membership_upper_bound.as_ref() {
-            Some(upper_bound) => {
-                history_page_rows(&transaction, agent_id, limit, before, upper_bound)?
-            }
-            None => Vec::new(),
-        };
-        let has_more = turns.len() > limit;
-        if has_more {
-            turns.pop();
-        }
-        let next_before = has_more
-            .then(|| turns.last().map(|turn| turn.key.clone()))
-            .flatten();
-        turns.reverse();
-        let active_turns = active_turn_rows(&transaction, agent_id)?;
-        let pending_inputs = pending_input_rows(&transaction, agent_id)?;
-        transaction.commit()?;
-        Ok(ConversationSummaryPage {
-            turns,
-            active_turns,
-            pending_inputs,
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let page = summary_page_in(
+            &transaction,
+            agent_id,
+            limit,
+            before,
             membership_upper_bound,
-            next_before,
-            has_more,
-        })
+        )?;
+        transaction.commit()?;
+        Ok(page)
+    }
+
+    pub fn summary_snapshot(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before_cursor: Option<&str>,
+        scope_principal: &str,
+        scope_entitlement: &str,
+    ) -> Result<Option<ConversationSnapshot<ConversationSummaryPage>>> {
+        self.summary_snapshot_after_context(
+            agent_id,
+            limit,
+            before_cursor,
+            scope_principal,
+            scope_entitlement,
+            || {},
+        )
+    }
+
+    fn summary_snapshot_after_context(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before_cursor: Option<&str>,
+        scope_principal: &str,
+        scope_entitlement: &str,
+        after_context: impl FnOnce(),
+    ) -> Result<Option<ConversationSnapshot<ConversationSummaryPage>>> {
+        validate_limit("conversation history", limit, MAX_HISTORY_PAGE_LIMIT)?;
+        let mut connection = self.db.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let Some(context) = conversation_snapshot_context(
+            &transaction,
+            agent_id,
+            scope_principal,
+            scope_entitlement,
+        )?
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        after_context();
+        let binding = context.binding(agent_id);
+        let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
+        let cursor = before_cursor
+            .map(|encoded| codec.decode::<HistoryCursor>(encoded, &binding))
+            .transpose()
+            .map_err(ConversationReadError::from)?;
+        let page = summary_page_in(
+            &transaction,
+            agent_id,
+            limit,
+            cursor.as_ref().map(|cursor| &cursor.before),
+            cursor.as_ref().map(|cursor| &cursor.membership_upper_bound),
+        )?;
+        let next_before_cursor = page.next_before.as_ref().map(|before| {
+            codec.encode(&HistoryCursor {
+                binding: binding.clone(),
+                before: before.clone(),
+                membership_upper_bound: page
+                    .membership_upper_bound
+                    .clone()
+                    .expect("a next history cursor requires a membership upper bound"),
+            })
+        });
+        let snapshot_cursor = codec.encode(&StreamCursor {
+            binding,
+            event_seq: context.event_head_seq,
+        });
+        transaction.commit()?;
+        Ok(Some(ConversationSnapshot {
+            runtime_id: context.runtime_id,
+            event_log_epoch: context.event_log_epoch,
+            visibility_scope_id: context.visibility_scope_id,
+            event_head_seq: context.event_head_seq,
+            oldest_retained_seq: context.oldest_retained_seq,
+            snapshot_cursor,
+            next_before_cursor,
+            value: page,
+        }))
     }
 
     pub fn activities(
@@ -421,62 +509,282 @@ impl ConversationRepository<'_> {
         before: Option<&ActivityKey>,
         membership_upper_bound: Option<&ActivityKey>,
     ) -> Result<Option<ConversationActivityPage>> {
-        anyhow::ensure!(
-            (1..=MAX_ACTIVITIES_PAGE_LIMIT).contains(&limit),
-            "conversation activity limit must be between 1 and {MAX_ACTIVITIES_PAGE_LIMIT}"
-        );
+        validate_limit("conversation activity", limit, MAX_ACTIVITIES_PAGE_LIMIT)?;
         let mut connection = self.db.connection()?;
-        let transaction = connection.transaction()?;
-        let Some((turn, detail_revision)) = turn_summary_by_id(&transaction, agent_id, turn_id)?
-        else {
-            return Ok(None);
-        };
-        let membership_upper_bound = membership_upper_bound.cloned().or(latest_activity_key(
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let page = activities_in(
             &transaction,
             agent_id,
             turn_id,
-        )?);
-        if let (Some(before), Some(upper_bound)) = (before, membership_upper_bound.as_ref()) {
-            anyhow::ensure!(
-                before <= upper_bound,
-                "conversation detail cursor is newer than its membership upper bound"
-            );
-        }
-        let mut raw_rows = match membership_upper_bound.as_ref() {
-            Some(upper_bound) => {
-                activity_page_rows(&transaction, agent_id, turn_id, limit, before, upper_bound)?
-            }
-            None => Vec::new(),
-        };
-        let has_more = raw_rows.len() > limit;
-        if has_more {
-            raw_rows.pop();
-        }
-        let next_before = has_more
-            .then(|| raw_rows.last().map(ActivityRow::key))
-            .flatten();
-        let mut coverage = turn.detail_coverage.clone();
-        let mut activities = Vec::with_capacity(raw_rows.len());
-        for row in raw_rows.into_iter().rev() {
-            if let Some(activity) = row.into_activity() {
-                activities.push(activity);
-            } else {
-                coverage = DetailCoverage::Partial {
-                    reason: DetailCoverageReason::RetentionGap,
-                };
-            }
-        }
-        transaction.commit()?;
-        Ok(Some(ConversationActivityPage {
-            turn,
-            detail_revision,
-            activities,
-            coverage,
+            limit,
+            before,
             membership_upper_bound,
-            next_before,
-            has_more,
+        )?;
+        transaction.commit()?;
+        Ok(page)
+    }
+
+    pub fn activity_snapshot(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        limit: usize,
+        before_cursor: Option<&str>,
+        scope_principal: &str,
+        scope_entitlement: &str,
+    ) -> Result<Option<ConversationSnapshot<Option<ConversationActivityPage>>>> {
+        validate_limit("conversation activity", limit, MAX_ACTIVITIES_PAGE_LIMIT)?;
+        let mut connection = self.db.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let Some(context) = conversation_snapshot_context(
+            &transaction,
+            agent_id,
+            scope_principal,
+            scope_entitlement,
+        )?
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let binding = context.binding(agent_id);
+        let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
+        let cursor = before_cursor
+            .map(|encoded| codec.decode::<DetailCursor>(encoded, &binding))
+            .transpose()
+            .map_err(ConversationReadError::from)?;
+        if cursor
+            .as_ref()
+            .is_some_and(|cursor| cursor.turn_id != turn_id)
+        {
+            return Err(ConversationReadError::Cursor(CursorDecodeError::BindingMismatch).into());
+        }
+        let page = activities_in(
+            &transaction,
+            agent_id,
+            turn_id,
+            limit,
+            cursor.as_ref().map(|cursor| &cursor.before),
+            cursor.as_ref().map(|cursor| &cursor.membership_upper_bound),
+        )?;
+        let next_before_cursor = page.as_ref().and_then(|page| {
+            page.next_before.as_ref().map(|before| {
+                codec.encode(&DetailCursor {
+                    binding: binding.clone(),
+                    turn_id: turn_id.to_string(),
+                    before: before.clone(),
+                    membership_upper_bound: page
+                        .membership_upper_bound
+                        .clone()
+                        .expect("a next detail cursor requires a membership upper bound"),
+                })
+            })
+        });
+        let snapshot_cursor = codec.encode(&StreamCursor {
+            binding,
+            event_seq: context.event_head_seq,
+        });
+        transaction.commit()?;
+        Ok(Some(ConversationSnapshot {
+            runtime_id: context.runtime_id,
+            event_log_epoch: context.event_log_epoch,
+            visibility_scope_id: context.visibility_scope_id,
+            event_head_seq: context.event_head_seq,
+            oldest_retained_seq: context.oldest_retained_seq,
+            snapshot_cursor,
+            next_before_cursor,
+            value: page,
         }))
     }
+}
+
+struct ConversationSnapshotContext {
+    runtime_id: String,
+    event_log_epoch: String,
+    visibility_scope_id: String,
+    event_head_seq: u64,
+    oldest_retained_seq: u64,
+    cursor_signing_key: String,
+}
+
+impl ConversationSnapshotContext {
+    fn binding(&self, agent_id: &str) -> CursorBinding {
+        CursorBinding {
+            runtime_id: self.runtime_id.clone(),
+            agent_id: agent_id.to_string(),
+            event_log_epoch: self.event_log_epoch.clone(),
+            visibility_scope_id: self.visibility_scope_id.clone(),
+            schema_version: CONVERSATION_SCHEMA_VERSION,
+            query_version: CONVERSATION_QUERY_VERSION,
+        }
+    }
+}
+
+fn validate_limit(resource: &'static str, actual: usize, maximum: usize) -> Result<()> {
+    if (1..=maximum).contains(&actual) {
+        return Ok(());
+    }
+    Err(ConversationReadError::InvalidLimit {
+        resource,
+        minimum: 1,
+        maximum,
+        actual,
+    }
+    .into())
+}
+
+fn conversation_snapshot_context(
+    connection: &Connection,
+    agent_id: &str,
+    scope_principal: &str,
+    scope_entitlement: &str,
+) -> Result<Option<ConversationSnapshotContext>> {
+    let visible = connection
+        .query_row(
+            "SELECT 1 FROM agent_identities
+             WHERE agent_id = ?1 AND status = 'active' AND visibility = 'public'",
+            [agent_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if !visible {
+        return Ok(None);
+    }
+    let metadata = |key: &str| -> Result<String> {
+        connection
+            .query_row(
+                "SELECT value FROM runtime_metadata WHERE key = ?1",
+                [key],
+                |row| row.get(0),
+            )
+            .with_context(|| format!("runtime metadata {key} is missing"))
+    };
+    let runtime_id = metadata("runtime_id")?;
+    let event_log_epoch = metadata("event_log_epoch")?;
+    let visibility_policy_generation: u64 = metadata("visibility_policy_generation")?
+        .parse()
+        .context("invalid visibility policy generation")?;
+    let cursor_signing_key = metadata("conversation_cursor_signing_key")?;
+    let scope_key = crate::runtime_db::evidence::audit_event_sequence_scope(Some(agent_id));
+    let (oldest_retained_seq, event_head_seq): (i64, i64) = connection.query_row(
+        "SELECT
+           COALESCE((
+             SELECT oldest_retained_seq FROM audit_event_retention_watermarks
+             WHERE scope_key = ?1
+           ), 0),
+           COALESCE((
+             SELECT last_value FROM runtime_sequences
+             WHERE domain = 'audit_event' AND scope_key = ?1
+           ), 0)",
+        [scope_key],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok(Some(ConversationSnapshotContext {
+        visibility_scope_id: crate::ids::visibility_scope_id(
+            &runtime_id,
+            scope_principal,
+            scope_entitlement,
+            visibility_policy_generation,
+        ),
+        runtime_id,
+        event_log_epoch,
+        event_head_seq: u64::try_from(event_head_seq)
+            .context("stored conversation event head is negative")?,
+        oldest_retained_seq: u64::try_from(oldest_retained_seq)
+            .context("stored conversation retention watermark is negative")?,
+        cursor_signing_key,
+    }))
+}
+
+fn summary_page_in(
+    connection: &Connection,
+    agent_id: &str,
+    limit: usize,
+    before: Option<&TurnKey>,
+    membership_upper_bound: Option<&TurnKey>,
+) -> Result<ConversationSummaryPage> {
+    let membership_upper_bound = membership_upper_bound
+        .cloned()
+        .or(latest_turn_key(connection, agent_id)?);
+    if let (Some(before), Some(upper_bound)) = (before, membership_upper_bound.as_ref()) {
+        if before > upper_bound {
+            return Err(ConversationReadError::CursorOutsideCoverage.into());
+        }
+    }
+    let mut turns = match membership_upper_bound.as_ref() {
+        Some(upper_bound) => history_page_rows(connection, agent_id, limit, before, upper_bound)?,
+        None => Vec::new(),
+    };
+    let has_more = turns.len() > limit;
+    if has_more {
+        turns.pop();
+    }
+    let next_before = has_more
+        .then(|| turns.last().map(|turn| turn.key.clone()))
+        .flatten();
+    turns.reverse();
+    Ok(ConversationSummaryPage {
+        turns,
+        active_turns: active_turn_rows(connection, agent_id)?,
+        pending_inputs: pending_input_rows(connection, agent_id)?,
+        membership_upper_bound,
+        next_before,
+        has_more,
+    })
+}
+
+fn activities_in(
+    connection: &Connection,
+    agent_id: &str,
+    turn_id: &str,
+    limit: usize,
+    before: Option<&ActivityKey>,
+    membership_upper_bound: Option<&ActivityKey>,
+) -> Result<Option<ConversationActivityPage>> {
+    let Some((turn, detail_revision)) = turn_summary_by_id(connection, agent_id, turn_id)? else {
+        return Ok(None);
+    };
+    let membership_upper_bound = membership_upper_bound
+        .cloned()
+        .or(latest_activity_key(connection, agent_id, turn_id)?);
+    if let (Some(before), Some(upper_bound)) = (before, membership_upper_bound.as_ref()) {
+        if before > upper_bound {
+            return Err(ConversationReadError::CursorOutsideCoverage.into());
+        }
+    }
+    let mut raw_rows = match membership_upper_bound.as_ref() {
+        Some(upper_bound) => {
+            activity_page_rows(connection, agent_id, turn_id, limit, before, upper_bound)?
+        }
+        None => Vec::new(),
+    };
+    let has_more = raw_rows.len() > limit;
+    if has_more {
+        raw_rows.pop();
+    }
+    let next_before = has_more
+        .then(|| raw_rows.last().map(ActivityRow::key))
+        .flatten();
+    let mut coverage = turn.detail_coverage.clone();
+    let mut activities = Vec::with_capacity(raw_rows.len());
+    for row in raw_rows.into_iter().rev() {
+        if let Some(activity) = row.into_activity() {
+            activities.push(activity);
+        } else {
+            coverage = DetailCoverage::Partial {
+                reason: DetailCoverageReason::RetentionGap,
+            };
+        }
+    }
+    Ok(Some(ConversationActivityPage {
+        turn,
+        detail_revision,
+        activities,
+        coverage,
+        membership_upper_bound,
+        next_before,
+        has_more,
+    }))
 }
 
 #[derive(Debug)]
@@ -605,10 +913,13 @@ fn active_turn_rows(
             decode_turn_row,
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    anyhow::ensure!(
-        rows.len() <= MAX_ACTIVE_TURNS,
-        "agent {agent_id} exceeds the bounded active-turn recovery limit"
-    );
+    if rows.len() > MAX_ACTIVE_TURNS {
+        return Err(ConversationReadError::CountLimitExceeded {
+            resource: "active turns",
+            limit: MAX_ACTIVE_TURNS,
+        }
+        .into());
+    }
     rows.iter_mut()
         .try_for_each(|row| hydrate_turn_summary(connection, row))?;
     Ok(rows.into_iter().map(|row| row.summary).collect())
@@ -651,10 +962,13 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
             },
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    anyhow::ensure!(
-        rows.len() <= MAX_PENDING_INPUTS,
-        "agent {agent_id} exceeds the bounded pending-input recovery limit"
-    );
+    if rows.len() > MAX_PENDING_INPUTS {
+        return Err(ConversationReadError::CountLimitExceeded {
+            resource: "pending inputs",
+            limit: MAX_PENDING_INPUTS,
+        }
+        .into());
+    }
     Ok(rows)
 }
 
@@ -766,10 +1080,13 @@ fn brief_ids(connection: &Connection, agent_id: &str, turn_id: &str) -> Result<V
             |row| row.get(0),
         )?
         .collect::<std::result::Result<Vec<_>, _>>()?;
-    anyhow::ensure!(
-        rows.len() <= MAX_BRIEFS_PER_TURN,
-        "turn {turn_id} exceeds the bounded Brief membership limit"
-    );
+    if rows.len() > MAX_BRIEFS_PER_TURN {
+        return Err(ConversationReadError::CountLimitExceeded {
+            resource: "briefs per turn",
+            limit: MAX_BRIEFS_PER_TURN,
+        }
+        .into());
+    }
     Ok(rows)
 }
 

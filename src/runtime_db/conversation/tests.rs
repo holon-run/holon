@@ -8,6 +8,7 @@ use tempfile::TempDir;
 
 use super::{
     settle_turn_result_tx, CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL,
+    MAX_BRIEFS_PER_TURN,
 };
 use crate::domain::conversation::{
     ActivityItem, Attention, ConversationActivity, ExecutionState, NoBriefReason,
@@ -15,10 +16,12 @@ use crate::domain::conversation::{
 };
 use crate::runtime_db::RuntimeDb;
 use crate::types::{
-    AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind, MessageBody, MessageEnvelope,
-    MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, ToolExecutionRecord,
-    ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind, TurnNoBriefReason, TurnRecord,
-    TurnReplayProvenance, TurnTerminalKind, TurnTerminalSummary, TurnTriggerSummary,
+    AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+    AgentVisibility, AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind, MessageBody,
+    MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
+    ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
+    TurnNoBriefReason, TurnRecord, TurnReplayProvenance, TurnTerminalKind, TurnTerminalSummary,
+    TurnTriggerSummary,
 };
 
 const AGENT_ID: &str = "agent-conversation-test";
@@ -83,6 +86,118 @@ fn activity_item(activity: &ConversationActivity) -> &ActivityItem {
         | ConversationActivity::Wait(item)
         | ConversationActivity::Error(item) => item,
     }
+}
+
+#[test]
+fn summary_snapshot_keeps_records_and_event_head_on_one_concurrent_read_view() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    let mut identity = AgentIdentityRecord::new(
+        AGENT_ID,
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    identity.status = AgentRegistryStatus::Active;
+    identity.created_at = timestamp(0);
+    identity.updated_at = timestamp(0);
+    db.agent_identities().upsert(&identity)?;
+    db.turn_records().upsert(&terminal(
+        turn("turn-concurrent-snapshot", 1),
+        TurnTerminalKind::Completed,
+        None,
+    ))?;
+
+    let baseline = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .expect("baseline snapshot");
+    assert!(baseline.value.turns[0].brief_ids.is_empty());
+
+    let barrier = Arc::new(Barrier::new(2));
+    let writer_barrier = Arc::clone(&barrier);
+    let writer = std::thread::spawn(move || -> Result<()> {
+        let writer_db = RuntimeDb::open_and_migrate(db_path, lock_path)?;
+        let mut brief = BriefRecord::new(AGENT_ID, BriefKind::Result, "late result", None, None);
+        brief.id = "brief-concurrent-snapshot".into();
+        brief.turn_id = Some("turn-concurrent-snapshot".into());
+        brief.turn_index = Some(1);
+        brief.created_at = timestamp(10);
+        let event = crate::types::brief_created_event_for(&brief)?;
+        writer_barrier.wait();
+        writer_db.evidence().append_brief_with_created_event(
+            Some(AGENT_ID),
+            &brief,
+            &event,
+            &[],
+        )?;
+        writer_barrier.wait();
+        Ok(())
+    });
+
+    let during_write = db
+        .conversation()
+        .summary_snapshot_after_context(AGENT_ID, 10, None, "test-principal", "public", || {
+            barrier.wait();
+            barrier.wait();
+        })?
+        .expect("snapshot during write");
+    writer.join().expect("brief writer")?;
+
+    assert_eq!(during_write.event_head_seq, baseline.event_head_seq);
+    assert!(during_write.value.turns[0].brief_ids.is_empty());
+    assert_eq!(during_write.value.turns[0].result, ResultState::Pending);
+
+    let after_write = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .expect("snapshot after write");
+    assert!(after_write.event_head_seq > during_write.event_head_seq);
+    assert_eq!(
+        after_write.value.turns[0].brief_ids,
+        ["brief-concurrent-snapshot"]
+    );
+    assert_eq!(after_write.value.turns[0].result, ResultState::Available);
+    Ok(())
+}
+
+#[test]
+fn summary_rejects_unbounded_brief_membership() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records().upsert(&terminal(
+        turn("turn-many-briefs", 1),
+        TurnTerminalKind::Completed,
+        None,
+    ))?;
+    for index in 0..=MAX_BRIEFS_PER_TURN {
+        let mut brief = BriefRecord::new(
+            AGENT_ID,
+            BriefKind::Result,
+            format!("brief {index}"),
+            None,
+            None,
+        );
+        brief.id = format!("brief-{index:03}");
+        brief.turn_id = Some("turn-many-briefs".into());
+        brief.turn_index = Some(1);
+        brief.created_at = timestamp(i64::try_from(index).unwrap());
+        db.evidence().append_brief(&brief)?;
+    }
+
+    let error = db
+        .conversation()
+        .summary_page(AGENT_ID, 10, None, None)
+        .expect_err("brief membership must remain bounded");
+    assert_eq!(
+        error.downcast_ref::<super::ConversationReadError>(),
+        Some(&super::ConversationReadError::CountLimitExceeded {
+            resource: "briefs per turn",
+            limit: MAX_BRIEFS_PER_TURN,
+        })
+    );
+    Ok(())
 }
 
 #[test]

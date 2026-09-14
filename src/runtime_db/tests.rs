@@ -6934,11 +6934,11 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
-    fn conversation_read_capability_stays_off_with_inventory_blockers() -> Result<()> {
+    fn conversation_read_capability_enables_after_inventory_repair() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let foundations = db.observer_sync_foundations()?;
-        assert!(!foundations.conversation_read_verified);
+        assert!(foundations.conversation_read_verified);
 
         let (verified, detail): (i64, String) = db.connection()?.query_row(
             "SELECT verified, detail
@@ -6947,22 +6947,39 @@ CREATE TABLE working_memory_deltas (
             [],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        assert_eq!(verified, 0);
+        assert_eq!(verified, 1);
         let detail: serde_json::Value = serde_json::from_str(&detail)?;
-        assert_eq!(detail["capability"], "agents.conversation-read.v1");
         assert_eq!(
-            detail["blocked_sources"]
-                .as_array()
-                .expect("blocked source inventory")
-                .len(),
-            6
+            detail["boundary_rule"],
+            "deferred_read_transaction_event_head"
         );
+        assert_eq!(detail["cursor_key"], "durable_runtime_metadata");
         assert_eq!(
-            detail["verified_sources"]
-                .as_array()
-                .expect("verified source inventory")
-                .len(),
-            3
+            detail["legacy_unattributed_briefs"],
+            "existing_briefs_surface"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn conversation_read_capability_degrades_when_revision_inventory_drifts() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        {
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.turn_records()
+                .upsert(&TurnRecord::new("agent-a", "turn-a", 1))?;
+            db.connection()?.execute(
+                "DELETE FROM conversation_turn_revisions
+                 WHERE agent_id = 'agent-a' AND turn_id = 'turn-a'",
+                [],
+            )?;
+        }
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(
+            !reopened
+                .observer_sync_foundations()?
+                .conversation_read_verified
         );
         Ok(())
     }

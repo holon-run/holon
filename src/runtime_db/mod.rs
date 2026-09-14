@@ -1014,6 +1014,11 @@ fn ensure_runtime_identity_metadata(connection: &Connection) -> Result<()> {
          VALUES ('visibility_policy_generation', '0', ?1, ?1)",
         rusqlite::params![now],
     )?;
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('conversation_cursor_signing_key', ?1, ?2, ?2)",
+        rusqlite::params![crate::ids::capability_id("conversation_cursor"), now],
+    )?;
     Ok(())
 }
 

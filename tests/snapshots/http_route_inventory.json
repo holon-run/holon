@@ -158,6 +158,38 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/conversation",
+    "handler": "summary",
+    "operation_id": "agentConversation",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "before",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "limit",
+        "location": "query",
+        "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/events",
     "handler": "events",
     "operation_id": "agentEvents",
@@ -560,6 +592,43 @@
         "name": "agent_id",
         "location": "path",
         "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/agents/{agent_id}/turns/{turn_id}/activities",
+    "handler": "activities",
+    "operation_id": "agentConversationActivities",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "turn_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "before",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "limit",
+        "location": "query",
+        "required": false
       }
     ],
     "request_schema": null,

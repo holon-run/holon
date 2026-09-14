@@ -95,6 +95,7 @@ pub(crate) use crate::{
 mod agents;
 mod auth;
 mod control;
+mod conversation;
 mod events;
 mod ingress;
 mod jobs;
@@ -113,6 +114,9 @@ mod workspace_files;
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
+pub(crate) use conversation::{
+    ConversationActivityResponse, ConversationReadQuery, ConversationSummaryResponse,
+};
 pub(crate) use observer_sync::{
     advertised_observer_sync_capabilities, ObserverSyncCapabilityVerification,
     PROJECTION_EFFECT_CAPABILITY,
@@ -203,6 +207,7 @@ pub struct AppState {
     pub template_remote_source_sync_jobs: Arc<tokio::sync::Semaphore>,
     pub(crate) roster_snapshot_limits: observer_sync::RosterSnapshotLimits,
     pub(crate) projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits,
+    pub(crate) conversation_read_limits: conversation::ConversationReadLimits,
     pub(crate) projection_gate: Arc<ProjectionGate>,
 }
 
@@ -322,6 +327,7 @@ impl AppState {
             template_remote_source_sync_jobs,
             roster_snapshot_limits: observer_sync::RosterSnapshotLimits::default(),
             projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits::default(),
+            conversation_read_limits: conversation::ConversationReadLimits::default(),
             projection_gate,
         }
     }
@@ -357,6 +363,7 @@ impl AppState {
             template_remote_source_sync_jobs,
             roster_snapshot_limits: observer_sync::RosterSnapshotLimits::default(),
             projection_snapshot_limits: observer_sync::ProjectionSnapshotLimits::default(),
+            conversation_read_limits: conversation::ConversationReadLimits::default(),
             projection_gate,
         }
     }
@@ -391,6 +398,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{agent_id}/projection-snapshot",
             get(observer_sync::agent_projection_snapshot),
+        )
+        .route(
+            "/agents/{agent_id}/conversation",
+            get(conversation::summary),
+        )
+        .route(
+            "/agents/{agent_id}/turns/{turn_id}/activities",
+            get(conversation::activities),
         )
         .route("/agents/{agent_id}/enqueue", post(state::enqueue))
         .route("/agents/{agent_id}", get(state::get_agent))
