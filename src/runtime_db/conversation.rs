@@ -18,6 +18,8 @@ use crate::domain::conversation::{
 use crate::runtime_db::types::ConversationRepository;
 use crate::types::{TurnRecord, TurnTerminalKind};
 
+const MAX_CHANGE_ID_JSON_DEPTH: usize = 32;
+
 pub(crate) const SOURCE_OPERATOR: &str = "operator";
 pub(crate) const SOURCE_ASSISTANT: &str = "assistant";
 pub(crate) const SOURCE_TOOL: &str = "tool";
@@ -708,7 +710,7 @@ impl ConversationRepository<'_> {
             let mut turn_ids = BTreeSet::new();
             let mut message_ids = BTreeSet::new();
             for event in &events {
-                collect_change_ids(&event.data, &mut turn_ids, &mut message_ids);
+                collect_change_ids(&event.data, &mut turn_ids, &mut message_ids, 0);
             }
             for message_id in &message_ids {
                 if let Some(turn_id) = assigned_turn_id_tx(&transaction, agent_id, message_id)? {
@@ -841,7 +843,11 @@ fn collect_change_ids(
     value: &Value,
     turn_ids: &mut BTreeSet<String>,
     message_ids: &mut BTreeSet<String>,
+    depth: usize,
 ) {
+    if depth > MAX_CHANGE_ID_JSON_DEPTH {
+        return;
+    }
     match value {
         Value::Object(object) => {
             for (key, value) in object {
@@ -858,12 +864,12 @@ fn collect_change_ids(
                         message_ids.insert(value.to_string());
                     }
                 }
-                collect_change_ids(value, turn_ids, message_ids);
+                collect_change_ids(value, turn_ids, message_ids, depth + 1);
             }
         }
         Value::Array(values) => {
             for value in values {
-                collect_change_ids(value, turn_ids, message_ids);
+                collect_change_ids(value, turn_ids, message_ids, depth + 1);
             }
         }
         _ => {}

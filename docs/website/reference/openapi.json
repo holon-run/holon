@@ -5933,6 +5933,879 @@
         ],
         "type": "object"
       },
+      "ConversationStreamMessage": {
+        "oneOf": [
+          {
+            "properties": {
+              "batch_id": {
+                "type": "string"
+              },
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "from_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "query_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "runtime_id": {
+                "type": "string"
+              },
+              "schema_version": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "through_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "batch_begin",
+                "type": "string"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "batch_id",
+              "schema_version",
+              "query_version",
+              "runtime_id",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "from_seq",
+              "through_seq"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "input": {
+                "properties": {
+                  "message_id": {
+                    "type": "string"
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "state": {
+                    "enum": [
+                      "queued",
+                      "assigning"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "message_id",
+                  "revision",
+                  "state"
+                ],
+                "type": "object"
+              },
+              "type": {
+                "const": "operator_upsert",
+                "type": "string"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "input"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "message_id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "operator_remove",
+                "type": "string"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "message_id",
+              "revision"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "turn": {
+                "properties": {
+                  "attention": {
+                    "anyOf": [
+                      {
+                        "oneOf": [
+                          {
+                            "properties": {
+                              "kind": {
+                                "const": "failed",
+                                "type": "string"
+                              },
+                              "outcome": {
+                                "enum": [
+                                  "completed",
+                                  "aborted",
+                                  "baseline_over_budget",
+                                  "deferred_to_fallback",
+                                  "provider_failed_needs_recovery"
+                                ],
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "outcome"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "properties": {
+                              "kind": {
+                                "const": "interrupted",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "properties": {
+                              "kind": {
+                                "const": "waiting",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "type": "object"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "brief_ids": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "detail_coverage": {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "complete",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "partial",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "retention_gap",
+                              "legacy_ownership",
+                              "unknown_activity_type",
+                              "missing_canonical_linkage"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "unavailable",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "retention_gap",
+                              "legacy_ownership",
+                              "unknown_activity_type",
+                              "missing_canonical_linkage"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "unknown",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "execution": {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "active",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "terminal",
+                            "type": "string"
+                          },
+                          "outcome": {
+                            "enum": [
+                              "completed",
+                              "aborted",
+                              "baseline_over_budget",
+                              "deferred_to_fallback",
+                              "provider_failed_needs_recovery"
+                            ],
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "outcome"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "key": {
+                    "properties": {
+                      "turn_id": {
+                        "type": "string"
+                      },
+                      "turn_index": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "turn_index",
+                      "turn_id"
+                    ],
+                    "type": "object"
+                  },
+                  "presentation_class": {
+                    "enum": [
+                      "operator",
+                      "task",
+                      "external",
+                      "timer",
+                      "internal",
+                      "system",
+                      "operational"
+                    ],
+                    "type": "string"
+                  },
+                  "result": {
+                    "oneOf": [
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "pending",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "available",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "none",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "oneOf": [
+                              {
+                                "properties": {
+                                  "kind": {
+                                    "const": "reducer_only",
+                                    "type": "string"
+                                  },
+                                  "reason": {
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind",
+                                  "reason"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "properties": {
+                                  "kind": {
+                                    "const": "aborted",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "properties": {
+                                  "kind": {
+                                    "const": "tool_only_wait",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "properties": {
+                          "kind": {
+                            "const": "unavailable",
+                            "type": "string"
+                          },
+                          "reason": {
+                            "enum": [
+                              "missing_canonical_linkage",
+                              "retention_gap",
+                              "legacy_coverage"
+                            ],
+                            "type": "string"
+                          },
+                          "retryable": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "reason",
+                          "retryable"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "settled": {
+                    "type": "boolean"
+                  },
+                  "turn_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "turn_id",
+                  "key",
+                  "revision",
+                  "presentation_class",
+                  "execution",
+                  "result",
+                  "settled",
+                  "detail_coverage",
+                  "brief_ids"
+                ],
+                "type": "object"
+              },
+              "type": {
+                "const": "turn_summary_upsert",
+                "type": "string"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "turn"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "activity": {
+                "oneOf": [
+                  {
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "operator",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "key",
+                      "revision",
+                      "summary"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "assistant",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "key",
+                      "revision",
+                      "summary"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "tool",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "key",
+                      "revision",
+                      "summary"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "wait",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "key",
+                      "revision",
+                      "summary"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": "object"
+                      },
+                      "kind": {
+                        "const": "error",
+                        "type": "string"
+                      },
+                      "revision": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "summary": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "id",
+                      "key",
+                      "revision",
+                      "summary"
+                    ],
+                    "type": "object"
+                  }
+                ]
+              },
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "activity_upsert",
+                "type": "string"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "turn_id",
+              "activity"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "detail_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "turn_id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "detail_invalidated",
+                "type": "string"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "turn_id",
+              "detail_revision"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "batch_id": {
+                "type": "string"
+              },
+              "checkpoint": {
+                "type": "string"
+              },
+              "event_log_epoch": {
+                "type": "string"
+              },
+              "through_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "checkpoint",
+                "type": "string"
+              },
+              "visibility_scope_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "batch_id",
+              "event_log_epoch",
+              "visibility_scope_id",
+              "through_seq",
+              "checkpoint"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "event_head_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "hint": {
+                "type": "string"
+              },
+              "oldest_retained_seq": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              },
+              "type": {
+                "const": "reset_required",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "reason",
+              "hint"
+            ],
+            "type": "object"
+          }
+        ],
+        "title": "ConversationStreamMessage"
+      },
+      "ConversationStreamQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "activity_limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ConversationStreamQuery",
+        "type": "object"
+      },
       "ConversationSummaryResponse": {
         "properties": {
           "active_turns": {
@@ -14437,6 +15310,64 @@
           }
         ],
         "summary": "Conversation summary snapshot",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}/conversation/stream": {
+      "get": {
+        "description": "Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.",
+        "operationId": "agentConversationStream",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationStreamQuery"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Server-Sent Events stream. Each data frame contains a StreamEventEnvelope JSON object."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error before stream establishment."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Conversation change stream",
         "tags": [
           "agents"
         ]

@@ -190,6 +190,29 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/conversation/stream",
+    "handler": "stream",
+    "operation_id": "agentConversationStream",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "ConversationStreamQuery",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json",
+      "text/event-stream"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/events",
     "handler": "events",
     "operation_id": "agentEvents",

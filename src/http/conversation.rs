@@ -235,7 +235,11 @@ pub async fn stream(
             return;
         }
         loop {
-            match live_rx.recv().await {
+            let published = tokio::select! {
+                _ = tx.closed() => return,
+                published = live_rx.recv() => published,
+            };
+            match published {
                 Ok(published)
                     if published.agent_id.as_deref() == Some(agent_id.as_str())
                         && published.event.event_seq > through_seq =>
@@ -1419,6 +1423,25 @@ mod tests {
         assert!(body.contains("event: batch_begin"));
         assert!(!body.contains("event: checkpoint"));
         assert!(!body.contains("id: "));
+    }
+
+    #[tokio::test]
+    async fn conversation_stream_idle_wait_ends_when_client_disconnects() {
+        let (_home, host) = test_host().await;
+        let mut live_rx = host.subscribe_events();
+        let (tx, rx) = tokio::sync::mpsc::channel::<std::result::Result<Event, anyhow::Error>>(1);
+        drop(rx);
+
+        let result = tokio::time::timeout(Duration::from_millis(100), async {
+            tokio::select! {
+                _ = tx.closed() => None,
+                published = live_rx.recv() => Some(published),
+            }
+        })
+        .await
+        .expect("idle stream wait should notice the disconnected client");
+
+        assert!(result.is_none());
     }
 
     #[tokio::test]

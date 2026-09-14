@@ -7,8 +7,9 @@ use rusqlite::params;
 use tempfile::TempDir;
 
 use super::{
-    settle_turn_result_tx, ConversationReadError, ConversationResetReason,
+    collect_change_ids, settle_turn_result_tx, ConversationReadError, ConversationResetReason,
     CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL, MAX_BRIEFS_PER_TURN,
+    MAX_CHANGE_ID_JSON_DEPTH,
 };
 use crate::domain::conversation::{
     ActivityItem, Attention, ConversationActivity, ConversationChange, CursorBinding, CursorCodec,
@@ -870,6 +871,32 @@ fn change_batch_recovers_snapshot_gap_and_coalesces_completed_turn() -> Result<(
     assert_eq!(reconnected.through_seq, batch.through_seq);
     assert!(reconnected.changes.is_empty());
     Ok(())
+}
+
+#[test]
+fn change_id_collection_ignores_values_beyond_the_depth_budget() {
+    let mut nested = serde_json::json!({
+        "turn_id": "turn-too-deep",
+        "message_id": "message-too-deep",
+    });
+    for _ in 0..=MAX_CHANGE_ID_JSON_DEPTH {
+        nested = serde_json::json!({ "nested": nested });
+    }
+    let payload = serde_json::json!({
+        "turn_id": "turn-visible",
+        "message_id": "message-visible",
+        "nested": nested,
+    });
+    let mut turn_ids = std::collections::BTreeSet::new();
+    let mut message_ids = std::collections::BTreeSet::new();
+
+    collect_change_ids(&payload, &mut turn_ids, &mut message_ids, 0);
+
+    assert_eq!(turn_ids.into_iter().collect::<Vec<_>>(), ["turn-visible"]);
+    assert_eq!(
+        message_ids.into_iter().collect::<Vec<_>>(),
+        ["message-visible"]
+    );
 }
 
 #[test]
