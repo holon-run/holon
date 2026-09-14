@@ -25,21 +25,8 @@ means you can:
 2. see the agent inspect a real workspace or run an approved tool;
 3. receive a concise result or an explicit request for the next decision.
 
-Use [Create your first agent](first-agent.md) when you want the full walkthrough.
-
-## New to Holon?
-
-If this is your first time using Holon:
-
-- **[Onboarding guide](onboarding.md)** — Interactive provider, credential, model, and search setup with `holon onboard`
-- **[Create your first agent](first-agent.md)** - Install, start, connect with TUI, create an agent, and configure models in ~15 minutes
-
-The tutorial covers:
-
-- Installing Holon and starting the runtime
-- Connecting with the Terminal UI
-- Creating an agent and sending your first prompt
-- Configuring models and providers
+The walkthroughs below cover provider setup, installation, connecting with
+the TUI, and creating your first agent.
 
 For the first durable workflow, choose a responsibility with a natural wait:
 following a pull request through CI, investigating an issue while waiting for
@@ -55,7 +42,7 @@ Holon gives you three ways to interact with the runtime:
 | **Daemon + TUI** | `holon daemon start` + `holon tui` | Interactive agent sessions with state, queues, and workspaces |
 | **Daemon + HTTP** | `holon daemon start` + HTTP client | Integrations, automation, control-plane consumers |
 
-The [first agent tutorial](first-agent.md) uses daemon + TUI because it
+The first agent tutorial uses daemon + TUI because it
 gives you the full interactive experience. For one-shot runs, see the
 [quick examples](/guides/quick-examples).
 
@@ -80,7 +67,7 @@ If you plan to modify or contribute to Holon itself:
 
 ## Requirements
 
-- Holon installed on `PATH` (Homebrew or direct binary; see [first agent](first-agent.md) for step-by-step)
+- Holon installed on `PATH` (Homebrew or direct binary; see the walkthrough below)
 - A model provider API key (Anthropic, OpenAI, or compatible)
 
 ## Repository orientation (contributors)

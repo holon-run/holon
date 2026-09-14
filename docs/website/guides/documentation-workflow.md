@@ -79,6 +79,12 @@ mdorigin dev --root .
 
 ## Refresh indexes
 
+Documentation landing pages use one managed catalog as the source of article
+links. Keep introductory prose and cross-section links outside it, but do not
+copy the catalog into the body or translate it as a second list. Translate each
+article's `title` and `summary`, then regenerate the index. Run
+`npm --prefix .tools run check:directories` from `docs/website` to check for duplicates.
+
 Directory pages may contain managed index blocks:
 
 ```markdown

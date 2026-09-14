@@ -1,67 +1,15 @@
 ---
 title: Guides
-summary: Task-oriented guides grouped by what you want to do with Holon.
+summary: Task-oriented guides for using, operating, and integrating Holon.
 order: 30
 ---
 
 # Guides
 
-Guides are organized by user job — find your goal and follow the path.
+Find a guide for the work you want to do: try Holon, use the Web GUI,
+automate GitHub tasks, operate the runtime, or coordinate agents.
 
-## Evaluate and try Holon
-
-Start here if you want to see what Holon can do with minimal setup.
-
-- **[Quick examples](/guides/quick-examples)** — one-shot commands, agent
-  creation, model configuration, daemon and TUI basics.
-- **[Local runtime](/guides/local-runtime)** — conservative workflow for
-  running and inspecting Holon from source.
-
-## Use the graphical interface
-
-- **[Web GUI](/guides/web-gui)** — embedded browser interface for agent
-  management, conversation, search, and settings.
-
-## Automate GitHub work
-
-- **[holon solve](/guides/solve)** — headless automation for GitHub issues and
-  pull requests with automatic skill dispatch.
-
-## Operate and configure
-
-Keep a running Holon instance healthy and configured.
-
-- **[Troubleshooting](/guides/troubleshooting)** — diagnose daemon, model,
-  configuration, and TUI issues in likely encounter order.
-- **[Runtime observability](/guides/observability)** — export OTLP traces,
-  scrape protected OpenMetrics, and install baseline dashboards and alerts.
-
-## Integrate and automate
-
-Wire Holon into external systems through its control plane.
-
-- **[Integration guide](/guides/integration)** — HTTP control plane with
-  curl examples and endpoint reference.
-
-## Collaborate and delegate
-
-Work with multiple agents, durable objectives, and reusable skills.
-
-- **[Multi-agent collaboration](/guides/multi-agent)** — creating and invoking
-  agents, supervision contracts, and workspace modes.
-- **[Work items guide](/guides/work-items)** — tracking durable objectives
-  with plans, todo lists, and lifecycle management.
-- **[Durable agent workflow](/guides/durable-agent-workflow)** — the end-to-end
-  durable agent story: WorkItems, wait/wake/resume, and final briefs.
-- **[Skills guide](/guides/skills)** — reusable SKILL.md workflows, skill
-  locations, and custom skill development.
-
-## Contribute to these docs
-
-Edit and build the Holon documentation website.
-
-- **[Documentation workflow](/guides/documentation-workflow)** — how to edit
-  and build the mdorigin-powered Holon website.
+Each entry below describes its workflow. New guides appear here automatically.
 
 <!-- INDEX:START -->
 
@@ -113,6 +61,10 @@ Edit and build the Holon documentation website.
   Solutions for common Holon issues covering daemon, configuration, model, and TUI problems.
   <!-- mdorigin:index kind=article -->
 
+- [Runtime observability](./observability.md)
+  Export Holon traces with OTLP, scrape protected OpenMetrics, and install baseline dashboards and alerts.
+  <!-- mdorigin:index kind=article -->
+
 - [Multi-agent collaboration](./multi-agent.md)
   Creating and invoking agents, supervision contracts, and workspace modes for parallel work.
   <!-- mdorigin:index kind=article -->
@@ -134,7 +86,7 @@ Edit and build the Holon documentation website.
   <!-- mdorigin:index kind=article -->
 
 - [Image Generation guide](./image-generation.md)
-  Agent tool for generating images from text prompts — model selection, size and format options, output management, and caching.
+  Agent tool for generating images from text prompts — model selection, size and format options, and output management.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

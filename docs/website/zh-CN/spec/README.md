@@ -34,32 +34,6 @@ order: 1
 - **RFCs** — 关联的源设计记录。
 - **已知缺口（Known gaps）** — 未解决漂移的跟踪后续 issue。
 
-## 当前规格页面
-
-- [Agent 状态](/zh-CN/spec/agent-state.md)
-  当前 Agent 状态、生命周期标签、运行时投影和用户可见的展示契约。
-
-- [工作项](/zh-CN/spec/work-items.md)
-  当前 WorkItem 生命周期、focus、readiness、规划、阻塞和完成契约。
-
-- [调度器](/zh-CN/spec/scheduler.md)
-  当前调度器输入、runnable/waiting 决策、WorkItem readiness 和 wake/sleep 边界。
-
-- [唤醒与延续](/zh-CN/spec/wake-and-continuation.md)
-  当前触发器分类、外部 ingress 能力、continuation 解析和 wake/sleep 生命周期。
-
-- [任务](/zh-CN/spec/tasks.md)
-  当前任务生命周期、terminal re-entry 和命令/子 Agent 监督契约。
-
-- [工具](/zh-CN/spec/tools.md)
-  当前面向模型的工具家族、权限边界、输入/结果契约和已废弃接口。
-
-- [Workspace 与执行](/zh-CN/spec/workspace-and-execution.md)
-  当前 workspace 身份、agent home、execution root、worktree 和 host-local 策略契约。
-
-- [信任与来源](/zh-CN/spec/trust-and-provenance.md)
-  当前 provenance、admission/authentication、指令权威和执行策略契约。
-
 ## 与 `docs/runtime-spec.md` 的关系
 
 [`docs/runtime-spec.md`](https://github.com/holon-run/holon/blob/main/docs/runtime-spec.md)

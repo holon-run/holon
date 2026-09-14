@@ -14,42 +14,9 @@ order: 40
 > [RFC 索引](https://github.com/holon-run/holon/tree/main/docs/rfcs)（英文）。
 
 > 本节页面均已译为中文。数据快照（`openapi.json`、`*-inventory.json`）和由源码生成的
-> [`models.md`](/zh-CN/reference/models.md) 正文保持英文，随英文版同步。
+> `models.md` 正文保持英文，随英文版同步。
 
-## 本节页面
-
-- [CLI 参考](/zh-CN/reference/cli.md)
-  Holon 命令行界面——基于 holon --help 验证（v0.39.0）。
-
-- [CLI 契约清单](/zh-CN/reference/cli-contract-inventory.md)
-  Holon 命令行参数、输出和后续契约工作的第一版稳定性清单。
-
-- [CLI 稳定性策略](/zh-CN/reference/cli-stability-policy.md)
-  Holon 命令行接口和机器可读输出契约的支持策略。
-
-- [CLI 退出码](/zh-CN/reference/cli-exit-codes.md)
-  Holon 命令行界面的退出码和流路由契约。
-
-- [配置](/zh-CN/reference/configuration.md)
-  Holon 配置文件、配置键、凭据、环境变量和诊断。
-
-- [HTTP 控制平面](/zh-CN/reference/http-control-plane.md)
-  如何理解 Holon 的无头集成接口。
-
-- [OpenAPI schema](/reference/openapi.json)（数据快照，英文）
-  Holon 当前 HTTP 控制平面接口的基线 OpenAPI 3.1 schema。
-
-- [API 契约清单](/zh-CN/reference/api-contract-inventory.md)
-  Holon HTTP 控制平面 API 参数、响应和第二阶段契约工作的基线后稳定性清单。
-
-- [模型工具 schema 清单](/zh-CN/reference/model-tool-schema-inventory.md)
-  Holon 面向模型的内置工具 schema、结果信封和稳定性标签的版本化清单。
-
-- [运行时状态枚举清单](/zh-CN/reference/runtime-status-enum-inventory.md)
-  稳定序列化运行时生命周期和状态枚举的机器可读基线。
-
-- [支持的模型](/zh-CN/reference/models.md)（正文由源码生成，随英文版自动同步）
-  Holon 内置支持的所有模型和提供商的完整参考。
+机器可读接口：[OpenAPI 3.1 schema](/reference/openapi.json) 描述当前 HTTP 控制平面。
 
 <!-- INDEX:START -->
 

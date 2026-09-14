@@ -70,6 +70,11 @@ mdorigin dev --root .
 
 ## 刷新索引
 
+文档目录页只用一份受管理的索引列出本节文章。正文可保留导读和跨分区链接，
+但不要复制目录，也不要把索引翻译成正文里的第二份列表。翻译各文章的
+`title` 和 `summary` 后重新生成索引即可。在 `docs/website` 下运行
+`npm --prefix .tools run check:directories` 检查重复链接。
+
 目录页可以包含受管理的索引块：
 
 ```markdown

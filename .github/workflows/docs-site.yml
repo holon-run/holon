@@ -62,6 +62,9 @@ jobs:
       - name: Build directory indexes
         run: npm --prefix .tools run build:index
 
+      - name: Check directory catalogs
+        run: npm --prefix .tools run check:directories
+
       - name: Build search index
         run: npm --prefix .tools run build:search
 
