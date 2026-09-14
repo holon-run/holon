@@ -75,8 +75,8 @@ build: ## Build all Rust targets (cargo build --all-targets)
 
 all: web build ## Build everything: web GUI then Rust
 
-test: ## Run the full Rust test suite serially
-	cargo test --all-targets -- --test-threads=1
+test: ## Run library, binary, and integration tests serially
+	cargo test --lib --bins --tests -- --test-threads=1
 
 test-resource-lint: ## Audit permanent test temp directories against the reasoned allowlist
 	python3 scripts/check-test-temp-resources.py
