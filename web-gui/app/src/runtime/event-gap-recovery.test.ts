@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { EventGapRecoveryTracker, recoverEventGap, type SequencedEvent } from "./event-gap-recovery";
+import {
+  EventGapRecoveryTracker,
+  loadCatchUpCursorSnapshot,
+  recoverEventGap,
+  saveCatchUpCursorSnapshot,
+  type CatchUpCursorSnapshot,
+  type SequencedEvent,
+} from "./event-gap-recovery";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -244,5 +251,71 @@ describe("EventGapRecoveryTracker", () => {
       highestObservedSeq: 2,
       recovering: false,
     });
+  });
+
+  it("keeps a rebase from rewinding contiguous progress within one epoch", () => {
+    const tracker = new EventGapRecoveryTracker();
+    tracker.register("agent-a", 40, "epoch-a");
+    tracker.observe("agent-a", 41, "epoch-a");
+
+    // A stale session projection rebasing to an older baseline must not
+    // rewind in-flight catch-up progress (#2986).
+    expect(tracker.rebase("agent-a", 5, "epoch-a", 5)).toEqual({
+      contiguousSeq: 41,
+      highestObservedSeq: 41,
+      recovering: false,
+    });
+  });
+
+  it("resets progress when a rebase changes the event-log epoch", () => {
+    const tracker = new EventGapRecoveryTracker();
+    tracker.register("agent-a", 40, "epoch-a");
+
+    expect(tracker.rebase("agent-a", 7, "epoch-b")).toEqual({
+      contiguousSeq: 7,
+      highestObservedSeq: 7,
+      recovering: false,
+    });
+  });
+});
+
+describe("catch-up cursor persistence", () => {
+  function memoryStorage() {
+    const items = new Map<string, string>();
+    return {
+      getItem: (key: string) => items.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        items.set(key, value);
+      },
+    };
+  }
+
+  it("round-trips a cursor snapshot through storage", () => {
+    const storage = memoryStorage();
+    const snapshot: CatchUpCursorSnapshot = {
+      runtimeId: "rt-1",
+      visibilityScopeId: "vis-1",
+      eventLogEpoch: "epoch-1",
+      agents: {
+        "agent-a": { eventLogEpoch: "epoch-1", contiguousSeq: 7500, highestObservedSeq: 8100 },
+      },
+    };
+
+    saveCatchUpCursorSnapshot(storage, snapshot);
+
+    expect(loadCatchUpCursorSnapshot(storage)).toEqual(snapshot);
+  });
+
+  it("tolerates missing storage and corrupt payloads", () => {
+    expect(loadCatchUpCursorSnapshot(undefined)).toBeUndefined();
+
+    const storage = memoryStorage();
+    expect(loadCatchUpCursorSnapshot(storage)).toBeUndefined();
+
+    storage.setItem("holon.globalSync.catchUpCursor.v1", "{not-json");
+    expect(loadCatchUpCursorSnapshot(storage)).toBeUndefined();
+
+    storage.setItem("holon.globalSync.catchUpCursor.v1", JSON.stringify({ runtimeId: "rt-1" }));
+    expect(loadCatchUpCursorSnapshot(storage)).toBeUndefined();
   });
 });

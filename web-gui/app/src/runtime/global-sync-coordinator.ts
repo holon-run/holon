@@ -11,7 +11,13 @@ import {
   eventLogEpochFromEvents,
   shouldResetForEventLogEpoch,
 } from "./conversation-store";
-import { EventGapRecoveryTracker, recoverEventGap } from "./event-gap-recovery";
+import {
+  EventGapRecoveryTracker,
+  loadCatchUpCursorSnapshot,
+  recoverEventGap,
+  saveCatchUpCursorSnapshot,
+  type CatchUpCursorSnapshot,
+} from "./event-gap-recovery";
 import {
   createRuntimeTrace,
   startRuntimeSpan,
@@ -105,6 +111,19 @@ const GLOBAL_BACKFILL_CONCURRENCY = 4;
 /** Low-rate safety net: full roster reconciliation at most this often. */
 const ROSTER_RECONCILIATION_INTERVAL_MS = 5 * 60_000;
 
+/**
+ * Fresh sessions never seed catch-up further behind the authoritative roster
+ * head than this window (#2986): a session replays at most one bounded
+ * lookback window instead of the agent's full event history.
+ */
+const GLOBAL_CATCHUP_BASELINE_LOOKBACK = 1_000;
+
+/** Authoritative per-agent event window learned from the roster snapshot. */
+interface RosterEventWindow {
+  eventHeadSeq: number;
+  oldestRetainedSeq: number;
+}
+
 export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   private readonly pendingStreamEvents = new Map<string, StreamEventEnvelopeDto[]>();
   private readonly streamFlushTimers = new Map<string, number>();
@@ -117,6 +136,8 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   private readonly recovery = new EventGapRecoveryTracker();
   private readonly backfillRetryTimers = new Map<string, number>();
   private readonly backfillRetryAttempts = new Map<string, number>();
+  private readonly rosterEventWindows = new Map<string, RosterEventWindow>();
+  private catchUpCursorState: CatchUpCursorSnapshot | undefined;
   private readonly recoveryBaselineInFlight = new Map<string, Promise<void>>();
   /** Authoritative discovery cycle (W4): in-flight snapshot + coalescing. */
   private rosterRefreshPromise: Promise<void> | undefined;
@@ -198,9 +219,17 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.subscribedAgents.add(agentId);
     if (!wasSubscribed && !this.recovery.snapshotFor(agentId)) {
       const session = get().sessionsByAgentId[agentId];
+      const window = this.rosterEventWindows.get(agentId);
+      // The session baseline may be stale (old gap record or a projection
+      // that has not hydrated yet); the roster head window keeps the
+      // catch-up start bounded (#2986).
+      const baseline = boundedCatchUpBaseline(
+        contiguousEventSeq(session, window?.eventHeadSeq),
+        window,
+      );
       this.recovery.register(
         agentId,
-        contiguousEventSeq(session),
+        baseline,
         session?.eventLogEpoch,
         observedEventSeq(session),
       );
@@ -221,6 +250,11 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.recoveryBaselineInFlight.delete(agentId);
     this.clearBackfillRetry(agentId);
     this.recovery.unregister(agentId);
+    this.rosterEventWindows.delete(agentId);
+    if (this.catchUpCursorState) {
+      delete this.catchUpCursorState.agents[agentId];
+      saveCatchUpCursorSnapshot(this.catchUpCursorStorage(), this.catchUpCursorState);
+    }
   }
 
   syncRoster(get: () => State, set: GlobalSyncStoreSet<State>): void {
@@ -319,12 +353,16 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         for (const agentId of omittedAgentIds) {
           this.unregister(agentId);
         }
-        for (const { agentId, eventWindow } of rosterAgentEntries(snapshot)) {
+        const rosterEntries = rosterAgentEntries(snapshot);
+        for (const { agentId, eventWindow } of rosterEntries) {
+          this.rosterEventWindows.set(agentId, eventWindow);
           this.dependencies.registerAgentRecovery(agentId, {
             eventHeadSeq: eventWindow.eventHeadSeq,
             oldestRetainedSeq: eventWindow.oldestRetainedSeq,
           });
         }
+        this.hydrateCatchUpCursors(identity);
+        this.reseedCatchUpBaselines(get);
         // Align in-memory subscriptions with the applied roster.
         this.syncRoster(get, set);
         if (this.rosterDirty) refreshAgain = true;
@@ -522,9 +560,13 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   rebaseRecoveryFromSession(agentId: string, session: AgentSessionState | undefined): void {
     if (!this.subscribedAgents.has(agentId)) return;
     this.recoveryBaselineInFlight.delete(agentId);
+    const window = this.rosterEventWindows.get(agentId);
     this.recovery.rebase(
       agentId,
-      contiguousEventSeq(session),
+      boundedCatchUpBaseline(
+        contiguousEventSeq(session, window?.eventHeadSeq),
+        window,
+      ),
       session?.eventLogEpoch,
       observedEventSeq(session),
     );
@@ -548,6 +590,10 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.rosterIdentity = undefined;
     this.rosterRetryAttempt = 0;
     this.lastRosterAppliedAt = 0;
+    this.rosterEventWindows.clear();
+    // Stored cursors stay in sessionStorage; identity + epoch checks decide
+    // whether they are still valid after the client re-discovers the daemon.
+    this.catchUpCursorState = undefined;
     if (this.globalStreamReconnectTimer != null) {
       window.clearTimeout(this.globalStreamReconnectTimer);
       this.globalStreamReconnectTimer = undefined;
@@ -572,6 +618,83 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.pendingStreamEvents.clear();
     this.subscribedAgents.clear();
     this.recovery.clear();
+  }
+
+  /**
+   * Restore persisted catch-up cursors for the freshly applied roster
+   * (#2986). Only cursors recorded for the same runtime connection and the
+   * same event-log epoch are valid; everything else starts from the bounded
+   * head-seeded baseline instead.
+   */
+  private hydrateCatchUpCursors(identity: RosterDiscoveryIdentity): void {
+    const stored = loadCatchUpCursorSnapshot(this.catchUpCursorStorage());
+    const identityMatches = Boolean(
+      stored
+      && stored.runtimeId === identity.runtimeId
+      && stored.visibilityScopeId === identity.visibilityScopeId
+      && stored.eventLogEpoch === identity.eventLogEpoch,
+    );
+    this.catchUpCursorState = identityMatches && stored
+      ? stored
+      : {
+          runtimeId: identity.runtimeId,
+          visibilityScopeId: identity.visibilityScopeId,
+          eventLogEpoch: identity.eventLogEpoch,
+          agents: {},
+        };
+    if (!identityMatches || !stored) return;
+    for (const [agentId, cursor] of Object.entries(stored.agents)) {
+      if (!cursor || cursor.eventLogEpoch !== identity.eventLogEpoch) continue;
+      const window = this.rosterEventWindows.get(agentId);
+      const baseline = boundedCatchUpBaseline(cursor.contiguousSeq, window);
+      const highest = Math.max(baseline, cursor.highestObservedSeq);
+      const existing = this.recovery.snapshotFor(agentId);
+      if (existing && baseline <= existing.contiguousSeq && highest <= existing.highestObservedSeq) {
+        continue;
+      }
+      this.recovery.rebase(agentId, baseline, identity.eventLogEpoch, highest);
+    }
+  }
+
+  /**
+   * A register() that ran before the authoritative roster (or against a
+   * session that had not hydrated yet) may hold a weak baseline. Re-seed it
+   * from the roster event window; rebase() is monotonic within an epoch, so
+   * agents already recovering or converged keep their progress (#2986).
+   */
+  private reseedCatchUpBaselines(get: () => State): void {
+    for (const agentId of this.subscribedAgents) {
+      const window = this.rosterEventWindows.get(agentId);
+      if (!window) continue;
+      const existing = this.recovery.snapshotFor(agentId);
+      const session = get().sessionsByAgentId[agentId];
+      const baseline = boundedCatchUpBaseline(
+        contiguousEventSeq(session, window.eventHeadSeq),
+        window,
+      );
+      if (existing && baseline <= existing.contiguousSeq) continue;
+      this.recovery.rebase(agentId, baseline, session?.eventLogEpoch, observedEventSeq(session));
+    }
+  }
+
+  private persistCatchUpCursor(agentId: string): void {
+    const snapshot = this.recovery.snapshotFor(agentId);
+    const cursorState = this.catchUpCursorState;
+    if (!snapshot || !cursorState) return;
+    cursorState.agents[agentId] = {
+      eventLogEpoch: cursorState.eventLogEpoch,
+      contiguousSeq: snapshot.contiguousSeq,
+      highestObservedSeq: snapshot.highestObservedSeq,
+    };
+    saveCatchUpCursorSnapshot(this.catchUpCursorStorage(), cursorState);
+  }
+
+  private catchUpCursorStorage(): Storage | undefined {
+    try {
+      return typeof window === "undefined" ? undefined : window.sessionStorage;
+    } catch {
+      return undefined;
+    }
   }
 
   private async catchUp(
@@ -664,12 +787,17 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         .filter((event) => event.event_seq != null)
         .map((event) => streamEventFromBackfill(event, agentId, page.event_log_epoch));
       const seqs = eventSeqs(events);
-      const baselineSeq = seqs.length ? Math.max(0, seqs[0] - 1) : 0;
+      const window = this.rosterEventWindows.get(agentId);
+      const baselineSeq = boundedCatchUpBaseline(
+        seqs.length ? Math.max(0, seqs[0] - 1) : 0,
+        window,
+      );
       this.recovery.rebase(agentId, baselineSeq, page.event_log_epoch);
       for (const seq of seqs) {
         this.recovery.observe(agentId, seq, page.event_log_epoch);
       }
       if (events.length) this.dependencies.applyStreamEvents(set, agentId, events);
+      this.persistCatchUpCursor(agentId);
     })().finally(() => {
       if (this.recoveryBaselineInFlight.get(agentId) === initialization) {
         this.recoveryBaselineInFlight.delete(agentId);
@@ -752,11 +880,14 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         },
       });
       if (!result.complete) {
+        // Persist bounded progress so a reload resumes from here (#2986).
+        this.persistCatchUpCursor(agentId);
         this.scheduleBackfillRetry(get, set, agentId);
         span.end("ok", { eventCount, incomplete: true });
         return false;
       }
       this.clearBackfillRetry(agentId);
+      this.persistCatchUpCursor(agentId);
       this.dependencies.setStreamState(set, agentId, "streaming", {
         syncError: undefined,
         syncRetryAttempt: undefined,
@@ -900,9 +1031,41 @@ export function streamEventFromBackfill(
   };
 }
 
-function contiguousEventSeq(session: AgentSessionState | undefined): number {
+/**
+ * Clamp a candidate catch-up baseline so it never sits further behind the
+ * authoritative roster head than the bounded lookback window, nor inside a
+ * retention range that can no longer be replayed (#2986).
+ */
+function boundedCatchUpBaseline(
+  baseline: number,
+  window: RosterEventWindow | undefined,
+): number {
+  let bounded = Math.max(0, baseline);
+  if (window) {
+    bounded = Math.max(
+      bounded,
+      window.eventHeadSeq - GLOBAL_CATCHUP_BASELINE_LOOKBACK,
+      window.oldestRetainedSeq > 0 ? window.oldestRetainedSeq - 1 : 0,
+    );
+  }
+  return bounded;
+}
+
+function contiguousEventSeq(
+  session: AgentSessionState | undefined,
+  headSeq?: number,
+): number {
   if (!session) return 0;
-  return session.gaps[0]?.afterSeq ?? highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0;
+  const direct = highestSeq(session.eventSeqs) ?? session.newestSeq ?? 0;
+  const gapAfterSeq = session.gaps[0]?.afterSeq;
+  if (gapAfterSeq != null) {
+    // A single stale gap record (e.g. left over from an earlier daemon
+    // restart) must not drag the catch-up baseline far behind head (#2986).
+    if (headSeq == null || gapAfterSeq >= headSeq - GLOBAL_CATCHUP_BASELINE_LOOKBACK) {
+      return gapAfterSeq;
+    }
+  }
+  return direct;
 }
 
 function observedEventSeq(session: AgentSessionState | undefined): number {
