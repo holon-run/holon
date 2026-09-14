@@ -37,10 +37,10 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
 
 conversation-sdk-ci: ## Test the TypeScript conversation SDK against the real Rust HTTP/SSE server
-	@bash -lc 'cd $(CONVERSATION_SDK_DIR) && \
+	@bash -c 'set -e; cd $(CONVERSATION_SDK_DIR) && \
 		if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
-		npm_config_engine_strict=true npm ci && npm test'
-	cargo test --test conversation_sdk_e2e typescript_sdk_runs_against_real_conversation_server -- --ignored
+		npm_config_engine_strict=true npm ci && npm test && \
+		cd ../.. && cargo test --test conversation_sdk_e2e typescript_sdk_runs_against_real_conversation_server -- --ignored'
 
 macos-menu-test: ## Build and test the native macOS menu app
 	swift test --package-path apps/macos/HolonMenu

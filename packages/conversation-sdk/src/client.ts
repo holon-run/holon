@@ -290,17 +290,34 @@ export class ConversationClient {
       isConversationResetReason(body.reason)
     ) {
       throw new ConversationResetError(body.reason, {
-        oldestRetainedSeq:
-          typeof body.oldest_retained_seq === "number"
-            ? body.oldest_retained_seq
-            : null,
-        eventHeadSeq:
-          typeof body.event_head_seq === "number"
-            ? body.event_head_seq
-            : null,
+        oldestRetainedSeq: resetSequence(
+          body.oldest_retained_seq,
+          "$response.oldest_retained_seq",
+        ),
+        eventHeadSeq: resetSequence(
+          body.event_head_seq,
+          "$response.event_head_seq",
+        ),
         ...(body.hint === undefined ? {} : { hint: body.hint }),
       });
     }
     throw new ConversationHttpError(response.status, body);
   }
+}
+
+function resetSequence(value: unknown, path: string): number | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (
+    typeof value !== "number" ||
+    !Number.isSafeInteger(value) ||
+    value < 0
+  ) {
+    throw new ConversationDecodeError(
+      path,
+      "expected non-negative safe integer or null",
+    );
+  }
+  return value;
 }

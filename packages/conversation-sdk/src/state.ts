@@ -63,6 +63,13 @@ interface MutableDetail {
   truncated: boolean;
 }
 
+interface AppliedBatchBoundary {
+  batchId: string;
+  fromSeq: number;
+  throughSeq: number;
+  checkpoint: ConversationCheckpoint;
+}
+
 interface MutableConversationState {
   scope: ConversationScope | null;
   turns: Map<string, ConversationTurnSummary>;
@@ -76,6 +83,7 @@ interface MutableConversationState {
   hasMore: boolean;
   checkpoint: ConversationCheckpoint | null;
   throughSeq: number | null;
+  lastAppliedBatch: AppliedBatchBoundary | null;
   resetReason: ConversationResetReason | null;
 }
 
@@ -133,6 +141,7 @@ export class ConversationProtocolState {
       );
     }
     assertSnapshotScope(current, page);
+    assertSnapshotFreshness(this.#state.throughSeq, page);
     const next = cloneState(this.#state);
     for (const turn of page.turns) {
       next.loadedTurnIds.add(turn.turn_id);
@@ -143,9 +152,6 @@ export class ConversationProtocolState {
       if (!next.loadedTurnIds.has(turn.turn_id)) {
         addLiveTurn(next, turn.turn_id, this.limits);
       }
-    }
-    for (const input of page.pending_inputs) {
-      upsertPendingInput(next, input, this.limits);
     }
     next.nextBeforeCursor = page.next_before_cursor;
     next.hasMore = page.has_more;
@@ -162,6 +168,7 @@ export class ConversationProtocolState {
   ): boolean {
     const current = this.#requireScope(identity);
     assertSnapshotScope(current, page);
+    assertSnapshotFreshness(this.#state.throughSeq, page);
     if (page.turn.turn_id !== turnId) {
       throw new ConversationStaleResponseError(
         "detail response belongs to a different turn",
@@ -214,18 +221,27 @@ export class ConversationProtocolState {
     batch: ConversationStreamBatch,
   ): boolean {
     const scope = this.#requireScope(identity);
-    if (this.#state.checkpoint === batch.checkpoint.checkpoint) {
-      return false;
-    }
     assertBatchScope(scope, batch);
-    if (this.#state.throughSeq !== batch.begin.from_seq) {
-      throw new ConversationStaleResponseError(
-        `stream batch starts at ${batch.begin.from_seq}, expected ${String(this.#state.throughSeq)}`,
-      );
-    }
+    assertBatchFraming(batch);
     if (batch.begin.through_seq < batch.begin.from_seq) {
       throw new ConversationProtocolError(
         "stream batch through_seq precedes from_seq",
+      );
+    }
+    if (this.#state.checkpoint === batch.checkpoint.checkpoint) {
+      if (
+        isExactBatchReplay(this.#state.lastAppliedBatch, batch) ||
+        isCurrentBoundaryAcknowledgement(this.#state, batch)
+      ) {
+        return false;
+      }
+      throw new ConversationProtocolError(
+        `stream checkpoint ${batch.checkpoint.checkpoint} was reused for a different batch boundary`,
+      );
+    }
+    if (this.#state.throughSeq !== batch.begin.from_seq) {
+      throw new ConversationStaleResponseError(
+        `stream batch starts at ${batch.begin.from_seq}, expected ${String(this.#state.throughSeq)}`,
       );
     }
 
@@ -235,6 +251,7 @@ export class ConversationProtocolState {
     }
     next.checkpoint = batch.checkpoint.checkpoint;
     next.throughSeq = batch.checkpoint.through_seq;
+    next.lastAppliedBatch = batchBoundary(batch);
     ensureTurnLimit(next, this.limits);
     this.#state = next;
     return true;
@@ -297,6 +314,7 @@ function emptyState(): MutableConversationState {
     hasMore: false,
     checkpoint: null,
     throughSeq: null,
+    lastAppliedBatch: null,
     resetReason: null,
   };
 }
@@ -325,6 +343,7 @@ function cloneState(
     hasMore: source.hasMore,
     checkpoint: source.checkpoint,
     throughSeq: source.throughSeq,
+    lastAppliedBatch: source.lastAppliedBatch,
     resetReason: source.resetReason,
   };
 }
@@ -388,6 +407,20 @@ function assertSnapshotScope(
   }
 }
 
+function assertSnapshotFreshness(
+  throughSeq: number | null,
+  response: ConversationSummaryResponse | ConversationActivityResponse,
+): void {
+  if (
+    throughSeq !== null &&
+    response.snapshot_through_seq < throughSeq
+  ) {
+    throw new ConversationStaleResponseError(
+      `snapshot response ends at ${response.snapshot_through_seq}, before committed stream sequence ${throughSeq}`,
+    );
+  }
+}
+
 function assertBatchScope(
   scope: ConversationScope,
   batch: ConversationStreamBatch,
@@ -405,6 +438,65 @@ function assertBatchScope(
       "stream batch scope does not match the bootstrapped conversation",
     );
   }
+  for (const mutation of batch.mutations) {
+    if (
+      mutation.event_log_epoch !== scope.event_log_epoch ||
+      mutation.visibility_scope_id !== scope.visibility_scope_id
+    ) {
+      throw new ConversationStaleResponseError(
+        "stream mutation scope does not match the bootstrapped conversation",
+      );
+    }
+  }
+}
+
+function assertBatchFraming(batch: ConversationStreamBatch): void {
+  if (batch.checkpoint.batch_id !== batch.begin.batch_id) {
+    throw new ConversationProtocolError(
+      "stream checkpoint batch id does not match batch_begin",
+    );
+  }
+  if (batch.checkpoint.through_seq !== batch.begin.through_seq) {
+    throw new ConversationProtocolError(
+      "stream checkpoint boundary does not match batch_begin",
+    );
+  }
+}
+
+function batchBoundary(
+  batch: ConversationStreamBatch,
+): AppliedBatchBoundary {
+  return {
+    batchId: batch.begin.batch_id,
+    fromSeq: batch.begin.from_seq,
+    throughSeq: batch.begin.through_seq,
+    checkpoint: batch.checkpoint.checkpoint,
+  };
+}
+
+function isExactBatchReplay(
+  applied: AppliedBatchBoundary | null,
+  batch: ConversationStreamBatch,
+): boolean {
+  return (
+    applied !== null &&
+    applied.batchId === batch.begin.batch_id &&
+    applied.fromSeq === batch.begin.from_seq &&
+    applied.throughSeq === batch.begin.through_seq &&
+    applied.checkpoint === batch.checkpoint.checkpoint
+  );
+}
+
+function isCurrentBoundaryAcknowledgement(
+  state: MutableConversationState,
+  batch: ConversationStreamBatch,
+): boolean {
+  return (
+    state.throughSeq !== null &&
+    batch.mutations.length === 0 &&
+    batch.begin.from_seq === state.throughSeq &&
+    batch.begin.through_seq === state.throughSeq
+  );
 }
 
 function compareTurns(
@@ -701,6 +793,7 @@ function applyMutation(
           return;
         }
         detail = newDetail(mutation.turn_id, mutation.detail_revision);
+        detail.invalidated = true;
         insertDetail(state, detail, limits);
       }
       if (mutation.detail_revision > detail.detailRevision) {

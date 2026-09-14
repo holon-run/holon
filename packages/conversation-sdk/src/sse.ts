@@ -76,7 +76,7 @@ export async function* parseSseStream(
     while (true) {
       const { done, value } = await reader.read();
       if (done) {
-        buffer += decoder.decode();
+        decoder.decode();
         completed = true;
         break;
       }
@@ -96,17 +96,6 @@ export async function* parseSseStream(
           yield frame;
         }
       }
-    }
-    if (buffer.length > 0) {
-      const line = buffer.endsWith("\r") ? buffer.slice(0, -1) : buffer;
-      const frame = consumeLine(line);
-      if (frame !== null) {
-        yield frame;
-      }
-    }
-    const finalFrame = dispatch();
-    if (finalFrame !== null) {
-      yield finalFrame;
     }
   } finally {
     if (!completed) {

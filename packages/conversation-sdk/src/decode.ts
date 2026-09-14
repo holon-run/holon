@@ -308,9 +308,14 @@ export function decodeTurnSummary(
   path = "$",
 ): ConversationTurnSummary {
   const source = record(value, path);
+  const turnId = nonEmptyString(source.turn_id, `${path}.turn_id`);
+  const key = decodeTurnKey(source.key, `${path}.key`);
+  if (key.turn_id !== turnId) {
+    fail(`${path}.key.turn_id`, "must match turn_id");
+  }
   return {
-    turn_id: nonEmptyString(source.turn_id, `${path}.turn_id`),
-    key: decodeTurnKey(source.key, `${path}.key`),
+    turn_id: turnId,
+    key,
     revision: safeInteger(source.revision, `${path}.revision`),
     presentation_class: enumValue(
       source.presentation_class,
@@ -337,6 +342,11 @@ export function decodeConversationActivity(
   path = "$",
 ): ConversationActivity {
   const source = record(value, path);
+  const id = nonEmptyString(source.id, `${path}.id`);
+  const key = decodeActivityKey(source.key, `${path}.key`);
+  if (key.activity_id !== id) {
+    fail(`${path}.key.activity_id`, "must match id");
+  }
   const kind = stringValue(source.kind, `${path}.kind`);
   if (
     kind !== "operator" &&
@@ -349,8 +359,8 @@ export function decodeConversationActivity(
   }
   return {
     kind,
-    id: nonEmptyString(source.id, `${path}.id`),
-    key: decodeActivityKey(source.key, `${path}.key`),
+    id,
+    key,
     revision: safeInteger(source.revision, `${path}.revision`),
     summary: stringValue(source.summary, `${path}.summary`),
   };

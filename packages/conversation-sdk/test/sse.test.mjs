@@ -31,6 +31,25 @@ test("parses chunked SSE comments and multiline data", async () => {
   ]);
 });
 
+test("discards an unterminated SSE event at EOF", async () => {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(
+        encoder.encode(
+          'event: checkpoint\nid: opaque\ndata: {"type":"checkpoint"}\n',
+        ),
+      );
+      controller.close();
+    },
+  });
+  const frames = [];
+  for await (const frame of parseSseStream(body)) {
+    frames.push(frame);
+  }
+  assert.deepEqual(frames, []);
+});
+
 test("assembles a complete batch and exposes only its checkpoint", () => {
   const assembler = new ConversationBatchAssembler();
   const begin = {

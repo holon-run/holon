@@ -8,6 +8,7 @@ import {
   ConversationDecodeError,
   ConversationResetError,
   decodeBriefRecord,
+  decodeConversationActivity,
   decodeConversationSummaryResponse,
 } from "../dist/index.js";
 import { summary } from "./helpers.mjs";
@@ -31,6 +32,37 @@ test("decodes bounded conversation responses and rejects unsafe u64 values", () 
     (error) =>
       error instanceof ConversationDecodeError &&
       error.path === "$.turns[0].revision",
+  );
+
+  assert.throws(
+    () =>
+      decodeConversationSummaryResponse(
+        summary({
+          turns: [
+            {
+              ...summary().turns[0],
+              key: { turn_index: 10, turn_id: "different-turn" },
+            },
+          ],
+        }),
+      ),
+    (error) =>
+      error instanceof ConversationDecodeError &&
+      error.path === "$.turns[0].key.turn_id",
+  );
+
+  assert.throws(
+    () =>
+      decodeConversationActivity({
+        kind: "assistant",
+        id: "activity-a",
+        key: { event_seq: 10, activity_id: "activity-b" },
+        revision: 1,
+        summary: "activity",
+      }),
+    (error) =>
+      error instanceof ConversationDecodeError &&
+      error.path === "$.key.activity_id",
   );
 });
 
@@ -132,4 +164,28 @@ test("maps handshake capability absence and typed reset errors", async () => {
       error.oldestRetainedSeq === 50 &&
       error.eventHeadSeq === 100,
   );
+
+  for (const malformed of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const invalidReset = new ConversationClient({
+      baseUrl: "http://runtime.test/api",
+      fetch: async () =>
+        Response.json(
+          {
+            ok: false,
+            error: "conversation recovery reset required",
+            code: "conversation_reset_required",
+            reason: "retention_expired",
+            oldest_retained_seq: malformed,
+            event_head_seq: 100,
+          },
+          { status: 409 },
+        ),
+    });
+    await assert.rejects(
+      invalidReset.summary("web"),
+      (error) =>
+        error instanceof ConversationDecodeError &&
+        error.path === "$response.oldest_retained_seq",
+    );
+  }
 });
