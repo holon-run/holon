@@ -1,6 +1,6 @@
 ---
 title: Holon
-summary: 让 Agent 持续跟进，让你不必事事盯着。Holon 是为持续工作而建的本地 Agent 工作台；你决定目标和边界，Agent 记录进展、等待变化，再接着推进。
+summary: Agent 持续跟进，无需事事盯着。Holon 是为持续工作而建的本地 Agent 工作台；你决定目标和边界，Agent 记录进展、等待变化，再接着推进。
 order: 1
 ---
 
@@ -10,7 +10,7 @@ order: 1
 
 <p class="home-eyebrow">与 Agent 协作，不止于一次对话</p>
 
-# 让 Agent 持续跟进，<br>让你不必事事盯着。
+# Agent 持续跟进，<br>无需事事盯着。
 
 <p class="home-hero__lede">把需要长期关注的事务交给 Agent：按约定跟进，有变化时继续推进，需要你判断或授权时再请你参与。你决定目标和边界，不必每一步都亲自催动。</p>
 
