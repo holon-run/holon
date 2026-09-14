@@ -552,22 +552,7 @@ impl RuntimeHost {
         let connection = rusqlite::Connection::open(&index_path)
             .with_context(|| format!("opening memory index at {}", index_path.display()))?;
         let tx = connection.unchecked_transaction()?;
-        // Delete FTS entries first (references memory_documents).
-        let _ = tx.execute(
-            "DELETE FROM memory_documents_fts
-             WHERE document_key IN (
-                SELECT document_key FROM memory_documents WHERE agent_id = ?1
-             )",
-            [agent_id],
-        );
-        tx.execute(
-            "DELETE FROM memory_documents WHERE agent_id = ?1",
-            [agent_id],
-        )?;
-        tx.execute(
-            "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
-            [agent_id],
-        )?;
+        delete_agent_memory_index_projection(&tx, agent_id)?;
         let _ = tx.execute(
             "DELETE FROM memory_index_pending_sources WHERE agent_id = ?1",
             [agent_id],
@@ -710,6 +695,50 @@ impl RuntimeHost {
     }
 }
 
+fn delete_agent_memory_index_projection(
+    tx: &rusqlite::Transaction<'_>,
+    agent_id: &str,
+) -> Result<()> {
+    // These tables may be absent in an index created by an older runtime.
+    let table_exists = |name: &str| -> Result<bool> {
+        tx.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
+             )",
+            [name],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(Into::into)
+    };
+    if table_exists("memory_documents_fts")? {
+        tx.execute(
+            "DELETE FROM memory_documents_fts
+             WHERE document_key IN (
+                SELECT document_key FROM memory_documents WHERE agent_id = ?1
+             )",
+            [agent_id],
+        )?;
+    }
+    if table_exists("memory_documents_fts_rows")? {
+        tx.execute(
+            "DELETE FROM memory_documents_fts_rows
+             WHERE document_key IN (
+                SELECT document_key FROM memory_documents WHERE agent_id = ?1
+             )",
+            [agent_id],
+        )?;
+    }
+    tx.execute(
+        "DELETE FROM memory_documents WHERE agent_id = ?1",
+        [agent_id],
+    )?;
+    tx.execute(
+        "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
+        [agent_id],
+    )?;
+    Ok(())
+}
+
 /// Validate that an agent home path is safe to delete: it must be a real
 /// directory (not a symlink) that resolves inside the runtime agents root.
 /// Deletion fails closed so a tampered home cannot remove files outside the
@@ -746,6 +775,71 @@ fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_cleanup_removes_row_map_before_fts_rowid_reuse() -> Result<()> {
+        let connection = rusqlite::Connection::open_in_memory()?;
+        connection.execute_batch(
+            "CREATE TABLE memory_documents (
+                 document_key TEXT PRIMARY KEY,
+                 agent_id TEXT NOT NULL
+             );
+             CREATE VIRTUAL TABLE memory_documents_fts USING fts5(
+                 document_key UNINDEXED,
+                 body
+             );
+             CREATE TABLE memory_documents_fts_rows (
+                 document_key TEXT PRIMARY KEY,
+                 fts_rowid INTEGER NOT NULL UNIQUE
+             );
+             CREATE TABLE memory_index_source_state (
+                 document_key TEXT PRIMARY KEY,
+                 agent_id TEXT NOT NULL
+             );",
+        )?;
+        let deleted_key = "deleted-agent:message:old";
+        connection.execute(
+            "INSERT INTO memory_documents (document_key, agent_id) VALUES (?1, 'deleted-agent')",
+            [deleted_key],
+        )?;
+        connection.execute(
+            "INSERT INTO memory_documents_fts (document_key, body) VALUES (?1, 'old')",
+            [deleted_key],
+        )?;
+        let deleted_rowid = connection.last_insert_rowid();
+        connection.execute(
+            "INSERT INTO memory_documents_fts_rows (document_key, fts_rowid) VALUES (?1, ?2)",
+            rusqlite::params![deleted_key, deleted_rowid],
+        )?;
+        connection.execute(
+            "INSERT INTO memory_index_source_state (document_key, agent_id)
+             VALUES (?1, 'deleted-agent')",
+            [deleted_key],
+        )?;
+
+        let tx = connection.unchecked_transaction()?;
+        delete_agent_memory_index_projection(&tx, "deleted-agent")?;
+        tx.commit()?;
+
+        let replacement_key = "replacement-agent:message:new";
+        connection.execute(
+            "INSERT INTO memory_documents_fts (rowid, document_key, body)
+             VALUES (?1, ?2, 'new')",
+            rusqlite::params![deleted_rowid, replacement_key],
+        )?;
+        connection.execute(
+            "INSERT INTO memory_documents_fts_rows (document_key, fts_rowid) VALUES (?1, ?2)",
+            rusqlite::params![replacement_key, deleted_rowid],
+        )?;
+
+        let mapped_key: String = connection.query_row(
+            "SELECT document_key FROM memory_documents_fts_rows WHERE fts_rowid = ?1",
+            [deleted_rowid],
+            |row| row.get(0),
+        )?;
+        assert_eq!(mapped_key, replacement_key);
+        Ok(())
+    }
 
     #[test]
     fn deletable_home_accepts_plain_directory_inside_root() {
