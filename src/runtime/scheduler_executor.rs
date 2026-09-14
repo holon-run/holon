@@ -865,6 +865,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 .as_ref()
                 .map(|work_item_id| (plan.activation_id.as_str(), work_item_id.as_str()))
         }) {
+            // Admission intentionally follows the canonical claim commit. If the
+            // process stops here, restart recovery closes the open attempt and a
+            // later canonical activation reclaims its unsettled results.
             let admitted = self
                 .runtime
                 .inner
