@@ -7,14 +7,16 @@ use serde_json::{json, Value};
 
 use crate::{
     diagnostics::PerformanceDiagnosticsSnapshot,
+    domain::conversation::ConversationShadowDiagnostics,
     http::{
         AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
         CompleteWorkItemRequest, ConversationActivityResponse, ConversationReadQuery,
-        ConversationStreamMessage, ConversationSummaryResponse, CreateTimerRequest,
-        DeleteAgentRequest, MemoryGetRequest, ModelConfigMigrationRequest, PickWorkItemRequest,
-        PickWorkItemResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, SearchRequest, SearchResponse, UpdateWorkItemRequest,
+        ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
+        CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest, ModelConfigMigrationRequest,
+        PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
+        UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -82,6 +84,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
     event_stream_route("get", "/agents/{agent_id}/conversation/stream", "agentConversationStream", "agents", "Conversation change stream", "Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/activities", "agentConversationActivities", "agents", "Conversation turn activity snapshot", "Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationActivityResponse", AuthKind::RemoteAccess),
+    route_with_response("get", "/control/agents/{agent_id}/conversation/shadow-diagnostics", "agentConversationShadowDiagnostics", "runtime", "Conversation shadow diagnostics", "Control-authenticated, metadata-only bounded comparison of canonical turn/source metadata and the conversation projection from one deferred read transaction. It never returns Brief bodies, transcript/tool payloads, or a second event ledger. Query parameter: turn_limit.", None, "ConversationShadowDiagnostics", AuthKind::Control),
     aide_route("get", "/agents/{agent_id}", "getAgent", "agents", "Get agent", "Return the canonical public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
@@ -510,6 +513,20 @@ fn operation(spec: &RouteSpec) -> Value {
             }),
         ]);
     }
+    if spec.operation_id == "agentConversationShadowDiagnostics" {
+        parameters.push(json!({
+            "name": "turn_limit",
+            "in": "query",
+            "required": false,
+            "description": "Maximum recent canonical turns compared. The server applies the bounded maximum.",
+            "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": crate::runtime_db::conversation::MAX_CONVERSATION_SHADOW_TURNS,
+                "default": CONVERSATION_SHADOW_DEFAULT_LIMIT
+            }
+        }));
+    }
     let mut op = json!({
         "operationId": spec.operation_id,
         "tags": [spec.tag],
@@ -759,6 +776,10 @@ fn component_schemas() -> Value {
         component_schema::<ConversationReadQuery>(),
     );
     schemas.insert(
+        "ConversationShadowQuery".into(),
+        component_schema::<ConversationShadowQuery>(),
+    );
+    schemas.insert(
         "ConversationSummaryResponse".into(),
         component_schema::<ConversationSummaryResponse>(),
     );
@@ -769,6 +790,10 @@ fn component_schemas() -> Value {
     schemas.insert(
         "ConversationStreamMessage".into(),
         component_schema::<ConversationStreamMessage>(),
+    );
+    schemas.insert(
+        "ConversationShadowDiagnostics".into(),
+        component_schema::<ConversationShadowDiagnostics>(),
     );
     schemas.insert("SlimTaskDto".into(), component_schema::<SlimTaskDto>());
     schemas.insert(

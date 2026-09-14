@@ -525,6 +525,12 @@ function mergeTurn(
   loaded: boolean,
   limits: ConversationStateLimits,
 ): boolean {
+  if (loaded) {
+    state.loadedTurnIds.add(incoming.turn_id);
+    state.liveTurnOrder = state.liveTurnOrder.filter(
+      (id) => id !== incoming.turn_id,
+    );
+  }
   const existing = state.turns.get(incoming.turn_id);
   if (existing !== undefined) {
     if (incoming.revision < existing.revision) {
@@ -546,13 +552,7 @@ function mergeTurn(
     }
   }
   state.turns.set(incoming.turn_id, incoming);
-  if (loaded) {
-    state.loadedTurnIds.add(incoming.turn_id);
-  }
-  if (
-    incoming.execution.kind === "active" &&
-    !state.loadedTurnIds.has(incoming.turn_id)
-  ) {
+  if (!state.loadedTurnIds.has(incoming.turn_id)) {
     addLiveTurn(state, incoming.turn_id, limits);
   }
   return true;
@@ -563,8 +563,9 @@ function addLiveTurn(
   turnId: string,
   limits: ConversationStateLimits,
 ): void {
-  state.liveTurnOrder = state.liveTurnOrder.filter((id) => id !== turnId);
-  state.liveTurnOrder.push(turnId);
+  if (!state.liveTurnOrder.includes(turnId)) {
+    state.liveTurnOrder.push(turnId);
+  }
   while (state.liveTurnOrder.length > limits.max_live_turns) {
     const evicted = state.liveTurnOrder.shift();
     if (evicted === undefined) {
@@ -756,13 +757,6 @@ function applyMutation(
       );
       return;
     case "turn_summary_upsert": {
-      const known =
-        state.loadedTurnIds.has(mutation.turn.turn_id) ||
-        state.liveTurnOrder.includes(mutation.turn.turn_id) ||
-        state.turns.has(mutation.turn.turn_id);
-      if (!known && mutation.turn.execution.kind === "terminal") {
-        return;
-      }
       mergeTurn(
         state,
         mutation.turn,

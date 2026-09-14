@@ -1,6 +1,6 @@
 //! Durable revision and linkage metadata for the conversation read model.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
@@ -11,11 +11,12 @@ use serde_json::Value;
 
 use crate::domain::conversation::{
     map_result, presentation_class, ActivityItem, ActivityKey, Attention, ConversationActivity,
-    ConversationActivityPage, ConversationChange, ConversationSummaryPage, ConversationTurnSummary,
-    CursorBinding, CursorCodec, CursorDecodeError, DetailCoverage, DetailCoverageReason,
-    DetailCursor, ExecutionState, HistoryCursor, PendingInput, PendingInputState,
-    PresentationClass, StreamCursor, TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION,
-    CONVERSATION_SCHEMA_VERSION,
+    ConversationActivityPage, ConversationChange, ConversationShadowDiagnostics,
+    ConversationShadowMetadata, ConversationShadowMismatch, ConversationShadowMismatchKind,
+    ConversationSummaryPage, ConversationTurnSummary, CursorBinding, CursorCodec,
+    CursorDecodeError, DetailCoverage, DetailCoverageReason, DetailCursor, ExecutionState,
+    HistoryCursor, PendingInput, PendingInputState, PresentationClass, StreamCursor,
+    TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::types::ConversationRepository;
 use crate::types::{TurnRecord, TurnTerminalKind};
@@ -201,8 +202,10 @@ LIMIT ?6";
 const MAX_ACTIVE_TURNS: usize = 32;
 const MAX_PENDING_INPUTS: usize = 100;
 const MAX_BRIEFS_PER_TURN: usize = 64;
+const MAX_CONVERSATION_SHADOW_MISMATCH_SAMPLES: usize = 32;
 pub(crate) const MAX_CONVERSATION_CHANGE_EVENTS: usize = 256;
 pub(crate) const MAX_CONVERSATION_CHANGE_ACTIVITIES: usize = 64;
+pub(crate) const MAX_CONVERSATION_SHADOW_TURNS: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConversationTurnRevision {
@@ -500,6 +503,42 @@ impl ConversationRepository<'_> {
         )
     }
 
+    pub fn shadow_diagnostics(
+        &self,
+        agent_id: &str,
+        turn_limit: usize,
+        scope_principal: &str,
+        scope_entitlement: &str,
+    ) -> Result<Option<ConversationShadowDiagnostics>> {
+        validate_limit(
+            "conversation shadow turns",
+            turn_limit,
+            MAX_CONVERSATION_SHADOW_TURNS,
+        )?;
+        let mut connection = self.db.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let Some(context) = conversation_snapshot_context(
+            &transaction,
+            agent_id,
+            scope_principal,
+            scope_entitlement,
+        )?
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let projection = summary_page_in(&transaction, agent_id, turn_limit, None, None)?;
+        let canonical = canonical_shadow_metadata(
+            &transaction,
+            agent_id,
+            turn_limit,
+            projection.membership_upper_bound.as_ref(),
+        )?;
+        let diagnostics = compare_shadow_metadata(context, turn_limit, canonical, projection)?;
+        transaction.commit()?;
+        Ok(Some(diagnostics))
+    }
+
     fn summary_snapshot_after_context(
         &self,
         agent_id: &str,
@@ -779,7 +818,7 @@ impl ConversationRepository<'_> {
                 };
                 let active = matches!(turn.execution, ExecutionState::Active);
                 changes.push(ConversationChange::TurnSummaryUpsert { turn });
-                if active {
+                if active && remaining_activity_limit > 0 {
                     if let Some(page) = activities_in(
                         &transaction,
                         agent_id,
@@ -788,23 +827,16 @@ impl ConversationRepository<'_> {
                         None,
                         None,
                     )? {
-                        if page.has_more {
-                            return Err(ConversationReadError::ResetRequired {
-                                reason: ConversationResetReason::ReplayLimitExceeded,
-                                requested_seq: from_seq,
-                                oldest_retained_seq: context.oldest_retained_seq,
-                                event_head_seq: context.event_head_seq,
-                            }
-                            .into());
+                        if !page.has_more {
+                            remaining_activity_limit =
+                                remaining_activity_limit.saturating_sub(page.activities.len());
+                            changes.extend(page.activities.into_iter().map(|activity| {
+                                ConversationChange::ActivityUpsert {
+                                    turn_id: turn_id.clone(),
+                                    activity,
+                                }
+                            }));
                         }
-                        remaining_activity_limit =
-                            remaining_activity_limit.saturating_sub(page.activities.len());
-                        changes.extend(page.activities.into_iter().map(|activity| {
-                            ConversationChange::ActivityUpsert {
-                                turn_id: turn_id.clone(),
-                                activity,
-                            }
-                        }));
                     }
                 }
                 changes.push(ConversationChange::DetailInvalidated {
@@ -947,6 +979,519 @@ impl ConversationSnapshotContext {
             schema_version: CONVERSATION_SCHEMA_VERSION,
             query_version: CONVERSATION_QUERY_VERSION,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ShadowTurnMetadata {
+    revision: Option<u64>,
+    brief_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShadowPendingInputMetadata {
+    revision: Option<u64>,
+    state: PendingInputState,
+}
+
+struct CanonicalShadowMetadata {
+    turns: BTreeMap<String, ShadowTurnMetadata>,
+    active_turns: BTreeMap<String, ShadowTurnMetadata>,
+    pending_inputs: BTreeMap<String, ShadowPendingInputMetadata>,
+    legacy_unattributed_briefs: usize,
+}
+
+fn canonical_shadow_metadata(
+    connection: &Connection,
+    agent_id: &str,
+    turn_limit: usize,
+    membership_upper_bound: Option<&TurnKey>,
+) -> Result<CanonicalShadowMetadata> {
+    let mut turns = BTreeMap::new();
+    if let Some(upper_bound) = membership_upper_bound {
+        let mut statement = connection.prepare(
+            "SELECT turns.turn_id, revisions.summary_revision
+             FROM turn_records AS turns
+             LEFT JOIN conversation_turn_revisions AS revisions
+               ON revisions.agent_id = turns.agent_id
+              AND revisions.turn_id = turns.turn_id
+             WHERE turns.agent_id = ?1
+               AND (
+                 turns.turn_index < ?2
+                 OR (turns.turn_index = ?2 AND turns.turn_id <= ?3)
+               )
+             ORDER BY turns.turn_index DESC, turns.turn_id DESC
+             LIMIT ?4",
+        )?;
+        let rows = statement.query_map(
+            params![
+                agent_id,
+                i64::try_from(upper_bound.turn_index)?,
+                upper_bound.turn_id,
+                i64::try_from(turn_limit)?,
+            ],
+            |row| {
+                let revision = row
+                    .get::<_, Option<i64>>(1)?
+                    .map(u64::try_from)
+                    .transpose()
+                    .map_err(sql_integer_error)?;
+                Ok((row.get::<_, String>(0)?, revision))
+            },
+        )?;
+        for row in rows {
+            let (turn_id, revision) = row?;
+            turns.insert(
+                turn_id,
+                ShadowTurnMetadata {
+                    revision,
+                    brief_ids: Vec::new(),
+                },
+            );
+        }
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT turns.turn_id, revisions.summary_revision
+         FROM turn_records AS turns
+         LEFT JOIN conversation_turn_revisions AS revisions
+           ON revisions.agent_id = turns.agent_id
+          AND revisions.turn_id = turns.turn_id
+         WHERE turns.agent_id = ?1
+           AND turns.terminal_kind IS NULL
+         ORDER BY turns.turn_index, turns.turn_id
+         LIMIT ?2",
+    )?;
+    let rows = statement.query_map(
+        params![agent_id, i64::try_from(MAX_ACTIVE_TURNS + 1)?],
+        |row| {
+            let revision = row
+                .get::<_, Option<i64>>(1)?
+                .map(u64::try_from)
+                .transpose()
+                .map_err(sql_integer_error)?;
+            Ok((row.get::<_, String>(0)?, revision))
+        },
+    )?;
+    let active_rows = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    if active_rows.len() > MAX_ACTIVE_TURNS {
+        return Err(ConversationReadError::CountLimitExceeded {
+            resource: "active turns",
+            limit: MAX_ACTIVE_TURNS,
+        }
+        .into());
+    }
+    let mut active_turns = active_rows
+        .into_iter()
+        .map(|(turn_id, revision)| {
+            (
+                turn_id,
+                ShadowTurnMetadata {
+                    revision,
+                    brief_ids: Vec::new(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let turn_ids = turns
+        .keys()
+        .chain(active_turns.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let brief_ids = canonical_shadow_brief_ids(connection, agent_id, &turn_ids)?;
+    for (turn_id, ids) in brief_ids {
+        if let Some(turn) = turns.get_mut(&turn_id) {
+            turn.brief_ids = ids.clone();
+        }
+        if let Some(turn) = active_turns.get_mut(&turn_id) {
+            turn.brief_ids = ids;
+        }
+    }
+
+    let mut statement = connection.prepare(
+        "SELECT queue.message_id, revisions.revision, queue.status
+         FROM queue_entries AS queue
+         LEFT JOIN conversation_input_assignments AS assignments
+           ON assignments.message_id = queue.message_id
+          AND assignments.agent_id = queue.agent_id
+         LEFT JOIN conversation_source_revisions AS revisions
+           ON revisions.source_kind = 'operator'
+          AND revisions.source_id = queue.message_id
+          AND revisions.agent_id = queue.agent_id
+         WHERE queue.agent_id = ?1
+           AND queue.status IN ('queued', 'dequeued')
+           AND assignments.message_id IS NULL
+         ORDER BY queue.created_at, queue.message_id
+         LIMIT ?2",
+    )?;
+    let rows = statement.query_map(
+        params![agent_id, i64::try_from(MAX_PENDING_INPUTS + 1)?],
+        |row| {
+            let revision = row
+                .get::<_, Option<i64>>(1)?
+                .map(u64::try_from)
+                .transpose()
+                .map_err(sql_integer_error)?;
+            let state = if row.get::<_, String>(2)? == "queued" {
+                PendingInputState::Queued
+            } else {
+                PendingInputState::Assigning
+            };
+            Ok((
+                row.get::<_, String>(0)?,
+                ShadowPendingInputMetadata { revision, state },
+            ))
+        },
+    )?;
+    let pending_rows = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+    if pending_rows.len() > MAX_PENDING_INPUTS {
+        return Err(ConversationReadError::CountLimitExceeded {
+            resource: "pending inputs",
+            limit: MAX_PENDING_INPUTS,
+        }
+        .into());
+    }
+
+    let legacy_unattributed_briefs = connection.query_row(
+        "SELECT COUNT(*)
+         FROM briefs
+         WHERE agent_id = ?1 AND turn_id IS NULL",
+        [agent_id],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    Ok(CanonicalShadowMetadata {
+        turns,
+        active_turns,
+        pending_inputs: pending_rows.into_iter().collect(),
+        legacy_unattributed_briefs: usize::try_from(legacy_unattributed_briefs)
+            .context("legacy unattributed Brief count is negative")?,
+    })
+}
+
+fn canonical_shadow_brief_ids(
+    connection: &Connection,
+    agent_id: &str,
+    turn_ids: &BTreeSet<String>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    if turn_ids.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let placeholders = std::iter::repeat_n("?", turn_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = connection.prepare(&format!(
+        "SELECT turn_id, evidence_id
+         FROM briefs
+         WHERE agent_id = ?
+           AND turn_id IN ({placeholders})
+         ORDER BY turn_id, COALESCE(created_event_seq, 9223372036854775807),
+                  created_at, evidence_id"
+    ))?;
+    let rows = statement.query_map(
+        params_from_iter(std::iter::once(agent_id).chain(turn_ids.iter().map(String::as_str))),
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+    )?;
+    let mut by_turn = BTreeMap::<String, Vec<String>>::new();
+    for row in rows {
+        let (turn_id, brief_id) = row?;
+        let brief_ids = by_turn.entry(turn_id).or_default();
+        if brief_ids.len() >= MAX_BRIEFS_PER_TURN {
+            return Err(ConversationReadError::CountLimitExceeded {
+                resource: "briefs per turn",
+                limit: MAX_BRIEFS_PER_TURN,
+            }
+            .into());
+        }
+        brief_ids.push(brief_id);
+    }
+    Ok(by_turn)
+}
+
+fn compare_shadow_metadata(
+    context: ConversationSnapshotContext,
+    checked_turn_limit: usize,
+    canonical: CanonicalShadowMetadata,
+    projection: ConversationSummaryPage,
+) -> Result<ConversationShadowDiagnostics> {
+    let projection_turns = projection
+        .turns
+        .iter()
+        .map(|turn| {
+            (
+                turn.turn_id.clone(),
+                ShadowTurnMetadata {
+                    revision: Some(turn.revision),
+                    brief_ids: turn.brief_ids.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let projection_active_turns = projection
+        .active_turns
+        .iter()
+        .map(|turn| {
+            (
+                turn.turn_id.clone(),
+                ShadowTurnMetadata {
+                    revision: Some(turn.revision),
+                    brief_ids: turn.brief_ids.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let projection_pending_inputs = projection
+        .pending_inputs
+        .iter()
+        .map(|input| {
+            (
+                input.message_id.clone(),
+                ShadowPendingInputMetadata {
+                    revision: Some(input.revision),
+                    state: input.state,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let canonical_briefs = unique_shadow_brief_count(&canonical.turns, &canonical.active_turns);
+    let projection_briefs = unique_shadow_brief_count(&projection_turns, &projection_active_turns);
+    let canonical_metadata = ConversationShadowMetadata {
+        turns: canonical.turns.len(),
+        active_turns: canonical.active_turns.len(),
+        pending_inputs: canonical.pending_inputs.len(),
+        briefs: canonical_briefs,
+    };
+    let projection_metadata = ConversationShadowMetadata {
+        turns: projection_turns.len(),
+        active_turns: projection_active_turns.len(),
+        pending_inputs: projection_pending_inputs.len(),
+        briefs: projection_briefs,
+    };
+
+    let mut mismatch_count = 0;
+    let mut mismatches = Vec::new();
+    compare_shadow_turns(
+        &canonical.turns,
+        &projection_turns,
+        ConversationShadowMismatchKind::MissingProjectionTurn,
+        ConversationShadowMismatchKind::UnexpectedProjectionTurn,
+        &mut mismatch_count,
+        &mut mismatches,
+    );
+    compare_shadow_turns(
+        &canonical.active_turns,
+        &projection_active_turns,
+        ConversationShadowMismatchKind::ActiveMembership,
+        ConversationShadowMismatchKind::ActiveMembership,
+        &mut mismatch_count,
+        &mut mismatches,
+    );
+    compare_shadow_inputs(
+        &canonical.pending_inputs,
+        &projection_pending_inputs,
+        &mut mismatch_count,
+        &mut mismatches,
+    );
+
+    Ok(ConversationShadowDiagnostics {
+        schema_version: CONVERSATION_SCHEMA_VERSION,
+        query_version: CONVERSATION_QUERY_VERSION,
+        runtime_id: context.runtime_id,
+        event_log_epoch: context.event_log_epoch,
+        visibility_scope_id: context.visibility_scope_id,
+        event_head_seq: context.event_head_seq,
+        oldest_retained_seq: context.oldest_retained_seq,
+        checked_turn_limit,
+        canonical: canonical_metadata,
+        projection: projection_metadata,
+        legacy_unattributed_briefs: canonical.legacy_unattributed_briefs,
+        mismatch_count,
+        mismatch_samples_truncated: mismatch_count > mismatches.len(),
+        mismatches,
+    })
+}
+
+fn unique_shadow_brief_count(
+    turns: &BTreeMap<String, ShadowTurnMetadata>,
+    active_turns: &BTreeMap<String, ShadowTurnMetadata>,
+) -> usize {
+    turns
+        .iter()
+        .chain(active_turns)
+        .map(|(turn_id, turn)| (turn_id, turn.brief_ids.len()))
+        .collect::<BTreeMap<_, _>>()
+        .values()
+        .sum()
+}
+
+fn compare_shadow_turns(
+    canonical: &BTreeMap<String, ShadowTurnMetadata>,
+    projection: &BTreeMap<String, ShadowTurnMetadata>,
+    missing_kind: ConversationShadowMismatchKind,
+    unexpected_kind: ConversationShadowMismatchKind,
+    mismatch_count: &mut usize,
+    mismatches: &mut Vec<ConversationShadowMismatch>,
+) {
+    for (turn_id, canonical_turn) in canonical {
+        let Some(projection_turn) = projection.get(turn_id) else {
+            push_shadow_mismatch(
+                mismatch_count,
+                mismatches,
+                ConversationShadowMismatch {
+                    kind: missing_kind,
+                    entity_id: turn_id.clone(),
+                    canonical_revision: canonical_turn.revision,
+                    projection_revision: None,
+                    canonical_count: Some(canonical_turn.brief_ids.len()),
+                    projection_count: None,
+                    canonical_state: None,
+                    projection_state: None,
+                },
+            );
+            continue;
+        };
+        if canonical_turn.revision != projection_turn.revision {
+            push_shadow_mismatch(
+                mismatch_count,
+                mismatches,
+                ConversationShadowMismatch {
+                    kind: ConversationShadowMismatchKind::TurnRevision,
+                    entity_id: turn_id.clone(),
+                    canonical_revision: canonical_turn.revision,
+                    projection_revision: projection_turn.revision,
+                    canonical_count: None,
+                    projection_count: None,
+                    canonical_state: None,
+                    projection_state: None,
+                },
+            );
+        }
+        if canonical_turn.brief_ids != projection_turn.brief_ids {
+            push_shadow_mismatch(
+                mismatch_count,
+                mismatches,
+                ConversationShadowMismatch {
+                    kind: ConversationShadowMismatchKind::BriefMembership,
+                    entity_id: turn_id.clone(),
+                    canonical_revision: None,
+                    projection_revision: None,
+                    canonical_count: Some(canonical_turn.brief_ids.len()),
+                    projection_count: Some(projection_turn.brief_ids.len()),
+                    canonical_state: None,
+                    projection_state: None,
+                },
+            );
+        }
+    }
+    for (turn_id, projection_turn) in projection {
+        if canonical.contains_key(turn_id) {
+            continue;
+        }
+        push_shadow_mismatch(
+            mismatch_count,
+            mismatches,
+            ConversationShadowMismatch {
+                kind: unexpected_kind,
+                entity_id: turn_id.clone(),
+                canonical_revision: None,
+                projection_revision: projection_turn.revision,
+                canonical_count: None,
+                projection_count: Some(projection_turn.brief_ids.len()),
+                canonical_state: None,
+                projection_state: None,
+            },
+        );
+    }
+}
+
+fn compare_shadow_inputs(
+    canonical: &BTreeMap<String, ShadowPendingInputMetadata>,
+    projection: &BTreeMap<String, ShadowPendingInputMetadata>,
+    mismatch_count: &mut usize,
+    mismatches: &mut Vec<ConversationShadowMismatch>,
+) {
+    for (message_id, canonical_input) in canonical {
+        let Some(projection_input) = projection.get(message_id) else {
+            push_shadow_mismatch(
+                mismatch_count,
+                mismatches,
+                ConversationShadowMismatch {
+                    kind: ConversationShadowMismatchKind::MissingProjectionInput,
+                    entity_id: message_id.clone(),
+                    canonical_revision: canonical_input.revision,
+                    projection_revision: None,
+                    canonical_count: None,
+                    projection_count: None,
+                    canonical_state: Some(canonical_input.state),
+                    projection_state: None,
+                },
+            );
+            continue;
+        };
+        if canonical_input.revision != projection_input.revision {
+            push_shadow_mismatch(
+                mismatch_count,
+                mismatches,
+                ConversationShadowMismatch {
+                    kind: ConversationShadowMismatchKind::InputRevision,
+                    entity_id: message_id.clone(),
+                    canonical_revision: canonical_input.revision,
+                    projection_revision: projection_input.revision,
+                    canonical_count: None,
+                    projection_count: None,
+                    canonical_state: None,
+                    projection_state: None,
+                },
+            );
+        }
+        if canonical_input.state != projection_input.state {
+            push_shadow_mismatch(
+                mismatch_count,
+                mismatches,
+                ConversationShadowMismatch {
+                    kind: ConversationShadowMismatchKind::InputState,
+                    entity_id: message_id.clone(),
+                    canonical_revision: None,
+                    projection_revision: None,
+                    canonical_count: None,
+                    projection_count: None,
+                    canonical_state: Some(canonical_input.state),
+                    projection_state: Some(projection_input.state),
+                },
+            );
+        }
+    }
+    for (message_id, projection_input) in projection {
+        if canonical.contains_key(message_id) {
+            continue;
+        }
+        push_shadow_mismatch(
+            mismatch_count,
+            mismatches,
+            ConversationShadowMismatch {
+                kind: ConversationShadowMismatchKind::UnexpectedProjectionInput,
+                entity_id: message_id.clone(),
+                canonical_revision: None,
+                projection_revision: projection_input.revision,
+                canonical_count: None,
+                projection_count: None,
+                canonical_state: None,
+                projection_state: Some(projection_input.state),
+            },
+        );
+    }
+}
+
+fn push_shadow_mismatch(
+    mismatch_count: &mut usize,
+    mismatches: &mut Vec<ConversationShadowMismatch>,
+    mismatch: ConversationShadowMismatch,
+) {
+    *mismatch_count += 1;
+    if mismatches.len() < MAX_CONVERSATION_SHADOW_MISMATCH_SAMPLES {
+        mismatches.push(mismatch);
     }
 }
 

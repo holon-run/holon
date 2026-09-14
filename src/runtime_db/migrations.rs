@@ -3550,6 +3550,11 @@ CREATE INDEX IF NOT EXISTS idx_task_result_settlements_activation
   WHERE activation_id IS NOT NULL;
 "#,
     },
+    Migration {
+        version: 66,
+        name: "conversation_input_assignment_repair",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3803,6 +3808,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "conversation_read_model_phase1" {
         ensure_conversation_read_model_phase1_schema(transaction)?;
+    }
+    if migration.name == "conversation_input_assignment_repair" {
+        repair_conversation_input_assignments(transaction)?;
     }
     if migration.name == "authentication_login_verifier" {
         ensure_authentication_login_verifier_schema(transaction)?;
@@ -4105,11 +4113,44 @@ CREATE INDEX IF NOT EXISTS idx_conversation_input_assignments_agent_turn
              INSERT OR IGNORE INTO conversation_input_assignments (
                message_id, agent_id, turn_id, revision, assigned_at
              )
-             SELECT input.value, turns.agent_id, turns.turn_id, 1, turns.created_at
+             SELECT input.value, turns.agent_id,
+                    CASE
+                      WHEN json_extract(
+                             turns.payload_json,
+                             '$.replay.source_message_id'
+                           ) = input.value
+                       AND json_type(
+                             turns.payload_json,
+                             '$.replay.source_turn_id'
+                           ) = 'text'
+                      THEN json_extract(
+                             turns.payload_json,
+                             '$.replay.source_turn_id'
+                           )
+                      ELSE turns.turn_id
+                    END,
+                    1, turns.created_at
              FROM turn_records AS turns,
                   json_each(turns.payload_json, '$.input_message_ids') AS input
-             WHERE input.type = 'text';"
+             WHERE input.type = 'text'
+             ORDER BY
+               CASE
+                 WHEN json_extract(
+                        turns.payload_json,
+                        '$.replay.source_message_id'
+                      ) = input.value
+                  AND json_type(
+                        turns.payload_json,
+                        '$.replay.source_turn_id'
+                      ) = 'text'
+                 THEN 0
+                 ELSE 1
+               END,
+               turns.turn_index,
+               turns.created_at,
+               turns.turn_id;"
         ))?;
+        repair_conversation_input_assignments(transaction)?;
     }
     for (table, sql) in [
         (
@@ -4165,6 +4206,99 @@ CREATE INDEX IF NOT EXISTS idx_conversation_input_assignments_agent_turn
          SET updated_at = ?1
          WHERE updated_at = ''",
         [&now],
+    )?;
+    Ok(())
+}
+
+fn repair_conversation_input_assignments(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "turn_records")?
+        || !table_exists_tx(transaction, "conversation_input_assignments")?
+    {
+        return Ok(());
+    }
+    transaction.execute_batch(
+        r#"
+WITH candidates AS (
+  SELECT
+    input.value AS message_id,
+    turns.agent_id,
+    CASE
+      WHEN json_extract(
+             turns.payload_json,
+             '$.replay.source_message_id'
+           ) = input.value
+       AND json_type(
+             turns.payload_json,
+             '$.replay.source_turn_id'
+           ) = 'text'
+      THEN json_extract(
+             turns.payload_json,
+             '$.replay.source_turn_id'
+           )
+      ELSE turns.turn_id
+    END AS canonical_turn_id,
+    turns.created_at AS assigned_at,
+    turns.turn_index,
+    CASE
+      WHEN json_extract(
+             turns.payload_json,
+             '$.replay.source_message_id'
+           ) = input.value
+       AND json_type(
+             turns.payload_json,
+             '$.replay.source_turn_id'
+           ) = 'text'
+      THEN 0
+      WHEN EXISTS (
+        SELECT 1
+        FROM turn_records AS replay_turn
+        WHERE replay_turn.agent_id = turns.agent_id
+          AND json_extract(
+                replay_turn.payload_json,
+                '$.replay.source_message_id'
+              ) = input.value
+          AND json_extract(
+                replay_turn.payload_json,
+                '$.replay.source_turn_id'
+              ) = turns.turn_id
+      )
+      THEN 1
+      ELSE 2
+    END AS canonical_priority
+  FROM turn_records AS turns,
+       json_each(turns.payload_json, '$.input_message_ids') AS input
+  WHERE input.type = 'text'
+),
+ranked AS (
+  SELECT
+    message_id,
+    agent_id,
+    canonical_turn_id,
+    assigned_at,
+    ROW_NUMBER() OVER (
+      PARTITION BY message_id
+      ORDER BY
+        canonical_priority,
+        turn_index,
+        assigned_at,
+        canonical_turn_id
+    ) AS candidate_rank
+  FROM candidates
+)
+INSERT INTO conversation_input_assignments (
+  message_id, agent_id, turn_id, revision, assigned_at
+)
+SELECT message_id, agent_id, canonical_turn_id, 1, assigned_at
+FROM ranked
+WHERE candidate_rank = 1
+ON CONFLICT(message_id) DO UPDATE SET
+  agent_id = excluded.agent_id,
+  turn_id = excluded.turn_id,
+  revision = conversation_input_assignments.revision + 1,
+  assigned_at = excluded.assigned_at
+WHERE conversation_input_assignments.agent_id <> excluded.agent_id
+   OR conversation_input_assignments.turn_id <> excluded.turn_id;
+"#,
     )?;
     Ok(())
 }

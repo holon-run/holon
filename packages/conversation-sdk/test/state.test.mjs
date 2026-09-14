@@ -444,7 +444,51 @@ test("marks an uncached detail invalidated on its first invalidation", () => {
   ]);
 });
 
-test("retains unknown active turns only in the bounded live window and resets reconnect", () => {
+test("retains unknown terminal summaries in the bounded live overlay", () => {
+  const state = new ConversationProtocolState({ max_live_turns: 2 });
+  state.bootstrap(identity, summary());
+  const applied = batch({
+    mutations: [
+      {
+        type: "turn_summary_upsert",
+        event_log_epoch: "epoch-a",
+        visibility_scope_id: "scope-a",
+        turn: turn("unknown-terminal-brief", 20, 1, {
+          execution: { kind: "terminal", outcome: "completed" },
+          result: { kind: "available" },
+          settled: true,
+          brief_ids: ["brief-terminal"],
+        }),
+      },
+      {
+        type: "turn_summary_upsert",
+        event_log_epoch: "epoch-a",
+        visibility_scope_id: "scope-a",
+        turn: turn("unknown-terminal-none", 21, 1, {
+          execution: { kind: "terminal", outcome: "completed" },
+          result: { kind: "none", reason: { kind: "tool_only_wait" } },
+          settled: true,
+        }),
+      },
+    ],
+  });
+  assert.equal(state.applyBatch(identity, applied), true);
+  assert.equal(state.applyBatch(identity, applied), false);
+  assert.deepEqual(
+    state
+      .view()
+      .turns.filter((item) => item.turn_id.startsWith("unknown-terminal"))
+      .map((item) => item.turn_id),
+    ["unknown-terminal-brief", "unknown-terminal-none"],
+  );
+  assert.equal(state.reconnectCheckpoint(), "checkpoint-11");
+  state.reset("retention_expired");
+  assert.equal(state.reconnectCheckpoint(), null);
+  assert.equal(state.view().reset_reason, "retention_expired");
+  assert.deepEqual(state.view().turns, []);
+});
+
+test("moves live terminal summaries into historical membership without duplicates", () => {
   const state = new ConversationProtocolState({ max_live_turns: 1 });
   state.bootstrap(identity, summary());
   state.applyBatch(
@@ -455,10 +499,34 @@ test("retains unknown active turns only in the bounded live window and resets re
           type: "turn_summary_upsert",
           event_log_epoch: "epoch-a",
           visibility_scope_id: "scope-a",
-          turn: turn("unknown-terminal", 20, 1, {
+          turn: turn("turn-live-terminal", 5, 2, {
             execution: { kind: "terminal", outcome: "completed" },
+            result: { kind: "available" },
+            settled: true,
+            brief_ids: ["brief-live-terminal"],
           }),
         },
+      ],
+    }),
+  );
+  state.applyOlderPage(
+    identity,
+    "history-before-10",
+    summary({
+      snapshot_through_seq: 11,
+      event_head_seq: 11,
+      snapshot_cursor: "checkpoint-11",
+      turns: [turn("turn-live-terminal", 5)],
+      next_before_cursor: null,
+      has_more: false,
+    }),
+  );
+  state.applyBatch(
+    identity,
+    batch({
+      from: 11,
+      through: 12,
+      mutations: [
         {
           type: "turn_summary_upsert",
           event_log_epoch: "epoch-a",
@@ -468,17 +536,14 @@ test("retains unknown active turns only in the bounded live window and resets re
       ],
     }),
   );
-  assert.equal(
-    state.view().turns.some((item) => item.turn_id === "unknown-terminal"),
-    false,
-  );
+  const terminal = state
+    .view()
+    .turns.filter((item) => item.turn_id === "turn-live-terminal");
+  assert.equal(terminal.length, 1);
+  assert.equal(terminal[0].revision, 2);
+  assert.deepEqual(terminal[0].brief_ids, ["brief-live-terminal"]);
   assert.equal(
     state.view().turns.some((item) => item.turn_id === "unknown-active"),
     true,
   );
-  assert.equal(state.reconnectCheckpoint(), "checkpoint-11");
-  state.reset("retention_expired");
-  assert.equal(state.reconnectCheckpoint(), null);
-  assert.equal(state.view().reset_reason, "retention_expired");
-  assert.deepEqual(state.view().turns, []);
 });

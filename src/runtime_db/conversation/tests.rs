@@ -9,12 +9,13 @@ use tempfile::TempDir;
 use super::{
     collect_change_ids, settle_turn_result_tx, ConversationReadError, ConversationResetReason,
     CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL, MAX_BRIEFS_PER_TURN,
-    MAX_CHANGE_ID_JSON_DEPTH,
+    MAX_CHANGE_ID_JSON_DEPTH, MAX_CONVERSATION_CHANGE_ACTIVITIES,
 };
 use crate::domain::conversation::{
-    ActivityItem, Attention, ConversationActivity, ConversationChange, CursorBinding, CursorCodec,
-    ExecutionState, NoBriefReason, PendingInputState, ResultState, StreamCursor, TerminalOutcome,
-    TurnKey, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
+    ActivityItem, Attention, ConversationActivity, ConversationChange,
+    ConversationShadowMismatchKind, CursorBinding, CursorCodec, ExecutionState, NoBriefReason,
+    PendingInputState, ResultState, StreamCursor, TerminalOutcome, TurnKey,
+    CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::RuntimeDb;
 use crate::types::{
@@ -229,6 +230,75 @@ fn summary_rejects_unbounded_brief_membership() -> Result<()> {
 }
 
 #[test]
+fn shadow_diagnostics_compare_bounded_metadata_and_report_legacy_briefs() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    register_public_agent(&db)?;
+    db.turn_records().upsert(&terminal(
+        turn("turn-shadow", 1),
+        TurnTerminalKind::Completed,
+        None,
+    ))?;
+
+    let mut brief = BriefRecord::new(
+        AGENT_ID,
+        BriefKind::Result,
+        "linked body must not appear in diagnostics",
+        None,
+        None,
+    );
+    brief.id = "brief-shadow".into();
+    brief.turn_id = Some("turn-shadow".into());
+    brief.turn_index = Some(1);
+    brief.created_at = timestamp(10);
+    db.evidence().append_brief(&brief)?;
+
+    let mut legacy = BriefRecord::new(
+        AGENT_ID,
+        BriefKind::Result,
+        "legacy body must not appear in diagnostics",
+        None,
+        None,
+    );
+    legacy.id = "brief-shadow-legacy".into();
+    legacy.created_at = timestamp(11);
+    db.evidence().append_brief(&legacy)?;
+
+    let report = db
+        .conversation()
+        .shadow_diagnostics(AGENT_ID, 10, "test-principal", "public")?
+        .expect("shadow diagnostics");
+    assert_eq!(report.checked_turn_limit, 10);
+    assert_eq!(report.canonical, report.projection);
+    assert_eq!(report.canonical.turns, 1);
+    assert_eq!(report.canonical.briefs, 1);
+    assert_eq!(report.legacy_unattributed_briefs, 1);
+    assert_eq!(report.mismatch_count, 0);
+    assert!(report.mismatches.is_empty());
+    let encoded = serde_json::to_string(&report)?;
+    assert!(!encoded.contains("linked body"));
+    assert!(!encoded.contains("legacy body"));
+
+    db.connection()?.execute(
+        "DELETE FROM conversation_turn_revisions
+         WHERE agent_id = ?1 AND turn_id = 'turn-shadow'",
+        [AGENT_ID],
+    )?;
+    let drifted = db
+        .conversation()
+        .shadow_diagnostics(AGENT_ID, 10, "test-principal", "public")?
+        .expect("drifted shadow diagnostics");
+    assert_eq!(drifted.mismatch_count, 1);
+    assert_eq!(
+        drifted.mismatches[0].kind,
+        ConversationShadowMismatchKind::TurnRevision
+    );
+    assert_eq!(drifted.mismatches[0].entity_id, "turn-shadow");
+    assert_eq!(drifted.mismatches[0].canonical_revision, None);
+    assert_eq!(drifted.mismatches[0].projection_revision, Some(1));
+    Ok(())
+}
+
+#[test]
 fn history_keyset_preserves_upper_bound_and_legacy_ties() -> Result<()> {
     let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
     for record in [
@@ -376,6 +446,15 @@ fn legacy_schema_migration_backfills_visible_activity_sequences() -> Result<()> 
     let mut record = turn("legacy-turn", 1);
     record.input_message_ids = vec![message.id.clone()];
     record.tool_execution_ids = vec!["legacy-tool".into()];
+    let mut replay = turn("legacy-replay", 2);
+    replay.input_message_ids = vec![message.id.clone()];
+    replay.replay = Some(TurnReplayProvenance {
+        source_message_id: message.id.clone(),
+        source_turn_id: record.turn_id.clone(),
+        reason: "legacy_replay".into(),
+        prior_terminal: None,
+    });
+    db.turn_records().upsert(&replay)?;
     db.turn_records().upsert(&record)?;
 
     let mut assistant = TranscriptEntry::new(
@@ -441,6 +520,49 @@ fn legacy_schema_migration_backfills_visible_activity_sequences() -> Result<()> 
         .activities
         .windows(2)
         .all(|pair| activity_item(&pair[0]).key < activity_item(&pair[1]).key));
+    let assignment = db.connection()?.query_row(
+        "SELECT turn_id
+         FROM conversation_input_assignments
+         WHERE message_id = ?1",
+        [&message.id],
+        |row| row.get::<_, String>(0),
+    )?;
+    assert_eq!(assignment, "legacy-turn");
+    Ok(())
+}
+
+#[test]
+fn migration_repairs_existing_replay_input_assignment() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    let mut source = turn("repair-source", 1);
+    source.input_message_ids = vec!["repair-message".into()];
+    db.turn_records().upsert(&source)?;
+    let mut replay = turn("repair-replay", 2);
+    replay.input_message_ids = source.input_message_ids.clone();
+    replay.replay = Some(TurnReplayProvenance {
+        source_message_id: "repair-message".into(),
+        source_turn_id: source.turn_id.clone(),
+        reason: "repair_test".into(),
+        prior_terminal: None,
+    });
+    db.turn_records().upsert(&replay)?;
+    db.connection()?.execute_batch(
+        "UPDATE conversation_input_assignments
+         SET turn_id = 'repair-replay'
+         WHERE message_id = 'repair-message';
+         DELETE FROM schema_migrations WHERE version = 66;",
+    )?;
+    drop(db);
+
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let assignment = db.connection()?.query_row(
+        "SELECT turn_id, revision
+         FROM conversation_input_assignments
+         WHERE message_id = 'repair-message'",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    assert_eq!(assignment, ("repair-source".into(), 2));
     Ok(())
 }
 
@@ -507,6 +629,31 @@ fn terminal_result_attention_matrix_is_typed() -> Result<()> {
         }
     );
     assert!(no_brief.settled);
+    Ok(())
+}
+
+#[test]
+fn settled_result_without_canonical_linkage_is_unavailable() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records().upsert(&terminal(
+        turn("turn-missing-canonical-result", 1),
+        TurnTerminalKind::Completed,
+        None,
+    ))?;
+    db.transaction(|tx| {
+        settle_turn_result_tx(tx, AGENT_ID, "turn-missing-canonical-result", timestamp(2))
+            .map(|_| ())
+    })?;
+
+    let page = db.conversation().summary_page(AGENT_ID, 1, None, None)?;
+    assert_eq!(
+        page.turns[0].result,
+        ResultState::Unavailable {
+            reason: crate::domain::conversation::ResultUnavailableReason::MissingCanonicalLinkage,
+            retryable: false,
+        }
+    );
+    assert!(page.turns[0].settled);
     Ok(())
 }
 
@@ -947,7 +1094,7 @@ fn change_batch_reconciles_brief_before_terminal_and_bounds_active_activity() ->
     }
     append_turn_event(&db, "event-stream-active-tools", "turn-stream-active", 13)?;
 
-    let activity_overflow = db
+    let bounded_active_batch = db
         .conversation()
         .change_batch(
             AGENT_ID,
@@ -956,15 +1103,17 @@ fn change_batch_reconciles_brief_before_terminal_and_bounds_active_activity() ->
             1,
             "test-principal",
             "public",
-        )
-        .expect_err("truncated active activity must reset");
-    assert!(matches!(
-        activity_overflow.downcast_ref::<ConversationReadError>(),
-        Some(ConversationReadError::ResetRequired {
-            reason: ConversationResetReason::ReplayLimitExceeded,
-            ..
-        })
-    ));
+        )?
+        .expect("bounded active change batch");
+    assert!(bounded_active_batch.changes.iter().any(|change| matches!(
+        change,
+        ConversationChange::DetailInvalidated { turn_id, .. }
+            if turn_id == "turn-stream-active"
+    )));
+    assert!(!bounded_active_batch
+        .changes
+        .iter()
+        .any(|change| matches!(change, ConversationChange::ActivityUpsert { .. })));
 
     let active_batch = db
         .conversation()
@@ -1106,7 +1255,7 @@ fn change_batch_enforces_shared_activity_budget_across_active_turns() -> Result<
         })
     ));
 
-    let shared_overflow = db
+    let shared_batch = db
         .conversation()
         .change_batch(
             AGENT_ID,
@@ -1115,15 +1264,128 @@ fn change_batch_enforces_shared_activity_budget_across_active_turns() -> Result<
             1,
             "test-principal",
             "public",
-        )
-        .expect_err("activity limit must apply to the complete batch");
-    assert!(matches!(
-        shared_overflow.downcast_ref::<ConversationReadError>(),
-        Some(ConversationReadError::ResetRequired {
-            reason: ConversationResetReason::ReplayLimitExceeded,
-            ..
-        })
-    ));
+        )?
+        .expect("shared activity batch");
+    assert_eq!(
+        shared_batch
+            .changes
+            .iter()
+            .filter(|change| matches!(change, ConversationChange::ActivityUpsert { .. }))
+            .count(),
+        1
+    );
+    assert_eq!(
+        shared_batch
+            .changes
+            .iter()
+            .filter(|change| matches!(change, ConversationChange::DetailInvalidated { .. }))
+            .count(),
+        2
+    );
+    Ok(())
+}
+
+#[test]
+fn change_batch_keeps_progress_when_active_detail_exceeds_inline_limit() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    register_public_agent(&db)?;
+    let mut active = turn("turn-stream-large-active", 1);
+    db.turn_records().upsert(&active)?;
+    let snapshot = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .expect("conversation snapshot");
+
+    active.tool_execution_ids = (0..=MAX_CONVERSATION_CHANGE_ACTIVITIES)
+        .map(|index| format!("tool-stream-large-{index:03}"))
+        .collect();
+    db.turn_records().upsert(&active)?;
+    for (index, tool_id) in active.tool_execution_ids.iter().enumerate() {
+        db.evidence().append_tool_execution(&ToolExecutionRecord {
+            id: tool_id.clone(),
+            agent_id: AGENT_ID.into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some(active.turn_id.clone()),
+            tool_name: "ExecCommand".into(),
+            created_at: timestamp(index as i64 + 1),
+            completed_at: Some(timestamp(index as i64 + 2)),
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({ "cmd": "true" }),
+            output: serde_json::Value::Null,
+            summary: tool_id.clone(),
+            invocation_surface: None,
+        })?;
+    }
+    append_turn_event(
+        &db,
+        "event-stream-large-active-first",
+        "turn-stream-large-active",
+        100,
+    )?;
+
+    let first = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            10,
+            MAX_CONVERSATION_CHANGE_ACTIVITIES,
+            "test-principal",
+            "public",
+        )?
+        .expect("first large active batch");
+    assert!(first.through_seq > snapshot.event_head_seq);
+    assert!(first.changes.iter().any(|change| matches!(
+        change,
+        ConversationChange::TurnSummaryUpsert { turn }
+            if turn.turn_id == "turn-stream-large-active"
+    )));
+    assert!(first.changes.iter().any(|change| matches!(
+        change,
+        ConversationChange::DetailInvalidated { turn_id, .. }
+            if turn_id == "turn-stream-large-active"
+    )));
+    assert!(!first
+        .changes
+        .iter()
+        .any(|change| matches!(change, ConversationChange::ActivityUpsert { .. })));
+
+    append_turn_event(
+        &db,
+        "event-stream-large-active-second",
+        "turn-stream-large-active",
+        101,
+    )?;
+    let second = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&first.checkpoint),
+            10,
+            MAX_CONVERSATION_CHANGE_ACTIVITIES,
+            "test-principal",
+            "public",
+        )?
+        .expect("second large active batch");
+    assert!(second.through_seq > first.through_seq);
+
+    let detail = db
+        .conversation()
+        .activities(
+            AGENT_ID,
+            "turn-stream-large-active",
+            MAX_CONVERSATION_CHANGE_ACTIVITIES,
+            None,
+            None,
+        )?
+        .expect("large active detail");
+    assert_eq!(detail.activities.len(), MAX_CONVERSATION_CHANGE_ACTIVITIES);
+    assert!(detail.has_more);
+    assert!(detail.next_before.is_some());
+    assert!(detail.membership_upper_bound.is_some());
     Ok(())
 }
 

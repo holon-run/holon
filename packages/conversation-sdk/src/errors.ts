@@ -48,6 +48,19 @@ export class ConversationCapabilityError extends ConversationProtocolError {
   }
 }
 
+export class ConversationCompatibilityError extends ConversationProtocolError {
+  readonly protocolName: string;
+  readonly protocolVersion: number;
+
+  constructor(protocolName: string, protocolVersion: number) {
+    super(
+      `unsupported control protocol: expected holon-control@1, received ${protocolName}@${protocolVersion}`,
+    );
+    this.protocolName = protocolName;
+    this.protocolVersion = protocolVersion;
+  }
+}
+
 export class ConversationResetError extends ConversationProtocolError {
   readonly reason: ConversationResetReason;
   readonly oldestRetainedSeq: number | null;

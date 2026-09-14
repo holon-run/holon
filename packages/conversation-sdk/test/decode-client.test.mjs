@@ -5,6 +5,7 @@ import {
   CONVERSATION_CAPABILITY,
   ConversationCapabilityError,
   ConversationClient,
+  ConversationCompatibilityError,
   ConversationDecodeError,
   ConversationResetError,
   decodeBriefRecord,
@@ -121,7 +122,31 @@ test("injects fetch, base URL, bearer auth, and cursor transport", async () => {
   assert.equal(requests[0].headers.get("x-test-principal"), "sdk");
 });
 
-test("maps handshake capability absence and typed reset errors", async () => {
+test("fails closed on incompatible handshakes, capability absence, and typed resets", async () => {
+  for (const protocol of [
+    { name: "other-control", version: 1 },
+    { name: "holon-control", version: 2 },
+  ]) {
+    const incompatible = new ConversationClient({
+      baseUrl: "http://runtime.test/api",
+      fetch: async () =>
+        Response.json({
+          ok: true,
+          protocol,
+          auth: { mode: "local", required: false },
+          capabilities: [CONVERSATION_CAPABILITY],
+          runtime: {},
+        }),
+    });
+    await assert.rejects(
+      incompatible.requireCapability(),
+      (error) =>
+        error instanceof ConversationCompatibilityError &&
+        error.protocolName === protocol.name &&
+        error.protocolVersion === protocol.version,
+    );
+  }
+
   const missing = new ConversationClient({
     baseUrl: "http://runtime.test/api",
     fetch: async () =>

@@ -44,3 +44,19 @@ batch assembler exposes a stream batch only after the matching `checkpoint`
 event and SSE `id` arrive. `ConversationProtocolState` applies that complete
 batch atomically and bounds retained turns, live turns, pending inputs, detail
 turns, and activities.
+
+## Compatibility
+
+The v1 client fails closed unless `/handshake` reports both:
+
+- control protocol `holon-control` version `1`;
+- capability `agents.conversation-read.v1`.
+
+Capability absence means the conversation surface is unavailable; callers
+should not probe the conversation routes. Summary, activity, and stream
+boundaries must report conversation schema/query version `1`. Unknown control,
+schema, or query versions require a client/server upgrade rather than
+best-effort decoding.
+
+The package supports browser and Node streaming `fetch`; its declared Node
+engine is Node 24 or newer.
