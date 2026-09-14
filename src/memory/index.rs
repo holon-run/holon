@@ -834,6 +834,19 @@ fn is_retryable_memory_index_error(error: &anyhow::Error) -> bool {
     })
 }
 
+fn rollback_failed_transaction(
+    transaction: Transaction<'_>,
+    operation: &'static str,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    match transaction.rollback() {
+        Ok(()) => error,
+        Err(rollback_error) => error.context(format!(
+            "failed to rollback memory index write {operation}: {rollback_error}"
+        )),
+    }
+}
+
 fn elapsed_millis(started_at: Instant) -> u64 {
     u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
@@ -848,7 +861,8 @@ impl MemoryIndex {
             .with_context(|| format!("failed to create {}", shared_indexes_dir.display()))?;
         let index_path = shared_indexes_dir.join(INDEX_FILENAME);
         let write_coordinator = memory_index_write_coordinator(&index_path)?;
-        let _turn = write_coordinator.wait_turn("memory_index.open_writer")?;
+        let deadline = Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE;
+        let _turn = write_coordinator.wait_turn_until("memory_index.open_writer", deadline)?;
         let result = (|| {
             let connection = Connection::open(&index_path)?;
             let index = Self {
@@ -859,15 +873,22 @@ impl MemoryIndex {
                 last_outbox_error_count: 0,
             };
             index.connection.busy_timeout(MEMORY_INDEX_BUSY_TIMEOUT)?;
-            index.connection.execute_batch(
-                r#"
-                PRAGMA journal_mode = WAL;
-                PRAGMA synchronous = NORMAL;
-                PRAGMA wal_autocheckpoint = 10000;
-                PRAGMA mmap_size = 268435456;
-                "#,
+            index.run_retryable_write_until(
+                "memory_index.open_writer.configure",
+                deadline,
+                || {
+                    index.connection.execute_batch(
+                        r#"
+                        PRAGMA journal_mode = WAL;
+                        PRAGMA synchronous = NORMAL;
+                        PRAGMA wal_autocheckpoint = 10000;
+                        PRAGMA mmap_size = 268435456;
+                        "#,
+                    )?;
+                    Ok(())
+                },
             )?;
-            index.ensure_schema()?;
+            index.ensure_schema_until(deadline)?;
             Ok(index)
         })();
         log_memory_index_write_error(&write_coordinator, "memory_index.open_writer", &result);
@@ -921,6 +942,7 @@ impl MemoryIndex {
             && self.table_exists("memory_documents_fts")?
             && self.table_exists("memory_documents_fts_rows")?
             && self.table_exists("memory_index_pending_sources")?
+            && self.table_has_column("memory_index_pending_sources", "revision")?
             && self.table_exists("memory_index_source_state")?
             && self.table_has_column("memory_index_source_state", "projection_version")?
             && self.table_exists("memory_index_meta")?
@@ -935,12 +957,16 @@ impl MemoryIndex {
         Self::open_in(shared_indexes_dir)
     }
 
-    fn write_turn(&self, operation: &'static str) -> Result<MemoryIndexWriteTurn> {
+    fn write_turn_until(
+        &self,
+        operation: &'static str,
+        deadline: Instant,
+    ) -> Result<MemoryIndexWriteTurn> {
         anyhow::ensure!(
             self.access == MemoryIndexAccess::Writer,
             "cannot write through read-only memory index connection"
         );
-        self.write_coordinator.wait_turn(operation)
+        self.write_coordinator.wait_turn_until(operation, deadline)
     }
 
     fn finish_write<T>(&self, operation: &'static str, result: Result<T>) -> Result<T> {
@@ -948,41 +974,69 @@ impl MemoryIndex {
         result
     }
 
-    fn run_immediate_transaction<T>(
+    fn run_write_transaction<T>(
         &self,
         operation: &'static str,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.run_immediate_transaction_with_deadline(
-            operation,
-            MEMORY_INDEX_TRANSACTION_DEADLINE,
-            f,
-        )
+        self.run_write_transaction_with_deadline(operation, MEMORY_INDEX_TRANSACTION_DEADLINE, f)
     }
 
-    fn run_immediate_transaction_with_deadline<T>(
+    fn run_write_transaction_with_deadline<T>(
         &self,
         operation: &'static str,
         deadline: Duration,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let deadline = Instant::now() + deadline;
+        let _turn = self.write_turn_until(operation, deadline)?;
+        self.run_immediate_transaction_until(operation, deadline, f)
+    }
+
+    fn run_immediate_transaction_until<T>(
+        &self,
+        operation: &'static str,
+        deadline: Instant,
         mut f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.run_retryable_write_until(operation, deadline, || {
+            let transaction =
+                Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+            let value = match f(&transaction) {
+                Ok(value) => value,
+                Err(error) => {
+                    return Err(rollback_failed_transaction(transaction, operation, error));
+                }
+            };
+            match transaction.execute_batch("COMMIT") {
+                Ok(()) => Ok(value),
+                Err(error) => Err(rollback_failed_transaction(
+                    transaction,
+                    operation,
+                    error.into(),
+                )),
+            }
+        })
+    }
+
+    fn run_retryable_write_until<T>(
+        &self,
+        operation: &'static str,
+        deadline: Instant,
+        mut f: impl FnMut() -> Result<T>,
     ) -> Result<T> {
         let started_at = Instant::now();
         let mut retry_count = 0_u32;
         let mut retry_delay = MEMORY_INDEX_TRANSACTION_RETRY_INITIAL_DELAY;
         loop {
-            let attempt = match Transaction::new_unchecked(
-                &self.connection,
-                TransactionBehavior::Immediate,
-            ) {
-                Ok(transaction) => match f(&transaction) {
-                    Ok(value) => transaction.commit().map(|()| value).map_err(Into::into),
-                    Err(error) => {
-                        drop(transaction);
-                        Err(error)
-                    }
-                },
-                Err(error) => Err(error.into()),
-            };
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            anyhow::ensure!(
+                !remaining.is_zero(),
+                "memory index write {operation} exhausted retry deadline before attempt"
+            );
+            self.connection
+                .busy_timeout(MEMORY_INDEX_BUSY_TIMEOUT.min(remaining))?;
+            let attempt = f();
             match attempt {
                 Ok(value) => {
                     if retry_count > 0 {
@@ -992,7 +1046,7 @@ impl MemoryIndex {
                             operation,
                             retry_count,
                             elapsed_ms = elapsed_millis(started_at),
-                            "memory index transaction succeeded after retry"
+                            "memory index write succeeded after retry"
                         );
                     }
                     return Ok(value);
@@ -1000,7 +1054,7 @@ impl MemoryIndex {
                 Err(error) if is_retryable_memory_index_error(&error) => {
                     retry_count = retry_count.saturating_add(1);
                     let elapsed = started_at.elapsed();
-                    if elapsed >= deadline {
+                    if Instant::now() >= deadline {
                         tracing::warn!(
                             db_role = "index",
                             db_path_hash = %self.write_coordinator.db_path_hash(),
@@ -1008,10 +1062,10 @@ impl MemoryIndex {
                             retry_count,
                             elapsed_ms = elapsed_millis(started_at),
                             error = %error,
-                            "memory index transaction retry deadline exhausted"
+                            "memory index write retry deadline exhausted"
                         );
                         return Err(error.context(format!(
-                            "memory index transaction {operation} exhausted retry deadline after {} ms and {retry_count} retries",
+                            "memory index write {operation} exhausted retry deadline after {} ms and {retry_count} retries",
                             elapsed.as_millis()
                         )));
                     }
@@ -1023,9 +1077,9 @@ impl MemoryIndex {
                         elapsed_ms = elapsed_millis(started_at),
                         retry_delay_ms = retry_delay.as_millis(),
                         error = %error,
-                        "memory index transaction retrying"
+                        "memory index write retrying"
                     );
-                    let remaining = deadline.saturating_sub(elapsed);
+                    let remaining = deadline.saturating_duration_since(Instant::now());
                     thread::sleep(retry_delay.min(remaining));
                     retry_delay = retry_delay
                         .saturating_mul(2)
@@ -1056,22 +1110,30 @@ impl MemoryIndex {
         self.finish_write("memory_index.enqueue_upsert", result)
     }
 
-    fn ensure_schema(&self) -> Result<()> {
+    fn ensure_schema_until(&self, deadline: Instant) -> Result<()> {
         if self.table_exists("memory_documents")?
             && (self.table_has_column("memory_documents", "original_body")?
                 || !self.table_has_column("memory_documents", "document_key")?)
         {
-            self.connection.execute_batch(
-                r#"
-                DROP TABLE IF EXISTS memory_documents_fts_rows;
-                DROP TABLE IF EXISTS memory_documents_fts;
-                DROP TABLE IF EXISTS memory_documents;
-                "#,
+            self.run_retryable_write_until(
+                "memory_index.ensure_schema.drop_legacy",
+                deadline,
+                || {
+                    self.connection.execute_batch(
+                        r#"
+                        DROP TABLE IF EXISTS memory_documents_fts_rows;
+                        DROP TABLE IF EXISTS memory_documents_fts;
+                        DROP TABLE IF EXISTS memory_documents;
+                        "#,
+                    )?;
+                    Ok(())
+                },
             )?;
         }
-        self.connection.execute_batch(
-            r#"
-            CREATE TABLE IF NOT EXISTS memory_documents (
+        self.run_retryable_write_until("memory_index.ensure_schema.create", deadline, || {
+            self.connection.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS memory_documents (
                 document_key TEXT PRIMARY KEY,
                 source_ref TEXT NOT NULL,
                 source_kind TEXT NOT NULL,
@@ -1154,34 +1216,55 @@ impl MemoryIndex {
                 document_key TEXT NOT NULL,
                 PRIMARY KEY (agent_id, generation, document_key)
             );
-            CREATE INDEX IF NOT EXISTS idx_memory_index_rebuild_seen_agent_generation
-                ON memory_index_rebuild_seen(agent_id, generation);
-            "#,
-        )?;
-        if !self.table_exists("memory_documents_fts_rows")? {
-            self.connection.execute_batch(
-                r#"
-                BEGIN IMMEDIATE;
-                CREATE TABLE memory_documents_fts_rows (
-                    document_key TEXT PRIMARY KEY,
-                    fts_rowid INTEGER NOT NULL UNIQUE
-                );
-                INSERT INTO memory_documents_fts_rows (document_key, fts_rowid)
-                    SELECT document_key, rowid FROM memory_documents_fts;
-                COMMIT;
+                CREATE INDEX IF NOT EXISTS idx_memory_index_rebuild_seen_agent_generation
+                    ON memory_index_rebuild_seen(agent_id, generation);
                 "#,
+            )?;
+            Ok(())
+        })?;
+        if !self.table_exists("memory_documents_fts_rows")? {
+            self.run_immediate_transaction_until(
+                "memory_index.ensure_schema.create_fts_rows",
+                deadline,
+                |transaction| {
+                    transaction.execute_batch(
+                        r#"
+                        CREATE TABLE memory_documents_fts_rows (
+                            document_key TEXT PRIMARY KEY,
+                            fts_rowid INTEGER NOT NULL UNIQUE
+                        );
+                        INSERT INTO memory_documents_fts_rows (document_key, fts_rowid)
+                            SELECT document_key, rowid FROM memory_documents_fts;
+                        "#,
+                    )?;
+                    Ok(())
+                },
             )?;
         }
         if !self.table_has_column("memory_index_source_state", "projection_version")? {
-            self.connection.execute_batch(
-                "ALTER TABLE memory_index_source_state
-                 ADD COLUMN projection_version INTEGER NOT NULL DEFAULT 0;",
+            self.run_retryable_write_until(
+                "memory_index.ensure_schema.add_projection_version",
+                deadline,
+                || {
+                    self.connection.execute_batch(
+                        "ALTER TABLE memory_index_source_state
+                         ADD COLUMN projection_version INTEGER NOT NULL DEFAULT 0;",
+                    )?;
+                    Ok(())
+                },
             )?;
         }
         if !self.table_has_column("memory_index_pending_sources", "revision")? {
-            self.connection.execute_batch(
-                "ALTER TABLE memory_index_pending_sources
-                 ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;",
+            self.run_retryable_write_until(
+                "memory_index.ensure_schema.add_pending_revision",
+                deadline,
+                || {
+                    self.connection.execute_batch(
+                        "ALTER TABLE memory_index_pending_sources
+                         ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;",
+                    )?;
+                    Ok(())
+                },
             )?;
         }
         Ok(())
@@ -1268,8 +1351,7 @@ impl MemoryIndex {
             .produced_watermark_for_agent(&agent_id)?;
         let generation = Uuid::new_v4().simple().to_string();
         let now = Utc::now();
-        let _turn = self.write_turn("memory_index.start_rebuild")?;
-        self.run_immediate_transaction("memory_index.start_rebuild", |transaction| {
+        self.run_write_transaction("memory_index.start_rebuild", |transaction| {
             transaction.execute(
                 "INSERT INTO memory_index_rebuild_jobs (
                     agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
@@ -1340,8 +1422,7 @@ impl MemoryIndex {
             } else {
                 MEMORY_INDEX_REBUILD_PHASE_SCAN
             };
-            let _turn = self.write_turn("memory_index.advance_rebuild_cursor")?;
-            self.run_immediate_transaction("memory_index.advance_rebuild_cursor", |transaction| {
+            self.run_write_transaction("memory_index.advance_rebuild_cursor", |transaction| {
                 transaction.execute(
                     "UPDATE memory_index_rebuild_jobs
                          SET phase = ?1, source_kind_index = ?2, source_cursor = '',
@@ -1383,8 +1464,7 @@ impl MemoryIndex {
         }
 
         let now = Utc::now();
-        let _turn = self.write_turn("memory_index.rebuild_scan")?;
-        self.run_immediate_transaction("memory_index.rebuild_scan", |transaction| {
+        self.run_write_transaction("memory_index.rebuild_scan", |transaction| {
             for document in &documents {
                 upsert_document_if_needed_tx(transaction, document)?;
                 upsert_source_state_tx(
@@ -1429,8 +1509,7 @@ impl MemoryIndex {
     fn prune_rebuild_slice(&mut self, job: &RebuildJob, slice_limit: usize) -> Result<usize> {
         let document_key_start = format!("{}:", job.agent_id);
         let document_key_end = format!("{};", job.agent_id);
-        let _turn = self.write_turn("memory_index.rebuild_prune")?;
-        let keys = self.run_immediate_transaction("memory_index.rebuild_prune", |transaction| {
+        let keys = self.run_write_transaction("memory_index.rebuild_prune", |transaction| {
             let mut statement = transaction.prepare(
                 "SELECT d.document_key
                      FROM memory_documents d
@@ -1501,8 +1580,7 @@ impl MemoryIndex {
             .context("runtime database is required for memory index rebuild")?;
         let runtime_id = runtime_index_runtime_id(&runtime_db);
         let now = Utc::now();
-        let _turn = self.write_turn("memory_index.rebuild_finalize")?;
-        self.run_immediate_transaction("memory_index.rebuild_finalize", |transaction| {
+        self.run_write_transaction("memory_index.rebuild_finalize", |transaction| {
             for source_kind in all_backfill_source_kinds() {
                 transaction.execute(
                     "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
@@ -1544,7 +1622,6 @@ impl MemoryIndex {
             )?;
             Ok(())
         })?;
-        drop(_turn);
         if job.runtime_high_watermark > 0 {
             if let Err(error) = runtime_db
                 .runtime_index_outbox()
@@ -1569,8 +1646,7 @@ impl MemoryIndex {
     }
 
     fn update_rebuild_phase(&self, job: &RebuildJob, phase: &str) -> Result<()> {
-        let _turn = self.write_turn("memory_index.update_rebuild_phase")?;
-        self.run_immediate_transaction("memory_index.update_rebuild_phase", |transaction| {
+        self.run_write_transaction("memory_index.update_rebuild_phase", |transaction| {
             transaction.execute(
                 "UPDATE memory_index_rebuild_jobs
                  SET phase = ?1, last_progress_at = ?2
@@ -1620,8 +1696,7 @@ impl MemoryIndex {
     }
 
     fn upsert_document(&self, document: &MemoryDocument) -> Result<()> {
-        let _turn = self.write_turn("memory_index.upsert_document")?;
-        self.run_immediate_transaction("memory_index.upsert_document", |transaction| {
+        self.run_write_transaction("memory_index.upsert_document", |transaction| {
             upsert_document_tx(transaction, document)?;
             upsert_source_state_tx(
                 transaction,
@@ -1632,9 +1707,8 @@ impl MemoryIndex {
     }
 
     fn delete_document(&self, agent_id: &str, source_ref: &str) -> Result<()> {
-        let _turn = self.write_turn("memory_index.delete_document")?;
         let document_key = document_key_for(agent_id, source_ref);
-        self.run_immediate_transaction("memory_index.delete_document", |transaction| {
+        self.run_write_transaction("memory_index.delete_document", |transaction| {
             delete_document_tx(transaction, &document_key)
         })
     }
@@ -1649,9 +1723,8 @@ impl MemoryIndex {
         source_updated_at: Option<DateTime<Utc>>,
         reason: &str,
     ) -> Result<()> {
-        let _turn = self.write_turn("memory_index.enqueue_source")?;
         let document_key = document_key_for(agent_id, source_ref);
-        self.run_immediate_transaction("memory_index.enqueue_source", |transaction| {
+        self.run_write_transaction("memory_index.enqueue_source", |transaction| {
             transaction.execute(
                 r#"
                 INSERT INTO memory_index_pending_sources (
@@ -1728,8 +1801,7 @@ impl MemoryIndex {
         pending_source: &PendingSourceSnapshot,
         prepared: &Result<PreparedPendingSource>,
     ) -> Result<()> {
-        let _turn = self.write_turn("memory_index.consume_pending_source")?;
-        self.run_immediate_transaction("memory_index.consume_pending_source", |transaction| {
+        self.run_write_transaction("memory_index.consume_pending_source", |transaction| {
             let source = &pending_source.source;
             let current_revision = transaction
                 .query_row(
@@ -1792,8 +1864,7 @@ impl MemoryIndex {
                     continue;
                 }
             };
-            let _turn = self.write_turn("memory_index.consume_stale_source")?;
-            self.run_immediate_transaction("memory_index.consume_stale_source", |transaction| {
+            self.run_write_transaction("memory_index.consume_stale_source", |transaction| {
                 if let Err(error) =
                     apply_prepared_pending_source_tx(transaction, &source, &prepared)
                 {
@@ -1812,8 +1883,7 @@ impl MemoryIndex {
             })?;
         }
         if !self.has_stale_source_states_for_agent(&agent_id)? {
-            let _turn = self.write_turn("memory_index.refresh_stale_meta")?;
-            self.run_immediate_transaction("memory_index.refresh_stale_meta", |transaction| {
+            self.run_write_transaction("memory_index.refresh_stale_meta", |transaction| {
                 if !has_stale_source_states_for_agent_tx(transaction, &agent_id)? {
                     upsert_index_meta_tx(transaction, &agent_id, None)?;
                 }
@@ -1853,10 +1923,8 @@ impl MemoryIndex {
                     break;
                 }
             };
-            let _turn = self.write_turn("memory_index.consume_runtime_outbox")?;
-            let applied = self.run_immediate_transaction(
-                "memory_index.consume_runtime_outbox",
-                |transaction| {
+            let applied =
+                self.run_write_transaction("memory_index.consume_runtime_outbox", |transaction| {
                     apply_prepared_pending_source_tx(transaction, &source, &prepared)?;
                     upsert_cursor_tx(
                         transaction,
@@ -1865,8 +1933,7 @@ impl MemoryIndex {
                         MEMORY_INDEX_OUTBOX_CURSOR,
                         row.change_seq,
                     )
-                },
-            );
+                });
             match applied {
                 Ok(()) => {
                     last_successful_seq = row.change_seq;
@@ -4606,6 +4673,63 @@ mod tests {
     }
 
     #[test]
+    fn fts_row_map_schema_creation_rolls_back_after_population_failure() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        let document = MemoryDocument {
+            source_ref: "message:schema-rollback".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "default".into(),
+            source_path: None,
+            title: "schema rollback title".into(),
+            body: "schema rollback body".into(),
+            sanitized_excerpt: "schema rollback excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now(),
+        };
+        index.upsert_document(&document)?;
+        let document_key = document_key(&document);
+        index.connection.execute(
+            "INSERT INTO memory_documents_fts
+                 (document_key, title, body, sanitized_excerpt)
+             SELECT document_key, title, body, sanitized_excerpt
+             FROM memory_documents_fts
+             WHERE document_key = ?1",
+            [&document_key],
+        )?;
+        index
+            .connection
+            .execute("DROP TABLE memory_documents_fts_rows", [])?;
+
+        index
+            .ensure_schema_until(Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE)
+            .expect_err("duplicate document keys should fail row map population");
+
+        assert!(index.connection.is_autocommit());
+        assert!(!index.table_exists("memory_documents_fts_rows")?);
+
+        index.connection.execute(
+            "DELETE FROM memory_documents_fts
+             WHERE rowid = (
+                 SELECT MAX(rowid) FROM memory_documents_fts WHERE document_key = ?1
+             )",
+            [&document_key],
+        )?;
+        index.ensure_schema_until(Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE)?;
+
+        let mapped_count: i64 = index.connection.query_row(
+            "SELECT COUNT(*) FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [&document_key],
+            |row| row.get(0),
+        )?;
+        assert_eq!(mapped_count, 1);
+        Ok(())
+    }
+
+    #[test]
     fn direct_upsert_rolls_back_projection_when_source_state_write_fails() -> Result<()> {
         let directory = tempdir()?;
         let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
@@ -4759,7 +4883,10 @@ mod tests {
         let directory = tempdir()?;
         let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
         let writer = MemoryIndex::open(&storage)?;
-        let _turn = writer.write_turn("test.hold_writer")?;
+        let _turn = writer.write_turn_until(
+            "test.hold_writer",
+            Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE,
+        )?;
         let shared_indexes_dir = storage.shared_indexes_dir();
         let (sender, receiver) = mpsc::channel();
 
@@ -4783,7 +4910,10 @@ mod tests {
         let index_path = shared_indexes_dir.join(INDEX_FILENAME);
         drop(Connection::open(&index_path)?);
         let coordinator = memory_index_write_coordinator(&index_path)?;
-        let writer_turn = coordinator.wait_turn("test.schema_initialization")?;
+        let writer_turn = coordinator.wait_turn_until(
+            "test.schema_initialization",
+            Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE,
+        )?;
         let (sender, receiver) = mpsc::channel();
 
         let handle = thread::spawn(move || {
@@ -4893,7 +5023,7 @@ mod tests {
         let started_at = Instant::now();
 
         let error = index
-            .run_immediate_transaction_with_deadline(
+            .run_write_transaction_with_deadline(
                 "test.retry_deadline",
                 Duration::from_millis(50),
                 |_| {
@@ -4905,13 +5035,50 @@ mod tests {
 
         assert!(!transaction_body_executed);
         assert!(
-            error
-                .to_string()
-                .contains("memory index transaction test.retry_deadline exhausted retry deadline"),
+            error.to_string().contains("exhausted retry deadline"),
             "unexpected error: {error:#}"
         );
         assert!(started_at.elapsed() < Duration::from_secs(1));
         blocker.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
+    #[test]
+    fn immediate_transaction_rolls_back_after_commit_failure() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        index.connection.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE transaction_parent (id INTEGER PRIMARY KEY);
+             CREATE TABLE transaction_child (
+                 parent_id INTEGER NOT NULL,
+                 FOREIGN KEY (parent_id) REFERENCES transaction_parent(id)
+                     DEFERRABLE INITIALLY DEFERRED
+             );",
+        )?;
+
+        index
+            .run_write_transaction("test.commit_failure", |transaction| {
+                transaction.execute("INSERT INTO transaction_child (parent_id) VALUES (1)", [])?;
+                Ok(())
+            })
+            .expect_err("deferred foreign key violation should fail commit");
+
+        assert!(index.connection.is_autocommit());
+        let child_count: i64 =
+            index
+                .connection
+                .query_row("SELECT COUNT(*) FROM transaction_child", [], |row| {
+                    row.get(0)
+                })?;
+        assert_eq!(child_count, 0);
+
+        index.run_write_transaction("test.after_commit_failure", |transaction| {
+            transaction.execute("INSERT INTO transaction_parent (id) VALUES (1)", [])?;
+            transaction.execute("INSERT INTO transaction_child (parent_id) VALUES (1)", [])?;
+            Ok(())
+        })?;
         Ok(())
     }
 
@@ -4921,7 +5088,10 @@ mod tests {
         let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
         let mut waiting_index = MemoryIndex::open(&storage)?;
         let writer = MemoryIndex::open(&storage)?;
-        let writer_turn = writer.write_turn("test.hold_writer")?;
+        let writer_turn = writer.write_turn_until(
+            "test.hold_writer",
+            Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE,
+        )?;
         let (sender, receiver) = mpsc::channel();
 
         let handle = thread::spawn(move || {

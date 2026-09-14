@@ -2,13 +2,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, OnceLock},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
-
-const MEMORY_INDEX_WRITE_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Default)]
 struct WriteCoordinatorState {
@@ -55,19 +53,13 @@ pub(super) fn memory_index_write_coordinator(
 }
 
 impl MemoryIndexWriteCoordinator {
-    pub(super) fn wait_turn(
+    pub(super) fn wait_turn_until(
         self: &Arc<Self>,
         operation: &'static str,
-    ) -> Result<MemoryIndexWriteTurn> {
-        self.wait_turn_for(operation, MEMORY_INDEX_WRITE_QUEUE_TIMEOUT)
-    }
-
-    fn wait_turn_for(
-        self: &Arc<Self>,
-        operation: &'static str,
-        timeout: Duration,
+        deadline: Instant,
     ) -> Result<MemoryIndexWriteTurn> {
         let wait_started_at = Instant::now();
+        let wait_budget = deadline.saturating_duration_since(wait_started_at);
         let ticket = {
             let mut state = self
                 .state
@@ -86,7 +78,7 @@ impl MemoryIndexWriteCoordinator {
             .lock()
             .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?;
         while state.serving_ticket != ticket {
-            let remaining = timeout.saturating_sub(wait_started_at.elapsed());
+            let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
                 state.cancelled_tickets.insert(ticket);
                 self.available.notify_all();
@@ -100,7 +92,7 @@ impl MemoryIndexWriteCoordinator {
                 );
                 return Err(anyhow!(
                     "memory index writer queue wait timed out after {} ms",
-                    timeout.as_millis()
+                    wait_budget.as_millis()
                 ));
             }
             let (next_state, _) = self
@@ -221,7 +213,8 @@ mod tests {
         let directory = tempdir()?;
         let coordinator =
             memory_index_write_coordinator(&directory.path().join("memory.v2.sqlite3"))?;
-        let first_turn = coordinator.wait_turn("test.first")?;
+        let first_turn =
+            coordinator.wait_turn_until("test.first", Instant::now() + Duration::from_secs(5))?;
         let (sender, receiver) = mpsc::channel();
         let mut handles = Vec::new();
 
@@ -229,7 +222,8 @@ mod tests {
             let waiter = Arc::clone(&coordinator);
             let sender = sender.clone();
             handles.push(thread::spawn(move || -> Result<()> {
-                let _turn = waiter.wait_turn("test.waiter")?;
+                let _turn = waiter
+                    .wait_turn_until("test.waiter", Instant::now() + Duration::from_secs(5))?;
                 sender.send(value)?;
                 Ok(())
             }));
@@ -270,12 +264,13 @@ mod tests {
         let directory = tempdir()?;
         let coordinator =
             memory_index_write_coordinator(&directory.path().join("memory.v2.sqlite3"))?;
-        let first_turn = coordinator.wait_turn("test.first")?;
+        let first_turn =
+            coordinator.wait_turn_until("test.first", Instant::now() + Duration::from_secs(5))?;
 
         let panicking_coordinator = Arc::clone(&coordinator);
         let panicking_handle = thread::spawn(move || {
             let _turn = panicking_coordinator
-                .wait_turn("test.panicking")
+                .wait_turn_until("test.panicking", Instant::now() + Duration::from_secs(5))
                 .expect("panicking writer failed to acquire turn");
             panic!("test writer panic");
         });
@@ -303,7 +298,8 @@ mod tests {
         let successor_coordinator = Arc::clone(&coordinator);
         let (sender, receiver) = mpsc::channel();
         let successor_handle = thread::spawn(move || -> Result<()> {
-            let _turn = successor_coordinator.wait_turn("test.successor")?;
+            let _turn = successor_coordinator
+                .wait_turn_until("test.successor", Instant::now() + Duration::from_secs(5))?;
             sender.send(())?;
             Ok(())
         });
@@ -342,11 +338,14 @@ mod tests {
         let directory = tempdir()?;
         let coordinator =
             memory_index_write_coordinator(&directory.path().join("memory.v2.sqlite3"))?;
-        let first_turn = coordinator.wait_turn("test.first")?;
+        let first_turn =
+            coordinator.wait_turn_until("test.first", Instant::now() + Duration::from_secs(5))?;
 
         let timed_out_coordinator = Arc::clone(&coordinator);
         let timed_out_handle = thread::spawn(move || {
-            match timed_out_coordinator.wait_turn_for("test.timeout", Duration::from_millis(50)) {
+            match timed_out_coordinator
+                .wait_turn_until("test.timeout", Instant::now() + Duration::from_millis(50))
+            {
                 Ok(_turn) => panic!("queued writer should time out"),
                 Err(error) => error,
             }
@@ -367,7 +366,8 @@ mod tests {
         let successor_coordinator = Arc::clone(&coordinator);
         let (sender, receiver) = mpsc::channel();
         let successor_handle = thread::spawn(move || -> Result<()> {
-            let _turn = successor_coordinator.wait_turn("test.successor")?;
+            let _turn = successor_coordinator
+                .wait_turn_until("test.successor", Instant::now() + Duration::from_secs(5))?;
             sender.send(())?;
             Ok(())
         });
