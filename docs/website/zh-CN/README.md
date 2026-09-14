@@ -161,8 +161,6 @@ holon daemon start
 
 从一个明确的目标开始，约定跟进方式、交付结果和需要你参与的时刻。少一些反复检查和催促，把时间留给你真正想做的事。
 
-<small class="home-translation-note">中文文档正在逐步完善中。尚未翻译的页面会链接到对应的英文版本。</small>
-
 </div>
 <div class="home-final__actions">
 <a class="home-button" href="/zh-CN/getting-started/first-agent">创建第一个 Agent</a>
