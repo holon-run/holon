@@ -22,9 +22,10 @@ define the normative v1 contract. Concrete DTO field names and hard limit values
 may be refined without changing the lifecycle, consistency, or compatibility
 boundaries frozen here.
 
-This implementation does not modify the existing `web-gui`. It may add an
-independent Web/TypeScript protocol SDK used by real HTTP/stream E2E tests and
-available for a later GUI integration WorkItem. Actual Codex/ChatGPT App folding
+This implementation does not modify the existing `web-gui`. The summary and
+detail reads and the conversation change stream are implemented by the Rust
+runtime. An independent Web/TypeScript protocol SDK remains available for a
+later phase and GUI integration WorkItem. Actual Codex/ChatGPT App folding
 behavior has not been verified and is not a prerequisite for this interface.
 
 Related native contracts:
@@ -360,7 +361,7 @@ GET /agents/{agent_id}/conversation/stream?after=<snapshot_cursor>
 Reuse SSE transport, authorization, and underlying source subscriptions, while
 keeping a separate projection contract:
 
-| Existing `/events/stream` | Proposed conversation stream |
+| Existing `/events/stream` | Conversation stream |
 | --- | --- |
 | Runtime event envelopes | Changes to visible inputs, summaries, and activities |
 | Raw `event_seq` recovery | Scoped opaque conversation checkpoint |
@@ -368,10 +369,11 @@ keeping a separate projection contract:
 | Client resolves display relationships | Server supplies canonical ownership and safe typed fields |
 
 This is a read projection over existing records/events, not a second execution
-log. Independent URL versus an explicit projection mode remains open; a distinct
-contract is required either way.
+log. V1 uses the independent
+`GET /agents/{agent_id}/conversation/stream` endpoint and leaves the raw stream
+contract unchanged.
 
-### 6.1 Proposed message vocabulary
+### 6.1 Message vocabulary
 
 | Message | Purpose |
 | --- | --- |
@@ -411,7 +413,7 @@ replacement. They have different roles and cannot be substituted for each other.
   checkpoint/SSE id. The server never claims to know that the client applied it.
   A disconnect before `checkpoint` replays from the client's previously
   persisted cursor.
-- Proposed SSE `id` values represent safe resumable checkpoints, not raw sequence
+- SSE `id` values represent safe resumable checkpoints, not raw sequence
   numbers or incomplete reconciliation progress. `Last-Event-ID` takes
   precedence over `after`; `after` is used only when the header is absent.
 - Filtered source events advance coverage via checkpoints; they are not gaps
@@ -423,9 +425,19 @@ replacement. They have different roles and cannot be substituted for each other.
   consumers must not block execution; bounded queues/backpressure may force reset.
 
 Malformed or cross-scope cursors are rejected; valid but no-longer-recoverable
-cursors return a typed reset condition. Exact HTTP statuses and SSE error
-encoding remain part of DTO review. Existing authorization failure semantics
-remain separate from recoverable cursor errors.
+cursors return a typed reset condition. Before SSE attachment, malformed or
+cross-scope cursors return a normal HTTP error, while retention, epoch, schema,
+query-version, cursor-ahead, and replay-budget failures return a typed
+`conversation_reset_required` response. After attachment, a live recovery
+failure emits `reset_required` when the bounded sender can still accept it and
+then closes the stream. Existing authorization failure semantics remain
+separate from recoverable cursor errors.
+
+The v1 query accepts the opaque `after` cursor plus bounded `limit` and
+`activity_limit` recovery budgets. Each emitted batch starts with `batch_begin`;
+only its terminal `checkpoint` carries an SSE `id`. The implementation uses a
+bounded per-connection queue and bounded send timeout, so a slow or disconnected
+consumer cannot block canonical event writers.
 
 ## 7. How the three reads cooperate
 

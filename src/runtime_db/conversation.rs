@@ -1,15 +1,18 @@
 //! Durable revision and linkage metadata for the conversation read model.
 
+use std::collections::BTreeSet;
+
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use serde_json::Value;
 
 use crate::domain::conversation::{
     map_result, presentation_class, ActivityItem, ActivityKey, Attention, ConversationActivity,
-    ConversationActivityPage, ConversationSummaryPage, ConversationTurnSummary, CursorBinding,
-    CursorCodec, CursorDecodeError, DetailCoverage, DetailCoverageReason, DetailCursor,
-    ExecutionState, HistoryCursor, PendingInput, PendingInputState, PresentationClass,
-    StreamCursor, TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION,
+    ConversationActivityPage, ConversationChange, ConversationSummaryPage, ConversationTurnSummary,
+    CursorBinding, CursorCodec, CursorDecodeError, DetailCoverage, DetailCoverageReason,
+    DetailCursor, ExecutionState, HistoryCursor, PendingInput, PendingInputState,
+    PresentationClass, StreamCursor, TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION,
     CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::types::ConversationRepository;
@@ -36,6 +39,25 @@ pub struct ConversationSnapshot<T> {
     pub value: T,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationChangeBatch {
+    pub runtime_id: String,
+    pub event_log_epoch: String,
+    pub visibility_scope_id: String,
+    pub from_seq: u64,
+    pub through_seq: u64,
+    pub oldest_retained_seq: u64,
+    pub checkpoint: String,
+    pub changes: Vec<ConversationChange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationResetReason {
+    RetentionExpired,
+    CursorAhead,
+    ReplayLimitExceeded,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ConversationReadError {
     #[error("{resource} limit must be between {minimum} and {maximum}, got {actual}")]
@@ -54,6 +76,13 @@ pub enum ConversationReadError {
     CursorOutsideCoverage,
     #[error("conversation cursor rejected: {0}")]
     Cursor(#[from] CursorDecodeError),
+    #[error("conversation stream reset required: {reason:?}")]
+    ResetRequired {
+        reason: ConversationResetReason,
+        requested_seq: u64,
+        oldest_retained_seq: u64,
+        event_head_seq: u64,
+    },
 }
 
 pub(crate) const CONVERSATION_HISTORY_FIRST_SQL: &str = "
@@ -168,6 +197,8 @@ LIMIT ?6";
 const MAX_ACTIVE_TURNS: usize = 32;
 const MAX_PENDING_INPUTS: usize = 100;
 const MAX_BRIEFS_PER_TURN: usize = 64;
+pub(crate) const MAX_CONVERSATION_CHANGE_EVENTS: usize = 256;
+pub(crate) const MAX_CONVERSATION_CHANGE_ACTIVITIES: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConversationTurnRevision {
@@ -595,6 +626,275 @@ impl ConversationRepository<'_> {
             value: page,
         }))
     }
+
+    pub fn change_batch(
+        &self,
+        agent_id: &str,
+        after_cursor: Option<&str>,
+        event_limit: usize,
+        activity_limit: usize,
+        scope_principal: &str,
+        scope_entitlement: &str,
+    ) -> Result<Option<ConversationChangeBatch>> {
+        validate_limit(
+            "conversation change events",
+            event_limit,
+            MAX_CONVERSATION_CHANGE_EVENTS,
+        )?;
+        validate_limit(
+            "conversation change activities",
+            activity_limit,
+            MAX_CONVERSATION_CHANGE_ACTIVITIES,
+        )?;
+        let mut connection = self.db.connection()?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let Some(context) = conversation_snapshot_context(
+            &transaction,
+            agent_id,
+            scope_principal,
+            scope_entitlement,
+        )?
+        else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let binding = context.binding(agent_id);
+        let codec = CursorCodec::new(context.cursor_signing_key.as_bytes());
+        let from_seq = after_cursor
+            .map(|encoded| codec.decode::<StreamCursor>(encoded, &binding))
+            .transpose()
+            .map_err(ConversationReadError::from)?
+            .map_or(context.event_head_seq, |cursor| cursor.event_seq);
+        if from_seq > context.event_head_seq {
+            return Err(ConversationReadError::ResetRequired {
+                reason: ConversationResetReason::CursorAhead,
+                requested_seq: from_seq,
+                oldest_retained_seq: context.oldest_retained_seq,
+                event_head_seq: context.event_head_seq,
+            }
+            .into());
+        }
+        if from_seq < context.event_head_seq
+            && from_seq.saturating_add(1) < context.oldest_retained_seq
+        {
+            return Err(ConversationReadError::ResetRequired {
+                reason: ConversationResetReason::RetentionExpired,
+                requested_seq: from_seq,
+                oldest_retained_seq: context.oldest_retained_seq,
+                event_head_seq: context.event_head_seq,
+            }
+            .into());
+        }
+
+        let events = audit_events_between(
+            &transaction,
+            agent_id,
+            from_seq,
+            context.event_head_seq,
+            event_limit + 1,
+        )?;
+        if events.len() > event_limit {
+            return Err(ConversationReadError::ResetRequired {
+                reason: ConversationResetReason::ReplayLimitExceeded,
+                requested_seq: from_seq,
+                oldest_retained_seq: context.oldest_retained_seq,
+                event_head_seq: context.event_head_seq,
+            }
+            .into());
+        }
+
+        let mut changes = Vec::new();
+        if !events.is_empty() {
+            let mut turn_ids = BTreeSet::new();
+            let mut message_ids = BTreeSet::new();
+            for event in &events {
+                collect_change_ids(&event.data, &mut turn_ids, &mut message_ids);
+            }
+            for message_id in &message_ids {
+                if let Some(turn_id) = assigned_turn_id_tx(&transaction, agent_id, message_id)? {
+                    turn_ids.insert(turn_id);
+                }
+            }
+
+            let pending_inputs = pending_input_rows(&transaction, agent_id)?;
+            let pending_ids = pending_inputs
+                .iter()
+                .map(|input| input.message_id.clone())
+                .collect::<BTreeSet<_>>();
+            changes.extend(
+                pending_inputs
+                    .into_iter()
+                    .map(|input| ConversationChange::OperatorUpsert { input }),
+            );
+            for message_id in message_ids {
+                if !pending_ids.contains(&message_id) {
+                    changes.push(ConversationChange::OperatorRemove {
+                        revision: source_revision(
+                            &transaction,
+                            SOURCE_OPERATOR,
+                            &message_id,
+                            agent_id,
+                        )?,
+                        message_id,
+                    });
+                }
+            }
+
+            for turn in active_turn_rows(&transaction, agent_id)? {
+                turn_ids.insert(turn.turn_id);
+            }
+            let mut remaining_activity_limit = activity_limit;
+            for turn_id in turn_ids {
+                let Some((turn, detail_revision)) =
+                    turn_summary_by_id(&transaction, agent_id, &turn_id)?
+                else {
+                    continue;
+                };
+                let active = matches!(turn.execution, ExecutionState::Active);
+                changes.push(ConversationChange::TurnSummaryUpsert { turn });
+                if active {
+                    if let Some(page) = activities_in(
+                        &transaction,
+                        agent_id,
+                        &turn_id,
+                        remaining_activity_limit,
+                        None,
+                        None,
+                    )? {
+                        if page.has_more {
+                            return Err(ConversationReadError::ResetRequired {
+                                reason: ConversationResetReason::ReplayLimitExceeded,
+                                requested_seq: from_seq,
+                                oldest_retained_seq: context.oldest_retained_seq,
+                                event_head_seq: context.event_head_seq,
+                            }
+                            .into());
+                        }
+                        remaining_activity_limit =
+                            remaining_activity_limit.saturating_sub(page.activities.len());
+                        changes.extend(page.activities.into_iter().map(|activity| {
+                            ConversationChange::ActivityUpsert {
+                                turn_id: turn_id.clone(),
+                                activity,
+                            }
+                        }));
+                    }
+                }
+                changes.push(ConversationChange::DetailInvalidated {
+                    turn_id,
+                    detail_revision,
+                });
+            }
+        }
+
+        let checkpoint = codec.encode(&StreamCursor {
+            binding,
+            event_seq: context.event_head_seq,
+        });
+        transaction.commit()?;
+        Ok(Some(ConversationChangeBatch {
+            runtime_id: context.runtime_id,
+            event_log_epoch: context.event_log_epoch,
+            visibility_scope_id: context.visibility_scope_id,
+            from_seq,
+            through_seq: context.event_head_seq,
+            oldest_retained_seq: context.oldest_retained_seq,
+            checkpoint,
+            changes,
+        }))
+    }
+}
+
+fn audit_events_between(
+    connection: &Connection,
+    agent_id: &str,
+    after_seq: u64,
+    through_seq: u64,
+    limit: usize,
+) -> Result<Vec<crate::types::AuditEvent>> {
+    let mut statement = connection.prepare(
+        "SELECT data_json
+         FROM audit_events
+         WHERE agent_id = ?1 AND event_seq > ?2 AND event_seq <= ?3
+         ORDER BY event_seq
+         LIMIT ?4",
+    )?;
+    let events = statement
+        .query_map(
+            params![
+                agent_id,
+                i64::try_from(after_seq)?,
+                i64::try_from(through_seq)?,
+                i64::try_from(limit)?
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .map(|row| {
+            let json = row?;
+            serde_json::from_str(&json).context("invalid canonical audit event payload")
+        })
+        .collect();
+    events
+}
+
+fn collect_change_ids(
+    value: &Value,
+    turn_ids: &mut BTreeSet<String>,
+    message_ids: &mut BTreeSet<String>,
+) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                if let Some(value) = value.as_str() {
+                    if matches!(
+                        key.as_str(),
+                        "turn_id" | "current_turn_id" | "source_turn_id"
+                    ) {
+                        turn_ids.insert(value.to_string());
+                    } else if matches!(
+                        key.as_str(),
+                        "message_id" | "related_message_id" | "source_message_id"
+                    ) {
+                        message_ids.insert(value.to_string());
+                    }
+                }
+                collect_change_ids(value, turn_ids, message_ids);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_change_ids(value, turn_ids, message_ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn source_revision(
+    connection: &Connection,
+    source_kind: &str,
+    source_id: &str,
+    agent_id: &str,
+) -> Result<u64> {
+    connection
+        .query_row(
+            "SELECT revision
+             FROM conversation_source_revisions
+             WHERE source_kind = ?1 AND source_id = ?2 AND agent_id = ?3",
+            params![source_kind, source_id, agent_id],
+            |row| {
+                u64::try_from(row.get::<_, i64>(0)?).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        0,
+                        rusqlite::types::Type::Integer,
+                        Box::new(error),
+                    )
+                })
+            },
+        )
+        .optional()
+        .map(|revision| revision.unwrap_or(1))
+        .map_err(Into::into)
 }
 
 struct ConversationSnapshotContext {

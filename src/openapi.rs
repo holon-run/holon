@@ -11,10 +11,11 @@ use crate::{
         AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
         CompleteWorkItemRequest, ConversationActivityResponse, ConversationReadQuery,
-        ConversationSummaryResponse, CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest,
-        ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
-        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
-        SearchRequest, SearchResponse, UpdateWorkItemRequest,
+        ConversationStreamMessage, ConversationStreamQuery, ConversationSummaryResponse,
+        CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest, ModelConfigMigrationRequest,
+        PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
+        UpdateWorkItemRequest,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -80,6 +81,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/agents/snapshot", "agentsSnapshot", "agents", "Agent roster snapshot", "Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentRosterSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/projection-snapshot", "agentProjectionSnapshot", "agents", "Agent projection snapshot", "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentProjectionSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
+    event_stream_route("get", "/agents/{agent_id}/conversation/stream", "agentConversationStream", "agents", "Conversation change stream", "Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.", Some("ConversationStreamQuery"), AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/activities", "agentConversationActivities", "agents", "Conversation turn activity snapshot", "Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationActivityResponse", AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}", "getAgent", "agents", "Get agent", "Return the canonical public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
@@ -722,6 +724,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "ConversationActivityResponse".into(),
         component_schema::<ConversationActivityResponse>(),
+    );
+    schemas.insert(
+        "ConversationStreamQuery".into(),
+        component_schema::<ConversationStreamQuery>(),
+    );
+    schemas.insert(
+        "ConversationStreamMessage".into(),
+        component_schema::<ConversationStreamMessage>(),
     );
     schemas.insert("SlimTaskDto".into(), component_schema::<SlimTaskDto>());
     schemas.insert(

@@ -7,21 +7,22 @@ use rusqlite::params;
 use tempfile::TempDir;
 
 use super::{
-    settle_turn_result_tx, CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL,
-    MAX_BRIEFS_PER_TURN,
+    settle_turn_result_tx, ConversationReadError, ConversationResetReason,
+    CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL, MAX_BRIEFS_PER_TURN,
 };
 use crate::domain::conversation::{
-    ActivityItem, Attention, ConversationActivity, ExecutionState, NoBriefReason,
-    PendingInputState, ResultState, TerminalOutcome, TurnKey,
+    ActivityItem, Attention, ConversationActivity, ConversationChange, CursorBinding, CursorCodec,
+    ExecutionState, NoBriefReason, PendingInputState, ResultState, StreamCursor, TerminalOutcome,
+    TurnKey, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::RuntimeDb;
 use crate::types::{
     AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-    AgentVisibility, AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind, MessageBody,
-    MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus,
-    ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry, TranscriptEntryKind,
-    TurnNoBriefReason, TurnRecord, TurnReplayProvenance, TurnTerminalKind, TurnTerminalSummary,
-    TurnTriggerSummary,
+    AgentVisibility, AuditEvent, AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind,
+    MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
+    QueueEntryStatus, ToolExecutionRecord, ToolExecutionStatus, TranscriptEntry,
+    TranscriptEntryKind, TurnNoBriefReason, TurnRecord, TurnReplayProvenance, TurnTerminalKind,
+    TurnTerminalSummary, TurnTriggerSummary,
 };
 
 const AGENT_ID: &str = "agent-conversation-test";
@@ -33,6 +34,32 @@ fn runtime_db() -> Result<(TempDir, PathBuf, PathBuf, RuntimeDb)> {
     std::fs::create_dir_all(db_path.parent().expect("database parent"))?;
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
     Ok((temp_dir, db_path, lock_path, db))
+}
+
+fn register_public_agent(db: &RuntimeDb) -> Result<()> {
+    let mut identity = AgentIdentityRecord::new(
+        AGENT_ID,
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    );
+    identity.status = AgentRegistryStatus::Active;
+    identity.created_at = timestamp(0);
+    identity.updated_at = timestamp(0);
+    db.agent_identities().upsert(&identity)
+}
+
+fn append_turn_event(db: &RuntimeDb, event_id: &str, turn_id: &str, offset: i64) -> Result<u64> {
+    let mut event = AuditEvent::legacy(
+        "conversation_test_change",
+        serde_json::json!({ "turn_id": turn_id }),
+    );
+    event.id = event_id.into();
+    event.created_at = timestamp(offset);
+    Ok(db.audit_events().append(Some(AGENT_ID), &event)?.event_seq)
 }
 
 fn timestamp(offset: i64) -> chrono::DateTime<Utc> {
@@ -757,5 +784,458 @@ fn keyset_queries_use_declared_indexes_without_temp_sorting() -> Result<()> {
             .all(|detail| !detail.contains("USE TEMP B-TREE")),
         "activity plan used a temporary sort: {activity_plan:?}"
     );
+    Ok(())
+}
+
+#[test]
+fn change_batch_recovers_snapshot_gap_and_coalesces_completed_turn() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    register_public_agent(&db)?;
+    db.turn_records().upsert(&terminal(
+        turn("turn-stream-completed", 1),
+        TurnTerminalKind::Completed,
+        None,
+    ))?;
+    let snapshot = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .expect("conversation snapshot");
+    let snapshot_revision = snapshot.value.turns[0].revision;
+
+    let mut brief = BriefRecord::new(AGENT_ID, BriefKind::Result, "result", None, None);
+    brief.id = "brief-stream-completed".into();
+    brief.turn_id = Some("turn-stream-completed".into());
+    brief.turn_index = Some(1);
+    brief.created_at = timestamp(10);
+    let event = crate::types::brief_created_event_for(&brief)?;
+    db.evidence()
+        .append_brief_with_created_event(Some(AGENT_ID), &brief, &event, &[])?;
+    append_turn_event(
+        &db,
+        "event-stream-completed-extra",
+        "turn-stream-completed",
+        11,
+    )?;
+
+    let batch = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            10,
+            10,
+            "test-principal",
+            "public",
+        )?
+        .expect("change batch");
+    assert_eq!(batch.from_seq, snapshot.event_head_seq);
+    assert!(batch.through_seq > batch.from_seq);
+    let summaries = batch
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            ConversationChange::TurnSummaryUpsert { turn } => Some(turn),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].turn_id, "turn-stream-completed");
+    assert_eq!(summaries[0].brief_ids, ["brief-stream-completed"]);
+    assert!(summaries[0].revision > snapshot_revision);
+    assert_eq!(
+        batch
+            .changes
+            .iter()
+            .filter(|change| matches!(
+                change,
+                ConversationChange::DetailInvalidated { turn_id, .. }
+                    if turn_id == "turn-stream-completed"
+            ))
+            .count(),
+        1
+    );
+
+    let reconnected = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&batch.checkpoint),
+            10,
+            10,
+            "test-principal",
+            "public",
+        )?
+        .expect("reconnected batch");
+    assert_eq!(reconnected.from_seq, batch.through_seq);
+    assert_eq!(reconnected.through_seq, batch.through_seq);
+    assert!(reconnected.changes.is_empty());
+    Ok(())
+}
+
+#[test]
+fn change_batch_reconciles_brief_before_terminal_and_bounds_active_activity() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    register_public_agent(&db)?;
+    let mut active = turn("turn-stream-active", 1);
+    db.turn_records().upsert(&active)?;
+    let snapshot = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .expect("conversation snapshot");
+    let snapshot_detail_revision = db
+        .conversation()
+        .activities(AGENT_ID, "turn-stream-active", 1, None, None)?
+        .expect("active turn detail")
+        .detail_revision;
+
+    let mut brief = BriefRecord::new(AGENT_ID, BriefKind::Result, "early result", None, None);
+    brief.id = "brief-stream-active".into();
+    brief.turn_id = Some("turn-stream-active".into());
+    brief.turn_index = Some(1);
+    brief.created_at = timestamp(10);
+    let event = crate::types::brief_created_event_for(&brief)?;
+    db.evidence()
+        .append_brief_with_created_event(Some(AGENT_ID), &brief, &event, &[])?;
+
+    active.tool_execution_ids = vec!["tool-stream-a".into(), "tool-stream-b".into()];
+    db.turn_records().upsert(&active)?;
+    for (id, offset) in [("tool-stream-a", 11), ("tool-stream-b", 12)] {
+        db.evidence().append_tool_execution(&ToolExecutionRecord {
+            id: id.into(),
+            agent_id: AGENT_ID.into(),
+            work_item_id: None,
+            turn_index: 1,
+            turn_id: Some("turn-stream-active".into()),
+            tool_name: "ExecCommand".into(),
+            created_at: timestamp(offset),
+            completed_at: Some(timestamp(offset + 1)),
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({ "cmd": "true" }),
+            output: serde_json::Value::Null,
+            summary: id.into(),
+            invocation_surface: None,
+        })?;
+    }
+    append_turn_event(&db, "event-stream-active-tools", "turn-stream-active", 13)?;
+
+    let activity_overflow = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            10,
+            1,
+            "test-principal",
+            "public",
+        )
+        .expect_err("truncated active activity must reset");
+    assert!(matches!(
+        activity_overflow.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::ResetRequired {
+            reason: ConversationResetReason::ReplayLimitExceeded,
+            ..
+        })
+    ));
+
+    let active_batch = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            10,
+            2,
+            "test-principal",
+            "public",
+        )?
+        .expect("active change batch");
+    let active_summary = active_batch
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::TurnSummaryUpsert { turn } => Some(turn),
+            _ => None,
+        })
+        .expect("active summary upsert");
+    assert!(matches!(active_summary.execution, ExecutionState::Active));
+    assert_eq!(active_summary.brief_ids, ["brief-stream-active"]);
+    assert_eq!(
+        active_batch
+            .changes
+            .iter()
+            .filter(|change| matches!(change, ConversationChange::ActivityUpsert { .. }))
+            .count(),
+        2
+    );
+    let invalidated_revision = active_batch
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::DetailInvalidated {
+                detail_revision, ..
+            } => Some(*detail_revision),
+            _ => None,
+        })
+        .expect("detail invalidation");
+    assert!(invalidated_revision > snapshot_detail_revision);
+    let active_revision = active_summary.revision;
+
+    db.turn_records()
+        .upsert(&terminal(active, TurnTerminalKind::Completed, None))?;
+    append_turn_event(
+        &db,
+        "event-stream-active-terminal",
+        "turn-stream-active",
+        14,
+    )?;
+    let terminal_batch = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&active_batch.checkpoint),
+            10,
+            1,
+            "test-principal",
+            "public",
+        )?
+        .expect("terminal change batch");
+    let terminal_summary = terminal_batch
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::TurnSummaryUpsert { turn } => Some(turn),
+            _ => None,
+        })
+        .expect("terminal summary upsert");
+    assert!(matches!(
+        terminal_summary.execution,
+        ExecutionState::Terminal {
+            outcome: TerminalOutcome::Completed
+        }
+    ));
+    assert_eq!(terminal_summary.brief_ids, ["brief-stream-active"]);
+    assert!(terminal_summary.revision > active_revision);
+    Ok(())
+}
+
+#[test]
+fn change_batch_enforces_shared_activity_budget_across_active_turns() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    register_public_agent(&db)?;
+    for (turn_id, turn_index, tool_id, offset) in [
+        ("turn-stream-budget-a", 1, "tool-stream-budget-a", 1),
+        ("turn-stream-budget-b", 2, "tool-stream-budget-b", 2),
+    ] {
+        let mut active = turn(turn_id, turn_index);
+        active.tool_execution_ids = vec![tool_id.into()];
+        db.turn_records().upsert(&active)?;
+        db.evidence().append_tool_execution(&ToolExecutionRecord {
+            id: tool_id.into(),
+            agent_id: AGENT_ID.into(),
+            work_item_id: None,
+            turn_index,
+            turn_id: Some(turn_id.into()),
+            tool_name: "ExecCommand".into(),
+            created_at: timestamp(offset),
+            completed_at: Some(timestamp(offset + 1)),
+            duration_ms: 1,
+            authority_class: AuthorityClass::RuntimeInstruction,
+            status: ToolExecutionStatus::Success,
+            input: serde_json::json!({ "cmd": "true" }),
+            output: serde_json::Value::Null,
+            summary: tool_id.into(),
+            invocation_surface: None,
+        })?;
+    }
+    let snapshot = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .expect("conversation snapshot");
+    append_turn_event(
+        &db,
+        "event-stream-shared-activity-budget",
+        "turn-stream-budget-a",
+        3,
+    )?;
+
+    let zero_limit = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            10,
+            0,
+            "test-principal",
+            "public",
+        )
+        .expect_err("zero activity limit must be rejected");
+    assert!(matches!(
+        zero_limit.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::InvalidLimit {
+            resource: "conversation change activities",
+            actual: 0,
+            ..
+        })
+    ));
+
+    let shared_overflow = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            10,
+            1,
+            "test-principal",
+            "public",
+        )
+        .expect_err("activity limit must apply to the complete batch");
+    assert!(matches!(
+        shared_overflow.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::ResetRequired {
+            reason: ConversationResetReason::ReplayLimitExceeded,
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn change_batch_returns_typed_replay_retention_epoch_and_query_resets() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    register_public_agent(&db)?;
+    let snapshot = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .expect("conversation snapshot");
+    let first_seq = append_turn_event(&db, "event-reset-first", "turn-reset", 1)?;
+    let second_seq = append_turn_event(&db, "event-reset-second", "turn-reset", 2)?;
+
+    let replay_error = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            1,
+            10,
+            "test-principal",
+            "public",
+        )
+        .expect_err("bounded replay must reset");
+    assert!(matches!(
+        replay_error.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::ResetRequired {
+            reason: ConversationResetReason::ReplayLimitExceeded,
+            ..
+        })
+    ));
+
+    let signing_key: String = db.connection()?.query_row(
+        "SELECT value FROM runtime_metadata
+         WHERE key = 'conversation_cursor_signing_key'",
+        [],
+        |row| row.get(0),
+    )?;
+    let binding = CursorBinding {
+        runtime_id: snapshot.runtime_id.clone(),
+        agent_id: AGENT_ID.into(),
+        event_log_epoch: snapshot.event_log_epoch.clone(),
+        visibility_scope_id: snapshot.visibility_scope_id.clone(),
+        schema_version: CONVERSATION_SCHEMA_VERSION,
+        query_version: CONVERSATION_QUERY_VERSION,
+    };
+    let cursor = |binding, event_seq| {
+        CursorCodec::new(signing_key.as_bytes()).encode(&StreamCursor { binding, event_seq })
+    };
+
+    let ahead = cursor(binding.clone(), second_seq + 1);
+    let ahead_error = db
+        .conversation()
+        .change_batch(AGENT_ID, Some(&ahead), 10, 10, "test-principal", "public")
+        .expect_err("cursor ahead must reset");
+    assert!(matches!(
+        ahead_error.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::ResetRequired {
+            reason: ConversationResetReason::CursorAhead,
+            ..
+        })
+    ));
+
+    let wrong_epoch = cursor(
+        CursorBinding {
+            event_log_epoch: "epoch_replaced".into(),
+            ..binding.clone()
+        },
+        first_seq,
+    );
+    let epoch_error = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&wrong_epoch),
+            10,
+            10,
+            "test-principal",
+            "public",
+        )
+        .expect_err("epoch mismatch must reset");
+    assert!(matches!(
+        epoch_error.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::Cursor(
+            crate::domain::conversation::CursorDecodeError::EventLogEpochMismatch
+        ))
+    ));
+
+    let wrong_query = cursor(
+        CursorBinding {
+            query_version: CONVERSATION_QUERY_VERSION + 1,
+            ..binding
+        },
+        first_seq,
+    );
+    let query_error = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&wrong_query),
+            10,
+            10,
+            "test-principal",
+            "public",
+        )
+        .expect_err("query mismatch must reset");
+    assert!(matches!(
+        query_error.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::Cursor(
+            crate::domain::conversation::CursorDecodeError::QueryVersionMismatch { .. }
+        ))
+    ));
+
+    db.connection()?.execute(
+        "INSERT INTO audit_event_retention_watermarks (scope_key, oldest_retained_seq)
+         VALUES (?1, ?2)",
+        params![
+            crate::runtime_db::evidence::audit_event_sequence_scope(Some(AGENT_ID)),
+            i64::try_from(second_seq)?
+        ],
+    )?;
+    let retention_error = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            10,
+            10,
+            "test-principal",
+            "public",
+        )
+        .expect_err("expired cursor must reset");
+    assert!(matches!(
+        retention_error.downcast_ref::<ConversationReadError>(),
+        Some(ConversationReadError::ResetRequired {
+            reason: ConversationResetReason::RetentionExpired,
+            ..
+        })
+    ));
     Ok(())
 }

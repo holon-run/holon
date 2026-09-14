@@ -1,11 +1,14 @@
-//! Bounded conversation snapshot HTTP reads.
+//! Bounded conversation snapshot reads and projected change streaming.
 
 use super::*;
 use crate::domain::conversation::{
-    ConversationActivity, ConversationTurnSummary, DetailCoverage, PendingInput,
-    CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
+    ConversationActivity, ConversationChange, ConversationTurnSummary, DetailCoverage,
+    PendingInput, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
-use crate::runtime_db::conversation::{ConversationReadError, ConversationSnapshot};
+use crate::runtime_db::conversation::{
+    ConversationChangeBatch, ConversationReadError, ConversationResetReason, ConversationSnapshot,
+    MAX_CONVERSATION_CHANGE_ACTIVITIES, MAX_CONVERSATION_CHANGE_EVENTS,
+};
 
 pub(crate) const CONVERSATION_SUMMARY_DEFAULT_LIMIT: usize = 30;
 pub(crate) const CONVERSATION_ACTIVITY_DEFAULT_LIMIT: usize = 50;
@@ -14,6 +17,8 @@ pub(crate) const CONVERSATION_ACTIVITY_ITEM_MAX_SERIALIZED_BYTES: usize = 256 * 
 pub(crate) const CONVERSATION_SUMMARY_MAX_SERIALIZED_BYTES: usize = 2 * 1024 * 1024;
 pub(crate) const CONVERSATION_ACTIVITY_MAX_SERIALIZED_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const CONVERSATION_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const CONVERSATION_STREAM_QUEUE_CAPACITY: usize = 32;
+const CONVERSATION_STREAM_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone)]
 pub(crate) struct ConversationReadLimits {
@@ -41,6 +46,14 @@ impl Default for ConversationReadLimits {
 pub(crate) struct ConversationReadQuery {
     pub limit: Option<usize>,
     pub before: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConversationStreamQuery {
+    pub after: Option<String>,
+    pub limit: Option<usize>,
+    pub activity_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -78,6 +91,408 @@ pub(crate) struct ConversationActivityResponse {
     pub coverage: DetailCoverage,
     pub next_before_cursor: Option<String>,
     pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ConversationStreamMessage {
+    BatchBegin {
+        batch_id: String,
+        schema_version: u32,
+        query_version: u32,
+        runtime_id: String,
+        event_log_epoch: String,
+        visibility_scope_id: String,
+        from_seq: u64,
+        through_seq: u64,
+    },
+    OperatorUpsert {
+        event_log_epoch: String,
+        visibility_scope_id: String,
+        input: PendingInput,
+    },
+    OperatorRemove {
+        event_log_epoch: String,
+        visibility_scope_id: String,
+        message_id: String,
+        revision: u64,
+    },
+    TurnSummaryUpsert {
+        event_log_epoch: String,
+        visibility_scope_id: String,
+        turn: ConversationTurnSummary,
+    },
+    ActivityUpsert {
+        event_log_epoch: String,
+        visibility_scope_id: String,
+        turn_id: String,
+        activity: ConversationActivity,
+    },
+    DetailInvalidated {
+        event_log_epoch: String,
+        visibility_scope_id: String,
+        turn_id: String,
+        detail_revision: u64,
+    },
+    Checkpoint {
+        batch_id: String,
+        event_log_epoch: String,
+        visibility_scope_id: String,
+        through_seq: u64,
+        checkpoint: String,
+    },
+    ResetRequired {
+        reason: String,
+        oldest_retained_seq: Option<u64>,
+        event_head_seq: Option<u64>,
+        hint: String,
+    },
+}
+
+impl ConversationStreamMessage {
+    fn event_name(&self) -> &'static str {
+        match self {
+            Self::BatchBegin { .. } => "batch_begin",
+            Self::OperatorUpsert { .. } => "operator_upsert",
+            Self::OperatorRemove { .. } => "operator_remove",
+            Self::TurnSummaryUpsert { .. } => "turn_summary_upsert",
+            Self::ActivityUpsert { .. } => "activity_upsert",
+            Self::DetailInvalidated { .. } => "detail_invalidated",
+            Self::Checkpoint { .. } => "checkpoint",
+            Self::ResetRequired { .. } => "reset_required",
+        }
+    }
+}
+
+pub async fn stream(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ConversationStreamQuery>,
+) -> AxumResponse {
+    if let Err(error) = authorize_remote_access(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    if !conversation_capability_available(&state) {
+        return capability_unavailable().into_response();
+    }
+    let header_cursor = match headers.get("last-event-id") {
+        Some(value) => match value.to_str() {
+            Ok(value) if !value.is_empty() => Some(value.to_string()),
+            Ok(_) => None,
+            Err(_) => {
+                return http_error(
+                    StatusCode::BAD_REQUEST,
+                    HttpErrorEnvelope::new("Last-Event-ID is not valid UTF-8")
+                        .code("conversation_cursor_malformed"),
+                )
+                .into_response();
+            }
+        },
+        None => None,
+    };
+    let after = header_cursor.or(query.after);
+    let event_limit = query.limit.unwrap_or(MAX_CONVERSATION_CHANGE_EVENTS);
+    let activity_limit = query
+        .activity_limit
+        .unwrap_or(MAX_CONVERSATION_CHANGE_ACTIVITIES);
+    let (scope_principal, scope_entitlement) = observer_sync::observer_scope_authority(&state);
+    let host = state.host.clone();
+    let mut live_rx = host.subscribe_events();
+    let initial_agent_id = agent_id.clone();
+    let initial_after = after.clone();
+    let initial = match tokio::time::timeout(
+        state.conversation_read_limits.timeout,
+        tokio::task::spawn_blocking(move || {
+            host.runtime_db().conversation().change_batch(
+                &initial_agent_id,
+                initial_after.as_deref(),
+                event_limit,
+                activity_limit,
+                scope_principal,
+                scope_entitlement,
+            )
+        }),
+    )
+    .await
+    {
+        Ok(Ok(Ok(Some(batch)))) => batch,
+        Ok(Ok(Ok(None))) => return agent_not_found().into_response(),
+        Ok(Ok(Err(error))) => return conversation_stream_error(error).into_response(),
+        Ok(Err(error)) => return error_response(error.into()).into_response(),
+        Err(_) => {
+            return timeout_error("stream recovery", state.conversation_read_limits.timeout)
+                .into_response()
+        }
+    };
+
+    let (tx, rx) = tokio::sync::mpsc::channel(CONVERSATION_STREAM_QUEUE_CAPACITY);
+    let host = state.host.clone();
+    tokio::spawn(async move {
+        let mut checkpoint = initial.checkpoint.clone();
+        let mut through_seq = initial.through_seq;
+        if !send_change_batch(&tx, initial).await {
+            return;
+        }
+        loop {
+            match live_rx.recv().await {
+                Ok(published)
+                    if published.agent_id.as_deref() == Some(agent_id.as_str())
+                        && published.event.event_seq > through_seq =>
+                {
+                    let host = host.clone();
+                    let agent_id_for_read = agent_id.clone();
+                    let after = checkpoint.clone();
+                    let batch = tokio::task::spawn_blocking(move || {
+                        host.runtime_db().conversation().change_batch(
+                            &agent_id_for_read,
+                            Some(&after),
+                            event_limit,
+                            activity_limit,
+                            scope_principal,
+                            scope_entitlement,
+                        )
+                    })
+                    .await;
+                    match batch {
+                        Ok(Ok(Some(batch))) => {
+                            checkpoint = batch.checkpoint.clone();
+                            through_seq = batch.through_seq;
+                            if !send_change_batch(&tx, batch).await {
+                                return;
+                            }
+                        }
+                        Ok(Ok(None)) => {
+                            let _ = send_stream_message(
+                                &tx,
+                                ConversationStreamMessage::ResetRequired {
+                                    reason: "agent_not_found".to_string(),
+                                    oldest_retained_seq: None,
+                                    event_head_seq: None,
+                                    hint: "bootstrap a fresh conversation snapshot".to_string(),
+                                },
+                                None,
+                            )
+                            .await;
+                            return;
+                        }
+                        Ok(Err(error)) => {
+                            let _ = send_stream_message(&tx, reset_message_for_error(&error), None)
+                                .await;
+                            return;
+                        }
+                        Err(error) => {
+                            warn!(%error, "conversation stream recovery task failed");
+                            return;
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                    warn!(skipped, %agent_id, "conversation stream receiver lagged");
+                    let _ = send_stream_message(
+                        &tx,
+                        ConversationStreamMessage::ResetRequired {
+                            reason: "slow_consumer".to_string(),
+                            oldest_retained_seq: None,
+                            event_head_seq: None,
+                            hint: "bootstrap a fresh conversation snapshot".to_string(),
+                        },
+                        None,
+                    )
+                    .await;
+                    return;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+            }
+        }
+    });
+    Sse::new(ReceiverStream::new(rx))
+        .keep_alive(
+            KeepAlive::new()
+                .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
+                .text("heartbeat"),
+        )
+        .into_response()
+}
+
+async fn send_change_batch(
+    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    batch: ConversationChangeBatch,
+) -> bool {
+    send_change_batch_with_timeout(tx, batch, CONVERSATION_STREAM_SEND_TIMEOUT).await
+}
+
+async fn send_change_batch_with_timeout(
+    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    batch: ConversationChangeBatch,
+    send_timeout: Duration,
+) -> bool {
+    let batch_id = format!("conversation:{}:{}", batch.from_seq, batch.through_seq);
+    if !send_stream_message_with_timeout(
+        tx,
+        ConversationStreamMessage::BatchBegin {
+            batch_id: batch_id.clone(),
+            schema_version: CONVERSATION_SCHEMA_VERSION,
+            query_version: CONVERSATION_QUERY_VERSION,
+            runtime_id: batch.runtime_id,
+            event_log_epoch: batch.event_log_epoch.clone(),
+            visibility_scope_id: batch.visibility_scope_id.clone(),
+            from_seq: batch.from_seq,
+            through_seq: batch.through_seq,
+        },
+        None,
+        send_timeout,
+    )
+    .await
+    {
+        return false;
+    }
+    for change in batch.changes {
+        let message = match change {
+            ConversationChange::OperatorUpsert { input } => {
+                ConversationStreamMessage::OperatorUpsert {
+                    event_log_epoch: batch.event_log_epoch.clone(),
+                    visibility_scope_id: batch.visibility_scope_id.clone(),
+                    input,
+                }
+            }
+            ConversationChange::OperatorRemove {
+                message_id,
+                revision,
+            } => ConversationStreamMessage::OperatorRemove {
+                event_log_epoch: batch.event_log_epoch.clone(),
+                visibility_scope_id: batch.visibility_scope_id.clone(),
+                message_id,
+                revision,
+            },
+            ConversationChange::TurnSummaryUpsert { turn } => {
+                ConversationStreamMessage::TurnSummaryUpsert {
+                    event_log_epoch: batch.event_log_epoch.clone(),
+                    visibility_scope_id: batch.visibility_scope_id.clone(),
+                    turn,
+                }
+            }
+            ConversationChange::ActivityUpsert { turn_id, activity } => {
+                ConversationStreamMessage::ActivityUpsert {
+                    event_log_epoch: batch.event_log_epoch.clone(),
+                    visibility_scope_id: batch.visibility_scope_id.clone(),
+                    turn_id,
+                    activity,
+                }
+            }
+            ConversationChange::DetailInvalidated {
+                turn_id,
+                detail_revision,
+            } => ConversationStreamMessage::DetailInvalidated {
+                event_log_epoch: batch.event_log_epoch.clone(),
+                visibility_scope_id: batch.visibility_scope_id.clone(),
+                turn_id,
+                detail_revision,
+            },
+        };
+        if !send_stream_message_with_timeout(tx, message, None, send_timeout).await {
+            return false;
+        }
+    }
+    let checkpoint = batch.checkpoint;
+    send_stream_message_with_timeout(
+        tx,
+        ConversationStreamMessage::Checkpoint {
+            batch_id,
+            event_log_epoch: batch.event_log_epoch,
+            visibility_scope_id: batch.visibility_scope_id,
+            through_seq: batch.through_seq,
+            checkpoint: checkpoint.clone(),
+        },
+        Some(checkpoint),
+        send_timeout,
+    )
+    .await
+}
+
+async fn send_stream_message(
+    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    message: ConversationStreamMessage,
+    id: Option<String>,
+) -> bool {
+    send_stream_message_with_timeout(tx, message, id, CONVERSATION_STREAM_SEND_TIMEOUT).await
+}
+
+async fn send_stream_message_with_timeout(
+    tx: &tokio::sync::mpsc::Sender<std::result::Result<Event, anyhow::Error>>,
+    message: ConversationStreamMessage,
+    id: Option<String>,
+    send_timeout: Duration,
+) -> bool {
+    let event_name = message.event_name();
+    let mut event = match Event::default().event(event_name).json_data(message) {
+        Ok(event) => event,
+        Err(error) => {
+            warn!(%error, event_name, "failed to serialize conversation stream message");
+            return false;
+        }
+    };
+    if let Some(id) = id {
+        event = event.id(id);
+    }
+    matches!(
+        tokio::time::timeout(send_timeout, tx.send(Ok(event)),).await,
+        Ok(Ok(()))
+    )
+}
+
+fn reset_reason_name(reason: ConversationResetReason) -> &'static str {
+    match reason {
+        ConversationResetReason::RetentionExpired => "retention_expired",
+        ConversationResetReason::CursorAhead => "cursor_ahead",
+        ConversationResetReason::ReplayLimitExceeded => "replay_limit_exceeded",
+    }
+}
+
+fn reset_message_for_error(error: &anyhow::Error) -> ConversationStreamMessage {
+    if let Some(ConversationReadError::ResetRequired {
+        reason,
+        oldest_retained_seq,
+        event_head_seq,
+        ..
+    }) = error.downcast_ref::<ConversationReadError>()
+    {
+        return ConversationStreamMessage::ResetRequired {
+            reason: reset_reason_name(*reason).to_string(),
+            oldest_retained_seq: Some(*oldest_retained_seq),
+            event_head_seq: Some(*event_head_seq),
+            hint: "bootstrap a fresh conversation snapshot".to_string(),
+        };
+    }
+    if let Some(ConversationReadError::Cursor(cursor_error)) =
+        error.downcast_ref::<ConversationReadError>()
+    {
+        let reason = match cursor_error {
+            crate::domain::conversation::CursorDecodeError::SchemaVersionMismatch { .. } => {
+                "schema_version_mismatch"
+            }
+            crate::domain::conversation::CursorDecodeError::QueryVersionMismatch { .. } => {
+                "query_version_mismatch"
+            }
+            crate::domain::conversation::CursorDecodeError::EventLogEpochMismatch => {
+                "event_log_epoch_mismatch"
+            }
+            _ => "cursor_rejected",
+        };
+        return ConversationStreamMessage::ResetRequired {
+            reason: reason.to_string(),
+            oldest_retained_seq: None,
+            event_head_seq: None,
+            hint: "bootstrap a fresh conversation snapshot".to_string(),
+        };
+    }
+    ConversationStreamMessage::ResetRequired {
+        reason: "stream_recovery_failed".to_string(),
+        oldest_retained_seq: None,
+        event_head_seq: None,
+        hint: "bootstrap a fresh conversation snapshot".to_string(),
+    }
 }
 
 pub async fn summary(
@@ -345,6 +760,9 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
                 crate::domain::conversation::CursorDecodeError::BindingMismatch => {
                     "conversation_cursor_scope_mismatch"
                 }
+                crate::domain::conversation::CursorDecodeError::EventLogEpochMismatch => {
+                    "conversation_cursor_event_log_epoch_mismatch"
+                }
                 crate::domain::conversation::CursorDecodeError::SchemaVersionMismatch {
                     ..
                 } => "conversation_cursor_schema_version_mismatch",
@@ -357,7 +775,55 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
                 HttpErrorEnvelope::new(error.to_string()).code(code),
             )
         }
+        ConversationReadError::ResetRequired {
+            reason,
+            requested_seq,
+            oldest_retained_seq,
+            event_head_seq,
+        } => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(error.to_string())
+                .code("conversation_reset_required")
+                .hint("restart from a fresh conversation snapshot")
+                .extension("reason", reset_reason_name(*reason))
+                .extension("requested_seq", *requested_seq)
+                .extension("oldest_retained_seq", *oldest_retained_seq)
+                .extension("event_head_seq", *event_head_seq),
+        ),
     }
+}
+
+fn conversation_stream_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if let Some(ConversationReadError::Cursor(cursor_error)) =
+        error.downcast_ref::<ConversationReadError>()
+    {
+        if matches!(
+            cursor_error,
+            crate::domain::conversation::CursorDecodeError::SchemaVersionMismatch { .. }
+                | crate::domain::conversation::CursorDecodeError::QueryVersionMismatch { .. }
+                | crate::domain::conversation::CursorDecodeError::EventLogEpochMismatch
+        ) {
+            return http_error(
+                StatusCode::CONFLICT,
+                HttpErrorEnvelope::new(error.to_string())
+                    .code("conversation_reset_required")
+                    .hint("restart from a fresh conversation snapshot")
+                    .extension(
+                        "reason",
+                        match cursor_error {
+                            crate::domain::conversation::CursorDecodeError::SchemaVersionMismatch {
+                                ..
+                            } => "schema_version_mismatch",
+                            crate::domain::conversation::CursorDecodeError::QueryVersionMismatch {
+                                ..
+                            } => "query_version_mismatch",
+                            _ => "event_log_epoch_mismatch",
+                        },
+                    ),
+            );
+        }
+    }
+    conversation_error(error)
 }
 
 fn oversized_turn<'a>(
@@ -418,8 +884,8 @@ mod tests {
         host::RuntimeHost,
         provider::StubProvider,
         types::{
-            AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind, MessageBody,
-            MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
+            AuditEvent, AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind,
+            MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
             QueueEntryStatus, ToolExecutionRecord, ToolExecutionStatus, TurnNoBriefReason,
             TurnRecord, TurnTerminalKind, TurnTerminalSummary, TurnTriggerSummary,
         },
@@ -429,6 +895,7 @@ mod tests {
         http::Request,
     };
     use chrono::TimeZone;
+    use tokio_stream::StreamExt;
     use tower::ServiceExt;
 
     async fn test_host() -> (tempfile::TempDir, RuntimeHost) {
@@ -496,6 +963,55 @@ mod tests {
         let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         let value = serde_json::from_slice(&body).unwrap_or(Value::Null);
         (status, value)
+    }
+
+    fn stream_batch() -> ConversationChangeBatch {
+        ConversationChangeBatch {
+            runtime_id: "runtime-test".into(),
+            event_log_epoch: "epoch-test".into(),
+            visibility_scope_id: "scope-test".into(),
+            from_seq: 10,
+            through_seq: 12,
+            oldest_retained_seq: 1,
+            checkpoint: "checkpoint-test".into(),
+            changes: vec![
+                ConversationChange::OperatorRemove {
+                    message_id: "message-finished".into(),
+                    revision: 7,
+                },
+                ConversationChange::DetailInvalidated {
+                    turn_id: "turn-finished".into(),
+                    detail_revision: 9,
+                },
+            ],
+        }
+    }
+
+    async fn render_events(events: Vec<Event>) -> String {
+        let stream = tokio_stream::iter(
+            events
+                .into_iter()
+                .map(Ok::<Event, std::convert::Infallible>),
+        );
+        let response = Sse::new(stream).into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    async fn read_through_checkpoint(response: AxumResponse) -> String {
+        let mut stream = response.into_body().into_data_stream();
+        let mut body = String::new();
+        loop {
+            let chunk = tokio::time::timeout(Duration::from_secs(1), stream.next())
+                .await
+                .expect("conversation stream should produce a bounded initial batch")
+                .expect("conversation stream should remain open through its checkpoint")
+                .expect("conversation stream body should be readable");
+            body.push_str(std::str::from_utf8(&chunk).unwrap());
+            if body.contains("event: checkpoint") {
+                return body;
+            }
+        }
     }
 
     fn seed_conversation(host: &RuntimeHost) {
@@ -863,5 +1379,137 @@ mod tests {
         let (status, body) = get_json(state, "/api/agents/web/conversation").await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(body["code"], "conversation_snapshot_timeout");
+    }
+
+    #[tokio::test]
+    async fn conversation_stream_frames_checkpoint_after_the_complete_batch() {
+        let batch = stream_batch();
+        let checkpoint = batch.checkpoint.clone();
+        let (tx, rx) = tokio::sync::mpsc::channel(8);
+        assert!(send_change_batch(&tx, batch).await);
+        drop(tx);
+
+        let response = Sse::new(ReceiverStream::new(rx)).into_response();
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        let batch_begin = body.find("event: batch_begin").unwrap();
+        let operator_remove = body.find("event: operator_remove").unwrap();
+        let detail_invalidated = body.find("event: detail_invalidated").unwrap();
+        let checkpoint_event = body.find("event: checkpoint").unwrap();
+        assert!(batch_begin < operator_remove);
+        assert!(operator_remove < detail_invalidated);
+        assert!(detail_invalidated < checkpoint_event);
+        assert_eq!(body.matches("id: ").count(), 1);
+        assert!(body.contains(&format!("id: {checkpoint}\n")));
+    }
+
+    #[tokio::test]
+    async fn conversation_stream_disconnect_before_checkpoint_exposes_no_resumable_id() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = tokio::spawn(async move { send_change_batch(&tx, stream_batch()).await });
+        let first = rx
+            .recv()
+            .await
+            .expect("batch_begin should be queued")
+            .expect("batch_begin should serialize");
+        drop(rx);
+        assert!(!sender.await.unwrap());
+
+        let body = render_events(vec![first]).await;
+        assert!(body.contains("event: batch_begin"));
+        assert!(!body.contains("event: checkpoint"));
+        assert!(!body.contains("id: "));
+    }
+
+    #[tokio::test]
+    async fn conversation_stream_slow_consumer_hits_the_bounded_send_timeout() {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let started = std::time::Instant::now();
+        assert!(
+            !send_change_batch_with_timeout(&tx, stream_batch(), Duration::from_millis(20)).await
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test]
+    async fn conversation_stream_prefers_last_event_id_and_returns_typed_resets() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let (status, snapshot) = get_json(
+            AppState::for_tcp(host.clone()),
+            "/api/agents/web/conversation",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let snapshot_cursor = snapshot["snapshot_cursor"].as_str().unwrap();
+
+        host.runtime_db()
+            .turn_records()
+            .upsert(&turn("turn-after-snapshot", 99))
+            .unwrap();
+        let mut event = AuditEvent::legacy(
+            "conversation_test_change",
+            serde_json::json!({ "turn_id": "turn-after-snapshot" }),
+        );
+        event.id = "event-after-snapshot".into();
+        event.created_at = timestamp(99);
+        host.runtime_db()
+            .audit_events()
+            .append(Some("web"), &event)
+            .unwrap();
+        let response = crate::http::router(AppState::for_tcp(host.clone()))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/agents/web/conversation/stream?after=not-a-cursor")
+                    .header("last-event-id", snapshot_cursor)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/event-stream"));
+        let body = read_through_checkpoint(response).await;
+        assert!(body.contains("event: batch_begin"));
+        assert!(body.contains("turn-after-snapshot"));
+        assert!(body.contains("event: checkpoint"));
+
+        let signing_key: String = host
+            .runtime_db()
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT value FROM runtime_metadata
+                 WHERE key = 'conversation_cursor_signing_key'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut binding = crate::domain::conversation::CursorBinding {
+            runtime_id: snapshot["runtime_id"].as_str().unwrap().into(),
+            agent_id: "web".into(),
+            event_log_epoch: snapshot["event_log_epoch"].as_str().unwrap().into(),
+            visibility_scope_id: snapshot["visibility_scope_id"].as_str().unwrap().into(),
+            schema_version: u32::try_from(snapshot["schema_version"].as_u64().unwrap()).unwrap(),
+            query_version: u32::try_from(snapshot["query_version"].as_u64().unwrap()).unwrap(),
+        };
+        binding.query_version += 1;
+        let stale_cursor = crate::domain::conversation::CursorCodec::new(signing_key.as_bytes())
+            .encode(&crate::domain::conversation::StreamCursor {
+                binding,
+                event_seq: snapshot["event_head_seq"].as_u64().unwrap(),
+            });
+        let (status, body) = get_json(
+            AppState::for_tcp(host),
+            &format!("/api/agents/web/conversation/stream?after={stale_cursor}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "conversation_reset_required");
+        assert_eq!(body["reason"], "query_version_mismatch");
     }
 }
