@@ -1,0 +1,355 @@
+{
+  "schema_version": "holon.performance.v0",
+  "benchmark_suite": "conversation_read",
+  "workload_version": "v1",
+  "started_at": "2026-09-14T14:24:04.797064986+00:00",
+  "git_revision": "b09e000a7cafae2b71c99e763c5cf9e87bf8616e",
+  "config": {
+    "warmup_repetitions": 1,
+    "measured_repetitions": 10,
+    "historical_turns": 100,
+    "long_turn_activities": 96,
+    "summary_limit": 30,
+    "detail_limit": 50,
+    "event_limit": 256,
+    "activity_limit": 64
+  },
+  "results": [
+    {
+      "benchmark_id": "conversation_read.summary_first_page",
+      "logical_reads_per_sample": 1,
+      "samples": [
+        {
+          "iteration": 1,
+          "wall_time_ns": 2909938,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 2,
+          "wall_time_ns": 2897304,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 3,
+          "wall_time_ns": 2897754,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 4,
+          "wall_time_ns": 2891542,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 5,
+          "wall_time_ns": 2888486,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 6,
+          "wall_time_ns": 2890881,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 7,
+          "wall_time_ns": 2911060,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 8,
+          "wall_time_ns": 2889648,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 9,
+          "wall_time_ns": 2901862,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        },
+        {
+          "iteration": 10,
+          "wall_time_ns": 2889438,
+          "payload_bytes": 11167,
+          "records": 31,
+          "replay_events": 0
+        }
+      ],
+      "summary": {
+        "median_wall_time_ns": 2897304,
+        "min_wall_time_ns": 2888486,
+        "max_wall_time_ns": 2911060,
+        "median_payload_bytes": 11167,
+        "median_records": 31,
+        "median_replay_events": 0
+      }
+    },
+    {
+      "benchmark_id": "conversation_read.long_turn_detail",
+      "logical_reads_per_sample": 1,
+      "samples": [
+        {
+          "iteration": 1,
+          "wall_time_ns": 1449248,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 2,
+          "wall_time_ns": 1439699,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 3,
+          "wall_time_ns": 1440651,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 4,
+          "wall_time_ns": 1431653,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 5,
+          "wall_time_ns": 1434559,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 6,
+          "wall_time_ns": 1439949,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 7,
+          "wall_time_ns": 1437195,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 8,
+          "wall_time_ns": 1438487,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 9,
+          "wall_time_ns": 1433527,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        },
+        {
+          "iteration": 10,
+          "wall_time_ns": 1432916,
+          "payload_bytes": 11965,
+          "records": 50,
+          "replay_events": 0
+        }
+      ],
+      "summary": {
+        "median_wall_time_ns": 1438487,
+        "min_wall_time_ns": 1431653,
+        "max_wall_time_ns": 1449248,
+        "median_payload_bytes": 11965,
+        "median_records": 50,
+        "median_replay_events": 0
+      }
+    },
+    {
+      "benchmark_id": "conversation_read.reconnect_replay",
+      "logical_reads_per_sample": 1,
+      "samples": [
+        {
+          "iteration": 1,
+          "wall_time_ns": 1846340,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 2,
+          "wall_time_ns": 1832222,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 3,
+          "wall_time_ns": 1833755,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 4,
+          "wall_time_ns": 1846109,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 5,
+          "wall_time_ns": 1850508,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 6,
+          "wall_time_ns": 1837412,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 7,
+          "wall_time_ns": 1833034,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 8,
+          "wall_time_ns": 1837142,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 9,
+          "wall_time_ns": 1833665,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        },
+        {
+          "iteration": 10,
+          "wall_time_ns": 1838264,
+          "payload_bytes": 837,
+          "records": 2,
+          "replay_events": 1
+        }
+      ],
+      "summary": {
+        "median_wall_time_ns": 1837412,
+        "min_wall_time_ns": 1832222,
+        "max_wall_time_ns": 1850508,
+        "median_payload_bytes": 837,
+        "median_records": 2,
+        "median_replay_events": 1
+      }
+    },
+    {
+      "benchmark_id": "conversation_read.shadow_metadata",
+      "logical_reads_per_sample": 1,
+      "samples": [
+        {
+          "iteration": 1,
+          "wall_time_ns": 3056132,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 2,
+          "wall_time_ns": 3058477,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 3,
+          "wall_time_ns": 3056733,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 4,
+          "wall_time_ns": 3052856,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 5,
+          "wall_time_ns": 3059989,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 6,
+          "wall_time_ns": 3053867,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 7,
+          "wall_time_ns": 3055331,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 8,
+          "wall_time_ns": 3052164,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 9,
+          "wall_time_ns": 3057023,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        },
+        {
+          "iteration": 10,
+          "wall_time_ns": 3088836,
+          "payload_bytes": 499,
+          "records": 30,
+          "replay_events": 0
+        }
+      ],
+      "summary": {
+        "median_wall_time_ns": 3056733,
+        "min_wall_time_ns": 3052164,
+        "max_wall_time_ns": 3088836,
+        "median_payload_bytes": 499,
+        "median_records": 30,
+        "median_replay_events": 0
+      }
+    }
+  ]
+}

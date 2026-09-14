@@ -28,6 +28,13 @@ runtime. An independent Web/TypeScript protocol SDK remains available for a
 later phase and GUI integration WorkItem. Actual Codex/ChatGPT App folding
 behavior has not been verified and is not a prerequisite for this interface.
 
+As of 2026-09-14, the v1 server and independent SDK implementation also include
+the compatibility and observability phase: fail-closed control/schema/query
+version checks, bounded metadata-only shadow diagnostics, label-free
+conversation metrics, and recovery fixes for long active turns, live terminal
+summaries, and legacy ownership/result mappings. The existing `web-gui` remains
+unchanged and no second event ledger has been introduced.
+
 Related native contracts:
 
 - [Operator Display Levels and Event Presentation](./operator-display-levels-and-event-presentation.md)
@@ -525,6 +532,25 @@ GUI or forcing a shared external Session model.
   capabilities; validate scope and permissions independently.
 - Do not persist folding state in runtime records or duplicate brief text.
 
+The v1 compatibility matrix is:
+
+| Boundary | Required value | Incompatible behavior |
+| --- | --- | --- |
+| Control handshake | `holon-control` protocol version `1` | SDK fails closed before conversation route use |
+| Capability | `agents.conversation-read.v1` | Treat the surface as unavailable; do not probe routes |
+| Summary/activity/stream | schema version `1`, query version `1` | Typed decode/reset failure; bootstrap or upgrade instead of guessing |
+| Cursor/checkpoint | Opaque and scope/epoch/version bound | Typed cursor/reset response; never reinterpret client-side |
+
+Rollout starts with capability preflight and a legacy client fallback. Operators
+then compare a bounded recent window through the control-authenticated
+`/api/control/agents/{agent_id}/conversation/shadow-diagnostics` endpoint and
+watch the label-free conversation group in
+`/api/control/runtime/performance` or `/api/control/runtime/metrics`.
+Shadow reports contain IDs, revisions, membership/coverage counters, and
+bounded mismatch samples only; they never contain Brief bodies, transcript
+text, or tool payloads. The detailed rollout and rollback procedure is in
+`docs/conversation-read-model-rollout.md`.
+
 Sequence implementation as: source/event coverage proof; revisions and bounded
 queries; snapshot/detail DTOs and backend contract tests; stream/recovery;
 independent Web/TypeScript protocol SDK and real protocol E2E; compatibility
@@ -557,6 +583,9 @@ UI migration, and legacy side-path removal are explicitly out of scope.
     historical `/events` or transcript/tool hydration.
 11. The SDK has no `web-gui` store/view-model dependency and the existing
     `web-gui` is unchanged by this implementation.
+12. Compatibility tests reject unknown control/schema/query versions and
+    capability absence. Shadow diagnostics and performance/OpenMetrics
+    snapshots expose only bounded metadata and fixed, label-free series.
 
 ## 11. Accepted v1 decisions
 

@@ -127,6 +127,31 @@ static PROJECTION_GATE_CANCELLED: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_MAX_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
 
+static CONVERSATION_SUMMARY: MetricAccumulator = MetricAccumulator::new("conversation.summary");
+static CONVERSATION_ACTIVITY: MetricAccumulator = MetricAccumulator::new("conversation.activity");
+static CONVERSATION_STREAM_RECOVERY: MetricAccumulator =
+    MetricAccumulator::new("conversation.stream_recovery");
+static CONVERSATION_SHADOW: MetricAccumulator = MetricAccumulator::new("conversation.shadow");
+static CONVERSATION_CAPABILITY_UNAVAILABLE: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_CURSOR_FAILURES: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_LIMIT_FAILURES: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_PAYLOAD_FAILURES: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_SLOW_CONSUMERS: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_LEGACY_UNATTRIBUTED_BRIEFS: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_SHADOW_MATCHES: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_SHADOW_MISMATCHES: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_RETENTION_EXPIRED: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_CURSOR_AHEAD: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_REPLAY_LIMIT_EXCEEDED: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_AGENT_NOT_FOUND: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_QUERY_VERSION_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_SCHEMA_VERSION_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_EVENT_LOG_EPOCH_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_VISIBILITY_SCOPE_MISMATCH: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_STREAM_RECOVERY_FAILED: AtomicU64 = AtomicU64::new(0);
+static CONVERSATION_RESET_SLOW_CONSUMER: AtomicU64 = AtomicU64::new(0);
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PerformanceDiagnosticsSnapshot {
     pub captured_at: String,
@@ -138,6 +163,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
+    #[serde(default)]
+    pub conversation: ConversationDiagnosticsSnapshot,
     #[serde(default)]
     pub diagnostics_writer: crate::diagnostics_store::DiagnosticsWriterStats,
     #[serde(default)]
@@ -155,6 +182,49 @@ pub struct ProjectionGateDiagnosticsSnapshot {
     pub cancelled: u64,
     pub active_permits: u64,
     pub max_active_permits: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConversationDiagnosticsSnapshot {
+    pub queries: Vec<MetricSnapshot>,
+    pub capability_unavailable: u64,
+    pub cursor_failures: u64,
+    pub limit_failures: u64,
+    pub payload_failures: u64,
+    pub timeouts: u64,
+    pub slow_consumers: u64,
+    pub legacy_unattributed_briefs: u64,
+    pub shadow_matches: u64,
+    pub shadow_mismatches: u64,
+    pub resets: ConversationResetDiagnosticsSnapshot,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct ConversationResetDiagnosticsSnapshot {
+    pub retention_expired: u64,
+    pub cursor_ahead: u64,
+    pub replay_limit_exceeded: u64,
+    pub agent_not_found: u64,
+    pub query_version_mismatch: u64,
+    pub schema_version_mismatch: u64,
+    pub event_log_epoch_mismatch: u64,
+    pub visibility_scope_mismatch: u64,
+    pub stream_recovery_failed: u64,
+    pub slow_consumer: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConversationResetMetricReason {
+    RetentionExpired,
+    CursorAhead,
+    ReplayLimitExceeded,
+    AgentNotFound,
+    QueryVersionMismatch,
+    SchemaVersionMismatch,
+    EventLogEpochMismatch,
+    VisibilityScopeMismatch,
+    StreamRecoveryFailed,
+    SlowConsumer,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -246,6 +316,96 @@ pub fn record_http_json_response(route: &'static str, elapsed: Duration, bytes: 
     process_started_at();
     HTTP_ALL.record(elapsed, Some(bytes));
     http_route_accumulator(route).record(elapsed, Some(bytes));
+}
+
+pub fn record_conversation_summary(elapsed: Duration, bytes: usize) {
+    process_started_at();
+    CONVERSATION_SUMMARY.record(elapsed, Some(bytes));
+}
+
+pub fn record_conversation_activity(elapsed: Duration, bytes: usize) {
+    process_started_at();
+    CONVERSATION_ACTIVITY.record(elapsed, Some(bytes));
+}
+
+pub fn record_conversation_stream_recovery(elapsed: Duration) {
+    process_started_at();
+    CONVERSATION_STREAM_RECOVERY.record(elapsed, None);
+}
+
+pub fn record_conversation_shadow(
+    elapsed: Duration,
+    mismatch_count: usize,
+    legacy_unattributed_briefs: usize,
+) {
+    process_started_at();
+    CONVERSATION_SHADOW.record(elapsed, None);
+    CONVERSATION_LEGACY_UNATTRIBUTED_BRIEFS
+        .fetch_add(legacy_unattributed_briefs as u64, Ordering::Relaxed);
+    if mismatch_count == 0 {
+        CONVERSATION_SHADOW_MATCHES.fetch_add(1, Ordering::Relaxed);
+    } else {
+        CONVERSATION_SHADOW_MISMATCHES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+pub fn record_conversation_capability_unavailable() {
+    process_started_at();
+    CONVERSATION_CAPABILITY_UNAVAILABLE.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_conversation_cursor_failure() {
+    process_started_at();
+    CONVERSATION_CURSOR_FAILURES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_conversation_limit_failure() {
+    process_started_at();
+    CONVERSATION_LIMIT_FAILURES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_conversation_payload_failure() {
+    process_started_at();
+    CONVERSATION_PAYLOAD_FAILURES.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_conversation_timeout() {
+    process_started_at();
+    CONVERSATION_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_conversation_slow_consumer() {
+    process_started_at();
+    CONVERSATION_SLOW_CONSUMERS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_conversation_reset(reason: ConversationResetMetricReason) {
+    process_started_at();
+    let counter = match reason {
+        ConversationResetMetricReason::RetentionExpired => &CONVERSATION_RESET_RETENTION_EXPIRED,
+        ConversationResetMetricReason::CursorAhead => &CONVERSATION_RESET_CURSOR_AHEAD,
+        ConversationResetMetricReason::ReplayLimitExceeded => {
+            &CONVERSATION_RESET_REPLAY_LIMIT_EXCEEDED
+        }
+        ConversationResetMetricReason::AgentNotFound => &CONVERSATION_RESET_AGENT_NOT_FOUND,
+        ConversationResetMetricReason::QueryVersionMismatch => {
+            &CONVERSATION_RESET_QUERY_VERSION_MISMATCH
+        }
+        ConversationResetMetricReason::SchemaVersionMismatch => {
+            &CONVERSATION_RESET_SCHEMA_VERSION_MISMATCH
+        }
+        ConversationResetMetricReason::EventLogEpochMismatch => {
+            &CONVERSATION_RESET_EVENT_LOG_EPOCH_MISMATCH
+        }
+        ConversationResetMetricReason::VisibilityScopeMismatch => {
+            &CONVERSATION_RESET_VISIBILITY_SCOPE_MISMATCH
+        }
+        ConversationResetMetricReason::StreamRecoveryFailed => {
+            &CONVERSATION_RESET_STREAM_RECOVERY_FAILED
+        }
+        ConversationResetMetricReason::SlowConsumer => &CONVERSATION_RESET_SLOW_CONSUMER,
+    };
+    counter.fetch_add(1, Ordering::Relaxed);
 }
 
 pub fn record_agent_summary_projection(elapsed: Duration) {
@@ -588,6 +748,42 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROVIDER_ROUND_TOTAL.snapshot(false),
             PROVIDER_RETRY.snapshot(false),
         ],
+        conversation: ConversationDiagnosticsSnapshot {
+            queries: vec![
+                CONVERSATION_SUMMARY.snapshot(true),
+                CONVERSATION_ACTIVITY.snapshot(true),
+                CONVERSATION_STREAM_RECOVERY.snapshot(false),
+                CONVERSATION_SHADOW.snapshot(false),
+            ],
+            capability_unavailable: CONVERSATION_CAPABILITY_UNAVAILABLE.load(Ordering::Relaxed),
+            cursor_failures: CONVERSATION_CURSOR_FAILURES.load(Ordering::Relaxed),
+            limit_failures: CONVERSATION_LIMIT_FAILURES.load(Ordering::Relaxed),
+            payload_failures: CONVERSATION_PAYLOAD_FAILURES.load(Ordering::Relaxed),
+            timeouts: CONVERSATION_TIMEOUTS.load(Ordering::Relaxed),
+            slow_consumers: CONVERSATION_SLOW_CONSUMERS.load(Ordering::Relaxed),
+            legacy_unattributed_briefs: CONVERSATION_LEGACY_UNATTRIBUTED_BRIEFS
+                .load(Ordering::Relaxed),
+            shadow_matches: CONVERSATION_SHADOW_MATCHES.load(Ordering::Relaxed),
+            shadow_mismatches: CONVERSATION_SHADOW_MISMATCHES.load(Ordering::Relaxed),
+            resets: ConversationResetDiagnosticsSnapshot {
+                retention_expired: CONVERSATION_RESET_RETENTION_EXPIRED.load(Ordering::Relaxed),
+                cursor_ahead: CONVERSATION_RESET_CURSOR_AHEAD.load(Ordering::Relaxed),
+                replay_limit_exceeded: CONVERSATION_RESET_REPLAY_LIMIT_EXCEEDED
+                    .load(Ordering::Relaxed),
+                agent_not_found: CONVERSATION_RESET_AGENT_NOT_FOUND.load(Ordering::Relaxed),
+                query_version_mismatch: CONVERSATION_RESET_QUERY_VERSION_MISMATCH
+                    .load(Ordering::Relaxed),
+                schema_version_mismatch: CONVERSATION_RESET_SCHEMA_VERSION_MISMATCH
+                    .load(Ordering::Relaxed),
+                event_log_epoch_mismatch: CONVERSATION_RESET_EVENT_LOG_EPOCH_MISMATCH
+                    .load(Ordering::Relaxed),
+                visibility_scope_mismatch: CONVERSATION_RESET_VISIBILITY_SCOPE_MISMATCH
+                    .load(Ordering::Relaxed),
+                stream_recovery_failed: CONVERSATION_RESET_STREAM_RECOVERY_FAILED
+                    .load(Ordering::Relaxed),
+                slow_consumer: CONVERSATION_RESET_SLOW_CONSUMER.load(Ordering::Relaxed),
+            },
+        },
     }
 }
 

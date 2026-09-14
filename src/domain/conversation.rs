@@ -39,6 +39,58 @@ pub struct ConversationSummaryPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConversationShadowDiagnostics {
+    pub schema_version: u32,
+    pub query_version: u32,
+    pub runtime_id: String,
+    pub event_log_epoch: String,
+    pub visibility_scope_id: String,
+    pub event_head_seq: u64,
+    pub oldest_retained_seq: u64,
+    pub checked_turn_limit: usize,
+    pub canonical: ConversationShadowMetadata,
+    pub projection: ConversationShadowMetadata,
+    pub legacy_unattributed_briefs: usize,
+    pub mismatch_count: usize,
+    pub mismatches: Vec<ConversationShadowMismatch>,
+    pub mismatch_samples_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConversationShadowMetadata {
+    pub turns: usize,
+    pub active_turns: usize,
+    pub pending_inputs: usize,
+    pub briefs: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ConversationShadowMismatch {
+    pub kind: ConversationShadowMismatchKind,
+    pub entity_id: String,
+    pub canonical_revision: Option<u64>,
+    pub projection_revision: Option<u64>,
+    pub canonical_count: Option<usize>,
+    pub projection_count: Option<usize>,
+    pub canonical_state: Option<PendingInputState>,
+    pub projection_state: Option<PendingInputState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ConversationShadowMismatchKind {
+    MissingProjectionTurn,
+    UnexpectedProjectionTurn,
+    TurnRevision,
+    BriefMembership,
+    ActiveMembership,
+    MissingProjectionInput,
+    UnexpectedProjectionInput,
+    InputRevision,
+    InputState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PendingInput {
     pub message_id: String,
     pub revision: u64,
@@ -203,7 +255,16 @@ pub fn map_result(
             true,
         );
     }
-    (ResultState::Pending, canonical_settled)
+    if canonical_settled {
+        return (
+            ResultState::Unavailable {
+                reason: ResultUnavailableReason::MissingCanonicalLinkage,
+                retryable: false,
+            },
+            true,
+        );
+    }
+    (ResultState::Pending, false)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -530,6 +591,16 @@ mod tests {
     #[test]
     fn result_mapping_does_not_infer_settled() {
         assert_eq!(map_result(0, None, false), (ResultState::Pending, false));
+        assert_eq!(
+            map_result(0, None, true),
+            (
+                ResultState::Unavailable {
+                    reason: ResultUnavailableReason::MissingCanonicalLinkage,
+                    retryable: false,
+                },
+                true
+            )
+        );
         assert_eq!(map_result(2, None, false), (ResultState::Available, false));
         assert_eq!(map_result(2, None, true), (ResultState::Available, true));
         assert_eq!(

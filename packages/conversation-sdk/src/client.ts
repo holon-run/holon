@@ -1,5 +1,6 @@
 import {
   ConversationCapabilityError,
+  ConversationCompatibilityError,
   ConversationDecodeError,
   ConversationHttpError,
   ConversationProtocolError,
@@ -16,6 +17,8 @@ import {
 import { ConversationBatchAssembler, parseSseStream } from "./sse.js";
 import {
   CONVERSATION_CAPABILITY,
+  HOLON_CONTROL_PROTOCOL_NAME,
+  HOLON_CONTROL_PROTOCOL_VERSION,
   type BriefRecord,
   type ConversationActivityResponse,
   type ConversationCheckpoint,
@@ -100,6 +103,15 @@ export class ConversationClient {
 
   async requireCapability(signal?: AbortSignal): Promise<ConversationHandshake> {
     const handshake = await this.handshake(signal);
+    if (
+      handshake.protocol.name !== HOLON_CONTROL_PROTOCOL_NAME ||
+      handshake.protocol.version !== HOLON_CONTROL_PROTOCOL_VERSION
+    ) {
+      throw new ConversationCompatibilityError(
+        handshake.protocol.name,
+        handshake.protocol.version,
+      );
+    }
     if (!handshake.capabilities.includes(CONVERSATION_CAPABILITY)) {
       throw new ConversationCapabilityError(CONVERSATION_CAPABILITY);
     }

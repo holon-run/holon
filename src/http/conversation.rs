@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::domain::conversation::{
-    ConversationActivity, ConversationChange, ConversationTurnSummary, DetailCoverage,
-    PendingInput, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
+    ConversationActivity, ConversationChange, ConversationShadowDiagnostics,
+    ConversationTurnSummary, DetailCoverage, PendingInput, CONVERSATION_QUERY_VERSION,
+    CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::conversation::{
     ConversationChangeBatch, ConversationReadError, ConversationResetReason, ConversationSnapshot,
@@ -12,6 +13,7 @@ use crate::runtime_db::conversation::{
 
 pub(crate) const CONVERSATION_SUMMARY_DEFAULT_LIMIT: usize = 30;
 pub(crate) const CONVERSATION_ACTIVITY_DEFAULT_LIMIT: usize = 50;
+pub(crate) const CONVERSATION_SHADOW_DEFAULT_LIMIT: usize = 30;
 pub(crate) const CONVERSATION_TURN_MAX_SERIALIZED_BYTES: usize = 64 * 1024;
 pub(crate) const CONVERSATION_ACTIVITY_ITEM_MAX_SERIALIZED_BYTES: usize = 256 * 1024;
 pub(crate) const CONVERSATION_SUMMARY_MAX_SERIALIZED_BYTES: usize = 2 * 1024 * 1024;
@@ -54,6 +56,12 @@ pub(crate) struct ConversationStreamQuery {
     pub after: Option<String>,
     pub limit: Option<usize>,
     pub activity_limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConversationShadowQuery {
+    pub turn_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -217,6 +225,7 @@ pub async fn stream(
             Ok(value) if !value.is_empty() => Some(value.to_string()),
             Ok(_) => None,
             Err(_) => {
+                crate::diagnostics::record_conversation_cursor_failure();
                 return http_error(
                     StatusCode::BAD_REQUEST,
                     HttpErrorEnvelope::new("Last-Event-ID is not valid UTF-8")
@@ -238,6 +247,7 @@ pub async fn stream(
     let initial_agent_id = agent_id.clone();
     let initial_after = after.clone();
     let read_timeout = state.conversation_read_limits.timeout;
+    let recovery_started_at = std::time::Instant::now();
     let initial = match bounded_blocking_read(read_timeout, move || {
         host.runtime_db().conversation().change_batch(
             &initial_agent_id,
@@ -250,7 +260,10 @@ pub async fn stream(
     })
     .await
     {
-        Ok(Ok(Some(batch))) => batch,
+        Ok(Ok(Some(batch))) => {
+            crate::diagnostics::record_conversation_stream_recovery(recovery_started_at.elapsed());
+            batch
+        }
         Ok(Ok(None)) => return agent_not_found().into_response(),
         Ok(Err(error)) => return conversation_stream_error(error).into_response(),
         Err(BoundedBlockingReadError::Join(error)) => {
@@ -282,6 +295,7 @@ pub async fn stream(
                     let host = host.clone();
                     let agent_id_for_read = agent_id.clone();
                     let after = checkpoint.clone();
+                    let recovery_started_at = std::time::Instant::now();
                     let batch = bounded_blocking_read(read_timeout, move || {
                         host.runtime_db().conversation().change_batch(
                             &agent_id_for_read,
@@ -295,6 +309,9 @@ pub async fn stream(
                     .await;
                     match batch {
                         Ok(Ok(Some(batch))) => {
+                            crate::diagnostics::record_conversation_stream_recovery(
+                                recovery_started_at.elapsed(),
+                            );
                             checkpoint = batch.checkpoint.clone();
                             through_seq = batch.through_seq;
                             if !send_change_batch(&tx, batch).await {
@@ -302,6 +319,9 @@ pub async fn stream(
                             }
                         }
                         Ok(Ok(None)) => {
+                            crate::diagnostics::record_conversation_reset(
+                                crate::diagnostics::ConversationResetMetricReason::AgentNotFound,
+                            );
                             let _ = send_stream_message(
                                 &tx,
                                 ConversationStreamMessage::ResetRequired {
@@ -316,6 +336,7 @@ pub async fn stream(
                             return;
                         }
                         Ok(Err(error)) => {
+                            record_background_stream_error(&error);
                             let _ = send_stream_message(&tx, reset_message_for_error(&error), None)
                                 .await;
                             return;
@@ -326,6 +347,10 @@ pub async fn stream(
                         }
                         Err(BoundedBlockingReadError::Timeout) => {
                             warn!(?read_timeout, %agent_id, "conversation stream recovery timed out");
+                            crate::diagnostics::record_conversation_timeout();
+                            crate::diagnostics::record_conversation_reset(
+                                crate::diagnostics::ConversationResetMetricReason::StreamRecoveryFailed,
+                            );
                             let _ = send_stream_message(
                                 &tx,
                                 ConversationStreamMessage::ResetRequired {
@@ -344,6 +369,10 @@ pub async fn stream(
                 Ok(_) => {}
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
                     warn!(skipped, %agent_id, "conversation stream receiver lagged");
+                    crate::diagnostics::record_conversation_slow_consumer();
+                    crate::diagnostics::record_conversation_reset(
+                        crate::diagnostics::ConversationResetMetricReason::SlowConsumer,
+                    );
                     let _ = send_stream_message(
                         &tx,
                         ConversationStreamMessage::ResetRequired {
@@ -490,10 +519,14 @@ async fn send_stream_message_with_timeout(
     if let Some(id) = id {
         event = event.id(id);
     }
-    matches!(
-        tokio::time::timeout(send_timeout, tx.send(Ok(event)),).await,
-        Ok(Ok(()))
-    )
+    match tokio::time::timeout(send_timeout, tx.send(Ok(event))).await {
+        Ok(Ok(())) => true,
+        Ok(Err(_)) => false,
+        Err(_) => {
+            crate::diagnostics::record_conversation_slow_consumer();
+            false
+        }
+    }
 }
 
 fn stream_reset_reason(reason: ConversationResetReason) -> ConversationStreamResetReason {
@@ -611,6 +644,7 @@ pub async fn summary(
         )
         .into_response();
     }
+    crate::diagnostics::record_conversation_summary(started_at.elapsed(), bytes.len());
     traced_json_bytes("/agents/{agent_id}/conversation", started_at, bytes)
 }
 
@@ -695,8 +729,72 @@ pub async fn activities(
         )
         .into_response();
     }
+    crate::diagnostics::record_conversation_activity(started_at.elapsed(), bytes.len());
     traced_json_bytes(
         "/agents/{agent_id}/turns/{turn_id}/activities",
+        started_at,
+        bytes,
+    )
+}
+
+pub async fn shadow_diagnostics(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ConversationShadowQuery>,
+) -> AxumResponse {
+    let started_at = std::time::Instant::now();
+    if let Err(error) = authorize_control(&headers, &state) {
+        return auth_required(error.to_string()).into_response();
+    }
+    let limits = state.conversation_read_limits.clone();
+    let turn_limit = query
+        .turn_limit
+        .unwrap_or(CONVERSATION_SHADOW_DEFAULT_LIMIT);
+    let host = state.host.clone();
+    let (scope_principal, scope_entitlement) = observer_sync::observer_scope_authority(&state);
+    let diagnostics: ConversationShadowDiagnostics = match tokio::time::timeout(
+        limits.timeout,
+        tokio::task::spawn_blocking(move || {
+            host.runtime_db().conversation().shadow_diagnostics(
+                &agent_id,
+                turn_limit,
+                scope_principal,
+                scope_entitlement,
+            )
+        }),
+    )
+    .await
+    {
+        Ok(Ok(Ok(Some(diagnostics)))) => diagnostics,
+        Ok(Ok(Ok(None))) => return agent_not_found().into_response(),
+        Ok(Ok(Err(error))) => return conversation_error(error).into_response(),
+        Ok(Err(error)) => return error_response(error.into()).into_response(),
+        Err(_) => return timeout_error("shadow diagnostics", limits.timeout).into_response(),
+    };
+    crate::diagnostics::record_conversation_shadow(
+        started_at.elapsed(),
+        diagnostics.mismatch_count,
+        diagnostics.legacy_unattributed_briefs,
+    );
+    let bytes = match serialize_json(
+        "/control/agents/{agent_id}/conversation/shadow-diagnostics",
+        &diagnostics,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => return error.into_response(),
+    };
+    if bytes.len() > limits.max_summary_serialized_bytes {
+        return payload_too_large(
+            "conversation_shadow_diagnostics_too_large",
+            "conversation shadow diagnostics exceeds the maximum serialized response size",
+            bytes.len(),
+            limits.max_summary_serialized_bytes,
+        )
+        .into_response();
+    }
+    traced_json_bytes(
+        "/control/agents/{agent_id}/conversation/shadow-diagnostics",
         started_at,
         bytes,
     )
@@ -753,6 +851,7 @@ fn conversation_capability_available(state: &AppState) -> bool {
 }
 
 fn capability_unavailable() -> (StatusCode, Json<Value>) {
+    crate::diagnostics::record_conversation_capability_unavailable();
     http_error(
         StatusCode::SERVICE_UNAVAILABLE,
         HttpErrorEnvelope::new(
@@ -776,6 +875,7 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     let Some(error) = error.downcast_ref::<ConversationReadError>() else {
         return error_response(error);
     };
+    record_conversation_read_error(error);
     match error {
         ConversationReadError::InvalidLimit {
             resource,
@@ -865,6 +965,12 @@ fn conversation_stream_error(error: anyhow::Error) -> (StatusCode, Json<Value>) 
                 | crate::domain::conversation::CursorDecodeError::QueryVersionMismatch { .. }
                 | crate::domain::conversation::CursorDecodeError::EventLogEpochMismatch
         ) {
+            record_conversation_read_error(
+                error
+                    .downcast_ref::<ConversationReadError>()
+                    .expect("conversation error was matched above"),
+            );
+            record_cursor_reset(cursor_error);
             return http_error(
                 StatusCode::CONFLICT,
                 HttpErrorEnvelope::new(error.to_string())
@@ -888,6 +994,65 @@ fn conversation_stream_error(error: anyhow::Error) -> (StatusCode, Json<Value>) 
     conversation_error(error)
 }
 
+fn record_conversation_read_error(error: &ConversationReadError) {
+    match error {
+        ConversationReadError::InvalidLimit { .. }
+        | ConversationReadError::CountLimitExceeded { .. } => {
+            crate::diagnostics::record_conversation_limit_failure();
+        }
+        ConversationReadError::CursorOutsideCoverage | ConversationReadError::Cursor(_) => {
+            crate::diagnostics::record_conversation_cursor_failure();
+        }
+        ConversationReadError::ResetRequired { reason, .. } => {
+            record_reset_reason(*reason);
+        }
+    }
+}
+
+fn record_background_stream_error(error: &anyhow::Error) {
+    let Some(error) = error.downcast_ref::<ConversationReadError>() else {
+        return;
+    };
+    record_conversation_read_error(error);
+    if let ConversationReadError::Cursor(error) = error {
+        record_cursor_reset(error);
+    }
+}
+
+fn record_reset_reason(reason: ConversationResetReason) {
+    let reason = match reason {
+        ConversationResetReason::RetentionExpired => {
+            crate::diagnostics::ConversationResetMetricReason::RetentionExpired
+        }
+        ConversationResetReason::CursorAhead => {
+            crate::diagnostics::ConversationResetMetricReason::CursorAhead
+        }
+        ConversationResetReason::ReplayLimitExceeded => {
+            crate::diagnostics::ConversationResetMetricReason::ReplayLimitExceeded
+        }
+    };
+    crate::diagnostics::record_conversation_reset(reason);
+}
+
+fn record_cursor_reset(error: &crate::domain::conversation::CursorDecodeError) {
+    let reason = match error {
+        crate::domain::conversation::CursorDecodeError::SchemaVersionMismatch { .. } => {
+            crate::diagnostics::ConversationResetMetricReason::SchemaVersionMismatch
+        }
+        crate::domain::conversation::CursorDecodeError::QueryVersionMismatch { .. } => {
+            crate::diagnostics::ConversationResetMetricReason::QueryVersionMismatch
+        }
+        crate::domain::conversation::CursorDecodeError::EventLogEpochMismatch => {
+            crate::diagnostics::ConversationResetMetricReason::EventLogEpochMismatch
+        }
+        crate::domain::conversation::CursorDecodeError::BindingMismatch => {
+            crate::diagnostics::ConversationResetMetricReason::VisibilityScopeMismatch
+        }
+        _ => return,
+    };
+    crate::diagnostics::record_conversation_reset(reason);
+}
+
 fn oversized_turn<'a>(
     turns: impl Iterator<Item = &'a ConversationTurnSummary>,
     max_serialized_bytes: usize,
@@ -898,6 +1063,7 @@ fn oversized_turn<'a>(
             Err(error) => return Some(error_response(error.into())),
         };
         if serialized_bytes > max_serialized_bytes {
+            crate::diagnostics::record_conversation_payload_failure();
             return Some(http_error(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 HttpErrorEnvelope::new("conversation turn exceeds the maximum serialized size")
@@ -917,6 +1083,7 @@ fn payload_too_large(
     serialized_bytes: usize,
     max_serialized_bytes: usize,
 ) -> (StatusCode, Json<Value>) {
+    crate::diagnostics::record_conversation_payload_failure();
     http_error(
         StatusCode::PAYLOAD_TOO_LARGE,
         HttpErrorEnvelope::new(message)
@@ -927,6 +1094,7 @@ fn payload_too_large(
 }
 
 fn timeout_error(kind: &'static str, timeout: Duration) -> (StatusCode, Json<Value>) {
+    crate::diagnostics::record_conversation_timeout();
     http_error(
         StatusCode::SERVICE_UNAVAILABLE,
         HttpErrorEnvelope::new(format!(
@@ -1178,6 +1346,7 @@ mod tests {
             "ConversationReadQuery",
             "ConversationSummaryResponse",
             "ConversationActivityResponse",
+            "ConversationShadowDiagnostics",
         ] {
             assert!(schemas.contains_key(name), "missing schema {name}");
         }
@@ -1190,6 +1359,11 @@ mod tests {
             api["paths"]["/api/agents/{agent_id}/turns/{turn_id}/activities"]["get"]["responses"]
                 ["200"]["content"]["application/json"]["schema"]["$ref"],
             "#/components/schemas/ConversationActivityResponse"
+        );
+        assert_eq!(
+            api["paths"]["/api/control/agents/{agent_id}/conversation/shadow-diagnostics"]["get"]
+                ["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ConversationShadowDiagnostics"
         );
         let summary_parameters = api["paths"]["/api/agents/{agent_id}/conversation"]["get"]
             ["parameters"]
@@ -1213,6 +1387,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["agent_id", "turn_id", "limit", "before"]
         );
+        let shadow_parameters = api["paths"]
+            ["/api/control/agents/{agent_id}/conversation/shadow-diagnostics"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            shadow_parameters
+                .iter()
+                .map(|parameter| parameter["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["agent_id", "turn_limit"]
+        );
+        assert_eq!(shadow_parameters[1]["in"], "query");
+        assert_eq!(shadow_parameters[1]["required"], false);
+        assert_eq!(shadow_parameters[1]["schema"]["minimum"], 1);
+        assert_eq!(shadow_parameters[1]["schema"]["maximum"], 100);
+        assert_eq!(shadow_parameters[1]["schema"]["default"], 30);
     }
 
     #[test]
@@ -1304,11 +1494,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shadow_diagnostics_are_bounded_and_metadata_only() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+
+        let (status, body) = get_json(
+            AppState::for_tcp(host),
+            "/api/control/agents/web/conversation/shadow-diagnostics?turn_limit=2",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["schema_version"], CONVERSATION_SCHEMA_VERSION);
+        assert_eq!(body["query_version"], CONVERSATION_QUERY_VERSION);
+        assert_eq!(body["checked_turn_limit"], 2);
+        assert_eq!(body["mismatch_count"], 0);
+        assert_eq!(body["legacy_unattributed_briefs"], 1);
+        assert!(body["canonical"]["turns"].as_u64().unwrap() <= 2);
+        assert!(body["projection"]["turns"].as_u64().unwrap() <= 2);
+
+        let serialized = body.to_string();
+        assert!(!serialized.contains("show the current state"));
+        assert!(!serialized.contains("workspace_secret"));
+        assert!(!serialized.contains("must-not-leak"));
+        assert!(!serialized.contains("first result"));
+        assert!(!serialized.contains("second result"));
+        assert!(!serialized.contains("legacy unattributed result"));
+    }
+
+    #[tokio::test]
     async fn conversation_routes_authorize_and_gate_capability() {
         let (_home, host) = test_host().await;
         let mut state = AppState::for_tcp(host.clone());
         state.require_control_token = true;
         let (status, body) = get_json(state, "/api/agents/web/conversation").await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "auth_required");
+
+        let mut state = AppState::for_tcp(host.clone());
+        state.require_control_token = true;
+        let (status, body) = get_json(
+            state,
+            "/api/control/agents/web/conversation/shadow-diagnostics",
+        )
+        .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
         assert_eq!(body["code"], "auth_required");
 

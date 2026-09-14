@@ -20,6 +20,7 @@ pub fn render(snapshot: &PerformanceDiagnosticsSnapshot) -> String {
         .chain(&snapshot.scheduler)
         .chain(&snapshot.turn)
         .chain(&snapshot.provider)
+        .chain(&snapshot.conversation.queries)
     {
         render_metric(&mut output, metric);
     }
@@ -69,6 +70,104 @@ pub fn render(snapshot: &PerformanceDiagnosticsSnapshot) -> String {
         &mut output,
         "holon_projection_gate_max_active_permits",
         gate.max_active_permits,
+    );
+
+    let conversation = &snapshot.conversation;
+    counter(
+        &mut output,
+        "holon_conversation_capability_unavailable_total",
+        conversation.capability_unavailable,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_cursor_failures_total",
+        conversation.cursor_failures,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_limit_failures_total",
+        conversation.limit_failures,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_payload_failures_total",
+        conversation.payload_failures,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_timeouts_total",
+        conversation.timeouts,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_slow_consumers_total",
+        conversation.slow_consumers,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_legacy_unattributed_briefs_total",
+        conversation.legacy_unattributed_briefs,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_shadow_matches_total",
+        conversation.shadow_matches,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_shadow_mismatches_total",
+        conversation.shadow_mismatches,
+    );
+    let resets = &conversation.resets;
+    counter(
+        &mut output,
+        "holon_conversation_resets_retention_expired_total",
+        resets.retention_expired,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_cursor_ahead_total",
+        resets.cursor_ahead,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_replay_limit_exceeded_total",
+        resets.replay_limit_exceeded,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_agent_not_found_total",
+        resets.agent_not_found,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_query_version_mismatch_total",
+        resets.query_version_mismatch,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_schema_version_mismatch_total",
+        resets.schema_version_mismatch,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_event_log_epoch_mismatch_total",
+        resets.event_log_epoch_mismatch,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_visibility_scope_mismatch_total",
+        resets.visibility_scope_mismatch,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_stream_recovery_failed_total",
+        resets.stream_recovery_failed,
+    );
+    counter(
+        &mut output,
+        "holon_conversation_resets_slow_consumer_total",
+        resets.slow_consumer,
     );
 
     let writer = snapshot.diagnostics_writer;

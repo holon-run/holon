@@ -861,6 +861,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/{agent_id}/conversation/shadow-diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversation shadow diagnostics
+         * @description Control-authenticated, metadata-only bounded comparison of canonical turn/source metadata and the conversation projection from one deferred read transaction. It never returns Brief bodies, transcript/tool payloads, or a second event ledger. Query parameter: turn_limit.
+         */
+        get: operations["agentConversationShadowDiagnostics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}/create": {
         parameters: {
             query?: never;
@@ -3933,6 +3953,69 @@ export interface components {
             latest_message_id: string | null;
             latest_transcript_entry_id: string | null;
         };
+        /** ConversationShadowDiagnostics */
+        ConversationShadowDiagnostics: {
+            canonical: {
+                /** Format: uint */
+                active_turns: number;
+                /** Format: uint */
+                briefs: number;
+                /** Format: uint */
+                pending_inputs: number;
+                /** Format: uint */
+                turns: number;
+            };
+            /** Format: uint */
+            checked_turn_limit: number;
+            /** Format: uint64 */
+            event_head_seq: number;
+            event_log_epoch: string;
+            /** Format: uint */
+            legacy_unattributed_briefs: number;
+            /** Format: uint */
+            mismatch_count: number;
+            mismatch_samples_truncated: boolean;
+            mismatches: {
+                /** Format: uint */
+                canonical_count?: number | null;
+                /** Format: uint64 */
+                canonical_revision?: number | null;
+                /** @enum {string|null} */
+                canonical_state?: "queued" | "assigning" | null;
+                entity_id: string;
+                /** @enum {string} */
+                kind: "missing_projection_turn" | "unexpected_projection_turn" | "turn_revision" | "brief_membership" | "active_membership" | "missing_projection_input" | "unexpected_projection_input" | "input_revision" | "input_state";
+                /** Format: uint */
+                projection_count?: number | null;
+                /** Format: uint64 */
+                projection_revision?: number | null;
+                /** @enum {string|null} */
+                projection_state?: "queued" | "assigning" | null;
+            }[];
+            /** Format: uint64 */
+            oldest_retained_seq: number;
+            projection: {
+                /** Format: uint */
+                active_turns: number;
+                /** Format: uint */
+                briefs: number;
+                /** Format: uint */
+                pending_inputs: number;
+                /** Format: uint */
+                turns: number;
+            };
+            /** Format: uint32 */
+            query_version: number;
+            runtime_id: string;
+            /** Format: uint32 */
+            schema_version: number;
+            visibility_scope_id: string;
+        };
+        /** ConversationShadowQuery */
+        ConversationShadowQuery: {
+            /** Format: uint */
+            turn_limit?: number | null;
+        };
         /** ConversationStreamMessage */
         ConversationStreamMessage: {
             batch_id: string;
@@ -4589,6 +4672,104 @@ export interface components {
                 total_ns: number;
             }[];
             captured_at: string;
+            /**
+             * @default {
+             *       "capability_unavailable": 0,
+             *       "cursor_failures": 0,
+             *       "legacy_unattributed_briefs": 0,
+             *       "limit_failures": 0,
+             *       "payload_failures": 0,
+             *       "queries": [],
+             *       "resets": {
+             *         "agent_not_found": 0,
+             *         "cursor_ahead": 0,
+             *         "event_log_epoch_mismatch": 0,
+             *         "query_version_mismatch": 0,
+             *         "replay_limit_exceeded": 0,
+             *         "retention_expired": 0,
+             *         "schema_version_mismatch": 0,
+             *         "slow_consumer": 0,
+             *         "stream_recovery_failed": 0,
+             *         "visibility_scope_mismatch": 0
+             *       },
+             *       "shadow_matches": 0,
+             *       "shadow_mismatches": 0,
+             *       "slow_consumers": 0,
+             *       "timeouts": 0
+             *     }
+             */
+            conversation: {
+                /** Format: uint64 */
+                capability_unavailable: number;
+                /** Format: uint64 */
+                cursor_failures: number;
+                /** Format: uint64 */
+                legacy_unattributed_briefs: number;
+                /** Format: uint64 */
+                limit_failures: number;
+                /** Format: uint64 */
+                payload_failures: number;
+                queries: {
+                    /** Format: double */
+                    avg_bytes?: number | null;
+                    /** Format: double */
+                    avg_ms: number;
+                    /** Format: uint64 */
+                    count: number;
+                    /** Format: uint64 */
+                    max_ms: number;
+                    name: string;
+                    /**
+                     * Format: uint64
+                     * @default 0
+                     */
+                    p50_ms: number;
+                    /**
+                     * Format: uint64
+                     * @default 0
+                     */
+                    p95_ms: number;
+                    /**
+                     * Format: uint64
+                     * @default 0
+                     */
+                    p99_ms: number;
+                    /** Format: uint64 */
+                    total_bytes?: number | null;
+                    /** Format: uint64 */
+                    total_ms: number;
+                }[];
+                resets: {
+                    /** Format: uint64 */
+                    agent_not_found: number;
+                    /** Format: uint64 */
+                    cursor_ahead: number;
+                    /** Format: uint64 */
+                    event_log_epoch_mismatch: number;
+                    /** Format: uint64 */
+                    query_version_mismatch: number;
+                    /** Format: uint64 */
+                    replay_limit_exceeded: number;
+                    /** Format: uint64 */
+                    retention_expired: number;
+                    /** Format: uint64 */
+                    schema_version_mismatch: number;
+                    /** Format: uint64 */
+                    slow_consumer: number;
+                    /** Format: uint64 */
+                    stream_recovery_failed: number;
+                    /** Format: uint64 */
+                    visibility_scope_mismatch: number;
+                };
+                /** Format: uint64 */
+                shadow_matches: number;
+                /** Format: uint64 */
+                shadow_mismatches: number;
+                /** Format: uint64 */
+                slow_consumers: number;
+                /** Format: uint64 */
+                timeouts: number;
+            };
             db: {
                 /** Format: double */
                 avg_bytes?: number | null;
@@ -8143,6 +8324,50 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentConversationShadowDiagnostics: {
+        parameters: {
+            query?: {
+                /** @description Maximum recent canonical turns compared. The server applies the bounded maximum. */
+                turn_limit?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConversationShadowDiagnostics"];
                 };
             };
             /** @description Client error JSON response. */

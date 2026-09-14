@@ -5933,6 +5933,235 @@
         ],
         "type": "object"
       },
+      "ConversationShadowDiagnostics": {
+        "properties": {
+          "canonical": {
+            "properties": {
+              "active_turns": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "briefs": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_inputs": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "turns": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "turns",
+              "active_turns",
+              "pending_inputs",
+              "briefs"
+            ],
+            "type": "object"
+          },
+          "checked_turn_limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "event_head_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "event_log_epoch": {
+            "type": "string"
+          },
+          "legacy_unattributed_briefs": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mismatch_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mismatch_samples_truncated": {
+            "type": "boolean"
+          },
+          "mismatches": {
+            "items": {
+              "properties": {
+                "canonical_count": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "canonical_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "canonical_state": {
+                  "enum": [
+                    "queued",
+                    "assigning",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "entity_id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "missing_projection_turn",
+                    "unexpected_projection_turn",
+                    "turn_revision",
+                    "brief_membership",
+                    "active_membership",
+                    "missing_projection_input",
+                    "unexpected_projection_input",
+                    "input_revision",
+                    "input_state"
+                  ],
+                  "type": "string"
+                },
+                "projection_count": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "projection_revision": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "projection_state": {
+                  "enum": [
+                    "queued",
+                    "assigning",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "entity_id"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "oldest_retained_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "projection": {
+            "properties": {
+              "active_turns": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "briefs": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "pending_inputs": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "turns": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "turns",
+              "active_turns",
+              "pending_inputs",
+              "briefs"
+            ],
+            "type": "object"
+          },
+          "query_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "runtime_id": {
+            "type": "string"
+          },
+          "schema_version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "visibility_scope_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schema_version",
+          "query_version",
+          "runtime_id",
+          "event_log_epoch",
+          "visibility_scope_id",
+          "event_head_seq",
+          "oldest_retained_seq",
+          "checked_turn_limit",
+          "canonical",
+          "projection",
+          "legacy_unattributed_briefs",
+          "mismatch_count",
+          "mismatches",
+          "mismatch_samples_truncated"
+        ],
+        "title": "ConversationShadowDiagnostics",
+        "type": "object"
+      },
+      "ConversationShadowQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "turn_limit": {
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "title": "ConversationShadowQuery",
+        "type": "object"
+      },
       "ConversationStreamMessage": {
         "oneOf": [
           {
@@ -8304,6 +8533,230 @@
           },
           "captured_at": {
             "type": "string"
+          },
+          "conversation": {
+            "default": {
+              "capability_unavailable": 0,
+              "cursor_failures": 0,
+              "legacy_unattributed_briefs": 0,
+              "limit_failures": 0,
+              "payload_failures": 0,
+              "queries": [],
+              "resets": {
+                "agent_not_found": 0,
+                "cursor_ahead": 0,
+                "event_log_epoch_mismatch": 0,
+                "query_version_mismatch": 0,
+                "replay_limit_exceeded": 0,
+                "retention_expired": 0,
+                "schema_version_mismatch": 0,
+                "slow_consumer": 0,
+                "stream_recovery_failed": 0,
+                "visibility_scope_mismatch": 0
+              },
+              "shadow_matches": 0,
+              "shadow_mismatches": 0,
+              "slow_consumers": 0,
+              "timeouts": 0
+            },
+            "properties": {
+              "capability_unavailable": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "cursor_failures": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "legacy_unattributed_briefs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "limit_failures": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "payload_failures": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "queries": {
+                "items": {
+                  "properties": {
+                    "avg_bytes": {
+                      "format": "double",
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "avg_ms": {
+                      "format": "double",
+                      "type": "number"
+                    },
+                    "count": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "max_ms": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "p50_ms": {
+                      "default": 0,
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "p95_ms": {
+                      "default": 0,
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "p99_ms": {
+                      "default": 0,
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "total_bytes": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "total_ms": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "count",
+                    "total_ms",
+                    "max_ms",
+                    "avg_ms"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "resets": {
+                "properties": {
+                  "agent_not_found": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "cursor_ahead": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "event_log_epoch_mismatch": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "query_version_mismatch": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "replay_limit_exceeded": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "retention_expired": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "schema_version_mismatch": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "slow_consumer": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "stream_recovery_failed": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "visibility_scope_mismatch": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "retention_expired",
+                  "cursor_ahead",
+                  "replay_limit_exceeded",
+                  "agent_not_found",
+                  "query_version_mismatch",
+                  "schema_version_mismatch",
+                  "event_log_epoch_mismatch",
+                  "visibility_scope_mismatch",
+                  "stream_recovery_failed",
+                  "slow_consumer"
+                ],
+                "type": "object"
+              },
+              "shadow_matches": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "shadow_mismatches": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "slow_consumers": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "timeouts": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "queries",
+              "capability_unavailable",
+              "cursor_failures",
+              "limit_failures",
+              "payload_failures",
+              "timeouts",
+              "slow_consumers",
+              "legacy_unattributed_briefs",
+              "shadow_matches",
+              "shadow_mismatches",
+              "resets"
+            ],
+            "type": "object"
           },
           "db": {
             "items": {
@@ -17468,6 +17921,76 @@
         "summary": "Control agent lifecycle",
         "tags": [
           "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/conversation/shadow-diagnostics": {
+      "get": {
+        "description": "Control-authenticated, metadata-only bounded comparison of canonical turn/source metadata and the conversation projection from one deferred read transaction. It never returns Brief bodies, transcript/tool payloads, or a second event ledger. Query parameter: turn_limit.",
+        "operationId": "agentConversationShadowDiagnostics",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum recent canonical turns compared. The server applies the bounded maximum.",
+            "in": "query",
+            "name": "turn_limit",
+            "required": false,
+            "schema": {
+              "default": 30,
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationShadowDiagnostics"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Conversation shadow diagnostics",
+        "tags": [
+          "runtime"
         ]
       }
     },

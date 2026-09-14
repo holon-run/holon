@@ -816,6 +816,33 @@
   },
   {
     "method": "get",
+    "path": "/api/control/agents/{agent_id}/conversation/shadow-diagnostics",
+    "handler": "shadow_diagnostics",
+    "operation_id": "agentConversationShadowDiagnostics",
+    "tag": "runtime",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "turn_limit",
+        "location": "query",
+        "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/control/agents/{agent_id}/delete-status",
     "handler": "agent_deletion_status",
     "operation_id": "agentDeleteStatus",
