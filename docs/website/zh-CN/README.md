@@ -8,11 +8,11 @@ order: 1
 <section class="home-hero">
 <div class="home-hero__copy">
 
-<p class="home-eyebrow">与 Agent 协作，不止于一次对话</p>
+<p class="home-eyebrow">从一次对话，到长期协作</p>
 
 # Agent 持续跟进，<br>无需事事盯着。
 
-<p class="home-hero__lede">把需要长期关注的事务交给 Agent：按约定跟进，有变化时继续推进，需要你判断或授权时再请你参与。你决定目标和边界，不必每一步都亲自催动。</p>
+<p class="home-hero__lede">把需要长期关注的事务交给 Agent。你设定目标和边界，Agent 按约定持续跟进，有变化时继续推进，需要你判断或授权时再请你参与。</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">开始使用</a>
