@@ -3,6 +3,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Arc,
+    thread,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -10,7 +12,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{
     params, params_from_iter,
     types::{Type, Value as SqlValue},
-    Connection, OpenFlags, OptionalExtension,
+    Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior,
 };
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -56,6 +58,10 @@ const MEMORY_INDEX_REBUILD_DEFAULT_SLICE: usize = 500;
 const MEMORY_INDEX_REBUILD_PHASE_SCAN: &str = "scan";
 const MEMORY_INDEX_REBUILD_PHASE_PRUNE: &str = "prune";
 const MEMORY_INDEX_REBUILD_PHASE_FINALIZE: &str = "finalize";
+const MEMORY_INDEX_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
+const MEMORY_INDEX_TRANSACTION_DEADLINE: Duration = Duration::from_secs(5);
+const MEMORY_INDEX_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(10);
+const MEMORY_INDEX_TRANSACTION_RETRY_MAX_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -812,6 +818,26 @@ fn log_memory_index_write_error<T>(
     }
 }
 
+fn is_retryable_memory_index_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        matches!(
+            source.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error {
+                    code: rusqlite::ffi::ErrorCode::DatabaseBusy
+                        | rusqlite::ffi::ErrorCode::DatabaseLocked,
+                    ..
+                },
+                _
+            ))
+        )
+    })
+}
+
+fn elapsed_millis(started_at: Instant) -> u64 {
+    u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
 impl MemoryIndex {
     fn open(storage: &AppStorage) -> Result<Self> {
         Self::open_in(&storage.shared_indexes_dir())
@@ -832,10 +858,10 @@ impl MemoryIndex {
                 last_outbox_consume_reached_limit: false,
                 last_outbox_error_count: 0,
             };
+            index.connection.busy_timeout(MEMORY_INDEX_BUSY_TIMEOUT)?;
             index.connection.execute_batch(
                 r#"
                 PRAGMA journal_mode = WAL;
-                PRAGMA busy_timeout = 5000;
                 PRAGMA synchronous = NORMAL;
                 PRAGMA wal_autocheckpoint = 10000;
                 PRAGMA mmap_size = 268435456;
@@ -920,6 +946,94 @@ impl MemoryIndex {
     fn finish_write<T>(&self, operation: &'static str, result: Result<T>) -> Result<T> {
         log_memory_index_write_error(&self.write_coordinator, operation, &result);
         result
+    }
+
+    fn run_immediate_transaction<T>(
+        &self,
+        operation: &'static str,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.run_immediate_transaction_with_deadline(
+            operation,
+            MEMORY_INDEX_TRANSACTION_DEADLINE,
+            f,
+        )
+    }
+
+    fn run_immediate_transaction_with_deadline<T>(
+        &self,
+        operation: &'static str,
+        deadline: Duration,
+        mut f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let started_at = Instant::now();
+        let mut retry_count = 0_u32;
+        let mut retry_delay = MEMORY_INDEX_TRANSACTION_RETRY_INITIAL_DELAY;
+        loop {
+            let attempt = match Transaction::new_unchecked(
+                &self.connection,
+                TransactionBehavior::Immediate,
+            ) {
+                Ok(transaction) => match f(&transaction) {
+                    Ok(value) => transaction.commit().map(|()| value).map_err(Into::into),
+                    Err(error) => {
+                        drop(transaction);
+                        Err(error)
+                    }
+                },
+                Err(error) => Err(error.into()),
+            };
+            match attempt {
+                Ok(value) => {
+                    if retry_count > 0 {
+                        tracing::debug!(
+                            db_role = "index",
+                            db_path_hash = %self.write_coordinator.db_path_hash(),
+                            operation,
+                            retry_count,
+                            elapsed_ms = elapsed_millis(started_at),
+                            "memory index transaction succeeded after retry"
+                        );
+                    }
+                    return Ok(value);
+                }
+                Err(error) if is_retryable_memory_index_error(&error) => {
+                    retry_count = retry_count.saturating_add(1);
+                    let elapsed = started_at.elapsed();
+                    if elapsed >= deadline {
+                        tracing::warn!(
+                            db_role = "index",
+                            db_path_hash = %self.write_coordinator.db_path_hash(),
+                            operation,
+                            retry_count,
+                            elapsed_ms = elapsed_millis(started_at),
+                            error = %error,
+                            "memory index transaction retry deadline exhausted"
+                        );
+                        return Err(error.context(format!(
+                            "memory index transaction {operation} exhausted retry deadline after {} ms and {retry_count} retries",
+                            elapsed.as_millis()
+                        )));
+                    }
+                    tracing::trace!(
+                        db_role = "index",
+                        db_path_hash = %self.write_coordinator.db_path_hash(),
+                        operation,
+                        retry_count,
+                        elapsed_ms = elapsed_millis(started_at),
+                        retry_delay_ms = retry_delay.as_millis(),
+                        error = %error,
+                        "memory index transaction retrying"
+                    );
+                    let remaining = deadline.saturating_sub(elapsed);
+                    thread::sleep(retry_delay.min(remaining));
+                    retry_delay = retry_delay
+                        .saturating_mul(2)
+                        .min(MEMORY_INDEX_TRANSACTION_RETRY_MAX_DELAY);
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 
     /// Enqueues one pending upsert on an already-open connection.
@@ -1257,37 +1371,38 @@ impl MemoryIndex {
 
         let now = Utc::now();
         let _turn = self.write_turn("memory_index.rebuild_scan")?;
-        let transaction = self.connection.transaction()?;
-        for document in &documents {
-            upsert_document_if_needed_tx(&transaction, document)?;
-            upsert_source_state_tx(
-                &transaction,
-                document,
-                source_id_from_ref(&document.source_ref),
-            )?;
+        self.run_immediate_transaction("memory_index.rebuild_scan", |transaction| {
+            for document in &documents {
+                upsert_document_if_needed_tx(transaction, document)?;
+                upsert_source_state_tx(
+                    transaction,
+                    document,
+                    source_id_from_ref(&document.source_ref),
+                )?;
+                transaction.execute(
+                    "INSERT OR IGNORE INTO memory_index_rebuild_seen (
+                        agent_id, generation, document_key
+                     ) VALUES (?1, ?2, ?3)",
+                    params![job.agent_id, job.generation, document_key(document)],
+                )?;
+            }
             transaction.execute(
-                "INSERT OR IGNORE INTO memory_index_rebuild_seen (
-                    agent_id, generation, document_key
-                 ) VALUES (?1, ?2, ?3)",
-                params![job.agent_id, job.generation, document_key(document)],
+                "UPDATE memory_index_rebuild_jobs
+                 SET source_cursor = ?1, source_offset = ?2,
+                     documents_processed = documents_processed + ?3,
+                     last_progress_at = ?4
+                 WHERE agent_id = ?5 AND generation = ?6",
+                params![
+                    next_cursor,
+                    i64::try_from(next_offset).unwrap_or(i64::MAX),
+                    i64::try_from(documents.len()).unwrap_or(i64::MAX),
+                    now.to_rfc3339(),
+                    job.agent_id,
+                    job.generation,
+                ],
             )?;
-        }
-        transaction.execute(
-            "UPDATE memory_index_rebuild_jobs
-             SET source_cursor = ?1, source_offset = ?2,
-                 documents_processed = documents_processed + ?3,
-                 last_progress_at = ?4
-             WHERE agent_id = ?5 AND generation = ?6",
-            params![
-                next_cursor,
-                i64::try_from(next_offset).unwrap_or(i64::MAX),
-                i64::try_from(documents.len()).unwrap_or(i64::MAX),
-                now.to_rfc3339(),
-                job.agent_id,
-                job.generation,
-            ],
-        )?;
-        transaction.commit()?;
+            Ok(())
+        })?;
         tracing::debug!(
             agent_id = %job.agent_id,
             generation = %job.generation,
@@ -1301,21 +1416,22 @@ impl MemoryIndex {
     fn prune_rebuild_slice(&mut self, job: &RebuildJob, slice_limit: usize) -> Result<usize> {
         let document_key_start = format!("{}:", job.agent_id);
         let document_key_end = format!("{};", job.agent_id);
-        let keys = {
-            let mut statement = self.connection.prepare(
+        let _turn = self.write_turn("memory_index.rebuild_prune")?;
+        let keys = self.run_immediate_transaction("memory_index.rebuild_prune", |transaction| {
+            let mut statement = transaction.prepare(
                 "SELECT d.document_key
-                 FROM memory_documents d
-                 WHERE d.document_key >= ?1
-                   AND d.document_key < ?2
-                   AND d.agent_id = ?3
-                   AND NOT EXISTS (
-                       SELECT 1 FROM memory_index_rebuild_seen s
-                       WHERE s.agent_id = ?3
-                         AND s.generation = ?4
-                         AND s.document_key = d.document_key
-                   )
-                 ORDER BY d.document_key
-                 LIMIT ?5",
+                     FROM memory_documents d
+                     WHERE d.document_key >= ?1
+                       AND d.document_key < ?2
+                       AND d.agent_id = ?3
+                       AND NOT EXISTS (
+                           SELECT 1 FROM memory_index_rebuild_seen s
+                           WHERE s.agent_id = ?3
+                             AND s.generation = ?4
+                             AND s.document_key = d.document_key
+                       )
+                     ORDER BY d.document_key
+                     LIMIT ?5",
             )?;
             let rows = statement.query_map(
                 params![
@@ -1327,24 +1443,36 @@ impl MemoryIndex {
                 ],
                 |row| row.get::<_, String>(0),
             )?;
-            rows.collect::<rusqlite::Result<Vec<_>>>()?
-        };
+            let keys = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+            drop(statement);
+            if keys.is_empty() {
+                transaction.execute(
+                    "UPDATE memory_index_rebuild_jobs
+                         SET phase = ?1, last_progress_at = ?2
+                         WHERE agent_id = ?3 AND generation = ?4",
+                    params![
+                        MEMORY_INDEX_REBUILD_PHASE_FINALIZE,
+                        Utc::now().to_rfc3339(),
+                        job.agent_id,
+                        job.generation,
+                    ],
+                )?;
+                return Ok(keys);
+            }
+            for document_key in &keys {
+                delete_document_tx(transaction, document_key)?;
+            }
+            transaction.execute(
+                "UPDATE memory_index_rebuild_jobs
+                     SET last_progress_at = ?1
+                     WHERE agent_id = ?2 AND generation = ?3",
+                params![Utc::now().to_rfc3339(), job.agent_id, job.generation],
+            )?;
+            Ok(keys)
+        })?;
         if keys.is_empty() {
-            self.update_rebuild_phase(job, MEMORY_INDEX_REBUILD_PHASE_FINALIZE)?;
             return Ok(0);
         }
-        let _turn = self.write_turn("memory_index.rebuild_prune")?;
-        let transaction = self.connection.transaction()?;
-        for document_key in &keys {
-            delete_document_tx(&transaction, document_key)?;
-        }
-        transaction.execute(
-            "UPDATE memory_index_rebuild_jobs
-             SET last_progress_at = ?1
-             WHERE agent_id = ?2 AND generation = ?3",
-            params![Utc::now().to_rfc3339(), job.agent_id, job.generation],
-        )?;
-        transaction.commit()?;
         tracing::debug!(
             agent_id = %job.agent_id,
             generation = %job.generation,
@@ -1361,47 +1489,48 @@ impl MemoryIndex {
         let runtime_id = runtime_index_runtime_id(&runtime_db);
         let now = Utc::now();
         let _turn = self.write_turn("memory_index.rebuild_finalize")?;
-        let transaction = self.connection.transaction()?;
-        for source_kind in all_backfill_source_kinds() {
-            transaction.execute(
-                "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
-                 VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(agent_id, source_kind) DO UPDATE SET
-                    cursor=excluded.cursor,
-                    updated_at=excluded.updated_at",
-                params![
-                    job.agent_id,
-                    source_kind,
-                    MEMORY_INDEX_BACKFILL_CURSOR,
-                    now.to_rfc3339(),
-                ],
+        self.run_immediate_transaction("memory_index.rebuild_finalize", |transaction| {
+            for source_kind in all_backfill_source_kinds() {
+                transaction.execute(
+                    "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
+                     VALUES (?1, ?2, ?3, ?4)
+                     ON CONFLICT(agent_id, source_kind) DO UPDATE SET
+                        cursor=excluded.cursor,
+                        updated_at=excluded.updated_at",
+                    params![
+                        job.agent_id,
+                        source_kind,
+                        MEMORY_INDEX_BACKFILL_CURSOR,
+                        now.to_rfc3339(),
+                    ],
+                )?;
+            }
+            upsert_cursor_tx(
+                transaction,
+                &runtime_id,
+                &job.agent_id,
+                MEMORY_INDEX_OUTBOX_CURSOR,
+                job.runtime_high_watermark,
             )?;
-        }
-        upsert_cursor_tx(
-            &transaction,
-            &runtime_id,
-            &job.agent_id,
-            MEMORY_INDEX_OUTBOX_CURSOR,
-            job.runtime_high_watermark,
-        )?;
-        transaction.execute(
-            "DELETE FROM memory_index_pending_sources
-             WHERE agent_id = ?1
-               AND enqueued_at <= ?2",
-            params![job.agent_id, job.started_at.to_rfc3339()],
-        )?;
-        upsert_index_meta_tx(&transaction, &job.agent_id, Some(now))?;
-        transaction.execute(
-            "DELETE FROM memory_index_rebuild_seen
-             WHERE agent_id = ?1 AND generation = ?2",
-            params![job.agent_id, job.generation],
-        )?;
-        transaction.execute(
-            "DELETE FROM memory_index_rebuild_jobs
-             WHERE agent_id = ?1 AND generation = ?2",
-            params![job.agent_id, job.generation],
-        )?;
-        transaction.commit()?;
+            transaction.execute(
+                "DELETE FROM memory_index_pending_sources
+                 WHERE agent_id = ?1
+                   AND enqueued_at <= ?2",
+                params![job.agent_id, job.started_at.to_rfc3339()],
+            )?;
+            upsert_index_meta_tx(transaction, &job.agent_id, Some(now))?;
+            transaction.execute(
+                "DELETE FROM memory_index_rebuild_seen
+                 WHERE agent_id = ?1 AND generation = ?2",
+                params![job.agent_id, job.generation],
+            )?;
+            transaction.execute(
+                "DELETE FROM memory_index_rebuild_jobs
+                 WHERE agent_id = ?1 AND generation = ?2",
+                params![job.agent_id, job.generation],
+            )?;
+            Ok(())
+        })?;
         drop(_turn);
         if job.runtime_high_watermark > 0 {
             if let Err(error) = runtime_db
@@ -1476,24 +1605,22 @@ impl MemoryIndex {
 
     fn upsert_document(&self, document: &MemoryDocument) -> Result<()> {
         let _turn = self.write_turn("memory_index.upsert_document")?;
-        let transaction = self.connection.unchecked_transaction()?;
-        upsert_document_tx(&transaction, document)?;
-        upsert_source_state_tx(
-            &transaction,
-            document,
-            source_id_from_ref(&document.source_ref),
-        )?;
-        transaction.commit()?;
-        Ok(())
+        self.run_immediate_transaction("memory_index.upsert_document", |transaction| {
+            upsert_document_tx(transaction, document)?;
+            upsert_source_state_tx(
+                transaction,
+                document,
+                source_id_from_ref(&document.source_ref),
+            )
+        })
     }
 
     fn delete_document(&self, agent_id: &str, source_ref: &str) -> Result<()> {
         let _turn = self.write_turn("memory_index.delete_document")?;
         let document_key = document_key_for(agent_id, source_ref);
-        let transaction = self.connection.unchecked_transaction()?;
-        delete_document_tx(&transaction, &document_key)?;
-        transaction.commit()?;
-        Ok(())
+        self.run_immediate_transaction("memory_index.delete_document", |transaction| {
+            delete_document_tx(transaction, &document_key)
+        })
     }
 
     fn enqueue_source(
@@ -1570,27 +1697,34 @@ impl MemoryIndex {
             if source.source_kind == MEMORY_INDEX_REBUILD_SOURCE_KIND {
                 continue;
             }
+            let prepared = prepare_pending_source(storage, &source);
             let _turn = self.write_turn("memory_index.consume_pending_source")?;
-            let transaction = self.connection.transaction()?;
-            let result = apply_pending_source_tx(&transaction, storage, &source);
-            match result {
-                Ok(()) => {
-                    transaction.execute(
-                        "DELETE FROM memory_index_pending_sources WHERE document_key = ?1",
-                        [&source.document_key],
-                    )?;
-                    transaction.commit()?;
+            self.run_immediate_transaction("memory_index.consume_pending_source", |transaction| {
+                let result = prepared
+                    .as_ref()
+                    .map_err(|error| anyhow::anyhow!(error.to_string()))
+                    .and_then(|prepared| {
+                        apply_prepared_pending_source_tx(transaction, &source, prepared)
+                    });
+                match result {
+                    Ok(()) => {
+                        transaction.execute(
+                            "DELETE FROM memory_index_pending_sources WHERE document_key = ?1",
+                            [&source.document_key],
+                        )?;
+                    }
+                    Err(error) if is_retryable_memory_index_error(&error) => return Err(error),
+                    Err(error) => {
+                        transaction.execute(
+                            "UPDATE memory_index_pending_sources
+                                 SET attempts = attempts + 1, last_error = ?2
+                                 WHERE document_key = ?1",
+                            params![source.document_key, error.to_string()],
+                        )?;
+                    }
                 }
-                Err(error) => {
-                    transaction.execute(
-                        "UPDATE memory_index_pending_sources
-                         SET attempts = attempts + 1, last_error = ?2
-                         WHERE document_key = ?1",
-                        params![source.document_key, error.to_string()],
-                    )?;
-                    transaction.commit()?;
-                }
-            }
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -1599,18 +1733,37 @@ impl MemoryIndex {
         let agent_id = storage_agent_id(storage);
         let stale_sources = self.stale_source_states_for_agent_with_limit(&agent_id, limit)?;
         for source in stale_sources {
+            let prepared = match prepare_pending_source(storage, &source) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    tracing::warn!(
+                        agent_id,
+                        source_kind = %source.source_kind,
+                        source_ref = %source.source_ref,
+                        error = %error,
+                        "skipping failed stale memory index source refresh"
+                    );
+                    continue;
+                }
+            };
             let _turn = self.write_turn("memory_index.consume_stale_source")?;
-            let transaction = self.connection.transaction()?;
-            if let Err(error) = apply_pending_source_tx(&transaction, storage, &source) {
-                tracing::warn!(
-                    agent_id,
-                    source_kind = %source.source_kind,
-                    source_ref = %source.source_ref,
-                    error = %error,
-                    "skipping failed stale memory index source refresh"
-                );
-            }
-            transaction.commit()?;
+            self.run_immediate_transaction("memory_index.consume_stale_source", |transaction| {
+                if let Err(error) =
+                    apply_prepared_pending_source_tx(transaction, &source, &prepared)
+                {
+                    if is_retryable_memory_index_error(&error) {
+                        return Err(error);
+                    }
+                    tracing::warn!(
+                        agent_id,
+                        source_kind = %source.source_kind,
+                        source_ref = %source.source_ref,
+                        error = %error,
+                        "skipping failed stale memory index source refresh"
+                    );
+                }
+                Ok(())
+            })?;
         }
         if !self.has_stale_source_states_for_agent(&agent_id)? {
             let _turn = self.write_turn("memory_index.refresh_stale_meta")?;
@@ -1641,27 +1794,34 @@ impl MemoryIndex {
         let mut consume_error: Option<anyhow::Error> = None;
         for row in rows {
             let source = pending_source_from_outbox_row(&row);
+            let prepared = match prepare_pending_source(storage, &source) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    consume_error = Some(error.context(format!(
+                        "agent_id={} change_seq={} source_kind={} source_ref={}",
+                        row.agent_id, row.change_seq, row.source_kind, row.source_ref
+                    )));
+                    break;
+                }
+            };
             let _turn = self.write_turn("memory_index.consume_runtime_outbox")?;
-            let transaction = self.connection.transaction()?;
-            let applied = apply_pending_source_tx(&transaction, storage, &source).and_then(|()| {
-                upsert_cursor_tx(
-                    &transaction,
-                    &runtime_id,
-                    &agent_id,
-                    MEMORY_INDEX_OUTBOX_CURSOR,
-                    row.change_seq,
-                )
-            });
-            match applied {
-                Ok(()) => match transaction.commit() {
-                    Ok(()) => {
-                        last_successful_seq = row.change_seq;
-                    }
-                    Err(error) => {
-                        consume_error = Some(error.into());
-                        break;
-                    }
+            let applied = self.run_immediate_transaction(
+                "memory_index.consume_runtime_outbox",
+                |transaction| {
+                    apply_prepared_pending_source_tx(transaction, &source, &prepared)?;
+                    upsert_cursor_tx(
+                        transaction,
+                        &runtime_id,
+                        &agent_id,
+                        MEMORY_INDEX_OUTBOX_CURSOR,
+                        row.change_seq,
+                    )
                 },
+            );
+            match applied {
+                Ok(()) => {
+                    last_successful_seq = row.change_seq;
+                }
                 Err(error) => {
                     consume_error = Some(error.context(format!(
                         "agent_id={} change_seq={} source_kind={} source_ref={}",
@@ -2201,6 +2361,11 @@ struct PendingSource {
     operation: String,
 }
 
+enum PreparedPendingSource {
+    Delete,
+    Upsert(MemoryDocument),
+}
+
 fn pending_source_from_outbox_row(row: &RuntimeIndexOutboxRow) -> PendingSource {
     PendingSource {
         document_key: document_key_for(&row.agent_id, &row.source_ref),
@@ -2211,17 +2376,27 @@ fn pending_source_from_outbox_row(row: &RuntimeIndexOutboxRow) -> PendingSource 
     }
 }
 
-fn apply_pending_source_tx(
-    connection: &Connection,
+fn prepare_pending_source(
     storage: &AppStorage,
     source: &PendingSource,
-) -> Result<()> {
+) -> Result<PreparedPendingSource> {
     if source.operation == RuntimeIndexOperation::Delete.as_str() {
-        return delete_document_tx(connection, &source.document_key);
+        return Ok(PreparedPendingSource::Delete);
     }
-    match document_for_pending_source(storage, source)? {
-        Some(document) => {
-            let hash = projection_hash(&document)?;
+    Ok(match document_for_pending_source(storage, source)? {
+        Some(document) => PreparedPendingSource::Upsert(document),
+        None => PreparedPendingSource::Delete,
+    })
+}
+
+fn apply_prepared_pending_source_tx(
+    connection: &Connection,
+    source: &PendingSource,
+    prepared: &PreparedPendingSource,
+) -> Result<()> {
+    match prepared {
+        PreparedPendingSource::Upsert(document) => {
+            let hash = projection_hash(document)?;
             let existing_state = connection
                 .query_row(
                     "SELECT content_hash, index_schema_version, projection_version
@@ -2245,11 +2420,11 @@ fn apply_pending_source_tx(
                 },
             );
             if needs_projection_refresh {
-                upsert_document_tx(connection, &document)?;
+                upsert_document_tx(connection, document)?;
             }
-            upsert_source_state_tx(connection, &document, &source.source_id)
+            upsert_source_state_tx(connection, document, &source.source_id)
         }
-        None => delete_document_tx(connection, &source.document_key),
+        PreparedPendingSource::Delete => delete_document_tx(connection, &source.document_key),
     }
 }
 
@@ -4600,6 +4775,82 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(pending_count, 8);
+        Ok(())
+    }
+
+    #[test]
+    fn immediate_transaction_retries_until_external_lock_is_released() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        index.connection.busy_timeout(Duration::from_millis(20))?;
+        let blocker = Connection::open(memory_index_path(&storage))?;
+        blocker.execute_batch("BEGIN IMMEDIATE")?;
+        let barrier = Arc::new(Barrier::new(2));
+        let thread_barrier = Arc::clone(&barrier);
+        let (sender, receiver) = mpsc::channel();
+
+        let handle = thread::spawn(move || {
+            thread_barrier.wait();
+            let result = index.run_immediate_transaction_with_deadline(
+                "test.retry_external_lock",
+                Duration::from_millis(500),
+                |transaction| upsert_index_meta_tx(transaction, "retry-agent", None),
+            );
+            sender
+                .send(result)
+                .expect("transaction result receiver dropped");
+        });
+
+        barrier.wait();
+        assert!(matches!(
+            receiver.recv_timeout(Duration::from_millis(75)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        blocker.execute_batch("COMMIT")?;
+        receiver.recv_timeout(Duration::from_secs(1))??;
+        handle.join().expect("transaction thread panicked");
+
+        let indexed_agent_count: i64 = Connection::open(memory_index_path(&storage))?.query_row(
+            "SELECT COUNT(*) FROM memory_index_meta WHERE agent_id = 'retry-agent'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(indexed_agent_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn immediate_transaction_stops_retrying_at_deadline() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        index.connection.busy_timeout(Duration::from_millis(10))?;
+        let blocker = Connection::open(memory_index_path(&storage))?;
+        blocker.execute_batch("BEGIN IMMEDIATE")?;
+        let mut transaction_body_executed = false;
+        let started_at = Instant::now();
+
+        let error = index
+            .run_immediate_transaction_with_deadline(
+                "test.retry_deadline",
+                Duration::from_millis(50),
+                |_| {
+                    transaction_body_executed = true;
+                    Ok(())
+                },
+            )
+            .expect_err("external write lock should exhaust the retry deadline");
+
+        assert!(!transaction_body_executed);
+        assert!(
+            error
+                .to_string()
+                .contains("memory index transaction test.retry_deadline exhausted retry deadline"),
+            "unexpected error: {error:#}"
+        );
+        assert!(started_at.elapsed() < Duration::from_secs(1));
+        blocker.execute_batch("ROLLBACK")?;
         Ok(())
     }
 

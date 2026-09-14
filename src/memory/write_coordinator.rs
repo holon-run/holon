@@ -1,17 +1,20 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, OnceLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 
+const MEMORY_INDEX_WRITE_QUEUE_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Default)]
 struct WriteCoordinatorState {
     next_ticket: u64,
     serving_ticket: u64,
+    cancelled_tickets: BTreeSet<u64>,
 }
 
 #[derive(Debug)]
@@ -56,6 +59,14 @@ impl MemoryIndexWriteCoordinator {
         self: &Arc<Self>,
         operation: &'static str,
     ) -> Result<MemoryIndexWriteTurn> {
+        self.wait_turn_for(operation, MEMORY_INDEX_WRITE_QUEUE_TIMEOUT)
+    }
+
+    fn wait_turn_for(
+        self: &Arc<Self>,
+        operation: &'static str,
+        timeout: Duration,
+    ) -> Result<MemoryIndexWriteTurn> {
         let wait_started_at = Instant::now();
         let ticket = {
             let mut state = self
@@ -75,10 +86,29 @@ impl MemoryIndexWriteCoordinator {
             .lock()
             .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?;
         while state.serving_ticket != ticket {
-            state = self
+            let remaining = timeout.saturating_sub(wait_started_at.elapsed());
+            if remaining.is_zero() {
+                state.cancelled_tickets.insert(ticket);
+                advance_serving_ticket(&mut state);
+                self.available.notify_all();
+                tracing::warn!(
+                    db_role = "index",
+                    db_path_hash = %self.db_path_hash,
+                    operation,
+                    ticket,
+                    queue_wait_ms = elapsed_millis(wait_started_at),
+                    "memory index writer queue wait timed out"
+                );
+                return Err(anyhow!(
+                    "memory index writer queue wait timed out after {} ms",
+                    timeout.as_millis()
+                ));
+            }
+            let (next_state, _) = self
                 .available
-                .wait(state)
+                .wait_timeout(state, remaining)
                 .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?;
+            state = next_state;
         }
         let queue_wait_ms = elapsed_millis(wait_started_at);
         tracing::debug!(
@@ -125,9 +155,16 @@ impl Drop for MemoryIndexWriteTurn {
             );
         }
         if let Ok(mut state) = self.coordinator.state.lock() {
-            state.serving_ticket = state.serving_ticket.saturating_add(1);
+            advance_serving_ticket(&mut state);
             self.coordinator.available.notify_all();
         }
+    }
+}
+
+fn advance_serving_ticket(state: &mut WriteCoordinatorState) {
+    state.serving_ticket = state.serving_ticket.saturating_add(1);
+    while state.cancelled_tickets.remove(&state.serving_ticket) {
+        state.serving_ticket = state.serving_ticket.saturating_add(1);
     }
 }
 
@@ -294,6 +331,54 @@ mod tests {
 
         drop(first_turn);
         assert!(panicking_handle.join().is_err());
+        receiver.recv_timeout(Duration::from_secs(1))?;
+        successor_handle
+            .join()
+            .expect("successor writer thread panicked")?;
+        Ok(())
+    }
+
+    #[test]
+    fn coordinator_timeout_cancels_ticket_and_releases_successor() -> Result<()> {
+        let directory = tempdir()?;
+        let coordinator =
+            memory_index_write_coordinator(&directory.path().join("memory.v2.sqlite3"))?;
+        let first_turn = coordinator.wait_turn("test.first")?;
+
+        let timed_out_coordinator = Arc::clone(&coordinator);
+        let timed_out_handle = thread::spawn(move || {
+            match timed_out_coordinator.wait_turn_for("test.timeout", Duration::from_millis(50)) {
+                Ok(_turn) => panic!("queued writer should time out"),
+                Err(error) => error,
+            }
+        });
+        for _ in 0..100 {
+            if coordinator
+                .state
+                .lock()
+                .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?
+                .next_ticket
+                >= 2
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let successor_coordinator = Arc::clone(&coordinator);
+        let (sender, receiver) = mpsc::channel();
+        let successor_handle = thread::spawn(move || -> Result<()> {
+            let _turn = successor_coordinator.wait_turn("test.successor")?;
+            sender.send(())?;
+            Ok(())
+        });
+
+        let timeout_error = timed_out_handle
+            .join()
+            .expect("timed out writer thread panicked");
+        assert!(timeout_error.to_string().contains("timed out"));
+        drop(first_turn);
+
         receiver.recv_timeout(Duration::from_secs(1))?;
         successor_handle
             .join()
