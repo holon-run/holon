@@ -188,6 +188,17 @@ main:has(.home-page) .catalog-page {
   letter-spacing: -0.022em;
 }
 
+/* Keep the Chinese proposition on two lines without changing English sizing. */
+.home-page--zh .home-hero h1 {
+  font-size: clamp(1.6rem, 3.1vw, 2.8rem);
+  line-height: 1.25;
+  letter-spacing: -0.03em;
+}
+
+.home-page--zh h2 {
+  line-height: 1.2;
+}
+
 .home-eyebrow,
 .home-kicker {
   margin: 0 0 1rem;

@@ -1,75 +1,75 @@
 ---
 title: Holon
-summary: 让多个 Agent 在你的工作环境里持续做事。Holon 保存工作状态，在有新进展时接着推进。
+summary: 让 Agent 持续跟进，让你不必事事盯着。Holon 是为持续工作而建的本地 Agent 工作台；你决定目标和边界，Agent 记录进展、等待变化，再接着推进。
 order: 1
 ---
 
-<div class="home-page">
+<div class="home-page home-page--zh">
 <section class="home-hero">
 <div class="home-hero__copy">
 
-<p class="home-eyebrow">长期 Agent 的本地工作台</p>
+<p class="home-eyebrow">与 Agent 协作，不止于一次对话</p>
 
-# 让 Agent 持续做事，<br>需要时再接入。
+# 让 Agent 持续跟进，<br>让你不必事事盯着。
 
-<p class="home-hero__lede">把审阅、调查、测试等反复发生的工作交给固定角色。Holon 让多个 Agent 在你的仓库和工具链中工作，保存进度，等到新提交、检查结果或你的确认，再接着推进。</p>
+<p class="home-hero__lede">把需要长期关注的事务交给 Agent：按约定跟进，有变化时继续推进，需要你判断或授权时再请你参与。你决定目标和边界，不必每一步都亲自催动。</p>
 
 <div class="home-actions">
-<a class="home-button home-button--primary" href="#install">安装 Holon</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon">在 GitHub 查看 ↗</a>
+<a class="home-button home-button--primary" href="#install">开始使用</a>
+<a class="home-button home-button--quiet" href="#capabilities">了解如何协作 ↓</a>
 </div>
 
-<p class="home-hero__note">Holon 是围绕 Agent 的本地优先运行时，不是另一个 Agent，也不是托管式 Agent 服务。</p>
+<p class="home-hero__note">Holon，为持续工作而建的本地 Agent 工作台。</p>
 
 </div>
-<div class="home-runtime" aria-label="Holon 运行时工作流程示意">
-<div class="home-runtime__top"><span>Holon Runtime · 工作流程</span><span class="home-runtime__status">示意图</span></div>
-<div class="home-runtime__events"><span>操作者输入</span><span>任务结果</span><span>外部事件</span><span>定时器</span></div>
+<div class="home-runtime" aria-label="你定目标和边界，Agent 持续跟进，在需要判断或授权时请你参与的协作示意">
+<div class="home-runtime__top"><span>你与 Agent · 持续协作</span><span class="home-runtime__status">示意图</span></div>
+<div class="home-runtime__events"><span>交代目标</span><span>约定权限</span><span>明确交付</span></div>
 <div class="home-runtime-map">
-<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">长期 AGENT</span><strong>固定角色，持续负责</strong><small>审阅、调查、测试；每项工作的目标和进度分别保留。</small></div>
-<div class="home-runtime-map__connector" aria-hidden="true"><span>执行</span></div>
+<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">Agent 持续跟进</span><strong>记住进展，接着做</strong><small>记录目标、已完成的工作和下一步，不必每次从头交代。</small></div>
+<div class="home-runtime-map__connector" aria-hidden="true"><span>在约定范围内推进</span></div>
 <div class="home-runtime-map__pair">
-<div class="home-runtime-map__stage"><span class="home-runtime-map__label">工作环境</span><strong>仓库 + 工具</strong><small>工作发生在真实项目环境中。</small></div>
-<div class="home-runtime-map__stage"><span class="home-runtime-map__label">控制边界</span><strong>信任 + 批准</strong><small>边界始终明确可见。</small></div>
+<div class="home-runtime-map__stage"><span class="home-runtime-map__label">有事可做</span><strong>在实际环境里推进</strong><small>使用你的仓库、文件与工具链。</small></div>
+<div class="home-runtime-map__stage"><span class="home-runtime-map__label">需要等待</span><strong>等到条件满足</strong><small>等待结果、外部变化或你的确认。</small></div>
 </div>
-<div class="home-runtime-map__connector" aria-hidden="true"><span>等待 · 唤醒 · 恢复</span></div>
-<div class="home-runtime-map__stage home-runtime-map__stage--output"><span class="home-runtime-map__label">结果交付</span><strong>面向操作者的简报</strong><small>结果与内部执行痕迹相互分离。</small></div>
+<div class="home-runtime-map__connector" aria-hidden="true"><span>有变化再继续，需要你时再确认</span></div>
+<div class="home-runtime-map__stage home-runtime-map__stage--output"><span class="home-runtime-map__label">你按需参与</span><strong>看结果，做关键判断</strong><small>带着进展、阻碍和待决定的事项来找你。</small></div>
 </div>
 </div>
 </section>
 
 <section class="home-section home-capability-section" id="capabilities">
 <div class="home-section__intro">
-<p class="home-kicker">Holon 如何工作</p>
+<p class="home-kicker">从一次帮忙，到持续跟进</p>
 
-## 一个核心工作模型，由三项运行时能力支撑。
+## 交代一件事，不必催动每一步。
 
-用明确的目标和进度组织工作。由长期负责的 Agent 持续推进，等待条件满足后继续，需要分工时再委派任务。
+一次回答之后，事情往往还没结束。等结果、看变化、记住下一步，不该总靠你自己。约定目标、权限和交付方式，让 Agent 接下持续跟进的工作。
 
 </div>
 <div class="home-capability-system">
 <article class="home-capability-main">
 <div class="home-capability-main__heading"><span>01</span><small>WorkItem｜工作项</small></div>
-<h3>让目标、进度和等待都有明确归属。</h3>
-<p>在 Holon 中，工作项（WorkItem）承载需要持续推进的目标，记录计划、进度、等待条件和完成简报。暂停后继续时，Agent 沿着同一个工作项推进，而不是从聊天历史中重新梳理。</p>
-<div class="home-state-sequence" aria-label="工作项生命周期"><span>事件</span><i>→</i><span>工作项</span><i>→</i><span>等待</span><i>→</i><span>唤醒</span><i>→</i><span>简报</span></div>
+<h3>不用每次从头交代。</h3>
+<p>一项需要长期跟进的任务，不该只留在聊天记录里。Holon 用工作项（WorkItem）保留目标、计划、进度和等待条件。Agent 暂停后继续时，能沿着同一项工作接着推进。</p>
+<div class="home-state-sequence" aria-label="持续协作过程"><span>定目标</span><i>→</i><span>记进展</span><i>→</i><span>等变化</span><i>→</i><span>接着做</span><i>→</i><span>交结果</span></div>
 <footer>WorkItem · 目标 · 计划 · 进度 · 等待条件 · 完成简报</footer>
 </article>
 <div class="home-capability-support">
-<article class="home-capability-row"><span>02</span><div><small>事件驱动续接</small><h3>有条件地等待，有信号再继续。</h3><p>明确记录工作项在等什么：任务结果、外部事件、定时器，或你的输入。条件满足后，继续推进对应工作项。</p></div></article>
-<article class="home-capability-row"><span>03</span><div><small>长期职责身份</small><h3>延续负责的 Agent，而不只是一段对话。</h3><p>为每个 Agent 设定持续职责，保留各自的指令与持久记忆。跨会话回到同一个 Agent，继续它负责的工作。</p></div></article>
-<article class="home-capability-row"><span>04</span><div><small>多 Agent 分工协作</small><h3>分头处理，接续推进。</h3><p>把任务交给已有 Agent，或创建子 Agent 并行处理。跟踪任务进度，等待结果返回，再继续推进主线工作。</p></div></article>
+<article class="home-capability-row"><span>02</span><div><small>等待与唤醒</small><h3>等待也是工作的一部分。</h3><p>等命令结果、外部事件或你的确认，条件满足后回到对应任务。持续跟进不等于一直运行，而是需要时能继续。</p></div></article>
+<article class="home-capability-row"><span>03</span><div><small>长期 Agent 与本地工作区</small><h3>在实际环境里做事。</h3><p>为 Agent 约定持续职责，保留工作资料，连接你的仓库、文件与工具链。让工作不只停留在对话里。</p></div></article>
+<article class="home-capability-row"><span>04</span><div><small>明确授权与信息来源</small><h3>委托执行，保留决定权。</h3><p>约定哪些行动可以直接执行，哪些需要先确认。Holon 区分你的指令、外部信息与工具结果；外部内容不等于你的授权。</p></div></article>
 </div>
 </div>
 </section>
 
 <section class="home-section home-product">
 <div class="home-section__intro home-section__intro--narrow">
-<p class="home-kicker">一个 Runtime · 多个入口</p>
+<p class="home-kicker">持续协作背后的工作台</p>
 
-## 界面可以关闭，工作仍有归处。
+## 不必守着对话窗口，工作仍有归处。
 
-以后台服务运行时，Holon Runtime 承接 Agent、工作项和等待状态。TUI 与 Web UI 连接同一个 Runtime；关闭操作界面，不等于停止后台服务。
+Holon 不是另一个 Agent，而是让 Agent 持续工作的本地运行时。以后台服务运行时，它保存工作状态、组织等待与唤醒。你可以通过 TUI 或 Web UI 回来查看进展、补充信息或调整方向。
 
 </div>
 <picture class="home-architecture">
@@ -83,9 +83,9 @@ order: 1
 <div class="home-proof__intro">
 <p class="home-kicker">精选文章</p>
 
-## 认识 Holon，再看它如何工作。
+## 看一件事，怎样被持续跟进。
 
-从产品介绍和 WorkItem 设计出发，动手配置持续审阅，再看共享 Agent 如何参与小团队的日常工作。
+从工作方式读到具体实践：了解 Holon 为什么保留工作状态，动手配置持续审阅，再看 Agent 如何接回人的测试结果。
 
 </div>
 <a class="home-reading-all" href="/zh-CN/blog/">查看全部文章 →</a>
@@ -94,7 +94,7 @@ order: 1
 <img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">01 · 产品故事</span>
 <h3>让多个 Agent 在你的工作环境里持续做事</h3>
-<p>固定角色在后台跟进，需要时再接入。认识 Holon 这套本地工作台，以及远程开发和团队协作中的用法。</p>
+<p>从每次叫 AI 帮忙，到让固定角色持续跟进。认识支撑这种协作方式的本地工作台。</p>
 <span class="home-reading-card__cta">认识 Holon →</span>
 </a>
 <a class="home-reading-card" href="/zh-CN/blog/why-work-items">
@@ -126,7 +126,7 @@ order: 1
 <div class="home-start__copy">
 <p class="home-kicker">从本地开始</p>
 
-## 先交给 Holon 一项有用的职责。
+## 为第一项持续任务做好准备。
 
 安装 Holon、配置模型提供商并启动 daemon。打开本地 Web 界面 `http://localhost:7878`，或使用 `holon tui`。
 
@@ -152,9 +152,9 @@ holon daemon start
 <div>
 <p class="home-kicker">从这里继续</p>
 
-## 给项目工作一个持久归属。
+## 先交给 Agent 一件你不想反复盯着的事。
 
-从本地开始，让第一条工作流保持小而清楚；当聊天或终端结束时，由 Holon 保存工作本身。
+从一个明确的目标开始，约定跟进方式、交付结果和需要你参与的时刻。少一些反复检查和催促，把时间留给你真正想做的事。
 
 <small class="home-translation-note">中文文档正在逐步完善中。尚未翻译的页面会链接到对应的英文版本。</small>
 
