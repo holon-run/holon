@@ -61,6 +61,10 @@ on:
       - "scripts/ci_timing.py"
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -262,7 +266,18 @@ jobs:
       - name: Check formatting
         run: make fmt-check
 
-      - name: Build
+      - name: Audit test temp resources
+        run: make test-resource-lint
+
+      - name: Test CI timing tooling
+        run: python3 -m unittest tests.test_ci_timing
+
+      - name: Clippy
+        run: make lint
+        env:
+          RUSTFLAGS: ""
+
+      - name: Build all targets, including benchmarks
         run: make build
 
       - name: Package check
@@ -270,12 +285,6 @@ jobs:
 
       - name: Check generated snapshots
         run: make snapshots-check
-
-      - name: Audit test temp resources
-        run: make test-resource-lint
-
-      - name: Test CI timing tooling
-        run: python3 -m unittest tests.test_ci_timing
 
       - name: Test
         run: |
@@ -299,11 +308,6 @@ jobs:
           name: ci-rust-test-timing-${{ github.run_attempt }}
           path: target/ci-timing/rust-test-targets.json
           if-no-files-found: warn
-
-      - name: Clippy
-        run: make lint
-        env:
-          RUSTFLAGS: ""
 
   rust-concurrent:
     name: Rust Concurrent
@@ -353,7 +357,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
 
       - name: Generate coverage
-        run: cargo llvm-cov --all-targets --lcov --output-path lcov.info
+        run: cargo llvm-cov --lib --bins --tests --lcov --output-path lcov.info
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
