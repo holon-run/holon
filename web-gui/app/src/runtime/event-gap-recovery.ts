@@ -72,10 +72,13 @@ export class EventGapRecoveryTracker {
     const highestObservedSeq = preserveObserved
       ? Math.max(current.highestObservedSeq, baselineSeq, observedSeq)
       : Math.max(baselineSeq, observedSeq);
+    // Within one event-log epoch a rebase must never move contiguousSeq
+    // backwards over in-flight catch-up progress (#2986); an epoch change
+    // resets the seq space entirely.
     const state: AgentRecoveryState = {
       generation: this.nextGeneration++,
       eventLogEpoch: normalizedEpoch ?? (preserveObserved ? current?.eventLogEpoch : undefined),
-      contiguousSeq: baselineSeq,
+      contiguousSeq: preserveObserved ? Math.max(baselineSeq, current.contiguousSeq) : baselineSeq,
       highestObservedSeq,
       observationVersion: current?.observationVersion ?? 0,
       backfillInFlight: false,
@@ -269,4 +272,51 @@ export async function recoverEventGap<T extends SequencedEvent>(
 
 function normalizeEpoch(eventLogEpoch?: string): string | undefined {
   return eventLogEpoch || undefined;
+}
+
+export interface CatchUpCursorRecord {
+  eventLogEpoch?: string;
+  contiguousSeq: number;
+  highestObservedSeq: number;
+}
+
+export interface CatchUpCursorSnapshot {
+  runtimeId?: string;
+  visibilityScopeId?: string;
+  eventLogEpoch?: string;
+  agents: Record<string, CatchUpCursorRecord>;
+}
+
+const CATCH_UP_CURSOR_STORAGE_KEY = "holon.globalSync.catchUpCursor.v1";
+
+type CatchUpCursorStorage = Pick<Storage, "getItem" | "setItem">;
+
+export function loadCatchUpCursorSnapshot(
+  storage: CatchUpCursorStorage | undefined,
+): CatchUpCursorSnapshot | undefined {
+  if (!storage) return undefined;
+  try {
+    const raw = storage.getItem(CATCH_UP_CURSOR_STORAGE_KEY);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed == null) return undefined;
+    const snapshot = parsed as CatchUpCursorSnapshot;
+    if (typeof snapshot.agents !== "object" || snapshot.agents == null) return undefined;
+    return snapshot;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveCatchUpCursorSnapshot(
+  storage: CatchUpCursorStorage | undefined,
+  snapshot: CatchUpCursorSnapshot,
+): void {
+  if (!storage) return;
+  try {
+    storage.setItem(CATCH_UP_CURSOR_STORAGE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // Cursor persistence is best-effort (#2986): quota or privacy-mode
+    // failures degrade to the in-memory catch-up behavior.
+  }
 }

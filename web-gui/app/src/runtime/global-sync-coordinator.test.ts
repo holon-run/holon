@@ -800,6 +800,182 @@ throw new Error(`Unexpected request: ${url}`);
     retryCallbacks.shift()?.();
     await vi.waitFor(() => expect(snapshotRequests).toBe(2));
   });
+
+  function headWindowRoster(): Record<string, unknown> {
+    return rosterSnapshot(["agent-a"], {
+      agents: [{
+        agent: listEntry("agent-a"),
+        event_window: { event_head_seq: 5000, oldest_retained_seq: 0 },
+        latest_brief: null,
+      }],
+    });
+  }
+
+  function backfillRequestsAfterSeqs(fetchMock: ReturnType<typeof vi.fn>): Array<string> {
+    return fetchMock.mock.calls
+      .map(([input]) => new URL(String(input), "http://localhost"))
+      .filter((url) => url.pathname.endsWith("/agents/agent-a/events"))
+      .map((url) => url.searchParams.get("after_seq"))
+      .filter((value): value is string => value != null);
+  }
+
+  function headWindowFetchMock(): ReturnType<typeof vi.fn> {
+    return vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([listEntry("agent-a")]));
+      if (url.pathname.endsWith("/agents/snapshot")) {
+        return Promise.resolve(jsonResponse(headWindowRoster()));
+      }
+      if (url.pathname.endsWith("/projection-snapshot")) {
+        return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        return Promise.resolve(sseResponse(init, () => undefined));
+      }
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        if (url.searchParams.get("order") === "desc") return Promise.resolve(jsonResponse(emptyEventsPage("agent-a")));
+        const afterSeq = Number(url.searchParams.get("after_seq") ?? "0");
+        const start = afterSeq + 1;
+        const end = Math.min(start + 99, 5000);
+        if (start > 5000) return Promise.resolve(jsonResponse(emptyEventsPage("agent-a")));
+        return Promise.resolve(jsonResponse({
+          events: Array.from({ length: end - start + 1 }, (_, index) => ({
+            id: `event-${start + index}`,
+            event_seq: start + index,
+            event_log_epoch: "epoch-1",
+            ts: "2026-08-10T00:00:00Z",
+            agent_id: "agent-a",
+            type: "legacy_event",
+            payload: {},
+          })),
+          event_log_epoch: "epoch-1",
+          has_older: false,
+          has_newer: end < 5000,
+          order: "asc",
+          limit: 100,
+          agent_id: "agent-a",
+        }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+  }
+
+  it("seeds catch-up from the roster head window instead of a stale gap baseline", async () => {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    const fetchMock = headWindowFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    // A gap record left over from an earlier daemon restart must not drag a
+    // fresh session into a full-history replay (#2986).
+    useRuntimeStore.setState({
+      sessionsByAgentId: {
+        "agent-a": sessionState({
+          eventLogEpoch: "epoch-1",
+          eventSeqs: [1],
+          newestSeq: 1,
+          gaps: [{ afterSeq: 1, beforeSeq: 5000 }],
+        }),
+      },
+    });
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
+    });
+    expect(backfillRequestsAfterSeqs(fetchMock)[0]).toBe("4000");
+  });
+
+  it("resumes catch-up from a persisted cursor for the same runtime connection", async () => {
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    sessionStorage.setItem("holon.globalSync.catchUpCursor.v1", JSON.stringify({
+      runtimeId: "rt-1",
+      visibilityScopeId: "vis-1",
+      eventLogEpoch: "epoch-1",
+      agents: {
+        "agent-a": { eventLogEpoch: "epoch-1", contiguousSeq: 4200, highestObservedSeq: 5000 },
+      },
+    }));
+    const fetchMock = headWindowFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    useRuntimeStore.setState({
+      sessionsByAgentId: {
+        "agent-a": sessionState({ eventLogEpoch: "epoch-1" }),
+      },
+    });
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
+    });
+    // The reload resumes from the persisted cursor instead of restarting.
+    expect(backfillRequestsAfterSeqs(fetchMock)[0]).toBe("4200");
+    const stored = JSON.parse(
+      sessionStorage.getItem("holon.globalSync.catchUpCursor.v1") ?? "{}",
+    ) as { agents?: Record<string, { contiguousSeq?: number }> };
+    expect(stored.agents?.["agent-a"]?.contiguousSeq).toBeGreaterThanOrEqual(4200);
+  });
+
+  it("ignores persisted cursors from a different runtime connection", async () => {
+    const sessionStorage = new MemoryStorage();
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage,
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    sessionStorage.setItem("holon.globalSync.catchUpCursor.v1", JSON.stringify({
+      runtimeId: "rt-other",
+      visibilityScopeId: "vis-1",
+      eventLogEpoch: "epoch-1",
+      agents: {
+        "agent-a": { eventLogEpoch: "epoch-1", contiguousSeq: 4200, highestObservedSeq: 5000 },
+      },
+    }));
+    const fetchMock = headWindowFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+    useRuntimeStore.setState({
+      sessionsByAgentId: {
+        "agent-a": sessionState({ eventLogEpoch: "epoch-1" }),
+      },
+    });
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("streaming");
+    });
+    // Without a valid cursor the session falls back to the bounded
+    // head-seeded baseline, never a full-history replay.
+    expect(backfillRequestsAfterSeqs(fetchMock)[0]).toBe("4000");
+    const stored = JSON.parse(
+      sessionStorage.getItem("holon.globalSync.catchUpCursor.v1") ?? "{}",
+    ) as { runtimeId?: string };
+    expect(stored.runtimeId).toBe("rt-1");
+  });
 });
 
 function jsonResponse(body: unknown): Response {
