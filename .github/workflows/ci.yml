@@ -266,6 +266,15 @@ jobs:
         with:
           components: rustfmt, clippy
 
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: v1-rust
+          key: ci-rust
+          env-vars: RUSTFLAGS
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -335,6 +344,15 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Restore concurrent test build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: v1-rust
+          key: ci-concurrent
+          env-vars: RUSTFLAGS
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
       - name: Test concurrent runtime lifecycles
         run: make test-concurrent
 
@@ -347,6 +365,8 @@ jobs:
     needs: changes
     if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    env:
+      CARGO_TARGET_DIR: target/llvm-cov
     steps:
       - uses: actions/checkout@v4
 
@@ -366,11 +386,28 @@ jobs:
         with:
           components: llvm-tools
 
+      - name: Restore coverage build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: v1-rust
+          key: ci-coverage
+          env-vars: CARGO_TARGET_DIR
+          workspaces: . -> target/llvm-cov
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
+      - name: Clear stale coverage profiles
+        run: |
+          if [ -d "${CARGO_TARGET_DIR}" ]; then
+            find "${CARGO_TARGET_DIR}" -type f \
+              \( -name '*.profraw' -o -name '*.profdata' \) -delete
+          fi
+
       - name: Generate coverage
-        run: cargo llvm-cov --lib --bins --tests --lcov --output-path lcov.info
+        run: cargo llvm-cov --no-clean --lib --bins --tests --lcov --output-path lcov.info
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
