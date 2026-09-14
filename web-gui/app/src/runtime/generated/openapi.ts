@@ -161,6 +161,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/conversation/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Conversation change stream
+         * @description Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.
+         */
+        get: operations["agentConversationStream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/enqueue": {
         parameters: {
             query?: never;
@@ -3913,6 +3933,228 @@ export interface components {
             latest_message_id: string | null;
             latest_transcript_entry_id: string | null;
         };
+        /** ConversationStreamMessage */
+        ConversationStreamMessage: {
+            batch_id: string;
+            event_log_epoch: string;
+            /** Format: uint64 */
+            from_seq: number;
+            /** Format: uint32 */
+            query_version: number;
+            runtime_id: string;
+            /** Format: uint32 */
+            schema_version: number;
+            /** Format: uint64 */
+            through_seq: number;
+            /** @constant */
+            type: "batch_begin";
+            visibility_scope_id: string;
+        } | {
+            event_log_epoch: string;
+            input: {
+                message_id: string;
+                /** Format: uint64 */
+                revision: number;
+                /** @enum {string} */
+                state: "queued" | "assigning";
+            };
+            /** @constant */
+            type: "operator_upsert";
+            visibility_scope_id: string;
+        } | {
+            event_log_epoch: string;
+            message_id: string;
+            /** Format: uint64 */
+            revision: number;
+            /** @constant */
+            type: "operator_remove";
+            visibility_scope_id: string;
+        } | {
+            event_log_epoch: string;
+            turn: {
+                attention?: ({
+                    /** @constant */
+                    kind: "failed";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                } | {
+                    /** @constant */
+                    kind: "interrupted";
+                } | {
+                    /** @constant */
+                    kind: "waiting";
+                }) | null;
+                brief_ids: string[];
+                detail_coverage: {
+                    /** @constant */
+                    kind: "complete";
+                } | {
+                    /** @constant */
+                    kind: "partial";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                } | {
+                    /** @constant */
+                    kind: "unknown";
+                };
+                execution: {
+                    /** @constant */
+                    kind: "active";
+                } | {
+                    /** @constant */
+                    kind: "terminal";
+                    /** @enum {string} */
+                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                };
+                key: {
+                    turn_id: string;
+                    /** Format: uint64 */
+                    turn_index: number;
+                };
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
+                result: {
+                    /** @constant */
+                    kind: "pending";
+                } | {
+                    /** @constant */
+                    kind: "available";
+                } | {
+                    /** @constant */
+                    kind: "none";
+                    reason: {
+                        /** @constant */
+                        kind: "reducer_only";
+                        reason: string;
+                    } | {
+                        /** @constant */
+                        kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "tool_only_wait";
+                    };
+                } | {
+                    /** @constant */
+                    kind: "unavailable";
+                    /** @enum {string} */
+                    reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
+                    retryable: boolean;
+                };
+                /** Format: uint64 */
+                revision: number;
+                settled: boolean;
+                turn_id: string;
+            };
+            /** @constant */
+            type: "turn_summary_upsert";
+            visibility_scope_id: string;
+        } | {
+            activity: {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "operator";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "assistant";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "tool";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "wait";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            } | {
+                id: string;
+                key: {
+                    activity_id: string;
+                    /** Format: uint64 */
+                    event_seq: number;
+                };
+                /** @constant */
+                kind: "error";
+                /** Format: uint64 */
+                revision: number;
+                summary: string;
+            };
+            event_log_epoch: string;
+            turn_id: string;
+            /** @constant */
+            type: "activity_upsert";
+            visibility_scope_id: string;
+        } | {
+            /** Format: uint64 */
+            detail_revision: number;
+            event_log_epoch: string;
+            turn_id: string;
+            /** @constant */
+            type: "detail_invalidated";
+            visibility_scope_id: string;
+        } | {
+            batch_id: string;
+            checkpoint: string;
+            event_log_epoch: string;
+            /** Format: uint64 */
+            through_seq: number;
+            /** @constant */
+            type: "checkpoint";
+            visibility_scope_id: string;
+        } | {
+            /** Format: uint64 */
+            event_head_seq?: number | null;
+            hint: string;
+            /** Format: uint64 */
+            oldest_retained_seq?: number | null;
+            reason: string;
+            /** @constant */
+            type: "reset_required";
+        };
+        /** ConversationStreamQuery */
+        ConversationStreamQuery: {
+            /** Format: uint */
+            activity_limit?: number | null;
+            after?: string | null;
+            /** Format: uint */
+            limit?: number | null;
+        };
         /** ConversationSummaryResponse */
         ConversationSummaryResponse: {
             active_turns: {
@@ -6459,6 +6701,42 @@ export interface operations {
             };
             /** @description Server error JSON response. */
             "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentConversationStream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConversationStreamQuery"];
+            };
+        };
+        responses: {
+            /** @description Server-Sent Events stream. Each data frame contains a StreamEventEnvelope JSON object. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": string;
+                };
+            };
+            /** @description Client error before stream establishment. */
+            "4XX": {
                 headers: {
                     [name: string]: unknown;
                 };

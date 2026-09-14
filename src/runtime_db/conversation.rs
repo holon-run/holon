@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{
+    params, params_from_iter, Connection, OptionalExtension, Transaction, TransactionBehavior,
+};
 use serde_json::Value;
 
 use crate::domain::conversation::{
@@ -423,12 +425,39 @@ pub(crate) fn assigned_turn_id_tx(
     tx.query_row(
         "SELECT turn_id
          FROM conversation_input_assignments
-         WHERE agent_id = ?1 AND message_id = ?2",
+         WHERE agent_id = ?1
+           AND message_id = ?2",
         params![agent_id, message_id],
         |row| row.get(0),
     )
     .optional()
     .map_err(Into::into)
+}
+
+fn assigned_turn_ids_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_ids: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    if message_ids.is_empty() || !table_exists_tx(tx, "conversation_input_assignments")? {
+        return Ok(BTreeSet::new());
+    }
+
+    let placeholders = std::iter::repeat_n("?", message_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut statement = tx.prepare(&format!(
+        "SELECT DISTINCT turn_id
+         FROM conversation_input_assignments
+         WHERE agent_id = ?
+           AND message_id IN ({placeholders})"
+    ))?;
+    let rows = statement.query_map(
+        params_from_iter(std::iter::once(agent_id).chain(message_ids.iter().map(String::as_str))),
+        |row| row.get::<_, String>(0),
+    )?;
+    rows.collect::<std::result::Result<BTreeSet<_>, _>>()
+        .map_err(Into::into)
 }
 
 impl ConversationRepository<'_> {
@@ -712,11 +741,7 @@ impl ConversationRepository<'_> {
             for event in &events {
                 collect_change_ids(&event.data, &mut turn_ids, &mut message_ids, 0);
             }
-            for message_id in &message_ids {
-                if let Some(turn_id) = assigned_turn_id_tx(&transaction, agent_id, message_id)? {
-                    turn_ids.insert(turn_id);
-                }
-            }
+            turn_ids.extend(assigned_turn_ids_tx(&transaction, agent_id, &message_ids)?);
 
             let pending_inputs = pending_input_rows(&transaction, agent_id)?;
             let pending_ids = pending_inputs
