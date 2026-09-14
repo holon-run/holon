@@ -6036,6 +6036,159 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
 }
 
 #[tokio::test]
+async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_activation() {
+    let mut harness = LifecycleHarness::new();
+    let (work_item_id, pending_message_id, first_message_id, first_activation_id) = {
+        let runtime = harness.runtime();
+        let work_item = runtime
+            .create_work_item(
+                "reclaim task result after interrupted activation".into(),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+        append_completed_rejoin_task(
+            runtime,
+            "task-interrupted-admission",
+            &work_item.id,
+            "turn-interrupted-admission-parent",
+        );
+        let mut task_result = task_result_message("task-interrupted-admission").with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        task_result.work_item_id = Some(work_item.id.clone());
+        task_result.turn_id = Some("turn-interrupted-admission".into());
+        let task = runtime
+            .task_record("task-interrupted-admission")
+            .await
+            .unwrap()
+            .unwrap();
+        runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .ensure_pending(&task, &task_result, runtime.now())
+            .unwrap()
+            .expect("pending task result settlement");
+
+        let mut first = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "first activation admits the task result".into(),
+            },
+        );
+        bind_autonomous_work_queue_tick(&mut first, &work_item, "continue_active");
+        let first = runtime.enqueue(first).await.unwrap();
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("first scheduler activation should be claimed");
+        };
+        assert_eq!(scheduled.message.id, first.id);
+        let first_activation_id = scheduler_executor::canonical_activation_id(&first.id);
+        let admitted = runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(&task_result.id)
+            .unwrap()
+            .expect("admitted task result settlement");
+        assert_eq!(
+            admitted.state,
+            crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted
+        );
+        assert_eq!(
+            admitted.activation_id.as_deref(),
+            Some(first_activation_id.as_str())
+        );
+        finish_claimed_test_run(runtime).await;
+
+        (work_item.id, task_result.id, first.id, first_activation_id)
+    };
+
+    harness.restart();
+    let runtime = harness.runtime();
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        1
+    );
+    let recovered = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("recovered execution partition");
+    assert_eq!(
+        recovered.attempts[&first_activation_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("next scheduler activation should be claimed");
+    };
+    assert_eq!(scheduled.message.id, first_message_id);
+    let rebound = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&pending_message_id)
+        .unwrap()
+        .expect("rebound task result settlement");
+    assert_eq!(
+        rebound.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted
+    );
+    let second_activation_id = rebound
+        .activation_id
+        .as_deref()
+        .expect("rebound settlement should identify the recovery activation");
+    assert_ne!(second_activation_id, first_activation_id);
+    let reclaimed = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("reclaimed execution partition");
+    assert_eq!(
+        reclaimed.attempts[second_activation_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
+    );
+    assert_eq!(
+        reclaimed.attempts[second_activation_id]
+            .source_message_id
+            .as_deref(),
+        Some(first_message_id.as_str())
+    );
+    assert!(matches!(
+        &reclaimed.work_items[&work_item_id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
+            attempt_id,
+            ..
+        } if attempt_id == second_activation_id
+    ));
+    assert_eq!(rebound.activation_id.as_deref(), Some(second_activation_id));
+    finish_claimed_test_run(runtime).await;
+}
+
+#[tokio::test]
 async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
