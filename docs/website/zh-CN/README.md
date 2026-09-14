@@ -88,9 +88,9 @@ Holon 不是另一个 Agent，而是让 Agent 持续工作的本地运行时。�
 <div class="home-proof__intro">
 <p class="home-kicker">精选文章</p>
 
-## 看一件事，怎样被持续跟进。
+## 从理解 Holon，到用它做事。
 
-从工作方式读到具体实践：了解 Holon 为什么保留工作状态，动手配置持续审阅，再看 Agent 如何接回人的测试结果。
+了解背后的设计，动手配置持续审阅，探索人与 Agent 的协作方式。
 
 </div>
 <a class="home-reading-all" href="/zh-CN/blog/">查看全部文章 →</a>
