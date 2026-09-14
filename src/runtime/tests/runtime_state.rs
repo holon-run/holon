@@ -5774,7 +5774,7 @@ async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced(
 }
 
 #[tokio::test]
-async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
+async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -5792,7 +5792,7 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
     .unwrap();
     let work_item = runtime
         .create_work_item(
-            "drop stale task rejoin queue head".into(),
+            "preserve sibling task result without consuming current wait".into(),
             Some(WorkItemPlanStatus::Ready),
             None,
             Vec::new(),
@@ -5876,15 +5876,42 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
         "work_item_id": work_item.id,
     }));
     valid.turn_id = Some("turn-current-rejoin".into());
-    let valid = runtime.enqueue(valid).await.unwrap();
+    let valid_message = valid;
 
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Idle
-    ));
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("sibling task result should be claimed for reducer-only processing");
+    };
+    assert_eq!(scheduled.message.id, stale.id);
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    let sibling_message = scheduled.message.clone();
+    let terminal = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: sibling_message.id.clone(),
+                agent_id: sibling_message.agent_id.clone(),
+                priority: sibling_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: sibling_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         runtime
             .storage()
@@ -5893,9 +5920,9 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
             .into_iter()
             .find(|entry| entry.message_id == stale.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dropped)
+        Some(QueueEntryStatus::Processed)
     );
-    assert!(runtime
+    assert!(!runtime
         .storage()
         .read_recent_events(usize::MAX)
         .unwrap()
@@ -5903,10 +5930,30 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
         .any(|event| {
             event.kind == "scheduler_authority_input_rejected"
                 && event.data["message_id"] == stale.id
-                && event.data["reason"] == "canonical_task_rejoin_stale"
-                && event.data["queue_disposition"] == "dropped"
+        }));
+    let pending = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&stale.id)
+        .unwrap()
+        .expect("sibling task result settlement");
+    assert_eq!(
+        pending.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+    );
+    assert_eq!(pending.activation_id, None);
+    assert!(runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .any(|condition| {
+            condition.id == registration.condition.id
+                && condition.status == WaitConditionStatus::Active
         }));
 
+    let valid = runtime.enqueue(valid_message).await.unwrap();
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -5915,10 +5962,81 @@ async fn stale_exact_task_rejoin_is_dropped_without_blocking_next_message() {
         panic!("valid message behind stale task result should be claimed");
     };
     assert_eq!(scheduled.message.id, valid.id);
+    let admitted = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&stale.id)
+        .unwrap()
+        .expect("admitted sibling task result settlement");
+    assert_eq!(
+        admitted.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted
+    );
+    let activation_id = scheduler_executor::canonical_activation_id(&valid.id);
+    assert_eq!(
+        admitted.activation_id.as_deref(),
+        Some(activation_id.as_str())
+    );
+    let claimed_message = scheduled.message.clone();
+    let terminal = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: claimed_message.id.clone(),
+                agent_id: claimed_message.agent_id.clone(),
+                priority: claimed_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: claimed_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    let settled = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&stale.id)
+        .unwrap()
+        .expect("settled sibling task result");
+    assert_eq!(
+        settled.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+    );
+    assert_eq!(
+        settled.disposition,
+        Some(crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered)
+    );
+    let current_settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&valid.id)
+        .unwrap()
+        .expect("current task result settlement");
+    assert_eq!(
+        current_settlement.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+    );
+    assert_eq!(
+        current_settlement.disposition,
+        Some(crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered)
+    );
 }
 
 #[tokio::test]
-async fn task_rejoin_without_execution_owner_is_dropped() {
+async fn task_rejoin_with_closed_owner_is_settled_without_reentry() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -6039,13 +6157,40 @@ async fn task_rejoin_without_execution_owner_is_dropped() {
         .await
         .unwrap();
 
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Idle
-    ));
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("closed-owner task result should be claimed for reducer-only settlement");
+    };
+    assert_eq!(scheduled.message.id, stale.id);
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    let stale_message = scheduled.message.clone();
+    let terminal = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: stale_message.id.clone(),
+                agent_id: stale_message.agent_id.clone(),
+                priority: stale_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: stale_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         runtime
             .storage()
@@ -6054,22 +6199,22 @@ async fn task_rejoin_without_execution_owner_is_dropped() {
             .into_iter()
             .find(|entry| entry.message_id == stale.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dropped)
+        Some(QueueEntryStatus::Processed)
     );
-    let stale_events = runtime
-        .storage()
-        .read_recent_events(usize::MAX)
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&stale.id)
         .unwrap()
-        .into_iter()
-        .filter(|event| event.data["message_id"] == stale.id)
-        .collect::<Vec<_>>();
-    assert!(
-        stale_events.iter().any(|event| {
-            event.kind == "scheduler_authority_input_rejected"
-                && event.data["reason"] == "canonical_task_rejoin_stale"
-                && event.data["queue_disposition"] == "dropped"
-        }),
-        "unexpected stale task-result events: {stale_events:#?}"
+        .expect("closed-owner settlement");
+    assert_eq!(
+        settlement.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+    );
+    assert_eq!(
+        settlement.disposition,
+        Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerClosed)
     );
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -6083,7 +6228,7 @@ async fn task_rejoin_without_execution_owner_is_dropped() {
 }
 
 #[tokio::test]
-async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() {
+async fn task_rejoin_missing_from_execution_partition_is_preserved_without_reentry() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -6159,13 +6304,40 @@ async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() 
     }));
     let result = runtime.enqueue(result).await.unwrap();
 
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Idle
-    ));
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("missing-partition task result should be claimed for reducer-only persistence");
+    };
+    assert_eq!(scheduled.message.id, result.id);
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    let result_message = scheduled.message.clone();
+    let terminal = runtime
+        .process_message_with_plan_deferred(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
+        )
+        .await
+        .unwrap();
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: result_message.id.clone(),
+                agent_id: result_message.agent_id.clone(),
+                priority: result_message.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: result_message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
     assert_eq!(
         runtime
             .storage()
@@ -6174,18 +6346,20 @@ async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() 
             .into_iter()
             .find(|entry| entry.message_id == result.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dropped)
+        Some(QueueEntryStatus::Processed)
     );
-    assert!(runtime
-        .storage()
-        .read_recent_events(usize::MAX)
+    let settlement = runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&result.id)
         .unwrap()
-        .iter()
-        .any(|event| {
-            event.kind == "scheduler_authority_input_rejected"
-                && event.data["message_id"] == result.id
-                && event.data["reason"] == "canonical_wait_execution_authority_missing"
-        }));
+        .expect("missing-partition task result settlement");
+    assert_eq!(
+        settlement.state,
+        crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+    );
+    assert_eq!(settlement.activation_id, None);
     assert!(!runtime
         .storage()
         .read_recent_events(usize::MAX)
@@ -6194,7 +6368,6 @@ async fn task_rejoin_missing_from_initialized_execution_partition_is_rejected() 
         .any(|event| {
             event.kind == "scheduler_authority_input_rejected"
                 && event.data["message_id"] == result.id
-                && event.data["reason"] == "canonical_task_rejoin_stale"
         }));
 }
 

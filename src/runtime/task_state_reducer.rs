@@ -338,10 +338,25 @@ impl RuntimeHandle {
             })
             .into_iter()
             .collect();
+        let task_result_settlement = transition
+            .message_evidence
+            .filter(|_| {
+                transition.admit_result_message && is_terminal_task_status(&persisted_task.status)
+            })
+            .map(|message| {
+                crate::runtime_db::TaskResultSettlementRecord::pending(
+                    &persisted_task,
+                    message,
+                    self.now(),
+                )
+            })
+            .transpose()?
+            .flatten();
         let commit =
             self.commit_task_transition(&crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
                 task: persisted_task,
+                task_result_settlement,
                 queue_entry,
                 work_items,
                 expected_wait_conditions,
@@ -521,6 +536,41 @@ impl RuntimeHandle {
         continuation_resolution: Option<&ContinuationResolution>,
         execution_admission_provenance: ExecutionAdmissionProvenance,
     ) -> Result<turn::TurnTerminalTransition> {
+        let settlement = self
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .ensure_pending(&task, message, self.now())?;
+        if settlement.is_some() && model_reentry {
+            if let ExecutionAdmissionProvenance::Canonical { activation_id, .. } =
+                &execution_admission_provenance
+            {
+                self.inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .admit_message(&message.agent_id, &message.id, activation_id, self.now())?;
+            }
+        }
+        if let Some(settlement) = settlement.as_ref() {
+            let owner = self
+                .inner
+                .runtime_db
+                .work_items()
+                .latest(&settlement.work_item_id)?;
+            let unavailable = match owner {
+                Some(owner) if owner.state != WorkItemState::Open => {
+                    Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerClosed)
+                }
+                None => Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerMissing),
+                Some(_) => None,
+            };
+            if let Some(disposition) = unavailable {
+                self.inner
+                    .runtime_db
+                    .task_result_settlements()
+                    .settle_owner_unavailable(&message.id, disposition, self.now())?;
+            }
+        }
         if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
             self.begin_reducer_only_turn(message, execution_admission_provenance)
                 .await?;
