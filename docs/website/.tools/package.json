@@ -9,7 +9,8 @@
     "build:search": "mdorigin build search --root .. --config ../mdorigin.config.json --out ./dist/search",
     "build:cloudflare": "mdorigin build cloudflare --root .. --config ../mdorigin.config.json --search ./dist/search --out ./dist/cloudflare",
     "check:blog": "python3 check-blog.py",
-    "build": "npm run sync:generated && npm run build:index && npm run check:blog && npm run build:search && npm run build:cloudflare",
+    "check:directories": "python3 test-check-directories.py && python3 check-directories.py",
+    "build": "npm run sync:generated && npm run build:index && npm run check:blog && npm run check:directories && npm run build:search && npm run build:cloudflare",
     "deploy": "wrangler deploy --config ../wrangler.jsonc"
   },
   "devDependencies": {

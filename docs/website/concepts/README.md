@@ -47,26 +47,6 @@ out, and the state disappears. Holon is different because:
 - You can see *where* each input came from and how much to trust it.
 - You can delegate work to child agents and supervise their progress.
 
-## Deeper reading
-
-The **memory system** page explains how Holon preserves continuity across
-turns through work items, work refs, episode archives, and indexed search.
-
-The **context continuity** page explains how Holon assembles bounded prompt
-context from turns, work items, task results, briefs, and structured episodes
-without relying on raw transcript replay.
-
-The **runtime model** page expands the four-object mental model into precise
-lifecycle vocabulary: agent profiles, work-item states, task kinds, queue
-semantics, triggers, and workspace isolation.
-
-The **trust boundaries** page is product-oriented: it explains why origin and
-trust matter for real integrations, not just as security theory.
-
-The **documentation layers** page explains how Holon separates product docs,
-current-contract reference, and maintainer design records — so you know which
-documents are canonical for which purpose.
-
 For the canonical design contracts behind these concepts, see the repository
 [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) and
 [implementation

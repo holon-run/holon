@@ -23,21 +23,7 @@ holon daemon start
 2. 看到 Agent 检查真实工作区或运行已获允许的工具；
 3. 收到精炼结果，或一项明确的下一步决策请求。
 
-需要完整分步说明时，进入[创建你的第一个 Agent](first-agent.md)。
-
-## 第一次接触 Holon？
-
-如果你是第一次使用 Holon：
-
-- **[引导配置](onboarding.md)** — 通过 `holon onboard` 交互式完成提供商、凭据、模型和搜索配置
-- **[创建你的第一个 Agent](first-agent.md)** — 安装、启动、连接 TUI、创建 Agent、配置模型，约 15 分钟
-
-教程涵盖：
-
-- 安装 Holon 并启动运行时
-- 用终端 UI（TUI）连接
-- 创建 Agent 并发送第一条提示
-- 配置模型和提供商
+下方教程提供完整的分步说明，涵盖提供商配置、安装、连接 TUI 和创建第一个 Agent。
 
 第一条持续工作流可以选择一项天然需要等待的职责：跟进 PR 与 CI、等待证据的问题分析，
 或保留明确人工审批点的发布协调。
@@ -52,7 +38,7 @@ Holon 提供三种与运行时交互的方式：
 | **Daemon + TUI** | `holon daemon start` + `holon tui` | 交互式 Agent 会话，带状态、队列和工作区 |
 | **Daemon + HTTP** | `holon daemon start` + HTTP 客户端 | 集成、自动化、控制平面消费方 |
 
-[第一个 Agent 教程](first-agent.md)使用 daemon + TUI，因为它提供完整的交互体验。
+第一个 Agent 教程使用 daemon + TUI，因为它提供完整的交互体验。
 单次执行参见[快速示例](/zh-CN/guides/quick-examples)。
 
 ## 评估或探索？
@@ -76,7 +62,7 @@ Holon 提供三种与运行时交互的方式：
 
 ## 环境要求
 
-- Holon 已安装并在 `PATH` 上（Homebrew 或直接下载二进制；分步说明见[创建第一个 Agent](first-agent.md)）
+- Holon 已安装并在 `PATH` 上（Homebrew 或直接下载二进制；分步说明见下方教程）
 - 一个模型提供商 API key（Anthropic、OpenAI 或兼容服务）
 
 ## 仓库导览（贡献者）
@@ -88,14 +74,6 @@ Holon 提供三种与运行时交互的方式：
 - `docs/` 包含运行时契约、设计记录和当前架构笔记。
 - `agent_templates/` 包含可远程同步的 Agent 模板。
 - `docs/website/` 包含本 mdorigin 文档站。
-
-## 本节页面
-
-- [创建你的第一个 Agent](first-agent.md)
-  从零到你的第一个 Holon Agent：安装、启动、TUI 基础、创建 Agent、配置模型。
-
-- [引导配置](onboarding.md)
-  用 `holon onboard` 交互式完成提供商、凭据、模型和搜索配置。
 
 <!-- INDEX:START -->
 
