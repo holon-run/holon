@@ -22,19 +22,24 @@ order: 1
 <p class="home-hero__note">Holon，为持续工作而建的本地 Agent 工作台。</p>
 
 </div>
-<div class="home-runtime" aria-label="你定目标和边界，Agent 持续跟进，在需要判断或授权时请你参与的协作示意">
+<div class="home-runtime" aria-label="你设定目标和边界，Agent 在推进工作、记录进展、等待变化与接着推进之间循环；需要判断或授权时请你参与，任务完成后交付。">
 <div class="home-runtime__top"><span>你与 Agent · 持续协作</span><span class="home-runtime__status">示意图</span></div>
-<div class="home-runtime__events"><span>交代目标</span><span>约定权限</span><span>明确交付</span></div>
-<div class="home-runtime-map">
-<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">Agent 持续跟进</span><strong>记住进展，接着做</strong><small>记录目标、已完成的工作和下一步，不必每次从头交代。</small></div>
-<div class="home-runtime-map__connector" aria-hidden="true"><span>在约定范围内推进</span></div>
-<div class="home-runtime-map__pair">
-<div class="home-runtime-map__stage"><span class="home-runtime-map__label">有事可做</span><strong>在实际环境里推进</strong><small>使用你的仓库、文件与工具链。</small></div>
-<div class="home-runtime-map__stage"><span class="home-runtime-map__label">需要等待</span><strong>等到条件满足</strong><small>等待结果、外部变化或你的确认。</small></div>
+<div class="home-followup__entry"><strong>你设定目标和边界</strong><span>约定权限 · 明确交付</span></div>
+<div class="home-followup">
+<div class="home-followup__cycle" role="group" aria-label="顺时针循环：推进工作，记录进展，等待变化，接着推进">
+<div class="home-followup__step home-followup__step--work"><strong>推进工作</strong><small>在实际环境里做事</small></div>
+<span class="home-followup__arrow home-followup__arrow--top" aria-hidden="true">→</span>
+<div class="home-followup__step home-followup__step--record"><strong>记录进展</strong><small>保留状态与下一步</small></div>
+<span class="home-followup__arrow home-followup__arrow--right" aria-hidden="true">↓</span>
+<div class="home-followup__center"><strong>Agent 持续跟进</strong><span>沿着同一项工作继续</span></div>
+<div class="home-followup__step home-followup__step--wait"><strong>等待变化</strong><small>等结果或约定条件</small></div>
+<span class="home-followup__arrow home-followup__arrow--bottom" aria-hidden="true">←</span>
+<div class="home-followup__step home-followup__step--resume"><strong>接着推进</strong><small>条件满足后继续</small></div>
+<span class="home-followup__arrow home-followup__arrow--left" aria-hidden="true">↑</span>
 </div>
-<div class="home-runtime-map__connector" aria-hidden="true"><span>有变化再继续，需要你时再确认</span></div>
-<div class="home-runtime-map__stage home-runtime-map__stage--output"><span class="home-runtime-map__label">你按需参与</span><strong>看结果，做关键判断</strong><small>带着进展、阻碍和待决定的事项来找你。</small></div>
+<aside class="home-followup__human"><span aria-hidden="true">⇄</span><strong>你按需参与</strong><p>需要判断<br>或授权时</p><small>确认后<br>回到工作中</small></aside>
 </div>
+<p class="home-followup__note">等待时暂停，有变化再继续。<br><span>任务完成后，交付结果。</span></p>
 </div>
 </section>
 
