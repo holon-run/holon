@@ -45,25 +45,25 @@ order: 1
 
 <section class="home-section home-capability-section" id="capabilities">
 <div class="home-section__intro">
-<p class="home-kicker">从一次帮忙，到持续跟进</p>
+<p class="home-kicker">Holon 如何工作</p>
 
-## 交代一件事，不必催动每一步。
+## 一个核心工作模型，由三项运行时能力支撑。
 
-一次回答之后，事情往往还没结束。等结果、看变化、记住下一步，不该总靠你自己。约定目标、权限和交付方式，让 Agent 接下持续跟进的工作。
+用明确的目标和进度组织工作。由长期负责的 Agent 持续推进，等待条件满足后继续，需要分工时再委派任务。
 
 </div>
 <div class="home-capability-system">
 <article class="home-capability-main">
 <div class="home-capability-main__heading"><span>01</span><small>WorkItem｜工作项</small></div>
-<h3>不用每次从头交代。</h3>
+<h3>让目标、进度和等待都有明确归属。</h3>
 <p>一项需要长期跟进的任务，不该只留在聊天记录里。Holon 用工作项（WorkItem）保留目标、计划、进度和等待条件。Agent 暂停后继续时，能沿着同一项工作接着推进。</p>
 <div class="home-state-sequence" aria-label="持续协作过程"><span>定目标</span><i>→</i><span>记进展</span><i>→</i><span>等变化</span><i>→</i><span>接着做</span><i>→</i><span>交结果</span></div>
 <footer>WorkItem · 目标 · 计划 · 进度 · 等待条件 · 完成简报</footer>
 </article>
 <div class="home-capability-support">
-<article class="home-capability-row"><span>02</span><div><small>等待与唤醒</small><h3>等待也是工作的一部分。</h3><p>等命令结果、外部事件或你的确认，条件满足后回到对应任务。持续跟进不等于一直运行，而是需要时能继续。</p></div></article>
-<article class="home-capability-row"><span>03</span><div><small>长期 Agent 与本地工作区</small><h3>在实际环境里做事。</h3><p>为 Agent 约定持续职责，保留工作资料，连接你的仓库、文件与工具链。让工作不只停留在对话里。</p></div></article>
-<article class="home-capability-row"><span>04</span><div><small>明确授权与信息来源</small><h3>委托执行，保留决定权。</h3><p>约定哪些行动可以直接执行，哪些需要先确认。Holon 区分你的指令、外部信息与工具结果；外部内容不等于你的授权。</p></div></article>
+<article class="home-capability-row"><span>02</span><div><small>事件驱动续接</small><h3>有条件地等待，有信号再继续。</h3><p>明确记录工作项在等什么：任务结果、外部事件、定时器，或你的输入。条件满足后，继续推进对应工作项。</p></div></article>
+<article class="home-capability-row"><span>03</span><div><small>长期职责身份</small><h3>延续负责的 Agent，而不只是一段对话。</h3><p>为每个 Agent 设定持续职责，保留各自的指令与持久记忆。跨会话回到同一个 Agent，继续它负责的工作。</p></div></article>
+<article class="home-capability-row"><span>04</span><div><small>多 Agent 分工协作</small><h3>分头处理，接续推进。</h3><p>把任务交给已有 Agent，或创建子 Agent 并行处理。跟踪任务进度，等待结果返回，再继续推进主线工作。</p></div></article>
 </div>
 </div>
 </section>
