@@ -2773,34 +2773,10 @@ impl TurnExecution<'_> {
                     true
                 };
                 if detached_completed {
-                    let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
-                    let tool_result = ToolResultBlock {
-                        tool_use_id: pending.request_tool_call_id.clone(),
-                        content: result_content.clone(),
-                        is_error: false,
-                        error: None,
-                    };
                     let continuation_text = format!(
                         "WorkItem {} was completed as a detached target. Continue the current execution objective; this completion does not end the current turn.",
                         pending.work_item_id
                     );
-                    use crate::types::{ToolResultData, ToolResultRef};
-                    runtime.persist_transcript_evidence(&TranscriptEntry::new(
-                        agent_id.to_string(),
-                        TranscriptEntryKind::ToolResults,
-                        Some(round),
-                        None,
-                        serde_json::to_value(ToolResultData::RefsWithWrapper {
-                            turn_id: turn_id.clone(),
-                            refs: vec![ToolResultRef {
-                                tool_call_id: pending.request_tool_call_id.clone(),
-                                tool_execution_id: Some(success_record.id.clone()),
-                                provider_visible_text: Some(result_content),
-                                content_truncated: false,
-                                is_error: false,
-                            }],
-                        })?,
-                    ))?;
                     runtime.persist_transcript_evidence(&TranscriptEntry::new(
                         agent_id.to_string(),
                         TranscriptEntryKind::ContinuationPrompt,
@@ -2816,14 +2792,14 @@ impl TurnExecution<'_> {
                         round,
                         estimated_tokens: build_round_estimated_tokens(
                             &completed_round_assistant_blocks,
-                            std::slice::from_ref(&tool_result),
+                            &[],
                             std::slice::from_ref(&continuation_text),
                         ),
                         assistant_blocks: completed_round_assistant_blocks,
                         text_blocks,
                         tool_calls: Vec::new(),
-                        tool_results: vec![tool_result],
-                        tool_result_envelopes: vec![result.envelope],
+                        tool_results: Vec::new(),
+                        tool_result_envelopes: Vec::new(),
                         follow_up_user_texts: vec![continuation_text],
                     });
                     completed_work_item_this_turn = true;
