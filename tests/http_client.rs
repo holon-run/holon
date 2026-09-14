@@ -24,6 +24,8 @@ http_async_tests!(
 
 #[cfg(unix)]
 http_async_tests!(
+    local_client_unix_failure_does_not_retry_over_http,
+    local_client_unix_event_stream_failure_does_not_retry_over_http,
     local_client_over_unix_socket_can_poll_without_http_fallback,
     local_client_over_unix_socket_can_read_agent_state_snapshot,
     local_client_over_unix_socket_can_stream_events_with_cursor_query,

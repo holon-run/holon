@@ -42,7 +42,7 @@ use tokio::time::{sleep, Duration, Instant};
 #[cfg(unix)]
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
+    net::{UnixListener, UnixStream},
 };
 
 use super::{
@@ -88,6 +88,105 @@ pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> R
     assert_eq!(status.identity.agent_id, "default");
 
     server.abort();
+    Ok(())
+}
+
+#[cfg(unix)]
+pub async fn local_client_unix_failure_does_not_retry_over_http() -> Result<()> {
+    let socket_dir = tempdir()?;
+    let socket_path = socket_dir.path().join("holon.sock");
+    let unix_listener = UnixListener::bind(&socket_path)?;
+    let http_listener = TcpListener::bind("127.0.0.1:0").await?;
+
+    let mut config = test_config();
+    config.socket_path = socket_path;
+    config.http_addr = http_listener.local_addr()?.to_string();
+
+    let unix_server = tokio::spawn(async move {
+        let (stream, _) = unix_listener.accept().await?;
+        drop(stream);
+        Ok::<_, anyhow::Error>(())
+    });
+    let mut http_server = tokio::spawn(async move {
+        let (mut stream, _) = http_listener.accept().await?;
+        let mut request = [0_u8; 2048];
+        let _ = stream.read(&mut request).await?;
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: close\r\n\r\n[]",
+            )
+            .await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let error = LocalClient::new(config)?
+        .list_agent_entries()
+        .await
+        .expect_err("unix transport failure must be returned");
+    unix_server.await??;
+
+    assert!(
+        !error.to_string().contains("HTTP fallback"),
+        "original unix error should not be wrapped as an HTTP fallback failure: {error:#}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut http_server)
+            .await
+            .is_err(),
+        "unix request failure must not connect to the configured HTTP transport"
+    );
+    http_server.abort();
+    Ok(())
+}
+
+#[cfg(unix)]
+pub async fn local_client_unix_event_stream_failure_does_not_retry_over_http() -> Result<()> {
+    let socket_dir = tempdir()?;
+    let socket_path = socket_dir.path().join("holon.sock");
+    let unix_listener = UnixListener::bind(&socket_path)?;
+    let http_listener = TcpListener::bind("127.0.0.1:0").await?;
+
+    let mut config = test_config();
+    config.socket_path = socket_path;
+    config.http_addr = http_listener.local_addr()?.to_string();
+
+    let unix_server = tokio::spawn(async move {
+        let (stream, _) = unix_listener.accept().await?;
+        drop(stream);
+        Ok::<_, anyhow::Error>(())
+    });
+    let mut http_server = tokio::spawn(async move {
+        let (mut stream, _) = http_listener.accept().await?;
+        let mut request = [0_u8; 2048];
+        let _ = stream.read(&mut request).await?;
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+            )
+            .await?;
+        Ok::<_, anyhow::Error>(())
+    });
+
+    let error = match LocalClient::new(config)?
+        .stream_agent_events("default", EventStreamRequest::default())
+        .await
+    {
+        Ok(_) => anyhow::bail!("unix event stream failure must be returned"),
+        Err(error) => error,
+    };
+    unix_server.await??;
+
+    assert!(
+        !error.to_string().contains("HTTP fallback"),
+        "original unix event stream error should be preserved: {error:#}"
+    );
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut http_server)
+            .await
+            .is_err(),
+        "unix event stream failure must not connect to the configured HTTP transport"
+    );
+    http_server.abort();
     Ok(())
 }
 

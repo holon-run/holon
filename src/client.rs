@@ -988,28 +988,20 @@ impl LocalClient {
 
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
-            let socket_error = match tokio::time::timeout(
+            let stream = match tokio::time::timeout(
                 self.network.connect_timeout,
                 self.stream_unix_events(&path, false),
             )
             .await
             {
-                Ok(Ok(stream)) => {
-                    return Ok(LocalEventStream {
-                        transport: EventStreamTransport::Unix(stream),
-                        frame_buffer: Vec::new(),
-                        idle_timeout: self.network.stream_idle_timeout,
-                    });
-                }
-                Ok(Err(err)) => err,
-                Err(_) => anyhow!("timed out opening event stream {}", path),
-            };
-            return self
-                .stream_http_events(&path, false)
-                .await
-                .with_context(|| {
-                    format!("unix socket event stream failed before HTTP fallback: {socket_error}")
-                });
+                Ok(result) => result,
+                Err(_) => Err(anyhow!("timed out opening event stream {}", path)),
+            }?;
+            return Ok(LocalEventStream {
+                transport: EventStreamTransport::Unix(stream),
+                frame_buffer: Vec::new(),
+                idle_timeout: self.network.stream_idle_timeout,
+            });
         }
 
         self.stream_http_events(&path, self.remote.is_some()).await
@@ -1110,16 +1102,7 @@ impl LocalClient {
     async fn send(&self, request: RequestSpec, include_control_auth: bool) -> Result<Vec<u8>> {
         #[cfg(unix)]
         if self.remote.is_none() && self.config.socket_path.exists() {
-            let socket_error = match self.send_unix(request.clone(), include_control_auth).await {
-                Ok(body) => return Ok(body),
-                Err(err) => err,
-            };
-            return self
-                .send_http(request, include_control_auth)
-                .await
-                .with_context(|| {
-                    format!("unix socket request failed before HTTP fallback: {socket_error}")
-                });
+            return self.send_unix(request, include_control_auth).await;
         }
 
         self.send_http(request, include_control_auth).await
