@@ -73,6 +73,22 @@ bytes, returned record count, and reconnect event work. The benchmark asserts
 the stable page/replay and hard payload boundaries, while absolute timings are
 evidence for comparison rather than platform-independent pass/fail thresholds.
 
+The checked-in Phase 5 baseline is
+[`docs/benchmarks/conversation-read-model-phase5.json`](benchmarks/conversation-read-model-phase5.json).
+It was captured on revision `b09e000a7cafae2b71c99e763c5cf9e87bf8616e`
+with 10 measured repetitions on 2026-09-14:
+
+| Read | Median wall time | Median payload | Records | Replay events |
+| --- | ---: | ---: | ---: | ---: |
+| First summary page | 2.90 ms | 11,167 bytes | 31 | 0 |
+| Long-turn detail | 1.44 ms | 11,965 bytes | 50 | 0 |
+| Reconnect replay | 1.84 ms | 837 bytes | 2 | 1 |
+| Metadata-only shadow | 3.06 ms | 499 bytes | 30 | 0 |
+
+All four workloads used one logical repository read per sample. Treat these
+timings as comparison evidence for the recorded environment, not universal
+latency thresholds.
+
 ## Recovery expectations
 
 - Long active turns may expose only a bounded complete inline activity page;
