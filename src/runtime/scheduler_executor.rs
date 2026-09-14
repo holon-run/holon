@@ -117,6 +117,7 @@ struct CanonicalClaimPlan {
 
 enum CanonicalClaimOutcome {
     ReduceOnly,
+    ReduceOnlyWithoutModelReentry,
     Plan(CanonicalClaimPlan),
     RejectQueued {
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
@@ -550,14 +551,15 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let replay_source_turn_id = queue_entry
             .filter(|entry| entry.status == QueueEntryStatus::Interrupted)
             .and_then(|_| persisted_message.turn_id.clone());
-        let canonical_claim = match self.canonical_activation_plan(
+        let (canonical_claim, canonical_reduce_only) = match self.canonical_activation_plan(
             &projection,
             &persisted_message,
             &dispatch_plan,
             legacy_decision.model_reentry,
         ) {
-            Ok(CanonicalClaimOutcome::ReduceOnly) => None,
-            Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
+            Ok(CanonicalClaimOutcome::ReduceOnly) => (None, false),
+            Ok(CanonicalClaimOutcome::ReduceOnlyWithoutModelReentry) => (None, true),
+            Ok(CanonicalClaimOutcome::Plan(plan)) => (Some(plan), false),
             Ok(CanonicalClaimOutcome::RejectQueued {
                 scenario_class,
                 reason,
@@ -628,22 +630,28 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     activation_id: plan.activation_id.clone(),
                 };
         }
-        let effective_decision = canonical_claim
-            .as_ref()
-            .map(|plan| {
-                let mut decision = scheduler::SchedulerDecision::new(
-                    scheduler::SchedulerDecisionKind::StartModelTurn,
-                    "canonical_activation_admitted",
-                )
-                .message(&persisted_message)
-                .model_reentry(true)
-                .evidence(format!("canonical_activation={}", plan.activation_id));
-                if let Some(work_item_id) = plan.work_item_id.as_deref() {
-                    decision = decision.work_item_id(work_item_id);
-                }
-                decision
-            })
-            .unwrap_or(legacy_decision);
+        let effective_decision = if let Some(plan) = canonical_claim.as_ref() {
+            let mut decision = scheduler::SchedulerDecision::new(
+                scheduler::SchedulerDecisionKind::StartModelTurn,
+                "canonical_activation_admitted",
+            )
+            .message(&persisted_message)
+            .model_reentry(true)
+            .evidence(format!("canonical_activation={}", plan.activation_id));
+            if let Some(work_item_id) = plan.work_item_id.as_deref() {
+                decision = decision.work_item_id(work_item_id);
+            }
+            decision
+        } else if canonical_reduce_only {
+            scheduler::SchedulerDecision::new(
+                scheduler::SchedulerDecisionKind::ReduceMessageOnly,
+                "canonical_reducer_only",
+            )
+            .message(&persisted_message)
+            .model_reentry(false)
+        } else {
+            legacy_decision
+        };
         scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -852,6 +860,40 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         self.runtime
             .apply_transition_commit(transition_commit)
             .await;
+        if let Some((activation_id, work_item_id)) = canonical_claim.as_ref().and_then(|plan| {
+            plan.work_item_id
+                .as_ref()
+                .map(|work_item_id| (plan.activation_id.as_str(), work_item_id.as_str()))
+        }) {
+            let admitted = self
+                .runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .admit_unsettled(
+                    &message.agent_id,
+                    work_item_id,
+                    activation_id,
+                    self.runtime.now(),
+                )?;
+            if !admitted.is_empty() {
+                self.runtime
+                    .inner
+                    .storage
+                    .append_event(&AuditEvent::legacy(
+                        "task_result_settlements_admitted",
+                        serde_json::json!({
+                            "agent_id": message.agent_id,
+                            "work_item_id": work_item_id,
+                            "activation_id": activation_id,
+                            "result_identities": admitted
+                                .iter()
+                                .map(|record| record.result_identity.as_str())
+                                .collect::<Vec<_>>(),
+                        }),
+                    ))?;
+            }
+        }
 
         Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Message(
             ScheduledMessage {
@@ -1082,6 +1124,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 == scheduler::CanonicalActivationCandidate::UnboundTaskResultWaitOrReduce
             {
                 return Ok(CanonicalClaimOutcome::ReduceOnly);
+            }
+            if matches!(
+                original_candidate,
+                scheduler::CanonicalActivationCandidate::ExactTaskRejoin { .. }
+            ) && task.is_some_and(|task| {
+                crate::runtime::task_state_reducer::is_terminal_task_status(&task.status)
+                    && !task.terminal_reentry()
+            }) {
+                // A terminal result without independent re-entry authority is
+                // still durable input. Reduce it into the result settlement
+                // ledger without consuming an unrelated wait or opening a
+                // model turn. A later canonical activation for the same owner
+                // will bind and deliver the pending result.
+                return Ok(CanonicalClaimOutcome::ReduceOnlyWithoutModelReentry);
             }
             if stale_task_rejoin {
                 return Ok(CanonicalClaimOutcome::RejectQueued {

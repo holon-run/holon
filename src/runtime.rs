@@ -4545,6 +4545,33 @@ impl RuntimeHandle {
         }
         let prepared_completion = terminal_transition
             .and_then(|transition| transition.prepared_work_item_completion.as_ref());
+        let task_result_settlement = if terminal_transition
+            .is_some_and(|transition| !transition.terminal.kind.is_failure())
+        {
+            let guard = self.inner.agent.lock().await;
+            guard
+                .state
+                .current_execution_binding
+                .as_ref()
+                .and_then(|binding| {
+                    let activation_id = binding.activation_id.as_ref()?;
+                    match binding.admission_provenance.as_ref()? {
+                        crate::types::ExecutionAdmissionProvenance::Canonical {
+                            activation_id: admitted_activation_id,
+                            ..
+                        } if admitted_activation_id == activation_id => {
+                            Some(crate::runtime_db::task_result_settlement::TaskResultActivationSettlement {
+                                activation_id: activation_id.clone(),
+                                disposition: crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered,
+                                settled_at: self.now(),
+                            })
+                        }
+                        _ => None,
+                    }
+                })
+        } else {
+            None
+        };
         let mut execution_protocol = if let Some(prepared) = prepared_completion {
             execution_protocol_completion_transition_from_prepared(
                 &record,
@@ -4671,44 +4698,45 @@ impl RuntimeHandle {
                 let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
                     anyhow!("completion commit is missing tool execution evidence")
                 })?;
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_completion(
-                        &command,
-                        &execution_protocol,
-                        &crate::runtime_db::transitions::CompletionTransition {
-                            requires_execution_continuation: true,
-                            work_items: vec![
-                                crate::runtime_db::transitions::WorkItemMutation::Update {
-                                    record: prepared.record.clone(),
-                                    expected_revision: prepared.record.revision - 1,
-                                },
-                            ],
-                            wait_conditions: prepared.wait_conditions.clone(),
-                            continuations: prepared.continuations.clone(),
-                            tool_execution,
-                            index_changes: prepared.index_changes.clone(),
-                        },
-                    )
+                self.inner.runtime_db.transitions().commit_queue_terminal(
+                    &command,
+                    &execution_protocol,
+                    Some(&crate::runtime_db::transitions::CompletionTransition {
+                        requires_execution_continuation: true,
+                        work_items: vec![
+                            crate::runtime_db::transitions::WorkItemMutation::Update {
+                                record: prepared.record.clone(),
+                                expected_revision: prepared.record.revision - 1,
+                            },
+                        ],
+                        wait_conditions: prepared.wait_conditions.clone(),
+                        continuations: prepared.continuations.clone(),
+                        tool_execution,
+                        index_changes: prepared.index_changes.clone(),
+                    }),
+                    &[],
+                    task_result_settlement.as_ref(),
+                )
             } else if terminal_transition
                 .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
             {
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol_and_terminal_tool_executions(
-                        &command,
-                        &execution_protocol,
-                        &terminal_transition
-                            .expect("terminal tool executions require a terminal transition")
-                            .terminal_tool_executions,
-                    )
+                self.inner.runtime_db.transitions().commit_queue_terminal(
+                    &command,
+                    &execution_protocol,
+                    None,
+                    &terminal_transition
+                        .expect("terminal tool executions require a terminal transition")
+                        .terminal_tool_executions,
+                    task_result_settlement.as_ref(),
+                )
             } else {
-                self.inner
-                    .runtime_db
-                    .transitions()
-                    .commit_queue_with_execution_protocol(&command, &execution_protocol)
+                self.inner.runtime_db.transitions().commit_queue_terminal(
+                    &command,
+                    &execution_protocol,
+                    None,
+                    &[],
+                    task_result_settlement.as_ref(),
+                )
             };
             match commit {
                 Ok(commit) => {

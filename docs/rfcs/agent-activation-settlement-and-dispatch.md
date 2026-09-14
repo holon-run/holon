@@ -546,6 +546,24 @@ reducer-only; it must not create a lifecycle nudge or consume queue-head
 no-progress budget. A duplicate or historical result cannot resume the wait
 because its message identity does not match the resolved generation.
 
+For a WorkItem-owned terminal task result, durable acceptance and activation
+authority are separate decisions. The terminal task transition atomically
+records a result settlement keyed by the durable task fence and result message.
+If another task wait currently owns the WorkItem lane, the result is processed
+reducer-only: it does not resolve that wait, claim an activation, or get
+dropped. A later canonical activation for the same WorkItem may admit a bounded
+oldest-first batch of pending results into that activation's model context.
+Results beyond the batch remain pending for a later activation.
+
+An admitted result belongs to one open activation and cannot be reassigned
+while that activation remains open. Recovery may rebind an admission only after
+the prior activation is no longer open. Delivery settlement is part of the same
+transaction as queue and Turn terminal settlement; a failed terminal commit
+therefore leaves the result eligible for recovery instead of marking it
+delivered. Duplicate result messages do not recreate a settled obligation, and
+results whose WorkItem owner is missing or closed settle deterministically
+without authorizing re-entry.
+
 Canonical scheduler tables persist `owner_kind + owner_id` and retain
 row-local primary-key, unique, `NOT NULL`, `CHECK`, generation, and idempotency
 constraints. Cross-table lifecycle consistency is enforced by typed commands,

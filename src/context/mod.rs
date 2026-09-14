@@ -47,6 +47,8 @@ use crate::{
 const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
 const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
 const ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET: usize = 240;
+const PENDING_TASK_RESULTS_CONTEXT_LIMIT: usize =
+    crate::runtime_db::task_result_settlement::TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT;
 
 #[derive(Debug, Clone)]
 pub struct ContextConfig {
@@ -269,6 +271,7 @@ fn context_candidate_policy(id: &str, pinned: bool) -> ContextCandidatePolicy {
         "continuation_anchor" => (RetentionPriority::Critical, DropTier::Last, 160),
         "recent_turns" => (RetentionPriority::High, DropTier::Late, 170),
         "continuation_context" => (RetentionPriority::High, DropTier::Last, 180),
+        "pending_task_results" => (RetentionPriority::Critical, DropTier::Last, 185),
         "current_input" => (RetentionPriority::Critical, DropTier::Last, 190),
         _ => (RetentionPriority::Normal, DropTier::Normal, u16::MAX),
     };
@@ -659,6 +662,10 @@ pub fn build_context_with_default_external_ingress(
     let wake_hint_fallback = (!continuation_present)
         .then(|| render_wake_hint_context(current_message))
         .flatten();
+    if let Some(content) = render_pending_task_results(storage, agent, current_message)? {
+        let section = turn_section("pending_task_results", content);
+        candidates.push(context_candidate(section.clone(), Some(section), true));
+    }
     let current_input_full = render_current_input_section(
         current_message,
         config.prompt_budget_estimated_tokens,
@@ -1178,6 +1185,76 @@ fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
     }
 
     lines.join("\n")
+}
+
+fn render_pending_task_results(
+    storage: &AppStorage,
+    agent: &AgentState,
+    current_message: &MessageEnvelope,
+) -> Result<Option<String>> {
+    let Some(activation_id) = agent
+        .current_execution_binding
+        .as_ref()
+        .and_then(|binding| binding.activation_id.as_deref())
+    else {
+        return Ok(None);
+    };
+    let Some(runtime_db) = storage.runtime_db()? else {
+        return Ok(None);
+    };
+    let records = runtime_db
+        .task_result_settlements()
+        .admitted_for_activation(&agent.id, activation_id)?;
+    let pending = records
+        .iter()
+        .filter(|record| record.message_id != current_message.id)
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return Ok(None);
+    }
+
+    let mut lines = vec![format!(
+        "Previously received terminal task results admitted to this execution (bounded to {PENDING_TASK_RESULTS_CONTEXT_LIMIT}; each result identity appears once):"
+    )];
+    for record in pending.iter().take(PENDING_TASK_RESULTS_CONTEXT_LIMIT) {
+        lines.push(format!(
+            "- result_identity: {}",
+            sanitize_inline(&record.result_identity)
+        ));
+        lines.push(format!("  task_id: {}", sanitize_inline(&record.task_id)));
+        lines.push(format!(
+            "  task_status: {}",
+            sanitize_inline(&record.task_status)
+        ));
+        lines.push(format!(
+            "  work_item_id: {}",
+            sanitize_inline(&record.work_item_id)
+        ));
+        if let Some(message) = storage.read_message_by_id(&record.message_id)? {
+            lines.push(format!(
+                "  summary: {}",
+                sanitize_inline(&body_preview(&message.body))
+            ));
+            if let Some(output_ref) = message
+                .source_refs
+                .get("output_ref")
+                .or_else(|| message.source_refs.get("stdout_ref"))
+            {
+                lines.push(format!("  output_ref: {}", sanitize_inline(output_ref)));
+            }
+        }
+        lines.push(format!(
+            "  retrieval: use TaskOutput or TaskStatus with task_id={}",
+            sanitize_inline(&record.task_id)
+        ));
+    }
+    if pending.len() > PENDING_TASK_RESULTS_CONTEXT_LIMIT {
+        lines.push(format!(
+            "- omitted_results: {} (use task query tools for the full set)",
+            pending.len() - PENDING_TASK_RESULTS_CONTEXT_LIMIT
+        ));
+    }
+    Ok(Some(lines.join("\n")))
 }
 
 fn render_active_task_command(lines: &mut Vec<String>, command: &CommandTaskStatusSnapshot) {
@@ -7060,6 +7137,102 @@ mod tests {
             .sections
             .iter()
             .all(|section| section.name != "active_tasks"));
+    }
+
+    #[test]
+    fn pending_task_results_render_only_for_the_admitted_activation() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_test(dir.path()).unwrap();
+        let runtime_db = storage.runtime_db().unwrap().expect("runtime db");
+        let task = active_task(
+            "task-pending",
+            "default",
+            TaskStatus::Completed,
+            Some(json!({
+                "rejoin_obligation_id": "task-pending",
+                "rejoin_generation": 1,
+                "parent_turn_id": "turn-parent",
+            })),
+        );
+        let mut result = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: task.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "completed verification".into(),
+            },
+        );
+        result.id = "message-pending-result".into();
+        result.work_item_id = task.work_item_id.clone();
+        result
+            .source_refs
+            .insert("output_ref".into(), "task_output:pending".into());
+        storage.append_message(&result).unwrap();
+        runtime_db
+            .task_result_settlements()
+            .ensure_pending(&task, &result, chrono::Utc::now())
+            .unwrap()
+            .expect("pending settlement");
+        runtime_db
+            .task_result_settlements()
+            .admit_unsettled(
+                "default",
+                "work-current",
+                "activation-pending",
+                chrono::Utc::now(),
+            )
+            .unwrap();
+
+        let mut agent = AgentState::new("default");
+        agent.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-pending".into()),
+            admission_provenance: Some(crate::types::ExecutionAdmissionProvenance::Canonical {
+                scenario_class:
+                    crate::domain::scheduler::SchedulerScenarioClass::WorkItemAutonomousContinuation,
+                activation_id: "activation-pending".into(),
+            }),
+            source_message_id: "message-current".into(),
+            turn_id: "turn-current".into(),
+            owner: None,
+            work_item_id: Some("work-current".into()),
+            claimed_work_revision: Some(1),
+        });
+        let current_message = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue".into(),
+            },
+        );
+
+        let rendered = render_pending_task_results(&storage, &agent, &current_message)
+            .unwrap()
+            .expect("pending task result context");
+        assert!(rendered.contains("result_identity:"));
+        assert!(rendered.contains("task_id: task-pending"));
+        assert!(rendered.contains("summary: completed verification"));
+        assert!(rendered.contains("output_ref: task_output:pending"));
+
+        agent
+            .current_execution_binding
+            .as_mut()
+            .unwrap()
+            .activation_id = Some("activation-other".into());
+        assert!(
+            render_pending_task_results(&storage, &agent, &current_message)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

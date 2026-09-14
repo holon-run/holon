@@ -23,10 +23,11 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{ffi::ErrorCode, Connection, Transaction, TransactionBehavior};
 
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
+#[cfg(target_os = "linux")]
+use crate::runtime_db::RuntimeDbProtectionError;
 use crate::runtime_db::{
-    RuntimeDbProtectionError, RuntimeDbRetryableError, RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL,
-    RUNTIME_DB_BUSY_TIMEOUT, RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY,
-    RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
+    RuntimeDbRetryableError, RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL, RUNTIME_DB_BUSY_TIMEOUT,
+    RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY, RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
 };
 
 pub(crate) enum LockMode {
