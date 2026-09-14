@@ -235,6 +235,29 @@ pub struct ConversationActivityPage {
     pub has_more: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ConversationChange {
+    OperatorUpsert {
+        input: PendingInput,
+    },
+    OperatorRemove {
+        message_id: String,
+        revision: u64,
+    },
+    TurnSummaryUpsert {
+        turn: ConversationTurnSummary,
+    },
+    ActivityUpsert {
+        turn_id: String,
+        activity: ConversationActivity,
+    },
+    DetailInvalidated {
+        turn_id: String,
+        detail_revision: u64,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 pub struct TurnKey {
     pub turn_index: u64,
@@ -301,6 +324,7 @@ pub enum CursorDecodeError {
     Tampered,
     KindMismatch,
     BindingMismatch,
+    EventLogEpochMismatch,
     SchemaVersionMismatch { expected: u32, actual: u32 },
     QueryVersionMismatch { expected: u32, actual: u32 },
 }
@@ -432,9 +456,11 @@ fn validate_binding(
             actual: actual.query_version,
         });
     }
+    if actual.event_log_epoch != expected.event_log_epoch {
+        return Err(CursorDecodeError::EventLogEpochMismatch);
+    }
     if actual.runtime_id != expected.runtime_id
         || actual.agent_id != expected.agent_id
-        || actual.event_log_epoch != expected.event_log_epoch
         || actual.visibility_scope_id != expected.visibility_scope_id
     {
         return Err(CursorDecodeError::BindingMismatch);
@@ -563,10 +589,6 @@ mod tests {
                 ..binding()
             },
             CursorBinding {
-                event_log_epoch: "other".into(),
-                ..binding()
-            },
-            CursorBinding {
                 visibility_scope_id: "other".into(),
                 ..binding()
             },
@@ -576,6 +598,13 @@ mod tests {
                 Err(CursorDecodeError::BindingMismatch)
             );
         }
+
+        let mut other = binding();
+        other.event_log_epoch = "other".into();
+        assert_eq!(
+            codec.decode::<StreamCursor>(&encoded, &other),
+            Err(CursorDecodeError::EventLogEpochMismatch)
+        );
 
         let mut other = binding();
         other.schema_version += 1;

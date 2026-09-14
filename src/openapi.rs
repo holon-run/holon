@@ -11,10 +11,10 @@ use crate::{
         AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
         CompleteWorkItemRequest, ConversationActivityResponse, ConversationReadQuery,
-        ConversationSummaryResponse, CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest,
-        ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
-        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
-        SearchRequest, SearchResponse, UpdateWorkItemRequest,
+        ConversationStreamMessage, ConversationSummaryResponse, CreateTimerRequest,
+        DeleteAgentRequest, MemoryGetRequest, ModelConfigMigrationRequest, PickWorkItemRequest,
+        PickWorkItemResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+        RuntimeConfigUpdateResponse, SearchRequest, SearchResponse, UpdateWorkItemRequest,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -80,6 +80,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/agents/snapshot", "agentsSnapshot", "agents", "Agent roster snapshot", "Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentRosterSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/projection-snapshot", "agentProjectionSnapshot", "agents", "Agent projection snapshot", "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentProjectionSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
+    event_stream_route("get", "/agents/{agent_id}/conversation/stream", "agentConversationStream", "agents", "Conversation change stream", "Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/activities", "agentConversationActivities", "agents", "Conversation turn activity snapshot", "Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationActivityResponse", AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}", "getAgent", "agents", "Get agent", "Return the canonical public AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
@@ -467,6 +468,48 @@ fn operation(spec: &RouteSpec) -> Value {
             "schema": { "type": "string", "minLength": 1 }
         }));
     }
+    if spec.operation_id == "agentConversationStream" {
+        parameters.extend([
+            json!({
+                "name": "after",
+                "in": "query",
+                "required": false,
+                "description": "Opaque conversation checkpoint. Last-Event-ID takes precedence when both are supplied.",
+                "schema": { "type": "string", "minLength": 1 }
+            }),
+            json!({
+                "name": "limit",
+                "in": "query",
+                "required": false,
+                "description": "Maximum canonical ledger events recovered in one batch.",
+                "schema": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 256,
+                    "default": 256
+                }
+            }),
+            json!({
+                "name": "activity_limit",
+                "in": "query",
+                "required": false,
+                "description": "Maximum active-turn activity items recovered across one batch.",
+                "schema": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 64,
+                    "default": 64
+                }
+            }),
+            json!({
+                "name": "Last-Event-ID",
+                "in": "header",
+                "required": false,
+                "description": "Opaque conversation checkpoint from the last fully consumed checkpoint event.",
+                "schema": { "type": "string", "minLength": 1 }
+            }),
+        ]);
+    }
     let mut op = json!({
         "operationId": spec.operation_id,
         "tags": [spec.tag],
@@ -722,6 +765,10 @@ fn component_schemas() -> Value {
     schemas.insert(
         "ConversationActivityResponse".into(),
         component_schema::<ConversationActivityResponse>(),
+    );
+    schemas.insert(
+        "ConversationStreamMessage".into(),
+        component_schema::<ConversationStreamMessage>(),
     );
     schemas.insert("SlimTaskDto".into(), component_schema::<SlimTaskDto>());
     schemas.insert(
@@ -1302,6 +1349,25 @@ mod tests {
         assert!(operation_count >= 40, "expected baseline coverage");
         assert!(paths["/api/events/stream"]["get"].is_object());
         assert!(paths["/api/agents/{agent_id}/events/stream"]["get"].is_object());
+        let conversation_stream = &paths["/api/agents/{agent_id}/conversation/stream"]["get"];
+        assert!(conversation_stream["requestBody"].is_null());
+        let stream_parameters = conversation_stream["parameters"]
+            .as_array()
+            .expect("conversation stream parameters");
+        for (name, location) in [
+            ("agent_id", "path"),
+            ("after", "query"),
+            ("limit", "query"),
+            ("activity_limit", "query"),
+            ("Last-Event-ID", "header"),
+        ] {
+            assert!(
+                stream_parameters
+                    .iter()
+                    .any(|parameter| parameter["name"] == name && parameter["in"] == location),
+                "missing {location} parameter {name}"
+            );
+        }
         assert_eq!(
             paths["/api/agents/{agent_id}/events"]["get"]["responses"]["200"]["content"]
                 ["application/json"]["schema"]["$ref"],

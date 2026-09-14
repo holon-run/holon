@@ -190,6 +190,49 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/conversation/stream",
+    "handler": "stream",
+    "operation_id": "agentConversationStream",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "Last-Event-ID",
+        "location": "header",
+        "required": false
+      },
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "activity_limit",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "after",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "limit",
+        "location": "query",
+        "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json",
+      "text/event-stream"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/events",
     "handler": "events",
     "operation_id": "agentEvents",

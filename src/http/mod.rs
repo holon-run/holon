@@ -115,7 +115,8 @@ mod workspace_files;
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
 pub(crate) use conversation::{
-    ConversationActivityResponse, ConversationReadQuery, ConversationSummaryResponse,
+    ConversationActivityResponse, ConversationReadQuery, ConversationStreamMessage,
+    ConversationSummaryResponse,
 };
 pub(crate) use observer_sync::{
     advertised_observer_sync_capabilities, ObserverSyncCapabilityVerification,
@@ -402,6 +403,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{agent_id}/conversation",
             get(conversation::summary),
+        )
+        .route(
+            "/agents/{agent_id}/conversation/stream",
+            get(conversation::stream),
         )
         .route(
             "/agents/{agent_id}/turns/{turn_id}/activities",
