@@ -1476,18 +1476,24 @@ impl MemoryIndex {
 
     fn upsert_document(&self, document: &MemoryDocument) -> Result<()> {
         let _turn = self.write_turn("memory_index.upsert_document")?;
-        upsert_document_tx(&self.connection, document)?;
+        let transaction = self.connection.unchecked_transaction()?;
+        upsert_document_tx(&transaction, document)?;
         upsert_source_state_tx(
-            &self.connection,
+            &transaction,
             document,
             source_id_from_ref(&document.source_ref),
-        )
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
 
     fn delete_document(&self, agent_id: &str, source_ref: &str) -> Result<()> {
         let _turn = self.write_turn("memory_index.delete_document")?;
         let document_key = document_key_for(agent_id, source_ref);
-        delete_document_tx(&self.connection, &document_key)
+        let transaction = self.connection.unchecked_transaction()?;
+        delete_document_tx(&transaction, &document_key)?;
+        transaction.commit()?;
+        Ok(())
     }
 
     fn enqueue_source(
@@ -2280,19 +2286,12 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
     let metadata_json = serde_json::to_string(&document.metadata)?;
     let hash = projection_hash(document)?;
     let document_key = document_key(document);
-    let document_exists = connection
-        .query_row(
-            "SELECT 1 FROM memory_documents WHERE document_key = ?1",
-            [&document_key],
-            |_| Ok(()),
-        )
-        .optional()?
-        .is_some();
     let search_text = indexed_text(&bounded_search_text(&document.body));
     let source_path = document
         .source_path
         .as_ref()
         .map(|path| path.display().to_string());
+    delete_fts_document_tx(connection, &document_key)?;
     connection.execute(
         r#"
         INSERT INTO memory_documents (
@@ -2329,9 +2328,6 @@ fn upsert_document_tx(connection: &Connection, document: &MemoryDocument) -> Res
             document.updated_at.to_rfc3339(),
         ],
     )?;
-    if document_exists {
-        delete_fts_document_tx(connection, &document_key)?;
-    }
     connection.execute(
         "INSERT INTO memory_documents_fts(document_key, title, body, sanitized_excerpt) VALUES (?1, ?2, ?3, ?4)",
         params![
@@ -2368,17 +2364,54 @@ fn upsert_document_if_needed_tx(connection: &Connection, document: &MemoryDocume
             },
         )
         .optional()?;
-    let needs_projection_refresh = existing_state.as_ref().is_none_or(
+    let state_matches = existing_state.as_ref().is_some_and(
         |(existing_hash, schema_version, projection_version)| {
-            existing_hash != &hash
-                || *schema_version != MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION
-                || *projection_version != MEMORY_INDEX_DOCUMENT_PROJECTION_VERSION
+            existing_hash == &hash
+                && *schema_version == MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION
+                && *projection_version == MEMORY_INDEX_DOCUMENT_PROJECTION_VERSION
         },
     );
+    let needs_projection_refresh =
+        !state_matches || !document_projection_is_complete_tx(connection, &document_key, &hash)?;
     if needs_projection_refresh {
         upsert_document_tx(connection, document)?;
     }
     Ok(())
+}
+
+fn document_projection_is_complete_tx(
+    connection: &Connection,
+    document_key: &str,
+    expected_hash: &str,
+) -> Result<bool> {
+    let projected_hash = connection
+        .query_row(
+            "SELECT content_hash FROM memory_documents WHERE document_key = ?1",
+            [document_key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    if projected_hash.as_deref() != Some(expected_hash) {
+        return Ok(false);
+    }
+    let fts_rowid = connection
+        .query_row(
+            "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [document_key],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    let Some(fts_rowid) = fts_rowid else {
+        return Ok(false);
+    };
+    let mapped_document_key = connection
+        .query_row(
+            "SELECT document_key FROM memory_documents_fts WHERE rowid = ?1",
+            [fts_rowid],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    Ok(mapped_document_key.as_deref() == Some(document_key))
 }
 
 fn bounded_search_text(value: &str) -> String {
@@ -2465,6 +2498,15 @@ fn delete_document_tx(connection: &Connection, document_key: &str) -> Result<()>
 }
 
 fn delete_fts_document_tx(connection: &Connection, document_key: &str) -> Result<()> {
+    let projection_was_known = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1 FROM memory_documents WHERE document_key = ?1
+             UNION ALL
+             SELECT 1 FROM memory_index_source_state WHERE document_key = ?1
+         )",
+        [document_key],
+        |row| row.get::<_, bool>(0),
+    )?;
     let fts_rowid = connection
         .query_row(
             "SELECT fts_rowid FROM memory_documents_fts_rows WHERE document_key = ?1",
@@ -2472,13 +2514,31 @@ fn delete_fts_document_tx(connection: &Connection, document_key: &str) -> Result
             |row| row.get::<_, i64>(0),
         )
         .optional()?;
+    let mut removed_mapped_row = false;
     if let Some(fts_rowid) = fts_rowid {
-        connection.execute(
-            "DELETE FROM memory_documents_fts WHERE rowid = ?1",
-            [fts_rowid],
-        )?;
+        let mapped_document_key = connection
+            .query_row(
+                "SELECT document_key FROM memory_documents_fts WHERE rowid = ?1",
+                [fts_rowid],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if mapped_document_key.as_deref() == Some(document_key) {
+            removed_mapped_row = connection.execute(
+                "DELETE FROM memory_documents_fts WHERE rowid = ?1",
+                [fts_rowid],
+            )? > 0;
+        }
         connection.execute(
             "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
+            [document_key],
+        )?;
+    }
+    if projection_was_known && !removed_mapped_row {
+        // This path repairs a pre-existing incomplete projection. Healthy
+        // writes always have a rowid map and never scan the UNINDEXED key.
+        connection.execute(
+            "DELETE FROM memory_documents_fts WHERE document_key = ?1",
             [document_key],
         )?;
     }
@@ -4304,6 +4364,155 @@ mod tests {
         )?;
 
         assert_eq!(mapped_rowid, fts_rowid);
+        Ok(())
+    }
+
+    #[test]
+    fn direct_upsert_rolls_back_projection_when_source_state_write_fails() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        let document = MemoryDocument {
+            source_ref: "message:atomic-upsert".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "default".into(),
+            source_path: None,
+            title: "atomic title".into(),
+            body: "atomic body".into(),
+            sanitized_excerpt: "atomic excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now(),
+        };
+        index.connection.execute_batch(
+            "CREATE TEMP TRIGGER fail_source_state_upsert
+             BEFORE INSERT ON memory_index_source_state
+             BEGIN
+                 SELECT RAISE(ABORT, 'source state write failed');
+             END;",
+        )?;
+
+        assert!(index.upsert_document(&document).is_err());
+        let document_key = document_key(&document);
+        for table in [
+            "memory_documents",
+            "memory_documents_fts",
+            "memory_documents_fts_rows",
+            "memory_index_source_state",
+        ] {
+            let count: i64 = index.connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE document_key = ?1"),
+                [&document_key],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 0, "{table} must roll back with source state");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn direct_delete_rolls_back_projection_when_source_state_write_fails() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        let document = MemoryDocument {
+            source_ref: "message:atomic-delete".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "default".into(),
+            source_path: None,
+            title: "atomic title".into(),
+            body: "atomic body".into(),
+            sanitized_excerpt: "atomic excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now(),
+        };
+        index.upsert_document(&document)?;
+        index.connection.execute_batch(
+            "CREATE TEMP TRIGGER fail_source_state_delete
+             BEFORE DELETE ON memory_index_source_state
+             BEGIN
+                 SELECT RAISE(ABORT, 'source state delete failed');
+             END;",
+        )?;
+
+        assert!(index
+            .delete_document("default", "message:atomic-delete")
+            .is_err());
+        let document_key = document_key(&document);
+        for table in [
+            "memory_documents",
+            "memory_documents_fts",
+            "memory_documents_fts_rows",
+            "memory_index_source_state",
+        ] {
+            let count: i64 = index.connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE document_key = ?1"),
+                [&document_key],
+                |row| row.get(0),
+            )?;
+            assert_eq!(count, 1, "{table} must remain when delete rolls back");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rebuild_repairs_incomplete_projection_with_matching_source_state() -> Result<()> {
+        for missing_part in ["document", "row_map", "fts_row"] {
+            let directory = tempdir()?;
+            let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+            storage.write_agent(&AgentState::new("default"))?;
+            let brief = brief_with_workspace(
+                "default",
+                BriefKind::Result,
+                &format!("missing {missing_part} rebuild sentinel"),
+                "ws-holon",
+            );
+            let source_ref = format!("brief:{}", brief.id);
+            storage.append_brief(&brief)?;
+            rebuild_memory_index(&storage, Some("ws-holon"))?;
+
+            let index = MemoryIndex::open(&storage)?;
+            let document_key = document_key_for("default", &source_ref);
+            match missing_part {
+                "document" => index.connection.execute(
+                    "DELETE FROM memory_documents WHERE document_key = ?1",
+                    [&document_key],
+                )?,
+                "row_map" => index.connection.execute(
+                    "DELETE FROM memory_documents_fts_rows WHERE document_key = ?1",
+                    [&document_key],
+                )?,
+                "fts_row" => index.connection.execute(
+                    "DELETE FROM memory_documents_fts
+                     WHERE rowid = (
+                         SELECT fts_rowid FROM memory_documents_fts_rows
+                         WHERE document_key = ?1
+                     )",
+                    [&document_key],
+                )?,
+                _ => unreachable!(),
+            };
+            drop(index);
+
+            rebuild_memory_index(&storage, Some("ws-holon"))?;
+
+            let index = MemoryIndex::open(&storage)?;
+            for table in [
+                "memory_documents",
+                "memory_documents_fts",
+                "memory_documents_fts_rows",
+            ] {
+                let count: i64 = index.connection.query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE document_key = ?1"),
+                    [&document_key],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "{table} must recover a missing {missing_part}");
+            }
+        }
         Ok(())
     }
 

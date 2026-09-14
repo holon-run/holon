@@ -1574,8 +1574,8 @@ impl RuntimeHost {
                             rebuild_last_progress_at = ?status.rebuild_last_progress_at,
                             "daemon memory indexer: processed agent"
                         );
-                        if agent_did_work {
-                            tokio::time::sleep(Self::MEMORY_INDEXER_MIN_WORK_GAP).await;
+                        if agent_did_work && self.wait_daemon_indexer_work_gap().await {
+                            return;
                         }
                     }
                     Ok(Err(error)) => {
@@ -1704,6 +1704,13 @@ impl RuntimeHost {
     fn memory_indexer_should_request_rebuild(attempts_after: u32) -> bool {
         let threshold = Self::MEMORY_INDEXER_REBUILD_AFTER_FAILED_ATTEMPTS;
         attempts_after >= threshold && attempts_after.is_multiple_of(threshold)
+    }
+
+    async fn wait_daemon_indexer_work_gap(&self) -> bool {
+        tokio::select! {
+            _ = self.inner.daemon_indexer_token.cancelled() => true,
+            _ = tokio::time::sleep(Self::MEMORY_INDEXER_MIN_WORK_GAP) => false,
+        }
     }
 
     async fn wait_daemon_indexer_round(&self, next_retry_at: Option<tokio::time::Instant>) {
@@ -6527,6 +6534,21 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[tokio::test]
+    async fn daemon_indexer_work_gap_observes_cancellation() {
+        let (_home, host) = test_host();
+        host.inner.daemon_indexer_token.cancel();
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(50),
+            host.wait_daemon_indexer_work_gap(),
+        )
+        .await
+        .expect("cancelled work gap must return promptly");
+
+        assert!(cancelled);
     }
 
     async fn wait_for_config_reload(
