@@ -1393,20 +1393,18 @@ impl RuntimeHost {
         }
     }
 
-    const DAEMON_INDEXER_BATCH: usize = 500;
+    /// Keep background slices small enough to yield before the watchdog even
+    /// when source projection must scan a large runtime database.
+    const DAEMON_INDEXER_BATCH: usize = 50;
     const DAEMON_INDEXER_FALLBACK_POLL: Duration = Duration::from_secs(60);
     /// First retry delay for a failing memory-index agent before exponential
     /// growth.
     const MEMORY_INDEXER_RETRY_BASE: Duration = Duration::from_millis(500);
     /// Upper bound for a failing agent's retry delay.
     const MEMORY_INDEXER_RETRY_MAX: Duration = Duration::from_secs(30);
-    /// Minimum spacing between consecutive daemon indexer rounds that did
-    /// work. Discovery plus per-agent rebuilds are expensive: without a
-    /// floor, worked rounds re-enter immediately, keep worker cores busy,
-    /// and hold SQLite write locks long enough for producer-side enqueues
-    /// to fail with `database is locked`, which marks more indexes dirty
-    /// and grows the next round's work set (issue #2939).
-    const MEMORY_INDEXER_MIN_ROUND_GAP: Duration = Duration::from_millis(500);
+    /// Minimum spacing between daemon indexer slices that did work. A large
+    /// self-heal set must yield between agents, not only after the whole set.
+    const MEMORY_INDEXER_MIN_WORK_GAP: Duration = Duration::from_millis(500);
     /// A bounded slice should normally finish well below this threshold.
     /// Warn while the blocking task is still running so a slow source read or
     /// SQLite stall is observable instead of only being reported after return.
@@ -1559,13 +1557,14 @@ impl RuntimeHost {
                 match result {
                     Ok(Ok(status)) => {
                         agent_retry_not_before.remove(agent_id);
-                        did_work |= status.lag > 0
+                        let agent_did_work = status.lag > 0
                             || status.consumption_was_limited
                             || status.rebuild_phase.is_some()
                             // A successful rebuild consumes every pending source
                             // for the agent, so another immediate round is useful.
                             || (pending_source_agent_ids.contains(agent_id)
                                 && status.skipped_error_count == 0);
+                        did_work |= agent_did_work;
                         tracing::debug!(
                             agent_id = %agent_id,
                             freshness = %status.freshness,
@@ -1575,6 +1574,9 @@ impl RuntimeHost {
                             rebuild_last_progress_at = ?status.rebuild_last_progress_at,
                             "daemon memory indexer: processed agent"
                         );
+                        if agent_did_work && self.wait_daemon_indexer_work_gap().await {
+                            return;
+                        }
                     }
                     Ok(Err(error)) => {
                         let attempts = agent_retry_not_before
@@ -1611,13 +1613,7 @@ impl RuntimeHost {
                 }
             }
 
-            if did_work {
-                // Pace worked rounds (issue #2939): unpaced re-entry turned a
-                // large self-heal work set into continuous full rebuilds,
-                // starved producer enqueues of the SQLite write lock, and
-                // kept worker cores busy without ever settling the debt.
-                tokio::time::sleep(Self::MEMORY_INDEXER_MIN_ROUND_GAP).await;
-            } else {
+            if !did_work {
                 let next_retry_at = agent_retry_not_before
                     .values()
                     .map(|(not_before, _)| *not_before)
@@ -1708,6 +1704,13 @@ impl RuntimeHost {
     fn memory_indexer_should_request_rebuild(attempts_after: u32) -> bool {
         let threshold = Self::MEMORY_INDEXER_REBUILD_AFTER_FAILED_ATTEMPTS;
         attempts_after >= threshold && attempts_after.is_multiple_of(threshold)
+    }
+
+    async fn wait_daemon_indexer_work_gap(&self) -> bool {
+        tokio::select! {
+            _ = self.inner.daemon_indexer_token.cancelled() => true,
+            _ = tokio::time::sleep(Self::MEMORY_INDEXER_MIN_WORK_GAP) => false,
+        }
     }
 
     async fn wait_daemon_indexer_round(&self, next_retry_at: Option<tokio::time::Instant>) {
@@ -6531,6 +6534,21 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[tokio::test]
+    async fn daemon_indexer_work_gap_observes_cancellation() {
+        let (_home, host) = test_host();
+        host.inner.daemon_indexer_token.cancel();
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(50),
+            host.wait_daemon_indexer_work_gap(),
+        )
+        .await
+        .expect("cancelled work gap must return promptly");
+
+        assert!(cancelled);
     }
 
     async fn wait_for_config_reload(
