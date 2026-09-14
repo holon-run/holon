@@ -1,40 +1,45 @@
 ---
 title: Holon
-summary: Let agents keep working in your environment. Holon preserves progress and resumes work when there is something to act on.
+summary: Agents follow through without constant nudging. Holon is a local workbench for ongoing agent work. You set the goals and boundaries; agents save progress, wait for changes, and pick up where they left off.
 order: 1
 ---
 
-<div class="home-page">
+<div class="home-page home-page--en">
 <section class="home-hero">
 <div class="home-hero__copy">
 
-<p class="home-eyebrow">Local workbench for long-lived agents</p>
+<p class="home-eyebrow">From a single conversation to ongoing collaboration</p>
 
-# Let agents keep working.<br>Connect when you need to.
+# Agents follow through.<br>Without constant nudging.
 
-<p class="home-hero__lede">Give recurring reviews, investigations, and tests to agents with ongoing roles. Holon runs them in your repositories and toolchains, saves their progress, and resumes work when a commit, check result, or your approval arrives.</p>
+<p class="home-hero__lede">Give agents work that needs ongoing attention. You set the goals and boundaries; they follow through as agreed, act when things change, and ask for your judgment or approval when needed.</p>
 
 <div class="home-actions">
-<a class="home-button home-button--primary" href="#install">Install Holon</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon">View on GitHub ↗</a>
+<a class="home-button home-button--primary" href="#install">Get started</a>
+<a class="home-button home-button--quiet" href="#capabilities">See how it works ↓</a>
 </div>
 
-<p class="home-hero__note">A local-first runtime around agents—not another agent or a managed agent service.</p>
+<p class="home-hero__note">Holon, a local workbench for ongoing agent work.</p>
 
 </div>
-<div class="home-runtime" aria-label="Illustrated Holon runtime workflow">
-<div class="home-runtime__top"><span>Holon Runtime · workflow</span><span class="home-runtime__status">illustration</span></div>
-<div class="home-runtime__events"><span>operator input</span><span>task result</span><span>external event</span><span>timer</span></div>
-<div class="home-runtime-map">
-<div class="home-runtime-map__stage home-runtime-map__stage--core"><span class="home-runtime-map__label">LONG-LIVED AGENT</span><strong>Ongoing roles, lasting responsibility</strong><small>Review, investigate, test—with goals and progress saved for each piece of work.</small></div>
-<div class="home-runtime-map__connector" aria-hidden="true"><span>execute</span></div>
-<div class="home-runtime-map__pair">
-<div class="home-runtime-map__stage"><span class="home-runtime-map__label">WORKSPACE</span><strong>Repositories + tools</strong><small>Work happens in real project environments.</small></div>
-<div class="home-runtime-map__stage"><span class="home-runtime-map__label">CONTROL</span><strong>Trust + approval</strong><small>Boundaries remain explicit.</small></div>
+<div class="home-runtime" aria-label="You set the goals and boundaries. Agents work, save progress, wait for changes, and resume. They ask for your judgment or approval when needed and deliver results when the task is complete.">
+<div class="home-runtime__top"><span>You + agents · ongoing collaboration</span><span class="home-runtime__status">illustration</span></div>
+<div class="home-followup__entry"><strong>You set the goals and boundaries</strong><span>Agree on permissions · Define the outcome</span></div>
+<div class="home-followup">
+<div class="home-followup__cycle" role="group" aria-label="Clockwise cycle: do the work, save progress, wait for changes, resume work">
+<div class="home-followup__step home-followup__step--work"><strong>Do the work</strong><small>Real tools and workspaces</small></div>
+<span class="home-followup__arrow home-followup__arrow--top" aria-hidden="true">→</span>
+<div class="home-followup__step home-followup__step--record"><strong>Save progress</strong><small>State and next steps</small></div>
+<span class="home-followup__arrow home-followup__arrow--right" aria-hidden="true">↓</span>
+<div class="home-followup__center"><strong>Agents follow through</strong><span>Continue the same work</span></div>
+<div class="home-followup__step home-followup__step--wait"><strong>Wait for changes</strong><small>Results or agreed conditions</small></div>
+<span class="home-followup__arrow home-followup__arrow--bottom" aria-hidden="true">←</span>
+<div class="home-followup__step home-followup__step--resume"><strong>Resume work</strong><small>When conditions are met</small></div>
+<span class="home-followup__arrow home-followup__arrow--left" aria-hidden="true">↑</span>
 </div>
-<div class="home-runtime-map__connector" aria-hidden="true"><span>wait · wake · resume</span></div>
-<div class="home-runtime-map__stage home-runtime-map__stage--output"><span class="home-runtime-map__label">DELIVERY</span><strong>Operator-facing brief</strong><small>Results stay separate from execution traces.</small></div>
+<aside class="home-followup__human"><span aria-hidden="true">⇄</span><strong>You step in</strong><p>For decisions<br>or approval</p><small>Then work<br>continues</small></aside>
 </div>
+<p class="home-followup__note">Pause while waiting. Resume when things change.<br><span>Deliver results when the task is complete.</span></p>
 </div>
 </section>
 
@@ -42,7 +47,7 @@ order: 1
 <div class="home-section__intro">
 <p class="home-kicker">How Holon works</p>
 
-## One operating model, supported by three runtime capabilities.
+## One core work model, supported by three runtime capabilities.
 
 Organize work around explicit goals and progress. Long-lived agents carry it forward, resume when waiting conditions are met, and delegate tasks when work needs to be split.
 
@@ -51,8 +56,8 @@ Organize work around explicit goals and progress. Long-lived agents carry it for
 <article class="home-capability-main">
 <div class="home-capability-main__heading"><span>01</span><small>WorkItem</small></div>
 <h3>Give goals, progress, and waits a place to belong.</h3>
-<p>In Holon, a WorkItem holds an ongoing objective, its plan, progress, waiting conditions, and completion brief. After a pause, the agent continues the same WorkItem instead of reconstructing the work from chat history.</p>
-<div class="home-state-sequence" aria-label="WorkItem lifecycle"><span>event</span><i>→</i><span>WorkItem</span><i>→</i><span>wait</span><i>→</i><span>wake</span><i>→</i><span>brief</span></div>
+<p>Work that needs ongoing attention should not live only in chat history. A WorkItem preserves its goal, plan, progress, and waiting conditions. After a pause, the agent can pick up the same work where it left off.</p>
+<div class="home-state-sequence" aria-label="Ongoing collaboration"><span>Set a goal</span><i>→</i><span>Save progress</span><i>→</i><span>Wait</span><i>→</i><span>Resume</span><i>→</i><span>Deliver</span></div>
 <footer>WorkItem · objective · plan · progress · waits · completion brief</footer>
 </article>
 <div class="home-capability-support">
@@ -65,27 +70,27 @@ Organize work around explicit goals and progress. Long-lived agents carry it for
 
 <section class="home-section home-product">
 <div class="home-section__intro home-section__intro--narrow">
-<p class="home-kicker">One runtime · multiple interfaces</p>
+<p class="home-kicker">The workbench behind ongoing collaboration</p>
 
-## Close the interface. Keep the work in place.
+## No need to watch the chat. Your work has a home.
 
-In daemon mode, Holon Runtime holds agents, work items, and waiting state. TUI and Web UI connect to the same runtime; closing an interface does not stop the background service.
+Holon is not another agent. It is a local runtime that lets agents keep working. Running as a background service, it saves work state and manages waits and wakeups. Return through the TUI or Web UI to check progress, add information, or change direction.
 
 </div>
 <picture class="home-architecture">
 <source media="(max-width: 1100px)" srcset="/assets/runtime-architecture-en-narrow.png" width="480" height="550">
 <img src="/assets/runtime-architecture-en.png" width="1200" height="350" alt="TUI and Web UI connect to one persistent Holon service; Mobile has a dashed outline and connection. Holon supports ongoing work, saved state and event wakeups, managing agents and work items with workspaces, files and toolchains on its host." loading="lazy" decoding="async">
 </picture>
-<p class="home-product__caption">Execution requires the daemon and host to stay running. The machine boundary shows where work runs, not additional permission isolation.</p>
+<p class="home-product__caption">Execution requires the daemon and host to stay running. The machine boundary indicates where work runs; it does not provide additional permission isolation.</p>
 </section>
 
 <section class="home-section home-proof">
 <div class="home-proof__intro">
-<p class="home-kicker">From the blog</p>
+<p class="home-kicker">Featured articles</p>
 
-## Meet Holon. Then see how the work continues.
+## From understanding Holon to putting it to work.
 
-Start with the product and its WorkItem design, set up continuous PR review, then see how shared agents fit into a small team's day-to-day work.
+Explore the design, set up continuous PR review, and see how people and agents work together.
 
 </div>
 <a class="home-reading-all" href="/blog/">View all articles →</a>
@@ -93,15 +98,15 @@ Start with the product and its WorkItem design, set up continuous PR review, the
 <a class="home-reading-card" href="/blog/what-is-holon">
 <img class="home-reading-card__cover" src="/assets/holon-agent-workspace-cover.webp" width="1672" height="941" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">01 · PRODUCT</span>
-<h3>Let agents keep working in your environment</h3>
-<p>Give agents ongoing roles and connect when you need to. Meet the local workbench, from your own machine to remote development and team use.</p>
+<h3>Let multiple agents keep working in your environment</h3>
+<p>Move from asking AI for help each time to giving agents ongoing roles. Meet the local workbench that supports this way of working.</p>
 <span class="home-reading-card__cta">Meet Holon →</span>
 </a>
 <a class="home-reading-card" href="/blog/why-work-items">
 <img class="home-reading-card__cover" src="/assets/workitem-abstract-flow-cover.webp" width="1536" height="768" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">02 · DESIGN</span>
-<h3>WorkItems: work state beyond the conversation</h3>
-<p>From an API migration to two PRs moving in parallel, see how goals, progress, and waiting conditions survive across turns.</p>
+<h3>WorkItem: separate work state from the conversation</h3>
+<p>From an API migration to alternating between two PRs, see how goals, progress, and waiting conditions survive across turns.</p>
 <span class="home-reading-card__cta">Explore the design →</span>
 </a>
 <a class="home-reading-card" href="/blog/one-pr-one-work-item">
@@ -114,8 +119,8 @@ Start with the product and its WorkItem design, set up continuous PR review, the
 <a class="home-reading-card" href="/blog/agents-in-a-small-team">
 <img class="home-reading-card__cover" src="/assets/team-shared-agents-cover.webp" width="1536" height="1024" alt="" loading="lazy" decoding="async">
 <span class="home-reading-card__category">04 · TEAM</span>
-<h3>From personal AI tools to shared team agents</h3>
-<p>Device investigations and hands-on testing show how shared agents join a team's workflow and pick up where people leave off.</p>
+<h3>Everyone has AI. How does the team work together?</h3>
+<p>From device failures to testing silent piano keys, see how shared agents fit into a team's workflow and follow up on people's test results.</p>
 <span class="home-reading-card__cta">Read the team story →</span>
 </a>
 </div>
@@ -124,16 +129,16 @@ Start with the product and its WorkItem design, set up continuous PR review, the
 <section class="home-section home-start-section" id="install">
 <div class="home-start">
 <div class="home-start__copy">
-<p class="home-kicker">Local-first by design</p>
+<p class="home-kicker">Start locally</p>
 
-## Start with one useful responsibility.
+## Get ready for your first ongoing task.
 
 Install Holon, configure a model provider, and start the daemon. Open the local Web interface at `http://localhost:7878` or use `holon tui`.
 
 <p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.40.0">v0.40.0</a></p>
 
 <div class="home-actions">
-<a class="home-button home-button--primary" href="/getting-started/">Setup guide</a>
+<a class="home-button home-button--primary" href="/getting-started/">Full setup guide</a>
 <a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases">Download binaries ↗</a>
 </div>
 
@@ -152,14 +157,14 @@ holon daemon start
 <div>
 <p class="home-kicker">Continue from here</p>
 
-## Give project work a durable home.
+## Start with one task you don't want to keep checking on.
 
-Start locally, keep the first workflow bounded, and let Holon preserve the work when the chat or terminal ends.
+Set a clear goal. Agree on how to follow up, what to deliver, and when you need to be involved. Spend less time checking and prompting, and more time on what matters to you.
 
 </div>
 <div class="home-final__actions">
 <a class="home-button" href="/getting-started/first-agent">Create your first agent</a>
-<a href="/blog/">Read the field notes →</a>
+<a href="/blog/">Read the practical guides →</a>
 </div>
 </section>
 </div>
