@@ -11,6 +11,7 @@ on:
       - "Dockerfile"
       - "src/**"
       - "tests/**"
+      - "packages/conversation-sdk/**"
       - "agent_templates/**"
       - "builtin_templates/**"
       - "docs/website/reference/openapi.json"
@@ -40,6 +41,7 @@ on:
       - "Dockerfile"
       - "src/**"
       - "tests/**"
+      - "packages/conversation-sdk/**"
       - "agent_templates/**"
       - "builtin_templates/**"
       - "docs/website/reference/openapi.json"
@@ -104,6 +106,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'src/**'
               - 'tests/**'
+              - 'packages/conversation-sdk/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
@@ -262,6 +265,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: packages/conversation-sdk/package-lock.json
+
+      - name: Test conversation SDK protocol
+        run: make conversation-sdk-ci
 
       - name: Check formatting
         run: make fmt-check
