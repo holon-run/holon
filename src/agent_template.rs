@@ -3497,6 +3497,7 @@ mod tests {
             "code-reviewer",
             "office-assistant",
             "server-ops",
+            "video-producer",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3588,6 +3589,28 @@ mod tests {
                 "{skill_id} should be available as a checked-in office skill"
             );
         }
+
+        let video_template = syncable.join("video-producer");
+        assert_eq!(
+            local_template_skills(&video_template),
+            vec![
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/video-production",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+                "remotion-dev/skills/skills/remotion-best-practices",
+            ]
+        );
+        let video_agents_md =
+            fs::read_to_string(video_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(video_agents_md.contains("versioned `video-production.yaml` manifest"));
+        assert!(video_agents_md.contains("OpenMontage is an optional external backend"));
+        assert!(video_agents_md.contains("does not authorize"));
+        assert!(video_agents_md.contains("A successful render is not proof"));
+        assert!(video_agents_md.contains("Read `video-production`"));
+        assert!(video_agents_md.contains("`remotion-best-practices`"));
+        assert!(video_agents_md.contains("does not bundle upstream skill files"));
+        assert!(video_agents_md.contains("Before first Remotion use"));
     }
 
     #[test]

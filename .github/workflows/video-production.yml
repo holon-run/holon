@@ -1,0 +1,19 @@
+name: Video production skill
+on:
+  pull_request:
+    paths: ['skills/video-production/**', '.github/workflows/video-production.yml']
+  push:
+    branches: [main]
+    paths: ['skills/video-production/**', '.github/workflows/video-production.yml']
+permissions:
+  contents: read
+jobs:
+  local-media:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python3 -m unittest discover -s skills/video-production/tests -v

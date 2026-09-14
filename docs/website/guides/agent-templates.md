@@ -19,10 +19,35 @@ Common scenarios:
 
 - **Creating a synced reviewer agent** — `holon agent create reviewer --template code-reviewer`
 - **Working with office documents** — `holon agent create office --template office-assistant`
+- **Producing video deliverables** — `holon agent create video --template video-producer`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
 - **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
 - **One-shot tasks with a role** — `holon run --template software-developer "Fix the null check in handler.rs"`
 - **Solving GitHub issues** — `holon solve https://github.com/owner/repo/issues/42`
+
+## Video Production
+
+`video-producer` turns approved scripts, shot lists, and supplied media into
+reviewable video deliverables. It pre-installs the first-party
+`video-production` skill and references the official
+`remotion-dev/skills/skills/remotion-best-practices` skill for installation
+directly from upstream, alongside `sview`, `uxc`, and `agentinbox`.
+
+- **Local assembly and QC:** the first-party skill uses Python and system
+  FFmpeg/ffprobe for existing images, clips, audio, and subtitles. Check these
+  dependencies and required codecs before rendering; they are not installed
+  by the template.
+- **Programmatic compositions:** use the official Remotion skill for React-based
+  video. Remotion, Node, and rendering dependencies belong in the user's
+  environment; the template bundles neither Remotion nor upstream skill files.
+  Before first use, check the license applicable to the installed version with
+  the operator. Direct installation does not waive usage or paid-license terms.
+- **Explicit boundaries:** original video generation and TTS require separately
+  configured backends. OpenMontage is optional and external. Publishing,
+  purchasing, and rights-sensitive operations require separate authorization.
+
+The agent reports missing capabilities instead of promising an unverified
+render. Start with supplied assets for the no-cloud production path.
 
 ## Template Naming
 

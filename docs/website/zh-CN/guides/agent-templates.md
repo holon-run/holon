@@ -18,10 +18,28 @@ Agent 会以一个通用的默认契约启动。
 
 - **创建可同步的评审 Agent** — `holon agent create reviewer --template code-reviewer`
 - **处理办公文档** — `holon agent create office --template office-assistant`
+- **制作视频成片** — `holon agent create video --template video-producer`
 - **运维服务器和服务** — `holon agent create ops --template server-ops`
 - **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
 - **带角色的一次性任务** — `holon run --template software-developer "Fix the null check in handler.rs"`
 - **解决 GitHub issue** — `holon solve https://github.com/owner/repo/issues/42`
+
+## 视频制作
+
+`video-producer` 将已批准的脚本、镜头清单和已有媒体制作成可审阅的视频交付物。
+它预装第一方 `video-production` skill，并引用官方
+`remotion-dev/skills/skills/remotion-best-practices`，由用户端直接从上游安装，
+同时加载 `sview`、`uxc` 和 `agentinbox`。
+
+- **本地合成与质检**：第一方 skill 使用 Python 和系统 FFmpeg/ffprobe 处理已有
+  图片、视频、音频和字幕。渲染前检查依赖及所需编解码器；模板不会安装这些系统依赖。
+- **程序化合成**：官方 Remotion skill 用于 React 视频制作。Remotion、Node 及
+  渲染依赖安装在用户环境；模板不打包 Remotion 或上游 skill 文件。首次使用前，
+  与操作者核验所安装版本的适用许可证；自行安装不免除使用条件或付费许可要求。
+- **明确边界**：原创镜头生成和 TTS 需要另行配置后端；OpenMontage 是外部可选
+  后端。发布、购买及涉及权利的操作需要单独授权。
+
+Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无云制作流程从已有素材开始。
 
 ## 模板命名
 
