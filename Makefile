@@ -37,8 +37,11 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
 
 conversation-sdk-ci: ## Test the TypeScript conversation SDK against the real Rust HTTP/SSE server
-	@bash -c 'set -e; cd $(CONVERSATION_SDK_DIR) && \
-		if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
+	@bash -c 'set -e; \
+		if ! node -e '\''process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)'\''; then \
+			. "$$HOME/.nvm/nvm.sh" && nvm use; \
+		fi; \
+		cd $(CONVERSATION_SDK_DIR) && \
 		npm_config_engine_strict=true npm ci && npm test && \
 		cd ../.. && cargo test --test conversation_sdk_e2e typescript_sdk_runs_against_real_conversation_server -- --ignored'
 
