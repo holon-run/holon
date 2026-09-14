@@ -89,7 +89,6 @@ impl MemoryIndexWriteCoordinator {
             let remaining = timeout.saturating_sub(wait_started_at.elapsed());
             if remaining.is_zero() {
                 state.cancelled_tickets.insert(ticket);
-                advance_serving_ticket(&mut state);
                 self.available.notify_all();
                 tracing::warn!(
                     db_role = "index",
@@ -372,11 +371,27 @@ mod tests {
             sender.send(())?;
             Ok(())
         });
+        for _ in 0..100 {
+            if coordinator
+                .state
+                .lock()
+                .map_err(|_| anyhow!("memory index write coordinator mutex poisoned"))?
+                .next_ticket
+                >= 3
+            {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
 
         let timeout_error = timed_out_handle
             .join()
             .expect("timed out writer thread panicked");
         assert!(timeout_error.to_string().contains("timed out"));
+        assert!(
+            receiver.recv_timeout(Duration::from_millis(100)).is_err(),
+            "successor writer acquired while the first turn was still active"
+        );
         drop(first_turn);
 
         receiver.recv_timeout(Duration::from_secs(1))?;
