@@ -1099,7 +1099,8 @@ impl MemoryIndex {
                 reason TEXT,
                 enqueued_at TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT
+                last_error TEXT,
+                revision INTEGER NOT NULL DEFAULT 1
             );
             CREATE TABLE IF NOT EXISTS memory_index_source_state (
                 document_key TEXT PRIMARY KEY,
@@ -1175,6 +1176,12 @@ impl MemoryIndex {
             self.connection.execute_batch(
                 "ALTER TABLE memory_index_source_state
                  ADD COLUMN projection_version INTEGER NOT NULL DEFAULT 0;",
+            )?;
+        }
+        if !self.table_has_column("memory_index_pending_sources", "revision")? {
+            self.connection.execute_batch(
+                "ALTER TABLE memory_index_pending_sources
+                 ADD COLUMN revision INTEGER NOT NULL DEFAULT 1;",
             )?;
         }
         Ok(())
@@ -1262,20 +1269,23 @@ impl MemoryIndex {
         let generation = Uuid::new_v4().simple().to_string();
         let now = Utc::now();
         let _turn = self.write_turn("memory_index.start_rebuild")?;
-        self.connection.execute(
-            "INSERT INTO memory_index_rebuild_jobs (
-                agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
-                runtime_high_watermark, documents_processed, started_at, last_progress_at
-             ) VALUES (?1, ?2, ?3, 0, '', 0, ?4, 0, ?5, ?5)
-             ON CONFLICT(agent_id) DO NOTHING",
-            params![
-                agent_id,
-                generation,
-                MEMORY_INDEX_REBUILD_PHASE_SCAN,
-                runtime_high_watermark,
-                now.to_rfc3339(),
-            ],
-        )?;
+        self.run_immediate_transaction("memory_index.start_rebuild", |transaction| {
+            transaction.execute(
+                "INSERT INTO memory_index_rebuild_jobs (
+                    agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
+                    runtime_high_watermark, documents_processed, started_at, last_progress_at
+                 ) VALUES (?1, ?2, ?3, 0, '', 0, ?4, 0, ?5, ?5)
+                 ON CONFLICT(agent_id) DO NOTHING",
+                params![
+                    agent_id,
+                    generation,
+                    MEMORY_INDEX_REBUILD_PHASE_SCAN,
+                    runtime_high_watermark,
+                    now.to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })?;
         tracing::info!(
             agent_id = %agent_id,
             generation = %generation,
@@ -1331,19 +1341,22 @@ impl MemoryIndex {
                 MEMORY_INDEX_REBUILD_PHASE_SCAN
             };
             let _turn = self.write_turn("memory_index.advance_rebuild_cursor")?;
-            self.connection.execute(
-                "UPDATE memory_index_rebuild_jobs
-                 SET phase = ?1, source_kind_index = ?2, source_cursor = '',
-                     source_offset = 0, last_progress_at = ?3
-                 WHERE agent_id = ?4 AND generation = ?5",
-                params![
-                    phase,
-                    i64::try_from(next_index).unwrap_or(i64::MAX),
-                    Utc::now().to_rfc3339(),
-                    job.agent_id,
-                    job.generation,
-                ],
-            )?;
+            self.run_immediate_transaction("memory_index.advance_rebuild_cursor", |transaction| {
+                transaction.execute(
+                    "UPDATE memory_index_rebuild_jobs
+                         SET phase = ?1, source_kind_index = ?2, source_cursor = '',
+                             source_offset = 0, last_progress_at = ?3
+                         WHERE agent_id = ?4 AND generation = ?5",
+                    params![
+                        phase,
+                        i64::try_from(next_index).unwrap_or(i64::MAX),
+                        Utc::now().to_rfc3339(),
+                        job.agent_id,
+                        job.generation,
+                    ],
+                )?;
+                Ok(())
+            })?;
             return Ok(0);
         }
 
@@ -1557,12 +1570,15 @@ impl MemoryIndex {
 
     fn update_rebuild_phase(&self, job: &RebuildJob, phase: &str) -> Result<()> {
         let _turn = self.write_turn("memory_index.update_rebuild_phase")?;
-        self.connection.execute(
-            "UPDATE memory_index_rebuild_jobs
-             SET phase = ?1, last_progress_at = ?2
-             WHERE agent_id = ?3 AND generation = ?4",
-            params![phase, Utc::now().to_rfc3339(), job.agent_id, job.generation],
-        )?;
+        self.run_immediate_transaction("memory_index.update_rebuild_phase", |transaction| {
+            transaction.execute(
+                "UPDATE memory_index_rebuild_jobs
+                 SET phase = ?1, last_progress_at = ?2
+                 WHERE agent_id = ?3 AND generation = ?4",
+                params![phase, Utc::now().to_rfc3339(), job.agent_id, job.generation],
+            )?;
+            Ok(())
+        })?;
         tracing::info!(
             agent_id = %job.agent_id,
             generation = %job.generation,
@@ -1635,35 +1651,38 @@ impl MemoryIndex {
     ) -> Result<()> {
         let _turn = self.write_turn("memory_index.enqueue_source")?;
         let document_key = document_key_for(agent_id, source_ref);
-        self.connection.execute(
-            r#"
-            INSERT INTO memory_index_pending_sources (
-                document_key, source_ref, agent_id, source_kind, source_id, operation,
-                source_updated_at, reason, enqueued_at, attempts, last_error
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)
-            ON CONFLICT(document_key) DO UPDATE SET
-                source_ref=excluded.source_ref,
-                agent_id=excluded.agent_id,
-                source_kind=excluded.source_kind,
-                source_id=excluded.source_id,
-                operation=excluded.operation,
-                source_updated_at=excluded.source_updated_at,
-                reason=excluded.reason,
-                enqueued_at=excluded.enqueued_at
-            "#,
-            params![
-                document_key,
-                source_ref,
-                agent_id,
-                source_kind,
-                source_id,
-                operation,
-                source_updated_at.map(|dt| dt.to_rfc3339()),
-                reason,
-                Utc::now().to_rfc3339(),
-            ],
-        )?;
-        Ok(())
+        self.run_immediate_transaction("memory_index.enqueue_source", |transaction| {
+            transaction.execute(
+                r#"
+                INSERT INTO memory_index_pending_sources (
+                    document_key, source_ref, agent_id, source_kind, source_id, operation,
+                    source_updated_at, reason, enqueued_at, attempts, last_error
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, NULL)
+                ON CONFLICT(document_key) DO UPDATE SET
+                    source_ref=excluded.source_ref,
+                    agent_id=excluded.agent_id,
+                    source_kind=excluded.source_kind,
+                    source_id=excluded.source_id,
+                    operation=excluded.operation,
+                    source_updated_at=excluded.source_updated_at,
+                    reason=excluded.reason,
+                    enqueued_at=excluded.enqueued_at,
+                    revision=memory_index_pending_sources.revision + 1
+                "#,
+                params![
+                    document_key,
+                    source_ref,
+                    agent_id,
+                    source_kind,
+                    source_id,
+                    operation,
+                    source_updated_at.map(|dt| dt.to_rfc3339()),
+                    reason,
+                    Utc::now().to_rfc3339(),
+                ],
+            )?;
+            Ok(())
+        })
     }
 
     fn enqueue_rebuild_intent(
@@ -1693,40 +1712,67 @@ impl MemoryIndex {
     fn consume_pending_sources(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
         let agent_id = storage_agent_id(storage);
         let pending = self.pending_sources_for_agent_with_limit(&agent_id, limit)?;
-        for source in pending {
+        for pending_source in pending {
+            let source = &pending_source.source;
             if source.source_kind == MEMORY_INDEX_REBUILD_SOURCE_KIND {
                 continue;
             }
             let prepared = prepare_pending_source(storage, &source);
-            let _turn = self.write_turn("memory_index.consume_pending_source")?;
-            self.run_immediate_transaction("memory_index.consume_pending_source", |transaction| {
-                let result = prepared
-                    .as_ref()
-                    .map_err(|error| anyhow::anyhow!(error.to_string()))
-                    .and_then(|prepared| {
-                        apply_prepared_pending_source_tx(transaction, &source, prepared)
-                    });
-                match result {
-                    Ok(()) => {
-                        transaction.execute(
-                            "DELETE FROM memory_index_pending_sources WHERE document_key = ?1",
-                            [&source.document_key],
-                        )?;
-                    }
-                    Err(error) if is_retryable_memory_index_error(&error) => return Err(error),
-                    Err(error) => {
-                        transaction.execute(
-                            "UPDATE memory_index_pending_sources
-                                 SET attempts = attempts + 1, last_error = ?2
-                                 WHERE document_key = ?1",
-                            params![source.document_key, error.to_string()],
-                        )?;
-                    }
-                }
-                Ok(())
-            })?;
+            self.consume_pending_source_snapshot(&pending_source, &prepared)?;
         }
         Ok(())
+    }
+
+    fn consume_pending_source_snapshot(
+        &self,
+        pending_source: &PendingSourceSnapshot,
+        prepared: &Result<PreparedPendingSource>,
+    ) -> Result<()> {
+        let _turn = self.write_turn("memory_index.consume_pending_source")?;
+        self.run_immediate_transaction("memory_index.consume_pending_source", |transaction| {
+            let source = &pending_source.source;
+            let current_revision = transaction
+                .query_row(
+                    "SELECT revision FROM memory_index_pending_sources
+                     WHERE document_key = ?1",
+                    [&source.document_key],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?;
+            if current_revision != Some(pending_source.revision) {
+                return Ok(());
+            }
+
+            let result = prepared
+                .as_ref()
+                .map_err(|error| anyhow::anyhow!(error.to_string()))
+                .and_then(|prepared| {
+                    apply_prepared_pending_source_tx(transaction, source, prepared)
+                });
+            match result {
+                Ok(()) => {
+                    transaction.execute(
+                        "DELETE FROM memory_index_pending_sources
+                         WHERE document_key = ?1 AND revision = ?2",
+                        params![source.document_key, pending_source.revision],
+                    )?;
+                }
+                Err(error) if is_retryable_memory_index_error(&error) => return Err(error),
+                Err(error) => {
+                    transaction.execute(
+                        "UPDATE memory_index_pending_sources
+                         SET attempts = attempts + 1, last_error = ?3
+                         WHERE document_key = ?1 AND revision = ?2",
+                        params![
+                            source.document_key,
+                            pending_source.revision,
+                            error.to_string()
+                        ],
+                    )?;
+                }
+            }
+            Ok(())
+        })
     }
 
     fn consume_stale_source_states(&mut self, storage: &AppStorage, limit: usize) -> Result<()> {
@@ -1767,9 +1813,12 @@ impl MemoryIndex {
         }
         if !self.has_stale_source_states_for_agent(&agent_id)? {
             let _turn = self.write_turn("memory_index.refresh_stale_meta")?;
-            if !self.has_stale_source_states_for_agent(&agent_id)? {
-                upsert_index_meta_tx(&self.connection, &agent_id, None)?;
-            }
+            self.run_immediate_transaction("memory_index.refresh_stale_meta", |transaction| {
+                if !has_stale_source_states_for_agent_tx(transaction, &agent_id)? {
+                    upsert_index_meta_tx(transaction, &agent_id, None)?;
+                }
+                Ok(())
+            })?;
         }
         Ok(())
     }
@@ -2027,15 +2076,16 @@ impl MemoryIndex {
     #[cfg(test)]
     fn pending_sources_for_agent(&self, agent_id: &str) -> Result<Vec<PendingSource>> {
         self.pending_sources_for_agent_with_limit(agent_id, usize::MAX)
+            .map(|sources| sources.into_iter().map(|source| source.source).collect())
     }
 
     fn pending_sources_for_agent_with_limit(
         &self,
         agent_id: &str,
         limit: usize,
-    ) -> Result<Vec<PendingSource>> {
+    ) -> Result<Vec<PendingSourceSnapshot>> {
         let mut statement = self.connection.prepare(
-            "SELECT document_key, source_ref, agent_id, source_kind, source_id, operation
+            "SELECT document_key, source_ref, agent_id, source_kind, source_id, operation, revision
              FROM memory_index_pending_sources
              WHERE agent_id = ?1
              ORDER BY enqueued_at ASC, document_key ASC
@@ -2043,12 +2093,15 @@ impl MemoryIndex {
         )?;
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = statement.query_map(params![agent_id, limit], |row| {
-            Ok(PendingSource {
-                document_key: row.get(0)?,
-                source_ref: row.get(1)?,
-                source_kind: row.get(3)?,
-                source_id: row.get(4)?,
-                operation: row.get(5)?,
+            Ok(PendingSourceSnapshot {
+                source: PendingSource {
+                    document_key: row.get(0)?,
+                    source_ref: row.get(1)?,
+                    source_kind: row.get(3)?,
+                    source_id: row.get(4)?,
+                    operation: row.get(5)?,
+                },
+                revision: row.get(6)?,
             })
         })?;
         rows.map(|row| row.map_err(Into::into)).collect()
@@ -2123,22 +2176,7 @@ impl MemoryIndex {
     }
 
     fn has_stale_source_states_for_agent(&self, agent_id: &str) -> Result<bool> {
-        self.connection
-            .query_row(
-                "SELECT 1 FROM memory_index_source_state
-                 WHERE agent_id = ?1
-                   AND (index_schema_version != ?2 OR projection_version != ?3)
-                 LIMIT 1",
-                params![
-                    agent_id,
-                    MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION,
-                    MEMORY_INDEX_DOCUMENT_PROJECTION_VERSION
-                ],
-                |_| Ok(true),
-            )
-            .optional()
-            .map(|value| value.unwrap_or(false))
-            .map_err(Into::into)
+        has_stale_source_states_for_agent_tx(&self.connection, agent_id)
     }
 
     fn has_backfill_checkpoints_for_agent(&self, agent_id: &str) -> Result<bool> {
@@ -2361,6 +2399,12 @@ struct PendingSource {
     operation: String,
 }
 
+#[derive(Debug, Clone)]
+struct PendingSourceSnapshot {
+    source: PendingSource,
+    revision: i64,
+}
+
 enum PreparedPendingSource {
     Delete,
     Upsert(MemoryDocument),
@@ -2387,6 +2431,25 @@ fn prepare_pending_source(
         Some(document) => PreparedPendingSource::Upsert(document),
         None => PreparedPendingSource::Delete,
     })
+}
+
+fn has_stale_source_states_for_agent_tx(connection: &Connection, agent_id: &str) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM memory_index_source_state
+             WHERE agent_id = ?1
+               AND (index_schema_version != ?2 OR projection_version != ?3)
+             LIMIT 1",
+            params![
+                agent_id,
+                MEMORY_INDEX_DOCUMENT_SCHEMA_VERSION,
+                MEMORY_INDEX_DOCUMENT_PROJECTION_VERSION
+            ],
+            |_| Ok(true),
+        )
+        .optional()
+        .map(|value| value.unwrap_or(false))
+        .map_err(Into::into)
 }
 
 fn apply_prepared_pending_source_tx(
@@ -4779,10 +4842,10 @@ mod tests {
     }
 
     #[test]
-    fn immediate_transaction_retries_until_external_lock_is_released() -> Result<()> {
+    fn enqueue_source_retries_until_external_lock_is_released() -> Result<()> {
         let directory = tempdir()?;
         let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
-        let index = MemoryIndex::open(&storage)?;
+        let mut index = MemoryIndex::open(&storage)?;
         index.connection.busy_timeout(Duration::from_millis(20))?;
         let blocker = Connection::open(memory_index_path(&storage))?;
         blocker.execute_batch("BEGIN IMMEDIATE")?;
@@ -4792,11 +4855,8 @@ mod tests {
 
         let handle = thread::spawn(move || {
             thread_barrier.wait();
-            let result = index.run_immediate_transaction_with_deadline(
-                "test.retry_external_lock",
-                Duration::from_millis(500),
-                |transaction| upsert_index_meta_tx(transaction, "retry-agent", None),
-            );
+            let result =
+                index.enqueue_upsert("retry-agent", "message", "message-retry", "message:retry");
             sender
                 .send(result)
                 .expect("transaction result receiver dropped");
@@ -4811,12 +4871,13 @@ mod tests {
         receiver.recv_timeout(Duration::from_secs(1))??;
         handle.join().expect("transaction thread panicked");
 
-        let indexed_agent_count: i64 = Connection::open(memory_index_path(&storage))?.query_row(
-            "SELECT COUNT(*) FROM memory_index_meta WHERE agent_id = 'retry-agent'",
+        let pending_count: i64 = Connection::open(memory_index_path(&storage))?.query_row(
+            "SELECT COUNT(*) FROM memory_index_pending_sources
+             WHERE document_key = 'retry-agent:message:retry'",
             [],
             |row| row.get(0),
         )?;
-        assert_eq!(indexed_agent_count, 1);
+        assert_eq!(pending_count, 1);
         Ok(())
     }
 
@@ -6534,6 +6595,84 @@ mod tests {
         assert!(results.iter().any(|result| result.source_ref == fresh_ref));
         assert!(MemoryIndex::open(&storage)
             .unwrap()
+            .pending_sources_for_agent("default")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn pending_source_snapshot_does_not_apply_after_same_key_reenqueue() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        ensure_agent_home_layout(dir.path()).unwrap();
+        fs::write(
+            agent_memory_self_path(dir.path()),
+            "pending source revision sentinel",
+        )
+        .unwrap();
+        rebuild_memory_index(&storage, None).unwrap();
+
+        let mut index = MemoryIndex::open(&storage).unwrap();
+        index
+            .enqueue_source(
+                "default",
+                "agent_memory_markdown",
+                "self",
+                "agent_memory:self",
+                "delete",
+                None,
+                "test_stale_delete",
+            )
+            .unwrap();
+        let document_key = document_key_for("default", "agent_memory:self");
+        let stale = index
+            .pending_sources_for_agent_with_limit("default", usize::MAX)
+            .unwrap()
+            .into_iter()
+            .find(|source| source.source.document_key == document_key)
+            .unwrap();
+
+        index
+            .enqueue_source(
+                "default",
+                "agent_memory_markdown",
+                "self",
+                "agent_memory:self",
+                "upsert",
+                None,
+                "test_new_upsert",
+            )
+            .unwrap();
+        index
+            .consume_pending_source_snapshot(&stale, &Ok(PreparedPendingSource::Delete))
+            .unwrap();
+
+        let (operation, revision): (String, i64) = index
+            .connection
+            .query_row(
+                "SELECT operation, revision FROM memory_index_pending_sources
+                 WHERE document_key = ?1",
+                [&document_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(operation, "upsert");
+        assert!(revision > stale.revision);
+        let document_exists: bool = index
+            .connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM memory_documents WHERE document_key = ?1
+                 )",
+                [&document_key],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(document_exists);
+
+        index.consume_pending_sources(&storage, 10).unwrap();
+        assert!(index
             .pending_sources_for_agent("default")
             .unwrap()
             .is_empty());
