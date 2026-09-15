@@ -92,6 +92,16 @@ export function useConversationSession(
   const controller = scopeKey !== null ? peekConversationScope(scopeKey) : null;
   const snapshot = mirror ?? conversationScopeSnapshot(scopeKey ?? "");
   const version = snapshot.version;
+  const conversationReady = snapshot.status.kind === "ready" && snapshot.view !== null;
+
+  // A scope that becomes ready can unblock a pending read marker that was
+  // gated on conversation readiness (e.g. truncated generation acknowledged
+  // while the read model was degraded). The gate itself re-checks route,
+  // visibility, and ledger readiness, so this only re-attempts the advance.
+  useEffect(() => {
+    if (!conversationReady || agentId === undefined) return;
+    useRuntimeStore.getState().markAgentConversationRead(agentId);
+  }, [conversationReady, agentId]);
 
   const model = useMemo(() => {
     const view = snapshot.view;

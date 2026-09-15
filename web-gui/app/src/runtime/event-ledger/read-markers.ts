@@ -22,6 +22,10 @@ export function readMarkerBoundary(record: LedgerReadStateRecord | undefined): n
  * head: every event above that boundary is known from then on, so future
  * unread counts are exact again. The explicit acknowledgement remains the
  * early-confirmation path before the marker catches up.
+ *
+ * The gated head must also cover the recorded truncation boundary: a stale
+ * gate head below a freshly recorded retention boundary must never retire
+ * the generation, because the marker never covered the unknown region.
  */
 export function shouldAutoRestoreExactCertainty(
   record: LedgerReadStateRecord | null | undefined,
@@ -29,7 +33,8 @@ export function shouldAutoRestoreExactCertainty(
 ): boolean {
   return (
     record?.certainty === "truncated" &&
-    (record.readThroughEventSeq ?? 0) >= gatedHeadSeq
+    (record.readThroughEventSeq ?? 0) >= gatedHeadSeq &&
+    (record.historyTruncatedBeforeSeq ?? 0) <= gatedHeadSeq
   );
 }
 

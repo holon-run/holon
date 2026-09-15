@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ConversationStateView } from "@holon/conversation-sdk";
+
 import {
   appendOptimisticOperatorPrompt,
   agentBriefPatchFromEvents,
@@ -32,9 +34,26 @@ import {
   getRuntimeTraceRecords,
   setRuntimeTraceEnabled,
 } from "./runtime-trace";
+import {
+  conversationScopeKey,
+  useConversationScopeStore,
+} from "./conversation-scope-store";
 import type { AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState, reduceSessionProjection } from "./session-projection";
 import type { AgentSummary } from "./types";
+
+/** Seeds the conversation scope mirror the read-marker gate consumes. */
+function seedReadyConversationScope(agentId: string): void {
+  useConversationScopeStore.setState({
+    scopes: {
+      [conversationScopeKey("local", agentId)]: {
+        status: { kind: "ready" },
+        view: {} as ConversationStateView,
+        version: 1,
+      },
+    },
+  });
+}
 
 const OBSERVER_SYNC_CAPABILITIES = [
   "agents.roster-snapshot.v1",
@@ -1148,6 +1167,7 @@ describe("roster activity unread state", () => {
         "agent-retry": { mode: "exact", count: 2 },
       },
     });
+    seedReadyConversationScope("agent-retry");
 
     useRuntimeStore.getState().markAgentConversationRead("agent-retry");
     await Promise.resolve();
@@ -1227,6 +1247,7 @@ describe("roster activity unread state", () => {
         "agent-auto": { mode: "truncated", count: 2 },
       },
     });
+    seedReadyConversationScope("agent-auto");
 
     useRuntimeStore.getState().markAgentConversationRead("agent-auto");
     await Promise.resolve();
@@ -1288,6 +1309,7 @@ describe("roster activity unread state", () => {
         "agent-noop": { mode: "exact", count: 2 },
       },
     });
+    seedReadyConversationScope("agent-noop");
 
     useRuntimeStore.getState().markAgentConversationRead("agent-noop");
     await vi.waitFor(() => {

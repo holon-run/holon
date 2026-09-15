@@ -18,7 +18,8 @@ export interface ConversationReadContext {
   route: string;
   selectedAgentId: string;
   documentVisible: boolean;
-  session: AgentSessionState | undefined;
+  /** The conversation read-model scope has a loaded view for this agent. */
+  conversationReady: boolean;
 }
 
 export function readStoredRosterActivity(
@@ -275,25 +276,13 @@ export function canMarkConversationRead({
   route,
   selectedAgentId,
   documentVisible,
-  session,
+  conversationReady,
 }: ConversationReadContext, agentId: string): boolean {
   return Boolean(
     route === "agent" &&
     selectedAgentId === agentId &&
     documentVisible &&
-    session &&
-    !session.loading &&
-    session.gaps.length === 0 &&
-    session.syncStatus !== "refreshing" &&
-    session.syncStatus !== "recovering" &&
-    session.syncStatus !== "stale" &&
-    session.syncStatus !== "error" &&
-    session.liveStatus !== "connecting" &&
-    session.liveStatus !== "reconnecting" &&
-    session.liveStatus !== "recovering" &&
-    session.liveStatus !== "stale" &&
-    session.liveStatus !== "error" &&
-    briefIdsForProjectionHydration(session).length === 0
+    conversationReady
   );
 }
 

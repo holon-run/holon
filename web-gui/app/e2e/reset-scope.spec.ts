@@ -226,15 +226,23 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
     eventsByAgentId: { [agentId]: [envelope(agentId, 8)] },
     oldestRetainedSeqByAgentId: { [agentId]: 7 },
     snapshotThroughSeqByAgentId: { [agentId]: 8 },
+    failConversationByAgentId: [agentId],
   });
   await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
 
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    ingestedThroughSeq: 8,
-    projectionReadyThroughSeq: 8,
-    certainty: "truncated",
-    historyTruncatedBeforeSeq: 7,
-  });
+  // Hold the read-marker gate closed while the retention reset lands: the
+  // conversation read model is unavailable (503), so the gate cannot confirm
+  // a ready conversation view and the marker never auto-advances past the
+  // truncation. The ledger itself ingests from the global event stream and
+  // still records the truncated generation for the manual acknowledgement.
+  await expect
+    .poll(() => ledger(page, agentId), { timeout: 15_000 })
+    .toMatchObject({
+      ingestedThroughSeq: 8,
+      projectionReadyThroughSeq: 8,
+      certainty: "truncated",
+      historyTruncatedBeforeSeq: 7,
+    });
   await expect(
     page.getByRole("region", { name: "Agent conversation" }).getByRole("status"),
   ).toContainText("Some earlier history");
@@ -244,6 +252,63 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
     historyTruncatedBeforeSeq: 7,
     acknowledgedTruncationBeforeSeq: 8,
   });
+  await expect(page.getByRole("button", { name: "Acknowledge earlier history" })).toHaveCount(0);
+  // Once the conversation read model recovers, the pending marker catches
+  // up to the acknowledged head without reopening the generation.
+  await configure(request, session, { failConversationByAgentId: [] });
+  // Re-entering the conversation rebuilds the scope immediately instead of
+  // waiting out the degraded period's accumulated reconnect backoff.
+  await page.getByRole("button", { name: "Dashboard" }).first().click();
+  await openAgent(page, agentId);
+  await expect
+    .poll(() => ledger(page, agentId), { timeout: 15_000 })
+    .toMatchObject({
+      readThroughEventSeq: 8,
+      certainty: "exact",
+      acknowledgedTruncationBeforeSeq: 8,
+  });
+});
+
+test("retention reset auto-restores exact certainty once the open conversation reads the head", async ({
+  context,
+  page,
+  request,
+}, testInfo) => {
+  const session = sessionFor(testInfo);
+  const agentId = "retention-auto-agent";
+  await configure(request, session, {
+    visibleAgentIds: [agentId],
+    ledgerEnabledAgentIds: [agentId],
+    eventsByAgentId: {
+      [agentId]: [1, 2, 3, 4, 5].map((seq) => envelope(agentId, seq)),
+    },
+  });
+  await attachSession(context, session);
+  await page.goto("/");
+  await openAgent(page, agentId);
+  await expect.poll(() => ledger(page, agentId)).toMatchObject({
+    ingestedThroughSeq: 5,
+    readThroughEventSeq: 5,
+    certainty: "exact",
+  });
+
+  await configure(request, session, {
+    eventsByAgentId: { [agentId]: [envelope(agentId, 8)] },
+    oldestRetainedSeqByAgentId: { [agentId]: 7 },
+    snapshotThroughSeqByAgentId: { [agentId]: 8 },
+  });
+  await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
+
+  // With the conversation open and visible, the marker catches up to the
+  // gated head and the truncated generation retires itself at that head —
+  // never below the recorded truncation boundary.
+  await expect.poll(() => ledger(page, agentId)).toMatchObject({
+    ingestedThroughSeq: 8,
+    readThroughEventSeq: 8,
+    certainty: "exact",
+    historyTruncatedBeforeSeq: 7,
+    acknowledgedTruncationBeforeSeq: 8,
+  }, { timeout: 10_000 });
   await expect(page.getByRole("button", { name: "Acknowledge earlier history" })).toHaveCount(0);
 });
 

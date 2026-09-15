@@ -195,17 +195,14 @@ describe("read state", () => {
       route: "agent",
       selectedAgentId: "agent-a",
       documentVisible: true,
-      session,
+      conversationReady: true,
     };
 
     expect(canMarkConversationRead(context, "agent-a")).toBe(true);
     expect(latestBriefDeliverySeq(session)).toBe(10);
     expect(canMarkConversationRead({ ...context, documentVisible: false }, "agent-a")).toBe(false);
     expect(
-      canMarkConversationRead(
-        { ...context, session: { ...session, liveStatus: "recovering" } },
-        "agent-a",
-      ),
+      canMarkConversationRead({ ...context, conversationReady: false }, "agent-a"),
     ).toBe(false);
   });
 });
@@ -221,7 +218,7 @@ describe("ledger read-marker gate", () => {
       route: "agent",
       selectedAgentId: "agent-a",
       documentVisible: true,
-      session: emptyAgentSession(),
+      conversationReady: true,
       discoveryFresh: true,
       readiness,
       ...overrides,
@@ -246,24 +243,12 @@ describe("ledger read-marker gate", () => {
     expect(decision.reason).toBe("document_hidden");
   });
 
-  it("blocks while the session is loading, gapped, or recovering", () => {
-    const loading = evaluateLedgerReadMarkerGate(
-      gateInput({ session: { ...emptyAgentSession(), loading: true } }),
+  it("blocks until the conversation read-model view is ready", () => {
+    const decision = evaluateLedgerReadMarkerGate(
+      gateInput({ conversationReady: false }),
       "agent-a",
     );
-    expect(loading.reason).toBe("session_not_ready");
-    const gapped = evaluateLedgerReadMarkerGate(
-      gateInput({
-        session: { ...emptyAgentSession(), gaps: [{ afterSeq: 1, beforeSeq: 9 }] },
-      }),
-      "agent-a",
-    );
-    expect(gapped.reason).toBe("session_not_ready");
-    const recovering = evaluateLedgerReadMarkerGate(
-      gateInput({ session: { ...emptyAgentSession(), syncStatus: "recovering" } }),
-      "agent-a",
-    );
-    expect(recovering.reason).toBe("session_not_ready");
+    expect(decision.reason).toBe("session_not_ready");
   });
 
   it("blocks while discovery is stale", () => {

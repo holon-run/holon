@@ -43,11 +43,13 @@ function sessionFor(req, url) {
       abortResponse: null,
       globalStreams: new Set(),
       agentStreams: new Set(),
+      conversationStreams: new Set(),
       visibleAgentIds: tour ? tourAgents.map((agent) => agent.id) : ["bootstrap-agent"],
       ledgerEnabledAgentIds: new Set(),
       eventsByAgentId: new Map(),
       briefsById: new Map(),
       blockedBriefIds: new Set(),
+      failConversationByAgentId: new Set(),
       streamGeneration: 0,
       runtimeId: "e2e-runtime",
       eventLogEpoch: "e2e-epoch",
@@ -87,6 +89,34 @@ function openEventStream(req, res, clients) {
   res.write(": connected\n\n");
   clients.add(res);
   req.on("close", () => clients.delete(res));
+}
+
+/**
+ * Minimal turn derivation for the conversation read model: each
+ * brief_created event becomes one settled operator turn carrying the brief,
+ * so the GUI timeline can render brief results on demand.
+ */
+function conversationTurns(session, agentId) {
+  return (session.eventsByAgentId.get(agentId) ?? [])
+    .filter(
+      (event) =>
+        event.type === "brief_created"
+        && typeof event.payload?.brief_id === "string"
+        && Number.isFinite(event.event_seq),
+    )
+    .map((event, index) => ({
+      turn_id: `turn-${event.event_seq}`,
+      key: { turn_index: index + 1, turn_id: `turn-${event.event_seq}` },
+      revision: 1,
+      presentation_class: "operator",
+      inputs: [],
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "available" },
+      settled: true,
+      attention: null,
+      detail_coverage: { kind: "complete" },
+      brief_ids: [event.payload.brief_id],
+    }));
 }
 
 function eventHead(session, agentId) {
@@ -253,8 +283,10 @@ async function handleControl(req, res, url) {
     for (const stream of [...session.globalStreams, ...session.agentStreams]) {
       stream.end();
     }
+    for (const stream of session.conversationStreams) stream.end();
     session.globalStreams.clear();
     session.agentStreams.clear();
+    session.conversationStreams.clear();
     json(res, { disconnected: true });
     return true;
   }
@@ -280,6 +312,9 @@ async function handleControl(req, res, url) {
     }
     if (Array.isArray(body.blockedBriefIds)) {
       session.blockedBriefIds = new Set(body.blockedBriefIds);
+    }
+    if (Array.isArray(body.failConversationByAgentId)) {
+      session.failConversationByAgentId = new Set(body.failConversationByAgentId);
     }
     if (body.abortResponse && typeof body.abortResponse === "object") {
       session.abortResponse = body.abortResponse;
@@ -380,12 +415,22 @@ async function handleApi(req, res, url) {
   }
   if (url.pathname === "/api/handshake") {
     json(res, {
-      auth: { mode: "none" },
+      ok: true,
+      protocol: { name: "holon-control", version: 1 },
+      auth: { mode: "none", required: false },
+      runtime: {
+        default_agent: "bootstrap-agent",
+        workspace_dir: "/tmp/holon-e2e",
+        home_dir: "/tmp/holon-e2e",
+        listen: "127.0.0.1:0",
+        advertise_url: `http://127.0.0.1:${requestedPort}`,
+      },
       capabilities: [
         "agents.roster-snapshot.v1",
         "agents.projection-snapshot.v1",
         "events.projection-effect.v1",
         "briefs.atomic-created-event.v1",
+        "agents.conversation-read.v1",
       ],
     });
     return true;
@@ -442,6 +487,62 @@ async function handleApi(req, res, url) {
   const eventsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/events$/);
   if (eventsMatch) {
     json(res, eventPage(session, decodeURIComponent(eventsMatch[1]), url));
+    return true;
+  }
+  const conversationMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/conversation$/);
+  if (conversationMatch) {
+    const agentId = decodeURIComponent(conversationMatch[1]);
+    if (session.failConversationByAgentId.has(agentId)) {
+      json(res, { error: "conversation unavailable" }, 503);
+      return true;
+    }
+    const head = eventHead(session, agentId);
+    json(res, {
+      schema_version: 1,
+      query_version: 1,
+      runtime_id: session.runtimeId,
+      event_log_epoch: session.eventLogEpoch,
+      visibility_scope_id: session.visibilityScopeId,
+      snapshot_through_seq: head,
+      event_head_seq: head,
+      oldest_retained_seq: session.oldestRetainedSeqByAgentId.get(agentId) ?? 0,
+      snapshot_cursor: `conv-snap:${agentId}:${head}`,
+      turns: conversationTurns(session, agentId),
+      active_turns: [],
+      pending_inputs: [],
+      next_before_cursor: null,
+      has_more: false,
+    });
+    return true;
+  }
+  const briefMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/briefs\/([^/]+)$/);
+  if (briefMatch && req.method === "GET") {
+    const briefId = decodeURIComponent(briefMatch[2]);
+    if (session.blockedBriefIds.has(briefId)) {
+      return true;
+    }
+    const brief = session.briefsById.get(briefId);
+    if (!brief) {
+      json(res, { error: `brief not found: ${briefId}` }, 404);
+      return true;
+    }
+    json(res, {
+      attachments: null,
+      related_message_id: null,
+      related_task_id: null,
+      ...brief,
+    });
+    return true;
+  }
+  if (/^\/api\/agents\/[^/]+\/conversation\/stream$/.test(url.pathname)) {
+    const streamAgent = decodeURIComponent(url.pathname.split("/")[3] ?? "");
+    if (session.failConversationByAgentId.has(streamAgent)) {
+      json(res, { error: "conversation stream unavailable" }, 503);
+      return true;
+    }
+    // Minimal live surface: hold the SSE open. The fixture has no live
+    // conversation deltas; snapshot-only state is already "ready".
+    openEventStream(req, res, session.conversationStreams);
     return true;
   }
   const briefsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/briefs:batchGet$/);
