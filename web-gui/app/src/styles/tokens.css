@@ -27,16 +27,16 @@
 
 :root {
   color-scheme: light;
-  --sidebar: #e8eef3;
-  --sidebar-soft: #dce8ef;
-  --page: #f8fafb;
+  --sidebar: #f7f7f8;
+  --sidebar-soft: #eceef0;
+  --page: #ffffff;
   --surface: #ffffff;
   --surface-soft: #f3f7fa;
   --surface-hover: #edf4f7;
-  --bubble: #e9eef2;
-  --line: #d8e0e7;
+  --bubble: #f0f1f3;
+  --line: #e6e7e9;
   --line-strong: #c3d0da;
-  --text: #182230;
+  --text: #242628;
   --muted: #5c6b7a;
   --faint: #8794a3;
   --accent: #087ea4;

@@ -1,5 +1,6 @@
 import {
   ArrowUp,
+  ArrowDown,
   LoaderCircle,
   Paperclip,
   Square,
@@ -7,7 +8,7 @@ import {
 } from "lucide-react";
 import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
-  type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MutableRefObject,
+  type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -163,6 +164,10 @@ export function AgentPage({
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
   const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
   const [modelMenuStyle, setModelMenuStyle] = useState<CSSProperties | null>(null);
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  const messageContentRef = useRef<HTMLDivElement | null>(null);
+  const readingAnchorRef = useRef<{ element: HTMLElement; offset: number }[]>([]);
+  const restoringAnchorRef = useRef(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
@@ -256,11 +261,16 @@ export function AgentPage({
     const handleKeyDown = (event: { key: string }) => {
       if (isScrollKey(event.key)) markIntent();
     };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.clientX >= list.getBoundingClientRect().right - 18) markIntent();
+    };
+    list.addEventListener("pointerdown", handlePointerDown);
     list.addEventListener("wheel", markIntent, { passive: true });
     list.addEventListener("touchstart", markIntent, { passive: true });
     list.addEventListener("touchmove", markIntent, { passive: true });
     list.addEventListener("keydown", handleKeyDown);
     return () => {
+      list.removeEventListener("pointerdown", handlePointerDown);
       list.removeEventListener("wheel", markIntent);
       list.removeEventListener("touchstart", markIntent);
       list.removeEventListener("touchmove", markIntent);
@@ -285,6 +295,7 @@ export function AgentPage({
     if (!list) return;
 
     stickToBottomRef.current = true;
+    setShowJumpToLatest(false);
     autoStickToBottomRef.current = true;
 
     if (scheduledBottomScrollRef.current !== null) {
@@ -311,20 +322,45 @@ export function AgentPage({
     scrollToConversationBottom();
   }, [activeAgent.id]);
 
-  const conversationContentVersion =
-    conversation === undefined
-      ? ""
-      : `${conversation.model.turns.length}:${conversation.model.turns.at(-1)?.turnId ?? ""}:${conversation.model.pendingInputs.length}:${conversation.model.status.kind}`;
-  useLayoutEffect(() => {
-    if (conversation === undefined) return;
+  const conversationContentVersion = conversation?.model.view?.through_seq ?? 0;
+
+  function rememberReadingAnchor() {
     const list = messageListRef.current;
     if (!list) return;
-    if (stickToBottomRef.current) {
-      scrollToConversationBottom();
-      onConversationRead();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [conversationContentVersion, onConversationRead]);
+    const top = list.getBoundingClientRect().top;
+    readingAnchorRef.current = Array.from(list.querySelectorAll<HTMLElement>("[data-conversation-anchor]"))
+      .filter((element) => element.getBoundingClientRect().bottom > top)
+      .slice(0, 8)
+      .map((element) => ({ element, offset: element.getBoundingClientRect().top - top }));
+  }
+
+  useLayoutEffect(() => {
+    const list = messageListRef.current;
+    const content = messageContentRef.current;
+    if (!list || !content) return;
+    readingAnchorRef.current = [];
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottomRef.current && !userScrollIntentRef.current) {
+        scrollToConversationBottom();
+      } else if (!userScrollIntentRef.current) {
+        const anchor = readingAnchorRef.current.find(({ element }) =>
+          element.isConnected && element.getBoundingClientRect().height > 0 && !element.closest('[aria-hidden="true"]'),
+        );
+        if (anchor) {
+          restoringAnchorRef.current = true;
+          list.scrollTop += anchor.element.getBoundingClientRect().top - list.getBoundingClientRect().top - anchor.offset;
+          window.cancelAnimationFrame(frame);
+          frame = window.requestAnimationFrame(() => { restoringAnchorRef.current = false; });
+        }
+      }
+      setShowJumpToLatest(!stickToBottomRef.current);
+      rememberReadingAnchor();
+    });
+    observer.observe(content);
+    observer.observe(list);
+    return () => { observer.disconnect(); window.cancelAnimationFrame(frame); };
+  }, [activeAgent.id]);
 
   useEffect(() => {
     const markReadIfVisible = () => {
@@ -436,9 +472,24 @@ export function AgentPage({
     await handleAttachmentFiles(event.dataTransfer?.files ?? null);
   }
 
+  function handleDisclosureClick(event: MouseEvent<HTMLDivElement>) {
+    const list = messageListRef.current;
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLElement>(".conversation-detail-toggle, .conversation-detail-older, summary")
+      : null;
+    if (!list || !target) return;
+    // Opening evidence is a reading action: keep its trigger in place even if
+    // the reader was following the bottom before clicking it.
+    stickToBottomRef.current = false;
+    readingAnchorRef.current = [{ element: target, offset: target.getBoundingClientRect().top - list.getBoundingClientRect().top }];
+    setShowJumpToLatest(true);
+  }
+
   function handleMessageListScroll() {
     const list = messageListRef.current;
     if (!list) return;
+    if (restoringAnchorRef.current && !userScrollIntentRef.current) return;
+    rememberReadingAnchor();
     if (userScrollIntentRef.current) {
       // Continued scrolling while intent is active (e.g. momentum after a
       // trackpad flick) keeps the intent window open so programmatic bottom
@@ -456,7 +507,11 @@ export function AgentPage({
       stickToBottomRef.current = true;
       return;
     }
+    // Layout and result hydration can emit scroll events without user input.
+    // Only an intentional scroll changes whether subsequent updates follow.
+    if (!userScrollIntentRef.current) return;
     stickToBottomRef.current = nearBottom;
+    setShowJumpToLatest(!nearBottom);
     if (stickToBottomRef.current) onConversationRead();
   }
 
@@ -519,59 +574,66 @@ export function AgentPage({
     <section className="page agent-page" aria-label={t("agent.conversationAria")}>
       <div className="agent-workbench">
         <section className="conversation-pane">
-          <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
-            {conversation !== undefined ? (
-              conversation.model.hasMoreHistory ||
-              conversation.model.historyState.kind === "loading" ? (
-                <div className="history-loader">
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    disabled={conversation.model.historyState.kind === "loading"}
-                    onClick={() => conversation.onLoadOlderHistory()}
-                  >
-                    {conversation.model.historyState.kind === "loading"
-                      ? t("agent.loadingEarlier")
-                      : t("agent.loadEarlier")}
+          <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll} onClickCapture={handleDisclosureClick}>
+            <div className="message-list-content" ref={messageContentRef}>
+              {conversation !== undefined ? (
+                conversation.model.hasMoreHistory ||
+                conversation.model.historyState.kind === "loading" ? (
+                  <div className="history-loader">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      disabled={conversation.model.historyState.kind === "loading"}
+                      onClick={() => conversation.onLoadOlderHistory()}
+                    >
+                      {conversation.model.historyState.kind === "loading"
+                        ? t("agent.loadingEarlier")
+                        : t("agent.loadEarlier")}
+                    </Button>
+                  </div>
+                ) : null
+              ) : null}
+              {historyTruncated && onAcknowledgeTruncation ? (
+                <div className="history-status truncation-notice" role="status">
+                  <span>{t("app.truncationNotice")}</span>
+                  <Button type="button" size="sm" variant="secondary" onClick={onAcknowledgeTruncation}>
+                    {t("app.truncationAcknowledge")}
                   </Button>
                 </div>
-              ) : null
-            ) : null}
-            {historyTruncated && onAcknowledgeTruncation ? (
-              <div className="history-status truncation-notice" role="status">
-                <span>{t("app.truncationNotice")}</span>
-                <Button type="button" size="sm" variant="secondary" onClick={onAcknowledgeTruncation}>
-                  {t("app.truncationAcknowledge")}
-                </Button>
-              </div>
-            ) : null}
-            {syncError ? (
-              <SyncRecoveryStatus
-                error={syncError}
-                retryAttempt={syncRetryAttempt}
-                onRetry={onRetrySync}
-              />
-            ) : null}
-            {conversation ? (
-              <ConversationTimeline
-                model={conversation.model}
-                onInspectActivity={conversation.onInspectActivity}
-                onLoadBrief={conversation.onLoadBrief}
-                onLoadDetail={conversation.onLoadDetail}
-                onLoadOlderActivities={conversation.onLoadOlderActivities}
-                onRetry={conversation.onRetry}
-                briefRecord={conversation.briefRecord}
-                briefLoadState={conversation.briefLoadState}
-                detailLoadState={conversation.detailLoadState}
-              />
-            ) : (
-              <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
-                <LoaderCircle size={24} className="spin" />
-                <span>{t("common.syncing")}</span>
-              </div>
-            )}
+              ) : null}
+              {syncError ? (
+                <SyncRecoveryStatus
+                  error={syncError}
+                  retryAttempt={syncRetryAttempt}
+                  onRetry={onRetrySync}
+                />
+              ) : null}
+              {conversation ? (
+                <ConversationTimeline
+                  model={conversation.model}
+                  onInspectActivity={conversation.onInspectActivity}
+                  onLoadBrief={conversation.onLoadBrief}
+                  onLoadDetail={conversation.onLoadDetail}
+                  onLoadOlderActivities={conversation.onLoadOlderActivities}
+                  onRetry={conversation.onRetry}
+                  briefRecord={conversation.briefRecord}
+                  briefLoadState={conversation.briefLoadState}
+                  detailLoadState={conversation.detailLoadState}
+                />
+              ) : (
+                <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
+                  <LoaderCircle size={24} className="spin" />
+                  <span>{t("common.syncing")}</span>
+                </div>
+              )}
+            </div>
           </div>
+          {showJumpToLatest ? (
+            <button type="button" className="conversation-jump" onClick={scrollToConversationBottom}>
+              <ArrowDown size={14} />{t("agentPage.backToLatest")}
+            </button>
+          ) : null}
 
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}

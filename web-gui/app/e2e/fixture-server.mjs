@@ -44,6 +44,7 @@ function sessionFor(req, url) {
       globalStreams: new Set(),
       agentStreams: new Set(),
       conversationStreams: new Set(),
+      conversationData: new Map(),
       visibleAgentIds: tour ? tourAgents.map((agent) => agent.id) : ["bootstrap-agent"],
       ledgerEnabledAgentIds: new Set(),
       eventsByAgentId: new Map(),
@@ -290,6 +291,32 @@ async function handleControl(req, res, url) {
     json(res, { disconnected: true });
     return true;
   }
+  if (url.pathname === "/__e2e__/conversation" && req.method === "POST") {
+    const session = sessionFor(req, url);
+    const body = await requestBody(req);
+    const previous = session.conversationData.get(body.agentId);
+    const data = { turns: [], activitiesByTurnId: {}, pending_inputs: [], ...body, head: (previous?.head ?? 0) + 1000 };
+    session.conversationData.set(body.agentId, data);
+    const scope = { event_log_epoch: session.eventLogEpoch, visibility_scope_id: session.visibilityScopeId };
+    const batchId = `batch-${data.head}`;
+    const changes = [
+      { type: "batch_begin", batch_id: batchId, schema_version: 1, query_version: 1,
+        runtime_id: session.runtimeId, ...scope, from_seq: previous?.head ?? 0, through_seq: data.head },
+      ...data.turns.map((turn) => ({ type: "turn_summary_upsert", ...scope, turn })),
+      ...Object.entries(data.activitiesByTurnId).flatMap(([turn_id, activities]) =>
+        activities.map((activity) => ({ type: "activity_upsert", ...scope, turn_id, activity }))),
+      { type: "checkpoint", batch_id: batchId, ...scope, through_seq: data.head, checkpoint: `conv-${data.head}` },
+    ];
+    for (const stream of session.conversationStreams) {
+      if (stream.conversationAgentId !== body.agentId) continue;
+      for (const change of changes) {
+        const id = change.type === "checkpoint" ? `id: ${change.checkpoint}\n` : "";
+        stream.write(`${id}event: ${change.type}\ndata: ${JSON.stringify(change)}\n\n`);
+      }
+    }
+    json(res, { updated: true });
+    return true;
+  }
   if (url.pathname === "/__e2e__/configure" && req.method === "POST") {
     const session = sessionFor(req, url);
     const body = await requestBody(req);
@@ -496,7 +523,8 @@ async function handleApi(req, res, url) {
       json(res, { error: "conversation unavailable" }, 503);
       return true;
     }
-    const head = eventHead(session, agentId);
+    const data = session.conversationData.get(agentId);
+    const head = data?.head ?? eventHead(session, agentId);
     json(res, {
       schema_version: 1,
       query_version: 1,
@@ -507,11 +535,28 @@ async function handleApi(req, res, url) {
       event_head_seq: head,
       oldest_retained_seq: session.oldestRetainedSeqByAgentId.get(agentId) ?? 0,
       snapshot_cursor: `conv-snap:${agentId}:${head}`,
-      turns: conversationTurns(session, agentId),
-      active_turns: [],
-      pending_inputs: [],
+      turns: data?.turns ?? conversationTurns(session, agentId),
+      active_turns: data?.turns.filter((turn) => turn.execution.kind === "active") ?? [],
+      pending_inputs: data?.pending_inputs ?? [],
       next_before_cursor: null,
       has_more: false,
+    });
+    return true;
+  }
+  const activityMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/turns\/([^/]+)\/activities$/);
+  if (activityMatch) {
+    const data = session.conversationData.get(decodeURIComponent(activityMatch[1]));
+    const turnId = decodeURIComponent(activityMatch[2]);
+    const turn = data?.turns.find((turn) => turn.turn_id === turnId);
+    if (!turn) { json(res, { error: "turn missing" }, 404); return true; }
+    json(res, {
+      schema_version: 1, query_version: 1, runtime_id: session.runtimeId,
+      event_log_epoch: session.eventLogEpoch, visibility_scope_id: session.visibilityScopeId,
+      snapshot_through_seq: data.head, event_head_seq: data.head, oldest_retained_seq: 0,
+      snapshot_cursor: `conv-snap:${activityMatch[1]}:${data.head}`,
+      turn, detail_revision: turn.revision,
+      activities: data.activitiesByTurnId[turnId] ?? [], coverage: { kind: "complete" },
+      next_before_cursor: null, has_more: false,
     });
     return true;
   }
@@ -540,8 +585,8 @@ async function handleApi(req, res, url) {
       json(res, { error: "conversation stream unavailable" }, 503);
       return true;
     }
-    // Minimal live surface: hold the SSE open. The fixture has no live
-    // conversation deltas; snapshot-only state is already "ready".
+    // The control endpoint publishes atomic conversation batches to this stream.
+    res.conversationAgentId = streamAgent;
     openEventStream(req, res, session.conversationStreams);
     return true;
   }

@@ -129,6 +129,8 @@ WHERE turns.agent_id = ?1
 ORDER BY turns.turn_index DESC, turns.turn_id DESC
 LIMIT ?6";
 
+// Extract display text before truncation. Evidence previews can contain partial
+// provider JSON, reasoning signatures, and tool arguments. Never forward them.
 pub(crate) const CONVERSATION_ACTIVITY_FIRST_SQL: &str = "
 SELECT sources.source_kind,
        sources.source_id,
@@ -136,10 +138,20 @@ SELECT sources.source_kind,
        sources.revision,
        CASE sources.source_kind
          WHEN 'operator' THEN messages.preview
-         WHEN 'assistant' THEN transcript.preview
-         WHEN 'tool' THEN tools.preview
+         WHEN 'assistant' THEN CASE WHEN transcript.evidence_id IS NULL THEN NULL ELSE
+           substr(COALESCE(
+             (SELECT group_concat(json_extract(block.value, '$.text'), char(10) || char(10))
+                FROM json_each(transcript.payload_json, '$.data.blocks') AS block
+               WHERE json_extract(block.value, '$.type') = 'text'
+                 AND json_type(block.value, '$.text') = 'text'),
+             CASE WHEN json_type(transcript.payload_json, '$.data.blocks') IS NULL
+                    AND json_type(transcript.payload_json, '$.data.text') = 'text'
+                  THEN json_extract(transcript.payload_json, '$.data.text') END,
+             ''), 1, 4000) END
+         WHEN 'tool' THEN substr(json_extract(tools.payload_json, '$.tool_name'), 1, 128)
+           || ' · ' || COALESCE(json_extract(tools.payload_json, '$.status'), 'unknown')
          WHEN 'wait' THEN waits.waiting_for
-         WHEN 'error' THEN transcript.preview
+         WHEN 'error' THEN CASE WHEN transcript.evidence_id IS NOT NULL THEN 'Execution failed' END
          ELSE NULL
        END
 FROM conversation_source_revisions AS sources
@@ -168,10 +180,20 @@ SELECT sources.source_kind,
        sources.revision,
        CASE sources.source_kind
          WHEN 'operator' THEN messages.preview
-         WHEN 'assistant' THEN transcript.preview
-         WHEN 'tool' THEN tools.preview
+         WHEN 'assistant' THEN CASE WHEN transcript.evidence_id IS NULL THEN NULL ELSE
+           substr(COALESCE(
+             (SELECT group_concat(json_extract(block.value, '$.text'), char(10) || char(10))
+                FROM json_each(transcript.payload_json, '$.data.blocks') AS block
+               WHERE json_extract(block.value, '$.type') = 'text'
+                 AND json_type(block.value, '$.text') = 'text'),
+             CASE WHEN json_type(transcript.payload_json, '$.data.blocks') IS NULL
+                    AND json_type(transcript.payload_json, '$.data.text') = 'text'
+                  THEN json_extract(transcript.payload_json, '$.data.text') END,
+             ''), 1, 4000) END
+         WHEN 'tool' THEN substr(json_extract(tools.payload_json, '$.tool_name'), 1, 128)
+           || ' · ' || COALESCE(json_extract(tools.payload_json, '$.status'), 'unknown')
          WHEN 'wait' THEN waits.waiting_for
-         WHEN 'error' THEN transcript.preview
+         WHEN 'error' THEN CASE WHEN transcript.evidence_id IS NOT NULL THEN 'Execution failed' END
          ELSE NULL
        END
 FROM conversation_source_revisions AS sources

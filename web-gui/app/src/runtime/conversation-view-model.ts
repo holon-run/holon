@@ -86,12 +86,14 @@ export function buildConversationSessionModel(
     left.turnId.localeCompare(right.turnId),
   );
   const activeTurn =
-    turns.find((turn) => turn.execution.kind === "active") ?? null;
+    [...turns].reverse().find((turn) => turn.execution.kind === "active") ?? null;
   return {
     status: input.status,
     view,
     turns,
-    pendingInputs: view?.pending_inputs ?? [],
+    pendingInputs: (view?.pending_inputs ?? []).filter(
+      (input) => !turns.some((turn) => turn.inputs.some((assigned) => assigned.message_id === input.message_id)),
+    ),
     hasMoreHistory: view?.has_more ?? false,
     historyState: input.historyState,
     briefs: input.briefs,
@@ -126,9 +128,6 @@ export type TurnResultPresentation =
 export function turnResultPresentation(
   turn: ConversationTurnGroup,
 ): TurnResultPresentation {
-  if (turn.execution.kind === "active") {
-    return { kind: "pending" };
-  }
   if (turn.briefIds.length > 0) {
     return { kind: "available", briefIds: turn.briefIds };
   }
@@ -142,8 +141,9 @@ export function turnResultPresentation(
   if (turn.result.kind === "pending") {
     // Terminal execution with a still-pending result record: the brief may
     // arrive shortly after terminal; render an explicit waiting state.
-    return { kind: "terminal_without_result", outcome: turn.execution.outcome };
+    return { kind: "pending" };
   }
+  if (turn.execution.kind === "active") return { kind: "pending" };
   if (turn.result.kind === "none") {
     return {
       kind: "terminal_without_result",
@@ -152,4 +152,15 @@ export function turnResultPresentation(
     };
   }
   return { kind: "terminal_without_result", outcome: turn.execution.outcome };
+}
+
+/** Execution state is independent of Brief arrival and loading. */
+export function turnExecutionPresentation(turn: ConversationTurnGroup) {
+  if (turn.execution.kind === "active") return "running";
+  if (turn.execution.outcome === "aborted" || turn.attention?.kind === "interrupted") return "interrupted";
+  if (turn.execution.outcome === "deferred_to_fallback") return "recovering";
+  if (turn.attention?.kind === "failed" || turn.execution.outcome !== "completed") return "failed";
+  if (turn.attention?.kind === "waiting") return "waiting";
+  if (turn.result.kind !== "unavailable" && (turn.result.kind === "pending" || !turn.settled)) return "waitingResult";
+  return "completed";
 }

@@ -1,6 +1,6 @@
 ---
 design_system: holon-local-web-gui
-version: 0.2.0
+version: 0.3.0
 status: standalone-app-contract
 audience:
   - local operators
@@ -72,7 +72,7 @@ tokens:
 component_tokens:
   shell:
     max_width: "1440px"
-    left_nav_width: "260px"
+    left_nav_width: "240px"
     detail_width: "360px"
   card:
     background: "{color.panel}"
@@ -108,19 +108,16 @@ The current implementation path is **standalone app first**:
   explicitly authorizes it;
 - do not embed the app into `holon serve` yet.
 
-The Web GUI is a local control room for a headless, event-driven runtime. It
-should not look like a generic chat app, a metrics-only SaaS dashboard, or a
-terminal log viewer. The default experience should explain what is happening,
-what needs operator attention, and what has been delivered.
+The Web GUI is a local control room for a headless, event-driven runtime.
+The conversation uses a quiet chat reading surface: operator inputs, live
+execution, and delivered results. Runtime tools remain available through
+progressive disclosure and the object inspector.
 
 ## Product principles
 
-1. **Work-first, not chat-first.** Conversations matter, but WorkItems,
-   waits, task results, and final briefs are the durable units operators need
-   to understand.
-   The agent detail page still needs a plain message composer and recent
-   history; the difference is that messages are shown with their WorkItem,
-   turn, and brief relationships instead of becoming the only organizing model.
+1. **Readable work.** Group conversation history by native turn and show
+   delivered briefs in full. Keep WorkItems, waits, and execution evidence
+   accessible without turning every event into another message bubble.
 2. **Progressive disclosure.** The default view is brief and human-readable.
    Verbose activity, tool calls, and debug details are one click deeper.
 3. **Local-first trust.** The UI must make local, operator, external, tool, and
@@ -233,6 +230,35 @@ Use a collapsible three-zone shell:
 
 For narrower screens, collapse the left nav to icons and make the side panel
 an overlay drawer. The prototype can focus on desktop first.
+
+## Conversation reading contract
+
+- Center a column up to 760px wide on a white surface. Use 16px result text,
+  14px progress text, and 12–13px metadata. The neutral navigation is 240px
+  wide; the object inspector starts closed and becomes an overlay below 1340px.
+- Operator inputs use soft gray right-aligned bubbles. Delivered briefs use
+  full-width Markdown without card borders. Keep copy and time below the result.
+- Place the execution disclosure before the result. Historical turns start
+  collapsed and do not fetch activity until opened. System, timer, external,
+  and task inputs keep a labeled provenance disclosure instead of impersonating
+  an operator message.
+- Active execution opens automatically. Show readable assistant progress and
+  compact tool rows, initially retaining the latest eight activities plus
+  errors/waits. Earlier activity and older server pages are explicit actions.
+  Tool inputs/outputs remain in the existing inspector.
+- Execution ending alone does not imply result delivery. A turn observed running
+  stays open while delivery is pending or referenced briefs are still loading.
+  Once settled and readable, collapse the process over 220ms. Manual expansion
+  wins over automatic folding; focus or selection inside process content keeps
+  it open. Respect reduced motion.
+- Failure, interruption, fallback, and wait notices remain visible outside the
+  fold. A historical readable brief with legacy `settled=false` does not show a
+  misleading waiting banner; this does not change its canonical settlement.
+- Follow content growth only while the reader is at the bottom. User scrolling
+  upward pauses following and reveals “Back to latest”. Preserve a visible
+  content anchor when result hydration or folding changes heights above it.
+- Keep the composer aligned with the reading column, with a 24px radius and a
+  compact utility row. Below 760px, use icon navigation and narrower gutters.
 
 ## Display levels
 

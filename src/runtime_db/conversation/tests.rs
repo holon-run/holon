@@ -1252,6 +1252,10 @@ fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()>
             .collect::<Vec<_>>(),
         ["assistant:assistant-activity", "tool:tool-activity"]
     );
+    assert_eq!(
+        activity_item(&first.activities[1]).summary,
+        "ExecCommand · deferred"
+    );
     assert!(first.has_more);
     let before = first.next_before.clone().expect("older activity cursor");
     let upper_bound = first
@@ -1273,6 +1277,7 @@ fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()>
         .iter()
         .find(|activity| activity_item(activity).id == "tool:tool-activity")
         .expect("updated tool");
+    assert_eq!(activity_item(updated_tool).summary, "ExecCommand · success");
     assert_eq!(activity_item(updated_tool).revision, 2);
     assert_eq!(
         activity_item(updated_tool).key.event_seq,
@@ -1957,5 +1962,46 @@ fn change_batch_returns_typed_replay_retention_epoch_and_query_resets() -> Resul
             ..
         })
     ));
+    Ok(())
+}
+
+#[test]
+fn activity_display_extracts_text_before_truncation_and_omits_provider_state() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-display", 1))?;
+    let text = "可读的执行进度\n".repeat(1000);
+    let mut entry = TranscriptEntry::new(
+        AGENT_ID,
+        TranscriptEntryKind::AssistantRound,
+        Some(1),
+        None,
+        serde_json::json!({
+            "turn_id": "turn-display",
+            "checkpoint": "private-checkpoint",
+            "blocks": [
+                { "type": "thinking", "text": "private-reasoning", "signature": "private-signature" },
+                { "type": "tool_use", "name": "ExecCommand", "input": { "secret": "private-input" } },
+                { "type": "text", "text": text }
+            ]
+        }),
+    );
+    entry.id = "display-text".into();
+    db.evidence().append_transcript_entry(&entry)?;
+    let first = db
+        .conversation()
+        .activities(AGENT_ID, "turn-display", 10, None, None)?
+        .unwrap();
+    let summary = &activity_item(&first.activities[0]).summary;
+    assert_eq!(summary, &text.chars().take(4000).collect::<String>());
+    assert!(!summary.contains("private-"));
+
+    entry.data["blocks"] = serde_json::json!([{ "type": "thinking", "text": "private-reasoning" }]);
+    db.evidence().append_transcript_entry(&entry)?;
+    let updated = db
+        .conversation()
+        .activities(AGENT_ID, "turn-display", 10, None, None)?
+        .unwrap();
+    assert!(activity_item(&updated.activities[0]).summary.is_empty());
+    assert_eq!(activity_item(&updated.activities[0]).revision, 2);
     Ok(())
 }

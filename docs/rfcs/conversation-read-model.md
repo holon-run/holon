@@ -22,7 +22,7 @@ define the normative v1 contract. Concrete DTO field names and hard limit values
 may be refined without changing the lifecycle, consistency, or compatibility
 boundaries frozen here.
 
-This implementation does not modify the existing `web-gui`. The summary and
+The initial server implementation did not modify the existing `web-gui`. The summary and
 detail reads and the conversation change stream are implemented by the Rust
 runtime. An independent Web/TypeScript protocol SDK remains available for a
 later phase and GUI integration WorkItem. Actual Codex/ChatGPT App folding
@@ -34,6 +34,10 @@ version checks, bounded metadata-only shadow diagnostics, label-free
 conversation metrics, and recovery fixes for long active turns, live terminal
 summaries, and legacy ownership/result mappings. The existing `web-gui` remains
 unchanged and no second event ledger has been introduced.
+
+As of 2026-09-15, the Web GUI consumes the SDK turn read model. Its reading,
+folding, and scrolling behavior is documented in [the GUI design contract](../../web-gui/DESIGN.md#conversation-reading-contract).
+The display-summary refinement below keeps the existing v1 wire shape.
 
 Related native contracts:
 
@@ -340,6 +344,22 @@ These are safe typed verbose items with bounded fields and authorized detail
 references. Existing inspectors handle large output/diffs. Shared activity
 resolution should be reused rather than implementing another set of tool-state
 heuristics in a route. Unknown types have explicit compatibility behavior.
+
+### Activity display summaries
+
+`summary` remains a bounded display field, not a serialized provider envelope.
+For assistant activity, extract only text blocks from the canonical transcript
+before taking the first 4,000 characters. Thinking blocks, signatures, tool-call
+arguments, and provider checkpoint state are excluded. An activity without
+visible text has an empty summary; clients may label that absence. Legacy
+text-only transcript entries may use their string `text` field.
+
+Tool summaries include the canonical tool name (up to 128 characters) and
+status. Full tool output and its summary stay in the object inspector. Typed errors use a
+short failure label; their evidence remains in authorized detail inspection.
+Operator previews retain the existing MessageBody preview representation.
+This refinement does not add fields, change identities, or alter pagination and
+stream revisions. Extraction runs inside the existing indexed page query.
 
 Detail pagination freezes membership independently from summary pagination.
 Its cursor is bound to agent, turn, epoch, and query version; it cannot resume

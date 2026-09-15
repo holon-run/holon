@@ -3,16 +3,17 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
-  CircleCheck,
-  CircleDashed,
+  Check,
+  Copy,
   Clock,
   LoaderCircle,
   RefreshCw,
   Unplug,
   User,
   Wrench,
+  ExternalLink,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, useRef, useId } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -29,6 +30,7 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import type { AgentTimelineActivity } from "../../runtime/types";
 import {
   turnResultPresentation,
+  turnExecutionPresentation,
   type ConversationSessionModel,
   type ConversationTurnGroup,
 } from "../../runtime/conversation-view-model";
@@ -61,7 +63,7 @@ export const ConversationTimeline = memo(function ConversationTimeline({
   const { t } = useTranslation();
   const status = model.status;
   return (
-    <div className="conversation-timeline" role="log" aria-label={t("agent.conversationAria")}>
+    <div className="conversation-timeline" aria-label={t("agent.conversationAria")}>
       {status.kind === "reconnecting" ? (
         <div className="conversation-status-banner is-reconnecting" role="status">
           <Unplug size={14} />
@@ -84,6 +86,13 @@ export const ConversationTimeline = memo(function ConversationTimeline({
           </button>
         </div>
       ) : null}
+      {model.turns.map((turn) => (
+        <ConversationTurnCard
+          key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}
+          turn={turn}
+          {...actions}
+        />
+      ))}
       {model.pendingInputs.length > 0 ? (
         <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingInputs")}>
           {model.pendingInputs.map((input) => (
@@ -91,9 +100,6 @@ export const ConversationTimeline = memo(function ConversationTimeline({
           ))}
         </div>
       ) : null}
-      {model.turns.map((turn) => (
-        <ConversationTurnCard key={turn.turnId} turn={turn} {...actions} />
-      ))}
       {!model.bootstrapLoading &&
       model.turns.length === 0 &&
       model.pendingInputs.length === 0 &&
@@ -118,25 +124,12 @@ export const ConversationTimeline = memo(function ConversationTimeline({
 function PendingInputChip({ input }: { input: PendingInput }) {
   const { t } = useTranslation();
   return (
-    <div
-      className={`conversation-pending-chip is-${input.state}`}
-      role="status"
-      aria-label={t("agentPage.pendingInputState")}
-    >
-      {input.state === "assigning" ? (
-        <LoaderCircle size={12} className="is-spinning" />
-      ) : (
+    <div className="conversation-pending-chip" data-conversation-anchor={`input:${input.message_id}`}>
+      {input.preview ? <MarkdownContent text={parseInputPreview(input.preview)} /> : null}
+      <span className="conversation-input-status" role="status">
         <Clock size={12} />
-      )}
-      {input.preview ? (
-        <MarkdownContent text={parseInputPreview(input.preview)} compact />
-      ) : (
-        <span>
-          {input.state === "assigning"
-            ? t("agentPage.pendingAssigning")
-            : t("agentPage.pendingQueued")}
-        </span>
-      )}
+        {t(input.state === "assigning" ? "agentPage.pendingAssigning" : "agentPage.pendingQueued")}
+      </span>
     </div>
   );
 }
@@ -144,133 +137,107 @@ function PendingInputChip({ input }: { input: PendingInput }) {
 const ConversationTurnCard = memo(function ConversationTurnCard({
   turn,
   ...actions
-}: {
-  turn: ConversationTurnGroup;
-} & ConversationTimelineActions) {
+}: { turn: ConversationTurnGroup } & ConversationTimelineActions) {
   const { t } = useTranslation();
+  const detailId = useId();
+  const detailRef = useRef<HTMLDivElement>(null);
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
-  const expanded = manualExpanded ?? turn.execution.kind === "active";
+  const [readingDetail, setReadingDetail] = useState(false);
+  const wasActive = useRef(turn.execution.kind === "active");
   const presentation = turnResultPresentation(turn);
+  const execution = turnExecutionPresentation(turn);
   const detailState = actions.detailLoadState(turn.turnId);
+  const briefReady = turn.briefIds.every((id) => actions.briefRecord(id) !== null);
+  const hasReadableBrief = turn.briefIds.length > 0 && briefReady;
+  const showExecutionNotice = execution !== "running" && execution !== "completed"
+    && !(execution === "waitingResult" && hasReadableBrief && !wasActive.current);
+  const awaitingResult = execution === "waitingResult" || (turn.briefIds.length > 0 && !briefReady);
+  const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
+  const expanded = manualExpanded ?? (autoExpanded || readingDetail);
+  const [mounted, setMounted] = useState(expanded);
+  const operator = turn.presentationClass === "operator";
 
-  const toggleExpanded = () => {
-    const next = !expanded;
-    setManualExpanded(next);
-    if (next && turn.detail === null && detailState.kind !== "loading") {
+  useEffect(() => {
+    if (turn.execution.kind === "active") wasActive.current = true;
+  }, [turn.execution.kind]);
+  useEffect(() => {
+    if (expanded) {
+      setMounted(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setMounted(false), 240);
+    return () => window.clearTimeout(timer);
+  }, [expanded]);
+  useEffect(() => {
+    if (expanded && turn.detail === null && detailState.kind === "idle") {
       actions.onLoadDetail(turn.turnId);
     }
-  };
+  }, [expanded, turn.detail, detailState.kind, turn.turnId, actions.onLoadDetail]);
+  useEffect(() => {
+    const updateReading = () => {
+      const node = detailRef.current;
+      const selection = window.getSelection();
+      setReadingDetail(Boolean(node && (
+        node.contains(document.activeElement) ||
+        (selection && !selection.isCollapsed && node.contains(selection.anchorNode))
+      )));
+    };
+    document.addEventListener("selectionchange", updateReading);
+    document.addEventListener("focusin", updateReading);
+    return () => {
+      document.removeEventListener("selectionchange", updateReading);
+      document.removeEventListener("focusin", updateReading);
+    };
+  }, []);
 
   return (
-    <section className="timeline-turn conversation-turn" aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
-      <div className="timeline-turn-rail" aria-hidden="true" />
-      <div className="timeline-turn-body">
-        <div className="timeline-turn-header">
-          <span className="timeline-turn-icon" data-tooltip={turn.turnId} data-tooltip-pos="bottom">
-            {isOperatorTurn(turn) ? <User size={14} /> : <Bot size={14} />}
-          </span>
-          <span className="conversation-turn-class">
-            {t(`agentPage.turnClass.${turn.presentationClass}`)}
-          </span>
-          <TurnStatusIcon turn={turn} presentation={presentation} />
-          <time>{`#${turn.turnIndex}`}</time>
-        </div>
-
-        {turn.inputs.map((input) => (
-          <ConversationInputLine key={input.message_id} input={input} />
-        ))}
-
-        {presentation.kind === "available" ? (
-          presentation.briefIds.map((briefId) => (
-            <ConversationBriefCard
-              key={briefId}
-              briefId={briefId}
-              actions={actions}
-            />
-          ))
-        ) : null}
-        {presentation.kind === "terminal_without_result" ? (
-          <div className="conversation-turn-notice is-muted">
-            {t("agentPage.turnNoBrief", {
-              outcome: t(`agentPage.outcome.${presentation.outcome}`),
-            })}
+    <section className={`conversation-turn is-${execution}`} data-turn-id={turn.turnId}
+      aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
+      {operator ? turn.inputs.map((input) => (
+        <ConversationInputLine key={input.message_id} input={input} />
+      )) : (
+        <details className="conversation-source" data-conversation-anchor={`source:${turn.turnId}`}>
+          <summary><Bot size={13} />{t(`agentPage.turnSource.${turn.presentationClass}`)}<ChevronRight size={12} /></summary>
+          {turn.inputs.map((input) => <MarkdownContent key={input.message_id} text={parseInputPreview(input.preview)} compact />)}
+          <span className="conversation-source-id">{`#${turn.turnIndex}`}</span>
+        </details>
+      )}
+      <div className="conversation-response">
+        <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
+          data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
+          onClick={() => setManualExpanded(!expanded)}>
+          <ChevronRight size={14} className="conversation-disclosure-chevron" />
+          {execution === "running" ? <LoaderCircle size={14} className="is-spinning" /> : null}
+          <span>{t(execution === "running" ? "agentPage.turnWorking" : "agentPage.executionProcess")}</span>
+        </button>
+        <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
+          aria-hidden={!expanded} inert={!expanded}>
+          <div className="conversation-detail-clip">
+            {mounted || expanded ? <ConversationDetailPanel turn={turn} detailState={detailState} actions={actions} /> : null}
           </div>
+        </div>
+        {showExecutionNotice ? (
+          <div className={`conversation-turn-notice is-${execution}`} role="status">
+            {execution === "failed" ? <CircleAlert size={14} /> : <Clock size={14} />}
+            {t(`agentPage.executionState.${execution === "waitingResult" && hasReadableBrief ? "finishingResult" : execution}`)}
+          </div>
+        ) : null}
+        {turn.briefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
+        {presentation.kind === "terminal_without_result" && execution === "completed" ? (
+          <div className="conversation-turn-notice">{t("agentPage.turnNoBrief", { outcome: t(`agentPage.outcome.${presentation.outcome}`) })}</div>
         ) : null}
         {presentation.kind === "unavailable" ? (
-          <div className="conversation-turn-notice is-error" role="note">
-            {t("agentPage.turnResultUnavailable")}
-            {presentation.reason ? ` (${presentation.reason})` : ""}
-          </div>
-        ) : null}
-        {presentation.kind === "pending" ? (
-          <WorkingTurnIndicator />
-        ) : null}
-
-        <button
-          type="button"
-          className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
-          aria-expanded={expanded}
-          onClick={toggleExpanded}
-        >
-          {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-          <span>{t("agentPage.executionProcess")}</span>
-          {turn.detail !== null && turn.detail.has_more ? (
-            <span className="conversation-detail-more">+</span>
-          ) : null}
-        </button>
-
-        {expanded ? (
-          <ConversationDetailPanel
-            turn={turn}
-            detailState={detailState}
-            actions={actions}
-          />
+          <div className="conversation-turn-notice is-error" role="note">{t("agentPage.turnResultUnavailable")}</div>
         ) : null}
       </div>
     </section>
   );
 });
 
-function isOperatorTurn(turn: ConversationTurnGroup): boolean {
-  return turn.presentationClass === "operator";
-}
-
-function TurnStatusIcon({
-  turn,
-  presentation,
-}: {
-  turn: ConversationTurnGroup;
-  presentation: ReturnType<typeof turnResultPresentation>;
-}) {
-  const { t } = useTranslation();
-  if (turn.attention?.kind === "failed") {
-    return <CircleAlert size={14} className="conversation-status is-failed" aria-label={t("agentPage.turnFailed")} />;
-  }
-  if (presentation.kind === "pending") {
-    return <LoaderCircle size={14} className="is-spinning conversation-status is-active" aria-label={t("agentPage.turnRunning")} />;
-  }
-  if (presentation.kind === "available" || presentation.kind === "terminal_without_result") {
-    return <CircleCheck size={14} className="conversation-status is-done" aria-label={t("agentPage.turnDone")} />;
-  }
-  return <CircleDashed size={14} className="conversation-status is-unknown" aria-label={t("agentPage.turnUnknown")} />;
-}
-
-function WorkingTurnIndicator() {
-  const { t } = useTranslation();
-  return (
-    <div className="conversation-working" role="status">
-      <LoaderCircle size={14} className="is-spinning" />
-      <span>{t("agentPage.turnWorking")}</span>
-    </div>
-  );
-}
-
 function ConversationInputLine({ input }: { input: TurnInputSummary }) {
-  const text = useMemo(() => parseInputPreview(input.preview), [input.preview]);
   return (
-    <div className="conversation-input-line">
-      <User size={14} />
-      <MarkdownContent text={text} compact />
+    <div className="conversation-input-line" data-conversation-anchor={`input:${input.message_id}`}>
+      <MarkdownContent text={parseInputPreview(input.preview)} />
     </div>
   );
 }
@@ -338,15 +305,14 @@ const ConversationBriefCard = memo(function ConversationBriefCard({
 });
 
 function BriefCardBody({ brief }: { brief: BriefRecord }) {
+  const { t } = useTranslation();
+  const [copied, setCopied] = useState(false);
   const created = useMemo(
     () => (brief.created_at ? new Date(brief.created_at) : null),
     [brief.created_at],
   );
   return (
-    <article className={`conversation-brief is-${brief.kind}`}>
-      {created !== null && !Number.isNaN(created.getTime()) ? (
-        <time dateTime={brief.created_at}>{created.toLocaleTimeString()}</time>
-      ) : null}
+    <article className={`conversation-brief is-${brief.kind}`} data-conversation-anchor={`brief:${brief.id}`}>
       <MarkdownContent
         text={brief.text}
         citations={brief.citations?.map((citation) => ({
@@ -355,6 +321,20 @@ function BriefCardBody({ brief }: { brief: BriefRecord }) {
         }))}
         compact={false}
       />
+      <div className="conversation-brief-actions">
+        <button type="button" aria-label={t(copied ? "agentPage.copiedReply" : "agentPage.copyReply")}
+          onClick={async () => {
+            try { await navigator.clipboard.writeText(brief.text); setCopied(true); }
+            catch { setCopied(false); }
+          }}>
+          {copied ? <Check size={14} /> : <Copy size={14} />}
+        </button>
+        {created !== null && !Number.isNaN(created.getTime()) ? (
+          <time dateTime={brief.created_at} title={created.toLocaleString()}>
+            {created.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+          </time>
+        ) : null}
+      </div>
       {brief.attachments !== null && brief.attachments.length > 0 ? (
         <span className="conversation-brief-attachments">
           {brief.attachments.length}
@@ -375,6 +355,7 @@ function ConversationDetailPanel({
 }) {
   const { t } = useTranslation();
   const detail = turn.detail;
+  const [showEarlier, setShowEarlier] = useState(false);
   if (detail === null) {
     if (detailState.kind === "error") {
       return (
@@ -409,11 +390,28 @@ function ConversationDetailPanel({
       {detail.truncated ? (
         <div className="conversation-detail-notice">{t("agentPage.detailTruncated")}</div>
       ) : null}
+      {detail.has_more && detail.next_before_cursor !== null ? (
+        <button
+          type="button"
+          className="conversation-detail-older"
+          onClick={() => { setShowEarlier(true); actions.onLoadOlderActivities(turn.turnId); }}
+        >
+          <ChevronUpLoadMore />
+          <span>{t("agentPage.loadOlderActivities")}</span>
+        </button>
+      ) : null}
+      {!showEarlier && detail.activities.length > 8 ? (
+        <button type="button" className="conversation-detail-older" onClick={() => setShowEarlier(true)}>
+          <ChevronDown size={13} />{t("agentPage.showEarlierProcess")}
+        </button>
+      ) : null}
       {detail.activities.length === 0 ? (
         <div className="conversation-detail-notice">{t("agentPage.detailEmpty")}</div>
       ) : (
         <ol className="conversation-activities">
-          {detail.activities.map((activity) => (
+          {detail.activities.filter((activity, index) =>
+            activity.kind !== "operator" && (showEarlier || index >= detail.activities.length - 8 || activity.kind === "error" || activity.kind === "wait")
+          ).map((activity) => (
             <ConversationActivityRow
               activity={activity}
               key={activity.id}
@@ -422,16 +420,7 @@ function ConversationDetailPanel({
           ))}
         </ol>
       )}
-      {detail.has_more && detail.next_before_cursor !== null ? (
-        <button
-          type="button"
-          className="conversation-detail-older"
-          onClick={() => actions.onLoadOlderActivities(turn.turnId)}
-        >
-          <ChevronUpLoadMore />
-          <span>{t("agentPage.loadOlderActivities")}</span>
-        </button>
-      ) : null}
+
     </div>
   );
 }
@@ -453,21 +442,31 @@ function ConversationActivityRow({
     [activity],
   );
   const icon = activityIcon(activity);
-  const kindLabel = t(`agentPage.activityKind.${activity.kind}`);
-  const inspect = onInspectActivity === undefined ? undefined : () =>
-    onInspectActivity(conversationActivityToInspectorActivity(activity));
+  const label = t(`agentPage.activityKind.${activity.kind}`);
   return (
-    <li
-      className={`conversation-activity is-${activity.kind}${inspect === undefined ? "" : " is-inspectable"}`}
-      data-activity-id={activity.id}
-      {...(inspect === undefined ? {} : { onClick: inspect })}
-    >
-      <span className="conversation-activity-icon">{icon}</span>
-      <span className="conversation-activity-kind">{kindLabel}</span>
-      <span className="conversation-activity-summary" title={summary.plain}>
-        {summary.display}
-      </span>
-      <span className="conversation-activity-seq">#{activity.key.event_seq}</span>
+    <li className={`conversation-activity is-${activity.kind}`} data-activity-id={activity.id}
+      data-conversation-anchor={`activity:${activity.id}`}>
+      {activity.kind === "assistant" ? (
+        <div className="conversation-progress-text">
+          {summary.display ? <MarkdownContent text={summary.display} /> : <span>{t("agentPage.activitySummaryUnavailable")}</span>}
+        </div>
+      ) : (
+        <details className="conversation-tool-detail">
+          <summary>
+            <span className="conversation-activity-icon">{icon}</span>
+            <span className="conversation-activity-summary">{summary.display || label}</span>
+            <ChevronRight size={13} className="conversation-disclosure-chevron" />
+          </summary>
+          <div className="conversation-tool-body">
+            <pre>{summary.plain || t("agentPage.activitySummaryUnavailable")}</pre>
+            {onInspectActivity ? (
+              <button type="button" onClick={() => onInspectActivity(conversationActivityToInspectorActivity(activity))}>
+                <ExternalLink size={13} />{t("agentPage.inspectActivity")}
+              </button>
+            ) : null}
+          </div>
+        </details>
+      )}
     </li>
   );
 }
@@ -491,6 +490,9 @@ export function conversationActivityToInspectorActivity(
     meta: `#${activity.key.event_seq} r${activity.revision}`,
     minDisplayLevel: "info",
     sourceIds: [activity.id],
+    ...(activity.kind === "tool" && activity.id.startsWith("tool:") && activity.id.length > 5
+      ? { stateObjectRef: { kind: "tool_execution" as const, id: activity.id.slice(5), toolName: "Tool", status: "unknown" } }
+      : {}),
   };
 }
 
@@ -515,44 +517,32 @@ interface ActivitySummary {
 }
 
 /**
- * Activity summaries embed different payload shapes per source kind:
- * operator carries serialized MessageBody JSON, assistant carries serialized
- * transcript entry JSON (extract text blocks), tool carries a status string,
- * wait carries the waiting description.
+ * Assistant/tool summaries are display text. Older daemons may send serialized
+ * assistant blocks; operator previews still carry MessageBody JSON.
  */
 export function summarizeActivity(activity: ConversationActivity): ActivitySummary {
   const raw = activity.summary;
   if (activity.kind === "assistant") {
-    return { display: summarizeAssistantSummary(raw), plain: raw };
+    const text = summarizeAssistantSummary(raw);
+    return { display: text, plain: text };
   }
   if (activity.kind === "operator") {
     const text = parseInputPreview(raw);
-    return { display: text.length > 0 ? text : raw, plain: raw };
+    return { display: text, plain: text };
   }
   return { display: raw, plain: raw };
 }
 
 function summarizeAssistantSummary(raw: string): string {
+  // Older daemons send truncated transcript JSON. Never expose its raw
+  // provider state, thinking blocks, or signatures in text or tooltips.
+  if (!/^\s*\{\s*"(?:blocks|role|type|data|active_model|checkpoint|signature|thinking)"\s*:/.test(raw)) return raw;
   try {
-    const parsed = JSON.parse(raw) as {
-      blocks?: Array<{ type?: string; text?: string; name?: string }>;
-    };
-    if (!Array.isArray(parsed.blocks)) return truncateSummary(raw);
-    const parts: string[] = [];
-    for (const block of parsed.blocks) {
-      if (typeof block.text === "string" && block.text.length > 0) {
-        parts.push(block.text);
-      } else if (typeof block.name === "string") {
-        parts.push(`⚡ ${block.name}`);
-      }
-    }
-    return truncateSummary(parts.join("\n"));
+    const parsed = JSON.parse(raw) as { blocks?: Array<{ type?: string; text?: string }> };
+    if (!Array.isArray(parsed.blocks)) return "";
+    return parsed.blocks.filter((block) => block && block.type === "text" && typeof block.text === "string")
+      .map((block) => block.text).join("\n\n");
   } catch {
-    return truncateSummary(raw);
+    return "";
   }
-}
-
-function truncateSummary(value: string, max = 240): string {
-  const normalized = value.replace(/\s+/g, " ").trim();
-  return normalized.length > max ? `${normalized.slice(0, max)}…` : normalized;
 }

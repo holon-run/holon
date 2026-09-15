@@ -10,6 +10,7 @@ import type {
 import {
   buildConversationSessionModel,
   turnResultPresentation,
+  turnExecutionPresentation,
   type ConversationTurnGroup,
 } from "./conversation-view-model";
 
@@ -109,7 +110,7 @@ describe("buildConversationSessionModel", () => {
     ]);
     expect(model.turns[0]?.detail).toBeNull();
     expect(model.turns[1]?.detail?.turn_id).toBe("turn-2");
-    expect(model.activeTurn?.turnId).toBe("turn-1");
+    expect(model.activeTurn?.turnId).toBe("turn-2");
   });
 
   it("treats a missing view before bootstrap as loading", () => {
@@ -200,7 +201,7 @@ describe("turnResultPresentation", () => {
         }),
       ),
     );
-    expect(presentation.kind).toBe("terminal_without_result");
+    expect(presentation.kind).toBe("pending");
   });
 
   it("propagates no-brief reasons for aborted turns", () => {
@@ -217,5 +218,28 @@ describe("turnResultPresentation", () => {
       outcome: "aborted",
       reason: { kind: "aborted" },
     });
+  });
+});
+
+
+describe("turn execution state", () => {
+  it.each([
+    ["completed", null, "completed"],
+    ["aborted", null, "interrupted"],
+    ["deferred_to_fallback", null, "recovering"],
+    ["provider_failed_needs_recovery", null, "failed"],
+    ["baseline_over_budget", null, "failed"],
+    ["completed", { kind: "waiting" }, "waiting"],
+  ] as const)("distinguishes %s from successful completion", (outcome, attention, expected) => {
+    expect(turnExecutionPresentation(group(turnSummary("t", 1, {
+      execution: { kind: "terminal", outcome }, attention, settled: true,
+      result: { kind: "available" }, brief_ids: ["brief-1"],
+    })))).toBe(expected);
+  });
+  it("does not call a result final until settlement", () => {
+    expect(turnExecutionPresentation(group(turnSummary("t", 1, {
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "available" }, brief_ids: ["brief-1"], settled: false,
+    })))).toBe("waitingResult");
   });
 });

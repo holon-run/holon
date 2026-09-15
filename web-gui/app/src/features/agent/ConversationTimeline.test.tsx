@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import type {
   BriefRecord,
@@ -107,7 +107,7 @@ function renderTimeline(
 }
 
 describe("ConversationTimeline", () => {
-  it("renders turn inputs, briefs, and index", () => {
+  it("renders inputs and briefs without visible turn chrome", () => {
     const html = renderTimeline([
       turnSummary("turn-1", 1, {
         inputs: [{ message_id: "m-1", preview: '{"type":"text","text":"帮我检查发布"}' }],
@@ -121,7 +121,19 @@ describe("ConversationTimeline", () => {
     ]);
     expect(html).toContain("帮我检查发布");
     expect(html).toContain("这是结果内容 markdown");
-    expect(html).toContain("#2");
+    expect(html).toContain('aria-label="Conversation turn 2"');
+    expect(html).not.toContain("timeline-turn-rail");
+    expect(html.indexOf("View execution process")).toBeLessThan(html.indexOf("这是结果内容 markdown"));
+  });
+
+  it("keeps legacy historical briefs readable without claiming delivery is pending", () => {
+    const html = renderTimeline([turnSummary("legacy", 1, {
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "available" }, settled: false, brief_ids: ["brief-1"],
+    })]);
+    expect(html).toContain("这是结果内容 markdown");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("waiting for the result");
   });
 
   it("shows terminal-without-result notice and unavailable reason", () => {
@@ -135,8 +147,9 @@ describe("ConversationTimeline", () => {
         result: { kind: "unavailable", reason: "retention_gap", retryable: false },
       }),
     ]);
-    expect(html).toContain("with no result brief");
-    expect(html).toContain("retention_gap");
+    expect(html).toContain("This turn was stopped");
+    expect(html).toContain("Result unavailable");
+    expect(html).not.toContain("waiting for the result");
   });
 
   it("renders pending input chips and reconnecting banner", () => {
@@ -212,7 +225,7 @@ describe("parseInputPreview", () => {
 });
 
 describe("summarizeActivity", () => {
-  it("extracts assistant text blocks and truncates long output", () => {
+  it("preserves readable assistant text without flattening Markdown", () => {
     const long = "x".repeat(400);
     const summary = summarizeActivity({
       kind: "assistant",
@@ -221,8 +234,7 @@ describe("summarizeActivity", () => {
       revision: 1,
       summary: JSON.stringify({ blocks: [{ type: "text", text: long }] }),
     });
-    expect(summary.display.endsWith("…")).toBe(true);
-    expect(summary.display.length).toBeLessThanOrEqual(241);
+    expect(summary).toEqual({ display: long, plain: long });
   });
 
   it("surfaces tool summaries verbatim", () => {
@@ -234,5 +246,41 @@ describe("summarizeActivity", () => {
       summary: "completed",
     });
     expect(summary.display).toBe("completed");
+  });
+});
+
+
+describe("conversation presentation boundaries", () => {
+  it("preserves Markdown links and ordinary JSON in display text", () => {
+    for (const raw of ['[Source](https://example.com)', '{"files": 3}', '[1, 2]']) {
+      expect(summarizeActivity({ kind: "assistant", id: "a", key: { event_seq: 1, activity_id: "a" }, revision: 1, summary: raw }))
+        .toEqual({ display: raw, plain: raw });
+    }
+  });
+
+  it("never returns hidden blocks or malformed transcript JSON as display or inspector text", () => {
+    for (const raw of [
+      '{"blocks":[{"type":"thinking","text":"private reasoning","signature":"secret"}]}',
+      '{"blocks":[{"type":"text","text":"truncated',
+      '{"active_model":"private","checkpoint":"secret"}',
+    ]) {
+      expect(summarizeActivity({ kind: "assistant", id: "a", key: { event_seq: 1, activity_id: "a" }, revision: 1, summary: raw }))
+        .toEqual({ display: "", plain: "" });
+    }
+  });
+  it("shows an early Brief while execution is still active", () => {
+    const html = renderTimeline([turnSummary("active", 1, { brief_ids: ["brief-1"], result: { kind: "available" } })]);
+    expect(html).toContain("Working…");
+    expect(html).toContain("这是结果内容 markdown");
+  });
+  it("puts queued input after history and exposes system provenance without a user bubble", () => {
+    const html = renderTimeline([turnSummary("background", 1, {
+      presentation_class: "system", inputs: [{ message_id: "system", preview: "recheck" }],
+      execution: { kind: "terminal", outcome: "completed" }, result: { kind: "available" },
+      settled: true, brief_ids: ["brief-1"],
+    })], { pendingInputs: [{ message_id: "queued", revision: 1, state: "queued", preview: "new prompt" }] } as never);
+    expect(html).toContain("System wake");
+    expect(html).not.toContain('class="conversation-input-line"');
+    expect(html.indexOf("new prompt")).toBeGreaterThan(html.indexOf("这是结果内容 markdown"));
   });
 });

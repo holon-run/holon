@@ -1453,7 +1453,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   selectedSkillId: "",
   selectedSkillAgentId: "",
   selectedTemplateId: "",
-  rightPanelOpen: true,
+  rightPanelOpen: false,
   rightPanelMode: "normal",
   rightPanelView: undefined,
   rightPanelViewStack: [],
