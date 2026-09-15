@@ -2918,7 +2918,7 @@ impl RuntimeHandle {
                     RuntimeErrorDomain::Conflict,
                     "continuation_unwind_incomplete",
                     format!(
-                        "continuation unwind from work item {} is disconnected from current focus at work item {} after continuation {}",
+                        "continuation unwind from work item {} is disconnected from current focus; chain breaks at work item {} after continuation {}",
                         record.id, missing_work_item_id, originating_continuation_id
                     ),
                 )
