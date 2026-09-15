@@ -554,6 +554,17 @@ fn migration_repairs_existing_replay_input_assignment() -> Result<()> {
         prior_terminal: None,
     });
     db.turn_records().upsert(&replay)?;
+    let stale_replay = turn("repair-stale-replay", 3);
+    db.turn_records().upsert(&stale_replay)?;
+    let mut stale_replay_payload = stale_replay;
+    stale_replay_payload.input_message_ids = source.input_message_ids.clone();
+    stale_replay_payload.replay = Some(TurnReplayProvenance {
+        source_message_id: "repair-message".into(),
+        source_turn_id: "repair-missing-source".into(),
+        reason: "repair_test".into(),
+        prior_terminal: None,
+    });
+    overwrite_turn_payload(&db, &stale_replay_payload)?;
     db.connection()?.execute_batch(
         "UPDATE conversation_input_assignments
          SET turn_id = 'repair-replay'
@@ -571,6 +582,14 @@ fn migration_repairs_existing_replay_input_assignment() -> Result<()> {
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
     )?;
     assert_eq!(assignment, ("repair-source".into(), 2));
+    let stale_replay_type: Option<String> = db.connection()?.query_row(
+        "SELECT json_type(payload_json, '$.replay')
+         FROM turn_records
+         WHERE turn_id = 'repair-stale-replay'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(stale_replay_type, None);
     db.connection()?
         .execute("DELETE FROM schema_migrations WHERE version = 66", [])?;
     drop(db);
@@ -680,7 +699,7 @@ DELETE FROM schema_migrations WHERE version = 66;
 }
 
 #[test]
-fn migration_rejects_conflicting_replay_input_sources() -> Result<()> {
+fn migration_skips_conflicting_replay_input_sources() -> Result<()> {
     let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
     let mut source_one = turn("repair-source-one", 1);
     source_one.input_message_ids = vec!["repair-conflict-message".into()];
@@ -717,44 +736,195 @@ fn migration_rejects_conflicting_replay_input_sources() -> Result<()> {
         .execute("DELETE FROM schema_migrations WHERE version = 66", [])?;
     drop(db);
 
-    let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
-        .expect_err("conflicting replay ownership must fail closed");
-    assert!(error
-        .to_string()
-        .contains("messages with conflicting replay source ownership"));
-    let connection = rusqlite::Connection::open(&db_path)?;
-    let version: i64 = connection.query_row(
-        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    assert_eq!(db.current_schema_version()?, 66);
+    let assignment = db.connection()?.query_row(
+        "SELECT turn_id, revision
+         FROM conversation_input_assignments
+         WHERE message_id = 'repair-conflict-message'",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    assert_eq!(assignment, ("repair-source-one".into(), 1));
+    let replay_count: i64 = db.connection()?.query_row(
+        "SELECT COUNT(*)
+         FROM turn_records
+         WHERE turn_id IN ('repair-replay-one', 'repair-replay-two')
+           AND json_type(payload_json, '$.replay') = 'object'",
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(version, 65);
+    assert_eq!(replay_count, 2);
     Ok(())
 }
 
 #[test]
-fn migration_rejects_missing_replay_source_turn() -> Result<()> {
+fn migration_discards_invalid_replay_provenance_without_reassigning_inputs() -> Result<()> {
     let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
-    let replay = turn("repair-missing-source-replay", 1);
-    db.turn_records().upsert(&replay)?;
-    let mut replay_payload = replay;
-    replay_payload.input_message_ids = vec!["repair-missing-source-message".into()];
-    replay_payload.replay = Some(TurnReplayProvenance {
-        source_message_id: "repair-missing-source-message".into(),
-        source_turn_id: "repair-missing-source".into(),
-        reason: "repair_test".into(),
-        prior_terminal: None,
-    });
-    overwrite_turn_payload(&db, &replay_payload)?;
-    db.connection()?
-        .execute("DELETE FROM schema_migrations WHERE version = 66", [])?;
+    db.connection()?.execute_batch(
+        r#"
+INSERT INTO turn_records (
+  turn_id, turn_index, agent_id, created_at, payload_json
+) VALUES
+(
+  'invalid-replay-incomplete', 1, 'agent-conversation-test',
+  '2026-09-15T00:00:01Z',
+  json_object(
+    'turn_id', 'invalid-replay-incomplete',
+    'turn_index', 1,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('invalid-incomplete-message'),
+    'replay', json_object(
+      'source_message_id', 'invalid-incomplete-message',
+      'source_turn_id', ''
+    ),
+    'created_at', '2026-09-15T00:00:01Z'
+  )
+),
+(
+  'invalid-replay-missing-input', 2, 'agent-conversation-test',
+  '2026-09-15T00:00:02Z',
+  json_object(
+    'turn_id', 'invalid-replay-missing-input',
+    'turn_index', 2,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array(),
+    'replay', json_object(
+      'source_message_id', 'invalid-missing-input-message',
+      'source_turn_id', 'invalid-source-valid'
+    ),
+    'created_at', '2026-09-15T00:00:02Z'
+  )
+),
+(
+  'invalid-replay-missing-source', 3, 'agent-conversation-test',
+  '2026-09-15T00:00:03Z',
+  json_object(
+    'turn_id', 'invalid-replay-missing-source',
+    'turn_index', 3,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('invalid-missing-source-message'),
+    'replay', json_object(
+      'source_message_id', 'invalid-missing-source-message',
+      'source_turn_id', 'invalid-source-absent'
+    ),
+    'created_at', '2026-09-15T00:00:03Z'
+  )
+),
+(
+  'invalid-replay-cross-agent', 4, 'agent-conversation-test',
+  '2026-09-15T00:00:04Z',
+  json_object(
+    'turn_id', 'invalid-replay-cross-agent',
+    'turn_index', 4,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('invalid-cross-agent-message'),
+    'replay', json_object(
+      'source_message_id', 'invalid-cross-agent-message',
+      'source_turn_id', 'invalid-source-cross-agent'
+    ),
+    'created_at', '2026-09-15T00:00:04Z'
+  )
+),
+(
+  'invalid-replay-source-missing-input', 5, 'agent-conversation-test',
+  '2026-09-15T00:00:05Z',
+  json_object(
+    'turn_id', 'invalid-replay-source-missing-input',
+    'turn_index', 5,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('invalid-source-missing-input-message'),
+    'replay', json_object(
+      'source_message_id', 'invalid-source-missing-input-message',
+      'source_turn_id', 'invalid-source-missing-input'
+    ),
+    'created_at', '2026-09-15T00:00:05Z'
+  )
+),
+(
+  'invalid-source-valid', 6, 'agent-conversation-test',
+  '2026-09-15T00:00:06Z',
+  json_object(
+    'turn_id', 'invalid-source-valid',
+    'turn_index', 6,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('invalid-missing-input-message'),
+    'created_at', '2026-09-15T00:00:06Z'
+  )
+),
+(
+  'invalid-source-cross-agent', 7, 'other-agent',
+  '2026-09-15T00:00:07Z',
+  json_object(
+    'turn_id', 'invalid-source-cross-agent',
+    'turn_index', 7,
+    'agent_id', 'other-agent',
+    'input_message_ids', json_array('invalid-cross-agent-message'),
+    'created_at', '2026-09-15T00:00:07Z'
+  )
+),
+(
+  'invalid-source-missing-input', 8, 'agent-conversation-test',
+  '2026-09-15T00:00:08Z',
+  json_object(
+    'turn_id', 'invalid-source-missing-input',
+    'turn_index', 8,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array(),
+    'created_at', '2026-09-15T00:00:08Z'
+  )
+);
+
+INSERT INTO conversation_input_assignments (
+  message_id, agent_id, turn_id, revision, assigned_at
+) VALUES
+(
+  'invalid-incomplete-message', 'agent-conversation-test',
+  'invalid-replay-incomplete', 7, '2026-09-15T00:00:01Z'
+),
+(
+  'invalid-missing-input-message', 'agent-conversation-test',
+  'invalid-replay-missing-input', 7, '2026-09-15T00:00:02Z'
+),
+(
+  'invalid-missing-source-message', 'agent-conversation-test',
+  'invalid-replay-missing-source', 7, '2026-09-15T00:00:03Z'
+),
+(
+  'invalid-cross-agent-message', 'agent-conversation-test',
+  'invalid-replay-cross-agent', 7, '2026-09-15T00:00:04Z'
+),
+(
+  'invalid-source-missing-input-message', 'agent-conversation-test',
+  'invalid-replay-source-missing-input', 7, '2026-09-15T00:00:05Z'
+);
+
+DELETE FROM schema_migrations WHERE version = 66;
+"#,
+    )?;
     drop(db);
 
-    let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
-        .expect_err("missing replay source must fail closed");
-    assert!(error
-        .to_string()
-        .contains("replay sources that are missing, cross-agent, or do not contain the input"));
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    assert_eq!(db.current_schema_version()?, 66);
+    let cleaned_replay_count: i64 = db.connection()?.query_row(
+        "SELECT COUNT(*)
+         FROM turn_records
+         WHERE turn_id LIKE 'invalid-replay-%'
+           AND json_type(payload_json, '$.replay') IS NULL",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(cleaned_replay_count, 5);
+    let preserved_assignment_count: i64 = db.connection()?.query_row(
+        "SELECT COUNT(*)
+         FROM conversation_input_assignments
+         WHERE turn_id LIKE 'invalid-replay-%'
+           AND agent_id = 'agent-conversation-test'
+           AND revision = 7",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(preserved_assignment_count, 5);
     Ok(())
 }
 

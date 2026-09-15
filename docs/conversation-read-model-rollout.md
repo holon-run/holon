@@ -8,10 +8,12 @@ This runbook covers the Rust conversation read surface and the independent
 
 Runtime database migration v66, `conversation_input_assignment_repair`, fixes
 legacy replay inputs whose assignment points at the replay turn instead of the
-canonical source turn. The migration now scans replay provenance once, validates
-that each source turn exists and contains the input, and changes only affected
-assignments. Migration logs include version, name, stage, row counts, duration,
-and failures.
+canonical source turn. The migration scans replay provenance once and changes
+assignments only when the source relationship is valid and unambiguous. Invalid
+historical replay metadata is removed without changing its existing assignment;
+valid but conflicting source groups keep their current data and skip repair.
+Migration logs include version, name, stage, repaired, discarded, and skipped
+row counts, bounded samples, duration, and execution failures.
 
 Before upgrading a large long-lived runtime:
 
@@ -20,9 +22,11 @@ Before upgrading a large long-lived runtime:
    `starting runtime database migration`,
    `repairing conversation input assignments`, and
    `finished runtime database migration`.
-3. Treat a provenance validation failure as a data-integrity blocker. Do not
-   edit assignments or migration markers by hand; retain the bounded sample in
-   the error and investigate the referenced turns.
+3. Review `discarding invalid replay provenance` and
+   `skipping conflicting replay sources` warnings after startup. These warnings
+   describe isolated historical data that did not block the migration:
+   discarded provenance does not move assignments, and conflicting valid
+   sources are left unchanged rather than guessed.
 4. After v66 commits, restart the new binary once and confirm migration is
    skipped and normal startup time returns.
 
