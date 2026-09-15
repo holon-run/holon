@@ -412,6 +412,7 @@ export interface RuntimeStoreState {
     options?: { download?: boolean },
   ) => string;
   navigateBack: () => void;
+  restoreRightPanelView: (view: RightPanelView) => void;
   toggleRightPanel: () => void;
   toggleNavCollapsed: () => void;
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
@@ -1806,6 +1807,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     });
     hydrateInspectorActivityDetail(get, set, agentId, activity);
   },
+  restoreRightPanelView: (view) => set((state) => ({
+    rightPanelOpen: true,
+    rightPanelView: view,
+    rightPanelViewStack: state.rightPanelView ? [...state.rightPanelViewStack.slice(-31), state.rightPanelView] : state.rightPanelViewStack,
+  })),
   navigateBack: () =>
     set((state) => {
       if (state.rightPanelViewStack.length === 0) {

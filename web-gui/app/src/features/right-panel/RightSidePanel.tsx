@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { CONVERSATION_MIN, PANEL_MIN } from "./panel-layout";
 
 import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { AgentControlAction, AgentDeletionStatus } from "../../runtime/types";
 import type { AgentSessionState, TimelineEventsState } from "../../runtime/runtime-store";
 import { getRuntimeTraceRevision, isRuntimeTraceEnabled, subscribeRuntimeTrace } from "../../runtime/runtime-trace";
 import type { TaskSummary } from "../../runtime/types";
-import { Maximize2, Minimize2, X } from "lucide-react";
+import { ArrowLeft, Maximize2, Minimize2, X } from "lucide-react";
 import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/ActivityInspectorPanel";
 import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { TaskDetailPanel } from "./TaskDetailPanel";
-import { FileBrowserPanel } from "./FileBrowserPanel";
+import { FileBrowserPanel, type FileBrowserSnapshot } from "./FileBrowserPanel";
 import { RuntimeTracePanel } from "./RuntimeTracePanel";
 import { TimelineEventsPanel } from "./TimelineEventsPanel";
 import { useTranslation } from "react-i18next";
@@ -31,6 +32,9 @@ interface RightSidePanelProps {
   view?: RightPanelView;
   open: boolean;
   mode: "normal" | "expanded";
+  full: boolean;
+  width: number;
+  onResize: (width: number, save?: boolean) => void;
   onToggleMode: () => void;
   onLoadWorkItemDetail: (workItemId: string) => void;
   onOpenWorkItemDetail: (workItem: WorkItemSummary) => void;
@@ -44,6 +48,7 @@ interface RightSidePanelProps {
   onRefreshTimelineEvents: () => void;
   onLoadOlderTimelineEvents: () => void;
   onNavigateBack: () => void;
+  onSelectView: (view: RightPanelView) => void;
   onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
   onOpenPlanFile?: (workspaceId: string, filePath: string) => void;
   onControlAgent?: (action: AgentControlAction) => Promise<void>;
@@ -69,6 +74,9 @@ export function RightSidePanel({
   view,
   open,
   mode,
+  full,
+  width,
+  onResize,
   onToggleMode,
   onLoadWorkItemDetail,
   onOpenWorkItemDetail,
@@ -82,6 +90,7 @@ export function RightSidePanel({
   onRefreshTimelineEvents,
   onLoadOlderTimelineEvents,
   onNavigateBack,
+  onSelectView,
   onBrowseFiles,
   onOpenPlanFile,
   onControlAgent,
@@ -90,48 +99,46 @@ export function RightSidePanel({
   onClose,
 }: RightSidePanelProps) {
   const { t } = useTranslation();
-  const PANEL_MIN = 320;
-  const PANEL_MAX = typeof window !== "undefined" ? Math.floor(window.innerWidth * 0.7) : 900;
-  const PANEL_KEY = "holon:panelWidth";
   const panelRef = useRef<HTMLElement>(null);
   const [dragging, setDragging] = useState(false);
-
-  const applyPanelWidth = useCallback((w: number) => {
-    document.documentElement.style.setProperty("--panel-w", `${w}px`);
-  }, []);
-
-  useEffect(() => {
-    const stored = localStorage.getItem(PANEL_KEY);
-    if (stored) {
-      const w = parseInt(stored, 10);
-      if (!Number.isNaN(w) && w >= PANEL_MIN && w <= PANEL_MAX) {
-        applyPanelWidth(w);
-      }
+  const returnFocus = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (open) {
+      const focused = document.activeElement;
+      if (focused instanceof HTMLElement && !panelRef.current?.contains(focused)) returnFocus.current = focused;
+      panelRef.current?.focus({ preventScroll: true });
+    } else if (returnFocus.current?.isConnected) {
+      returnFocus.current.focus({ preventScroll: true });
+    } else if (returnFocus.current) {
+      document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus({ preventScroll: true });
     }
-  }, [applyPanelWidth]);
+  }, [open]);
+  useLayoutEffect(() => {
+    if (full && !panelRef.current?.contains(document.activeElement)) panelRef.current?.focus({ preventScroll: true });
+  }, [full]);
 
   const startResize = useCallback(
     (e: React.MouseEvent) => {
       e.preventDefault();
       setDragging(true);
       const startX = e.clientX;
-      const startWidth = panelRef.current?.offsetWidth ?? 420;
+      const startWidth = width;
+      let finalWidth = startWidth;
       const onMove = (ev: MouseEvent) => {
         const delta = startX - ev.clientX;
-        const newWidth = Math.max(PANEL_MIN, Math.min(PANEL_MAX, startWidth + delta));
-        applyPanelWidth(newWidth);
+        finalWidth = Math.max(PANEL_MIN, Math.min(window.innerWidth - 72 - CONVERSATION_MIN, startWidth + delta));
+        onResize(finalWidth);
       };
       const onUp = () => {
         setDragging(false);
-        const finalWidth = panelRef.current?.offsetWidth ?? 420;
-        localStorage.setItem(PANEL_KEY, String(finalWidth));
+        onResize(finalWidth, true);
         document.removeEventListener("mousemove", onMove);
         document.removeEventListener("mouseup", onUp);
       };
       document.addEventListener("mousemove", onMove);
       document.addEventListener("mouseup", onUp);
     },
-    [applyPanelWidth],
+    [onResize, width],
   );
 
   // Global shortcuts while the panel is open: Cmd/Ctrl+. toggles the expanded
@@ -164,6 +171,41 @@ export function RightSidePanel({
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const runtimeTraceEnabled = isRuntimeTraceEnabled();
   const activeView = view?.agentId === agent.id ? view : { kind: "agent_overview" as const, agentId: agent.id };
+  const lastFile = useRef<Extract<RightPanelView, { kind: "file_browser" }>>(undefined);
+  const lastDetail = useRef<RightPanelView>(undefined);
+  const fileSnapshots = useRef(new Map<string, FileBrowserSnapshot>());
+  const [fileTitle, setFileTitle] = useState<{ viewKey: string; path?: string }>();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const bodyPositions = useRef(new Map<string, { top: number; expanded: boolean[] }>());
+  const viewKey = JSON.stringify(activeView.kind === "file_browser" ? activeView : {
+    kind: activeView.kind,
+    id: activeView.kind === "tool_execution_detail" ? activeView.toolExecutionId
+      : activeView.kind === "task_detail" ? activeView.task.id
+      : activeView.kind === "work_item_detail" ? activeView.workItem.id
+      : activeView.kind === "activity_inspector" ? activeView.activity.id : agent.id,
+  });
+  useLayoutEffect(() => {
+    if (activeView.kind === "file_browser") lastFile.current = activeView;
+    else if (activeView.kind !== "agent_overview") lastDetail.current = activeView;
+  }, [activeView]);
+  useLayoutEffect(() => {
+    const node = bodyRef.current;
+    if (!node || !open) return;
+    const restore = bodyPositions.current.get(viewKey);
+    node.scrollTop = restore?.top ?? 0;
+    node.querySelectorAll("details").forEach((item, i) => { if (restore?.expanded[i] !== undefined) item.open = restore.expanded[i]; });
+    return () => {
+      bodyPositions.current.set(viewKey, { top: node.scrollTop, expanded: Array.from(node.querySelectorAll("details"), (item) => item.open) });
+      if (bodyPositions.current.size > 32) bodyPositions.current.delete(bodyPositions.current.keys().next().value!);
+    };
+  }, [viewKey, open]);
+  const workspace = agent.workspaceSummary;
+  const workspaces = agent.attachedWorkspaces?.length ? agent.attachedWorkspaces : workspace?.id ? [{ workspaceId: workspace.id, name: workspace.name ?? workspace.id, executionRootId: workspace.executionRootId ?? undefined }] : [];
+  const openFiles = () => {
+    if (lastFile.current) onSelectView(lastFile.current);
+    else if (workspace?.id) onBrowseFiles(workspace.id, workspace.executionRootId);
+    else if (workspaces[0]) onBrowseFiles(workspaces[0].workspaceId, workspaces[0].executionRootId);
+  };
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
   const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace && runtimeTraceEnabled;
   const title =
@@ -180,9 +222,9 @@ export function RightSidePanel({
         : activeView.kind === "task_detail"
           ? t("rightPanel.taskDetail")
           : activeView.kind === "tool_execution_detail"
-            ? t("inspector.toolExecution")
+            ? (toolExecutionDetailsById[activeView.toolExecutionId]?.toolExecution?.tool_name ?? activeView.toolName ?? t("inspector.toolExecution"))
           : activeView.kind === "file_browser"
-            ? t("rightPanel.fileBrowser")
+            ? ((fileTitle?.viewKey === viewKey ? fileTitle.path : activeView.initialFilePath)?.split("/").pop() ?? t("rightPanel.fileBrowser"))
           : t("panel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail"
@@ -192,7 +234,7 @@ export function RightSidePanel({
     : undefined;
   const taskDetailState = activeView.kind === "task_detail" ? activeView.detailState ?? taskDetailsById[activeView.task.id] : undefined;
   const toolExecutionDetailState = activeView.kind === "tool_execution_detail"
-    ? activeView.detailState ?? toolExecutionDetailsById[activeView.toolExecutionId]
+    ? toolExecutionDetailsById[activeView.toolExecutionId] ?? activeView.detailState
     : undefined;
 
   useEffect(() => {
@@ -212,27 +254,30 @@ export function RightSidePanel({
   };
 
   return (
-    <aside className="side-panel" data-mode={mode} aria-label={t("rightPanel.contextPanel")} hidden={!open} ref={panelRef}>
-      {open && mode === "normal" ? (
-        <div className="panel-resizer" data-dragging={dragging} onMouseDown={startResize} onDoubleClick={onToggleMode} />
+    <aside className="side-panel" data-mode={mode} data-full={full} tabIndex={-1} aria-label={t("rightPanel.contextPanel")} hidden={!open} ref={panelRef}>
+      {open && !full ? (
+        <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label={t("rightPanel.resizePanel")} tabIndex={0}
+          aria-valuenow={width} aria-valuemin={PANEL_MIN} aria-valuemax={Math.max(PANEL_MIN, window.innerWidth - 72 - CONVERSATION_MIN)}
+          onKeyDown={(e) => { if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); onResize(Math.max(PANEL_MIN, Math.min(window.innerWidth - 72 - CONVERSATION_MIN, width + (e.key === "ArrowLeft" ? 32 : -32))), true); } }}
+          data-dragging={dragging} onMouseDown={startResize} onDoubleClick={onToggleMode} />
       ) : null}
       <div className="panel-header">
         <div>
-          <span className="eyebrow">{t("rightPanel.contextPanel")}</span>
           <strong>{title}</strong>
         </div>
         <div className="panel-actions">
+          {full ? <button type="button" onClick={onClose}>{t("rightPanel.backToConversation")}</button> : null}
           {activeView.kind !== "agent_overview" || skillManagerActive ? (
             <button
               type="button"
-              aria-label={t("rightPanel.showOverview")}
+              aria-label={t("rightPanel.backToSource")}
               onClick={() => {
                 setShowSkillManager(false);
                 setShowRuntimeTrace(false);
-                onShowAgentOverview();
+                onNavigateBack();
               }}
             >
-              {t("rightPanel.agentOverview")}
+              <ArrowLeft size={14} />
             </button>
           ) : null}
         {activeView.kind === "agent_overview" && runtimeTraceEnabled ? (
@@ -260,8 +305,17 @@ export function RightSidePanel({
           </button>
         </div>
       </div>
-      <div className="panel-body">
-        {runtimeTraceActive ? (
+      <nav className="panel-sections" aria-label={t("rightPanel.contextPanel")}>
+        <button type="button" aria-current={activeView.kind === "agent_overview" ? "page" : undefined} onClick={onShowAgentOverview}>{t("rightPanel.overviewTab")}</button>
+        <button type="button" aria-current={activeView.kind === "file_browser" ? "page" : undefined} disabled={!lastFile.current && !workspaces.length} onClick={openFiles}>{t("fileBrowser.files")}</button>
+        <button type="button" aria-current={activeView.kind !== "file_browser" && activeView.kind !== "agent_overview" ? "page" : undefined} disabled={!lastDetail.current && (activeView.kind === "file_browser" || activeView.kind === "agent_overview")} onClick={() => { if (lastDetail.current) onSelectView(lastDetail.current); }}>{t("rightPanel.detailTab")}</button>
+      </nav>
+      {activeView.kind === "file_browser" && workspaces.length > 1 ? <select className="panel-workspace-select" aria-label={t("rightPanel.workspaces")} value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
+        onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles(selected.workspaceId, selected.executionRootId); }}>
+        {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
+      </select> : null}
+      <div className="panel-body" ref={bodyRef}>
+        {open && (runtimeTraceActive ? (
           <RuntimeTracePanel agentId={agent.id} connection={connection} />
         ) : skillManagerActive ? (
           <AgentSkillManagerPanel
@@ -300,7 +354,14 @@ export function RightSidePanel({
             <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel key={`${activeView.workspaceId}:${activeView.initialFilePath ?? ""}`} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} workspaceLabel={agent.attachedWorkspaces?.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack} />
+          <FileBrowserPanel key={viewKey} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
+            snapshot={fileSnapshots.current.get(viewKey)} onSnapshot={(snapshot) => {
+              if (snapshot.selectedFile?.loading || !snapshot.listing) return;
+              if (fileTitle?.viewKey !== viewKey || fileTitle.path !== snapshot.selectedFile?.path) setFileTitle({ viewKey, path: snapshot.selectedFile?.path });
+              fileSnapshots.current.delete(viewKey);
+              fileSnapshots.current.set(viewKey, snapshot);
+              while (fileSnapshots.current.size > 6) fileSnapshots.current.delete(fileSnapshots.current.keys().next().value!);
+            }} />
         ) : (
           <AgentOverviewPanel
             agent={agent}
@@ -321,7 +382,7 @@ export function RightSidePanel({
             onDeleteAgent={onDeleteAgent}
             onRenameAgent={onRenameAgent}
           />
-        )}
+        ))}
       </div>
     </aside>
   );

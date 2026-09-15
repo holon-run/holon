@@ -228,8 +228,46 @@ Use a collapsible three-zone shell:
 └───────────────┴─────────────────────────────────────────────┴────────────┘
 ```
 
-For narrower screens, collapse the left nav to icons and make the side panel
-an overlay drawer. The prototype can focus on desktop first.
+The navigation is 224px expanded or 72px compact. The inspector defaults to
+380px, with a 320px minimum, and reserves at least 640px for the conversation
+when displayed beside it. Collapse navigation temporarily before constraining
+the inspector's preferred width. When even compact navigation and both panes
+cannot fit, display the inspector as a complete view with an explicit return
+to the conversation. Do not partially cover the conversation or composer.
+
+### Inspector and file reading
+
+- Overview, Files and Details are stable entry points. Opening an execution
+  row selects its existing object renderer and highlights the corresponding
+  row; incoming events never replace a file the user is reading.
+- Content selection and display mode are independent. Maximize fills the work
+  area except for compact desktop navigation; on narrow screens it fills the
+  viewport. Restore preserves the preferred inspector width and navigation
+  state, subject to the available space.
+- Keep maximize/restore controls, separator double-click, Cmd/Ctrl+. and the
+  Escape sequence (expanded to normal to closed). The width separator supports
+  arrow keys. The covered conversation is inert, remains subscribed to updates,
+  and does not acknowledge newly arriving content as read until visible again.
+- Closing the inspector restores focus to the invoking control when it still
+  exists, with the composer as fallback. Closing file content unmounts previews
+  so media does not continue playing in a hidden pane.
+- A file browser at least 960px wide can show a collapsible 240px directory
+  column beside the preview. Narrower browsers switch between directory and
+  preview. Directory navigation uses existing APIs without recursive scans.
+- Preserve file selection, directory, filter, sorting, rendered/source mode
+  and scroll positions when switching inspector content or size. Keep a bounded
+  in-memory history: six file-browser locations, each with up to four previous
+  file selections, and up to 32 inspector scroll positions. State belongs to
+  the current runtime/auth scope, agent, workspace and execution root; it is
+  reset across scope changes and is not persisted to disk.
+- File links update the directory context and support returning to the prior
+  file or invoking tool. Use the existing Markdown, source, image, media, PDF,
+  download, error and truncation renderers. Explicit refresh still reads fresh
+  content; UI restoration is not a background file polling mechanism.
+- Keep overview information compact: identity/status, current work, workspaces,
+  then capabilities and settings. Runtime facts and lifecycle controls are
+  disclosures. Workspace names open the browser; full paths remain available
+  on expansion. Use dividers rather than nested raised cards.
 
 ## Conversation reading contract
 

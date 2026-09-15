@@ -44,6 +44,7 @@ export interface ConversationTimelineActions {
   onInspectActivity?: (activity: AgentTimelineActivity) => void;
   onLoadToolDetail?: (id: string, revision: number) => void;
   toolDetails?: Record<string, ToolExecutionDetailState>;
+  selectedActivityId?: string;
   briefRecord: (briefId: string) => BriefRecord | null;
   briefLoadState: (briefId: string) => ConversationBriefLoadState | null;
   detailLoadState: (turnId: string) => ConversationDetailLoadState;
@@ -423,6 +424,7 @@ function ConversationDetailPanel({
               onInspectActivity={actions.onInspectActivity}
               onLoadToolDetail={actions.onLoadToolDetail}
               toolDetail={actions.toolDetails?.[activity.id.slice(5)]}
+              selected={actions.selectedActivityId === activity.id}
             />
           ))}
         </ol>
@@ -441,11 +443,13 @@ function ConversationActivityRow({
   onInspectActivity,
   onLoadToolDetail,
   toolDetail,
+  selected,
 }: {
   activity: ConversationActivity;
   onInspectActivity?: (activity: AgentTimelineActivity) => void;
   onLoadToolDetail?: (id: string, revision: number) => void;
   toolDetail?: ToolExecutionDetailState;
+  selected?: boolean;
 }) {
   const { t } = useTranslation();
   const toolId = activity.kind === "tool" && activity.id.startsWith("tool:") ? activity.id.slice(5) : undefined;
@@ -465,7 +469,7 @@ function ConversationActivityRow({
   const icon = activityIcon(activity);
   const label = t(`agentPage.activityKind.${activity.kind}`);
   return (
-    <li className={`conversation-activity is-${activity.kind}`} data-activity-id={activity.id}
+    <li className={`conversation-activity is-${activity.kind}${selected ? " is-selected" : ""}`} data-activity-id={activity.id}
       data-conversation-anchor={`activity:${activity.id}`}>
       {activity.kind === "assistant" ? (
         <div className="conversation-progress-text" onClick={(event) => {

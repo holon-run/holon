@@ -731,6 +731,14 @@ const en = {
     openGithub: "Open Holon on GitHub",
   },
   rightPanel: {
+    runtimeSettings: "Runtime settings",
+    manageAgent: "Manage agent",
+    backToSource: "Back to source",
+    overviewTab: "Overview",
+    detailTab: "Details",
+    filterAgents: "Filter agents…",
+    resizePanel: "Resize side panel",
+    backToConversation: "Back to conversation",
     contextPanel: "Context side panel",
     showOverview: "Show agent overview",
     closePanel: "Close side panel",
@@ -801,6 +809,7 @@ const en = {
     stderr: "Stderr",
   },
   fileBrowser: {
+    toggleDirectory: "Directory",
     back: "Back",
     overview: "Overview",
     upDir: "Go to parent directory",

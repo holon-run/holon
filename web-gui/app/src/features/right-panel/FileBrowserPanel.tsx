@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowUp,
@@ -57,7 +57,26 @@ interface FileBrowserPanelProps {
   initialPath?: string;
   workspaceLabel?: string;
   onClose?: () => void;
+  snapshot?: FileBrowserSnapshot;
+  onSnapshot?: (snapshot: FileBrowserSnapshot) => void;
 }
+
+export interface FileBrowserSnapshot {
+  currentPath: string;
+  listing: WorkspaceDirectoryListing | null;
+  selectedFile: SelectedFile | null;
+  showHidden: boolean;
+  showRendered: boolean;
+  viewMode: "files" | "preview";
+  filterText: string;
+  sortKey: "name" | "size" | "modified";
+  sortAsc: boolean;
+  directoryVisible: boolean;
+  scroll: Record<string, { top: number; left: number }>;
+  history: FileBrowserLocation[];
+}
+
+type FileBrowserLocation = Pick<FileBrowserSnapshot, "currentPath" | "listing" | "selectedFile" | "showRendered" | "viewMode" | "scroll" | "filterText">;
 
 interface SelectedFile {
   path: string;
@@ -249,7 +268,7 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
   return state.html;
 }
 
-export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, workspaceLabel, onClose }: FileBrowserPanelProps) {
+export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, workspaceLabel, onClose, snapshot, onSnapshot }: FileBrowserPanelProps) {
   const { t } = useTranslation();
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
@@ -258,27 +277,77 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
 
   const effectiveInitialPath =
     initialPath ?? (initialFilePath ? initialFilePath.split("/").slice(0, -1).join("/") : "");
-  const [currentPath, setCurrentPath] = useState(effectiveInitialPath);
-  const [listing, setListing] = useState<WorkspaceDirectoryListing | null>(null);
+  const [currentPath, setCurrentPath] = useState(snapshot?.currentPath ?? effectiveInitialPath);
+  const [listing, setListing] = useState<WorkspaceDirectoryListing | null>(snapshot?.listing ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(null);
-  const [showHidden, setShowHidden] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(snapshot?.selectedFile ?? null);
+  const [showHidden, setShowHidden] = useState(snapshot?.showHidden ?? false);
   const [linkCopied, setLinkCopied] = useState(false);
-  const autoOpenedRef = useRef(false);
+  const autoOpenedRef = useRef(Boolean(snapshot?.selectedFile));
   const contentScrollRef = useRef<HTMLDivElement>(null);
-  const [showRendered, setShowRendered] = useState(true);
-  const [viewMode, setViewMode] = useState<"files" | "preview">("files");
-  const [filterText, setFilterText] = useState("");
-  const [sortKey, setSortKey] = useState<"name" | "size" | "modified">("name");
-  const [sortAsc, setSortAsc] = useState(true);
+  const [showRendered, setShowRendered] = useState(snapshot?.showRendered ?? true);
+  const [viewMode, setViewMode] = useState<"files" | "preview">(snapshot?.viewMode ?? "files");
+  const [filterText, setFilterText] = useState(snapshot?.filterText ?? "");
+  const [sortKey, setSortKey] = useState<"name" | "size" | "modified">(snapshot?.sortKey ?? "name");
+  const [sortAsc, setSortAsc] = useState(snapshot?.sortAsc ?? true);
+  const [directoryVisible, setDirectoryVisible] = useState(snapshot?.directoryVisible ?? true);
+  const [wide, setWide] = useState(false);
+  const browserRef = useRef<HTMLDivElement>(null);
+  const scroll = useRef(snapshot?.scroll ?? {});
+  const history = useRef<FileBrowserLocation[]>(snapshot?.history ?? []);
+  const requestGeneration = useRef(0);
+  useEffect(() => () => { requestGeneration.current++; }, []);
+  const latestSnapshot = useRef<FileBrowserSnapshot | null>(null);
+  useLayoutEffect(() => {
+    latestSnapshot.current = { currentPath, listing, selectedFile, showHidden, showRendered, viewMode, filterText, sortKey, sortAsc, directoryVisible, scroll: scroll.current, history: history.current };
+    if (!loading && !selectedFile?.loading) onSnapshot?.(latestSnapshot.current);
+  });
+  useLayoutEffect(() => {
+    const node = browserRef.current;
+    if (!node) return;
+    const observer = new ResizeObserver(([entry]) => setWide(entry.contentRect.width >= 960));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+  useLayoutEffect(() => {
+    browserRef.current?.querySelectorAll<HTMLElement>("[data-file-scroll]").forEach((node) => {
+      const saved = scroll.current[node.dataset.fileScroll!];
+      if (saved) { node.scrollTop = saved.top; node.scrollLeft = saved.left; }
+    });
+  }, [viewMode, wide, directoryVisible, selectedFile?.path, showRendered]);
+  const split = wide && directoryVisible && Boolean(selectedFile);
+  const rememberLocation = () => {
+    const current = latestSnapshot.current;
+    if (!current?.selectedFile || current.selectedFile.loading) return;
+    const { currentPath, listing, selectedFile, showRendered, viewMode, filterText } = current;
+    history.current = [...history.current.slice(-3), { currentPath, listing, selectedFile, showRendered, viewMode, filterText, scroll: { ...scroll.current } }];
+  };
+  const goBack = () => {
+    const previous = history.current.pop();
+    if (!previous) { onClose?.(); return; }
+    requestGeneration.current++;
+    previousFile.current = previous.selectedFile?.path;
+    scroll.current = previous.scroll;
+    setCurrentPath(previous.currentPath);
+    setListing(previous.listing);
+    setSelectedFile(previous.selectedFile);
+    setShowRendered(previous.showRendered);
+    setViewMode(previous.viewMode);
+    setFilterText(previous.filterText);
+    setLoading(false);
+    setError(undefined);
+  };
   const [imageDims, setImageDims] = useState<{ width: number; height: number }>();
 
   // Determine whether the selected file is markdown.
   const isMarkdownFile = selectedFile?.path?.toLowerCase().endsWith(".md") ?? false;
 
   // Reset scroll position and toggle state when a new file is opened.
+  const previousFile = useRef(snapshot?.selectedFile?.path);
   useEffect(() => {
+    if (previousFile.current === selectedFile?.path) return;
+    previousFile.current = selectedFile?.path;
     if (contentScrollRef.current) {
       contentScrollRef.current.scrollTop = 0;
     }
@@ -296,6 +365,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
 
   const loadDir = useCallback(
     async (path: string) => {
+      const request = ++requestGeneration.current;
       setLoading(true);
       setError(undefined);
       setSelectedFile(null);
@@ -303,12 +373,14 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       setFilterText("");
       try {
         const result = await browseWorkspaceDir(workspaceId, path || undefined, executionRootId);
+        if (request !== requestGeneration.current) return;
         setListing(result);
         setCurrentPath(path);
       } catch (err) {
+        if (request !== requestGeneration.current) return;
         setError(err instanceof Error ? err.message : String(err));
       } finally {
-        setLoading(false);
+        if (request === requestGeneration.current) setLoading(false);
       }
     },
     [workspaceId, executionRootId, browseWorkspaceDir],
@@ -316,6 +388,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
 
   const reloadFile = useCallback(async () => {
     if (!selectedFile?.path) return;
+    const request = ++requestGeneration.current;
     const filePath = selectedFile.path;
     if (
       isImageFile(selectedFile.mimeType) ||
@@ -330,6 +403,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     setSelectedFile({ path: filePath, loading: true });
     try {
       const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: filePath,
         content: content.content,
@@ -342,6 +416,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         loading: false,
       });
     } catch (err) {
+      if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: filePath,
         loading: false,
@@ -351,7 +426,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   }, [selectedFile, workspaceId, executionRootId, readWorkspaceFile]);
 
   useEffect(() => {
-    void loadDir(effectiveInitialPath);
+    if (!snapshot?.listing) void loadDir(effectiveInitialPath);
   }, [loadDir, effectiveInitialPath]);
 
   // Auto-open the initial file after the directory listing loads.
@@ -384,6 +459,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
 
     const filePath = currentPath ? `${currentPath}/${entry.name}` : entry.name;
+    if (filePath !== selectedFile?.path) rememberLocation();
+    const request = ++requestGeneration.current;
     setViewMode("preview");
 
     if (!isTextFile(entry.mimeType, entry.name)) {
@@ -402,6 +479,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     setSelectedFile({ path: filePath, loading: true });
     try {
       const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: filePath,
         content: content.content,
@@ -414,6 +492,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         loading: false,
       });
     } catch (err) {
+      if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: filePath,
         loading: false,
@@ -429,11 +508,14 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
    * entry exists for the target.
    */
   const openWorkspacePath = useCallback(async (filePath: string) => {
+    rememberLocation();
+    const request = ++requestGeneration.current;
     setViewMode("preview");
     setSelectedFile({ path: filePath, loading: true });
     setError(undefined);
     try {
       const info = await fetchWorkspacePath(workspaceId, filePath, executionRootId);
+      if (request !== requestGeneration.current) return;
       if (info.type === "directory") {
         setListing(info);
         setCurrentPath(info.path);
@@ -442,6 +524,11 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         setFilterText("");
         return;
       }
+      const parent = filePath.split("/").slice(0, -1).join("/");
+      const directory = await browseWorkspaceDir(workspaceId, parent || undefined, executionRootId);
+      if (request !== requestGeneration.current) return;
+      setListing(directory);
+      setCurrentPath(parent);
       if (!isTextFile(info.mimeType, filePath)) {
         setSelectedFile({
           path: info.path,
@@ -453,6 +540,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         return;
       }
       const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: content.path,
         content: content.content,
@@ -465,13 +553,14 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         loading: false,
       });
     } catch (err) {
+      if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: filePath,
         loading: false,
         error: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [workspaceId, executionRootId, fetchWorkspacePath, readWorkspaceFile]);
+  }, [workspaceId, executionRootId, fetchWorkspacePath, readWorkspaceFile, browseWorkspaceDir]);
 
   const downloadSelectedFile = () => {
     if (!selectedFile?.path) return;
@@ -597,11 +686,17 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       : undefined;
 
   return (
-    <div className="file-browser">
+    <div className="file-browser" ref={browserRef} data-split={split} onScrollCapture={(event) => {
+      const node = event.target as HTMLElement;
+      if (node.dataset.fileScroll) {
+        scroll.current[node.dataset.fileScroll] = { top: node.scrollTop, left: node.scrollLeft };
+        if (latestSnapshot.current) onSnapshot?.({ ...latestSnapshot.current, scroll: scroll.current });
+      }
+    }}>
       <div className="file-browser-toolbar">
-        <button type="button" className="file-browser-back-btn" onClick={() => onClose?.()}>
+        <button type="button" className="file-browser-back-btn" onClick={goBack}>
           <ArrowLeft size={14} />
-          {t("fileBrowser.overview")}
+          {t("rightPanel.backToSource")}
         </button>
         {workspaceLabel ? (
           <span className="file-browser-ws-label">{workspaceLabel}</span>
@@ -657,6 +752,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       </div>
 
       <div className="file-browser-tabs" role="tablist">
+        {wide && selectedFile ? <button type="button" onClick={() => setDirectoryVisible(!directoryVisible)} aria-pressed={directoryVisible}>{t("fileBrowser.toggleDirectory")}</button> : null}
         <button
           type="button"
           role="tab"
@@ -678,7 +774,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         </button>
       </div>
 
-      {viewMode === "files" ? (
+      {viewMode === "files" || split ? (
         <div className="file-browser-filter">
           <Search size={14} className="file-browser-filter-icon" />
           <input
@@ -707,7 +803,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
 
       {error ? <p className="inspector-error">{error}</p> : null}
 
-      {viewMode === "files" ? (
+      <div className="file-browser-panes">
+      {viewMode === "files" || split ? (
         <>
           {loading && !listing ? (
         <p className="inspector-muted">{t("common.loading")}</p>
@@ -716,7 +813,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               {filterText ? t("fileBrowser.noMatch") : t("fileBrowser.emptyDir")}
             </p>
       ) : (
-        <div className="file-browser-listing">
+        <div className="file-browser-listing" data-file-scroll="directory">
           <div className="file-browser-columns">
             <button
               type="button"
@@ -766,7 +863,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       )}
 
         </>
-      ) : selectedFile ? (
+      ) : null}
+      {(viewMode === "preview" || split) && selectedFile ? (
         <div className="file-browser-viewer">
           <div className="file-browser-viewer-head">
             <strong title={selectedFile.path}>{selectedFile.path}</strong>
@@ -884,7 +982,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                 </p>
               ) : null}
               {isMarkdownFile && showRendered ? (
-                <div className="file-browser-markdown markdown-content" ref={contentScrollRef}>
+                <div className="file-browser-markdown markdown-content" ref={contentScrollRef} data-file-scroll={`rendered:${selectedFile.path}`}>
                   <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                     {selectedFile.content}
                   </Markdown>
@@ -892,6 +990,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               ) : (
                 <div
                   className="file-browser-code"
+                  data-file-scroll={`source:${selectedFile.path}`}
                   ref={contentScrollRef}
                   dangerouslySetInnerHTML={{ __html: highlightedHtml ?? plainCodeHtml }}
                 />
@@ -907,9 +1006,10 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             </div>
           )}
         </div>
-      ) : (
+      ) : viewMode === "preview" ? (
         <p className="inspector-muted">{t("fileBrowser.noFileSelected")}</p>
-      )}
+      ) : null}
+      </div>
     </div>
   );
 }

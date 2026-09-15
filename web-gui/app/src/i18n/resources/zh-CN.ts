@@ -732,6 +732,14 @@ const zh: Record<string, any> = {
     openGithub: "在 GitHub 上打开 Holon",
   },
   rightPanel: {
+    runtimeSettings: "运行设置",
+    manageAgent: "管理 Agent",
+    backToSource: "返回来源",
+    overviewTab: "概览",
+    detailTab: "详情",
+    filterAgents: "筛选 Agent…",
+    resizePanel: "调整侧栏宽度",
+    backToConversation: "返回会话",
     contextPanel: "上下文侧面板",
     showOverview: "显示智能体概览",
     closePanel: "关闭侧面板",
@@ -802,6 +810,7 @@ const zh: Record<string, any> = {
     stderr: "标准错误",
   },
   fileBrowser: {
+    toggleDirectory: "目录",
     back: "返回",
     overview: "概览",
     upDir: "返回上级目录",

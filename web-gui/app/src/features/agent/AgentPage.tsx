@@ -613,6 +613,7 @@ export function AgentPage({
                 <ConversationTimeline
                   model={conversation.model}
                   toolDetails={conversation.toolDetails}
+                  selectedActivityId={conversation.selectedActivityId}
                   onLoadToolDetail={conversation.onLoadToolDetail}
                   onInspectActivity={conversation.onInspectActivity}
                   onLoadBrief={conversation.onLoadBrief}
@@ -653,7 +654,7 @@ export function AgentPage({
             ) : null}
             <textarea
               ref={composerTextareaRef}
-              rows={2}
+              rows={1}
               placeholder={t("agent.sendInputPlaceholder", { id: activeAgent.id })}
               value={prompt}
               disabled={sendingPrompt}

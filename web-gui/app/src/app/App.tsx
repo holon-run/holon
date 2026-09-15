@@ -31,6 +31,7 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
+import { usePanelLayout } from "../features/right-panel/usePanelLayout";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
@@ -74,6 +75,17 @@ const AGENT_ROW_SUMMARY_MAX_WIDTH = 40;
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
   const discovery = useRuntimeStore((state) => state.discovery);
+  const previousPanelIdentity = useRef<string | undefined>(undefined);
+  const [panelScopeGeneration, setPanelScopeGeneration] = useState(0);
+  const panelIdentity = discovery.identity ? JSON.stringify(discovery.identity) : undefined;
+  useLayoutEffect(() => {
+    // Initial discovery adopts the already-open local UI. A subsequent scope
+    // replacement must discard cached file content before the next paint.
+    if (panelIdentity && previousPanelIdentity.current && panelIdentity !== previousPanelIdentity.current) {
+      setPanelScopeGeneration((generation) => generation + 1);
+    }
+    if (panelIdentity) previousPanelIdentity.current = panelIdentity;
+  }, [panelIdentity]);
   const { t } = useTranslation();
   useSyncExternalStore(subscribeRuntimeTrace, getRuntimeTraceRevision, getRuntimeTraceRevision);
   const developerDiagnosticsEnabled = isRuntimeTraceEnabled();
@@ -82,6 +94,7 @@ export function App() {
   const [createAgentTemplate, setCreateAgentTemplate] = useState("");
   const [createAgentError, setCreateAgentError] = useState<string | undefined>();
   const [createAgentBusy, setCreateAgentBusy] = useState(false);
+  const [agentFilter, setAgentFilter] = useState("");
   const route = useRuntimeStore((state) => state.route);
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
   const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
@@ -91,7 +104,9 @@ export function App() {
   const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
   const rightPanelMode = useRuntimeStore((state) => state.rightPanelMode);
   const toggleRightPanelExpanded = useRuntimeStore((state) => state.toggleRightPanelExpanded);
-  const navCollapsed = useRuntimeStore((state) => state.navCollapsed);
+  const navPreference = useRuntimeStore((state) => state.navCollapsed);
+  const panelLayout = usePanelLayout(rightPanelOpen, rightPanelMode === "expanded", navPreference);
+  const navCollapsed = panelLayout.navCollapsed;
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
   const markAgentConversationRead = useRuntimeStore((state) => state.markAgentConversationRead);
@@ -111,6 +126,7 @@ export function App() {
   const showTaskDetail = useRuntimeStore((state) => state.showTaskDetail);
   const showFileBrowser = useRuntimeStore((state) => state.showFileBrowser);
   const navigateBack = useRuntimeStore((state) => state.navigateBack);
+  const restoreRightPanelView = useRuntimeStore((state) => state.restoreRightPanelView);
   const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
@@ -130,13 +146,14 @@ export function App() {
     sidePanelAgentId ? state.sessionsByAgentId[sidePanelAgentId] : undefined,
   );
   const markSelectedAgentConversationRead = useCallback(() => {
-    if (activeAgentId) markAgentConversationRead(activeAgentId);
+    if (activeAgentId && !panelLayout.full) markAgentConversationRead(activeAgentId);
   }, [
     activeAgentId,
     activeAgentLedgerUnread,
     discoveryFreshness,
     activeAgentId ? ledgerReadinessRevisionByAgentId[activeAgentId] : undefined,
     markAgentConversationRead,
+    panelLayout.full,
     selectedAgentSession?.briefHydrationById,
     selectedAgentSession?.gaps.length,
     selectedAgentSession?.liveStatus,
@@ -485,6 +502,8 @@ export function App() {
       data-panel={rightPanelOpen ? "open" : "closed"}
       data-panel-mode={rightPanelMode}
       data-nav-collapsed={navCollapsed}
+      data-panel-full={panelLayout.full}
+      style={{ "--panel-w": `${panelLayout.width}px` } as CSSProperties}
     >
       <aside className="sidebar" aria-label="Holon navigation">
         <div className="sidebar-brand">
@@ -523,7 +542,10 @@ export function App() {
             type="button"
             aria-label={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
             title={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
-            onClick={toggleNavCollapsed}
+            onClick={() => {
+              if (panelLayout.full || (navCollapsed && !navPreference)) setRightPanelOpen(false);
+              else toggleNavCollapsed();
+            }}
           >
             <ChevronLeft size={18} />
           </button>
@@ -564,13 +586,14 @@ export function App() {
               +
             </button>
           </div>
+          <input className="agent-filter" aria-label={t("rightPanel.filterAgents")} placeholder={t("rightPanel.filterAgents")} value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} />
           {bootstrap.agents.length === 0 ? (
             <div className="agent-list-state" role="status">
               <strong>{loading ? t("status.syncing") : t("dashboard.noAgentsTitle")}</strong>
               <span>{loading ? t("boot.body") : t("dashboard.startAgent")}</span>
             </div>
           ) : (
-            visibleAgents.map((agent) => {
+            visibleAgents.filter((agent) => navCollapsed || `${agent.name ?? ""} ${agent.id}`.toLowerCase().includes(agentFilter.toLowerCase())).map((agent) => {
               const status = deriveAgentDisplayStatus(agent, t);
               const workSummary = agent.currentWork?.objective;
               const unreadView = unreadBadgeView(
@@ -611,8 +634,6 @@ export function App() {
                       <span className="agent-row-meta">
                         <span>{truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH)}</span>
                       </span>
-                    ) : agent.name ? (
-                      <small>{agent.id}</small>
                     ) : null}
                   </span>
                 </button>
@@ -626,7 +647,7 @@ export function App() {
         </div>
       </aside>
 
-      <main className="main-shell">
+      <main className="main-shell" inert={panelLayout.full}>
         <header className="topbar">
           <div className="topbar-primary">
             <div className="top-title">
@@ -706,6 +727,10 @@ export function App() {
                 : {
                     model: conversationSession.model,
                     toolDetails: selectedAgentSession?.toolExecutionDetailsById,
+                    selectedActivityId: rightPanelOpen && rightPanelView && rightPanelView.agentId === activeAgentId
+                      ? rightPanelView.kind === "tool_execution_detail" ? `tool:${rightPanelView.toolExecutionId}`
+                        : rightPanelView.kind === "activity_inspector" ? rightPanelView.activity.id : undefined
+                      : undefined,
                     onLoadToolDetail: (id, revision) => {
                       void loadAgentToolExecutionDetail(activeAgentId, id, undefined, revision);
                     },
@@ -843,6 +868,10 @@ export function App() {
 
       {selectedAgent ? (
         <RightSidePanel
+          key={`${bootstrap.connection.mode}:${bootstrap.connection.baseUrl}:${panelScopeGeneration}:${selectedAgent.id}`}
+          full={panelLayout.full}
+          width={panelLayout.width}
+          onResize={panelLayout.resizePanel}
           agent={selectedAgent}
           onControlAgent={async (action) => { await controlAgent(selectedAgent.id, action); }}
           onDeleteAgent={async (cascade) => {
@@ -893,6 +922,7 @@ export function App() {
             void loadOlderTimelineEvents(selectedAgent.id);
           }}
           onNavigateBack={navigateBack}
+          onSelectView={restoreRightPanelView}
           onBrowseFiles={(workspaceId: string, executionRootId?: string) => {
             showFileBrowser(selectedAgent.id, workspaceId, undefined, executionRootId);
           }}

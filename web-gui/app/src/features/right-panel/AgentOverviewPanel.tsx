@@ -201,10 +201,10 @@ export function AgentOverviewPanel({
   }
 
   return (
-    <div className="inspector-stack">
+    <div className="inspector-stack agent-overview-stack">
       <CollapsibleInspectorCard
-        title={t("rightPanel.agent")}
-        summary={t("rightPanel.lifecycle", { value: agent.lifecycle })}
+        title={agent.name ?? agent.id}
+        className="agent-identity-card"
         badge={<StatusBadge className="state-chip" kind="agent" value={agent.posture || agent.lifecycle} />}
       >
         {renaming ? (
@@ -242,7 +242,6 @@ export function AgentOverviewPanel({
           </div>
         ) : (
           <div className="agent-overview-title">
-            <h2>{agent.name ?? agent.id}</h2>
             {canRename ? (
               <button
                 type="button"
@@ -270,22 +269,21 @@ export function AgentOverviewPanel({
             {renameError}
           </small>
         ) : null}
+        <p className="overview-current-work">{currentWorkLabel}</p>
+        <details className="overview-runtime"><summary>{t("rightPanel.runtimeSettings")}</summary>
         <dl className="inspector-facts">
           <div>
             <dt>{t("agent.model")}</dt>
             <dd>{compactModelRouteDisplay(agent.model)}</dd>
           </div>
           <div>
-            <dt>{t("agent.currentWork")}</dt>
-            <dd>{currentWorkLabel}</dd>
-          </div>
-          <div>
             <dt>{t("agent.scheduling")}</dt>
             <dd>{compactMeta([agent.posture, agent.postureReason])}</dd>
           </div>
         </dl>
+        </details>
         {onControlAgent || onDeleteAgent ? (
-          <div className="lifecycle-controls">
+          <details className="lifecycle-controls" open={deletionStatus?.job ? true : undefined}><summary>{t("rightPanel.manageAgent")}</summary>
             {deletionStatus?.job ? (
               <div className="deletion-progress" role="status">
                 <Loader2 size={14} className="animate-spin" />
@@ -367,12 +365,12 @@ export function AgentOverviewPanel({
                 ) : null}
               </>
             )}
-          </div>
+          </details>
         ) : null}
       </CollapsibleInspectorCard>
 
       {(() => {
-        const wsCount = agent.attachedWorkspaces?.length ?? (workspace ? 1 : 0);
+        const wsCount = agent.attachedWorkspaces?.length || (workspace ? 1 : 0);
         const activeTitle = workspace?.worktree?.branch
           ? `${workspaceName} · ${workspace.worktree.branch}`
           : workspaceName;
@@ -390,8 +388,9 @@ export function AgentOverviewPanel({
             {workspace ? (
               <div className="workspace-active-section">
                 <div className="inspector-list-head">
-                  <strong>{activeTitle}</strong>
+                  <button type="button" className="workspace-name-link" onClick={() => { if (workspace.id) onBrowseFiles(workspace.id, workspace.executionRootId); }}>{activeTitle}</button>
                 </div>
+                <details className="workspace-path-details"><summary>{t("rightPanel.path")}</summary>
                 <dl className="inspector-facts">
                   {activePath ? (
                     <div>
@@ -428,6 +427,7 @@ export function AgentOverviewPanel({
                     </div>
                   ) : null}
                 </dl>
+                </details>
                 <details className="inspector-details-list workspace-technical-details">
                   <summary>{t("panel.details")}</summary>
                   <dl className="inspector-facts">
@@ -482,7 +482,8 @@ export function AgentOverviewPanel({
                   .map((ws) => (
                     <div key={ws.executionRootId ?? ws.workspaceId} className="workspace-list-item">
                       <div className="workspace-list-item-info">
-                        <div className="workspace-list-item-name">{ws.name}</div>
+                        <button type="button" className="workspace-name-link" onClick={() => onBrowseFiles(ws.workspaceId, ws.executionRootId)}>{ws.name}</button>
+                        <details className="workspace-path-details"><summary>{t("rightPanel.path")}</summary>
                         <a
                           href="#"
                           className="workspace-path-link workspace-list-item-anchor"
@@ -492,7 +493,7 @@ export function AgentOverviewPanel({
                           }}
                         >
                           {ws.anchor}
-                        </a>
+                        </a></details>
                       </div>
                     </div>
                   ))}
@@ -560,8 +561,8 @@ export function AgentOverviewPanel({
 
       {workItems.length ? (
         <CollapsibleInspectorCard
-          title={t("rightPanel.workItemsWithCount", { count: currentWorkItems.length + openWorkItems.length })}
-          className="current-work"
+          title={currentWorkItems.length + openWorkItems.length ? t("rightPanel.workItemsWithCount", { count: currentWorkItems.length + openWorkItems.length }) : t("rightPanel.completedCount", { count: completedWorkItems.length })}
+          className={currentWorkItems.length + openWorkItems.length ? "current-work" : "past-work"}
         >
           {currentWorkItems.map((workItem) => (
             <WorkItemCard key={workItem.id} workItem={workItem} featured onSelect={selectWorkItem} />
@@ -585,12 +586,7 @@ export function AgentOverviewPanel({
           ) : null}
         </CollapsibleInspectorCard>
       ) : (
-        <EmptyState
-          className="inspector-empty"
-          icon={<Inbox size={20} />}
-          title={t("panel.noCurrentWork")}
-          description={t("rightPanel.noCurrentWorkDesc")}
-        />
+        null
       )}
     </div>
   );
