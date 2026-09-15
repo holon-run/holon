@@ -4,6 +4,7 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
+use std::time::Instant;
 
 use crate::domain::{
     execution_protocol::{
@@ -35,6 +36,34 @@ pub(crate) const PUBLISHED_MIGRATION_FLOOR: i64 = 25;
 pub(crate) const RELEASE_BASELINE_TARGET: i64 = 45;
 pub(crate) const RETIRED_SCHEDULER_SCHEMA_PREDECESSOR: i64 = 46;
 pub(crate) const AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION: i64 = 59;
+pub(crate) const CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION: i64 = 66;
+pub(crate) const CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME: &str =
+    "conversation_input_assignment_repair";
+pub(crate) const CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL: &str = r#"
+SELECT
+  json_extract(
+    replay_turn.payload_json,
+    '$.replay.source_message_id'
+  ) AS message_id,
+  replay_turn.agent_id,
+  json_extract(
+    replay_turn.payload_json,
+    '$.replay.source_turn_id'
+  ) AS canonical_turn_id,
+  replay_turn.turn_id AS replay_turn_id,
+  replay_turn.turn_index AS replay_turn_index,
+  replay_turn.created_at AS assigned_at,
+  json_type(
+    replay_turn.payload_json,
+    '$.replay.source_message_id'
+  ) = 'text' AS message_id_is_text,
+  json_type(
+    replay_turn.payload_json,
+    '$.replay.source_turn_id'
+  ) = 'text' AS source_turn_id_is_text
+FROM turn_records AS replay_turn
+WHERE json_type(replay_turn.payload_json, '$.replay') = 'object'
+"#;
 const RELEASE_BASELINE_SCHEMA_TARGET: i64 = 42;
 const RELEASE_BASELINE_ID: &str = "v0.30.0-schema-25-to-schema-45";
 
@@ -3551,8 +3580,8 @@ CREATE INDEX IF NOT EXISTS idx_task_result_settlements_activation
 "#,
     },
     Migration {
-        version: 66,
-        name: "conversation_input_assignment_repair",
+        version: CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
+        name: CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
         sql: "",
     },
 ];
@@ -3761,29 +3790,54 @@ pub(crate) fn apply_migration(connection: &mut Connection, migration: &Migration
         }
         return Ok(());
     }
-    if migration.name == "scheduler_lifecycle_owners" {
-        return migrate_scheduler_lifecycle_owners(connection, migration);
-    }
-    if migration.name == "scheduler_internal_followup_admission" {
-        return migrate_scheduler_internal_followup_admission(connection, migration);
-    }
-    if migration.name == "wait_trigger_identity" {
-        return migrate_wait_trigger_identity(connection, migration);
-    }
-    if migration.name == "wait_unresolved_owner_uniqueness" {
-        return migrate_wait_unresolved_owner_uniqueness(connection, migration);
-    }
-    if migration.name == "wait_protocol_cutover" {
-        return migrate_wait_protocol_cutover(connection, migration);
-    }
-    if migration.name == "drop_retired_scheduler_schema" {
-        return migrate_retired_scheduler_schema(connection, migration);
-    }
+    let started = Instant::now();
+    tracing::info!(
+        migration_version = migration.version,
+        migration_name = migration.name,
+        "starting runtime database migration"
+    );
+    let result = (|| {
+        if migration.name == "scheduler_lifecycle_owners" {
+            return migrate_scheduler_lifecycle_owners(connection, migration);
+        }
+        if migration.name == "scheduler_internal_followup_admission" {
+            return migrate_scheduler_internal_followup_admission(connection, migration);
+        }
+        if migration.name == "wait_trigger_identity" {
+            return migrate_wait_trigger_identity(connection, migration);
+        }
+        if migration.name == "wait_unresolved_owner_uniqueness" {
+            return migrate_wait_unresolved_owner_uniqueness(connection, migration);
+        }
+        if migration.name == "wait_protocol_cutover" {
+            return migrate_wait_protocol_cutover(connection, migration);
+        }
+        if migration.name == "drop_retired_scheduler_schema" {
+            return migrate_retired_scheduler_schema(connection, migration);
+        }
 
-    let transaction = connection.transaction()?;
-    apply_migration_transaction(&transaction, migration)?;
-    transaction.commit()?;
-    Ok(())
+        let transaction = connection.transaction()?;
+        apply_migration_transaction(&transaction, migration)?;
+        transaction.commit()?;
+        Ok(())
+    })();
+    let duration_ms = started.elapsed().as_millis();
+    match &result {
+        Ok(()) => tracing::info!(
+            migration_version = migration.version,
+            migration_name = migration.name,
+            duration_ms,
+            "finished runtime database migration"
+        ),
+        Err(error) => tracing::error!(
+            migration_version = migration.version,
+            migration_name = migration.name,
+            duration_ms,
+            %error,
+            "runtime database migration failed"
+        ),
+    }
+    result
 }
 
 fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migration) -> Result<()> {
@@ -4216,60 +4270,147 @@ fn repair_conversation_input_assignments(transaction: &Transaction<'_>) -> Resul
     {
         return Ok(());
     }
-    transaction.execute_batch(
+    tracing::info!(
+        migration_version = 66,
+        migration_name = "conversation_input_assignment_repair",
+        stage = "scan_replay_provenance",
+        "repairing conversation input assignments"
+    );
+    transaction.execute_batch(&format!(
         r#"
-WITH candidates AS (
-  SELECT
-    input.value AS message_id,
-    turns.agent_id,
-    CASE
-      WHEN json_extract(
-             turns.payload_json,
-             '$.replay.source_message_id'
-           ) = input.value
-       AND json_type(
-             turns.payload_json,
-             '$.replay.source_turn_id'
-           ) = 'text'
-      THEN json_extract(
-             turns.payload_json,
-             '$.replay.source_turn_id'
-           )
-      ELSE turns.turn_id
-    END AS canonical_turn_id,
-    turns.created_at AS assigned_at,
-    turns.turn_index,
-    CASE
-      WHEN json_extract(
-             turns.payload_json,
-             '$.replay.source_message_id'
-           ) = input.value
-       AND json_type(
-             turns.payload_json,
-             '$.replay.source_turn_id'
-           ) = 'text'
-      THEN 0
-      WHEN EXISTS (
-        SELECT 1
-        FROM turn_records AS replay_turn
-        WHERE replay_turn.agent_id = turns.agent_id
-          AND json_extract(
-                replay_turn.payload_json,
-                '$.replay.source_message_id'
-              ) = input.value
-          AND json_extract(
-                replay_turn.payload_json,
-                '$.replay.source_turn_id'
-              ) = turns.turn_id
-      )
-      THEN 1
-      ELSE 2
-    END AS canonical_priority
-  FROM turn_records AS turns,
-       json_each(turns.payload_json, '$.input_message_ids') AS input
-  WHERE input.type = 'text'
-),
-ranked AS (
+DROP TABLE IF EXISTS temp.conversation_replay_input_sources;
+CREATE TEMP TABLE conversation_replay_input_sources AS
+{CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL};
+
+CREATE INDEX conversation_replay_input_sources_message
+  ON conversation_replay_input_sources(message_id);
+CREATE INDEX conversation_replay_input_sources_source_turn
+  ON conversation_replay_input_sources(canonical_turn_id);
+"#,
+    ))?;
+    let replay_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM conversation_replay_input_sources",
+        [],
+        |row| row.get(0),
+    )?;
+    tracing::info!(
+        migration_version = 66,
+        migration_name = "conversation_input_assignment_repair",
+        stage = "validate_replay_provenance",
+        replay_count,
+        "repairing conversation input assignments"
+    );
+    fail_on_conversation_repair_diagnostics(
+        transaction,
+        "replay turns with incomplete provenance",
+        "SELECT COUNT(*)
+         FROM conversation_replay_input_sources
+         WHERE COALESCE(message_id_is_text, 0) = 0
+            OR COALESCE(source_turn_id_is_text, 0) = 0
+            OR TRIM(COALESCE(message_id, '')) = ''
+            OR TRIM(COALESCE(canonical_turn_id, '')) = ''",
+        "SELECT replay_turn_id
+         FROM conversation_replay_input_sources
+         WHERE COALESCE(message_id_is_text, 0) = 0
+            OR COALESCE(source_turn_id_is_text, 0) = 0
+            OR TRIM(COALESCE(message_id, '')) = ''
+            OR TRIM(COALESCE(canonical_turn_id, '')) = ''
+         ORDER BY replay_turn_id
+         LIMIT 5",
+    )?;
+    fail_on_conversation_repair_diagnostics(
+        transaction,
+        "replay turns whose source message is not attached as input",
+        "SELECT COUNT(*)
+         FROM conversation_replay_input_sources AS replay
+         JOIN turn_records AS replay_turn
+           ON replay_turn.turn_id = replay.replay_turn_id
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM json_each(
+             replay_turn.payload_json, '$.input_message_ids'
+           ) AS input
+           WHERE input.type = 'text'
+             AND input.value = replay.message_id
+         )",
+        "SELECT replay.replay_turn_id
+         FROM conversation_replay_input_sources AS replay
+         JOIN turn_records AS replay_turn
+           ON replay_turn.turn_id = replay.replay_turn_id
+         WHERE NOT EXISTS (
+           SELECT 1
+           FROM json_each(
+             replay_turn.payload_json, '$.input_message_ids'
+           ) AS input
+           WHERE input.type = 'text'
+             AND input.value = replay.message_id
+         )
+         ORDER BY replay.replay_turn_id
+         LIMIT 5",
+    )?;
+    fail_on_conversation_repair_diagnostics(
+        transaction,
+        "messages with conflicting replay source ownership",
+        "SELECT COUNT(*)
+         FROM (
+           SELECT message_id
+           FROM conversation_replay_input_sources
+           GROUP BY message_id
+           HAVING MIN(agent_id) <> MAX(agent_id)
+              OR MIN(canonical_turn_id) <> MAX(canonical_turn_id)
+         )",
+        "SELECT message_id
+         FROM conversation_replay_input_sources
+         GROUP BY message_id
+         HAVING MIN(agent_id) <> MAX(agent_id)
+            OR MIN(canonical_turn_id) <> MAX(canonical_turn_id)
+         ORDER BY message_id
+         LIMIT 5",
+    )?;
+    fail_on_conversation_repair_diagnostics(
+        transaction,
+        "replay sources that are missing, cross-agent, or do not contain the input",
+        "SELECT COUNT(*)
+         FROM conversation_replay_input_sources AS replay
+         LEFT JOIN turn_records AS source_turn
+           ON source_turn.turn_id = replay.canonical_turn_id
+         WHERE source_turn.turn_id IS NULL
+            OR source_turn.agent_id <> replay.agent_id
+            OR NOT EXISTS (
+              SELECT 1
+              FROM json_each(
+                source_turn.payload_json, '$.input_message_ids'
+              ) AS input
+              WHERE input.type = 'text'
+                AND input.value = replay.message_id
+            )",
+        "SELECT replay.message_id || ':' || replay.canonical_turn_id
+         FROM conversation_replay_input_sources AS replay
+         LEFT JOIN turn_records AS source_turn
+           ON source_turn.turn_id = replay.canonical_turn_id
+         WHERE source_turn.turn_id IS NULL
+            OR source_turn.agent_id <> replay.agent_id
+            OR NOT EXISTS (
+              SELECT 1
+              FROM json_each(
+                source_turn.payload_json, '$.input_message_ids'
+              ) AS input
+              WHERE input.type = 'text'
+                AND input.value = replay.message_id
+            )
+         ORDER BY replay.message_id, replay.canonical_turn_id
+         LIMIT 5",
+    )?;
+    tracing::info!(
+        migration_version = 66,
+        migration_name = "conversation_input_assignment_repair",
+        stage = "apply_replay_assignments",
+        replay_count,
+        "repairing conversation input assignments"
+    );
+    let changed_count = transaction.execute(
+        r#"
+WITH ranked AS (
   SELECT
     message_id,
     agent_id,
@@ -4278,12 +4419,11 @@ ranked AS (
     ROW_NUMBER() OVER (
       PARTITION BY message_id
       ORDER BY
-        canonical_priority,
-        turn_index,
+        replay_turn_index,
         assigned_at,
-        canonical_turn_id
+        replay_turn_id
     ) AS candidate_rank
-  FROM candidates
+  FROM conversation_replay_input_sources
 )
 INSERT INTO conversation_input_assignments (
   message_id, agent_id, turn_id, revision, assigned_at
@@ -4299,8 +4439,38 @@ ON CONFLICT(message_id) DO UPDATE SET
 WHERE conversation_input_assignments.agent_id <> excluded.agent_id
    OR conversation_input_assignments.turn_id <> excluded.turn_id;
 "#,
+        [],
     )?;
+    transaction.execute_batch("DROP TABLE conversation_replay_input_sources;")?;
+    tracing::info!(
+        migration_version = 66,
+        migration_name = "conversation_input_assignment_repair",
+        stage = "complete",
+        replay_count,
+        changed_count,
+        "repaired conversation input assignments"
+    );
     Ok(())
+}
+
+fn fail_on_conversation_repair_diagnostics(
+    transaction: &Transaction<'_>,
+    description: &str,
+    count_sql: &str,
+    sample_sql: &str,
+) -> Result<()> {
+    let count: i64 = transaction.query_row(count_sql, [], |row| row.get(0))?;
+    if count == 0 {
+        return Ok(());
+    }
+    let samples = transaction
+        .prepare(sample_sql)?
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    bail!(
+        "conversation input assignment repair found {count} {description}; samples: {}",
+        samples.join(", ")
+    );
 }
 
 fn ensure_authentication_login_verifier_schema(transaction: &Transaction<'_>) -> Result<()> {

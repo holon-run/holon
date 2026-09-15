@@ -1789,6 +1789,52 @@ mod tests {
     }
 
     #[test]
+    fn debug_runtime_db_conversation_input_assignment_rollback_defaults_to_dry_run() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "conversation-input-assignment-rollback",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::ConversationInputAssignmentRollback { apply, json },
+                },
+        } = cli.command
+        else {
+            panic!("expected conversation input assignment rollback command");
+        };
+        assert!(!apply);
+        assert!(json);
+    }
+
+    #[test]
+    fn debug_runtime_db_conversation_input_assignment_rollback_parses_apply() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "conversation-input-assignment-rollback",
+            "--apply",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::ConversationInputAssignmentRollback { apply, json },
+                },
+        } = cli.command
+        else {
+            panic!("expected conversation input assignment rollback command");
+        };
+        assert!(apply);
+        assert!(!json);
+    }
+
+    #[test]
     fn debug_scheduler_recovery_command_parses_read_only_options() {
         let cli = Cli::parse_from([
             "holon",
@@ -3630,6 +3676,46 @@ fn handle_runtime_db_debug_command(
                 print_json(&serde_json::to_value(report)?)
             } else {
                 println!("{}", serde_json::to_string_pretty(&report)?);
+                Ok(())
+            }
+        }
+        holon::cli::RuntimeDbDebugCommands::ConversationInputAssignmentRollback { apply, json } => {
+            let _maintenance_lock = RuntimeDbLock::try_lock(
+                config.runtime_db_maintenance_lock_path(),
+            )
+            .context("conversation input assignment rollback requires holon serve to be stopped")?;
+            let _migration_lock = RuntimeDbLock::try_lock(config.runtime_db_lock_path()).context(
+                "conversation input assignment rollback cannot run during a database migration",
+            )?;
+            let db = RuntimeDb::open_for_conversation_input_assignment_rollback(
+                config.runtime_db_path(),
+                config.runtime_db_lock_path(),
+            )?;
+            let report = if apply {
+                db.apply_conversation_input_assignment_rollback()?
+            } else {
+                db.plan_conversation_input_assignment_rollback()?
+            };
+            if json {
+                print_json(&serde_json::to_value(report)?)
+            } else {
+                println!(
+                    "conversation input assignment rollback: mode={} eligible={} changed={} backup_verified={} head=v{} ({}) target=v{} ({})",
+                    if report.apply { "apply" } else { "dry-run" },
+                    report.eligible,
+                    report.changed,
+                    report.backup_verified,
+                    report.current_version,
+                    report.current_name.as_deref().unwrap_or("<none>"),
+                    report.target_version,
+                    report.target_name
+                );
+                if let Some(backup_path) = &report.backup_path {
+                    println!("  backup: {}", backup_path.display());
+                }
+                if let Some(reason) = &report.reason {
+                    println!("  reason: {reason}");
+                }
                 Ok(())
             }
         }

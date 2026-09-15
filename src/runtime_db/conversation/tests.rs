@@ -17,7 +17,7 @@ use crate::domain::conversation::{
     PendingInputState, ResultState, StreamCursor, TerminalOutcome, TurnKey,
     CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
-use crate::runtime_db::RuntimeDb;
+use crate::runtime_db::{migrations::CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL, RuntimeDb};
 use crate::types::{
     AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
     AgentVisibility, AuditEvent, AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind,
@@ -36,6 +36,14 @@ fn runtime_db() -> Result<(TempDir, PathBuf, PathBuf, RuntimeDb)> {
     std::fs::create_dir_all(db_path.parent().expect("database parent"))?;
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
     Ok((temp_dir, db_path, lock_path, db))
+}
+
+fn overwrite_turn_payload(db: &RuntimeDb, turn: &TurnRecord) -> Result<()> {
+    db.connection()?.execute(
+        "UPDATE turn_records SET payload_json = ?1 WHERE turn_id = ?2",
+        params![serde_json::to_string(turn)?, turn.turn_id],
+    )?;
+    Ok(())
 }
 
 fn register_public_agent(db: &RuntimeDb) -> Result<()> {
@@ -563,6 +571,190 @@ fn migration_repairs_existing_replay_input_assignment() -> Result<()> {
         |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
     )?;
     assert_eq!(assignment, ("repair-source".into(), 2));
+    db.connection()?
+        .execute("DELETE FROM schema_migrations WHERE version = 66", [])?;
+    drop(db);
+
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let assignment = db.connection()?.query_row(
+        "SELECT turn_id, revision
+         FROM conversation_input_assignments
+         WHERE message_id = 'repair-message'",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    assert_eq!(assignment, ("repair-source".into(), 2));
+    Ok(())
+}
+
+#[test]
+fn migration_replay_scan_query_plan_has_no_correlated_turn_scan() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let connection = db.connection()?;
+    let mut statement = connection.prepare(&format!(
+        "EXPLAIN QUERY PLAN {CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL}"
+    ))?;
+    let details = statement
+        .query_map([], |row| row.get::<_, String>(3))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert_eq!(
+        details
+            .iter()
+            .filter(|detail| detail.contains("SCAN replay_turn"))
+            .count(),
+        1,
+        "{details:?}"
+    );
+    assert!(
+        details.iter().all(|detail| !detail.contains("CORRELATED")),
+        "{details:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn migration_repair_handles_large_non_replay_history_without_candidate_cross_product() -> Result<()>
+{
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    db.connection()?.execute_batch(
+        r#"
+WITH digits(value) AS (
+  VALUES (0), (1), (2), (3), (4), (5), (6), (7), (8), (9)
+),
+sequence(value) AS (
+  SELECT thousands.value * 1000
+       + hundreds.value * 100
+       + tens.value * 10
+       + ones.value
+       + 1
+  FROM digits AS thousands
+  CROSS JOIN digits AS hundreds
+  CROSS JOIN digits AS tens
+  CROSS JOIN digits AS ones
+)
+INSERT INTO turn_records (
+  turn_id, turn_index, agent_id, created_at, payload_json
+)
+SELECT
+  printf('bulk-turn-%05d', value),
+  value,
+  'bulk-agent',
+  '2026-09-15T00:00:00Z',
+  json_object(
+    'turn_id', printf('bulk-turn-%05d', value),
+    'turn_index', value,
+    'agent_id', 'bulk-agent',
+    'input_message_ids', json_array(printf('bulk-message-%05d', value)),
+    'created_at', '2026-09-15T00:00:00Z'
+  )
+FROM sequence;
+
+INSERT INTO conversation_input_assignments (
+  message_id, agent_id, turn_id, revision, assigned_at
+)
+SELECT
+  printf('bulk-message-%05d', turn_index),
+  agent_id,
+  turn_id,
+  1,
+  created_at
+FROM turn_records
+WHERE agent_id = 'bulk-agent';
+
+DELETE FROM schema_migrations WHERE version = 66;
+"#,
+    )?;
+    drop(db);
+
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    assert_eq!(db.current_schema_version()?, 66);
+    let assignment_count: i64 = db.connection()?.query_row(
+        "SELECT COUNT(*)
+         FROM conversation_input_assignments
+         WHERE agent_id = 'bulk-agent'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(assignment_count, 10000);
+    Ok(())
+}
+
+#[test]
+fn migration_rejects_conflicting_replay_input_sources() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    let mut source_one = turn("repair-source-one", 1);
+    source_one.input_message_ids = vec!["repair-conflict-message".into()];
+    db.turn_records().upsert(&source_one)?;
+    let source_two = turn("repair-source-two", 2);
+    db.turn_records().upsert(&source_two)?;
+    let replay_one = turn("repair-replay-one", 3);
+    db.turn_records().upsert(&replay_one)?;
+    let replay_two = turn("repair-replay-two", 4);
+    db.turn_records().upsert(&replay_two)?;
+
+    let mut source_two_payload = source_two;
+    source_two_payload.input_message_ids = source_one.input_message_ids.clone();
+    overwrite_turn_payload(&db, &source_two_payload)?;
+    let mut replay_one_payload = replay_one;
+    replay_one_payload.input_message_ids = source_one.input_message_ids.clone();
+    replay_one_payload.replay = Some(TurnReplayProvenance {
+        source_message_id: "repair-conflict-message".into(),
+        source_turn_id: source_one.turn_id.clone(),
+        reason: "repair_test".into(),
+        prior_terminal: None,
+    });
+    overwrite_turn_payload(&db, &replay_one_payload)?;
+    let mut replay_two_payload = replay_two;
+    replay_two_payload.input_message_ids = source_one.input_message_ids.clone();
+    replay_two_payload.replay = Some(TurnReplayProvenance {
+        source_message_id: "repair-conflict-message".into(),
+        source_turn_id: source_two_payload.turn_id.clone(),
+        reason: "repair_test".into(),
+        prior_terminal: None,
+    });
+    overwrite_turn_payload(&db, &replay_two_payload)?;
+    db.connection()?
+        .execute("DELETE FROM schema_migrations WHERE version = 66", [])?;
+    drop(db);
+
+    let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
+        .expect_err("conflicting replay ownership must fail closed");
+    assert!(error
+        .to_string()
+        .contains("messages with conflicting replay source ownership"));
+    let connection = rusqlite::Connection::open(&db_path)?;
+    let version: i64 = connection.query_row(
+        "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(version, 65);
+    Ok(())
+}
+
+#[test]
+fn migration_rejects_missing_replay_source_turn() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    let replay = turn("repair-missing-source-replay", 1);
+    db.turn_records().upsert(&replay)?;
+    let mut replay_payload = replay;
+    replay_payload.input_message_ids = vec!["repair-missing-source-message".into()];
+    replay_payload.replay = Some(TurnReplayProvenance {
+        source_message_id: "repair-missing-source-message".into(),
+        source_turn_id: "repair-missing-source".into(),
+        reason: "repair_test".into(),
+        prior_terminal: None,
+    });
+    overwrite_turn_payload(&db, &replay_payload)?;
+    db.connection()?
+        .execute("DELETE FROM schema_migrations WHERE version = 66", [])?;
+    drop(db);
+
+    let error = RuntimeDb::open_and_migrate(&db_path, &lock_path)
+        .expect_err("missing replay source must fail closed");
+    assert!(error
+        .to_string()
+        .contains("replay sources that are missing, cross-agent, or do not contain the input"));
     Ok(())
 }
 

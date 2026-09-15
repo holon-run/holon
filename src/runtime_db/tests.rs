@@ -9,8 +9,9 @@ use crate::runtime_db::evidence::{content_hash, upsert_execution_root_entry_tx};
 use crate::runtime_db::migrations::{
     apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
     backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
-    max_known_migration_version, schema_fingerprint, table_exists, MIGRATIONS,
-    PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
+    max_known_migration_version, schema_fingerprint, table_exists,
+    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
+    MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
 };
 #[cfg(test)]
 use crate::runtime_db::storage_domain::upsert_storage_domain;
@@ -3598,6 +3599,99 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(
             current_schema_version(&connection)?,
             max_known_migration_version() + 1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn conversation_input_assignment_rollback_is_dry_run_by_default_and_preserves_backup(
+    ) -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let db = RuntimeDb::open_for_conversation_input_assignment_rollback(&db_path, &lock_path)?;
+
+        let plan = db.plan_conversation_input_assignment_rollback()?;
+        assert!(plan.eligible);
+        assert!(!plan.apply);
+        assert!(!plan.changed);
+        assert!(!plan.backup_verified);
+        assert_eq!(
+            plan.current_version,
+            CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION
+        );
+        assert_eq!(
+            plan.current_name.as_deref(),
+            Some(CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME)
+        );
+        assert_eq!(db.current_schema_version()?, 66);
+
+        let applied = db.apply_conversation_input_assignment_rollback()?;
+        assert!(applied.apply);
+        assert!(applied.changed);
+        assert!(applied.backup_verified);
+        assert_eq!(applied.current_version, 65);
+        let backup_path = applied.backup_path.expect("verified backup path");
+        assert!(backup_path.is_file());
+        assert_eq!(
+            current_schema_version(&open_connection(&backup_path)?)?,
+            CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION
+        );
+        assert_eq!(db.current_schema_version()?, 65);
+        Ok(())
+    }
+
+    #[test]
+    fn conversation_input_assignment_rollback_rejects_ineligible_heads() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        {
+            let connection = open_connection(&db_path)?;
+            connection.execute(
+                "INSERT INTO schema_migrations (version, name, applied_at)
+                 VALUES (?1, 'future_test', ?2)",
+                (
+                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION + 1,
+                    Utc::now().to_rfc3339(),
+                ),
+            )?;
+        }
+        let db = RuntimeDb::open_for_conversation_input_assignment_rollback(&db_path, &lock_path)?;
+        let plan = db.plan_conversation_input_assignment_rollback()?;
+        assert!(!plan.eligible);
+        assert!(plan
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("newer migration")));
+        let error = db
+            .apply_conversation_input_assignment_rollback()
+            .expect_err("newer migration must block rollback");
+        assert!(error.to_string().contains("newer migration"));
+        assert_eq!(
+            db.current_schema_version()?,
+            CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION + 1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn conversation_input_assignment_rollback_rejects_v66_name_mismatch() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        open_connection(&db_path)?.execute(
+            "UPDATE schema_migrations SET name = 'wrong_name' WHERE version = ?1",
+            [CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION],
+        )?;
+        let db = RuntimeDb::open_for_conversation_input_assignment_rollback(&db_path, &lock_path)?;
+        let plan = db.plan_conversation_input_assignment_rollback()?;
+        assert!(!plan.eligible);
+        assert!(plan
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("name mismatch")));
+        assert!(db.apply_conversation_input_assignment_rollback().is_err());
+        assert_eq!(
+            db.current_schema_version()?,
+            CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION
         );
         Ok(())
     }

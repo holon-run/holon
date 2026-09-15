@@ -4,6 +4,28 @@ This runbook covers the Rust conversation read surface and the independent
 `@holon/conversation-sdk`. It does not migrate or modify the existing
 `web-gui`, and it does not introduce a second event ledger.
 
+## Runtime database upgrade
+
+Runtime database migration v66, `conversation_input_assignment_repair`, fixes
+legacy replay inputs whose assignment points at the replay turn instead of the
+canonical source turn. The migration now scans replay provenance once, validates
+that each source turn exists and contains the input, and changes only affected
+assignments. Migration logs include version, name, stage, row counts, duration,
+and failures.
+
+Before upgrading a large long-lived runtime:
+
+1. Stop `holon serve` and preserve the runtime database, WAL, and SHM files.
+2. Start the new binary and watch for
+   `starting runtime database migration`,
+   `repairing conversation input assignments`, and
+   `finished runtime database migration`.
+3. Treat a provenance validation failure as a data-integrity blocker. Do not
+   edit assignments or migration markers by hand; retain the bounded sample in
+   the error and investigate the referenced turns.
+4. After v66 commits, restart the new binary once and confirm migration is
+   skipped and normal startup time returns.
+
 ## Compatibility preflight
 
 Before calling conversation routes, fetch `/api/handshake` and require:
@@ -108,3 +130,29 @@ preserved legacy reads. Do not reinterpret checkpoints or copy data into a new
 ledger. Server routes and diagnostics may remain deployed because they are
 read-only and capability gated; investigate shadow/reset metrics before another
 canary.
+
+If the database has committed only the data-only v66 marker and the previous
+v65-capable binary must be restored, first stop `holon serve` and run the
+protected offline preflight:
+
+```sh
+holon debug runtime-db conversation-input-assignment-rollback --json
+```
+
+The command is dry-run by default. It is eligible only when the highest
+migration is exactly v66 with the expected
+`conversation_input_assignment_repair` name. It refuses databases with a newer
+migration or a mismatched marker.
+
+Apply the rollback only after reviewing the report:
+
+```sh
+holon debug runtime-db conversation-input-assignment-rollback --apply --json
+```
+
+Apply mode creates and integrity-checks a `VACUUM INTO` backup, verifies that
+the backup retains v66, then atomically removes only the v66 marker and verifies
+that the live database head is v65 `task_result_settlements`. The repaired
+assignments remain in place because their tables and rows are already valid for
+v65. Do not start a v66-capable binary against the downgraded marker before the
+v65 rollback test, because it will apply v66 again.
