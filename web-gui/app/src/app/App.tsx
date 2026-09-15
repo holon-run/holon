@@ -52,6 +52,7 @@ import {
   useRuntimeStore,
 } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
+import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
 import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
@@ -252,6 +253,9 @@ export function App() {
     syncStatus: agentSyncStatus,
     refresh: refreshAgentDetail,
   } = useAgentDetail(activeAgentId, effectiveDisplayLevel);
+  const conversationSession = useConversationSession(
+    route === "agent" ? activeAgentId : undefined,
+  );
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedSemanticHistory =
     selectedAgentSession?.semanticHistoryByDisplayLevel[effectiveDisplayLevel];
@@ -722,6 +726,20 @@ export function App() {
           <AgentPage
             key={activeAgent.id}
             agent={activeAgent}
+            conversation={
+              conversationSession.scopeKey === null
+                ? undefined
+                : {
+                    model: conversationSession.model,
+                    onLoadBrief: conversationSession.loadBrief,
+                    onLoadDetail: conversationSession.loadDetail,
+                    onLoadOlderActivities: conversationSession.loadOlderActivities,
+                    onRetry: conversationSession.retry,
+                    briefRecord: conversationSession.briefRecord,
+                    briefLoadState: conversationSession.briefState,
+                    detailLoadState: conversationSession.detailState,
+                  }
+            }
             detail={selectedAgentDetail}
             detailLoading={agentDetailLoading}
             contentStatus={agentContentStatus}

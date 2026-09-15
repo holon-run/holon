@@ -18,6 +18,8 @@ import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
 import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
 import { TimelineTurnGroup, WorkingIndicator } from "./AgentTimeline";
+import { ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
+import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
 import { collectWorkingActivitiesForCurrentTurn, groupTimelineTurns, itemHasEventSeq, type TimelineTurn } from "./timeline-utils";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
@@ -33,8 +35,14 @@ import type {
 import type { AgentSyncStatus } from "../../runtime/runtime-store-helpers";
 import type { OperatorPromptAttachment } from "../../runtime/client";
 
+export interface ConversationTimelineBundle extends ConversationTimelineActions {
+  model: ConversationSessionModel;
+}
+
 interface AgentPageProps {
   agent: AgentSummary;
+  /** Canonical conversation read-model projection; replaces the raw timeline. */
+  conversation?: ConversationTimelineBundle;
   detail: AgentDetail | null;
   detailLoading?: boolean;
   contentStatus?: "unknown" | "available" | "confirmed-empty";
@@ -327,6 +335,7 @@ function cancelReconciledMeasurement(raf: number | null): void {
 
 export function AgentPage({
   agent,
+  conversation,
   detail,
   detailLoading,
   contentStatus = "unknown",
@@ -859,7 +868,18 @@ export function AgentPage({
                 onRetry={onRetrySync}
               />
             ) : null}
-            {timelineTurns.length > 0 ? (
+            {conversation ? (
+              <ConversationTimeline
+                model={conversation.model}
+                onLoadBrief={conversation.onLoadBrief}
+                onLoadDetail={conversation.onLoadDetail}
+                onLoadOlderActivities={conversation.onLoadOlderActivities}
+                onRetry={conversation.onRetry}
+                briefRecord={conversation.briefRecord}
+                briefLoadState={conversation.briefLoadState}
+                detailLoadState={conversation.detailLoadState}
+              />
+            ) : timelineTurns.length > 0 ? (
               <div
                 ref={virtualWrapperRef}
                 className="message-list-virtual-wrapper"

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback } from "react";
 
 import { useRuntimeStore } from "./runtime-store";
 import type { AgentSyncStatus } from "./runtime-store-helpers";
@@ -21,33 +21,15 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   const syncStatus = useRuntimeStore((state) =>
     agentId ? state.sessionsByAgentId[agentId]?.syncStatus ?? "idle" : "idle",
   );
-  const hasDisplayHistory = useRuntimeStore((state) =>
-    agentId ? state.sessionsByAgentId[agentId]?.semanticHistoryByDisplayLevel[displayLevel] != null : false,
-  );
-  const ensureAgentSession = useRuntimeStore((state) => state.ensureAgentSession);
   const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
-  const registerAgentForEvents = useRuntimeStore((state) => state.registerAgentForEvents);
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    if (agentId === undefined) return;
     await refreshAgentDetail(agentId, displayLevel, { trigger: "manual.refresh" });
-  };
+  }, [agentId, displayLevel, refreshAgentDetail]);
 
-  useEffect(() => {
-    if (!agentId) return;
-    registerAgentForEvents(agentId);
-  }, [agentId, registerAgentForEvents]);
-
-  const prevDisplayLevelRef = useRef<DisplayLevel | undefined>(undefined);
-  useEffect(() => {
-    if (!agentId) return;
-    const prevLevel = prevDisplayLevelRef.current;
-    const levelRank: Record<DisplayLevel, number> = { info: 0, verbose: 1, debug: 2 };
-    const levelIncreased = prevLevel != null && levelRank[displayLevel] > levelRank[prevLevel];
-    void ensureAgentSession(agentId, displayLevel);
-    if (detail && !detail.error && (levelIncreased || !hasDisplayHistory)) {
-      void refreshAgentDetail(agentId, displayLevel, { trigger: "display_level.increased" });
-    }
-    prevDisplayLevelRef.current = displayLevel;
-  }, [agentId, displayLevel, ensureAgentSession, refreshAgentDetail, hasDisplayHistory]);
-
+  // Conversation content now flows from the conversation read model
+  // (useConversationSession). Mounting a page must not start the legacy
+  // event-session hydration or catch-up; refresh stays available for the
+  // manual action only.
   return { detail, loading, contentStatus, syncStatus, refresh };
 }
