@@ -1,8 +1,14 @@
 import {
-  ledgerStatusForDiagnostics,
+  getRuntimeConnectionConfig,
   ledgerReadMarkerDecision,
+  ledgerStatusForDiagnostics,
   useRuntimeStore,
 } from "../runtime/runtime-store";
+import {
+  conversationScopeKey,
+  peekConversationScope,
+} from "../runtime/conversation-scope-store";
+import { currentRemoteKey } from "../runtime/session-cache";
 import {
   AGENT_SESSIONS_STORE,
   LEDGER_DB_NAME,
@@ -19,6 +25,11 @@ import type {
 } from "../runtime/event-ledger/ledger";
 
 export interface HolonE2eSnapshot {
+  conversationStatus?: {
+    kind: string;
+    error?: string;
+    hasView: boolean;
+  };
   route: string;
   bootstrapLoading: boolean;
   bootstrapError?: string;
@@ -105,7 +116,23 @@ declare global {
 
 function snapshot(): HolonE2eSnapshot {
   const state = useRuntimeStore.getState();
+  const conversationScope = state.selectedAgentId
+    ? peekConversationScope(
+        conversationScopeKey(currentRemoteKey(getRuntimeConnectionConfig()), state.selectedAgentId),
+      )
+    : null;
   return {
+    conversationStatus: conversationScope
+      ? {
+          kind: conversationScope.status.kind,
+          error: conversationScope.status.kind === "unsupported" ||
+              conversationScope.status.kind === "recoverable_error" ||
+              conversationScope.status.kind === "terminal_error"
+            ? String(conversationScope.status.error ?? "")
+            : undefined,
+          hasView: conversationScope.view() !== null,
+        }
+      : undefined,
     route: state.route,
     bootstrapLoading: state.bootstrapLoading,
     bootstrapError: state.bootstrapError,

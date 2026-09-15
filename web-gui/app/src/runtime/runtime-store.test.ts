@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import type { ConversationStateView } from "@holon/conversation-sdk";
+
 import {
   appendOptimisticOperatorPrompt,
   agentBriefPatchFromEvents,
   agentDetailErrorKind,
   applyStreamEvents,
   backfillRetryDelayMs,
-  buildResumeRefreshes,
   canUseRemoteRuntimeConnections,
   isSessionCacheContextCurrent,
   isLoopbackWebHostname,
@@ -14,7 +15,6 @@ import {
   mergeBootstrapAgentState,
   mergeTimelineEventPage,
   modelCatalogCacheKey,
-  missingBriefIdsForHydration,
   observerSyncDiagnostics,
   clearStoredRuntimeConnectionToken,
   readStoredRemoteConnectionProfiles,
@@ -34,9 +34,26 @@ import {
   getRuntimeTraceRecords,
   setRuntimeTraceEnabled,
 } from "./runtime-trace";
+import {
+  conversationScopeKey,
+  useConversationScopeStore,
+} from "./conversation-scope-store";
 import type { AgentSessionState } from "./runtime-store";
 import { createSessionProjectionState, reduceSessionProjection } from "./session-projection";
 import type { AgentSummary } from "./types";
+
+/** Seeds the conversation scope mirror the read-marker gate consumes. */
+function seedReadyConversationScope(agentId: string): void {
+  useConversationScopeStore.setState({
+    scopes: {
+      [conversationScopeKey("local", agentId)]: {
+        status: { kind: "ready" },
+        view: {} as ConversationStateView,
+        version: 1,
+      },
+    },
+  });
+}
 
 const OBSERVER_SYNC_CAPABILITIES = [
   "agents.roster-snapshot.v1",
@@ -77,10 +94,7 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
   return {
     ...createSessionProjectionState(),
     loading: false,
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
     liveStatus: "idle",
-    cacheStatus: "unchecked",
     contentStatus: "unknown",
     syncStatus: "idle",
     sendingPrompt: false,
@@ -110,7 +124,7 @@ describe("sendOperatorPrompt", () => {
 
     try {
       await expect(
-        useRuntimeStore.getState().sendOperatorPrompt("agent-a", "hello", "info"),
+        useRuntimeStore.getState().sendOperatorPrompt("agent-a", "hello"),
       ).rejects.toThrow("Secure random number generation is unavailable");
 
       expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
@@ -345,7 +359,7 @@ describe("refreshAgentDetail last-known-good", () => {
         },
       }, true);
 
-      await useRuntimeStore.getState().refreshAgentDetail("agent-a", "info");
+      await useRuntimeStore.getState().refreshAgentDetail("agent-a");
 
       const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
       expect(session?.detail?.agent.model).toBe("test-model-live");
@@ -370,7 +384,7 @@ describe("refreshAgentDetail last-known-good", () => {
         sessionsByAgentId: { "agent-a": sessionState() },
       }, true);
 
-      await useRuntimeStore.getState().refreshAgentDetail("agent-a", "info");
+      await useRuntimeStore.getState().refreshAgentDetail("agent-a");
 
       const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
       expect(session?.detail?.agent.model).toBe("unavailable");
@@ -632,10 +646,6 @@ describe("resume session reset", () => {
     const reset = resetSessionsForResume({
       "agent-a": sessionState({
         loading: true,
-        semanticHistoryByDisplayLevel: {
-          info: { cursorSeq: 10, hasOlder: true, loading: true },
-        },
-        targetEventLoading: true,
         sendingPrompt: true,
         liveStatus: "recovering",
         reconnectAttempt: 4,
@@ -651,10 +661,6 @@ describe("resume session reset", () => {
 
     expect(reset["agent-a"]).toMatchObject({
       loading: false,
-      semanticHistoryByDisplayLevel: {
-        info: { cursorSeq: 10, hasOlder: true, loading: false },
-      },
-      targetEventLoading: false,
       sendingPrompt: false,
       liveStatus: "stale",
       reconnectAttempt: 0,
@@ -763,11 +769,6 @@ describe("timeline events state", () => {
   it("returns developer-only UI to a non-debug closed state when diagnostics are disabled", () => {
     useRuntimeStore.setState({
       selectedAgentId: "agent-a",
-      displayLevel: "debug",
-      displayLevelsByAgentId: {
-        "agent-a": "debug",
-        "agent-b": "verbose",
-      },
       rightPanelOpen: true,
       rightPanelView: { kind: "timeline_events", agentId: "agent-a" },
       rightPanelViewStack: [
@@ -776,14 +777,9 @@ describe("timeline events state", () => {
       ],
     });
 
-    useRuntimeStore.getState().disableDeveloperDiagnosticsUi("agent-a");
+    useRuntimeStore.getState().disableDeveloperDiagnosticsUi();
 
     expect(useRuntimeStore.getState()).toMatchObject({
-      displayLevel: "info",
-      displayLevelsByAgentId: {
-        "agent-a": "info",
-        "agent-b": "verbose",
-      },
       rightPanelOpen: false,
       rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
       rightPanelViewStack: [{ kind: "agent_overview", agentId: "agent-a" }],
@@ -1161,6 +1157,7 @@ describe("roster activity unread state", () => {
         "agent-retry": { mode: "exact", count: 2 },
       },
     });
+    seedReadyConversationScope("agent-retry");
 
     useRuntimeStore.getState().markAgentConversationRead("agent-retry");
     await Promise.resolve();
@@ -1240,6 +1237,7 @@ describe("roster activity unread state", () => {
         "agent-auto": { mode: "truncated", count: 2 },
       },
     });
+    seedReadyConversationScope("agent-auto");
 
     useRuntimeStore.getState().markAgentConversationRead("agent-auto");
     await Promise.resolve();
@@ -1301,6 +1299,7 @@ describe("roster activity unread state", () => {
         "agent-noop": { mode: "exact", count: 2 },
       },
     });
+    seedReadyConversationScope("agent-noop");
 
     useRuntimeStore.getState().markAgentConversationRead("agent-noop");
     await vi.waitFor(() => {
@@ -1336,7 +1335,6 @@ describe("roster activity unread state", () => {
       rosterActivityByAgentId: activity,
       sessionsByAgentId: {
         "agent-a": sessionState({
-          cacheStatus: "hit",
           contentStatus: "available",
           syncStatus: "streaming",
           liveStatus: "recovering",
@@ -1399,84 +1397,6 @@ describe("brief projection and hydration", () => {
     vi.unstubAllGlobals();
   });
 
-  it("prefetches a brief for a non-selected agent without hydrating its messages or transcripts", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = String(input);
-      if (url.endsWith("/agents/agent-b/briefs:batchGet")) {
-        return Promise.resolve(jsonResponse({
-          briefs: [{ id: "brief-b", text: "Background hydrated brief." }],
-          missing_brief_ids: [],
-        }));
-      }
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-    useRuntimeStore.setState({
-      selectedAgentId: "agent-a",
-      sessionsByAgentId: {
-        "agent-a": sessionState(),
-        "agent-b": sessionState(),
-      },
-    });
-
-    const briefEvent: StreamEventEnvelopeDto = {
-      id: "event-brief-b",
-      event_seq: 1,
-      event_log_epoch: "epoch-b",
-      contract_version: 1,
-      ts: "2026-07-24T00:00:00Z",
-      agent_id: "agent-b",
-      type: "brief_created",
-      payload_schema: "holon.runtime_event.brief_created",
-      payload_schema_version: 1,
-      provenance: {},
-      payload: { brief_id: "brief-b" },
-    };
-    const ingestSessionEvents = vi
-      .spyOn(AgentSessionRepository.prototype, "ingestSessionEvents")
-      .mockResolvedValue(null);
-
-    applyStreamEvents(useRuntimeStore.setState, "agent-b", [briefEvent]);
-
-    expect(ingestSessionEvents).toHaveBeenCalledWith("agent-b", [briefEvent]);
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    expect(String(fetchMock.mock.calls[0]?.[0])).toContain("/agents/agent-b/briefs:batchGet");
-    await vi.waitFor(() => {
-      expect(useRuntimeStore.getState().sessionsByAgentId["agent-b"]?.briefRecordsById["brief-b"]?.text)
-        .toBe("Background hydrated brief.");
-    });
-
-    const sessionBefore = useRuntimeStore.getState().sessionsByAgentId["agent-b"];
-    applyStreamEvents(useRuntimeStore.setState, "agent-b", [briefEvent]);
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    // Duplicate flushes neither commit a new session object nor rehydrate.
-    expect(useRuntimeStore.getState().sessionsByAgentId["agent-b"]).toBe(sessionBefore);
-
-    // A follow-up event that references no new unresolved brief id must not
-    // issue another briefs:batchGet either.
-    const followUpEvent: StreamEventEnvelopeDto = {
-      ...briefEvent,
-      id: "event-brief-b-followup",
-      event_seq: 2,
-    };
-    applyStreamEvents(useRuntimeStore.setState, "agent-b", [followUpEvent]);
-    await Promise.resolve();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
 
   it("uses persisted brief text for roster patches", () => {
     const patch = agentBriefPatchFromEvents(
@@ -1507,51 +1427,6 @@ describe("brief projection and hydration", () => {
     );
   });
 
-  it("hydrates a missing brief even when its associated transcript is loaded", () => {
-    const session: AgentSessionState = {
-      ...createSessionProjectionState(),
-      loading: false,
-      semanticHistoryByDisplayLevel: {},
-      targetEventLoading: false,
-      liveStatus: "idle",
-      cacheStatus: "unchecked",
-      contentStatus: "unknown",
-      syncStatus: "idle",
-      sendingPrompt: false,
-    abortingRun: false,
-      detail: null,
-      eventsBySeq: {
-        23: {
-          agent_id: "agent-a",
-          event_seq: 23,
-          ts: "2026-07-10T00:00:00Z",
-          type: "brief_created",
-          payload: {
-            brief_id: "brief-123",
-            finalizes_assistant_round_id: "round-123",
-          },
-        },
-      },
-      eventSeqs: [23],
-      referencedBriefIds: { "brief-123": true },
-      transcriptEntriesById: {
-        "round-123": {
-          id: "round-123",
-          data: {
-            blocks: [
-              { type: "thinking", text: "Internal reasoning must not be visible." },
-              { type: "text", text: "Transcript final text." },
-            ],
-          },
-        },
-      },
-      workItemDetailsById: {},
-      taskDetailsById: {},
-      toolExecutionDetailsById: {},
-    };
-
-    expect(missingBriefIdsForHydration(session)).toEqual(["brief-123"]);
-  });
 
   it("tracks loading, transient failure, manual retry, and not found brief states", () => {
     let projection = reduceSessionProjection(createSessionProjectionState(), {
@@ -1711,673 +1586,6 @@ describe("runtime client generation", () => {
   });
 });
 
-describe("agent event catch-up", () => {
-  afterEach(() => {
-    useRuntimeStore.setState({
-      sessionsByAgentId: {},
-      globalStreamStatus: "idle",
-      selectedAgentId: "",
-    });
-    vi.unstubAllGlobals();
-  });
-
-  it("loads every newer page without treating the server high watermark as consumed", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const event = (eventSeq: number) => ({
-      id: `event-${eventSeq}`,
-      event_seq: eventSeq,
-      event_log_epoch: "epoch-1",
-      contract_version: 1,
-      ts: "2026-07-24T00:00:00Z",
-      agent_id: "agent-a",
-      type: "legacy_event",
-      payload_schema: "holon.runtime_event.legacy",
-      payload_schema_version: 1,
-      provenance: {},
-      payload: {},
-    });
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      if (url.pathname.endsWith("/agents/agent-a/events")) {
-        const afterSeq = Number(url.searchParams.get("after_seq"));
-        const order = url.searchParams.get("order");
-        // Phase 1: tail-first descending fetch returns newest 100 events (51-150)
-        if (order === "desc") {
-          return Promise.resolve(jsonResponse({
-            events: Array.from({ length: 100 }, (_, index) => event(150 - index)),
-            event_log_epoch: "epoch-1",
-            cursor_seq: 1428,
-            newest_seq: 150,
-            oldest_seq: 51,
-            has_older: true,
-            has_newer: false,
-            order: "desc",
-            limit: 100,
-          }));
-        }
-        // Phase 2: ascending backfill from cached cursor
-        if (afterSeq === 1) {
-          return Promise.resolve(jsonResponse({
-            events: Array.from({ length: 100 }, (_, index) => event(index + 2)),
-            event_log_epoch: "epoch-1",
-            cursor_seq: 1428,
-            newest_seq: 101,
-            oldest_seq: 2,
-            has_older: false,
-            has_newer: true,
-            order: "asc",
-            limit: 100,
-          }));
-        }
-        if (afterSeq === 101) {
-          return Promise.resolve(jsonResponse({
-            events: Array.from({ length: 49 }, (_, index) => event(index + 102)),
-            event_log_epoch: "epoch-1",
-            cursor_seq: 1428,
-            newest_seq: 150,
-            oldest_seq: 102,
-            has_older: false,
-            has_newer: false,
-            order: "asc",
-            limit: 100,
-          }));
-        }
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-    const now = Date.now();
-    useRuntimeStore.setState({
-      globalStreamStatus: "idle",
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          cacheStatus: "hit",
-          contentStatus: "available",
-          syncStatus: "stale",
-          detailValidatedAt: now,
-          eventsValidatedAt: now,
-          detail: {
-            agent: agentSummary({ id: "agent-a" }),
-            source: "http",
-            timeline: [],
-          },
-          eventsBySeq: { 1: event(1) },
-          eventSeqs: [1],
-          newestSeq: 1,
-          oldestSeq: 1,
-          eventLogEpoch: "epoch-1",
-        }),
-      },
-    });
-
-    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
-
-    const eventRequests = fetchMock.mock.calls
-      .map(([input]) => new URL(String(input), "http://localhost"))
-      .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
-    // Phase 1: descending tail fetch, Phase 1.5: display-level filtered tail, Phase 2: ascending backfill from cached cursor
-    expect(eventRequests.map((url) => url.searchParams.get("order"))).toEqual(["desc", "desc", "asc"]);
-    expect(eventRequests.map((url) => url.searchParams.get("after_seq"))).toEqual([null, null, "1"]);
-    // Phase 1.5 request carries the display-level filter
-    expect(eventRequests[1].searchParams.get("max_level")).toBe("info");
-    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
-      eventSeqs: Array.from({ length: 150 }, (_, index) => index + 1),
-      newestSeq: 150,
-      syncStatus: "idle",
-    });
-  });
-
-  it("does not advance the consumed cursor from an empty newer page", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const event = {
-      id: "event-1",
-      event_seq: 1,
-      event_log_epoch: "epoch-1",
-      contract_version: 1,
-      ts: "2026-07-24T00:00:00Z",
-      agent_id: "agent-a",
-      type: "legacy_event",
-      payload_schema: "holon.runtime_event.legacy",
-      payload_schema_version: 1,
-      provenance: {},
-      payload: {},
-    };
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      if (url.pathname.endsWith("/agents/agent-a/events")) {
-        const order = url.searchParams.get("order");
-        // Phase 1: descending tail returns events 10-20, creating a gap
-        if (order === "desc") {
-          return Promise.resolve(jsonResponse({
-            events: Array.from({ length: 11 }, (_, index) => ({
-              ...event,
-              id: `event-${20 - index}`,
-              event_seq: 20 - index,
-            })),
-            event_log_epoch: "epoch-1",
-            cursor_seq: 1428,
-            newest_seq: 20,
-            oldest_seq: 10,
-            has_older: true,
-            has_newer: false,
-            order: "desc",
-            limit: 100,
-          }));
-        }
-        // Phase 2: ascending backfill returns empty page with has_newer: true
-        return Promise.resolve(jsonResponse({
-          events: [],
-          event_log_epoch: "epoch-1",
-          cursor_seq: 1428,
-          newest_seq: 1428,
-          oldest_seq: null,
-          has_older: false,
-          has_newer: true,
-          order: "asc",
-          limit: 100,
-        }));
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-    const now = Date.now();
-    useRuntimeStore.setState({
-      globalStreamStatus: "idle",
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          cacheStatus: "hit",
-          contentStatus: "available",
-          syncStatus: "stale",
-          detailValidatedAt: now,
-          eventsValidatedAt: now,
-          detail: {
-            agent: agentSummary({ id: "agent-a" }),
-            source: "http",
-            timeline: [],
-          },
-          eventsBySeq: { 1: event },
-          eventSeqs: [1],
-          newestSeq: 1,
-          oldestSeq: 1,
-          eventLogEpoch: "epoch-1",
-        }),
-      },
-    });
-
-    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
-
-    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
-      // Tail events 10-20 merged before backfill error
-      eventSeqs: [1, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20],
-      newestSeq: 20,
-      syncStatus: "error",
-      error: "Agent event catch-up page did not advance its consumed cursor.",
-    });
-  });
-
-  it("recovers missed events by fetching from the gap cursor instead of newestSeq", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const event = (seq: number) => ({
-      id: `event-${seq}`,
-      event_seq: seq,
-      event_log_epoch: "epoch-1",
-      contract_version: 1,
-      ts: "2026-07-24T00:00:00Z",
-      agent_id: "agent-a",
-      type: "legacy_event",
-      payload_schema: "holon.runtime_event.legacy",
-      payload_schema_version: 1,
-      provenance: {},
-      payload: {},
-    });
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      if (url.pathname.endsWith("/agents/agent-a/events")) {
-        const order = url.searchParams.get("order");
-        // Phase 1: descending tail returns the newest event (5)
-        if (order === "desc") {
-          return Promise.resolve(jsonResponse({
-            events: [event(5)],
-            event_log_epoch: "epoch-1",
-            cursor_seq: 5,
-            newest_seq: 5,
-            oldest_seq: 5,
-            has_older: true,
-            has_newer: false,
-            order: "desc",
-            limit: 100,
-          }));
-        }
-        // Phase 2: ascending backfill should query from gaps[0].afterSeq (1), not newestSeq (5).
-        const afterSeq = Number(url.searchParams.get("after_seq"));
-        expect(afterSeq).toBe(1);
-        return Promise.resolve(jsonResponse({
-          events: [event(2), event(3), event(4), event(5)],
-          event_log_epoch: "epoch-1",
-          cursor_seq: 5,
-          newest_seq: 5,
-          oldest_seq: 2,
-          has_older: false,
-          has_newer: false,
-          order: "asc",
-          limit: 100,
-        }));
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-    const now = Date.now();
-    // Session has events 1 and 5, with a gap (2-4 missing).
-    // newestSeq is 5 (inflated by a streaming event), but gaps[0].afterSeq is 1.
-    useRuntimeStore.setState({
-      globalStreamStatus: "idle",
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          cacheStatus: "hit",
-          contentStatus: "available",
-          syncStatus: "stale",
-          detailValidatedAt: now,
-          eventsValidatedAt: now,
-          detail: {
-            agent: agentSummary({ id: "agent-a" }),
-            source: "http",
-            timeline: [],
-          },
-          eventsBySeq: { 1: event(1), 5: event(5) },
-          eventSeqs: [1, 5],
-          newestSeq: 5,
-          oldestSeq: 1,
-          gaps: [{ afterSeq: 1, beforeSeq: 5 }],
-          eventLogEpoch: "epoch-1",
-        }),
-      },
-    });
-
-    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
-
-    const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
-    // Gap should be filled: events 1-5 all present, no gaps.
-    expect(session.eventSeqs).toEqual([1, 2, 3, 4, 5]);
-    expect(session.gaps).toEqual([]);
-    expect(session.newestSeq).toBe(5);
-    expect(session.syncStatus).toBe("idle");
-  });
-});
-
-describe("brief hydration retry limits", () => {
-  afterEach(() => {
-    useRuntimeStore.setState({
-      sessionsByAgentId: {},
-      globalStreamStatus: "idle",
-      selectedAgentId: "",
-    });
-    vi.unstubAllGlobals();
-  });
-
-  it("stops automatic hydration after five attempts but still allows manual retry", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = String(input);
-      if (url.endsWith("/agents/agent-a/briefs:batchGet")) {
-        return Promise.resolve(jsonResponse({
-          briefs: [{ id: "brief-123", text: "Hydrated after manual retry." }],
-          missing_brief_ids: [],
-        }));
-      }
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-
-    const now = Date.now();
-    useRuntimeStore.setState({
-      globalStreamStatus: "streaming",
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          cacheStatus: "hit",
-          contentStatus: "available",
-          syncStatus: "streaming",
-          detailValidatedAt: now,
-          eventsValidatedAt: now,
-          detail: {
-            agent: agentSummary({ id: "agent-a" }),
-            source: "http",
-            timeline: [],
-          },
-          eventsBySeq: {
-            1: {
-              agent_id: "agent-a",
-              event_seq: 1,
-              ts: "2026-07-23T00:00:00Z",
-              type: "brief_created",
-              payload: { brief_id: "brief-123" },
-            },
-          },
-          eventSeqs: [1],
-          referencedBriefIds: { "brief-123": true },
-          briefHydrationById: {
-            "brief-123": {
-              briefId: "brief-123",
-              status: "failed",
-              attempt: 5,
-              errorKind: "request_failed",
-            },
-          },
-        }),
-      },
-    });
-
-    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
-    expect(fetchMock).not.toHaveBeenCalled();
-
-    useRuntimeStore.getState().retryBriefHydration("agent-a", "brief-123");
-    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => {
-      expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.briefRecordsById["brief-123"]?.text)
-        .toBe("Hydrated after manual retry.");
-    });
-  });
-
-  it("hydrates selected message references on the fresh streaming fast path", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = String(input);
-      if (url.endsWith("/agents/agent-a/messages:batchGet")) {
-        return Promise.resolve(jsonResponse({
-          messages: [{
-            id: "message-123",
-            origin: { kind: "operator" },
-            body: { text: "Hydrated selected message." },
-          }],
-          missing_message_ids: [],
-        }));
-      }
-      if (url.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-
-    const now = Date.now();
-    useRuntimeStore.setState({
-      route: "agent",
-      selectedAgentId: "agent-a",
-      globalStreamStatus: "streaming",
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          cacheStatus: "hit",
-          contentStatus: "available",
-          syncStatus: "streaming",
-          detailValidatedAt: now,
-          eventsValidatedAt: now,
-          detail: {
-            agent: agentSummary({ id: "agent-a" }),
-            source: "http",
-            timeline: [],
-          },
-          eventsBySeq: {
-            1: {
-              agent_id: "agent-a",
-              event_seq: 1,
-              type: "message_enqueued",
-              payload: {
-                message_id: "message-123",
-                origin: { kind: "operator" },
-              },
-            },
-          },
-          eventSeqs: [1],
-          referencedMessageIds: { "message-123": true },
-        }),
-      },
-    });
-
-    await useRuntimeStore.getState().ensureAgentSession("agent-a", "info");
-
-    await vi.waitFor(() => {
-      expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.messagesById["message-123"])
-        .toMatchObject({ id: "message-123" });
-    });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("semantic history pagination", () => {
-  afterEach(() => {
-    useRuntimeStore.setState({
-      sessionsByAgentId: {},
-      selectedAgentId: "",
-    });
-    vi.unstubAllGlobals();
-  });
-
-  it("continues across raw pages until the selected display level gains a timeline item", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const event = (
-      eventSeq: number,
-      type: string,
-      payload: Record<string, unknown> = {},
-    ): StreamEventEnvelopeDto => ({
-      id: `event-${eventSeq}`,
-      event_seq: eventSeq,
-      event_log_epoch: "epoch-1",
-      ts: `2026-08-09T00:00:${String(eventSeq % 60).padStart(2, "0")}Z`,
-      agent_id: "agent-a",
-      type,
-      payload,
-    });
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      if (url.pathname.endsWith("/agents/agent-a/messages:batchGet")) {
-        return Promise.resolve(jsonResponse({ messages: [], missing_message_ids: ["message-80"] }));
-      }
-      if (url.pathname.endsWith("/agents/agent-a/events")) {
-        const beforeSeq = Number(url.searchParams.get("before_seq"));
-        if (beforeSeq === 90) {
-          return Promise.resolve(jsonResponse({
-            events: [event(89, "legacy_event"), event(88, "legacy_event")],
-            event_log_epoch: "epoch-1",
-            oldest_seq: 88,
-            newest_seq: 89,
-            has_older: true,
-            has_newer: false,
-            order: "desc",
-            limit: 80,
-          }));
-        }
-        if (beforeSeq === 88) {
-          return Promise.resolve(jsonResponse({
-            events: [event(80, "message_enqueued", {
-              message_id: "message-80",
-              origin: { kind: "operator" },
-              body: "Older operator message",
-            })],
-            event_log_epoch: "epoch-1",
-            oldest_seq: 80,
-            newest_seq: 80,
-            has_older: false,
-            has_newer: false,
-            order: "desc",
-            limit: 80,
-          }));
-        }
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-
-    useRuntimeStore.setState({
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          eventLogEpoch: "epoch-1",
-          detail: {
-            agent: agentSummary({ id: "agent-a" }),
-            source: "http",
-            timeline: [],
-          },
-          semanticHistoryByDisplayLevel: {
-            info: { eventLogEpoch: "epoch-1", cursorSeq: 90, hasOlder: true, loading: false },
-            verbose: { eventLogEpoch: "epoch-1", cursorSeq: 70, hasOlder: true, loading: false },
-          },
-        }),
-      },
-    });
-
-    await useRuntimeStore.getState().loadOlderAgentEvents("agent-a", "info");
-
-    const eventRequests = fetchMock.mock.calls
-      .map(([input]) => new URL(String(input), "http://localhost"))
-      .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
-    expect(eventRequests.map((url) => url.searchParams.get("before_seq"))).toEqual(["90", "88"]);
-    expect(eventRequests.every((url) => !url.searchParams.has("max_level"))).toBe(true);
-    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
-      oldestSeq: 80,
-      semanticHistoryByDisplayLevel: {
-        info: { cursorSeq: 80, hasOlder: false, loading: false },
-        verbose: { cursorSeq: 70, hasOlder: true, loading: false },
-      },
-    });
-  });
-
-  it("bounds a load when raw pages keep producing no semantic timeline items", async () => {
-    const localStorage = new MemoryStorage();
-    const sessionStorage = new MemoryStorage();
-    vi.stubGlobal("window", {
-      localStorage,
-      sessionStorage,
-      setTimeout,
-      clearTimeout,
-      location: { hostname: "localhost", protocol: "http:" },
-    });
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = new URL(String(input), "http://localhost");
-      if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
-      if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      if (url.pathname.endsWith("/agents/agent-a/events")) {
-        const beforeSeq = Number(url.searchParams.get("before_seq"));
-        const nextSeq = beforeSeq - 1;
-        return Promise.resolve(jsonResponse({
-          events: [{
-            id: `event-${nextSeq}`,
-            event_seq: nextSeq,
-            event_log_epoch: "epoch-1",
-            agent_id: "agent-a",
-            type: "legacy_event",
-            payload: {},
-          }],
-          event_log_epoch: "epoch-1",
-          oldest_seq: nextSeq,
-          newest_seq: nextSeq,
-          has_older: true,
-          has_newer: false,
-          order: "desc",
-          limit: 80,
-        }));
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    vi.stubGlobal("fetch", fetchMock);
-    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
-    fetchMock.mockClear();
-    useRuntimeStore.setState({
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          eventLogEpoch: "epoch-1",
-          detail: {
-            agent: agentSummary({ id: "agent-a" }),
-            source: "http",
-            timeline: [],
-          },
-          semanticHistoryByDisplayLevel: {
-            info: { eventLogEpoch: "epoch-1", cursorSeq: 90, hasOlder: true, loading: false },
-          },
-        }),
-      },
-    });
-
-    await useRuntimeStore.getState().loadOlderAgentEvents("agent-a", "info");
-
-    const eventRequests = fetchMock.mock.calls
-      .map(([input]) => new URL(String(input), "http://localhost"))
-      .filter((url) => url.pathname.endsWith("/agents/agent-a/events"));
-    expect(eventRequests).toHaveLength(5);
-    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.semanticHistoryByDisplayLevel.info)
-      .toMatchObject({ cursorSeq: 85, hasOlder: true, loading: false });
-  });
-});
-
 describe("projection saturation refresh handling", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -2438,16 +1646,6 @@ describe("projection saturation refresh handling", () => {
 });
 
 describe("bounded resume refresh scheduling", () => {
-  it("only schedules a detail refresh for the selected agent", () => {
-    expect(buildResumeRefreshes(["agent-a", "agent-b", "agent-c"], "agent-b")).toEqual([
-      { agentId: "agent-b", detail: true },
-    ]);
-  });
-
-  it("schedules no resume refresh when the selected agent is absent from the refreshed roster", () => {
-    expect(buildResumeRefreshes(["agent-a", "agent-c"], "agent-b")).toEqual([]);
-  });
-
   it("limits concurrent refreshes", async () => {
     let active = 0;
     let maxActive = 0;

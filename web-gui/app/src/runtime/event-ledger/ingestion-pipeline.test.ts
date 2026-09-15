@@ -620,13 +620,13 @@ describe("ledger ingestion pipeline", () => {
     // repair on their own, without any external drainHydration call.
     await vi.waitFor(
       () => {
-        expect(pipeline.status(scope)!.pendingHydrationJobs).toBe(0);
+        const status = pipeline.status(scope)!;
+        expect(status.pendingHydrationJobs).toBe(0);
+        expect(status.state).toBe("idle");
       },
       { timeout: 2000, interval: 10 },
     );
-    const status = pipeline.status(scope)!;
-    expect(status.state).toBe("idle");
-    expect(status.projectionReadyThroughSeq).toBe(2);
+    expect(pipeline.status(scope)!.projectionReadyThroughSeq).toBe(2);
     expect(repairFetch.mock.calls.length).toBeGreaterThanOrEqual(1);
 
     const gate = pipeline.readinessGate(scope);

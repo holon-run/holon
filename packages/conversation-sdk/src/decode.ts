@@ -19,6 +19,7 @@ import {
   type ConversationStreamMessage,
   type ConversationSummaryResponse,
   type ConversationTurnSummary,
+  type TurnInputSummary,
   type DetailCoverage,
   type DetailCoverageReason,
   type ExecutionState,
@@ -300,6 +301,24 @@ export function decodePendingInput(
     message_id: nonEmptyString(source.message_id, `${path}.message_id`),
     revision: safeInteger(source.revision, `${path}.revision`),
     state,
+    preview:
+      source.preview === undefined || source.preview === null
+        ? ""
+        : stringValue(source.preview, `${path}.preview`),
+  };
+}
+
+export function decodeTurnInputSummary(
+  value: unknown,
+  path = "$",
+): TurnInputSummary {
+  const source = record(value, path);
+  return {
+    message_id: nonEmptyString(source.message_id, `${path}.message_id`),
+    preview:
+      source.preview === undefined || source.preview === null
+        ? ""
+        : stringValue(source.preview, `${path}.preview`),
   };
 }
 
@@ -321,6 +340,9 @@ export function decodeTurnSummary(
       source.presentation_class,
       presentationClasses,
       `${path}.presentation_class`,
+    ),
+    inputs: arrayValue(source.inputs, `${path}.inputs`).map(
+      (input, index) => decodeTurnInputSummary(input, `${path}.inputs[${index}]`),
     ),
     execution: decodeExecutionState(source.execution, `${path}.execution`),
     result: decodeResultState(source.result, `${path}.result`),

@@ -7,89 +7,61 @@ import {
 } from "lucide-react";
 import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
-  type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MutableRefObject, type RefObject,
+  type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { useVirtualizer, type VirtualItem, type Virtualizer } from "@tanstack/react-virtual";
 
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
-import { deriveAgentDisplayStatus } from "../../runtime/agent-status";
-import { filterTimelineByDisplayLevel } from "../../runtime/session-reducer";
-import { TimelineTurnGroup, WorkingIndicator } from "./AgentTimeline";
-import { collectWorkingActivitiesForCurrentTurn, groupTimelineTurns, itemHasEventSeq, type TimelineTurn } from "./timeline-utils";
+import { ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
+import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
 import { useTranslation } from "react-i18next";
-import type { TFunction } from "i18next";
 import type {
   AgentDetail,
   AgentSummary,
-  AgentTimelineActivity,
-  AgentTimelineItem,
-  DisplayLevel,
   RuntimeModelCatalog,
   RuntimeModelOption,
 } from "../../runtime/types";
-import type { AgentSyncStatus } from "../../runtime/runtime-store-helpers";
 import type { OperatorPromptAttachment } from "../../runtime/client";
+
+export interface ConversationTimelineBundle extends ConversationTimelineActions {
+  model: ConversationSessionModel;
+  onLoadOlderHistory: () => void;
+}
 
 interface AgentPageProps {
   agent: AgentSummary;
+  /** Canonical conversation read-model projection; replaces the raw timeline. */
+  conversation?: ConversationTimelineBundle;
   detail: AgentDetail | null;
-  detailLoading?: boolean;
-  contentStatus?: "unknown" | "available" | "confirmed-empty";
-  syncStatus?: AgentSyncStatus;
-  displayLevel: DisplayLevel;
   sendingPrompt: boolean;
   abortingRun?: boolean;
   abortError?: string;
-  hasOlderEvents: boolean;
-  loadingOlderEvents: boolean;
   promptError?: string;
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;
   modelCatalogError?: string;
-  historyError?: string;
   syncError?: string;
   syncRetryAttempt?: number;
   /** Ledger-backed lower-bound unread state (W5 truncation indicator). */
   historyTruncated?: boolean;
-  targetEventSeq?: number;
-  resumeRevision?: number;
   onRefreshModels: () => Promise<void>;
   onSetModel: (model: string, reasoningEffort?: string) => Promise<void>;
   onClearModel: () => Promise<void>;
-  onLoadOlderEvents: () => Promise<void>;
   onRetrySync: () => void;
   onAcknowledgeTruncation?: () => void;
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   onAbortCurrentRun: (runId: string) => Promise<void>;
   onConversationRead: () => void;
-  onOpenInspector: () => void;
-  onInspectActivity: (activity: AgentTimelineActivity) => void;
-  selectedActivityId?: string;
 }
 
-const DEFAULT_INFO_TIMELINE_ITEM_LIMIT = 12;
-const DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT = 160;
-const DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT = 220;
-const HISTORY_PAGE_VISIBLE_INCREMENT = 80;
-const TOP_SCROLL_THRESHOLD = 16;
 const BOTTOM_SCROLL_THRESHOLD = 96;
 // How long scroll intent stays active after the last user scroll input
 // (wheel, touch, or scroll keys). Long enough to cover momentum scrolling.
 const USER_SCROLL_INTENT_CLEAR_MS = 500;
 const COMPOSER_DRAFT_STORAGE_PREFIX = "holon.webGui.composerDraft.v1";
 const COMPOSER_TEXTAREA_MAX_HEIGHT = 320;
-const MESSAGE_LIST_BOTTOM_SAFE_SPACE = 96;
-
-export type HistoryLoadDecision = "expand-local" | "load-network" | "none";
-
-export function historyLoadDecision(hasHiddenTimelineItems: boolean, hasOlderEvents: boolean): HistoryLoadDecision {
-  if (hasHiddenTimelineItems) return "expand-local";
-  if (hasOlderEvents) return "load-network";
-  return "none";
-}
 
 export type ComposerPrimaryAction = "send" | "stop-run";
 
@@ -157,208 +129,29 @@ export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
   textarea.style.overflowY = textarea.scrollHeight > COMPOSER_TEXTAREA_MAX_HEIGHT ? "auto" : "hidden";
 }
 
-export interface ScrollAnchor {
-  key: VirtualItem["key"];
-  index: number;
-  offset: number;
-}
-
-export function captureScrollAnchor(virtualItems: Pick<VirtualItem, "key" | "index" | "start" | "size">[], scrollTop: number): ScrollAnchor | null {
-  const anchorItem = virtualItems.find((item) => item.start + item.size > scrollTop);
-  return anchorItem
-    ? { key: anchorItem.key, index: anchorItem.index, offset: Math.max(0, scrollTop - anchorItem.start) }
-    : null;
-}
-
-export function restoredScrollTop(
-  anchor: ScrollAnchor | null,
-  anchorIndex: number | undefined,
-  offsetForIndex: (index: number) => number | undefined,
-  fallbackTop: number,
-  contentOffset = 0,
-): number {
-  if (!anchor || anchorIndex == null) return fallbackTop;
-  const start = offsetForIndex(anchorIndex);
-  return start == null ? fallbackTop : Math.max(0, contentOffset + start + anchor.offset);
-}
-
-export function timelineLayoutRevision(turns: TimelineTurn[]): string {
-  let hash = 2166136261;
-  let fieldCount = 0;
-  const add = (value: unknown) => {
-    const text = value == null ? "" : String(value);
-    fieldCount += 1;
-    hash = fnv1a(`${text.length}:${text}`, hash);
-  };
-  const addItem = (item: AgentTimelineItem | AgentTimelineActivity) => {
-    add(item.id);
-    add(item.kind);
-    add(item.label);
-    add(item.body);
-    add(item.meta);
-    add(item.minDisplayLevel);
-    add(item.detail?.label);
-    add(item.detail?.text);
-    add(item.detail?.tone);
-    add(item.executionMeta?.outcome);
-    add(item.executionMeta?.exitStatus);
-    add(item.executionMeta?.durationMs);
-    add(item.executionMeta?.outputTruncated);
-    add(item.executionMeta?.taskId);
-    add(item.statusTrail?.length ?? 0);
-    for (const step of item.statusTrail ?? []) {
-      add(step.status);
-      add(step.timestamp);
-    }
-  };
-
-  for (const turn of turns) {
-    add(turn.id);
-    add(turn.kind);
-    add(turn.label);
-    add(turn.timestamp);
-    add(turn.items.length);
-    for (const item of turn.items) {
-      addItem(item);
-      add(item.activities?.length ?? 0);
-      for (const activity of item.activities ?? []) {
-        addItem(activity);
-      }
-    }
-  }
-
-  return `${turns.length}:${fieldCount}:${hash.toString(36)}`;
-}
-
-function fnv1a(text: string, initialHash: number): number {
-  let hash = initialHash;
-  for (let index = 0; index < text.length; index += 1) {
-    hash ^= text.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return hash >>> 0;
-}
-
-function useReconciledVirtualMeasurements({
-  virtualizer,
-  scrollElementRef,
-  contentElementRef,
-  layoutRevision,
-  stickToBottomRef,
-  pendingAnchorRef,
-  anchorIndexByKey,
-  scrollToBottom,
-}: {
-  virtualizer: Virtualizer<HTMLDivElement, Element>;
-  scrollElementRef: RefObject<HTMLDivElement | null>;
-  contentElementRef: RefObject<HTMLDivElement | null>;
-  layoutRevision: string;
-  stickToBottomRef: MutableRefObject<boolean>;
-  pendingAnchorRef: MutableRefObject<ScrollAnchor | null>;
-  anchorIndexByKey: ReadonlyMap<string, number>;
-  scrollToBottom: () => void;
-}) {
-  const scrollToBottomRef = useRef(scrollToBottom);
-  const rafRef = useRef<number | null>(null);
-
-  useLayoutEffect(() => {
-    scrollToBottomRef.current = scrollToBottom;
-  }, [scrollToBottom]);
-
-  useLayoutEffect(() => {
-    const list = scrollElementRef.current;
-    if (!list) return;
-
-    const wasAtBottom = stickToBottomRef.current || isScrolledNearBottom(list);
-    const contentOffset = contentElementRef.current?.offsetTop ?? 0;
-    const virtualScrollTop = Math.max(0, list.scrollTop - contentOffset);
-    const measuredAnchor = virtualizer.getVirtualItemForOffset(virtualScrollTop);
-    const anchor =
-      pendingAnchorRef.current ??
-      (wasAtBottom || !measuredAnchor ? null : captureScrollAnchor([measuredAnchor], virtualScrollTop));
-    pendingAnchorRef.current = null;
-    const fallbackTop = list.scrollTop;
-    cancelReconciledMeasurement(rafRef.current);
-
-    // Synchronously re-measure visible elements without clearing the entire
-    // size cache. virtualizer.measure() clears itemSizeCache wholesale, which
-    // makes every row fall back to the 320px estimate. Because row keys are
-    // stable (turn.id), React reuses the same DOM nodes, so the measureElement
-    // ref callback never re-fires and the ResizeObserver does not fire either
-    // (the element's real height did not change). Rows taller than 320px then
-    // overlap with their neighbours until some unrelated event triggers a
-    // re-measure. Calling measureElement(el) directly reads the true height
-    // and calls resizeItem, updating only that item's cached size.
-    const wrapper = contentElementRef.current;
-    if (wrapper) {
-      wrapper.querySelectorAll<HTMLElement>("[data-index]").forEach((el) => {
-        virtualizer.measureElement(el);
-      });
-    }
-
-    rafRef.current = window.requestAnimationFrame(() => {
-      rafRef.current = null;
-      const currentList = scrollElementRef.current;
-      if (!currentList) return;
-      if (wasAtBottom) {
-        scrollToBottomRef.current();
-        return;
-      }
-      stickToBottomRef.current = false;
-      const anchorIndex = anchor ? anchorIndexByKey.get(String(anchor.key)) ?? anchor.index : undefined;
-      currentList.scrollTop = restoredScrollTop(
-        anchor,
-        anchorIndex,
-        (index) => virtualizer.getOffsetForIndex(index, "start")?.[0],
-        fallbackTop,
-        contentElementRef.current?.offsetTop ?? 0,
-      );
-    });
-
-    return () => cancelReconciledMeasurement(rafRef.current);
-  }, [anchorIndexByKey, contentElementRef, layoutRevision, pendingAnchorRef, scrollElementRef, stickToBottomRef, virtualizer]);
-}
-
-function cancelReconciledMeasurement(raf: number | null): void {
-  if (raf !== null) {
-    window.cancelAnimationFrame(raf);
-  }
-}
 
 export function AgentPage({
   agent,
+  conversation,
   detail,
-  detailLoading,
-  contentStatus = "unknown",
-  syncStatus = "idle",
-  displayLevel,
   sendingPrompt,
   abortingRun = false,
   abortError,
-  hasOlderEvents,
-  loadingOlderEvents,
   promptError,
   modelCatalog,
   modelCatalogLoading,
   modelCatalogError,
-  historyError,
   syncError,
   syncRetryAttempt,
   historyTruncated = false,
-  targetEventSeq,
-  resumeRevision = 0,
   onRefreshModels,
   onSetModel,
   onClearModel,
-  onLoadOlderEvents,
   onRetrySync,
   onAcknowledgeTruncation,
   onSendPrompt,
   onAbortCurrentRun,
   onConversationRead,
-  onOpenInspector,
-  onInspectActivity,
-  selectedActivityId,
 }: AgentPageProps) {
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
@@ -370,14 +163,11 @@ export function AgentPage({
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
   const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
   const [modelMenuStyle, setModelMenuStyle] = useState<CSSProperties | null>(null);
-  const [visibleTimelineItemLimit, setVisibleTimelineItemLimit] = useState(() => defaultTimelineItemLimit("info"));
   const messageListRef = useRef<HTMLDivElement | null>(null);
-  const virtualWrapperRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragCounterRef = useRef(0);
-  const preserveScrollRef = useRef<ScrollAnchor | null>(null);
   const stickToBottomRef = useRef(true);
   const autoStickToBottomRef = useRef(false);
   const userScrollIntentRef = useRef(false);
@@ -417,15 +207,6 @@ export function AgentPage({
   }, [modelPickerOpen]);
 
   const activeAgent = detail?.agent ?? agent;
-  const sourceTimeline = detail?.timeline ?? [];
-  const timeline = useMemo(
-    () => timelineForDisplayLevel(sourceTimeline, displayLevel, visibleTimelineItemLimit),
-    [displayLevel, sourceTimeline, visibleTimelineItemLimit],
-  );
-  const isWorking = isAgentWorking(activeAgent, sendingPrompt, t);
-  const workingActivities = useMemo(() => (isWorking ? collectWorkingActivitiesForCurrentTurn(sourceTimeline) : []), [isWorking, sourceTimeline]);
-  const timelineTurns = useMemo(() => groupTimelineTurns(timeline), [timeline]);
-  const targetTimelineItemId = useMemo(() => timeline.find((item) => itemHasEventSeq(item, targetEventSeq))?.id, [targetEventSeq, timeline]);
   const trimmedPrompt = prompt.trim();
   const composerHasDraft = trimmedPrompt.length > 0 || attachments.length > 0;
   const composerAction = composerPrimaryAction({
@@ -435,24 +216,6 @@ export function AgentPage({
   });
   const canStopCurrentRun = composerAction === "stop-run" && Boolean(activeAgent.currentRunId) && !abortingRun;
   const canSendPrompt = composerHasDraft && !sendingPrompt;
-  const newestTimelineItem = timeline[timeline.length - 1];
-  const timelineVersion = `${timeline.length}:${newestTimelineItem?.id ?? ""}:${timeline[0]?.id ?? ""}:${detail?.events?.length ?? 0}:${hasOlderEvents}`;
-  const timelineLayoutVersion = useMemo(() => `${resumeRevision}:${timelineLayoutRevision(timelineTurns)}`, [resumeRevision, timelineTurns]);
-  const timelineTurnIndexById = useMemo(
-    () => new Map(timelineTurns.map((turn, index) => [turn.id, index])),
-    [timelineTurns],
-  );
-  const rowVirtualizer = useVirtualizer({
-    count: timelineTurns.length,
-    getScrollElement: () => messageListRef.current,
-    estimateSize: () => 320,
-    paddingEnd: MESSAGE_LIST_BOTTOM_SAFE_SPACE,
-    overscan: 4,
-    getItemKey: (index) => timelineTurns[index]?.id ?? `empty:${index}`,
-  });
-  const hasHiddenTimelineItems = timeline.length >= visibleTimelineItemLimit && sourceTimeline.length > visibleTimelineItemLimit;
-  const historyLoadAction = historyLoadDecision(hasHiddenTimelineItems, hasOlderEvents);
-  const loadingNetworkHistory = historyLoadAction === "load-network" && loadingOlderEvents;
   const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
@@ -467,12 +230,11 @@ export function AgentPage({
   const currentProviderModels = groupedModelOptions.find((group) => group.provider === currentProvider)?.models ?? [];
 
   useEffect(() => {
-    setVisibleTimelineItemLimit(defaultTimelineItemLimit(displayLevel));
     setModelPickerOpen(false);
     setReasoningPopoverOpen(false);
     setSelectedProvider(null);
     setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
-  }, [activeAgent.id, displayLevel, activeAgent.modelReasoningEffort]);
+  }, [activeAgent.id, activeAgent.modelReasoningEffort]);
 
   useEffect(() => {
     return () => {
@@ -525,15 +287,11 @@ export function AgentPage({
     stickToBottomRef.current = true;
     autoStickToBottomRef.current = true;
 
-    const lastTurnIndex = timelineTurns.length - 1;
     if (scheduledBottomScrollRef.current !== null) {
       window.cancelAnimationFrame(scheduledBottomScrollRef.current);
       scheduledBottomScrollRef.current = null;
     }
 
-    if (lastTurnIndex >= 0) {
-      rowVirtualizer.scrollToIndex(lastTurnIndex, { align: "end", behavior: "auto" });
-    }
     list.scrollTop = list.scrollHeight;
     scheduledBottomScrollRef.current = window.requestAnimationFrame(() => {
       scheduledBottomScrollRef.current = null;
@@ -546,24 +304,27 @@ export function AgentPage({
   }
 
   useLayoutEffect(() => {
-    preserveScrollRef.current = null;
     stickToBottomRef.current = true;
     // A fresh conversation view must not inherit scroll intent from the
     // previously viewed agent.
     clearUserScrollIntent(userScrollIntentRef, userScrollIntentTimerRef);
-    rowVirtualizer.measure();
     scrollToConversationBottom();
   }, [activeAgent.id]);
 
+  const conversationContentVersion =
+    conversation === undefined
+      ? ""
+      : `${conversation.model.turns.length}:${conversation.model.turns.at(-1)?.turnId ?? ""}:${conversation.model.pendingInputs.length}:${conversation.model.status.kind}`;
   useLayoutEffect(() => {
+    if (conversation === undefined) return;
     const list = messageListRef.current;
     if (!list) return;
-
     if (stickToBottomRef.current) {
       scrollToConversationBottom();
       onConversationRead();
     }
-  }, [timelineVersion, syncStatus, onConversationRead]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationContentVersion, onConversationRead]);
 
   useEffect(() => {
     const markReadIfVisible = () => {
@@ -579,55 +340,7 @@ export function AgentPage({
     markReadIfVisible();
     document.addEventListener("visibilitychange", markReadIfVisible);
     return () => document.removeEventListener("visibilitychange", markReadIfVisible);
-  }, [activeAgent.id, timelineVersion, syncStatus, onConversationRead]);
-
-  useReconciledVirtualMeasurements({
-    virtualizer: rowVirtualizer,
-    scrollElementRef: messageListRef,
-    contentElementRef: virtualWrapperRef,
-    layoutRevision: timelineLayoutVersion,
-    stickToBottomRef,
-    pendingAnchorRef: preserveScrollRef,
-    anchorIndexByKey: timelineTurnIndexById,
-    scrollToBottom: scrollToConversationBottom,
-  });
-
-  useEffect(() => {
-    if (timelineTurns.length === 0) return;
-    const wrapper = virtualWrapperRef.current;
-    const list = messageListRef.current;
-    if (!wrapper || !list) return;
-    const observer = new ResizeObserver(() => {
-      if (stickToBottomRef.current) {
-        list.scrollTop = list.scrollHeight;
-      }
-    });
-    observer.observe(wrapper);
-    return () => observer.disconnect();
-  }, [timelineTurns.length]);
-
-  useLayoutEffect(() => {
-    if (!targetTimelineItemId) return;
-    const list = messageListRef.current;
-    if (!list) return;
-    stickToBottomRef.current = false;
-
-    // Target item already in DOM — scroll directly.
-    const target = list.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`);
-    if (target) {
-      target.scrollIntoView({ block: "center" });
-      return;
-    }
-
-    // Target item is virtualized out of view — scroll its turn into view first.
-    const turnIndex = timelineTurns.findIndex((turn) => turn.items.some((item) => item.id === targetTimelineItemId));
-    if (turnIndex < 0) return;
-    rowVirtualizer.scrollToIndex(turnIndex, { align: "center" });
-    const timer = setTimeout(() => {
-      list.querySelector<HTMLElement>(`[data-timeline-item-id="${cssEscape(targetTimelineItemId)}"]`)?.scrollIntoView({ block: "center" });
-    }, 0);
-    return () => clearTimeout(timer);
-  }, [targetTimelineItemId, timelineVersion]);
+  }, [activeAgent.id, conversationContentVersion, onConversationRead]);
 
   async function sendDraftPrompt() {
     if (!canSendPrompt) return;
@@ -747,31 +460,6 @@ export function AgentPage({
     if (stickToBottomRef.current) onConversationRead();
   }
 
-  async function handleLoadOlderEvents() {
-    if (historyLoadAction === "none") return;
-    const list = messageListRef.current;
-    if (list) {
-      const contentOffset = virtualWrapperRef.current?.offsetTop ?? 0;
-      const virtualScrollTop = Math.max(0, list.scrollTop - contentOffset);
-      const anchorItem = rowVirtualizer.getVirtualItemForOffset(virtualScrollTop);
-      preserveScrollRef.current =
-        list.scrollTop > TOP_SCROLL_THRESHOLD && anchorItem
-          ? captureScrollAnchor([anchorItem], virtualScrollTop)
-          : null;
-      stickToBottomRef.current = false;
-    }
-    if (historyLoadAction === "expand-local") {
-      setVisibleTimelineItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
-      return;
-    }
-    try {
-      await onLoadOlderEvents();
-      setVisibleTimelineItemLimit((limit) => limit + HISTORY_PAGE_VISIBLE_INCREMENT);
-    } catch {
-      preserveScrollRef.current = null;
-    }
-  }
-
   function toggleModelPicker() {
     const opening = !modelPickerOpen;
     if (opening) setReasoningPopoverOpen(false);
@@ -832,17 +520,23 @@ export function AgentPage({
       <div className="agent-workbench">
         <section className="conversation-pane">
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
-            {historyLoadAction !== "none" ? (
-              <div className="history-loader">
-                <Button type="button" size="sm" variant="secondary" disabled={loadingNetworkHistory} onClick={handleLoadOlderEvents}>
-                  {loadingNetworkHistory ? t("agent.loadingEarlier") : t("agent.loadEarlier")}
-                </Button>
-              </div>
-            ) : null}
-            {historyError ? (
-              <div className="history-status" role="alert">
-                {historyError}
-              </div>
+            {conversation !== undefined ? (
+              conversation.model.hasMoreHistory ||
+              conversation.model.historyState.kind === "loading" ? (
+                <div className="history-loader">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={conversation.model.historyState.kind === "loading"}
+                    onClick={() => conversation.onLoadOlderHistory()}
+                  >
+                    {conversation.model.historyState.kind === "loading"
+                      ? t("agent.loadingEarlier")
+                      : t("agent.loadEarlier")}
+                  </Button>
+                </div>
+              ) : null
             ) : null}
             {historyTruncated && onAcknowledgeTruncation ? (
               <div className="history-status truncation-notice" role="status">
@@ -859,91 +553,25 @@ export function AgentPage({
                 onRetry={onRetrySync}
               />
             ) : null}
-            {timelineTurns.length > 0 ? (
-              <div
-                ref={virtualWrapperRef}
-                className="message-list-virtual-wrapper"
-                style={{ height: rowVirtualizer.getTotalSize(), position: "relative" }}
-              >
-                {rowVirtualizer.getVirtualItems().map((vi) => {
-                  const turn = timelineTurns[vi.index];
-                  if (!turn) return null;
-                  return (
-                    <div
-                      key={vi.key}
-                      className="message-list-virtual-item"
-                      data-index={vi.index}
-                      ref={rowVirtualizer.measureElement}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${vi.start}px)`,
-                      }}
-                    >
-                      <TimelineTurnGroup
-                        displayLevel={displayLevel}
-                        onOpenInspector={onOpenInspector}
-                        onInspectActivity={onInspectActivity}
-                        selectedActivityId={selectedActivityId}
-                        targetTimelineItemId={targetTimelineItemId}
-                        turn={turn}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-            {timeline.length === 0 ? (
-              detailLoading ||
-              (contentStatus === "unknown" && syncStatus !== "error") ||
-              (contentStatus === "available" && (syncStatus === "refreshing" || syncStatus === "recovering")) ? (
-                <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
-                  <LoaderCircle size={24} className="spin" />
-                  <span>{t("common.syncing")}</span>
-                </div>
-              ) : contentStatus === "confirmed-empty" ? (
-              <EmptyState
-                className="conversation-empty"
-                icon="↵"
-                title={t("agent.noActivity")}
-                description={
-                  displayLevel === "info"
-                    ? t("agent.conversationEmpty")
-                    : t("agent.noEventsYet")
-                }
+            {conversation ? (
+              <ConversationTimeline
+                model={conversation.model}
+                onInspectActivity={conversation.onInspectActivity}
+                onLoadBrief={conversation.onLoadBrief}
+                onLoadDetail={conversation.onLoadDetail}
+                onLoadOlderActivities={conversation.onLoadOlderActivities}
+                onRetry={conversation.onRetry}
+                briefRecord={conversation.briefRecord}
+                briefLoadState={conversation.briefLoadState}
+                detailLoadState={conversation.detailLoadState}
               />
-              ) : null
-            ) : null}
-            {timeline.length > 0 &&
-            (syncStatus === "refreshing" || syncStatus === "recovering" || syncStatus === "reconnecting") ? (
-              <div
-                className={`history-status${syncStatus === "recovering" ? " history-status--recovering" : ""}${
-                  syncStatus === "reconnecting" ? " history-status--reconnecting" : ""
-                }`}
-                role="status"
-              >
-                {syncStatus === "refreshing"
-                  ? t("common.refreshing")
-                  : syncStatus === "recovering"
-                    ? t("common.recovering")
-                    : t("common.reconnecting")}
+            ) : (
+              <div className="conversation-loading" role="status" aria-label={t("common.loading")}>
+                <LoaderCircle size={24} className="spin" />
+                <span>{t("common.syncing")}</span>
               </div>
-            ) : null}
+            )}
           </div>
-
-          {isWorking ? (
-            <div className="working-indicator-slot">
-              <WorkingIndicator
-                activities={workingActivities}
-                agent={activeAgent}
-                displayLevel={displayLevel}
-                onInspectActivity={onInspectActivity}
-                onOpenOverview={onOpenInspector}
-              />
-            </div>
-          ) : null}
 
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}
@@ -1282,29 +910,6 @@ function clearUserScrollIntent(
     timerRef.current = null;
   }
   intentRef.current = false;
-}
-
-function defaultTimelineItemLimit(displayLevel: DisplayLevel): number {
-  if (displayLevel === "debug") return DEFAULT_DEBUG_TIMELINE_ITEM_LIMIT;
-  if (displayLevel === "verbose") return DEFAULT_VERBOSE_TIMELINE_ITEM_LIMIT;
-  return DEFAULT_INFO_TIMELINE_ITEM_LIMIT;
-}
-
-export function timelineForDisplayLevel(
-  sourceTimeline: AgentTimelineItem[],
-  displayLevel: DisplayLevel,
-  itemLimit: number,
-): AgentTimelineItem[] {
-  return filterTimelineByDisplayLevel(sourceTimeline, displayLevel, { itemLimit });
-}
-
-function isAgentWorking(agent: AgentSummary, sendingPrompt: boolean, t: TFunction): boolean {
-  return sendingPrompt || deriveAgentDisplayStatus(agent, t).tone === "running";
-}
-
-function cssEscape(value: string): string {
-  if (typeof CSS !== "undefined" && CSS.escape) return CSS.escape(value);
-  return value.replace(/["\\]/g, "\\$&");
 }
 
 export function SyncRecoveryStatus({

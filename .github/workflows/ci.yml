@@ -145,6 +145,7 @@ jobs:
           cache-dependency-path: |
             web-gui/app/package-lock.json
             web-gui/openapi-tools/package-lock.json
+            packages/conversation-sdk/package-lock.json
 
       - name: Test and build web GUI
         run: make web-ci
@@ -409,7 +410,9 @@ jobs:
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: web-gui/app/package-lock.json
+          cache-dependency-path: |
+            web-gui/app/package-lock.json
+            packages/conversation-sdk/package-lock.json
 
       - name: Build web GUI
         if: needs.changes.outputs.web == 'true'

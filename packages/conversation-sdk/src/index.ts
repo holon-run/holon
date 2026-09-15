@@ -1,4 +1,5 @@
 export * from "./client.js";
+export * from "./controller.js";
 export * from "./decode.js";
 export * from "./errors.js";
 export * from "./sse.js";

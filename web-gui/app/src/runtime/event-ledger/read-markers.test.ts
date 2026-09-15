@@ -149,6 +149,20 @@ describe("read markers", () => {
     expect(caughtUp.record.certainty).toBe("truncated");
     expect(shouldAutoRestoreExactCertainty(caughtUp.record, 9)).toBe(true);
 
+    // A stale gate head below a freshly recorded truncation boundary must
+    // not retire the generation: the marker never covered the unknown
+    // region below historyTruncatedBeforeSeq.
+    expect(
+      shouldAutoRestoreExactCertainty(
+        {
+          ...caughtUp.record,
+          historyTruncatedBeforeSeq: 12,
+          readThroughEventSeq: 9,
+        },
+        9,
+      ),
+    ).toBe(false);
+
     // Acknowledging at the gated head opens the exact generation without
     // touching the marker or the recorded truncation facts.
     const restored = await ledger.acknowledgeReadTruncation(scope, 9);

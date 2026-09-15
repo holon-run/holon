@@ -115,6 +115,10 @@ interjected, aborted, dropped, and quarantined inputs are not pending. The
 dequeue-to-turn-assignment transition must be atomic or revisioned so an input
 cannot disappear between the pending set and its owning turn.
 
+Each pending input carries a bounded message-body preview with the same shape
+and limits as assigned turn-input previews, so clients can echo the operator's
+in-flight text while the owning turn is still running.
+
 ### 3.2 Execution, result availability, and attention are separate
 
 A summary must distinguish:
@@ -122,10 +126,18 @@ A summary must distinguish:
 | Dimension | Proposed meaning |
 | --- | --- |
 | Execution | Whether the turn is active or terminal; a safe typed terminal outcome |
+| Input previews | Canonical message ids plus bounded text previews for inputs assigned to the turn |
 | Result availability | Whether known briefs are resolved, explicitly absent, or durably unavailable |
 | Result finality | Whether canonical delivery lifecycle proves the result set is settled |
 | Attention | Safe error/interruption/wait information requiring visibility |
 | Detail availability | Whether activity is available, partial, unavailable, or unknown |
+
+`inputs` on a turn summary carries the assigned input message ids with bounded
+message-body previews (at most 8 per turn). This lets history pages render
+inputs without issuing per-turn activity detail requests; the authoritative
+activity sequence remains in turn detail. Input assignment bumps the turn
+summary revision, so stream consumers receive refreshed previews on the same
+revision path.
 
 `brief_upsert` does not terminate a turn. Agent idle and WorkItem completion
 are not substitutes for a turn terminal record. A wait may close the current
@@ -202,7 +214,7 @@ Logical response fields:
 | `schema_version`, `event_log_epoch` | Response contract and source-log identity |
 | `turns[]` | One bounded page of turn summaries, returned in chronological order |
 | `active_turns[]` | Active summary records for bootstrap/recovery, not activity bodies |
-| `pending_inputs[]` | Visible unassigned inputs for bootstrap/recovery |
+| `pending_inputs[]` | Visible unassigned inputs for bootstrap/recovery, each with the same bounded message-body preview shape as assigned turn inputs |
 | `next_before_cursor`, `has_more` | Older-history navigation, counting turns |
 | `snapshot_cursor` | Stream coverage boundary for this coherent read |
 
@@ -556,6 +568,29 @@ queries; snapshot/detail DTOs and backend contract tests; stream/recovery;
 independent Web/TypeScript protocol SDK and real protocol E2E; compatibility
 and observability. Existing `web-gui` repository/cache, dual-mode integration,
 UI migration, and legacy side-path removal are explicitly out of scope.
+
+### 9.1 Web GUI cutover (2026-09 follow-up)
+
+The GUI migration originally deferred above has since landed on
+`feat/web-gui-conversation-read-model`: normal conversation pages render only
+from the SDK read model (`snapshot → stream → summary/brief/detail` with
+opaque-cursor history paging), and the legacy side paths were deleted rather
+than left as a fallback:
+
+- Removed: the raw-event virtualized timeline in `AgentPage`, the
+  `AgentTimeline`/`timeline-utils` projection, `ensureAgentSession` /
+  `catchUpEvents` / `loadTargetEventWindow` / message-transcript-brief batch
+  hydration, `loadOlderAgentEvents` semantic-history paging, the per-agent
+  legacy session-content cache read/write, and resume-time full-session
+  hydration. Ordinary conversation startup no longer triggers raw `/events`
+  paging or transcript hydration through roster, unread, or resume paths.
+- Kept intentionally: the raw event projection stack that backs the
+  independent Debug `timeline-events` view and diagnostics bridge, the durable
+  event ledger (unread markers, recovery, truncation acknowledgement), roster
+  and run-state sync, and the model-catalog cache. The legacy per-agent
+  session-content records are cleared per remote on init instead of being
+  imported; connection config, read markers, and diagnostics ledger storage
+  are untouched.
 
 ## 10. Acceptance evidence required for implementation
 

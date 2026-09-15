@@ -2,6 +2,13 @@
 
 FROM node:24-bookworm-slim AS web-builder
 
+WORKDIR /src/packages/conversation-sdk
+COPY packages/conversation-sdk/package.json packages/conversation-sdk/package-lock.json ./
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci
+COPY packages/conversation-sdk/ ./
+RUN npm run build
+
 WORKDIR /src/web-gui/app
 COPY web-gui/app/package.json web-gui/app/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \

@@ -28,7 +28,6 @@ import { AgentPage } from "../features/agent/AgentPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
-import { SegmentedControl, SegmentedControlButton } from "../components/ui/SegmentedControl";
 import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
@@ -37,7 +36,6 @@ import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
 import { TemplateDetailPage, TemplatesPage } from "../features/templates/TemplatesPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
-import { availableDisplayLevels } from "../runtime/display-level";
 import {
   getRuntimeTraceRevision,
   isRuntimeTraceEnabled,
@@ -52,8 +50,9 @@ import {
   useRuntimeStore,
 } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
+import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
+import type { AgentSummary, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
 import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation } from "./routes";
 
@@ -88,10 +87,6 @@ export function App() {
   const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
   const selectedSkillAgentId = useRuntimeStore((state) => state.selectedSkillAgentId);
   const selectedTemplateId = useRuntimeStore((state) => state.selectedTemplateId);
-  const displayLevel = useRuntimeStore((state) =>
-    state.displayLevelsByAgentId[selectedAgentId] ?? "info",
-  );
-  const resumeRevision = useRuntimeStore((state) => state.resumeRevision);
   const rightPanelOpen = useRuntimeStore((state) => state.rightPanelOpen);
   const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
   const rightPanelMode = useRuntimeStore((state) => state.rightPanelMode);
@@ -103,7 +98,6 @@ export function App() {
   const acknowledgeAgentTruncation = useRuntimeStore((state) => state.acknowledgeAgentTruncation);
   const openSkill = useRuntimeStore((state) => state.openSkill);
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
-  const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
   const disableDeveloperDiagnosticsUi = useRuntimeStore((state) => state.disableDeveloperDiagnosticsUi);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
@@ -240,21 +234,17 @@ export function App() {
   const controlAgent = useRuntimeStore((state) => state.controlAgent);
   const deleteAgent = useRuntimeStore((state) => state.deleteAgent);
   const renameAgentAction = useRuntimeStore((state) => state.renameAgent);
-  const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
-  const effectiveDisplayLevel =
-    !developerDiagnosticsEnabled && displayLevel === "debug" ? "info" : displayLevel;
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
-    contentStatus: agentContentStatus,
-    syncStatus: agentSyncStatus,
     refresh: refreshAgentDetail,
-  } = useAgentDetail(activeAgentId, effectiveDisplayLevel);
+  } = useAgentDetail(activeAgentId);
+  const conversationSession = useConversationSession(
+    route === "agent" ? activeAgentId : undefined,
+  );
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
-  const selectedSemanticHistory =
-    selectedAgentSession?.semanticHistoryByDisplayLevel[effectiveDisplayLevel];
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
   const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
@@ -293,19 +283,6 @@ export function App() {
             <RefreshCw size={16} />
           </Button>
         </div>
-        <SegmentedControl className="display-level" label={t("app.displayLevel")}>
-          {availableDisplayLevels(developerDiagnosticsEnabled).map((level) => (
-            <SegmentedControlButton
-              active={displayLevel === level}
-              className={displayLevel === level ? "is-active" : ""}
-              key={level}
-              type="button"
-              onClick={() => setDisplayLevel(level, activeAgentId)}
-            >
-              {level === "info" ? t("app.info") : level === "verbose" ? t("app.verbose") : t("app.debug")}
-            </SegmentedControlButton>
-          ))}
-        </SegmentedControl>
         {developerDiagnosticsEnabled && activeAgentId ? (
           <Button
             type="button"
@@ -328,7 +305,7 @@ export function App() {
     const applyBrowserRoute = () => {
       const nextRoute = routeFromLocation(window.location);
       if (nextRoute.route === "agent" && nextRoute.agentId) {
-        openAgent(nextRoute.agentId, nextRoute.eventSeq);
+        openAgent(nextRoute.agentId);
         return;
       }
       if (nextRoute.route === "skillDetail" && nextRoute.skillId) {
@@ -402,7 +379,7 @@ export function App() {
 
   useEffect(() => {
     if (!developerDiagnosticsEnabled) {
-      disableDeveloperDiagnosticsUi(selectedAgentId);
+      disableDeveloperDiagnosticsUi();
     }
   }, [developerDiagnosticsEnabled, disableDeveloperDiagnosticsUi, selectedAgentId]);
 
@@ -432,7 +409,7 @@ export function App() {
   }
 
   function navigateAgent(agentId: string, eventSeq?: number) {
-    openAgent(agentId, eventSeq);
+    openAgent(agentId);
     pushBrowserRoute("agent", agentId, undefined, eventSeq == null ? undefined : { event_seq: eventSeq });
   }
 
@@ -722,11 +699,27 @@ export function App() {
           <AgentPage
             key={activeAgent.id}
             agent={activeAgent}
+            conversation={
+              conversationSession.scopeKey === null
+                ? undefined
+                : {
+                    model: conversationSession.model,
+                    onLoadOlderHistory: conversationSession.loadOlderHistory,
+                    onInspectActivity: (activity) => {
+                      if (activeAgentId !== undefined) {
+                        inspectActivity(activeAgentId, activity);
+                      }
+                    },
+                    onLoadBrief: conversationSession.loadBrief,
+                    onLoadDetail: conversationSession.loadDetail,
+                    onLoadOlderActivities: conversationSession.loadOlderActivities,
+                    onRetry: conversationSession.retry,
+                    briefRecord: conversationSession.briefRecord,
+                    briefLoadState: conversationSession.briefState,
+                    detailLoadState: conversationSession.detailState,
+                  }
+            }
             detail={selectedAgentDetail}
-            detailLoading={agentDetailLoading}
-            contentStatus={agentContentStatus}
-            syncStatus={agentSyncStatus}
-            displayLevel={effectiveDisplayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             abortingRun={selectedAgentSession?.abortingRun ?? false}
             abortError={selectedAgentSession?.abortError}
@@ -734,34 +727,19 @@ export function App() {
             modelCatalog={modelCatalog}
             modelCatalogLoading={modelCatalogLoading}
             modelCatalogError={selectedAgentSession?.modelError ?? modelCatalogError}
-            hasOlderEvents={selectedSemanticHistory?.hasOlder ?? false}
-            loadingOlderEvents={selectedSemanticHistory?.loading ?? false}
-            historyError={selectedSemanticHistory?.error ?? selectedAgentSession?.targetEventError ?? selectedAgentSession?.error}
             syncError={selectedAgentSession?.syncError}
             syncRetryAttempt={selectedAgentSession?.syncRetryAttempt}
             historyTruncated={ledgerUnreadByAgentId[activeAgent.id]?.mode === "truncated"}
             onAcknowledgeTruncation={() => {
               void acknowledgeAgentTruncation(activeAgent.id);
             }}
-            targetEventSeq={selectedAgentSession?.targetEventSeq}
-            resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}
-            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, effectiveDisplayLevel, reasoningEffort)}
-            onClearModel={() => clearAgentModel(activeAgent.id, effectiveDisplayLevel)}
-            onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, effectiveDisplayLevel)}
+            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, reasoningEffort)}
+            onClearModel={() => clearAgentModel(activeAgent.id)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
-            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, effectiveDisplayLevel, attachments)}
+            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments)}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
-            onOpenInspector={() => {
-              showAgentOverview(activeAgent.id);
-            }}
-            onInspectActivity={(activity) => inspectActivity(activeAgent.id, activity)}
-            selectedActivityId={
-              rightPanelView?.kind === "activity_inspector" && rightPanelView.agentId === activeAgent.id
-                ? rightPanelView.activity.id
-                : undefined
-            }
           />
         ) : null}
         {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}

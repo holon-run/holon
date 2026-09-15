@@ -31,14 +31,6 @@ export type AgentSyncStatus =
   | "stale"
   | "error";
 
-export interface SemanticHistoryState {
-  eventLogEpoch?: string;
-  cursorSeq?: number;
-  hasOlder: boolean;
-  loading: boolean;
-  error?: string;
-}
-
 export interface TimelineEventsState {
   eventLogEpoch?: string;
   eventsBySeq: Record<number, SessionEventEnvelope>;
@@ -53,10 +45,7 @@ export interface TimelineEventsState {
 
 export interface AgentSessionState extends SessionProjectionState {
   loading: boolean;
-  semanticHistoryByDisplayLevel: Partial<Record<DisplayLevel, SemanticHistoryState>>;
-  targetEventLoading: boolean;
   liveStatus: AgentLiveStatus;
-  cacheStatus: AgentCacheStatus;
   contentStatus: AgentContentStatus;
   syncStatus: AgentSyncStatus;
   lastValidatedAt?: number;
@@ -68,14 +57,12 @@ export interface AgentSessionState extends SessionProjectionState {
   /** Last non-conflict abort failure surfaced to the composer. */
   abortError?: string;
   detail: AgentDetail | null;
-  targetEventSeq?: number;
   lastStreamActivityAt?: string;
   reconnectAttempt?: number;
   error?: string;
   syncError?: string;
   syncRetryAttempt?: number;
   syncRetryAt?: number;
-  targetEventError?: string;
   promptError?: string;
   modelError?: string;
   workItemDetailsById: Record<string, WorkItemDetailState>;

@@ -6,23 +6,16 @@ import i18next from "i18next";
 import "../../i18n";
 import {
   attachmentKindForFile,
-  captureScrollAnchor,
   composerPrimaryAction,
-  historyLoadDecision,
   isScrollKey,
   looksLikeProgrammaticBottomScroll,
   readStoredComposerDraft,
   resizeComposerTextarea,
-  restoredScrollTop,
   storedComposerDraftKey,
   SyncRecoveryStatus,
-  timelineForDisplayLevel,
-  timelineLayoutRevision,
   writeStoredComposerDraft,
   resolveModelSwitchReasoningEffort,
 } from "./AgentPage";
-import { availableDisplayLevels } from "../../runtime/display-level";
-import type { TimelineTurn } from "./timeline-utils";
 import type { RuntimeModelOption } from "../../runtime/types";
 
 class MemoryStorage implements Storage {
@@ -192,49 +185,6 @@ describe("composer attachments", () => {
   });
 });
 
-describe("timeline virtual layout reconciliation", () => {
-  it("changes the layout revision when hydrated content replaces a preview under the same turn id", () => {
-    const preview = timelineTurn("turn:assistant", "Short preview");
-    const hydrated = timelineTurn("turn:assistant", "Short preview\n\nExpanded hydrated transcript body.");
-
-    expect(timelineLayoutRevision([hydrated])).not.toBe(timelineLayoutRevision([preview]));
-  });
-
-  it("keeps the same visible turn offset after measurements change", () => {
-    const anchor = captureScrollAnchor(
-      [
-        { key: "turn:a", index: 0, start: 0, size: 120 },
-        { key: "turn:b", index: 1, start: 120, size: 200 },
-      ],
-      164,
-    );
-
-    expect(anchor).toEqual({ key: "turn:b", index: 1, offset: 44 });
-    expect(restoredScrollTop(anchor, 1, (index) => index === 1 ? 180 : undefined, 164)).toBe(224);
-  });
-
-  it("restores an anchored turn even when it is outside the current virtual overscan", () => {
-    const anchor = captureScrollAnchor([{ key: "turn:a", index: 0, start: 20, size: 80 }], 44);
-
-    expect(restoredScrollTop(anchor, 8, (index) => index === 8 ? 1_900 : undefined, 44)).toBe(1_924);
-  });
-
-  it("accounts for history controls before the virtual wrapper when restoring an anchor", () => {
-    const anchor = captureScrollAnchor([{ key: "turn:a", index: 0, start: 20, size: 80 }], 44);
-
-    expect(restoredScrollTop(anchor, 8, (index) => index === 8 ? 1_900 : undefined, 84, 32)).toBe(1_956);
-  });
-
-  it("falls back to the original scroll top when the virtualizer cannot resolve the anchored index", () => {
-    const anchor = captureScrollAnchor([{ key: "turn:a", index: 0, start: 20, size: 80 }], 44);
-
-    expect(restoredScrollTop(anchor, 8, () => undefined, 44)).toBe(44);
-  });
-
-  it("does not capture an anchor when only overscan rows before the viewport are measured", () => {
-    expect(captureScrollAnchor([{ key: "turn:a", index: 0, start: 0, size: 80 }], 120)).toBeNull();
-  });
-});
 
 describe("scroll stick intent", () => {
   it("treats a scroll event as programmatic only while auto-scroll is active, no user intent exists, and the position is near the bottom", () => {
@@ -277,58 +227,3 @@ describe("scroll stick intent", () => {
   });
 });
 
-describe("timeline display levels", () => {
-  it("only exposes Debug while developer diagnostics are enabled", () => {
-    expect(availableDisplayLevels(false)).toEqual(["info", "verbose"]);
-    expect(availableDisplayLevels(true)).toEqual(["info", "verbose", "debug"]);
-  });
-
-  it("keeps debug on the semantic timeline instead of replacing it with raw events", () => {
-    const semanticItem = timelineTurn("turn:assistant", "Semantic result").items[0];
-    const debugItem = {
-      ...semanticItem,
-      id: "runtime:debug",
-      minDisplayLevel: "debug" as const,
-      body: "Detailed runtime bookkeeping",
-    };
-
-    expect(timelineForDisplayLevel([semanticItem, debugItem], "debug", 20).map((item) => item.id))
-      .toEqual(["assistant-message", "runtime:debug"]);
-  });
-});
-
-describe("history loading", () => {
-  it("expands already loaded timeline items before requesting network history", () => {
-    expect(historyLoadDecision(true, true)).toBe("expand-local");
-    expect(historyLoadDecision(true, false)).toBe("expand-local");
-  });
-
-  it("requests network history only after the local timeline reaches its boundary", () => {
-    expect(historyLoadDecision(false, true)).toBe("load-network");
-  });
-
-  it("does nothing when neither local nor server history remains", () => {
-    expect(historyLoadDecision(false, false)).toBe("none");
-  });
-});
-
-function timelineTurn(turnId: string, body: string): TimelineTurn {
-  return {
-    id: turnId,
-    kind: "runtime",
-    label: "Turn",
-    timestamp: "2026-07-19T00:00:00.000Z",
-    items: [
-      {
-        id: "assistant-message",
-        kind: "assistant",
-        label: "Assistant",
-        body,
-        timestamp: "2026-07-19T00:00:00.000Z",
-        meta: "assistant",
-        minDisplayLevel: "info",
-        sourceIds: ["event:1"],
-      },
-    ],
-  };
-}

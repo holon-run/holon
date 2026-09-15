@@ -72,4 +72,35 @@ test("cold start bootstraps and applies a live roster event", async ({ page, req
   expect(finalRequests.requests.filter(
     (entry: string) => entry === "GET /api/agents/e2e-agent/events?limit=100&order=desc",
   )).toHaveLength(1);
+
+  // Opening an agent speaks the conversation read-model contract: one
+  // capability handshake, one summary snapshot, one live conversation
+  // stream — and no legacy per-agent raw event stream.
+  await page.getByRole("button", { name: "Open e2e-agent", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "Agent conversation" }),
+  ).toBeVisible();
+  await expect.poll(async () => {
+    const conversationRequests = await request.get(controlPath("/__e2e__/requests"))
+      .then((response) => response.json());
+    return conversationRequests.requests;
+  }).toEqual(expect.arrayContaining([
+    "GET /api/agents/e2e-agent/conversation?limit=30",
+    "GET /api/agents/e2e-agent/conversation/stream",
+  ]));
+  const conversationRequests = await request.get(controlPath("/__e2e__/requests"))
+    .then((response) => response.json());
+  expect(conversationRequests.requests.filter(
+    (entry: string) => entry === "GET /api/agents/e2e-agent/conversation?limit=30",
+  )).toHaveLength(1);
+  expect(conversationRequests.requests.filter(
+    (entry: string) => entry === "GET /api/agents/e2e-agent/conversation/stream",
+  )).toHaveLength(1);
+  expect(conversationRequests.requests.filter(
+    (entry: string) => entry === "GET /api/agents/e2e-agent/events/stream",
+  )).toHaveLength(0);
+  expect(conversationRequests.requests.filter(
+    (entry: string) => entry.includes("messages:batchGet")
+      || entry.includes("transcript:batchGet")
+  )).toHaveLength(0);
 });

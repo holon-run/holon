@@ -1326,6 +1326,22 @@ mod tests {
         legacy.id = "brief-legacy-unattributed".into();
         legacy.created_at = timestamp(12);
         db.evidence().append_brief(&legacy).unwrap();
+        let mut pending = MessageEnvelope::new(
+            "web",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued operator echo".into(),
+            },
+        );
+        pending.id = "message-pending".into();
+        pending.created_at = timestamp(20);
+        db.evidence().append_message(&pending).unwrap();
         db.queue_entries()
             .upsert(&QueueEntryRecord {
                 message_id: "message-pending".into(),
@@ -1442,6 +1458,12 @@ mod tests {
         assert_eq!(
             summary["pending_inputs"][0]["message_id"],
             "message-pending"
+        );
+        assert!(
+            summary["pending_inputs"][0]["preview"]
+                .as_str()
+                .is_some_and(|value| value.contains("queued operator echo")),
+            "pending input should expose a text preview"
         );
         let turns = summary["turns"].as_array().unwrap();
         let multi = turns

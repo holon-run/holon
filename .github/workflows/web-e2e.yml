@@ -42,10 +42,18 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: web-gui/app/package-lock.json
+          cache-dependency-path: |
+            web-gui/app/package-lock.json
+            packages/conversation-sdk/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build conversation SDK
+        working-directory: packages/conversation-sdk
+        run: |
+          npm ci
+          npm run build
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
@@ -87,10 +95,18 @@ jobs:
         with:
           node-version: "24"
           cache: npm
-          cache-dependency-path: web-gui/app/package-lock.json
+          cache-dependency-path: |
+            web-gui/app/package-lock.json
+            packages/conversation-sdk/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Build conversation SDK
+        working-directory: packages/conversation-sdk
+        run: |
+          npm ci
+          npm run build
 
       - name: Install Chromium
         run: npx playwright install --with-deps chromium

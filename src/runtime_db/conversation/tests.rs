@@ -379,6 +379,49 @@ fn history_keyset_preserves_upper_bound_and_legacy_ties() -> Result<()> {
 }
 
 #[test]
+fn summary_includes_assigned_input_previews() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator-test".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "summarize the release".into(),
+        },
+    );
+    message.id = "message-input-preview".into();
+    message.turn_id = Some("turn-input-preview".into());
+    message.created_at = timestamp(1);
+    db.evidence().append_message(&message)?;
+
+    let mut source = turn("turn-input-preview", 1);
+    source.trigger = Some(TurnTriggerSummary::from_message(&message));
+    source.input_message_ids = vec![message.id.clone()];
+    db.turn_records()
+        .upsert(&terminal(source, TurnTerminalKind::Completed, None))?;
+
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    let summary = page
+        .turns
+        .iter()
+        .find(|turn| turn.turn_id == "turn-input-preview")
+        .expect("turn summary");
+    assert_eq!(summary.inputs.len(), 1);
+    assert_eq!(summary.inputs[0].message_id, "message-input-preview");
+    assert!(
+        summary.inputs[0].preview.contains("summarize the release"),
+        "preview should carry the input text: {}",
+        summary.inputs[0].preview
+    );
+    Ok(())
+}
+
+#[test]
 fn replayed_input_keeps_source_turn_assignment() -> Result<()> {
     let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
     let mut message = MessageEnvelope::new(
@@ -1080,6 +1123,22 @@ fn turn_and_brief_revisions_are_idempotent_under_late_brief_race() -> Result<()>
 #[test]
 fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut pending_message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator-test".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "check the pending echo".into(),
+        },
+    );
+    pending_message.id = "message-pending".into();
+    pending_message.created_at = timestamp(1);
+    db.evidence().append_message(&pending_message)?;
     let queued = QueueEntryRecord {
         message_id: "message-pending".into(),
         agent_id: AGENT_ID.into(),
@@ -1091,8 +1150,15 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     db.queue_entries().upsert(&queued)?;
     let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
     assert_eq!(page.pending_inputs.len(), 1);
-    assert_eq!(page.pending_inputs[0].revision, 1);
+    assert_eq!(page.pending_inputs[0].revision, 2);
     assert_eq!(page.pending_inputs[0].state, PendingInputState::Queued);
+    assert!(
+        page.pending_inputs[0]
+            .preview
+            .contains("check the pending echo"),
+        "pending preview should carry the input text: {}",
+        page.pending_inputs[0].preview
+    );
 
     let assigning = QueueEntryRecord {
         status: QueueEntryStatus::Dequeued,
@@ -1101,8 +1167,11 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     };
     db.queue_entries().upsert(&assigning)?;
     let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
-    assert_eq!(page.pending_inputs[0].revision, 2);
+    assert_eq!(page.pending_inputs[0].revision, 3);
     assert_eq!(page.pending_inputs[0].state, PendingInputState::Assigning);
+    assert!(page.pending_inputs[0]
+        .preview
+        .contains("check the pending echo"));
 
     let mut assigned = turn("turn-assigned", 1);
     assigned.input_message_ids = vec!["message-pending".into()];

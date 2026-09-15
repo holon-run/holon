@@ -5718,6 +5718,25 @@
                   }
                 ]
               },
+              "inputs": {
+                "items": {
+                  "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
+                  "properties": {
+                    "message_id": {
+                      "type": "string"
+                    },
+                    "preview": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message_id",
+                    "preview"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
               "key": {
                 "properties": {
                   "turn_id": {
@@ -5874,6 +5893,7 @@
               "key",
               "revision",
               "presentation_class",
+              "inputs",
               "execution",
               "result",
               "settled",
@@ -6250,6 +6270,9 @@
                   "message_id": {
                     "type": "string"
                   },
+                  "preview": {
+                    "type": "string"
+                  },
                   "revision": {
                     "format": "uint64",
                     "minimum": 0,
@@ -6266,7 +6289,8 @@
                 "required": [
                   "message_id",
                   "revision",
-                  "state"
+                  "state",
+                  "preview"
                 ],
                 "type": "object"
               },
@@ -6498,6 +6522,25 @@
                       }
                     ]
                   },
+                  "inputs": {
+                    "items": {
+                      "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
+                      "properties": {
+                        "message_id": {
+                          "type": "string"
+                        },
+                        "preview": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "message_id",
+                        "preview"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
                   "key": {
                     "properties": {
                       "turn_id": {
@@ -6654,6 +6697,7 @@
                   "key",
                   "revision",
                   "presentation_class",
+                  "inputs",
                   "execution",
                   "result",
                   "settled",
@@ -7222,6 +7266,25 @@
                     }
                   ]
                 },
+                "inputs": {
+                  "items": {
+                    "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
+                    "properties": {
+                      "message_id": {
+                        "type": "string"
+                      },
+                      "preview": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "message_id",
+                      "preview"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
                 "key": {
                   "properties": {
                     "turn_id": {
@@ -7378,6 +7441,7 @@
                 "key",
                 "revision",
                 "presentation_class",
+                "inputs",
                 "execution",
                 "result",
                 "settled",
@@ -7416,6 +7480,9 @@
                 "message_id": {
                   "type": "string"
                 },
+                "preview": {
+                  "type": "string"
+                },
                 "revision": {
                   "format": "uint64",
                   "minimum": 0,
@@ -7432,7 +7499,8 @@
               "required": [
                 "message_id",
                 "revision",
-                "state"
+                "state",
+                "preview"
               ],
               "type": "object"
             },
@@ -7637,6 +7705,25 @@
                     }
                   ]
                 },
+                "inputs": {
+                  "items": {
+                    "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
+                    "properties": {
+                      "message_id": {
+                        "type": "string"
+                      },
+                      "preview": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "message_id",
+                      "preview"
+                    ],
+                    "type": "object"
+                  },
+                  "type": "array"
+                },
                 "key": {
                   "properties": {
                     "turn_id": {
@@ -7793,6 +7880,7 @@
                 "key",
                 "revision",
                 "presentation_class",
+                "inputs",
                 "execution",
                 "result",
                 "settled",

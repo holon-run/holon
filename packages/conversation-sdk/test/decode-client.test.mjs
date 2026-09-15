@@ -12,7 +12,72 @@ import {
   decodeConversationActivity,
   decodeConversationSummaryResponse,
 } from "../dist/index.js";
-import { summary } from "./helpers.mjs";
+import { summary, turn } from "./helpers.mjs";
+
+test("decodes pending input previews and defaults missing previews to empty", () => {
+  const decoded = decodeConversationSummaryResponse(
+    summary({
+      pending_inputs: [
+        {
+          message_id: "message-pending",
+          revision: 2,
+          state: "assigning",
+          preview: '{"type":"text","text":"check this"}',
+        },
+        {
+          message_id: "message-legacy",
+          revision: 1,
+          state: "queued",
+        },
+        {
+          message_id: "message-empty",
+          revision: 3,
+          state: "queued",
+          preview: "",
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(decoded.pending_inputs, [
+    {
+      message_id: "message-pending",
+      revision: 2,
+      state: "assigning",
+      preview: '{"type":"text","text":"check this"}',
+    },
+    {
+      message_id: "message-legacy",
+      revision: 1,
+      state: "queued",
+      preview: "",
+    },
+    {
+      message_id: "message-empty",
+      revision: 3,
+      state: "queued",
+      preview: "",
+    },
+  ]);
+});
+
+test("decodes turn input previews that are present but empty", () => {
+  const decoded = decodeConversationSummaryResponse(
+    summary({
+      turns: [
+        turn("turn-empty-preview", 3, 1, {
+          inputs: [
+            { message_id: "message-text", preview: "operator text" },
+            { message_id: "message-blank", preview: "" },
+          ],
+        }),
+      ],
+    }),
+  );
+  assert.deepEqual(decoded.turns[0].inputs, [
+    { message_id: "message-text", preview: "operator text" },
+    { message_id: "message-blank", preview: "" },
+  ]);
+});
 
 test("decodes bounded conversation responses and rejects unsafe u64 values", () => {
   const decoded = decodeConversationSummaryResponse(summary());

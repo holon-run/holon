@@ -3916,6 +3916,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4051,6 +4055,7 @@ export interface components {
             event_log_epoch: string;
             input: {
                 message_id: string;
+                preview: string;
                 /** Format: uint64 */
                 revision: number;
                 /** @enum {string} */
@@ -4109,6 +4114,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4288,6 +4297,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4336,6 +4349,7 @@ export interface components {
             oldest_retained_seq: number;
             pending_inputs: {
                 message_id: string;
+                preview: string;
                 /** Format: uint64 */
                 revision: number;
                 /** @enum {string} */
@@ -4389,6 +4403,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */

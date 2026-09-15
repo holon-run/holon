@@ -14,12 +14,21 @@ use crate::types::{
 pub const CONVERSATION_SCHEMA_VERSION: u32 = 1;
 pub const CONVERSATION_QUERY_VERSION: u32 = 1;
 
+/// Canonical operator input attached to a turn, for summary-level rendering
+/// without loading turn activity detail. Bounded per turn by the read model.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnInputSummary {
+    pub message_id: String,
+    pub preview: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ConversationTurnSummary {
     pub turn_id: String,
     pub key: TurnKey,
     pub revision: u64,
     pub presentation_class: PresentationClass,
+    pub inputs: Vec<TurnInputSummary>,
     pub execution: ExecutionState,
     pub result: ResultState,
     pub settled: bool,
@@ -95,6 +104,7 @@ pub struct PendingInput {
     pub message_id: String,
     pub revision: u64,
     pub state: PendingInputState,
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
