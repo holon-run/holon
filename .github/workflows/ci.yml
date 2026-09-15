@@ -171,23 +171,14 @@ jobs:
       - name: Install both macOS Rust targets
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
-      - name: Restore Apple Silicon Rust build cache
+      - name: Restore Rust build cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           prefix-key: v1-rust
-          key: ci-macos-aarch64-release
-          env-vars: CARGO_TARGET_DIR
-          workspaces: . -> target/macos-aarch64
-          cache-bin: false
-          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      - name: Restore Intel Rust build cache
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-        with:
-          prefix-key: v1-rust
-          key: ci-macos-x86_64-release
-          env-vars: CARGO_TARGET_DIR
-          workspaces: . -> target/macos-x86_64
+          key: ci-macos-release
+          workspaces: |
+            . -> target/macos-aarch64
+            . -> target/macos-x86_64
           cache-bin: false
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
