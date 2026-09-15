@@ -150,8 +150,9 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   const briefReady = turn.briefIds.every((id) => actions.briefRecord(id) !== null);
   const hasReadableBrief = turn.briefIds.length > 0 && briefReady;
   const showExecutionNotice = execution !== "running" && execution !== "completed"
-    && !(execution === "waitingResult" && hasReadableBrief && !wasActive.current);
-  const awaitingResult = execution === "waitingResult" || (turn.briefIds.length > 0 && !briefReady);
+    && !(execution === "waitingResult" && hasReadableBrief);
+  const awaitingResult = (execution === "waitingResult" && !hasReadableBrief)
+    || (turn.briefIds.length > 0 && !briefReady);
   const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
   const expanded = manualExpanded ?? (autoExpanded || readingDetail);
   const [mounted, setMounted] = useState(expanded);

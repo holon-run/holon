@@ -51,10 +51,12 @@ test("live process folds only after a readable result; manual expansion and fail
   await update();
   await expect(live.getByText("Execution ended, waiting for the result…")).toBeVisible();
   await expect(disclosure).toHaveAttribute("aria-expanded", "true");
-  current = { ...current, revision: 3, result: { kind: "available" }, settled: true, brief_ids: ["current-brief"] };
+  // A readable brief is sufficient to fold; transport settlement can arrive later.
+  current = { ...current, revision: 3, result: { kind: "available" }, settled: false, brief_ids: ["current-brief"] };
   await update();
   await expect(live.getByText("The layout is ready.")).toBeVisible();
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await expect(live.getByText("Finishing result delivery…")).not.toBeVisible();
 
   // Historical expansion is explicit and remains stable on summary updates.
   await disclosure.click();

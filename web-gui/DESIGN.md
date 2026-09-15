@@ -250,12 +250,13 @@ an overlay drawer. The prototype can focus on desktop first.
   progress also has a keyboard-accessible inspect button. Selecting text or
   opening a Markdown link does not trigger inspection.
 - Execution ending alone does not imply result delivery. A turn observed running
-  stays open while delivery is pending or referenced briefs are still loading.
-  Once settled and readable, collapse the process over 220ms. Manual expansion
+  stays open while its result is pending or referenced briefs are still loading.
+  Once execution has ended and the brief is readable, collapse the process over
+  220ms without waiting for transport settlement. Manual expansion
   wins over automatic folding; focus or selection inside process content keeps
   it open. Respect reduced motion.
 - Failure, interruption, fallback, and wait notices remain visible outside the
-  fold. A historical readable brief with legacy `settled=false` does not show a
+  fold. A readable brief with `settled=false` does not show a
   misleading waiting banner; this does not change its canonical settlement.
 - Follow content growth only while the reader is at the bottom. User scrolling
   upward pauses following and reveals “Back to latest”. Preserve a visible
