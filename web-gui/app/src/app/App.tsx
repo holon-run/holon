@@ -101,6 +101,7 @@ export function App() {
   const disableDeveloperDiagnosticsUi = useRuntimeStore((state) => state.disableDeveloperDiagnosticsUi);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
+  const loadAgentToolExecutionDetail = useRuntimeStore((state) => state.loadAgentToolExecutionDetail);
   const showAgentOverview = useRuntimeStore((state) => state.showAgentOverview);
   const showTimelineEvents = useRuntimeStore((state) => state.showTimelineEvents);
   const refreshTimelineEvents = useRuntimeStore((state) => state.refreshTimelineEvents);
@@ -704,6 +705,10 @@ export function App() {
                 ? undefined
                 : {
                     model: conversationSession.model,
+                    toolDetails: selectedAgentSession?.toolExecutionDetailsById,
+                    onLoadToolDetail: (id, revision) => {
+                      void loadAgentToolExecutionDetail(activeAgentId, id, undefined, revision);
+                    },
                     onLoadOlderHistory: conversationSession.loadOlderHistory,
                     onInspectActivity: (activity) => {
                       if (activeAgentId !== undefined) {

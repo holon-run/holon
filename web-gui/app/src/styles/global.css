@@ -7255,7 +7255,7 @@ code {
   color: var(--text);
 }
 .conversation-input-line .markdown-content,
-.conversation-pending-chip .markdown-content { font-size: 16px; line-height: 1.75; }
+.conversation-pending-chip .markdown-content { font-size: 15px; line-height: 1.65; }
 .conversation-pending-inputs { display: flex; flex-direction: column; gap: 12px; }
 .conversation-pending-chip { margin-bottom: 0; }
 .conversation-input-status { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); font-size: 12px; }
@@ -7266,7 +7266,7 @@ code {
 .conversation-source-id { display: block; padding-top: 4px; font-family: var(--mono); }
 .conversation-brief { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 8px 0 0; }
 .conversation-brief + .conversation-brief { margin-top: 24px; }
-.conversation-brief > .markdown-content { font-size: 16px; line-height: 1.8; }
+.conversation-brief > .markdown-content { font-size: 15px; line-height: 1.7; }
 .conversation-brief-actions { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
 .conversation-brief-actions button { border: 0; background: transparent; color: inherit; padding: 6px; border-radius: 6px; cursor: pointer; }
 .conversation-brief-actions button:hover { background: var(--surface-hover); }
@@ -7310,7 +7310,7 @@ code {
 .conversation-activities { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .conversation-activity { min-width: 0; color: var(--muted); font-size: 13px; }
 .conversation-activity.is-error { color: var(--danger); }
-.conversation-progress-text > .markdown-content { font-size: 14px; line-height: 1.7; }
+.conversation-progress-text > .markdown-content { font-size: 13px; line-height: 1.65; }
 .conversation-activity-icon { display: inline-flex; flex: none; padding-top: 3px; }
 .conversation-activity-summary { min-width: 0; flex: 1; overflow-wrap: anywhere; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .conversation-timeline button:focus-visible,
@@ -7356,6 +7356,10 @@ code {
   text-align: left;
 }
 .conversation-activity-row:hover { background: var(--surface-hover); }
+.conversation-tool-content { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.conversation-tool-content .conversation-activity-summary { color: var(--text); line-height: 1.5; }
+.conversation-tool-content .is-command { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
+.conversation-tool-meta { color: var(--muted); font-size: 11px; line-height: 1.4; }
 .conversation-activity-row > svg { flex: none; margin-top: 3px; }
 .conversation-activity.is-error .conversation-activity-row { color: var(--danger); }
 .conversation-progress-text { position: relative; padding-right: 24px; }

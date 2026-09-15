@@ -737,6 +737,7 @@ export interface ToolExecutionDetailState {
   loading?: boolean;
   error?: string;
   toolExecution?: RuntimeToolExecutionRecord;
+  conversationRevision?: number;
 }
 
 export interface WorkspaceFileEntry {

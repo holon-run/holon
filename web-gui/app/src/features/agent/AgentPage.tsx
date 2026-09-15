@@ -612,6 +612,8 @@ export function AgentPage({
               {conversation ? (
                 <ConversationTimeline
                   model={conversation.model}
+                  toolDetails={conversation.toolDetails}
+                  onLoadToolDetail={conversation.onLoadToolDetail}
                   onInspectActivity={conversation.onInspectActivity}
                   onLoadBrief={conversation.onLoadBrief}
                   onLoadDetail={conversation.onLoadDetail}
@@ -995,4 +997,3 @@ export function SyncRecoveryStatus({
     </div>
   );
 }
-

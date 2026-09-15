@@ -141,13 +141,63 @@ test("an invalidated active process refreshes before its brief and opens the exi
   await page.goto(`/agents/${agentId}/conversation`);
   await expect(page.getByText("Starting the live check.")).toBeVisible();
   await update([activity(1, "Starting the live check."), tool]);
-  await expect(page.getByRole("button", { name: "ExecCommand · success", exact: true })).toBeVisible();
+  const toolRow = page.locator('[data-activity-id="tool:exec-live"] button');
+  await expect(toolRow).toContainText("printf live-marker");
+  await expect(toolRow).toContainText("ExecCommand · success");
   await expect(page.locator('[data-turn-id="live-detail"] .conversation-brief')).toHaveCount(0);
-  await page.getByRole("button", { name: "ExecCommand · success", exact: true }).click();
+  await toolRow.click();
   await expect(page.locator(".side-panel")).toBeVisible();
   await expect(page.locator(".side-panel").getByText("printf live-marker", { exact: true })).toBeVisible();
   await expect(page.locator(".side-panel").getByText("live-marker", { exact: true })).toBeVisible();
+  const toolRequests = async () => (await request.get(control("/__e2e__/requests")).then((r) => r.json())).requests
+    .filter((url: string) => url.includes("/tool-executions/exec-live"));
+  expect(await toolRequests()).toHaveLength(1);
+  // The same canonical record changes while mounted; both preview and open inspector refresh.
+  await request.post(control("/__e2e__/configure"), { data: { toolExecutionsById: {
+    "exec-live": { id: "exec-live", agent_id: agentId, tool_name: "ExecCommand", status: "error",
+      input: { cmd: "printf live-marker" }, output: { stderr: "updated failure", exit_status: 1 }, duration_ms: 1250 },
+  } } });
+  await update([activity(1, "Starting the live check."), { ...tool, revision: 2, summary: "ExecCommand · error" }]);
+  await expect(toolRow).toContainText("ExecCommand · error · 1.3s");
+  await expect(page.locator(".side-panel").getByText("updated failure", { exact: true })).toBeVisible();
+  expect(await toolRequests()).toHaveLength(2);
   await page.getByRole("button", { name: "Close side panel", exact: true }).click();
   await page.getByText("Starting the live check.", { exact: true }).click();
   await expect(page.locator(".side-panel").getByText("Starting the live check.", { exact: true }).first()).toBeVisible();
+});
+
+test("tool summaries load only for visible expanded rows and failed loads remain inspectable", async ({ page, context, request }, info) => {
+  const session = `tool-preview-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const tools: ConversationActivity[] = Array.from({ length: 10 }, (_, i) => ({
+    kind: "tool", id: `tool:preview-${i}`, key: { event_seq: i, activity_id: `tool:preview-${i}` },
+    revision: 1, summary: "ExecCommand · success",
+  }));
+  await request.post(control("/__e2e__/configure"), { data: { toolExecutionsById: Object.fromEntries(tools.slice(0, 9).map((_, i) => [
+    `preview-${i}`, { id: `preview-${i}`, tool_name: "ExecCommand", status: "success", input: { cmd: `echo ${i}` } },
+  ])) } });
+  await request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [turn("history", 1, { execution: { kind: "terminal", outcome: "completed" }, settled: true,
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } } })],
+    activitiesByTurnId: { history: tools },
+  } });
+  const toolRequests = async () => (await request.get(control("/__e2e__/requests")).then((r) => r.json())).requests
+    .filter((url: string) => url.includes("/tool-executions/"));
+  await page.goto(`/agents/${agentId}/conversation`);
+  const toggle = page.locator(".conversation-detail-toggle");
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(await toolRequests()).toHaveLength(0);
+  await toggle.click();
+  await expect(page.getByText("echo 8", { exact: true })).toBeVisible();
+  await expect.poll(async () => (await toolRequests()).length).toBe(8);
+  await expect(page.locator('[data-activity-id="tool:preview-9"] button')).toBeEnabled();
+  await page.getByRole("button", { name: "Show earlier activity" }).click();
+  await expect(page.getByText("echo 0", { exact: true })).toBeVisible();
+  expect(await toolRequests()).toHaveLength(10);
+  await toggle.click();
+  await expect(page.locator(".conversation-activity")).toHaveCount(0);
+  await toggle.click();
+  await expect(page.getByText("echo 8", { exact: true })).toBeVisible();
+  expect(await toolRequests()).toHaveLength(10);
 });

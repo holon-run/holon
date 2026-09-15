@@ -27,7 +27,8 @@ import type {
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { EmptyState } from "../../components/ui/EmptyState";
-import type { AgentTimelineActivity } from "../../runtime/types";
+import type { AgentTimelineActivity, ToolExecutionDetailState } from "../../runtime/types";
+import { toolExecutionPresentation } from "../../runtime/tool-execution-presentation";
 import {
   turnResultPresentation,
   turnExecutionPresentation,
@@ -41,6 +42,8 @@ export interface ConversationTimelineActions {
   onLoadOlderActivities: (turnId: string) => void;
   onRetry: () => void;
   onInspectActivity?: (activity: AgentTimelineActivity) => void;
+  onLoadToolDetail?: (id: string, revision: number) => void;
+  toolDetails?: Record<string, ToolExecutionDetailState>;
   briefRecord: (briefId: string) => BriefRecord | null;
   briefLoadState: (briefId: string) => ConversationBriefLoadState | null;
   detailLoadState: (turnId: string) => ConversationDetailLoadState;
@@ -418,6 +421,8 @@ function ConversationDetailPanel({
               activity={activity}
               key={activity.id}
               onInspectActivity={actions.onInspectActivity}
+              onLoadToolDetail={actions.onLoadToolDetail}
+              toolDetail={actions.toolDetails?.[activity.id.slice(5)]}
             />
           ))}
         </ol>
@@ -434,11 +439,25 @@ function ChevronUpLoadMore() {
 function ConversationActivityRow({
   activity,
   onInspectActivity,
+  onLoadToolDetail,
+  toolDetail,
 }: {
   activity: ConversationActivity;
   onInspectActivity?: (activity: AgentTimelineActivity) => void;
+  onLoadToolDetail?: (id: string, revision: number) => void;
+  toolDetail?: ToolExecutionDetailState;
 }) {
   const { t } = useTranslation();
+  const toolId = activity.kind === "tool" && activity.id.startsWith("tool:") ? activity.id.slice(5) : undefined;
+  useEffect(() => {
+    // Mounted rows are the visible part of an expanded process. Retry stale
+    // records on a new activity revision, including after an earlier failure.
+    if (toolId && !toolDetail?.loading && (toolDetail?.conversationRevision ?? -1) < activity.revision) {
+      onLoadToolDetail?.(toolId, activity.revision);
+    }
+  }, [toolId, activity.revision, toolDetail, onLoadToolDetail]);
+  const tool = useMemo(() => toolId && toolDetail?.toolExecution
+    ? toolExecutionPresentation(toolDetail.toolExecution) : undefined, [toolId, toolDetail?.toolExecution]);
   const summary = useMemo(
     () => summarizeActivity(activity),
     [activity],
@@ -468,7 +487,15 @@ function ConversationActivityRow({
           disabled={!onInspectActivity}
           onClick={() => onInspectActivity?.(conversationActivityToInspectorActivity(activity))}>
           <span className="conversation-activity-icon">{icon}</span>
-          <span className="conversation-activity-summary">{summary.display || label}</span>
+          {tool ? (
+            <span className="conversation-tool-content">
+              <span className={`conversation-activity-summary${tool.command ? " is-command" : ""}`}>{tool.text}</span>
+              <span className="conversation-tool-meta">
+                {tool.toolName} · {tool.status}
+                {tool.durationMs != null ? ` · ${tool.durationMs < 1000 ? `${tool.durationMs}ms` : `${(tool.durationMs / 1000).toFixed(1)}s`}` : ""}
+              </span>
+            </span>
+          ) : <span className="conversation-activity-summary">{summary.display || label}</span>}
           <ChevronRight size={13} />
         </button>
       )}

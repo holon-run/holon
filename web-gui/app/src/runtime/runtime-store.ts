@@ -450,7 +450,7 @@ export interface RuntimeStoreState {
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
-  loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
+  loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity, conversationRevision?: number) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   abortCurrentRun: (agentId: string | undefined, runId: string | null | undefined) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, reasoningEffort?: string) => Promise<void>;
@@ -3124,20 +3124,29 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  loadAgentToolExecutionDetail: async (agentId, toolExecutionId, fallbackActivity) => {
+  loadAgentToolExecutionDetail: async (agentId, toolExecutionId, fallbackActivity, conversationRevision) => {
     if (!agentId || !toolExecutionId) return;
     const request = captureClientRequest();
     const key = `${agentId}:${toolExecutionId}`;
     const cached = get().sessionsByAgentId[agentId]?.toolExecutionDetailsById[toolExecutionId];
-    if (cached?.toolExecution || cached?.loading || toolExecutionDetailInFlight.has(key)) return;
+    const currentRevision = conversationRevision === undefined || (cached?.conversationRevision ?? -1) >= conversationRevision;
+    if ((cached?.toolExecution && currentRevision) || cached?.loading || toolExecutionDetailInFlight.has(key)) return;
     toolExecutionDetailInFlight.add(key);
     setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: true, error: undefined });
     try {
       const toolExecution = await request.client.getToolExecution(agentId, toolExecutionId);
       if (!isCurrentClientRequest(request)) return;
-      setToolExecutionDetailState(set, agentId, toolExecutionId, { loading: false, toolExecution });
+      setToolExecutionDetailState(set, agentId, toolExecutionId, {
+        loading: false, toolExecution,
+        ...(conversationRevision !== undefined ? { conversationRevision } : {}),
+      });
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
+      setToolExecutionDetailState(set, agentId, toolExecutionId, {
+        loading: false,
+        error: error instanceof Error ? error.message : String(error),
+        ...(conversationRevision !== undefined ? { conversationRevision } : {}),
+      });
       // If the tool execution record doesn't exist (e.g. historical events
       // without tool_execution_id), fall back to the activity inspector
       // which renders structured detail from the raw event payload.
@@ -3152,10 +3161,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         void hydrateInspectorActivityDetail(get, set, agentId, fallbackActivity);
         return;
       }
-      setToolExecutionDetailState(set, agentId, toolExecutionId, {
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
     } finally {
       if (!isCurrentClientRequest(request)) {
         return;
