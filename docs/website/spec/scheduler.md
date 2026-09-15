@@ -162,6 +162,15 @@ All effects commit in the same SQLite transaction. If the transaction fails or
 the CAS does not match, no partial queue, activation, settlement, or delivery
 state is left behind.
 
+WorkItem focus transitions use the same atomicity boundary. When
+`PickWorkItem` resolves a yielded continuation chain, the transition fences the
+expected agent state, the complete active continuation snapshot, and each frame
+being changed. It rejects cycles, competing edges, and a chain disconnected
+from an existing current focus without writes. If current focus is absent, the
+explicit pick may deterministically resume the selected frame, cancel its
+orphaned descendants, and install the selected WorkItem as current in the same
+transaction.
+
 The canonical scheduler is the only runtime engine. Queue, WorkItem, wait,
 task, Turn, transcript, brief, delivery, activation, settlement, and execution
 facts share one authority and transaction path.

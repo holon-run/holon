@@ -2,7 +2,7 @@ use super::super::*;
 use super::support::*;
 use crate::types::{
     AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority, TaskKind, TaskStatus,
-    WorkItemState,
+    WorkItemContinuationFrame, WorkItemContinuationState, WorkItemState,
 };
 
 // ── task_from_message ───────────────────────────────────────────────
@@ -49,6 +49,46 @@ fn task_from_message_missing_task_kind_returns_error() {
     assert!(
         result.unwrap_err().to_string().contains("task_kind"),
         "error should mention missing task_kind"
+    );
+}
+
+#[test]
+fn continuation_path_analysis_rejects_cycle() {
+    let first = WorkItemContinuationFrame::new_on_completed("default", "work-a", "work-b", None);
+    let second = WorkItemContinuationFrame::new_on_completed("default", "work-b", "work-a", None);
+
+    let error = tasks::analyze_continuation_path("work-a", Some("work-current"), &[first, second])
+        .unwrap_err();
+
+    assert_eq!(
+        crate::runtime_error::describe_runtime_error(&error).code,
+        "continuation_topology_cycle"
+    );
+}
+
+#[test]
+fn continuation_path_analysis_rejects_duplicate_suspended_edge() {
+    let first = WorkItemContinuationFrame::new_on_completed("default", "work-a", "work-b", None);
+    let second = WorkItemContinuationFrame::new_on_completed("default", "work-a", "work-c", None);
+
+    let error = tasks::analyze_continuation_path("work-a", None, &[first, second]).unwrap_err();
+
+    assert_eq!(
+        crate::runtime_error::describe_runtime_error(&error).code,
+        "continuation_topology_ambiguous"
+    );
+}
+
+#[test]
+fn continuation_path_analysis_rejects_duplicate_active_edge() {
+    let first = WorkItemContinuationFrame::new_on_completed("default", "work-a", "work-c", None);
+    let second = WorkItemContinuationFrame::new_on_completed("default", "work-b", "work-c", None);
+
+    let error = tasks::analyze_continuation_path("work-a", None, &[first, second]).unwrap_err();
+
+    assert_eq!(
+        crate::runtime_error::describe_runtime_error(&error).code,
+        "continuation_topology_ambiguous"
     );
 }
 
@@ -504,6 +544,143 @@ async fn execution_bound_pick_yields_without_rebinding_current_turn() {
             .as_ref()
             .and_then(|binding| binding.work_item_id.as_deref()),
         Some(first.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn pick_yielded_work_item_without_current_focus_repairs_dangling_chain() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let first = runtime
+        .create_work_item("first caller".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let second = runtime
+        .create_work_item("second caller".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let third = runtime
+        .create_work_item("dangling active target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(first.id.clone()).await.unwrap();
+    runtime.pick_work_item(second.id.clone()).await.unwrap();
+    runtime.pick_work_item(third.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_work_item_id = None;
+        guard.state.current_turn_work_item_id = None;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let picked = runtime
+        .pick_work_item_with_reason(first.id.clone(), Some("repair dangling chain".into()))
+        .await
+        .unwrap();
+
+    assert_eq!(picked.current_work_item.id, first.id);
+    assert!(picked.continuation_resolved.is_some());
+    let frames = runtime.storage().latest_work_item_continuations().unwrap();
+    let first_frame = frames
+        .iter()
+        .find(|frame| frame.suspended_work_item_id == first.id)
+        .unwrap();
+    assert_eq!(first_frame.state, WorkItemContinuationState::Resumed);
+    assert_eq!(
+        first_frame.resolution_reason.as_deref(),
+        Some("explicit_pick")
+    );
+    let descendant = frames
+        .iter()
+        .find(|frame| frame.suspended_work_item_id == second.id)
+        .unwrap();
+    assert_eq!(descendant.state, WorkItemContinuationState::Cancelled);
+    assert_eq!(
+        descendant.resolution_reason.as_deref(),
+        Some("orphaned_descendant_without_current_focus")
+    );
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .current_work_item_id
+            .as_deref(),
+        Some(first.id.as_str())
+    );
+}
+
+#[tokio::test]
+async fn pick_disconnected_yielded_work_item_reports_locatable_conflict_without_writes() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let first = runtime
+        .create_work_item("first caller".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let second = runtime
+        .create_work_item("second caller".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let missing = runtime
+        .create_work_item("missing continuation owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let unrelated = runtime
+        .create_work_item("unrelated current focus".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(first.id.clone()).await.unwrap();
+    runtime.pick_work_item(second.id.clone()).await.unwrap();
+    runtime.pick_work_item(missing.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_work_item_id = Some(unrelated.id.clone());
+        guard.state.current_turn_work_item_id = Some(unrelated.id.clone());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+    let before = runtime.storage().latest_work_item_continuations().unwrap();
+    let originating = before
+        .iter()
+        .find(|frame| frame.suspended_work_item_id == second.id)
+        .unwrap()
+        .id
+        .clone();
+
+    let error = runtime
+        .pick_work_item_with_reason(first.id.clone(), Some("repair dangling chain".into()))
+        .await
+        .unwrap_err();
+    let descriptor = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(descriptor.code, "continuation_unwind_incomplete");
+    assert_eq!(
+        descriptor.safe_context.get("work_item_id"),
+        Some(&missing.id)
+    );
+    assert_eq!(descriptor.safe_context.get("record_id"), Some(&originating));
+    assert_eq!(
+        runtime.storage().latest_work_item_continuations().unwrap(),
+        before
     );
 }
 
