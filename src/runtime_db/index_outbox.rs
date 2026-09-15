@@ -85,6 +85,18 @@ impl RuntimeIndexOutboxRepository<'_> {
             .transaction(|tx| insert_runtime_index_changes_tx(tx, changes))
     }
 
+    /// Delete pending runtime-index rows for one agent while preserving its
+    /// monotonic produced watermark.
+    pub fn delete_pending_for_agent(&self, agent_id: &str) -> Result<usize> {
+        let connection = self.db.connection()?;
+        connection
+            .execute(
+                "DELETE FROM runtime_index_outbox WHERE agent_id = ?1",
+                [agent_id],
+            )
+            .map_err(Into::into)
+    }
+
     pub fn high_watermark(&self) -> Result<i64> {
         let connection = self.db.connection()?;
         connection
@@ -355,6 +367,25 @@ mod tests {
         // Later appends only move the watermark forward.
         outbox.append_changes(&[change("agent-a", "4")]).unwrap();
         assert_eq!(outbox.produced_watermark_for_agent("agent-a").unwrap(), 4);
+    }
+
+    #[test]
+    fn deleting_pending_rows_preserves_produced_watermark() {
+        let (_dir, db) = runtime_db();
+        let outbox = db.runtime_index_outbox();
+        outbox
+            .append_changes(&[
+                change("agent-a", "1"),
+                change("agent-b", "2"),
+                change("agent-a", "3"),
+            ])
+            .unwrap();
+
+        assert_eq!(outbox.delete_pending_for_agent("agent-a").unwrap(), 2);
+        assert_eq!(outbox.pending_count_for_agent("agent-a", 0).unwrap(), 0);
+        assert_eq!(outbox.pending_count_for_agent("agent-b", 0).unwrap(), 1);
+        assert_eq!(outbox.produced_watermark_for_agent("agent-a").unwrap(), 3);
+        assert_eq!(outbox.delete_pending_for_agent("agent-a").unwrap(), 0);
     }
 
     #[test]

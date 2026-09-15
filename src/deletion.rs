@@ -7,7 +7,7 @@
 //! resumes from the failed phase.
 //!
 //! The coordinator is triggered:
-//! - inline after `begin_public_agent_deletion`;
+//! - inline after operator deletion begins;
 //! - on daemon startup for crash recovery;
 //! - periodically for retry of failed jobs.
 
@@ -225,16 +225,10 @@ impl RuntimeHost {
                 .await?;
         }
 
-        let storage = match self.agent_storage(agent_id) {
-            Ok(s) => s,
-            Err(_) => {
-                // Agent data dir already gone; nothing to quiesce.
-                debug!(
-                    agent_id,
-                    "agent storage unavailable during quiesce; skipping"
-                );
-                return Ok(());
-            }
+        let storage = if self.agent_data_dir(agent_id).exists() {
+            self.agent_storage(agent_id).ok()
+        } else {
+            None
         };
 
         let now = Utc::now();
@@ -302,15 +296,17 @@ impl RuntimeHost {
         }
 
         // Emit audit event via storage if available.
-        let _ = storage.append_event(&AuditEvent::legacy(
-            "deletion_quiesce",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "tasks_cancelled": tasks_count,
-                "waits_cancelled": waits_count,
-                "queue_entries_aborted": queue_aborted,
-            }),
-        ));
+        if let Some(storage) = storage {
+            let _ = storage.append_event(&AuditEvent::legacy(
+                "deletion_quiesce",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "tasks_cancelled": tasks_count,
+                    "waits_cancelled": waits_count,
+                    "queue_entries_aborted": queue_aborted,
+                }),
+            ));
+        }
 
         Ok(())
     }
@@ -340,7 +336,7 @@ impl RuntimeHost {
     /// Scheduler: terminalize durable work that could participate in future
     /// scheduler promotion or dispatch.
     async fn deletion_phase_scheduler(&self, agent_id: &str) -> Result<()> {
-        let storage = self.agent_storage(agent_id)?;
+        let storage = self.agent_storage(&self.config().default_agent_id)?;
         let terminalizing_work_items = self
             .runtime_db()
             .work_items()
@@ -533,14 +529,17 @@ impl RuntimeHost {
 
     /// Index: remove the agent's documents from the shared memory index.
     async fn deletion_phase_index(&self, agent_id: &str) -> Result<()> {
+        self.runtime_db()
+            .runtime_index_outbox()
+            .delete_pending_for_agent(agent_id)?;
         // The memory index is a shared SQLite database. Remove all rows
         // belonging to this agent.
-        let storage = match self.agent_storage(agent_id) {
+        let storage = match self.agent_storage(&self.config().default_agent_id) {
             Ok(s) => s,
             Err(_) => {
                 debug!(
                     agent_id,
-                    "agent storage unavailable during index cleanup; skipping"
+                    "shared index storage unavailable during index cleanup; skipping"
                 );
                 return Ok(());
             }
@@ -627,38 +626,20 @@ impl RuntimeHost {
                 id.visibility == AgentVisibility::Private
                     && id.ownership() == AgentOwnership::ParentSupervised
                     && id.parent_agent_id.as_deref() == Some(parent_agent_id)
-                    && id.status == AgentRegistryStatus::Active
             })
             .collect();
 
         for child in children {
             let child_id = &child.agent_id;
-            // Create a deletion job for the child if one doesn't exist.
-            let existing = self
-                .runtime_db()
-                .agent_deletions()
-                .latest_for_agent(child_id)?;
-            // A Completed job while the identity is Active means the child
-            // was re-created through the reincarnation path. Reincarnation
-            // is currently restricted to public self-owned agents, so this
-            // arm is only reachable for ids that were never re-created; if
-            // private child re-creation is ever allowed, this must create a
-            // fresh job (via `begin`, which replaces the stale Completed
-            // row) instead of silently skipping the cascade.
-            let child_job = match existing {
-                Some(job) if job.status == AgentDeletionStatus::Completed => continue,
-                Some(job) => job,
-                None => {
-                    let (updated_identity, job, _) = self.runtime_db().agent_deletions().begin(
-                        child_id,
-                        child.revision,
-                        &parent_job.requested_by,
-                        false, // Don't recurse further
-                    )?;
-                    self.cache_agent_identity(&updated_identity)?;
-                    job
-                }
-            };
+            let bootstrap_lock = self.agent_bootstrap_lock(child_id);
+            let _bootstrap_guard = bootstrap_lock.lock().await;
+            let (updated_identity, child_job, _) = self.runtime_db().agent_deletions().begin(
+                child_id,
+                child.revision,
+                &parent_job.requested_by,
+                false, // Don't recurse further
+            )?;
+            self.cache_agent_identity(&updated_identity)?;
             Box::pin(self.execute_deletion_job(child_job))
                 .await
                 .with_context(|| format!("cascading deletion to private child {child_id}"))?;
