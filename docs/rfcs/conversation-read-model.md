@@ -359,6 +359,10 @@ already represented by the current-input and in-flight round sections.
 Expanded clients refresh invalidated detail pages, including active turns whose
 activity set exceeds the bounded stream budget. They do not wait for a Brief or
 reconstruct a second turn ledger from generic audit events.
+Transcript mutations advance both detail and summary revisions: transcript kinds
+also determine the summary's detail coverage. Reusing a summary revision after
+that coverage changes violates the SDK's immutable-revision contract and stops
+live delivery.
 
 ### Activity display summaries
 

@@ -754,8 +754,11 @@ pub(crate) fn upsert_transcript_entry_tx(
             )?;
         }
         if let Some(turn_id) = turn_id {
+            // Transcript kinds also determine the coverage exposed on the
+            // summary. Publish a new summary revision with every transcript
+            // change so stream and detail reads cannot disagree at one revision.
             let _ =
-                bump_turn_revision_tx(tx, &entry.agent_id, turn_id, false, true, entry.created_at)?;
+                bump_turn_revision_tx(tx, &entry.agent_id, turn_id, true, true, entry.created_at)?;
         }
     }
     Ok(())

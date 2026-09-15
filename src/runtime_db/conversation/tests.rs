@@ -1183,6 +1183,37 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
 }
 
 #[test]
+fn transcript_coverage_changes_advance_the_turn_summary_revision() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    db.turn_records().upsert(&turn("turn-live-coverage", 1))?;
+    let before = db
+        .conversation()
+        .activities(AGENT_ID, "turn-live-coverage", 10, None, None)?
+        .expect("active turn");
+    let entry = TranscriptEntry::new(
+        AGENT_ID,
+        TranscriptEntryKind::ToolResults,
+        Some(1),
+        None,
+        serde_json::json!({"turn_id": "turn-live-coverage", "results": []}),
+    );
+    db.evidence().append_transcript_entry(&entry)?;
+    let after = db
+        .conversation()
+        .activities(AGENT_ID, "turn-live-coverage", 10, None, None)?
+        .expect("updated turn");
+    assert_ne!(before.turn.detail_coverage, after.turn.detail_coverage);
+    assert!(after.turn.revision > before.turn.revision);
+    db.evidence().append_transcript_entry(&entry)?;
+    let replay = db
+        .conversation()
+        .activities(AGENT_ID, "turn-live-coverage", 10, None, None)?
+        .expect("replayed turn");
+    assert_eq!(after.turn, replay.turn);
+    Ok(())
+}
+
+#[test]
 fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()> {
     let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
     let mut message = MessageEnvelope::new(
