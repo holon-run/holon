@@ -3901,6 +3901,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4094,6 +4098,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4273,6 +4281,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4374,6 +4386,10 @@ export interface components {
                     /** @enum {string} */
                     outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
+                inputs: {
+                    message_id: string;
+                    preview: string;
+                }[];
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
