@@ -554,15 +554,17 @@ fn migration_repairs_existing_replay_input_assignment() -> Result<()> {
         prior_terminal: None,
     });
     db.turn_records().upsert(&replay)?;
-    let mut stale_replay = turn("repair-stale-replay", 3);
-    stale_replay.input_message_ids = source.input_message_ids.clone();
-    stale_replay.replay = Some(TurnReplayProvenance {
+    let stale_replay = turn("repair-stale-replay", 3);
+    db.turn_records().upsert(&stale_replay)?;
+    let mut stale_replay_payload = stale_replay;
+    stale_replay_payload.input_message_ids = source.input_message_ids.clone();
+    stale_replay_payload.replay = Some(TurnReplayProvenance {
         source_message_id: "repair-message".into(),
         source_turn_id: "repair-missing-source".into(),
         reason: "repair_test".into(),
         prior_terminal: None,
     });
-    db.turn_records().upsert(&stale_replay)?;
+    overwrite_turn_payload(&db, &stale_replay_payload)?;
     db.connection()?.execute_batch(
         "UPDATE conversation_input_assignments
          SET turn_id = 'repair-replay'
