@@ -500,6 +500,11 @@ export function resetTransientRuntimeStateForResume(
     templateSyncInProgress: false,
     templateDetailLoadingById: resetBooleanMap(state.templateDetailLoadingById),
     agentSkillCatalogLoadingByAgentId: resetBooleanMap(state.agentSkillCatalogLoadingByAgentId),
+    // Drop skill-catalog error placeholders so the fetch effect re-runs against
+    // the new client generation; clean catalogs survive as last-known-good.
+    agentSkillCatalogByAgentId: Object.fromEntries(
+      Object.entries(state.agentSkillCatalogByAgentId).filter(([, catalog]) => !catalog.error),
+    ),
     credentialStoreLoading: false,
     codexDeviceLogin: { status: "idle" },
     searchLoading: false,
@@ -593,6 +598,8 @@ const agentDetailRefreshInFlight = new Map<string, { generation: number; promise
 const agentDetailRequestSequence = new Map<string, number>();
 const agentDetailRetryTimers = new Map<string, number>();
 const agentDetailRetryAttempts = new Map<string, number>();
+const agentSkillCatalogRetryTimers = new Map<string, number>();
+const agentSkillCatalogRetryAttempts = new Map<string, number>();
 let bootstrapRefreshInFlight: Promise<void> | undefined;
 let bootstrapRefreshTimer: number | undefined;
 let clientGeneration = 0;
@@ -604,6 +611,7 @@ const STREAM_RECONNECT_MAX_MS = 15_000;
 const AGENT_VALIDATION_TTL_MS = 60_000;
 const RESUME_RECONCILIATION_THRESHOLD_MS = 60_000;
 const AGENT_DETAIL_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
+const AGENT_SKILL_CATALOG_RETRY_DELAYS_MS = [2_000, 5_000, 15_000] as const;
 
 function nextClientGeneration(): number {
   clientGeneration += 1;
@@ -667,6 +675,9 @@ function cancelClientGenerationWork(): void {
   for (const timer of agentDetailRetryTimers.values()) window.clearTimeout(timer);
   agentDetailRetryTimers.clear();
   agentDetailRetryAttempts.clear();
+  for (const timer of agentSkillCatalogRetryTimers.values()) window.clearTimeout(timer);
+  agentSkillCatalogRetryTimers.clear();
+  agentSkillCatalogRetryAttempts.clear();
   globalSyncCoordinator.cancelClientGenerationWork();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
@@ -2704,10 +2715,22 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           [agentId]: false,
         },
       }));
+      clearAgentSkillCatalogRetry(agentId);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
       set((state) => ({
+        // Keep an error-carrying (or last-known-good) catalog in the map so
+        // the App-level fetch effect terminates instead of hot-retrying;
+        // recovery retries from the store with bounded backoff.
+        agentSkillCatalogByAgentId: {
+          ...state.agentSkillCatalogByAgentId,
+          [agentId]: {
+            ...(state.agentSkillCatalogByAgentId[agentId] ?? emptySkillCatalog),
+            source: "http",
+            error: message,
+          },
+        },
         agentSkillCatalogLoadingByAgentId: {
           ...state.agentSkillCatalogLoadingByAgentId,
           [agentId]: false,
@@ -2717,6 +2740,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           [agentId]: message,
         },
       }));
+      scheduleAgentSkillCatalogRetry(get, agentId);
     }
   },
 
@@ -4047,6 +4071,48 @@ function clearAgentDetailRetry(agentId: string): void {
   if (timer != null) window.clearTimeout(timer);
   agentDetailRetryTimers.delete(agentId);
   agentDetailRetryAttempts.delete(agentId);
+}
+
+function scheduleAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string): void {
+  if (agentSkillCatalogRetryTimers.has(agentId)) return;
+  const attempt = agentSkillCatalogRetryAttempts.get(agentId) ?? 0;
+  if (attempt >= AGENT_SKILL_CATALOG_RETRY_DELAYS_MS.length) return;
+  agentSkillCatalogRetryAttempts.set(agentId, attempt + 1);
+  armAgentSkillCatalogRetry(
+    get,
+    agentId,
+    AGENT_SKILL_CATALOG_RETRY_DELAYS_MS[attempt] + retryJitterMs(),
+  );
+}
+
+function armAgentSkillCatalogRetry(get: () => RuntimeStoreState, agentId: string, delayMs: number): void {
+  const timer = window.setTimeout(() => {
+    agentSkillCatalogRetryTimers.delete(agentId);
+    const streamStatus = get().globalStreamStatus;
+    if (streamStatus !== "streaming" && streamStatus !== "catching_up") {
+      // Connection down: pause without fetching or consuming another attempt
+      // so the retry resumes once the stream reconnects.
+      armAgentSkillCatalogRetry(
+        get,
+        agentId,
+        AGENT_SKILL_CATALOG_RETRY_DELAYS_MS[AGENT_SKILL_CATALOG_RETRY_DELAYS_MS.length - 1] + retryJitterMs(),
+      );
+      return;
+    }
+    void get().refreshAgentSkillCatalog(agentId);
+  }, delayMs);
+  agentSkillCatalogRetryTimers.set(agentId, timer);
+}
+
+function clearAgentSkillCatalogRetry(agentId: string): void {
+  const timer = agentSkillCatalogRetryTimers.get(agentId);
+  if (timer != null) window.clearTimeout(timer);
+  agentSkillCatalogRetryTimers.delete(agentId);
+  agentSkillCatalogRetryAttempts.delete(agentId);
+}
+
+function retryJitterMs(): number {
+  return Math.floor(Math.random() * 500);
 }
 
 

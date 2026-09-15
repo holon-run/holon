@@ -2569,6 +2569,149 @@ describe("right panel expanded mode", () => {
   });
 });
 
+describe("refreshAgentSkillCatalog bounded retry", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function stubSkillWindow() {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+  }
+
+  function skillsFetchMock(skills: () => Response) {
+    let calls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/agents/agent-a/skills")) {
+        calls += 1;
+        return skills();
+      }
+      if (url.endsWith("/handshake")) {
+        return jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES });
+      }
+      if (url.endsWith("/agents/list")) return jsonResponse([]);
+      if (url.endsWith("/agents/snapshot")) {
+        return jsonResponse({
+          contract_version: 1,
+          runtime_id: "runtime-1",
+          event_log_epoch: "epoch-1",
+          visibility_scope_id: "scope-1",
+          agents: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    return { fetchMock, calls: () => calls };
+  }
+
+  async function connectStreaming() {
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    useRuntimeStore.setState({ globalStreamStatus: "streaming" });
+  }
+
+  it("stores an error placeholder so the fetch effect terminates, then retries with bounded backoff", async () => {
+    vi.useFakeTimers();
+    stubSkillWindow();
+    const { fetchMock, calls } = skillsFetchMock(() => new Response("server error", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await connectStreaming();
+
+    await useRuntimeStore.getState().refreshAgentSkillCatalog("agent-a");
+
+    // The catalog slot must be filled with an error-carrying entry so the
+    // App-level fetch effect does not immediately re-fire (the ~209 rps storm).
+    expect(useRuntimeStore.getState().agentSkillCatalogByAgentId["agent-a"]).toMatchObject({
+      source: "http",
+      error: "GET /agents/agent-a/skills failed with 500",
+    });
+    expect(useRuntimeStore.getState().agentSkillCatalogErrorByAgentId["agent-a"]).toBe(
+      "GET /agents/agent-a/skills failed with 500",
+    );
+    expect(useRuntimeStore.getState().agentSkillCatalogLoadingByAgentId["agent-a"]).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(90_000);
+    // Initial call plus exactly three bounded retries.
+    expect(calls()).toBe(4);
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(calls()).toBe(4);
+  });
+
+  it("pauses retries while the runtime connection is down and resumes after reconnect", async () => {
+    vi.useFakeTimers();
+    stubSkillWindow();
+    const { fetchMock, calls } = skillsFetchMock(() => new Response("server error", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await connectStreaming();
+    useRuntimeStore.setState({ globalStreamStatus: "reconnecting" });
+
+    await useRuntimeStore.getState().refreshAgentSkillCatalog("agent-a");
+    expect(calls()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    // Paused while disconnected: no additional fetches at all.
+    expect(calls()).toBe(1);
+
+    useRuntimeStore.setState({ globalStreamStatus: "streaming" });
+    await vi.advanceTimersByTimeAsync(120_000);
+    // Resumed, and still bounded to three retries.
+    expect(calls()).toBe(4);
+  });
+
+  it("clears the retry schedule once a retry succeeds", async () => {
+    vi.useFakeTimers();
+    stubSkillWindow();
+    let failing = true;
+    const { fetchMock, calls } = skillsFetchMock(() =>
+      failing ? new Response("server error", { status: 500 }) : jsonResponse({ skills: [] }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await connectStreaming();
+
+    await useRuntimeStore.getState().refreshAgentSkillCatalog("agent-a");
+    failing = false;
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    const state = useRuntimeStore.getState();
+    expect(calls()).toBe(2);
+    expect(state.agentSkillCatalogByAgentId["agent-a"]).toMatchObject({
+      source: "http",
+      agentId: "agent-a",
+      catalog: [],
+    });
+    expect(state.agentSkillCatalogByAgentId["agent-a"]?.error).toBeUndefined();
+    expect(state.agentSkillCatalogErrorByAgentId["agent-a"]).toBeUndefined();
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(calls()).toBe(2);
+  });
+
+  it("drops error placeholders on resume reset while keeping clean catalogs", () => {
+    const previous = useRuntimeStore.getState();
+    try {
+      useRuntimeStore.setState({
+        agentSkillCatalogByAgentId: {
+          "agent-clean": { source: "http", catalog: [] },
+          "agent-failed": { source: "http", catalog: [], error: "GET failed with 500" },
+        },
+      });
+      const patch = resetTransientRuntimeStateForResume(useRuntimeStore.getState());
+      expect(patch.agentSkillCatalogByAgentId).toEqual({
+        "agent-clean": { source: "http", catalog: [] },
+      });
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+});
+
+
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     status: 200,
