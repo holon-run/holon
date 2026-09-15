@@ -153,8 +153,3 @@ export function turnResultPresentation(
   }
   return { kind: "terminal_without_result", outcome: turn.execution.outcome };
 }
-
-/** Turns the roster should highlight as background/system activity. */
-export function isBackgroundTurn(turn: ConversationTurnGroup): boolean {
-  return turn.presentationClass !== "operator";
-}

@@ -9,7 +9,6 @@ import type {
 
 import {
   buildConversationSessionModel,
-  isBackgroundTurn,
   turnResultPresentation,
   type ConversationTurnGroup,
 } from "./conversation-view-model";
@@ -218,16 +217,5 @@ describe("turnResultPresentation", () => {
       outcome: "aborted",
       reason: { kind: "aborted" },
     });
-  });
-});
-
-describe("isBackgroundTurn", () => {
-  it("marks non-operator presentation classes as background", () => {
-    expect(isBackgroundTurn(group(turnSummary("t", 1)))).toBe(false);
-    expect(
-      isBackgroundTurn(
-        group(turnSummary("t", 1, { presentation_class: "timer" })),
-      ),
-    ).toBe(true);
   });
 });

@@ -12,7 +12,6 @@ import {
   acquireConversationScope,
   conversationScopeKey,
   conversationScopeSnapshot,
-  EMPTY_CONVERSATION_MIRROR,
   peekConversationScope,
   releaseConversationScope,
   subscribeConversationScope,
@@ -210,5 +209,3 @@ export function useConversationSession(
     detailState,
   };
 }
-
-export const CONVERSATION_MIRROR_FALLBACK = EMPTY_CONVERSATION_MIRROR;
