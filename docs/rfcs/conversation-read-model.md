@@ -565,6 +565,29 @@ independent Web/TypeScript protocol SDK and real protocol E2E; compatibility
 and observability. Existing `web-gui` repository/cache, dual-mode integration,
 UI migration, and legacy side-path removal are explicitly out of scope.
 
+### 9.1 Web GUI cutover (2026-09 follow-up)
+
+The GUI migration originally deferred above has since landed on
+`feat/web-gui-conversation-read-model`: normal conversation pages render only
+from the SDK read model (`snapshot → stream → summary/brief/detail` with
+opaque-cursor history paging), and the legacy side paths were deleted rather
+than left as a fallback:
+
+- Removed: the raw-event virtualized timeline in `AgentPage`, the
+  `AgentTimeline`/`timeline-utils` projection, `ensureAgentSession` /
+  `catchUpEvents` / `loadTargetEventWindow` / message-transcript-brief batch
+  hydration, `loadOlderAgentEvents` semantic-history paging, the per-agent
+  legacy session-content cache read/write, and resume-time full-session
+  hydration. Ordinary conversation startup no longer triggers raw `/events`
+  paging or transcript hydration through roster, unread, or resume paths.
+- Kept intentionally: the raw event projection stack that backs the
+  independent Debug `timeline-events` view and diagnostics bridge, the durable
+  event ledger (unread markers, recovery, truncation acknowledgement), roster
+  and run-state sync, and the model-catalog cache. The legacy per-agent
+  session-content records are cleared per remote on init instead of being
+  imported; connection config, read markers, and diagnostics ledger storage
+  are untouched.
+
 ## 10. Acceptance evidence required for implementation
 
 1. Initial/older requests contain no historical verbose/transcript/tool output.

@@ -60,3 +60,18 @@ best-effort decoding.
 
 The package supports browser and Node streaming `fetch`; its declared Node
 engine is Node 24 or newer.
+
+## Controller and GUI integration
+
+The framework-agnostic `ConversationController` (added with the Web GUI
+cutover) owns the page lifecycle around the client and protocol state:
+serialized snapshot bootstrap, bounded-backoff stream reconnection with
+serialized reset re-snapshotting, single-flight history/detail/brief requests,
+typed status (`loading` / `ready` / `reconnecting` / `unsupported` /
+`recoverable_error` / `terminal_error`), and dispose semantics for scope
+switches. `web-gui` wraps it through a reference-counted scope store
+(`web-gui/app/src/runtime/conversation-scope-store.ts`) and the
+`useConversationSession` hook; it is the only conversation-content source for
+normal GUI pages. The legacy raw-event timeline, session catch-up, and
+transcript hydration paths were removed from the GUI — see the cutover note in
+`docs/rfcs/conversation-read-model.md` §9.1.

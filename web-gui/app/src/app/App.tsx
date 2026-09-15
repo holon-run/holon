@@ -92,7 +92,6 @@ export function App() {
   const displayLevel = useRuntimeStore((state) =>
     state.displayLevelsByAgentId[selectedAgentId] ?? "info",
   );
-  const resumeRevision = useRuntimeStore((state) => state.resumeRevision);
   const rightPanelOpen = useRuntimeStore((state) => state.rightPanelOpen);
   const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
   const rightPanelMode = useRuntimeStore((state) => state.rightPanelMode);
@@ -241,7 +240,6 @@ export function App() {
   const controlAgent = useRuntimeStore((state) => state.controlAgent);
   const deleteAgent = useRuntimeStore((state) => state.deleteAgent);
   const renameAgentAction = useRuntimeStore((state) => state.renameAgent);
-  const loadOlderAgentEvents = useRuntimeStore((state) => state.loadOlderAgentEvents);
   const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
   const effectiveDisplayLevel =
@@ -249,16 +247,12 @@ export function App() {
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
-    contentStatus: agentContentStatus,
-    syncStatus: agentSyncStatus,
     refresh: refreshAgentDetail,
   } = useAgentDetail(activeAgentId, effectiveDisplayLevel);
   const conversationSession = useConversationSession(
     route === "agent" ? activeAgentId : undefined,
   );
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
-  const selectedSemanticHistory =
-    selectedAgentSession?.semanticHistoryByDisplayLevel[effectiveDisplayLevel];
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
   const selectedAgentStatus = route === "agent" && activeAgent ? deriveAgentDisplayStatus(activeAgent, t) : undefined;
@@ -332,7 +326,7 @@ export function App() {
     const applyBrowserRoute = () => {
       const nextRoute = routeFromLocation(window.location);
       if (nextRoute.route === "agent" && nextRoute.agentId) {
-        openAgent(nextRoute.agentId, nextRoute.eventSeq);
+        openAgent(nextRoute.agentId);
         return;
       }
       if (nextRoute.route === "skillDetail" && nextRoute.skillId) {
@@ -436,7 +430,7 @@ export function App() {
   }
 
   function navigateAgent(agentId: string, eventSeq?: number) {
-    openAgent(agentId, eventSeq);
+    openAgent(agentId);
     pushBrowserRoute("agent", agentId, undefined, eventSeq == null ? undefined : { event_seq: eventSeq });
   }
 
@@ -747,10 +741,6 @@ export function App() {
                   }
             }
             detail={selectedAgentDetail}
-            detailLoading={agentDetailLoading}
-            contentStatus={agentContentStatus}
-            syncStatus={agentSyncStatus}
-            displayLevel={effectiveDisplayLevel}
             sendingPrompt={selectedAgentSession?.sendingPrompt ?? false}
             abortingRun={selectedAgentSession?.abortingRun ?? false}
             abortError={selectedAgentSession?.abortError}
@@ -758,34 +748,19 @@ export function App() {
             modelCatalog={modelCatalog}
             modelCatalogLoading={modelCatalogLoading}
             modelCatalogError={selectedAgentSession?.modelError ?? modelCatalogError}
-            hasOlderEvents={selectedSemanticHistory?.hasOlder ?? false}
-            loadingOlderEvents={selectedSemanticHistory?.loading ?? false}
-            historyError={selectedSemanticHistory?.error ?? selectedAgentSession?.targetEventError ?? selectedAgentSession?.error}
             syncError={selectedAgentSession?.syncError}
             syncRetryAttempt={selectedAgentSession?.syncRetryAttempt}
             historyTruncated={ledgerUnreadByAgentId[activeAgent.id]?.mode === "truncated"}
             onAcknowledgeTruncation={() => {
               void acknowledgeAgentTruncation(activeAgent.id);
             }}
-            targetEventSeq={selectedAgentSession?.targetEventSeq}
-            resumeRevision={resumeRevision}
             onRefreshModels={refreshModelCatalog}
             onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, effectiveDisplayLevel, reasoningEffort)}
             onClearModel={() => clearAgentModel(activeAgent.id, effectiveDisplayLevel)}
-            onLoadOlderEvents={() => loadOlderAgentEvents(activeAgent.id, effectiveDisplayLevel)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
             onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, effectiveDisplayLevel, attachments)}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
-            onOpenInspector={() => {
-              showAgentOverview(activeAgent.id);
-            }}
-            onInspectActivity={(activity) => inspectActivity(activeAgent.id, activity)}
-            selectedActivityId={
-              rightPanelView?.kind === "activity_inspector" && rightPanelView.agentId === activeAgent.id
-                ? rightPanelView.activity.id
-                : undefined
-            }
           />
         ) : null}
         {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}

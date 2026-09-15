@@ -168,6 +168,35 @@ export async function cacheDeleteSession(remoteKey: string, agentId: string): Pr
   }
 }
 
+/**
+ * Delete every cached agent session for one remote without touching the
+ * model-catalog cache or any other store. Used to retire the legacy
+ * conversation-content cache namespace after the conversation read-model
+ * cutover.
+ */
+export async function cacheClearRemoteSessions(remoteKey: string): Promise<void> {
+  const db = await openDB();
+  if (!db) return;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const store = db.transaction(SESSIONS_STORE, "readwrite").objectStore(SESSIONS_STORE);
+      const request = store.index("byRemoteKey").openCursor(IDBKeyRange.only(remoteKey));
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    // Silent fallback.
+  }
+}
+
 export async function cachePutModelCatalog(catalog: CachedModelCatalog): Promise<void> {
   const db = await openDB();
   if (!db) return;

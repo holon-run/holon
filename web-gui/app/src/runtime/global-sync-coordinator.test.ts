@@ -47,10 +47,7 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
   return {
     ...createSessionProjectionState(),
     loading: false,
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
     liveStatus: "idle",
-    cacheStatus: "unchecked",
     contentStatus: "unknown",
     syncStatus: "idle",
     sendingPrompt: false,

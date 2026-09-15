@@ -23,14 +23,9 @@ import {
   eventLogEpochFromEvents,
   hasEventIdentityConflict,
   materializeProjectionDetail,
-  mergeCachedSessionIntoCurrent,
   mergeEventPageIntoConversation,
   resetSessionForEventConflict,
-  semanticHistoryState,
-  semanticTimelineHasNewItem,
-  semanticTimelineItemIds,
   sessionForEventLogEpoch,
-  withSemanticHistoryState,
 } from "./conversation-store";
 import {
   backfillRetryDelayMs,
@@ -70,11 +65,8 @@ import {
 } from "./session-reducer";
 import { generateUuid } from "./uuid";
 import {
-  briefIdsForProjectionHydration,
   deriveSessionTimeline,
-  messageIdsForProjectionHydration,
   projectionEvents,
-  transcriptEntryIdsForProjectionHydration,
   type SessionProjectionAction,
 } from "./session-projection";
 import { canApplySessionEvent } from "./session-events";
@@ -124,17 +116,15 @@ import type {
 import type {
   AgentLiveStatus,
   AgentSessionState,
-  SemanticHistoryState,
   TimelineEventsState,
   WorkItemDetailState,
   TaskDetailState,
   ToolExecutionDetailState,
 } from "./runtime-store-helpers";
-export type { AgentLiveStatus, AgentSessionState, SemanticHistoryState, TimelineEventsState };
+export type { AgentLiveStatus, AgentSessionState, TimelineEventsState };
 export {
   hasEventIdentityConflict,
   materializeProjectionDetail,
-  mergeCachedSessionIntoCurrent,
   sessionForEventLogEpoch,
 } from "./conversation-store";
 export {
@@ -384,7 +374,7 @@ export interface RuntimeStoreState {
   resumeRevision: number;
 
   setRoute: (route: RouteKey) => void;
-  openAgent: (agentId: string, targetEventSeq?: number) => void;
+  openAgent: (agentId: string) => void;
   markAgentConversationRead: (agentId: string) => void;
   refreshLedgerUnread: (agentId: string) => Promise<void>;
   acknowledgeAgentTruncation: (agentId: string) => Promise<void>;
@@ -457,7 +447,6 @@ export interface RuntimeStoreState {
   clearCodexDeviceLogin: () => void;
   runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   loadSearchResultContent: (sourceRef: string) => Promise<void>;
-  ensureAgentSession: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   refreshAgentDetail: (
     agentId: string | undefined,
     displayLevel: DisplayLevel,
@@ -465,11 +454,9 @@ export interface RuntimeStoreState {
   ) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
-  retryBriefHydration: (agentId: string, briefId: string) => void;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
-  loadOlderAgentEvents: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   abortCurrentRun: (agentId: string | undefined, runId: string | null | undefined) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
@@ -693,17 +680,8 @@ function cancelClientGenerationWork(): void {
   workItemDetailInFlight.clear();
   taskDetailInFlight.clear();
   toolExecutionDetailInFlight.clear();
-  agentSessionRepository.cancelClientGenerationWork();
 }
 
-export function buildResumeRefreshes(
-  agentIds: readonly string[],
-  selectedAgentId: string,
-): Array<{ agentId: string; detail: boolean }> {
-  return agentIds
-    .filter((agentId) => agentId === selectedAgentId)
-    .map((agentId) => ({ agentId, detail: true }));
-}
 
 function closeEventStreamsForResume(set: StoreSet): void {
   globalSyncCoordinator.closeForResume(set);
@@ -725,10 +703,6 @@ export function resetSessionsForResume(
       {
         ...session,
         loading: false,
-        semanticHistoryByDisplayLevel: resetSemanticHistoryLoading(
-          session.semanticHistoryByDisplayLevel,
-        ),
-        targetEventLoading: false,
         sendingPrompt: false,
         abortingRun: false,
         liveStatus: "stale" as const,
@@ -747,16 +721,6 @@ export function resetSessionsForResume(
   );
 }
 
-function resetSemanticHistoryLoading(
-  histories: AgentSessionState["semanticHistoryByDisplayLevel"],
-): AgentSessionState["semanticHistoryByDisplayLevel"] {
-  return Object.fromEntries(
-    Object.entries(histories).map(([displayLevel, history]) => [
-      displayLevel,
-      history?.loading ? { ...history, loading: false } : history,
-    ]),
-  );
-}
 
 function resetDetailLoading<T extends { loading?: boolean }>(detailsById: Record<string, T>): Record<string, T> {
   return Object.fromEntries(
@@ -1462,124 +1426,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     getClient: () => runtimeClient,
     getConnectionConfig: () => runtimeConnectionConfig,
     getGeneration: () => clientGeneration,
-    isCurrentGeneration: isCurrentClientGeneration,
-    mergeRemoteCache: (state, cached, remoteKey) => {
-      const sessionsByAgentId = { ...state.sessionsByAgentId };
-      const restoredAgentIds: string[] = [];
-      for (const [agentId, partial] of Object.entries(cached.sessionsByAgentId)) {
-        const current = sessionsByAgentId[agentId] ?? emptyAgentSession();
-        const restored = mergeCachedSessionIntoCurrent(current, partial);
-        if (restored === current) continue;
-        sessionsByAgentId[agentId] = restored;
-        restoredAgentIds.push(agentId);
-      }
-      const rosterActivityByAgentId = mergeCachedReadStates(
-        state.rosterActivityByAgentId,
-        cached.readStateByAgentId,
-      );
-      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
-        writeStoredRosterActivity(remoteKey, rosterActivityByAgentId);
-      }
-      const withProvisional = rebuildProvisionalDetailsWithAgents(
-        state.bootstrap.agents,
-        sessionsByAgentId,
-      );
-      return {
-        restoredAgentIds,
-        partial: {
-          bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
-          rosterActivityByAgentId,
-          sessionsByAgentId: withProvisional ?? sessionsByAgentId,
-        },
-      };
-    },
-    mergeAgentCache: (state, agentId, cached, remoteKey) => {
-      const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-      const restored = cached
-        ? mergeCachedSessionIntoCurrent(current, cached.session)
-        : current;
-      const available = Boolean(restored.detail?.timeline.length || restored.eventSeqs.length);
-      const cachedActivity = mergeCachedReadState(
-        state.rosterActivityByAgentId[agentId],
-        cached?.readState,
-      );
-      const rosterActivityByAgentId =
-        cachedActivity && cachedActivity !== state.rosterActivityByAgentId[agentId]
-          ? { ...state.rosterActivityByAgentId, [agentId]: cachedActivity }
-          : state.rosterActivityByAgentId;
-      if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
-        writeStoredRosterActivity(remoteKey, rosterActivityByAgentId);
-      }
-      return {
-        bootstrap: sortBootstrapAgents(state.bootstrap, rosterActivityByAgentId),
-        rosterActivityByAgentId,
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...restored,
-            cacheStatus: cached ? "hit" : "miss",
-            contentStatus: available ? "available" : "unknown",
-            syncStatus: cached ? "stale" : "refreshing",
-            loading: !restored.detail,
-          },
-        },
-      };
-    },
-    markCacheUnavailable: (state) => ({
-      sessionsByAgentId: Object.fromEntries(
-        Object.entries(state.sessionsByAgentId).map(([agentId, session]) => [
-          agentId,
-          session.cacheStatus === "unchecked"
-            ? { ...session, cacheStatus: "unavailable" as const }
-            : session,
-        ]),
-      ),
-    }),
-    mergeEventPage: mergeEventPageIntoSession,
-    mergeMessages: mergeHydratedMessagesIntoSession,
-    mergeTranscripts: mergeHydratedTranscriptEntriesIntoSession,
-    mergeBriefs: mergeHydratedBriefRecordsIntoSession,
-    markBriefHydrationStarted: (state, agentId, briefIds, displayLevel) =>
-      updateBriefHydrationState(state, agentId, {
-        type: "briefs_hydration_started",
-        briefIds,
-      }, displayLevel),
-    markBriefHydrationFailed: (state, agentId, briefIds, errorKind, displayLevel) =>
-      updateBriefHydrationState(state, agentId, {
-        type: "briefs_hydration_failed",
-        briefIds,
-        errorKind,
-      }, displayLevel),
-    markHydrationError: (state, agentId, error) => ({
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        [agentId]: {
-          ...(state.sessionsByAgentId[agentId] ?? emptyAgentSession()),
-          error,
-        },
-      },
-    }),
-    updateTargetEventState: (state, agentId, update) => ({
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        [agentId]: {
-          ...emptyAgentSession(),
-          ...state.sessionsByAgentId[agentId],
-          targetEventLoading: update.loading,
-          targetEventError: update.error,
-        },
-      },
-    }),
-    missingMessageIds: missingMessageIdsForHydration,
-    missingTranscriptIds: missingTranscriptEntryIdsForHydration,
-    missingBriefIds: missingBriefIdsForHydration,
-    cachedReadState: (state, agentId) =>
-      cachedReadState(state.rosterActivityByAgentId[agentId]),
-    rebaseRecovery: (agentId, session) =>
-      globalSyncCoordinator.rebaseRecoveryFromSession(agentId, session),
-    isWorkItemInvalidationEvent: isWorkItemCacheInvalidationEvent,
-    isAgentStateInvalidationEvent: isAgentStateCacheInvalidationEvent,
-    catchUpErrorKind: agentDetailErrorKind,
     ledgerIngestion: {
       // Stable runtime identity (runtime id + visibility scope) is learned
       // from the per-Agent projection snapshot during W3 recovery; the
@@ -1704,27 +1550,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       selectedSkillAgentId: agentId ?? "",
     }),
   openTemplate: (catalogId) => set({ route: "templateDetail", selectedTemplateId: catalogId }),
-  openAgent: (agentId, targetEventSeq) =>
-    set((state) => {
-      const currentSession = state.sessionsByAgentId[agentId];
-      return {
-        selectedAgentId: agentId,
-        route: "agent",
-        displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
-        sessionsByAgentId:
-          targetEventSeq == null
-            ? state.sessionsByAgentId
-            : {
-                ...state.sessionsByAgentId,
-                [agentId]: {
-                  ...emptyAgentSession(),
-                  ...currentSession,
-                  targetEventSeq,
-                  targetEventError: undefined,
-                },
-              },
-      };
-    }),
+  openAgent: (agentId) =>
+    set((state) => ({
+      selectedAgentId: agentId,
+      route: "agent",
+      displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
+    })),
   markAgentConversationRead: (agentId) => {
     pendingReadMarkerAgentIds.add(agentId);
     void retryPendingReadMarker(agentId);
@@ -2280,19 +2111,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         });
         if (!isCurrentClientGeneration(generation)) return;
         const selectedAgentId = get().selectedAgentId;
-        const refreshes = buildResumeRefreshes(
-          get().bootstrap.agents.map((agent) => agent.id),
-          selectedAgentId,
-        );
         await runWithConcurrencyLimit(
-          refreshes,
+          get()
+            .bootstrap.agents.map((agent) => agent.id)
+            .filter((agentId) => agentId === selectedAgentId),
           4,
-          async ({ agentId, detail }) => {
-            if (detail) {
-              await get().ensureAgentSession(agentId, get().displayLevel);
-            } else {
-              await get().refreshAgentState(agentId);
-            }
+          async (agentId) => {
+            await get().refreshAgentState(agentId);
           },
           () => isCurrentClientGeneration(generation),
         );
@@ -3118,99 +2943,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  ensureAgentSession: async (agentId, displayLevel) => {
-    if (!agentId) return;
-    return agentSessionRepository.runEnsureOnce(agentId, async () => {
-      try {
-        const trace = createRuntimeTrace("agent.open", { agentId, trigger: "agent.open" });
-        let session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-        if (session.cacheStatus === "unchecked") {
-          const cacheSpan = startRuntimeSpan(trace, "cache.read");
-          set((state) => ({
-            sessionsByAgentId: {
-              ...state.sessionsByAgentId,
-              [agentId]: {
-                ...emptyAgentSession(),
-                ...state.sessionsByAgentId[agentId],
-                cacheStatus: "loading",
-                loading: !state.sessionsByAgentId[agentId]?.detail,
-              },
-            },
-          }));
-          const cached = await agentSessionRepository.restoreAgentCache(agentId);
-          startRuntimeSpan(trace, "ui.session_state_transition", {
-            state: cached ? "cache_hit/stale" : "cache_miss/refreshing",
-          }).end("ok");
-          cacheSpan.end("ok", { cacheHit: Boolean(cached) });
-        }
-
-        session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-        const hasCachedContent = Boolean(session.detail && session.eventSeqs.length);
-        const freshOf = (ts?: number) => ts != null && Date.now() - ts < AGENT_VALIDATION_TTL_MS;
-        const eventsFresh = freshOf(session.eventsValidatedAt ?? session.lastValidatedAt);
-        const detailFresh = freshOf(session.detailValidatedAt ?? session.lastValidatedAt);
-        const fresh = eventsFresh && detailFresh;
-        if (hasCachedContent && fresh && get().globalStreamStatus === "streaming") {
-          if (session && missingBriefIdsForHydration(session).length > 0) {
-            agentSessionRepository.hydrateSession(agentId, displayLevel);
-          }
-          startRuntimeSpan(trace, "agent.validate", { reason: "fresh_stream" }).end("skipped");
-          return;
-        }
-        if (hasCachedContent) {
-          set((state) => ({
-            sessionsByAgentId: {
-              ...state.sessionsByAgentId,
-              [agentId]: {
-                ...state.sessionsByAgentId[agentId],
-                loading: true,
-                syncStatus: "refreshing",
-              },
-            },
-          }));
-          try {
-            await agentSessionRepository.catchUpEvents(agentId, displayLevel, trace);
-            if (!fresh) void get().refreshAgentState(agentId);
-            set((state) => ({
-              sessionsByAgentId: {
-                ...state.sessionsByAgentId,
-                [agentId]: {
-                  ...state.sessionsByAgentId[agentId],
-                  loading: false,
-                  syncStatus: get().globalStreamStatus === "streaming" ? "streaming" : "idle",
-                  contentStatus: "available",
-                  eventsValidatedAt: Date.now(),
-                  detailValidatedAt: Date.now(),
-                },
-              },
-            }));
-            startRuntimeSpan(trace, "ui.session_state_transition", {
-              state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
-                get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
-              }`,
-            }).end("ok");
-          } catch (error) {
-            set((state) => ({
-              sessionsByAgentId: {
-                ...state.sessionsByAgentId,
-                [agentId]: {
-                  ...state.sessionsByAgentId[agentId],
-                  loading: false,
-                  syncStatus: "error",
-                  error: error instanceof Error ? error.message : String(error),
-                },
-              },
-            }));
-          }
-          return;
-        }
-        await get().refreshAgentDetail(agentId, displayLevel, { trace, trigger: "agent.open" });
-      } finally {
-        agentSessionRepository.hydrateSelected(agentId, displayLevel);
-      }
-    });
-  },
-
   refreshAgentDetail: async (agentId, displayLevel, options = {}) => {
     if (!agentId) {
       return;
@@ -3267,13 +2999,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           span.end("error", { recovery: "last-known-good" });
           return;
         }
-        await agentSessionRepository.loadTargetEventWindow(agentId, displayLevel);
-        if (
-          !isCurrentClientRequest(request) ||
-          agentDetailRequestSequence.get(agentId) !== sequence
-        ) return;
-        agentSessionRepository.hydrateSession(agentId, displayLevel);
-        agentSessionRepository.scheduleCacheWrite(agentId);
         clearAgentDetailRetry(agentId);
         span.end(detail.error ? "error" : "ok", {
           eventCount: detail.events?.length ?? 0,
@@ -3394,20 +3119,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  retryBriefHydration: (agentId, briefId) => {
-    const displayLevel = get().displayLevelsByAgentId[agentId] ?? get().displayLevel;
-    const trace = createRuntimeTrace("object.hydration", {
-      agentId,
-      trigger: "brief.hydration.manual_retry",
-    });
-    startRuntimeSpan(trace, "object.hydration", {
-      resource: "brief",
-      retry: "manual",
-      idCount: 1,
-    }).end("ok");
-    agentSessionRepository.retryBriefHydration(agentId, briefId, displayLevel, trace);
-  },
-
   loadAgentWorkItemDetail: async (agentId, workItemId) => {
     if (!agentId || !workItemId) return;
     const request = captureClientRequest();
@@ -3521,90 +3232,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  loadOlderAgentEvents: async (agentId, displayLevel) => {
-    if (!agentId) return;
-    const session = get().sessionsByAgentId[agentId] ?? emptyAgentSession();
-    const history = semanticHistoryState(session, displayLevel);
-    if (history.loading || !history.hasOlder || history.cursorSeq == null) return;
-
-    const request = captureClientRequest();
-    set((state) => updateSemanticHistoryState(state, agentId, displayLevel, {
-      ...semanticHistoryState(state.sessionsByAgentId[agentId], displayLevel),
-      loading: true,
-      error: undefined,
-    }));
-
-    try {
-      const initialTimelineItemIds = semanticTimelineItemIds(session, displayLevel);
-      let cursorSeq = history.cursorSeq;
-      for (let pageCount = 0; pageCount < MAX_SEMANTIC_HISTORY_PAGES_PER_LOAD; pageCount += 1) {
-        const page = await request.client.getAgentEvents(agentId, {
-          beforeSeq: cursorSeq,
-          limit: 80,
-          order: "desc",
-        });
-        if (!isCurrentClientRequest(request)) return;
-
-        const nextCursorSeq = page.oldest_seq ?? undefined;
-        if (page.has_older && (nextCursorSeq == null || nextCursorSeq >= cursorSeq)) {
-          throw new Error("Agent semantic history page did not advance its cursor.");
-        }
-        set((state) =>
-          mergeEventPageIntoSession(
-            state,
-            agentId,
-            page.events ?? [],
-            page.oldest_seq ?? undefined,
-            page.has_older,
-            displayLevel,
-            {
-              eventLogEpoch: page.event_log_epoch,
-              historyDisplayLevel: displayLevel,
-              historyLoading: true,
-            },
-          ),
-        );
-        const current = get().sessionsByAgentId[agentId];
-        if (
-          semanticTimelineHasNewItem(current, displayLevel, initialTimelineItemIds) ||
-          !page.has_older ||
-          nextCursorSeq == null
-        ) {
-          break;
-        }
-        cursorSeq = nextCursorSeq;
-      }
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => updateSemanticHistoryState(state, agentId, displayLevel, {
-        ...semanticHistoryState(state.sessionsByAgentId[agentId], displayLevel),
-        loading: false,
-        error: undefined,
-      }));
-      agentSessionRepository.hydrateSession(agentId, displayLevel);
-      agentSessionRepository.scheduleCacheWrite(agentId);
-    } catch (error) {
-      if (!isCurrentClientRequest(request)) return;
-      set((state) => ({
-        sessionsByAgentId: {
-          ...state.sessionsByAgentId,
-          [agentId]: {
-            ...emptyAgentSession(),
-            ...state.sessionsByAgentId[agentId],
-            semanticHistoryByDisplayLevel: {
-              ...state.sessionsByAgentId[agentId]?.semanticHistoryByDisplayLevel,
-              [displayLevel]: {
-                ...semanticHistoryState(state.sessionsByAgentId[agentId], displayLevel),
-                loading: false,
-                error: error instanceof Error ? error.message : String(error),
-              },
-            },
-          },
-        },
-      }));
-      throw error;
-    }
-  },
-
   sendOperatorPrompt: async (agentId, text, displayLevel, attachments = []) => {
     const prompt = text.trim();
     if (!agentId || (!prompt && attachments.length === 0)) {
@@ -3660,9 +3287,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           },
         },
       }));
-      if (!isAgentEventStreamActive(agentId, get().sessionsByAgentId[agentId]?.liveStatus)) {
-        void agentSessionRepository.catchUpEvents(agentId, displayLevel);
-      }
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -4800,7 +4424,6 @@ function mergeAgentDetailIntoSession(
         ...projected,
         loading: false,
         liveStatus: detail.error ? "error" : current.liveStatus,
-        cacheStatus: current.cacheStatus === "unchecked" ? "miss" : current.cacheStatus,
         contentStatus: detail.error
           ? projected.eventSeqs.length
             ? "available"
@@ -4813,15 +4436,6 @@ function mergeAgentDetailIntoSession(
         detailValidatedAt: detail.error ? current.detailValidatedAt : Date.now(),
         newestSeq: newestSeq || undefined,
         oldestSeq: detail.oldestEventSeq ?? projected.oldestSeq,
-        semanticHistoryByDisplayLevel: {
-          ...projected.semanticHistoryByDisplayLevel,
-          [displayLevel]: {
-            eventLogEpoch: detail.eventLogEpoch,
-            cursorSeq: detail.oldestEventSeq,
-            hasOlder: detail.hasOlderEvents ?? false,
-            loading: false,
-          },
-        },
         error: detail.error,
       },
     },
@@ -4888,8 +4502,6 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
     offerToLedger();
     return;
   }
-  const unresolvedBriefIdsBefore = new Set(briefIdsForProjectionHydration(currentSession));
-  let introducedNewBriefRefs = false;
 
   set((state) => {
     const current = sessionForEventLogEpoch(
@@ -4914,9 +4526,6 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
       events: uniqueEvents,
       eventLogEpoch: incomingEpoch,
     }, "debug", patchedBaseDetail);
-    introducedNewBriefRefs = briefIdsForProjectionHydration(projected).some(
-      (briefId) => !unresolvedBriefIdsBefore.has(briefId),
-    );
     const timelineEvents = state.timelineEventsByAgentId[agentId];
 
     return {
@@ -4948,15 +4557,6 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
     };
   });
   offerToLedger();
-  const displayLevel = useRuntimeStore.getState().displayLevel;
-  agentSessionRepository.hydrateSelectedContent(agentId, displayLevel);
-  // Hydrate briefs only when this flush introduced references the store has
-  // not already seen unresolved; otherwise unrelated poll responses would
-  // issue briefs:batchGet on every tick.
-  if (introducedNewBriefRefs) {
-    agentSessionRepository.hydrateBriefs(agentId, displayLevel);
-  }
-  agentSessionRepository.scheduleCacheWrite(agentId);
   if (events.some((event) => canApplySessionEvent(event) && isWorkItemCacheInvalidationEvent(event))) {
     void useRuntimeStore.getState().refreshAgentWorkItems(agentId);
   }
@@ -4990,21 +4590,6 @@ function isAgentStateCacheInvalidationEvent(event: StreamEventEnvelopeDto): bool
   );
 }
 
-function updateBriefHydrationState(
-  state: RuntimeStoreState,
-  agentId: string,
-  action: Extract<SessionProjectionAction, { type: "briefs_hydration_started" | "briefs_hydration_failed" }>,
-  displayLevel: DisplayLevel,
-): Partial<RuntimeStoreState> {
-  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  return {
-    sessionsByAgentId: {
-      ...state.sessionsByAgentId,
-      [agentId]: applyProjectionAction(current, action, displayLevel),
-    },
-  };
-}
-
 export function agentDetailErrorKind(error: unknown): string {
   if (error instanceof Error) {
     if (error.name === "RuntimeHttpError") return "http_error";
@@ -5013,10 +4598,6 @@ export function agentDetailErrorKind(error: unknown): string {
   }
   if (isTimeoutAbortError(error)) return "timeout";
   return "unknown";
-}
-
-function briefHydrationErrorKind(error: unknown): string {
-  return isTimeoutAbortError(error) ? "timeout" : "request_failed";
 }
 
 export function agentBriefPatchFromEvents(
@@ -5038,93 +4619,6 @@ export function agentBriefPatchFromEvents(
     };
   }
   return patch;
-}
-
-function missingMessageIdsForHydration(session: AgentSessionState | undefined): string[] {
-  return session ? messageIdsForProjectionHydration(session).slice(-100) : [];
-}
-
-function missingTranscriptEntryIdsForHydration(session: AgentSessionState | undefined): string[] {
-  return session ? transcriptEntryIdsForProjectionHydration(session).slice(-100) : [];
-}
-
-export function missingBriefIdsForHydration(session: AgentSessionState | undefined): string[] {
-  return session ? briefIdsForProjectionHydration(session).slice(-100) : [];
-}
-
-function mergeHydratedMessagesIntoSession(
-  state: RuntimeStoreState,
-  agentId: string,
-  messages: RuntimeMessageEnvelope[],
-  missingMessageIds: string[],
-  displayLevel: DisplayLevel,
-): Partial<RuntimeStoreState> {
-  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  if (!messages.length && !missingMessageIds.length) return {};
-  const projected = applyProjectionAction(current, {
-    type: "messages_hydrated",
-    messages,
-    missingIds: missingMessageIds,
-  }, displayLevel);
-
-  return {
-    sessionsByAgentId: {
-      ...state.sessionsByAgentId,
-      [agentId]: projected,
-    },
-  };
-}
-
-function mergeHydratedTranscriptEntriesIntoSession(
-  state: RuntimeStoreState,
-  agentId: string,
-  entries: RuntimeTranscriptEntry[],
-  missingEntryIds: string[],
-  displayLevel: DisplayLevel,
-): Partial<RuntimeStoreState> {
-  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  if (!entries.length && !missingEntryIds.length) return {};
-  let projected = applyProjectionAction(current, {
-    type: "transcripts_hydrated",
-    entries,
-    missingIds: missingEntryIds,
-  }, displayLevel);
-  const briefPatch = agentBriefPatchFromEvents(projectionEvents(projected), projected.briefRecordsById);
-  projected = { ...projected, detail: patchAgentDetail(projected.detail, undefined, briefPatch) };
-
-  return {
-    bootstrap: patchBootstrapAgent(state.bootstrap, agentId, undefined, briefPatch),
-    sessionsByAgentId: {
-      ...state.sessionsByAgentId,
-      [agentId]: projected,
-    },
-  };
-}
-
-function mergeHydratedBriefRecordsIntoSession(
-  state: RuntimeStoreState,
-  agentId: string,
-  recordsById: Record<string, RuntimeBriefRecord>,
-  notFoundBriefIds: string[],
-  displayLevel: DisplayLevel,
-): Partial<RuntimeStoreState> {
-  const current = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
-  if (!Object.keys(recordsById).length && !notFoundBriefIds.length) return {};
-  let projected = applyProjectionAction(current, {
-    type: "briefs_hydrated",
-    recordsById,
-    missingIds: notFoundBriefIds,
-  }, displayLevel);
-  const briefPatch = agentBriefPatchFromEvents(projectionEvents(projected), projected.briefRecordsById);
-  projected = { ...projected, detail: patchAgentDetail(projected.detail, undefined, briefPatch) };
-
-  return {
-    bootstrap: patchBootstrapAgent(state.bootstrap, agentId, undefined, briefPatch),
-    sessionsByAgentId: {
-      ...state.sessionsByAgentId,
-      [agentId]: projected,
-    },
-  };
 }
 
 function agentRunPatchFromEvents(events: StreamEventEnvelopeDto[]): Pick<AgentSummary, "currentRunId" | "lifecycle"> | undefined {
@@ -5187,19 +4681,6 @@ function patchAgentDetail(
   };
 }
 
-function updateSemanticHistoryState(
-  state: RuntimeStoreState,
-  agentId: string,
-  displayLevel: DisplayLevel,
-  history: SemanticHistoryState,
-): Partial<RuntimeStoreState> {
-  return {
-    sessionsByAgentId: {
-      ...state.sessionsByAgentId,
-      [agentId]: withSemanticHistoryState(state.sessionsByAgentId[agentId], displayLevel, history),
-    },
-  };
-}
 
 function mergeEventPageIntoSession(
   state: RuntimeStoreState,

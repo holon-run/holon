@@ -11,10 +11,7 @@ import {
   type SessionProjectionAction,
   type SessionProjectionState,
 } from "./session-projection";
-import type {
-  AgentSessionState,
-  SemanticHistoryState,
-} from "./runtime-store-helpers";
+import type { AgentSessionState } from "./runtime-store-helpers";
 import type {
   AgentDetail,
   AgentTimelineItem,
@@ -27,18 +24,13 @@ export const OPTIMISTIC_OPERATOR_MESSAGE_PREFIX = "operator-prompt-message:";
 export interface MergeConversationEventPageOptions {
   newestSeq?: number;
   eventLogEpoch?: string;
-  historyDisplayLevel?: DisplayLevel;
-  historyLoading?: boolean;
 }
 
 export function emptyAgentSession(): AgentSessionState {
   return {
     ...createSessionProjectionState(),
     loading: false,
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
     liveStatus: "idle",
-    cacheStatus: "unchecked",
     contentStatus: "unknown",
     syncStatus: "idle",
     sendingPrompt: false,
@@ -50,33 +42,6 @@ export function emptyAgentSession(): AgentSessionState {
   };
 }
 
-export function mergeCachedSessionIntoCurrent(
-  current: AgentSessionState,
-  cached: Partial<AgentSessionState>,
-): AgentSessionState {
-  if (
-    current.detail ||
-    current.eventSeqs.length > 0 ||
-    Object.keys(current.messagesById).length > 0 ||
-    Object.keys(current.transcriptEntriesById).length > 0 ||
-    Object.keys(current.briefRecordsById).length > 0
-  ) {
-    return current;
-  }
-  return {
-    ...current,
-    ...cached,
-    loading: current.loading,
-    semanticHistoryByDisplayLevel:
-      Object.keys(current.semanticHistoryByDisplayLevel).length > 0
-        ? current.semanticHistoryByDisplayLevel
-        : (cached.semanticHistoryByDisplayLevel ?? {}),
-    targetEventLoading: current.targetEventLoading,
-    liveStatus: current.liveStatus,
-    sendingPrompt: current.sendingPrompt,
-    abortingRun: current.abortingRun,
-  };
-}
 
 export function applyProjectionAction(
   current: AgentSessionState,
@@ -160,9 +125,6 @@ export function sessionForEventLogEpoch(
   const reset = applyProjectionAction(current, { type: "reset", eventLogEpoch: incomingEpoch });
   return {
     ...reset,
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
-    targetEventError: undefined,
     detail: reset.detail
       ? {
           ...reset.detail,
@@ -191,65 +153,8 @@ export function resetSessionForEventConflict(
       reason: "event_identity_conflict",
     }),
     liveStatus: "stale",
-    semanticHistoryByDisplayLevel: {},
-    targetEventLoading: false,
     error: "runtime event identity conflict; refreshing projection",
   };
-}
-
-export function semanticHistoryState(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-): SemanticHistoryState {
-  return session?.semanticHistoryByDisplayLevel[displayLevel] ?? {
-    eventLogEpoch: session?.eventLogEpoch,
-    cursorSeq: undefined,
-    hasOlder: false,
-    loading: false,
-  };
-}
-
-export function withSemanticHistoryState(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-  history: SemanticHistoryState,
-): AgentSessionState {
-  const current = session ?? emptyAgentSession();
-  return {
-    ...current,
-    semanticHistoryByDisplayLevel: {
-      ...current.semanticHistoryByDisplayLevel,
-      [displayLevel]: history,
-    },
-  };
-}
-
-export function semanticTimelineItemIds(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-): Set<string> {
-  return new Set(semanticTimeline(session, displayLevel).map((item) => item.id));
-}
-
-export function semanticTimelineHasNewItem(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-  initialItemIds: Set<string>,
-): boolean {
-  return semanticTimeline(session, displayLevel).some((item) => !initialItemIds.has(item.id));
-}
-
-export function semanticTimeline(
-  session: AgentSessionState | undefined,
-  displayLevel: DisplayLevel,
-): AgentTimelineItem[] {
-  return session
-    ? filterTimelineByDisplayLevel(
-        deriveSessionTimeline(session, displayLevel),
-        displayLevel,
-        { itemLimit: Number.MAX_SAFE_INTEGER },
-      )
-    : [];
 }
 
 export function mergeEventPageIntoConversation(
@@ -272,19 +177,6 @@ export function mergeEventPageIntoConversation(
     events: pageEvents,
     eventLogEpoch: options.eventLogEpoch,
   }, displayLevel, current.detail);
-  const historyDisplayLevel = options.historyDisplayLevel;
-  const semanticHistoryByDisplayLevel = historyDisplayLevel
-    ? {
-        ...projected.semanticHistoryByDisplayLevel,
-        [historyDisplayLevel]: {
-          eventLogEpoch: options.eventLogEpoch ?? projected.eventLogEpoch,
-          cursorSeq: pageOldestSeq,
-          hasOlder: pageHasOlder ?? false,
-          loading: options.historyLoading ?? false,
-        },
-      }
-    : projected.semanticHistoryByDisplayLevel;
-
   return {
     ...projected,
     newestSeq: Math.max(options.newestSeq ?? 0, projected.newestSeq ?? 0) || undefined,
@@ -292,7 +184,6 @@ export function mergeEventPageIntoConversation(
       pageOldestSeq != null && projected.oldestSeq != null
         ? Math.min(pageOldestSeq, projected.oldestSeq)
         : (pageOldestSeq ?? projected.oldestSeq),
-    semanticHistoryByDisplayLevel,
   };
 }
 
