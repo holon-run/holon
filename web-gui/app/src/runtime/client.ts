@@ -782,6 +782,20 @@ function projectFileMeta(response: WorkspaceFileMetaDto): WorkspaceFileMeta {
   };
 }
 
+/**
+ * Resolve the normalized API base for auxiliary clients (conversation SDK,
+ * stream consumers) using the same rules as the main runtime client:
+ * explicit config baseUrl, then VITE_HOLON_API_BASE, then the local dev
+ * default. Returns undefined when nothing resolves.
+ */
+export function resolveRuntimeApiBase(
+  config: Pick<RuntimeClientOptions, "mode" | "baseUrl">,
+): string | undefined {
+  const connectionMode = config.mode ?? (config.baseUrl ? "remote" : "local");
+  const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
+  return normalizeBaseUrl(config.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
+}
+
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
   const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;

@@ -549,6 +549,15 @@ export interface SkillInstallJob {
 const SKILL_INSTALL_JOBS_STORAGE_KEY = "holon.webGui.skillInstallJobs.v1";
 const SKILL_JOB_TERMINAL_RETENTION = 20;
 
+/**
+ * Current runtime connection config (module-level source of truth). Auxiliary
+ * clients such as the conversation SDK scope store read this to build
+ * transport with identical base URL and bearer semantics.
+ */
+export function getRuntimeConnectionConfig(): RuntimeConnectionConfig {
+  return runtimeConnectionConfig;
+}
+
 function retainSkillJobs(jobs: SkillInstallJob[]): SkillInstallJob[] {
   let terminalToDrop = Math.max(
     0,
