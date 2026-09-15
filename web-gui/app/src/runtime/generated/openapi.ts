@@ -2446,6 +2446,11 @@ export interface components {
                 /** Format: uint64 */
                 expected_identity_revision: number;
                 last_error?: string | null;
+                /**
+                 * @default delete
+                 * @enum {string}
+                 */
+                mode: "delete" | "cleanup_repair";
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
                 requested_by: string;
@@ -2496,6 +2501,11 @@ export interface components {
                 /** Format: uint64 */
                 expected_identity_revision: number;
                 last_error?: string | null;
+                /**
+                 * @default delete
+                 * @enum {string}
+                 */
+                mode: "delete" | "cleanup_repair";
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
                 requested_by: string;
@@ -2689,6 +2699,11 @@ export interface components {
                 /** Format: uint64 */
                 expected_identity_revision: number;
                 last_error?: string | null;
+                /**
+                 * @default delete
+                 * @enum {string}
+                 */
+                mode: "delete" | "cleanup_repair";
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
                 requested_by: string;
