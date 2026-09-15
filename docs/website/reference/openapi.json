@@ -10592,6 +10592,27 @@
                 },
                 "type": "array"
               },
+              "command_task_min_free_disk_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "command_task_min_free_disk_percent": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "command_task_output_quota_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "command_task_output_retention_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "default_tool_output_tokens": {
                 "format": "uint32",
                 "minimum": 0,
@@ -10848,6 +10869,10 @@
               "runtime_max_output_tokens",
               "default_tool_output_tokens",
               "max_tool_output_tokens",
+              "command_task_output_retention_bytes",
+              "command_task_output_quota_bytes",
+              "command_task_min_free_disk_bytes",
+              "command_task_min_free_disk_percent",
               "disable_provider_fallback",
               "runtime_db_retention",
               "providers",
@@ -11061,6 +11086,27 @@
                 },
                 "type": "array"
               },
+              "command_task_min_free_disk_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "command_task_min_free_disk_percent": {
+                "format": "uint8",
+                "maximum": 255,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "command_task_output_quota_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "command_task_output_retention_bytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "default_tool_output_tokens": {
                 "format": "uint32",
                 "minimum": 0,
@@ -11317,6 +11363,10 @@
               "runtime_max_output_tokens",
               "default_tool_output_tokens",
               "max_tool_output_tokens",
+              "command_task_output_retention_bytes",
+              "command_task_output_quota_bytes",
+              "command_task_min_free_disk_bytes",
+              "command_task_min_free_disk_percent",
               "disable_provider_fallback",
               "runtime_db_retention",
               "providers",
@@ -12746,6 +12796,84 @@
                       "null"
                     ]
                   },
+                  "output_capture": {
+                    "properties": {
+                      "available_disk_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "decoded_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "dropped_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "emitted_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "execution_quota_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "failure_code": {
+                        "enum": [
+                          "output_limit_exceeded",
+                          "low_disk_space",
+                          "output_persistence_failed",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "required_free_disk_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "retained_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "retention_limit_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "emitted_bytes",
+                      "decoded_bytes",
+                      "retained_bytes",
+                      "dropped_bytes",
+                      "retention_limit_bytes",
+                      "execution_quota_bytes",
+                      "truncated"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
                   "output_path": {
                     "type": [
                       "string",
@@ -13389,6 +13517,84 @@
                   "null"
                 ]
               },
+              "output_capture": {
+                "properties": {
+                  "available_disk_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "decoded_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "dropped_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "emitted_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "execution_quota_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "failure_code": {
+                    "enum": [
+                      "output_limit_exceeded",
+                      "low_disk_space",
+                      "output_persistence_failed",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "required_free_disk_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "retained_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "retention_limit_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "emitted_bytes",
+                  "decoded_bytes",
+                  "retained_bytes",
+                  "dropped_bytes",
+                  "retention_limit_bytes",
+                  "execution_quota_bytes",
+                  "truncated"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "output_preview": {
                 "type": "string"
               },
@@ -13781,6 +13987,84 @@
               "login": {
                 "type": [
                   "boolean",
+                  "null"
+                ]
+              },
+              "output_capture": {
+                "properties": {
+                  "available_disk_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "decoded_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "dropped_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "emitted_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "execution_quota_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "failure_code": {
+                    "enum": [
+                      "output_limit_exceeded",
+                      "low_disk_space",
+                      "output_persistence_failed",
+                      null
+                    ],
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "required_free_disk_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "retained_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "retention_limit_bytes": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "truncated": {
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "emitted_bytes",
+                  "decoded_bytes",
+                  "retained_bytes",
+                  "dropped_bytes",
+                  "retention_limit_bytes",
+                  "execution_quota_bytes",
+                  "truncated"
+                ],
+                "type": [
+                  "object",
                   "null"
                 ]
               },
@@ -14336,6 +14620,84 @@
                   "login": {
                     "type": [
                       "boolean",
+                      "null"
+                    ]
+                  },
+                  "output_capture": {
+                    "properties": {
+                      "available_disk_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "decoded_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "dropped_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "emitted_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "execution_quota_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "failure_code": {
+                        "enum": [
+                          "output_limit_exceeded",
+                          "low_disk_space",
+                          "output_persistence_failed",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "required_free_disk_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "retained_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "retention_limit_bytes": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "truncated": {
+                        "type": "boolean"
+                      }
+                    },
+                    "required": [
+                      "emitted_bytes",
+                      "decoded_bytes",
+                      "retained_bytes",
+                      "dropped_bytes",
+                      "retention_limit_bytes",
+                      "execution_quota_bytes",
+                      "truncated"
+                    ],
+                    "type": [
+                      "object",
                       "null"
                     ]
                   },

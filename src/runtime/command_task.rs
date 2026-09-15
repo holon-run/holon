@@ -1,9 +1,9 @@
-use std::{path::PathBuf, time::Duration};
+use std::{io::SeekFrom, path::PathBuf, time::Duration};
 
 use anyhow::{anyhow, Context, Result};
 use serde_json::json;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::{mpsc, oneshot},
     task::JoinHandle,
 };
@@ -21,13 +21,15 @@ use crate::{
     },
     tool::ToolError,
     types::{
-        AuthorityClass, CommandCostDiagnostics, CommandTaskSpec, CommandTaskStatusSnapshot,
-        ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult, ExternalTriggerScope,
-        ExternalTriggerStatus, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-        TaskHandle, TaskKind, TaskRecord, TaskRecoverySpec, TaskStatus, ToolArtifactRef,
-        HOLON_CALLER_AGENT_ID_ENV, HOLON_CALLER_AUTHORITY_CLASS_ENV,
-        HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV, HOLON_CALLER_SOURCE_TASK_ID_ENV,
-        HOLON_CALLER_SOURCE_TURN_ID_ENV, HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
+        AuthorityClass, CommandCostDiagnostics, CommandTaskOutputCaptureSnapshot,
+        CommandTaskOutputFailureCode, CommandTaskOutputPolicy, CommandTaskSpec,
+        CommandTaskStatusSnapshot, ExecCommandDuplicatePolicy, ExecCommandOutcome,
+        ExecCommandResult, ExternalTriggerScope, ExternalTriggerStatus, MessageBody,
+        MessageEnvelope, MessageKind, MessageOrigin, Priority, TaskHandle, TaskKind, TaskRecord,
+        TaskRecoverySpec, TaskStatus, ToolArtifactRef, HOLON_CALLER_AGENT_ID_ENV,
+        HOLON_CALLER_AUTHORITY_CLASS_ENV, HOLON_CALLER_SOURCE_ACTIVATION_ID_ENV,
+        HOLON_CALLER_SOURCE_TASK_ID_ENV, HOLON_CALLER_SOURCE_TURN_ID_ENV,
+        HOLON_CALLER_SOURCE_WORK_ITEM_ID_ENV,
     },
     utf8::IncrementalUtf8LossyDecoder,
 };
@@ -38,6 +40,9 @@ const OUTPUT_CHANNEL_CAPACITY: usize = 64;
 const INPUT_CHANNEL_CAPACITY: usize = 16;
 const STREAM_TAIL_CHAR_LIMIT: usize = 128_000;
 const COMBINED_TAIL_CHAR_LIMIT: usize = 256_000;
+const PERSISTED_TAIL_BYTE_LIMIT: usize = 256 * 1024;
+const PERSISTED_TRUNCATION_MARKER_RESERVE: u64 = 256;
+const DISK_SPACE_CHECK_INTERVAL_BYTES: u64 = 256 * 1024;
 const PROCESS_STATUS_POLL_INTERVAL: Duration = Duration::from_millis(25);
 // After the main process exits, only give readers a short grace period to
 // deliver already-buffered output. Background children may inherit stdout/stderr
@@ -67,6 +72,7 @@ pub(super) struct ResolvedCommandTask {
     output_path: PathBuf,
     execution: ExecutionSnapshot,
     env: Vec<(String, String)>,
+    output_policy: CommandTaskOutputPolicy,
 }
 
 pub(super) struct RunningCommand {
@@ -91,6 +97,7 @@ struct CommandTaskRunOutcome {
     exit_status: RunningProcessExitStatus,
     process_completed_at: chrono::DateTime<chrono::Utc>,
     output_completed_at: chrono::DateTime<chrono::Utc>,
+    output_failure: Option<CommandTaskOutputFailure>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -102,6 +109,7 @@ enum OutputStream {
 struct OutputChunk {
     stream: OutputStream,
     text: String,
+    bytes: Vec<u8>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -109,6 +117,37 @@ struct CapturedOutput {
     stdout: String,
     stderr: String,
     combined: String,
+    emitted_bytes: u64,
+    decoded_bytes: u64,
+    retained_bytes: u64,
+    dropped_bytes: u64,
+    retention_limit_bytes: u64,
+    execution_quota_bytes: u64,
+    truncated: bool,
+    raw_retained: Vec<u8>,
+    raw_tail: Vec<u8>,
+    raw_truncated: bool,
+    output_failure: Option<CommandTaskOutputFailure>,
+}
+
+#[derive(Debug, Clone)]
+struct CommandTaskOutputFailure {
+    code: CommandTaskOutputFailureCode,
+    message: String,
+    available_disk_bytes: Option<u64>,
+    required_free_disk_bytes: Option<u64>,
+}
+
+struct BoundedOutputFile {
+    file: tokio::fs::File,
+    path: PathBuf,
+    policy: CommandTaskOutputPolicy,
+    tail_limit: usize,
+    head_limit: u64,
+    retained_bytes: u64,
+    rolling_tail: Vec<u8>,
+    truncated: bool,
+    next_disk_check_at: u64,
 }
 
 struct CommandTaskMatch {
@@ -120,7 +159,17 @@ struct CommandTaskMatch {
 }
 
 impl CapturedOutput {
-    fn push(&mut self, chunk: OutputChunk) {
+    fn new(policy: CommandTaskOutputPolicy) -> Self {
+        Self {
+            retention_limit_bytes: policy.retention_bytes,
+            execution_quota_bytes: policy.execution_quota_bytes,
+            ..Self::default()
+        }
+    }
+
+    fn push(&mut self, chunk: &OutputChunk) {
+        self.emitted_bytes = self.emitted_bytes.saturating_add(chunk.bytes.len() as u64);
+        self.decoded_bytes = self.decoded_bytes.saturating_add(chunk.text.len() as u64);
         push_tail(&mut self.combined, &chunk.text, COMBINED_TAIL_CHAR_LIMIT);
         match chunk.stream {
             OutputStream::Stdout => {
@@ -129,6 +178,51 @@ impl CapturedOutput {
             OutputStream::Stderr => {
                 push_tail(&mut self.stderr, &chunk.text, STREAM_TAIL_CHAR_LIMIT)
             }
+        }
+        let tail_limit = persisted_tail_limit(self.retention_limit_bytes);
+        push_rolling_bytes(&mut self.raw_tail, &chunk.bytes, tail_limit);
+        if !self.raw_truncated {
+            let remaining = self
+                .retention_limit_bytes
+                .saturating_sub(self.raw_retained.len() as u64);
+            let retain = remaining.min(chunk.bytes.len() as u64) as usize;
+            self.raw_retained.extend_from_slice(&chunk.bytes[..retain]);
+            if retain < chunk.bytes.len() {
+                self.raw_truncated = true;
+                self.raw_retained
+                    .truncate(persisted_head_limit(self.retention_limit_bytes));
+            }
+        }
+    }
+
+    fn apply_persistence(&mut self, retained_bytes: u64, truncated: bool) {
+        self.retained_bytes = retained_bytes;
+        self.dropped_bytes = self.emitted_bytes.saturating_sub(retained_bytes);
+        self.truncated = truncated || self.dropped_bytes > 0;
+    }
+
+    fn fail(&mut self, failure: CommandTaskOutputFailure) {
+        self.output_failure = Some(failure);
+    }
+
+    fn output_capture_snapshot(&self) -> CommandTaskOutputCaptureSnapshot {
+        CommandTaskOutputCaptureSnapshot {
+            emitted_bytes: self.emitted_bytes,
+            decoded_bytes: self.decoded_bytes,
+            retained_bytes: self.retained_bytes,
+            dropped_bytes: self.dropped_bytes,
+            retention_limit_bytes: self.retention_limit_bytes,
+            execution_quota_bytes: self.execution_quota_bytes,
+            truncated: self.truncated,
+            failure_code: self.output_failure.as_ref().map(|failure| failure.code),
+            available_disk_bytes: self
+                .output_failure
+                .as_ref()
+                .and_then(|failure| failure.available_disk_bytes),
+            required_free_disk_bytes: self
+                .output_failure
+                .as_ref()
+                .and_then(|failure| failure.required_free_disk_bytes),
         }
     }
 
@@ -170,6 +264,248 @@ impl CapturedOutput {
     }
 }
 
+impl BoundedOutputFile {
+    async fn open(
+        system: &crate::system::LocalSystem,
+        path: PathBuf,
+        policy: CommandTaskOutputPolicy,
+    ) -> Result<Self> {
+        let file = system.open_output_file(&path).await?;
+        let tail_limit = persisted_tail_limit(policy.retention_bytes);
+        let head_limit = persisted_head_limit(policy.retention_bytes) as u64;
+        Ok(Self {
+            file,
+            path,
+            policy,
+            tail_limit,
+            head_limit,
+            retained_bytes: 0,
+            rolling_tail: Vec::with_capacity(tail_limit),
+            truncated: false,
+            next_disk_check_at: 0,
+        })
+    }
+
+    async fn write_chunk(
+        &mut self,
+        system: &crate::system::LocalSystem,
+        bytes: &[u8],
+        emitted_bytes: u64,
+    ) -> std::result::Result<Option<CommandTaskOutputFailure>, std::io::Error> {
+        let remaining = self
+            .policy
+            .retention_bytes
+            .saturating_sub(self.retained_bytes);
+        let write_len = if self.truncated {
+            0
+        } else {
+            remaining.min(bytes.len() as u64)
+        };
+        if emitted_bytes >= self.next_disk_check_at {
+            self.next_disk_check_at = emitted_bytes.saturating_add(DISK_SPACE_CHECK_INTERVAL_BYTES);
+            let probe_path = self.path.parent().unwrap_or(self.path.as_path());
+            match system.filesystem_space(probe_path) {
+                Ok((available, total)) => {
+                    let required = required_free_disk_bytes(self.policy, total);
+                    if would_cross_disk_waterline(available, required, write_len) {
+                        return Ok(Some(CommandTaskOutputFailure {
+                            code: CommandTaskOutputFailureCode::LowDiskSpace,
+                            message: format!(
+                                "command output stopped because writing {write_len} bytes would cross the configured filesystem safety waterline ({available} available, {required} required after the write)"
+                            ),
+                            available_disk_bytes: Some(available),
+                            required_free_disk_bytes: Some(required),
+                        }));
+                    }
+                }
+                Err(err) => {
+                    return Ok(Some(CommandTaskOutputFailure {
+                        code: CommandTaskOutputFailureCode::OutputPersistenceFailed,
+                        message: format!("failed to inspect command output filesystem: {err:#}"),
+                        available_disk_bytes: None,
+                        required_free_disk_bytes: None,
+                    }));
+                }
+            }
+        }
+
+        push_rolling_bytes(&mut self.rolling_tail, bytes, self.tail_limit);
+        if self.truncated {
+            return Ok(None);
+        }
+
+        let write_len = write_len as usize;
+        if write_len > 0 {
+            if let Err(err) = self.file.write_all(&bytes[..write_len]).await {
+                return Err(err);
+            }
+            self.retained_bytes = self.retained_bytes.saturating_add(write_len as u64);
+        }
+        if write_len < bytes.len() {
+            self.activate_truncation().await?;
+        }
+        Ok(None)
+    }
+
+    async fn seed_capture(
+        &mut self,
+        system: &crate::system::LocalSystem,
+        captured: &CapturedOutput,
+    ) -> std::result::Result<Option<CommandTaskOutputFailure>, std::io::Error> {
+        if captured.raw_retained.is_empty() {
+            return Ok(None);
+        }
+        if let Some(failure) = self
+            .write_chunk(system, &captured.raw_retained, captured.emitted_bytes)
+            .await?
+        {
+            return Ok(Some(failure));
+        }
+        if captured.raw_truncated {
+            self.rolling_tail.clone_from(&captured.raw_tail);
+            self.activate_truncation().await?;
+        }
+        Ok(None)
+    }
+
+    async fn activate_truncation(&mut self) -> std::io::Result<()> {
+        self.truncated = true;
+        self.file.set_len(self.head_limit).await?;
+        self.retained_bytes = self.head_limit;
+        self.file.seek(SeekFrom::Start(self.head_limit)).await?;
+        self.file
+            .write_all(b"\n\n[holon: command output truncated; final dropped_bytes are recorded in task metadata]\n\n")
+            .await?;
+        Ok(())
+    }
+
+    async fn finalize(
+        &mut self,
+        emitted_bytes: u64,
+        allow_tail_rewrite: bool,
+    ) -> std::io::Result<(u64, bool)> {
+        if self.truncated && allow_tail_rewrite {
+            let retained_bytes = self
+                .head_limit
+                .saturating_add(self.rolling_tail.len() as u64);
+            let dropped_bytes = emitted_bytes.saturating_sub(retained_bytes);
+            let marker = format!(
+                "\n\n[holon: command output truncated; dropped_bytes={dropped_bytes}; retained bounded head and tail]\n\n"
+            );
+            self.file.set_len(self.head_limit).await?;
+            self.file.seek(SeekFrom::Start(self.head_limit)).await?;
+            self.file.write_all(marker.as_bytes()).await?;
+            self.file.write_all(&self.rolling_tail).await?;
+            self.file
+                .set_len(
+                    self.head_limit
+                        .saturating_add(marker.len() as u64)
+                        .saturating_add(self.rolling_tail.len() as u64),
+                )
+                .await?;
+            self.file.flush().await?;
+            return Ok((retained_bytes, true));
+        }
+        self.file.flush().await?;
+        Ok((self.retained_bytes, self.truncated))
+    }
+}
+
+fn persisted_tail_limit(retention_bytes: u64) -> usize {
+    let quarter = usize::try_from(retention_bytes / 4).unwrap_or(usize::MAX);
+    PERSISTED_TAIL_BYTE_LIMIT.min(quarter).max(1)
+}
+
+fn persisted_head_limit(retention_bytes: u64) -> usize {
+    let tail_limit = persisted_tail_limit(retention_bytes) as u64;
+    usize::try_from(
+        retention_bytes
+            .saturating_sub(tail_limit)
+            .saturating_sub(PERSISTED_TRUNCATION_MARKER_RESERVE),
+    )
+    .unwrap_or(usize::MAX)
+}
+
+fn required_free_disk_bytes(policy: CommandTaskOutputPolicy, total_bytes: u64) -> u64 {
+    let percent_bytes = total_bytes
+        .saturating_mul(policy.min_free_disk_percent as u64)
+        .saturating_add(99)
+        / 100;
+    policy.min_free_disk_bytes.max(percent_bytes)
+}
+
+fn would_cross_disk_waterline(
+    available_bytes: u64,
+    required_free_bytes: u64,
+    planned_write_bytes: u64,
+) -> bool {
+    available_bytes.saturating_sub(planned_write_bytes) < required_free_bytes
+}
+
+fn push_rolling_bytes(buffer: &mut Vec<u8>, bytes: &[u8], limit: usize) {
+    if bytes.len() >= limit {
+        buffer.clear();
+        buffer.extend_from_slice(&bytes[bytes.len() - limit..]);
+        return;
+    }
+    let overflow = buffer
+        .len()
+        .saturating_add(bytes.len())
+        .saturating_sub(limit);
+    if overflow > 0 {
+        buffer.drain(..overflow);
+    }
+    buffer.extend_from_slice(bytes);
+}
+
+fn classify_output_write_error(error: &std::io::Error) -> CommandTaskOutputFailure {
+    let low_disk = error.raw_os_error() == Some(libc::ENOSPC);
+    CommandTaskOutputFailure {
+        code: if low_disk {
+            CommandTaskOutputFailureCode::LowDiskSpace
+        } else {
+            CommandTaskOutputFailureCode::OutputPersistenceFailed
+        },
+        message: if low_disk {
+            format!("command output persistence failed because the filesystem is full: {error}")
+        } else {
+            format!("command output persistence failed: {error}")
+        },
+        available_disk_bytes: None,
+        required_free_disk_bytes: None,
+    }
+}
+
+fn classify_output_open_error(error: &anyhow::Error) -> CommandTaskOutputFailure {
+    if let Some(io_error) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+    {
+        return classify_output_write_error(io_error);
+    }
+    CommandTaskOutputFailure {
+        code: CommandTaskOutputFailureCode::OutputPersistenceFailed,
+        message: format!("command output persistence failed: {error:#}"),
+        available_disk_bytes: None,
+        required_free_disk_bytes: None,
+    }
+}
+
+fn output_quota_failure(
+    policy: CommandTaskOutputPolicy,
+    emitted_bytes: u64,
+) -> Option<CommandTaskOutputFailure> {
+    (emitted_bytes > policy.execution_quota_bytes).then(|| CommandTaskOutputFailure {
+        code: CommandTaskOutputFailureCode::OutputLimitExceeded,
+        message: format!(
+            "command emitted {emitted_bytes} bytes, exceeding the configured execution output quota of {} bytes",
+            policy.execution_quota_bytes
+        ),
+        available_disk_bytes: None,
+        required_free_disk_bytes: None,
+    })
+}
+
 impl RuntimeHandle {
     async fn ensure_process_execution_exposed(&self, surface: &str) -> Result<()> {
         let state = self.agent_state().await?;
@@ -207,15 +543,9 @@ impl RuntimeHandle {
         let running = self
             .start_command_process(&resolved, None, crate::tool::names::EXEC_COMMAND)
             .await?;
-        self.register_command_task(
-            summary,
-            resolved,
-            running,
-            authority_class,
-            false,
-            CapturedOutput::default(),
-        )
-        .await
+        let captured = CapturedOutput::new(resolved.output_policy);
+        self.register_command_task(summary, resolved, running, authority_class, false, captured)
+            .await
     }
 
     pub(crate) async fn execute_exec_command(
@@ -260,7 +590,7 @@ impl RuntimeHandle {
         let mut running = self
             .start_command_process(&resolved, trace_context, crate::tool::names::EXEC_COMMAND)
             .await?;
-        let mut captured = CapturedOutput::default();
+        let mut captured = CapturedOutput::new(resolved.output_policy);
         if spec.yield_time_ms == 0 {
             return self
                 .promote_exec_command_to_task(
@@ -282,7 +612,7 @@ impl RuntimeHandle {
             tokio::select! {
                 chunk = running.output_rx.recv() => {
                     if let Some(chunk) = chunk {
-                        captured.push(chunk);
+                        captured.push(&chunk);
                     }
                 }
                 _ = status_tick.tick() => {
@@ -404,7 +734,7 @@ impl RuntimeHandle {
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
-        let mut captured = CapturedOutput::default();
+        let mut captured = CapturedOutput::new(resolved.output_policy);
         let mut running = self
             .start_command_process(
                 &resolved,
@@ -421,7 +751,7 @@ impl RuntimeHandle {
             tokio::select! {
                 chunk = running.output_rx.recv() => {
                     if let Some(chunk) = chunk {
-                        captured.push(chunk);
+                        captured.push(&chunk);
                     }
                 }
                 _ = status_tick.tick() => {
@@ -632,6 +962,7 @@ impl RuntimeHandle {
             output_path: PathBuf::new(),
             execution: execution_snapshot,
             env,
+            output_policy: self.inner.config_snapshot.load().command_task_output_policy,
         })
     }
 
@@ -664,11 +995,15 @@ impl RuntimeHandle {
         running: RunningCommand,
         authority_class: AuthorityClass,
         promoted_from_exec_command: bool,
-        initial_capture: CapturedOutput,
+        mut initial_capture: CapturedOutput,
     ) -> Result<TaskRecord> {
         let agent_id = self.agent_id().await?;
         let task_id = crate::ids::task_id();
         resolved.output_path = self.command_task_output_path(&task_id)?;
+        if initial_capture.retention_limit_bytes == 0 {
+            initial_capture.retention_limit_bytes = resolved.output_policy.retention_bytes;
+            initial_capture.execution_quota_bytes = resolved.output_policy.execution_quota_bytes;
+        }
         let (input_tx, input_rx) = mpsc::channel(INPUT_CHANNEL_CAPACITY);
         let detail = command_task_detail(
             &resolved,
@@ -814,6 +1149,8 @@ impl RuntimeHandle {
             Ok(outcome) => {
                 let status = if outcome.cancelled {
                     TaskStatus::Cancelled
+                } else if outcome.output_failure.is_some() {
+                    TaskStatus::Failed
                 } else if outcome.exit_status.success() {
                     TaskStatus::Completed
                 } else {
@@ -833,7 +1170,10 @@ impl RuntimeHandle {
                 CommandTaskTerminal {
                     status,
                     exit_status: outcome.exit_status.code(),
-                    error: None,
+                    error: outcome
+                        .output_failure
+                        .as_ref()
+                        .map(|failure| failure.message.clone()),
                     cancel_requested: outcome.cancel_requested,
                     force_stop_requested: outcome.force_stop_requested,
                 }
@@ -941,14 +1281,36 @@ impl RuntimeHandle {
         promoted_from_exec_command: bool,
         captured: &mut CapturedOutput,
     ) -> Result<CommandTaskRunOutcome> {
-        let mut file = self
-            .system()
-            .open_output_file(&resolved.output_path)
-            .await?;
-        if !captured.combined.is_empty() {
-            file.write_all(captured.combined.as_bytes()).await?;
+        let system = self.system();
+        let mut output_failure = None;
+        let mut output = match BoundedOutputFile::open(
+            system.as_ref(),
+            resolved.output_path.clone(),
+            resolved.output_policy,
+        )
+        .await
+        {
+            Ok(output) => Some(output),
+            Err(err) => {
+                output_failure = Some(classify_output_open_error(&err));
+                None
+            }
+        };
+        if output_failure.is_none() {
+            if let Some(output) = output.as_mut() {
+                output_failure = match output.seed_capture(system.as_ref(), captured).await {
+                    Ok(failure) => failure,
+                    Err(err) => Some(classify_output_write_error(&err)),
+                };
+            }
         }
-        file.flush().await?;
+        if output_failure.is_none() {
+            output_failure = output_quota_failure(resolved.output_policy, captured.emitted_bytes);
+        }
+        if let Some(failure) = output_failure.clone() {
+            captured.fail(failure);
+            let _ = running.process.stop(StopSignal::Kill).await;
+        }
         let latest_status = self
             .inner
             .storage
@@ -995,6 +1357,7 @@ impl RuntimeHandle {
         let mut cancelled = false;
         let mut cancellation_requested = false;
         let mut force_stop_requested = false;
+        let mut output_stop_requested = output_failure.is_some();
         let mut output_closed = false;
         let mut status_tick = tokio::time::interval(PROCESS_STATUS_POLL_INTERVAL);
         status_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -1005,8 +1368,35 @@ impl RuntimeHandle {
                 chunk = running.output_rx.recv(), if !output_closed => {
                     match chunk {
                         Some(chunk) => {
-                            file.write_all(chunk.text.as_bytes()).await?;
-                            captured.push(chunk);
+                            captured.push(&chunk);
+                            if output_failure.is_none() {
+                                if let Some(output) = output.as_mut() {
+                                    output_failure = match output
+                                        .write_chunk(
+                                            system.as_ref(),
+                                            &chunk.bytes,
+                                            captured.emitted_bytes,
+                                        )
+                                        .await
+                                    {
+                                        Ok(failure) => failure,
+                                        Err(err) => Some(classify_output_write_error(&err)),
+                                    };
+                                }
+                            }
+                            if output_failure.is_none() {
+                                output_failure = output_quota_failure(
+                                    resolved.output_policy,
+                                    captured.emitted_bytes,
+                                );
+                            }
+                            if let Some(failure) = output_failure.clone() {
+                                captured.fail(failure);
+                                if !output_stop_requested {
+                                    output_stop_requested = true;
+                                    let _ = running.process.stop(StopSignal::Kill).await;
+                                }
+                            }
                         }
                         None => {
                             output_closed = true;
@@ -1046,9 +1436,39 @@ impl RuntimeHandle {
             }
         }
 
-        collect_remaining_output_into_file(running, captured, &mut file).await?;
+        collect_remaining_output_into_file(
+            system.as_ref(),
+            resolved.output_policy,
+            running,
+            captured,
+            &mut output,
+            &mut output_failure,
+        )
+        .await;
         let output_completed_at = chrono::Utc::now();
-        file.flush().await?;
+        let allow_tail_rewrite = output_failure.as_ref().is_none_or(|failure| {
+            failure.code == CommandTaskOutputFailureCode::OutputLimitExceeded
+        });
+        let (retained_bytes, truncated) = if let Some(output) = output.as_mut() {
+            match output
+                .finalize(captured.emitted_bytes, allow_tail_rewrite)
+                .await
+            {
+                Ok(result) => result,
+                Err(err) => {
+                    if output_failure.is_none() {
+                        output_failure = Some(classify_output_write_error(&err));
+                    }
+                    (output.retained_bytes, output.truncated)
+                }
+            }
+        } else {
+            (0, captured.emitted_bytes > 0)
+        };
+        captured.apply_persistence(retained_bytes, truncated);
+        if let Some(failure) = output_failure.clone() {
+            captured.fail(failure);
+        }
         Ok(CommandTaskRunOutcome {
             cancelled,
             cancel_requested: cancellation_requested,
@@ -1056,6 +1476,7 @@ impl RuntimeHandle {
             exit_status,
             process_completed_at,
             output_completed_at,
+            output_failure,
         })
     }
 
@@ -1284,7 +1705,15 @@ where
             Ok(0) => break,
             Ok(read) => {
                 let text = decoder.push(&buffer[..read]);
-                if !text.is_empty() && tx.send(OutputChunk { stream, text }).await.is_err() {
+                if tx
+                    .send(OutputChunk {
+                        stream,
+                        text,
+                        bytes: buffer[..read].to_vec(),
+                    })
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -1293,14 +1722,20 @@ where
     }
     let text = decoder.finish();
     if !text.is_empty() {
-        let _ = tx.send(OutputChunk { stream, text }).await;
+        let _ = tx
+            .send(OutputChunk {
+                stream,
+                text,
+                bytes: Vec::new(),
+            })
+            .await;
     }
 }
 
 async fn collect_remaining_output(running: &mut RunningCommand, captured: &mut CapturedOutput) {
     let drain = async {
         while let Some(chunk) = running.output_rx.recv().await {
-            captured.push(chunk);
+            captured.push(&chunk);
         }
     };
     // After the main process exits, background children may hold pipe write-ends
@@ -1361,16 +1796,33 @@ fn record_command_trace(
 }
 
 async fn collect_remaining_output_into_file(
+    system: &crate::system::LocalSystem,
+    policy: CommandTaskOutputPolicy,
     running: &mut RunningCommand,
     captured: &mut CapturedOutput,
-    file: &mut tokio::fs::File,
-) -> Result<()> {
+    output: &mut Option<BoundedOutputFile>,
+    output_failure: &mut Option<CommandTaskOutputFailure>,
+) {
     let drain = async {
         while let Some(chunk) = running.output_rx.recv().await {
-            if file.write_all(chunk.text.as_bytes()).await.is_err() {
-                break;
+            captured.push(&chunk);
+            if output_failure.is_none() {
+                if let Some(output) = output.as_mut() {
+                    *output_failure = match output
+                        .write_chunk(system, &chunk.bytes, captured.emitted_bytes)
+                        .await
+                    {
+                        Ok(failure) => failure,
+                        Err(err) => Some(classify_output_write_error(&err)),
+                    };
+                }
             }
-            captured.push(chunk);
+            if output_failure.is_none() {
+                *output_failure = output_quota_failure(policy, captured.emitted_bytes);
+            }
+            if let Some(failure) = output_failure.clone() {
+                captured.fail(failure);
+            }
         }
     };
     // After the main process exits, background children may hold pipe write-ends
@@ -1387,7 +1839,6 @@ async fn collect_remaining_output_into_file(
             handle.abort();
         }
     }
-    Ok(())
 }
 
 fn build_command_task_result_text(
@@ -1431,6 +1882,8 @@ fn command_task_detail(
         "tty": resolved.spec.tty,
         "yield_time_ms": resolved.spec.yield_time_ms,
         "max_output_tokens": resolved.spec.max_output_tokens,
+        "output_policy": resolved.output_policy,
+        "output_capture": captured.output_capture_snapshot(),
         "terminal_reentry": resolved.spec.terminal_reentry,
         "promoted_from_exec_command": promoted_from_exec_command,
         "accepts_input": resolved.spec.accepts_input && !terminal_snapshot_ready,
@@ -1659,6 +2112,7 @@ mod tests {
             tx.try_send(OutputChunk {
                 stream: OutputStream::Stdout,
                 text: stdout.into(),
+                bytes: stdout.as_bytes().to_vec(),
             })
             .unwrap();
         }
@@ -1666,6 +2120,7 @@ mod tests {
             tx.try_send(OutputChunk {
                 stream: OutputStream::Stderr,
                 text: stderr.into(),
+                bytes: stderr.as_bytes().to_vec(),
             })
             .unwrap();
         }
@@ -1771,10 +2226,11 @@ mod tests {
         resolved.env.iter().cloned().collect()
     }
 
-    async fn read_output_text(bytes: Vec<u8>, stream: OutputStream) -> String {
+    async fn read_output_text(bytes: Vec<u8>, stream: OutputStream) -> (String, u64) {
         let (tx, mut rx) = mpsc::channel(OUTPUT_CHANNEL_CAPACITY);
         read_output(Cursor::new(bytes), stream, tx).await;
         let mut output = String::new();
+        let mut emitted_bytes = 0;
         while let Some(chunk) = rx.recv().await {
             assert!(matches!(
                 (chunk.stream, stream),
@@ -1782,8 +2238,9 @@ mod tests {
                     | (OutputStream::Stderr, OutputStream::Stderr)
             ));
             output.push_str(&chunk.text);
+            emitted_bytes += chunk.bytes.len() as u64;
         }
-        output
+        (output, emitted_bytes)
     }
 
     #[test]
@@ -1844,11 +2301,319 @@ mod tests {
         for stream in [OutputStream::Stdout, OutputStream::Stderr] {
             let mut bytes = vec![b'a'; 4095];
             bytes.extend_from_slice("中".as_bytes());
-            let output = read_output_text(bytes, stream).await;
+            let expected_emitted_bytes = bytes.len() as u64;
+            let (output, emitted_bytes) = read_output_text(bytes, stream).await;
 
             assert_eq!(output, format!("{}中", "a".repeat(4095)));
+            assert_eq!(emitted_bytes, expected_emitted_bytes);
             assert!(!output.contains('\u{FFFD}'));
         }
+    }
+
+    #[tokio::test]
+    async fn bounded_output_file_retains_head_and_tail_within_combined_cap() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bounded-output.log");
+        let policy = CommandTaskOutputPolicy {
+            retention_bytes: 4 * 1024,
+            execution_quota_bytes: 64 * 1024,
+            min_free_disk_bytes: 0,
+            min_free_disk_percent: 0,
+        };
+        let system = crate::system::LocalSystem::new();
+        let stdout = "A".repeat(3_000);
+        let stderr = "Z".repeat(3_000);
+        let mut output = BoundedOutputFile::open(&system, path.clone(), policy)
+            .await
+            .unwrap();
+
+        assert!(output
+            .write_chunk(&system, stdout.as_bytes(), stdout.len() as u64)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(output
+            .write_chunk(
+                &system,
+                stderr.as_bytes(),
+                (stdout.len() + stderr.len()) as u64,
+            )
+            .await
+            .unwrap()
+            .is_none());
+        let decoded_bytes = (stdout.len() + stderr.len()) as u64;
+        let (retained_bytes, truncated) = output.finalize(decoded_bytes, true).await.unwrap();
+        let artifact = tokio::fs::read(&path).await.unwrap();
+        let artifact_text = String::from_utf8(artifact.clone()).unwrap();
+
+        assert!(truncated);
+        assert!(artifact.len() as u64 <= policy.retention_bytes);
+        assert!(artifact_text.starts_with(&"A".repeat(output.head_limit as usize)));
+        assert!(artifact_text.ends_with(&"Z".repeat(output.tail_limit)));
+        assert!(artifact_text.contains("dropped_bytes=2160"));
+        assert_eq!(retained_bytes, output.head_limit + output.tail_limit as u64);
+    }
+
+    #[tokio::test]
+    async fn command_task_retention_truncation_does_not_fail_execution() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let mut resolved = resolved_command(&runtime, &spec).await;
+        let policy = CommandTaskOutputPolicy {
+            retention_bytes: 4 * 1024,
+            execution_quota_bytes: 64 * 1024,
+            min_free_disk_bytes: 0,
+            min_free_disk_percent: 0,
+        };
+        resolved.output_policy = policy;
+        let stdout = "A".repeat(3_000);
+        let stderr = "Z".repeat(3_000);
+        let task = runtime
+            .register_command_task(
+                "bounded output".into(),
+                resolved,
+                running_command(FakeRunningProcess::completed(0), &stdout, &stderr),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::new(policy),
+            )
+            .await
+            .unwrap();
+
+        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Completed).await;
+        let detail = latest.detail.as_ref().expect("terminal detail");
+        let capture = detail["output_capture"]
+            .as_object()
+            .expect("output capture");
+        assert_eq!(capture["emitted_bytes"].as_u64(), Some(6_000));
+        assert_eq!(capture["decoded_bytes"].as_u64(), Some(6_000));
+        assert_eq!(capture["retained_bytes"].as_u64(), Some(3_840));
+        assert_eq!(capture["dropped_bytes"].as_u64(), Some(2_160));
+        assert_eq!(capture["truncated"].as_bool(), Some(true));
+        assert!(capture.get("failure_code").is_none());
+
+        let output_path = detail["output_path"].as_str().expect("output path");
+        let artifact = tokio::fs::read(output_path).await.unwrap();
+        assert!(artifact.len() as u64 <= policy.retention_bytes);
+        assert!(artifact.starts_with(&"A".repeat(2_816).into_bytes()));
+        assert!(artifact.ends_with(&"Z".repeat(1_024).into_bytes()));
+    }
+
+    #[tokio::test]
+    async fn promoted_command_task_seeds_bounded_raw_head_and_tail() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let mut resolved = resolved_command(&runtime, &spec).await;
+        let policy = CommandTaskOutputPolicy {
+            retention_bytes: 4 * 1024,
+            execution_quota_bytes: 64 * 1024,
+            min_free_disk_bytes: 0,
+            min_free_disk_percent: 0,
+        };
+        resolved.output_policy = policy;
+        let mut captured = CapturedOutput::new(policy);
+        captured.push(&OutputChunk {
+            stream: OutputStream::Stdout,
+            text: "A".repeat(3_000),
+            bytes: vec![b'A'; 3_000],
+        });
+        captured.push(&OutputChunk {
+            stream: OutputStream::Stderr,
+            text: "Z".repeat(3_000),
+            bytes: vec![b'Z'; 3_000],
+        });
+        let task = runtime
+            .register_command_task(
+                "promoted bounded output".into(),
+                resolved,
+                running_command(FakeRunningProcess::completed(0), "", ""),
+                AuthorityClass::OperatorInstruction,
+                true,
+                captured,
+            )
+            .await
+            .unwrap();
+
+        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Completed).await;
+        let detail = latest.detail.as_ref().expect("terminal detail");
+        assert_eq!(
+            detail["output_capture"]["emitted_bytes"].as_u64(),
+            Some(6_000)
+        );
+        assert_eq!(
+            detail["output_capture"]["dropped_bytes"].as_u64(),
+            Some(2_160)
+        );
+        let output_path = detail["output_path"].as_str().expect("output path");
+        let artifact = tokio::fs::read(output_path).await.unwrap();
+        assert!(artifact.len() as u64 <= policy.retention_bytes);
+        assert!(artifact.starts_with(&"A".repeat(2_816).into_bytes()));
+        assert!(artifact.ends_with(&"Z".repeat(1_024).into_bytes()));
+    }
+
+    #[test]
+    fn dropped_bytes_use_raw_emitted_bytes_not_lossy_utf8_size() {
+        let policy = CommandTaskOutputPolicy {
+            retention_bytes: 4 * 1024,
+            execution_quota_bytes: 64 * 1024,
+            min_free_disk_bytes: 0,
+            min_free_disk_percent: 0,
+        };
+        let bytes = vec![0xff; 3];
+        let mut captured = CapturedOutput::new(policy);
+        captured.push(&OutputChunk {
+            stream: OutputStream::Stdout,
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+            bytes,
+        });
+        captured.apply_persistence(1, true);
+
+        assert_eq!(captured.emitted_bytes, 3);
+        assert_eq!(captured.decoded_bytes, 9);
+        assert_eq!(captured.dropped_bytes, 2);
+    }
+
+    #[test]
+    fn enospc_is_classified_as_low_disk_space() {
+        let failure = classify_output_write_error(&std::io::Error::from_raw_os_error(libc::ENOSPC));
+
+        assert_eq!(failure.code, CommandTaskOutputFailureCode::LowDiskSpace);
+        assert!(failure.message.contains("filesystem is full"));
+    }
+
+    #[test]
+    fn disk_waterline_accounts_for_the_current_write() {
+        assert!(!would_cross_disk_waterline(1_100, 1_000, 100));
+        assert!(would_cross_disk_waterline(1_100, 1_000, 101));
+        assert!(would_cross_disk_waterline(500, 1_000, 0));
+    }
+
+    #[tokio::test]
+    async fn command_task_execution_output_quota_is_a_typed_failure() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let mut resolved = resolved_command(&runtime, &spec).await;
+        let policy = CommandTaskOutputPolicy {
+            retention_bytes: 4 * 1024,
+            execution_quota_bytes: 4 * 1024,
+            min_free_disk_bytes: 0,
+            min_free_disk_percent: 0,
+        };
+        resolved.output_policy = policy;
+        let stdout = "Q".repeat(8 * 1024);
+        let task = runtime
+            .register_command_task(
+                "quota output".into(),
+                resolved,
+                running_command(FakeRunningProcess::completed(0), &stdout, ""),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::new(policy),
+            )
+            .await
+            .unwrap();
+
+        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Failed).await;
+        let detail = latest.detail.as_ref().expect("terminal detail");
+        assert_eq!(
+            detail["output_capture"]["failure_code"].as_str(),
+            Some("output_limit_exceeded")
+        );
+        assert_eq!(
+            detail["output_capture"]["emitted_bytes"].as_u64(),
+            Some(8 * 1024)
+        );
+        assert!(detail["error"]
+            .as_str()
+            .expect("typed output failure")
+            .contains("execution output quota"));
+    }
+
+    #[tokio::test]
+    async fn command_task_low_disk_waterline_is_a_typed_failure() {
+        let (_home, _workspace, runtime) = test_runtime();
+        let spec = command_spec(false, false);
+        let mut resolved = resolved_command(&runtime, &spec).await;
+        let policy = CommandTaskOutputPolicy {
+            retention_bytes: 4 * 1024,
+            execution_quota_bytes: 64 * 1024,
+            min_free_disk_bytes: u64::MAX,
+            min_free_disk_percent: 100,
+        };
+        resolved.output_policy = policy;
+        let task = runtime
+            .register_command_task(
+                "low disk output".into(),
+                resolved,
+                running_command(FakeRunningProcess::pending(), "disk guarded output", ""),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::new(policy),
+            )
+            .await
+            .unwrap();
+
+        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Failed).await;
+        let detail = latest.detail.as_ref().expect("terminal detail");
+        assert_eq!(
+            detail["output_capture"]["failure_code"].as_str(),
+            Some("low_disk_space")
+        );
+        assert_eq!(
+            detail["output_capture"]["required_free_disk_bytes"].as_u64(),
+            Some(u64::MAX)
+        );
+        assert!(detail["output_capture"]["available_disk_bytes"]
+            .as_u64()
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn command_task_output_open_failure_still_drains_and_serves_fallback() {
+        let (home, _workspace, runtime) = test_runtime();
+        tokio::fs::write(home.path().join("task-output"), b"not a directory")
+            .await
+            .unwrap();
+        let spec = command_spec(false, false);
+        let resolved = resolved_command(&runtime, &spec).await;
+        let task = runtime
+            .register_command_task(
+                "failed output open".into(),
+                resolved,
+                running_command(
+                    FakeRunningProcess::pending(),
+                    "stdout survived persistence failure",
+                    "",
+                ),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::default(),
+            )
+            .await
+            .unwrap();
+
+        let latest = wait_for_latest_task(&runtime, &task.id, TaskStatus::Failed).await;
+        assert_eq!(
+            latest.detail.as_ref().unwrap()["output_capture"]["failure_code"].as_str(),
+            Some("output_persistence_failed")
+        );
+        assert_eq!(
+            latest.detail.as_ref().unwrap()["output_capture"]["emitted_bytes"].as_u64(),
+            Some(35)
+        );
+        let output = runtime.task_output(&task.id, false, 0).await.unwrap();
+        assert!(output
+            .task
+            .output_preview
+            .contains("stdout survived persistence failure"));
+        assert_eq!(
+            output
+                .task
+                .output_capture
+                .as_ref()
+                .and_then(|capture| capture.failure_code),
+            Some(CommandTaskOutputFailureCode::OutputPersistenceFailed)
+        );
     }
 
     #[tokio::test]

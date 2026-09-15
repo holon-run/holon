@@ -382,6 +382,42 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "runtime.command_task_output_retention_bytes",
+            kind: "positive_integer",
+            description: "Maximum combined bytes retained on disk for one command task.",
+            default: json!(
+                crate::types::CommandTaskOutputPolicy::default().retention_bytes
+            ),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.command_task_output_quota_bytes",
+            kind: "positive_integer",
+            description: "Maximum bytes a command task may emit before it is terminated.",
+            default: json!(
+                crate::types::CommandTaskOutputPolicy::default().execution_quota_bytes
+            ),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.command_task_min_free_disk_bytes",
+            kind: "positive_integer",
+            description: "Minimum free bytes required while persisting command task output.",
+            default: json!(
+                crate::types::CommandTaskOutputPolicy::default().min_free_disk_bytes
+            ),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.command_task_min_free_disk_percent",
+            kind: "positive_integer",
+            description: "Minimum free filesystem percentage required while persisting command task output.",
+            default: json!(
+                crate::types::CommandTaskOutputPolicy::default().min_free_disk_percent
+            ),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "runtime.prompt_budget_estimated_tokens",
             kind: "positive_integer",
             description: "Estimated token budget for one assembled context projection.",
@@ -874,6 +910,26 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .max_tool_output_tokens
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "runtime.command_task_output_retention_bytes" => Ok(config
+            .runtime
+            .command_task_output_retention_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.command_task_output_quota_bytes" => Ok(config
+            .runtime
+            .command_task_output_quota_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.command_task_min_free_disk_bytes" => Ok(config
+            .runtime
+            .command_task_min_free_disk_bytes
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.command_task_min_free_disk_percent" => Ok(config
+            .runtime
+            .command_task_min_free_disk_percent
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "runtime.disable_provider_fallback" => Ok(config
             .runtime
             .disable_provider_fallback
@@ -1244,6 +1300,22 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                     .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32),
             );
         }
+        "runtime.command_task_output_retention_bytes" => {
+            config.runtime.command_task_output_retention_bytes =
+                Some(parse_positive_u64_key(key, raw_value)?.max(4 * 1024));
+        }
+        "runtime.command_task_output_quota_bytes" => {
+            config.runtime.command_task_output_quota_bytes =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.command_task_min_free_disk_bytes" => {
+            config.runtime.command_task_min_free_disk_bytes =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "runtime.command_task_min_free_disk_percent" => {
+            config.runtime.command_task_min_free_disk_percent =
+                Some(parse_positive_u32_key(key, raw_value)?.min(100) as u8);
+        }
         "runtime.disable_provider_fallback" => {
             config.runtime.disable_provider_fallback = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -1559,6 +1631,18 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "runtime.max_output_tokens" => config.runtime.max_output_tokens = None,
         "runtime.default_tool_output_tokens" => config.runtime.default_tool_output_tokens = None,
         "runtime.max_tool_output_tokens" => config.runtime.max_tool_output_tokens = None,
+        "runtime.command_task_output_retention_bytes" => {
+            config.runtime.command_task_output_retention_bytes = None;
+        }
+        "runtime.command_task_output_quota_bytes" => {
+            config.runtime.command_task_output_quota_bytes = None;
+        }
+        "runtime.command_task_min_free_disk_bytes" => {
+            config.runtime.command_task_min_free_disk_bytes = None;
+        }
+        "runtime.command_task_min_free_disk_percent" => {
+            config.runtime.command_task_min_free_disk_percent = None;
+        }
         "runtime.disable_provider_fallback" => config.runtime.disable_provider_fallback = None,
         "runtime.retention.enabled" => config.runtime.retention.enabled = None,
         "runtime.retention.audit_events_days" => {

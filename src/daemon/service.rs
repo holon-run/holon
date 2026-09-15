@@ -120,6 +120,10 @@ pub struct RuntimeConfigSurface {
     pub runtime_max_output_tokens: u32,
     pub default_tool_output_tokens: u32,
     pub max_tool_output_tokens: u32,
+    pub command_task_output_retention_bytes: u64,
+    pub command_task_output_quota_bytes: u64,
+    pub command_task_min_free_disk_bytes: u64,
+    pub command_task_min_free_disk_percent: u8,
     pub disable_provider_fallback: bool,
     pub runtime_db_retention: crate::runtime_db::RuntimeDbRetentionPolicy,
     pub providers: Vec<RuntimeProviderSummary>,
@@ -196,6 +200,10 @@ impl RuntimeConfigSurface {
             runtime_max_output_tokens: config.runtime_max_output_tokens,
             default_tool_output_tokens: config.default_tool_output_tokens,
             max_tool_output_tokens: config.max_tool_output_tokens,
+            command_task_output_retention_bytes: config.command_task_output_retention_bytes,
+            command_task_output_quota_bytes: config.command_task_output_quota_bytes,
+            command_task_min_free_disk_bytes: config.command_task_min_free_disk_bytes,
+            command_task_min_free_disk_percent: config.command_task_min_free_disk_percent,
             disable_provider_fallback: config.disable_provider_fallback,
             runtime_db_retention: config
                 .runtime_db_retention_policy()

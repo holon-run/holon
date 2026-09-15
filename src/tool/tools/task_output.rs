@@ -129,6 +129,7 @@ mod tests {
                     output_artifact: None,
                     result_summary: Some("done".into()),
                     exit_status: Some(0),
+                    output_capture: None,
                     failure_artifact: None,
                     child_supervision: None,
                     token_usage: None,

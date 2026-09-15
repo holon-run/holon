@@ -1777,6 +1777,12 @@ impl RuntimeHandle {
             .as_ref()
             .and_then(|detail| detail.get("token_usage"))
             .and_then(|value| serde_json::from_value(value.clone()).ok());
+        let output_capture = task
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.get("output_capture"))
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok());
 
         Ok(TaskOutputSnapshot {
             task_id: task.id,
@@ -1789,6 +1795,7 @@ impl RuntimeHandle {
             output_artifact,
             result_summary,
             exit_status,
+            output_capture,
             failure_artifact,
             child_supervision,
             token_usage,
@@ -1839,10 +1846,14 @@ impl RuntimeHandle {
             ));
         };
 
-        match tokio::fs::read_to_string(path).await {
-            Ok(content) if !content.is_empty() || fallback.is_empty() => Ok(
-                crate::tool::helpers::truncate_output_for_tokens(&content, max_output_tokens),
-            ),
+        match tokio::fs::read(path).await {
+            Ok(content) if !content.is_empty() || fallback.is_empty() => {
+                let content = String::from_utf8_lossy(&content);
+                Ok(crate::tool::helpers::truncate_output_for_tokens(
+                    &content,
+                    max_output_tokens,
+                ))
+            }
             Ok(_) => Ok(crate::tool::helpers::truncate_output_for_tokens(
                 &fallback,
                 max_output_tokens,

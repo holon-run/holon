@@ -3554,6 +3554,50 @@ pub struct TaskListEntry {
     pub command: Option<CommandTaskStatusSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct CommandTaskOutputPolicy {
+    pub retention_bytes: u64,
+    pub execution_quota_bytes: u64,
+    pub min_free_disk_bytes: u64,
+    pub min_free_disk_percent: u8,
+}
+
+impl Default for CommandTaskOutputPolicy {
+    fn default() -> Self {
+        Self {
+            retention_bytes: 8 * 1024 * 1024,
+            execution_quota_bytes: 64 * 1024 * 1024,
+            min_free_disk_bytes: 512 * 1024 * 1024,
+            min_free_disk_percent: 5,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandTaskOutputFailureCode {
+    OutputLimitExceeded,
+    LowDiskSpace,
+    OutputPersistenceFailed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct CommandTaskOutputCaptureSnapshot {
+    pub emitted_bytes: u64,
+    pub decoded_bytes: u64,
+    pub retained_bytes: u64,
+    pub dropped_bytes: u64,
+    pub retention_limit_bytes: u64,
+    pub execution_quota_bytes: u64,
+    pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_code: Option<CommandTaskOutputFailureCode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub available_disk_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub required_free_disk_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct CommandTaskStatusSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3582,6 +3626,8 @@ pub struct CommandTaskStatusSnapshot {
     pub accepts_input: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_target: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_capture: Option<CommandTaskOutputCaptureSnapshot>,
 }
 
 impl CommandTaskStatusSnapshot {
@@ -3655,6 +3701,15 @@ impl CommandTaskStatusSnapshot {
                 .flatten(),
             input_target: include_runtime_fields
                 .then(|| task_detail_string(&task.detail, "input_target"))
+                .flatten(),
+            output_capture: include_runtime_fields
+                .then(|| {
+                    task.detail
+                        .as_ref()
+                        .and_then(|detail| detail.get("output_capture"))
+                        .cloned()
+                        .and_then(|value| serde_json::from_value(value).ok())
+                })
                 .flatten(),
         })
     }
@@ -3860,6 +3915,8 @@ pub struct TaskOutputSnapshot {
     pub output_artifact: Option<usize>,
     pub result_summary: Option<String>,
     pub exit_status: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_capture: Option<CommandTaskOutputCaptureSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_artifact: Option<FailureArtifact>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
