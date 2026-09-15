@@ -146,8 +146,20 @@ pub async fn control_agent_delete_fences_runtime_and_is_idempotent() -> Result<(
         .await?
         .json()
         .await?;
-    assert_eq!(second["created"], false);
-    assert_eq!(second["job"]["deletion_id"], deletion_id);
+    let expected_deletion_id = if second["created"] == true {
+        // The inline coordinator may complete the original deletion before the
+        // retry arrives. In that case the retry starts the documented cleanup
+        // repair path instead of returning the completed delete-mode job.
+        assert_eq!(second["job"]["mode"], "cleanup_repair");
+        assert_ne!(second["job"]["deletion_id"], deletion_id);
+        second["job"]["deletion_id"]
+            .as_str()
+            .expect("cleanup repair deletion id")
+            .to_string()
+    } else {
+        assert_eq!(second["job"]["deletion_id"], deletion_id);
+        deletion_id.clone()
+    };
 
     let prompt = client
         .post(format!("{base}/api/control/agents/delete-me/prompt"))
@@ -180,7 +192,7 @@ pub async fn control_agent_delete_fences_runtime_and_is_idempotent() -> Result<(
         "expected deleting or deleted, got {:?}",
         status["identity"]["status"]
     );
-    assert_eq!(status["job"]["deletion_id"], deletion_id);
+    assert_eq!(status["job"]["deletion_id"], expected_deletion_id);
     assert!(loaded
         .storage()
         .read_recent_messages(10)?

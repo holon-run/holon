@@ -18,6 +18,11 @@ deletion:
 Deletion is an authenticated operator control-plane operation. It creates a
 durable, idempotent deletion job before cleanup begins.
 
+The same operation repairs legacy terminal private children that were archived
+without a deletion job. A repair job records `mode=cleanup_repair`, keeps the
+identity `Deleted`, and starts at `Quiesce`; normal jobs record `mode=delete`
+and retain the `Active -> Deleting` fence.
+
 ## Phase 0–1 Contract
 
 Agent identity is canonical in `agent_identities.payload_json`, with projected
@@ -25,14 +30,28 @@ columns for queries. Legacy `archived` identity payloads decode as `Deleted`;
 the historical SQLite `archived_at` column remains a compatibility projection
 for the Rust `deleted_at` field.
 
-The first deletion transaction:
+The deletion transaction verifies the current identity revision and then:
 
-1. verifies that the identity exists and its revision is current;
-2. rejects the configured default agent and identities that are not public and
-   self-owned;
-3. changes identity status from `Active` to `Deleting`;
-4. inserts one durable `agent_deletion_jobs` record;
-5. returns the existing job for repeated delete requests.
+1. rejects the configured default agent and identities that are neither public
+   self-owned agents nor private parent-supervised child agents;
+2. returns an existing deletion job for repeated requests;
+3. for `Active`, atomically changes identity status to `Deleting` and inserts a
+   normal job starting at `Fence`;
+4. for `Deleting` without a job, inserts a recovery job starting at `Fence`
+   without changing identity revision again;
+5. for `Deleted` without a job, inserts a `cleanup_repair` job starting at
+   `Quiesce` without reopening the identity;
+6. replaces a legacy completed `delete` job once with `cleanup_repair`, because
+   completion under the older contract is not evidence that shared index and
+   outbox cleanup ran. A completed repair job is returned idempotently.
+
+`AgentDeletionJob.mode` is backward-compatible: old payloads without the field
+decode as `delete`. A `cleanup_repair` job is valid only while the canonical
+identity remains `Deleted`; it never synthesizes `Deleted -> Deleting`.
+Concurrent requests are serialized by the identity revision and the unique
+per-agent deletion-job row. Existing actionable jobs are returned before
+revision validation so retries carrying the original admission revision remain
+idempotent; revision validation fences only job creation or replacement.
 
 After the fence commits, runtime bootstrap, ingress, wake, prompt, enqueue, and
 control paths must not return or create a runnable runtime for that identity.
@@ -84,12 +103,32 @@ workspace bindings.
 
 ## Cleanup Boundary
 
-Phase 0–1 establishes the fence, durable job, status API, and restart-safe
-record. Later phases advance the job through runtime, ingress, scheduler,
-workspace, index, AgentHome, and finalization cleanup. Cleanup must be
-reentrant and fail closed on dirty, locked, or occupied managed worktrees.
+Normal deletion advances through `Fence -> Quiesce -> Ingress -> Scheduler ->
+Workspace -> Index -> Home -> Finalize`. Cleanup repair starts at `Quiesce`
+and uses the same idempotent terminal-safe phases. Missing AgentHome state is a
+successful no-op; shared index cleanup does not depend on reopening or
+recreating the deleted agent's home.
 
-Private-child cleanup remains on the existing parent-supervised path until it
-is migrated to the unified cleanup engine. Public named descendants never
-cascade automatically; private children cascade only when explicitly
-requested.
+The `Index` phase removes the agent's shared memory projection, pending source
+state, checkpoints, metadata, cursors, and pending runtime-index outbox rows.
+The produced outbox watermark is retained as monotonic propagation evidence.
+
+Single private parent-supervised children use the authenticated operator delete
+surface. Explicit parent cascade uses the same ensure-job transaction for
+`Active`, `Deleting`, and legacy `Deleted` children, so a terminal child without
+a job receives cleanup repair. Public named descendants never cascade
+automatically.
+
+## Memory Index Admission
+
+Memory-index candidates are the union of runtime outbox rows, pending source
+state, produced-watermark backfill candidates, and self-heal discovery.
+Immediately before refresh or rebuild dispatch, the daemon reads the canonical
+identity from `agent_identities` while holding the per-agent bootstrap fence.
+Only `Active` identities proceed; active private children remain eligible.
+Unknown, `Deleting`, `Deleted`, or undecodable identities fail closed for that
+round.
+
+Operator deletion and parent cascade acquire the same fence before changing a
+child identity, preventing a refresh from crossing the deletion admission
+boundary.

@@ -256,6 +256,14 @@
                   "null"
                 ]
               },
+              "mode": {
+                "default": "delete",
+                "enum": [
+                  "delete",
+                  "cleanup_repair"
+                ],
+                "type": "string"
+              },
               "phase": {
                 "enum": [
                   "fence",
@@ -412,6 +420,14 @@
                   "string",
                   "null"
                 ]
+              },
+              "mode": {
+                "default": "delete",
+                "enum": [
+                  "delete",
+                  "cleanup_repair"
+                ],
+                "type": "string"
               },
               "phase": {
                 "enum": [
@@ -1139,6 +1155,14 @@
                   "string",
                   "null"
                 ]
+              },
+              "mode": {
+                "default": "delete",
+                "enum": [
+                  "delete",
+                  "cleanup_repair"
+                ],
+                "type": "string"
               },
               "phase": {
                 "enum": [

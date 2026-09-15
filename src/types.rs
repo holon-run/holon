@@ -845,6 +845,14 @@ pub enum AgentDeletionStatus {
     Completed,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentDeletionMode {
+    #[default]
+    Delete,
+    CleanupRepair,
+}
+
 #[derive(
     Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord,
 )]
@@ -884,6 +892,8 @@ impl AgentDeletionPhase {
 pub struct AgentDeletionJob {
     pub deletion_id: String,
     pub agent_id: String,
+    #[serde(default)]
+    pub mode: AgentDeletionMode,
     pub status: AgentDeletionStatus,
     pub phase: AgentDeletionPhase,
     pub requested_by: String,

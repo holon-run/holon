@@ -104,9 +104,9 @@ mod tests {
         },
         system::{WorkspaceAccessMode, WorkspaceProjectionKind},
         types::{
-            ActiveWorkspaceEntry, AgentDeletionJob, AgentDeletionStatus, AgentKind, AgentOwnership,
-            AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind,
-            TimerStatus,
+            ActiveWorkspaceEntry, AgentDeletionJob, AgentDeletionMode, AgentDeletionPhase,
+            AgentDeletionStatus, AgentKind, AgentOwnership, AgentProfilePreset,
+            AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind, TimerStatus,
         },
     };
     use rusqlite::OptionalExtension;
@@ -5236,11 +5236,13 @@ CREATE TABLE working_memory_deltas (
         assert!(created);
         assert_eq!(deleting.status, AgentRegistryStatus::Deleting);
         assert_eq!(deleting.revision, identity.revision + 1);
+        assert_eq!(first_job.mode, AgentDeletionMode::Delete);
+        assert_eq!(first_job.phase, AgentDeletionPhase::Fence);
         assert!(first_job.cascade_private_children);
 
         let (same_identity, same_job, created) = db.agent_deletions().begin(
             "agent-delete",
-            deleting.revision,
+            identity.revision,
             "operator:retry",
             false,
         )?;
@@ -5267,6 +5269,79 @@ CREATE TABLE working_memory_deltas (
         Ok(())
     }
 
+    #[test]
+    fn agent_deletion_begin_repairs_deleting_and_deleted_identities_without_jobs() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+
+        let mut deleting = agent_identity("repair-deleting", 3);
+        deleting.status = AgentRegistryStatus::Deleting;
+        db.agent_identities().upsert(&deleting)?;
+        let (same_deleting, delete_job, created) = db.agent_deletions().begin(
+            "repair-deleting",
+            deleting.revision,
+            "operator:repair",
+            false,
+        )?;
+        assert!(created);
+        assert_eq!(same_deleting, deleting);
+        assert_eq!(delete_job.mode, AgentDeletionMode::Delete);
+        assert_eq!(delete_job.phase, AgentDeletionPhase::Fence);
+
+        let mut deleted = agent_identity("repair-deleted", 5);
+        deleted.status = AgentRegistryStatus::Deleted;
+        deleted.deleted_at = Some(deleted.updated_at);
+        db.agent_identities().upsert(&deleted)?;
+        let (same_deleted, repair_job, created) = db.agent_deletions().begin(
+            "repair-deleted",
+            deleted.revision,
+            "operator:repair",
+            false,
+        )?;
+        assert!(created);
+        assert_eq!(same_deleted, deleted);
+        assert_eq!(repair_job.mode, AgentDeletionMode::CleanupRepair);
+        assert_eq!(repair_job.phase, AgentDeletionPhase::Quiesce);
+
+        let (repeated_identity, repeated_job, created) = db.agent_deletions().begin(
+            "repair-deleted",
+            deleted.revision,
+            "operator:retry",
+            true,
+        )?;
+        assert!(!created);
+        assert_eq!(repeated_identity, deleted);
+        assert_eq!(repeated_job, repair_job);
+
+        let (final_identity, completed) = db.agent_deletions().finalize(&repair_job)?;
+        assert_eq!(final_identity, deleted);
+        assert_eq!(completed.status, AgentDeletionStatus::Completed);
+        assert_eq!(completed.mode, AgentDeletionMode::CleanupRepair);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_deletion_job_payload_defaults_to_delete_mode() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let identity = agent_identity("legacy-delete-job", 1);
+        db.agent_identities().upsert(&identity)?;
+        let (_, job, _) = db.agent_deletions().begin(
+            "legacy-delete-job",
+            identity.revision,
+            "operator:test",
+            false,
+        )?;
+        let mut payload = serde_json::to_value(&job)?;
+        payload
+            .as_object_mut()
+            .expect("job payload object")
+            .remove("mode");
+        let decoded: AgentDeletionJob = serde_json::from_value(payload)?;
+        assert_eq!(decoded.mode, AgentDeletionMode::Delete);
+        Ok(())
+    }
+
     fn fully_delete_agent(
         db: &RuntimeDb,
         agent_id: &str,
@@ -5277,6 +5352,37 @@ CREATE TABLE working_memory_deltas (
             db.agent_deletions()
                 .begin(agent_id, identity.revision, "operator:test", false)?;
         db.agent_deletions().finalize(&job)
+    }
+
+    #[test]
+    fn completed_delete_job_is_replaced_once_by_cleanup_repair() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let (deleted, completed_delete) = fully_delete_agent(&db, "repair-completed-delete")?;
+        assert_eq!(completed_delete.mode, AgentDeletionMode::Delete);
+
+        let (same_identity, repair, created) = db.agent_deletions().begin(
+            "repair-completed-delete",
+            deleted.revision,
+            "operator:repair",
+            false,
+        )?;
+        assert!(created);
+        assert_eq!(same_identity, deleted);
+        assert_ne!(repair.deletion_id, completed_delete.deletion_id);
+        assert_eq!(repair.mode, AgentDeletionMode::CleanupRepair);
+        assert_eq!(repair.phase, AgentDeletionPhase::Quiesce);
+
+        let (_, completed_repair) = db.agent_deletions().finalize(&repair)?;
+        let (_, repeated, created) = db.agent_deletions().begin(
+            "repair-completed-delete",
+            deleted.revision,
+            "operator:retry",
+            false,
+        )?;
+        assert!(!created);
+        assert_eq!(repeated, completed_repair);
+        Ok(())
     }
 
     #[test]
