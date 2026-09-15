@@ -453,6 +453,7 @@ const en = {
     copiedReply: "Reply copied",
     showEarlierProcess: "Show earlier activity",
     activitySummaryUnavailable: "Activity summary unavailable",
+    awaitingActivity: "Waiting for the model…",
     inspectActivity: "Inspect details",
     backToLatest: "Back to latest",
     turnWorking: "Working…",

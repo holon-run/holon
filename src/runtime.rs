@@ -3878,6 +3878,7 @@ impl RuntimeHandle {
             guard.persist_state(&self.inner.storage)?;
             guard.state.clone()
         };
+        self.persist_started_turn(&state, message)?;
         self.append_state_changed_events(&state)?;
         if let Some(message) = message {
             self.inner.storage.append_event(&AuditEvent::legacy(

@@ -4070,7 +4070,7 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
         .clone()
         .expect("completed work item has bound result brief");
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &message);
     runtime
         .storage()
         .append_turn(&terminal.turn_record)
@@ -5268,7 +5268,7 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
     assert_eq!(updated_work_item.turn_id, None);
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, None);
+    let terminal = terminal_transition_from_started_turn(&runtime, &message);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -5429,7 +5429,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .unwrap();
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, None);
+    let terminal = terminal_transition_from_started_turn(&runtime, &message);
     let processed = QueueEntryRecord {
         message_id: message.id.clone(),
         agent_id: message.agent_id.clone(),
@@ -8983,12 +8983,12 @@ async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_e
         .unwrap()
         .last_turn_terminal
         .is_none());
-    assert!(runtime
+    let retained_turn = runtime
         .storage()
-        .read_recent_turns(16)
+        .read_turn_by_id(&turn_id)
         .unwrap()
-        .iter()
-        .all(|turn| turn.turn_id != turn_id));
+        .expect("admission remains durable when terminal settlement rolls back");
+    assert!(retained_turn.terminal.is_none());
     assert!(runtime
         .storage()
         .read_recent_briefs(16)
@@ -9125,12 +9125,12 @@ async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() 
         .unwrap()
         .last_turn_terminal
         .is_none());
-    assert!(runtime
+    let retained_turn = runtime
         .storage()
-        .read_recent_turns(16)
+        .read_turn_by_id(&turn_id)
         .unwrap()
-        .iter()
-        .all(|turn| turn.turn_id != turn_id));
+        .expect("admission remains durable when terminal settlement rolls back");
+    assert!(retained_turn.terminal.is_none());
     assert!(runtime
         .storage()
         .read_recent_events(128)
@@ -9295,7 +9295,7 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
     runtime.storage().append_brief(&decoy).unwrap();
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &message);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -9521,7 +9521,7 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
         .expect("completion report brief");
 
     finish_claimed_test_run(&runtime).await;
-    let resume_terminal = terminal_transition(&resume, Some(&work_item.id));
+    let resume_terminal = terminal_transition_from_started_turn(&runtime, &resume);
     runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -9658,7 +9658,7 @@ async fn completed_production_settlement_interrupts_mismatched_completion_execut
     runtime.apply_transition_commit(commit).await;
 
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &message);
     assert!(runtime
         .commit_queue_terminal_settlement(
             QueueEntryRecord {
@@ -9775,7 +9775,7 @@ async fn completed_production_settlement_interrupts_without_result_report() {
         .await
         .unwrap();
     finish_claimed_test_run(&runtime).await;
-    let terminal = terminal_transition(&message, Some(&work_item.id));
+    let terminal = terminal_transition_from_started_turn(&runtime, &message);
 
     assert!(runtime
         .commit_queue_terminal_settlement(
@@ -14025,11 +14025,52 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
         .await
         .unwrap();
 
+    let before = runtime
+        .runtime_db()
+        .conversation()
+        .summary_snapshot("default", 10, None, "test", "public")
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.value.pending_inputs.len(), 1);
     let mut runner = tokio::spawn(runtime.clone().run());
     tokio::select! {
         _ = started.notified() => {}
         result = &mut runner => panic!("runtime exited before provider start: {result:?}"),
     }
+    // The provider is still blocked: both snapshot and stream must already
+    // expose the native active turn and remove its input from the pending queue.
+    let during = runtime
+        .runtime_db()
+        .conversation()
+        .summary_snapshot("default", 10, None, "test", "public")
+        .unwrap()
+        .unwrap();
+    assert!(during.value.pending_inputs.is_empty());
+    assert_eq!(during.value.active_turns.len(), 1);
+    let active = &during.value.active_turns[0];
+    assert_eq!(active.inputs.len(), 1);
+    assert!(active.brief_ids.is_empty());
+    assert!(matches!(
+        active.execution,
+        crate::domain::conversation::ExecutionState::Active
+    ));
+    let batch = runtime
+        .runtime_db()
+        .conversation()
+        .change_batch(
+            "default",
+            Some(&before.snapshot_cursor),
+            256,
+            64,
+            "test",
+            "public",
+        )
+        .unwrap()
+        .unwrap();
+    assert!(batch.changes.iter().any(|change| matches!(change,
+        crate::domain::conversation::ConversationChange::TurnSummaryUpsert { turn }
+        if turn.turn_id == active.turn_id && matches!(turn.execution, crate::domain::conversation::ExecutionState::Active))));
+
     let run_id = runtime
         .agent_state()
         .await
@@ -16543,4 +16584,136 @@ async fn post_commit_agent_state_projection_rebases_onto_newer_memory() {
             .unwrap(),
         Some(runtime.agent_state().await.unwrap())
     );
+}
+
+struct ConversationProgressProvider {
+    inner: OneToolThenTextProvider,
+    before_result: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
+#[async_trait]
+impl AgentProvider for ConversationProgressProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut response = self.inner.complete_turn(request).await?;
+        if self.inner.call_count().await == 1 {
+            response.blocks.insert(
+                0,
+                ModelBlock::Text {
+                    text: "Checking live progress.".into(),
+                },
+            );
+        } else {
+            self.before_result.notify_one();
+            self.release.notified().await;
+        }
+        Ok(response)
+    }
+}
+
+#[tokio::test]
+async fn conversation_stream_exposes_progress_and_tool_before_result_delivery() {
+    use crate::domain::conversation::{ConversationActivity, ConversationChange, ExecutionState};
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let before_result = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(ConversationProgressProvider {
+            inner: OneToolThenTextProvider {
+                calls: Mutex::new(0),
+            },
+            before_result: before_result.clone(),
+            release: release.clone(),
+        }),
+        "default".into(),
+        continuation_ready_context_config(&workspace, 64_000),
+    )
+    .unwrap();
+    append_default_host_identity(&runtime);
+    runtime
+        .enqueue(trusted_operator_prompt(None, "test live progress"))
+        .await
+        .unwrap();
+    let before = runtime
+        .runtime_db()
+        .conversation()
+        .summary_snapshot("default", 10, None, "test", "public")
+        .unwrap()
+        .unwrap();
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(30), before_result.notified())
+        .await
+        .expect("tool completes before the gated final response");
+    let events = runtime.storage().read_recent_events(64).unwrap();
+    let projection = events
+        .iter()
+        .find(|event| event.kind == "provider_round_completed")
+        .expect("first round was recorded");
+    let invariants = projection.data["context_management"]["history_projection"]
+        ["invariant_results"]
+        .as_array()
+        .expect("history invariants");
+    assert!(invariants
+        .iter()
+        .any(|result| result["code"] == "canonical_evidence_unique" && result["status"] == "pass"));
+    let during = runtime
+        .runtime_db()
+        .conversation()
+        .summary_snapshot("default", 10, None, "test", "public")
+        .unwrap()
+        .unwrap();
+    assert!(during.value.pending_inputs.is_empty());
+    let active = during
+        .value
+        .active_turns
+        .first()
+        .expect("active native turn");
+    assert!(matches!(active.execution, ExecutionState::Active));
+    assert!(active.brief_ids.is_empty());
+    let batch = runtime
+        .runtime_db()
+        .conversation()
+        .change_batch(
+            "default",
+            Some(&before.snapshot_cursor),
+            256,
+            64,
+            "test",
+            "public",
+        )
+        .unwrap()
+        .unwrap();
+    assert!(batch.changes.iter().any(|change| matches!(change,
+        ConversationChange::ActivityUpsert { activity: ConversationActivity::Assistant(item), .. }
+        if item.summary == "Checking live progress.")));
+    assert!(batch.changes.iter().any(|change| matches!(change,
+        ConversationChange::ActivityUpsert { activity: ConversationActivity::Tool(item), .. }
+        if item.summary == "ExecCommand · success")));
+    release.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let turn = runtime
+                .storage()
+                .read_turn_by_id(&active.turn_id)
+                .unwrap()
+                .unwrap();
+            if turn.terminal.is_some() {
+                assert!(!turn.produced_brief_ids.is_empty());
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("terminal and brief settle after releasing the final response");
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
 }

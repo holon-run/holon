@@ -7261,8 +7261,7 @@ code {
 .conversation-input-status { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); font-size: 12px; }
 .conversation-source { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
 .conversation-source summary { display: flex; align-items: center; gap: 7px; cursor: pointer; width: fit-content; padding: 4px 0; }
-.conversation-source summary::-webkit-details-marker,
-.conversation-tool-detail summary::-webkit-details-marker { display: none; }
+.conversation-source summary::-webkit-details-marker { display: none; }
 .conversation-source > .markdown-content { padding: 8px 12px; border-left: 1px solid var(--line); margin-top: 8px; }
 .conversation-source-id { display: block; padding-top: 4px; font-family: var(--mono); }
 .conversation-brief { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 8px 0 0; }
@@ -7298,8 +7297,7 @@ code {
 .conversation-detail-toggle:hover,
 .conversation-detail button:hover { color: var(--text); }
 .conversation-disclosure-chevron { flex: none; transition: transform 180ms ease; }
-.conversation-detail-toggle.is-expanded .conversation-disclosure-chevron,
-.conversation-tool-detail[open] > summary .conversation-disclosure-chevron { transform: rotate(90deg); }
+.conversation-detail-toggle.is-expanded .conversation-disclosure-chevron { transform: rotate(90deg); }
 .conversation-detail-collapse { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 220ms ease, opacity 160ms ease; }
 .conversation-detail-collapse.is-expanded { grid-template-rows: 1fr; opacity: 1; }
 .conversation-detail-clip { min-height: 0; overflow: hidden; }
@@ -7313,12 +7311,8 @@ code {
 .conversation-activity { min-width: 0; color: var(--muted); font-size: 13px; }
 .conversation-activity.is-error { color: var(--danger); }
 .conversation-progress-text > .markdown-content { font-size: 14px; line-height: 1.7; }
-.conversation-tool-detail > summary { display: flex; align-items: flex-start; gap: 9px; cursor: pointer; border-radius: 6px; padding: 5px 0; }
-.conversation-tool-detail > summary:hover { color: var(--text); }
 .conversation-activity-icon { display: inline-flex; flex: none; padding-top: 3px; }
 .conversation-activity-summary { min-width: 0; flex: 1; overflow-wrap: anywhere; white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.conversation-tool-body pre { margin: 5px 0; padding: 12px; border-radius: 10px; background: var(--surface-soft); font: 12px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.conversation-tool-body { padding-left: 21px; }
 .conversation-timeline button:focus-visible,
 .conversation-timeline summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
 .conversation-jump { position: absolute; z-index: 2; bottom: 150px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 8px 14px; border: 1px solid var(--line); border-radius: 24px; background: var(--surface); box-shadow: var(--shadow-soft); font-size: 12px; color: var(--text); cursor: pointer; }
@@ -7349,3 +7343,24 @@ code {
 }
 
 .message-list-content { width: 100%; display: flex; flex-direction: column; gap: 12px; flex: none; }
+
+/* Use the existing object inspector directly from each execution row. */
+.conversation-detail .conversation-activity-row {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  gap: 9px;
+  padding: 7px 6px;
+  border-radius: 7px;
+  font-size: 13px;
+  text-align: left;
+}
+.conversation-activity-row:hover { background: var(--surface-hover); }
+.conversation-activity-row > svg { flex: none; margin-top: 3px; }
+.conversation-activity.is-error .conversation-activity-row { color: var(--danger); }
+.conversation-progress-text { position: relative; padding-right: 24px; }
+.conversation-detail .conversation-progress-inspect {
+  position: absolute; right: 0; top: 2px; padding: 4px; opacity: 0.5;
+}
+.conversation-progress-text:hover .conversation-progress-inspect,
+.conversation-progress-inspect:focus-visible { opacity: 1; }

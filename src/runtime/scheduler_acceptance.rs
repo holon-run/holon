@@ -772,7 +772,15 @@ async fn scheduler_acceptance_terminal_transition(
         .turn_id
         .clone()
         .ok_or_else(|| anyhow!("scheduler acceptance message has no turn id"))?;
-    let turn_index = runtime.agent_state().await?.turn_index.saturating_add(1);
+    let mut turn_record = runtime
+        .inner
+        .storage
+        .read_turn_by_id(&turn_id)?
+        .ok_or_else(|| anyhow!("scheduler acceptance turn has not started"))?;
+    if turn_record.current_work_item_id.as_deref() != Some(work_item_id) {
+        return Err(anyhow!("scheduler acceptance turn owner changed"));
+    }
+    let turn_index = turn_record.turn_index;
     let terminal = TurnTerminalRecord {
         turn_id: turn_id.clone(),
         turn_index,
@@ -786,10 +794,6 @@ async fn scheduler_acceptance_terminal_transition(
         completed_at: Utc::now(),
         duration_ms: 1,
     };
-    let mut turn_record = TurnRecord::new(&message.agent_id, &turn_id, turn_index);
-    turn_record.current_work_item_id = Some(work_item_id.into());
-    turn_record.trigger = Some(TurnTriggerSummary::from_message(message));
-    turn_record.input_message_ids = vec![message.id.clone()];
     turn_record.terminal = Some(TurnTerminalSummary::from_terminal(&terminal));
     Ok(super::turn::TurnTerminalTransition {
         terminal,

@@ -454,6 +454,7 @@ const zh: Record<string, any> = {
     copiedReply: "已复制回复",
     showEarlierProcess: "查看前面的过程",
     activitySummaryUnavailable: "过程摘要暂不可用",
+    awaitingActivity: "正在等待模型响应…",
     inspectActivity: "查看详情",
     backToLatest: "回到最新",
     turnWorking: "正在处理本轮…",

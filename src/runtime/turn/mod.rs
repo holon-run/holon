@@ -178,6 +178,66 @@ fn render_operator_interjection_text(message: &MessageEnvelope) -> String {
 }
 
 impl RuntimeHandle {
+    pub(super) fn persist_started_turn(
+        &self,
+        state: &crate::types::AgentState,
+        message: Option<&MessageEnvelope>,
+    ) -> Result<()> {
+        let turn_id = state
+            .current_turn_id
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("started turn has no identity"))?;
+        let binding = state.current_execution_binding.as_ref();
+        let mut record = TurnRecord::new(&state.id, turn_id, state.turn_index);
+        record.run_id = state.current_run_id.clone();
+        record.current_work_item_id = binding
+            .map(|binding| binding.work_item_id.clone())
+            .unwrap_or_else(|| {
+                state
+                    .current_turn_work_item_id
+                    .clone()
+                    .or_else(|| state.current_work_item_id.clone())
+            });
+        record.owner = Some(
+            binding
+                .and_then(|binding| binding.owner.clone())
+                .or_else(|| {
+                    record.current_work_item_id.as_ref().map(|work_item_id| {
+                        crate::types::TurnOwner::WorkItem {
+                            work_item_id: work_item_id.clone(),
+                        }
+                    })
+                })
+                .unwrap_or_else(|| crate::types::TurnOwner::AgentLifecycle {
+                    agent_id: state.id.clone(),
+                }),
+        );
+        if let Some(message) = message {
+            record.trigger = Some(TurnTriggerSummary::from_message(message));
+            record.input_message_ids = vec![message.id.clone()];
+            if let Some(source_turn_id) = message
+                .turn_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && *id != turn_id)
+            {
+                record.replay = Some(crate::types::TurnReplayProvenance {
+                    source_message_id: message.id.clone(),
+                    source_turn_id: source_turn_id.to_owned(),
+                    reason: "interrupted_queue_claim_reentry".into(),
+                    prior_terminal: self
+                        .inner
+                        .storage
+                        .read_turn_by_id(source_turn_id)?
+                        .and_then(|turn| turn.terminal),
+                });
+            }
+        }
+        // Publish the canonical identity before provider work starts. The read
+        // model must not wait for the terminal record to assign this input.
+        self.inner.storage.append_turn(&record)
+    }
+
     pub(super) async fn begin_reducer_only_turn(
         &self,
         message: &MessageEnvelope,
@@ -311,16 +371,19 @@ impl RuntimeHandle {
             })
             .collect::<Vec<_>>();
 
-        let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
-        if let Some(existing) = self.inner.storage.read_turn_by_id(turn_id)? {
-            record.created_at = existing.created_at;
-        }
-        record.run_id = run_id;
-        record.current_work_item_id = current_work_item_id;
-        record.owner = Some(owner);
-        record.trigger = input_messages
-            .first()
-            .map(|message| TurnTriggerSummary::from_message(message));
+        let mut record = if let Some(existing) = self.inner.storage.read_turn_by_id(turn_id)? {
+            // Admission identity remains fixed even when execution changes focus.
+            existing
+        } else {
+            let mut record = TurnRecord::new(agent_id, turn_id, terminal.turn_index);
+            record.run_id = run_id;
+            record.current_work_item_id = current_work_item_id;
+            record.owner = Some(owner);
+            record.trigger = input_messages
+                .first()
+                .map(|message| TurnTriggerSummary::from_message(message));
+            record
+        };
         record.input_message_ids = input_messages
             .iter()
             .map(|message| message.id.clone())
@@ -351,31 +414,33 @@ impl RuntimeHandle {
             .map(|condition| condition.id.clone())
             .collect();
         record.terminal = Some(TurnTerminalSummary::from_terminal(terminal));
-        record.replay = source_message_id
-            .as_deref()
-            .and_then(|source_message_id| {
-                input_messages
-                    .iter()
-                    .find(|message| message.id == source_message_id)
-            })
-            .and_then(|message| {
-                let source_turn_id = message.turn_id.as_deref()?.trim();
-                (!source_turn_id.is_empty() && source_turn_id != turn_id).then(|| {
-                    let prior_terminal = self
-                        .inner
-                        .storage
-                        .read_turn_by_id(source_turn_id)
-                        .ok()
-                        .flatten()
-                        .and_then(|turn| turn.terminal);
-                    crate::types::TurnReplayProvenance {
-                        source_message_id: message.id.clone(),
-                        source_turn_id: source_turn_id.to_string(),
-                        reason: "interrupted_queue_claim_reentry".into(),
-                        prior_terminal,
-                    }
+        record.replay = record.replay.or_else(|| {
+            source_message_id
+                .as_deref()
+                .and_then(|source_message_id| {
+                    input_messages
+                        .iter()
+                        .find(|message| message.id == source_message_id)
                 })
-            });
+                .and_then(|message| {
+                    let source_turn_id = message.turn_id.as_deref()?.trim();
+                    (!source_turn_id.is_empty() && source_turn_id != turn_id).then(|| {
+                        let prior_terminal = self
+                            .inner
+                            .storage
+                            .read_turn_by_id(source_turn_id)
+                            .ok()
+                            .flatten()
+                            .and_then(|turn| turn.terminal);
+                        crate::types::TurnReplayProvenance {
+                            source_message_id: message.id.clone(),
+                            source_turn_id: source_turn_id.to_string(),
+                            reason: "interrupted_queue_claim_reentry".into(),
+                            prior_terminal,
+                        }
+                    })
+                })
+        });
 
         Ok(record)
     }

@@ -345,6 +345,21 @@ references. Existing inspectors handle large output/diffs. Shared activity
 resolution should be reused rather than implementing another set of tool-state
 heuristics in a route. Unknown types have explicit compatibility behavior.
 
+### Publishing active execution
+
+The runtime persists the native turn record when execution begins, before the
+provider request, then publishes `turn_started`. Input assignment and the turn
+revision therefore become readable while the provider is still running. The
+terminal transition updates that existing identity; run, owner, trigger,
+creation time, and replay provenance remain fixed at admission. A failed terminal
+settlement retains the active admission record without inventing a terminal.
+Prompt history excludes the active turn carrying the current input, which is
+already represented by the current-input and in-flight round sections.
+
+Expanded clients refresh invalidated detail pages, including active turns whose
+activity set exceeds the bounded stream budget. They do not wait for a Brief or
+reconstruct a second turn ledger from generic audit events.
+
 ### Activity display summaries
 
 `summary` remains a bounded display field, not a serialized provider envelope.

@@ -140,6 +140,20 @@ impl RecentTurnsReprojection {
     }
 }
 
+fn history_turns_without_current_input(
+    mut records: Vec<TurnRecord>,
+    message_id: &str,
+    limit: usize,
+) -> Vec<TurnRecord> {
+    // Active turns are now durable. Current input and in-flight rounds already
+    // have dedicated prompt sections; including them as history duplicates them.
+    records.retain(|record| {
+        record.terminal.is_some() || !record.input_message_ids.iter().any(|id| id == message_id)
+    });
+    records.drain(..records.len().saturating_sub(limit));
+    records
+}
+
 pub(crate) fn reproject_recent_turns(
     storage: &AppStorage,
     reprojection: &RecentTurnsReprojection,
@@ -171,7 +185,11 @@ pub(crate) fn reproject_work_item_scoped_with_limit(
     let owner = crate::types::TurnOwner::WorkItem {
         work_item_id: work_item.id.clone(),
     };
-    let turn_records = storage.read_recent_turns_for_owner(&owner, window_limit)?;
+    let turn_records = history_turns_without_current_input(
+        storage.read_recent_turns_for_owner(&owner, window_limit.saturating_add(1))?,
+        &reprojection.current_message.id,
+        window_limit,
+    );
     if turn_records.is_empty() {
         return Ok(WorkItemScopedReprojection::NoOwnedTurnRecords);
     }
@@ -298,7 +316,11 @@ pub fn build_context_with_default_external_ingress(
     let continuation_anchor_messages = storage.read_all_messages()?;
     let mut briefs = storage.read_recent_briefs(config.recent_briefs)?;
     let mut tools = storage.read_recent_tool_executions(config.recent_messages)?;
-    let turn_records = storage.read_recent_turns(config.recent_messages)?;
+    let turn_records = history_turns_without_current_input(
+        storage.read_recent_turns(config.recent_messages.saturating_add(1))?,
+        &current_message.id,
+        config.recent_messages,
+    );
     hydrate_recent_turn_references(
         storage,
         &turn_records,
@@ -7597,13 +7619,21 @@ mod tests {
         );
         storage.append_message(&system_tick).unwrap();
 
+        let mut current_message = operator_message.clone();
+        current_message.id = "msg-current-input".into();
+        current_message.body = MessageBody::Text {
+            text: "current input must not be repeated in history".into(),
+        };
+        storage.append_message(&current_message).unwrap();
+        append_turn_for_message(&storage, &current_message, "turn-current-input", 2);
+
         let session = AgentState::new("default");
         let built = build_context(
             &storage,
             &session,
             &execution_snapshot_for(&session),
             &crate::types::SkillsRuntimeView::default(),
-            &operator_message,
+            &current_message,
             None,
             &ContextConfig {
                 recent_messages: 10,
@@ -7624,6 +7654,9 @@ mod tests {
         assert!(recent_turns.content.contains("hello"));
         assert!(!recent_turns.content.contains("SystemTick"));
         assert!(!recent_turns.content.contains("wake hint: changed"));
+        assert!(!recent_turns
+            .content
+            .contains("current input must not be repeated in history"));
     }
 
     #[test]

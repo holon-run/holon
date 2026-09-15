@@ -169,7 +169,8 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     return () => window.clearTimeout(timer);
   }, [expanded]);
   useEffect(() => {
-    if (expanded && turn.detail === null && detailState.kind === "idle") {
+    if (expanded && (turn.detail === null || turn.detail.invalidated)
+      && detailState.kind !== "loading" && detailState.kind !== "error") {
       actions.onLoadDetail(turn.turnId);
     }
   }, [expanded, turn.detail, detailState.kind, turn.turnId, actions.onLoadDetail]);
@@ -405,8 +406,8 @@ function ConversationDetailPanel({
           <ChevronDown size={13} />{t("agentPage.showEarlierProcess")}
         </button>
       ) : null}
-      {detail.activities.length === 0 ? (
-        <div className="conversation-detail-notice">{t("agentPage.detailEmpty")}</div>
+      {detail.activities.every((activity) => activity.kind === "operator") ? (
+        <div className="conversation-detail-notice">{t(turn.execution.kind === "active" ? "agentPage.awaitingActivity" : "agentPage.detailEmpty")}</div>
       ) : (
         <ol className="conversation-activities">
           {detail.activities.filter((activity, index) =>
@@ -447,25 +448,28 @@ function ConversationActivityRow({
     <li className={`conversation-activity is-${activity.kind}`} data-activity-id={activity.id}
       data-conversation-anchor={`activity:${activity.id}`}>
       {activity.kind === "assistant" ? (
-        <div className="conversation-progress-text">
+        <div className="conversation-progress-text" onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest("a, button")) return;
+          if (window.getSelection()?.isCollapsed === false) return;
+          onInspectActivity?.(conversationActivityToInspectorActivity(activity));
+        }}>
           {summary.display ? <MarkdownContent text={summary.display} /> : <span>{t("agentPage.activitySummaryUnavailable")}</span>}
+          {onInspectActivity ? (
+            <button type="button" className="conversation-progress-inspect"
+              aria-label={t("agentPage.inspectActivity")}
+              onClick={() => onInspectActivity(conversationActivityToInspectorActivity(activity))}>
+              <ExternalLink size={13} />
+            </button>
+          ) : null}
         </div>
       ) : (
-        <details className="conversation-tool-detail">
-          <summary>
-            <span className="conversation-activity-icon">{icon}</span>
-            <span className="conversation-activity-summary">{summary.display || label}</span>
-            <ChevronRight size={13} className="conversation-disclosure-chevron" />
-          </summary>
-          <div className="conversation-tool-body">
-            <pre>{summary.plain || t("agentPage.activitySummaryUnavailable")}</pre>
-            {onInspectActivity ? (
-              <button type="button" onClick={() => onInspectActivity(conversationActivityToInspectorActivity(activity))}>
-                <ExternalLink size={13} />{t("agentPage.inspectActivity")}
-              </button>
-            ) : null}
-          </div>
-        </details>
+        <button type="button" className="conversation-activity-row"
+          disabled={!onInspectActivity}
+          onClick={() => onInspectActivity?.(conversationActivityToInspectorActivity(activity))}>
+          <span className="conversation-activity-icon">{icon}</span>
+          <span className="conversation-activity-summary">{summary.display || label}</span>
+          <ChevronRight size={13} />
+        </button>
       )}
     </li>
   );

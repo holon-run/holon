@@ -245,7 +245,10 @@ an overlay drawer. The prototype can focus on desktop first.
 - Active execution opens automatically. Show readable assistant progress and
   compact tool rows, initially retaining the latest eight activities plus
   errors/waits. Earlier activity and older server pages are explicit actions.
-  Tool inputs/outputs remain in the existing inspector.
+  Clicking an activity opens the existing inspector directly, including its
+  tool-specific rendering for commands, patches, images, and WorkItems. Assistant
+  progress also has a keyboard-accessible inspect button. Selecting text or
+  opening a Markdown link does not trigger inspection.
 - Execution ending alone does not imply result delivery. A turn observed running
   stays open while delivery is pending or referenced briefs are still loading.
   Once settled and readable, collapse the process over 220ms. Manual expansion

@@ -49,6 +49,7 @@ function sessionFor(req, url) {
       ledgerEnabledAgentIds: new Set(),
       eventsByAgentId: new Map(),
       briefsById: new Map(),
+      toolExecutionsById: new Map(),
       blockedBriefIds: new Set(),
       failConversationByAgentId: new Set(),
       streamGeneration: 0,
@@ -303,8 +304,9 @@ async function handleControl(req, res, url) {
       { type: "batch_begin", batch_id: batchId, schema_version: 1, query_version: 1,
         runtime_id: session.runtimeId, ...scope, from_seq: previous?.head ?? 0, through_seq: data.head },
       ...data.turns.map((turn) => ({ type: "turn_summary_upsert", ...scope, turn })),
-      ...Object.entries(data.activitiesByTurnId).flatMap(([turn_id, activities]) =>
+      ...Object.entries(data.invalidateOnly ? {} : data.activitiesByTurnId).flatMap(([turn_id, activities]) =>
         activities.map((activity) => ({ type: "activity_upsert", ...scope, turn_id, activity }))),
+      ...data.turns.map((turn) => ({ type: "detail_invalidated", ...scope, turn_id: turn.turn_id, detail_revision: data.head })),
       { type: "checkpoint", batch_id: batchId, ...scope, through_seq: data.head, checkpoint: `conv-${data.head}` },
     ];
     for (const stream of session.conversationStreams) {
@@ -334,6 +336,7 @@ async function handleControl(req, res, url) {
         ]),
       );
     }
+    if (body.toolExecutionsById) session.toolExecutionsById = new Map(Object.entries(body.toolExecutionsById));
     if (body.briefsById && typeof body.briefsById === "object") {
       session.briefsById = new Map(Object.entries(body.briefsById));
     }
@@ -554,10 +557,16 @@ async function handleApi(req, res, url) {
       event_log_epoch: session.eventLogEpoch, visibility_scope_id: session.visibilityScopeId,
       snapshot_through_seq: data.head, event_head_seq: data.head, oldest_retained_seq: 0,
       snapshot_cursor: `conv-snap:${activityMatch[1]}:${data.head}`,
-      turn, detail_revision: turn.revision,
+      turn, detail_revision: data.head,
       activities: data.activitiesByTurnId[turnId] ?? [], coverage: { kind: "complete" },
       next_before_cursor: null, has_more: false,
     });
+    return true;
+  }
+  const toolMatch = url.pathname.match(/^\/api\/agents\/[^/]+\/tool-executions\/([^/]+)$/);
+  if (toolMatch) {
+    const tool = session.toolExecutionsById.get(decodeURIComponent(toolMatch[1]));
+    json(res, tool ?? { error: "tool not found" }, tool ? 200 : 404);
     return true;
   }
   const briefMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/briefs\/([^/]+)$/);

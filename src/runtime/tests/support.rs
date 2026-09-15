@@ -135,6 +135,24 @@ pub(crate) fn terminal_transition(
     }
 }
 
+pub(crate) fn terminal_transition_from_started_turn(
+    runtime: &RuntimeHandle,
+    message: &MessageEnvelope,
+) -> super::super::turn::TurnTerminalTransition {
+    let mut record = runtime
+        .storage()
+        .read_turn_by_id(message.turn_id.as_deref().unwrap())
+        .unwrap()
+        .expect("turn identity was persisted at admission");
+    let mut transition = terminal_transition(message, record.current_work_item_id.as_deref());
+    transition.terminal.turn_index = record.turn_index;
+    record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(
+        &transition.terminal,
+    ));
+    transition.turn_record = record;
+    transition
+}
+
 pub(crate) async fn wait_for_audit_events(
     runtime: &RuntimeHandle,
     limit: usize,

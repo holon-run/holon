@@ -121,3 +121,31 @@ test("live growth follows the bottom but preserves history reading, including on
   const input = page.locator(".composer textarea");
   expect((await input.boundingBox())!.width).toBeGreaterThan(200);
 });
+
+test("an invalidated active process refreshes before its brief and opens the existing tool renderer in one click", async ({ page, context, request }, info) => {
+  const session = `details-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const current = turn("live-detail", 1);
+  const tool: ConversationActivity = { kind: "tool", id: "tool:exec-live", key: { event_seq: 2, activity_id: "tool:exec-live" }, revision: 1, summary: "ExecCommand · success" };
+  await request.post(control("/__e2e__/configure"), { data: { toolExecutionsById: {
+    "exec-live": { id: "exec-live", agent_id: agentId, tool_name: "ExecCommand", status: "success",
+      input: { cmd: "printf live-marker" }, output: { stdout: "live-marker", exit_status: 0 }, summary: "command completed" },
+  } } });
+  const update = (activities: ConversationActivity[]) => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], activitiesByTurnId: { "live-detail": activities }, invalidateOnly: true,
+  } });
+  await update([activity(1, "Starting the live check.")]);
+  await page.goto(`/agents/${agentId}/conversation`);
+  await expect(page.getByText("Starting the live check.")).toBeVisible();
+  await update([activity(1, "Starting the live check."), tool]);
+  await expect(page.getByRole("button", { name: "ExecCommand · success", exact: true })).toBeVisible();
+  await expect(page.locator('[data-turn-id="live-detail"] .conversation-brief')).toHaveCount(0);
+  await page.getByRole("button", { name: "ExecCommand · success", exact: true }).click();
+  await expect(page.locator(".side-panel")).toBeVisible();
+  await expect(page.locator(".side-panel").getByText("printf live-marker", { exact: true })).toBeVisible();
+  await expect(page.locator(".side-panel").getByText("live-marker", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Close side panel", exact: true }).click();
+  await page.getByText("Starting the live check.", { exact: true }).click();
+  await expect(page.locator(".side-panel").getByText("Starting the live check.", { exact: true }).first()).toBeVisible();
+});
