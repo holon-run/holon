@@ -3,6 +3,7 @@ import { Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
+import { PageHeading } from "../../components/ui/PageHeading";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import type { AgentSummary, MemorySourceContent, RuntimeSearchOptions, SearchResponse, SearchResultItem } from "../../runtime/types";
@@ -82,12 +83,9 @@ export function SearchPage({
   }
 
   return (
-    <section className="page search-page" aria-label="Search">
-      <div className="page-inner search-inner">
-        <section className="search-hero">
-          <span className="eyebrow">{t("searchPage.runtimeSearch")}</span>
-          <h1>{t("searchPage.title")}</h1>
-        </section>
+    <section className="page search-page workspace-page" aria-label="Search">
+      <div className="page-inner search-inner workspace-page-content">
+        <PageHeading title={t("searchPage.title")} />
 
         <form className="search-form" onSubmit={submit}>
           <label className="search-query">

@@ -1,0 +1,195 @@
+/* Global workspaces share the conversation's quiet surfaces and compact type.
+   Scoped here so inspector cards and conversation renderers keep their own layout. */
+.workspace-page {
+  --surface-soft: #f7f7f8;
+  --surface-hover: #f0f1f3;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.workspace-page-content {
+  width: 100%;
+  max-width: 1180px;
+  min-width: 0;
+  margin-inline: auto;
+  padding: 28px 36px 48px;
+  align-content: start;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+
+.page-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  min-width: 0;
+}
+
+.page-heading > div { min-width: 0; }
+.page-heading h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.025em;
+  overflow-wrap: anywhere;
+}
+.page-heading p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+.page-heading-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.workspace-page .eyebrow { color: var(--muted); font-size: 11px; font-weight: 600; }
+.workspace-page :is(h2, h3) { font-size: 16px; font-weight: 600; }
+.workspace-page :is(button, input, select, textarea, summary):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.workspace-page :is(input:not([type="checkbox"]), select, textarea) {
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.workspace-page :is(.search-form, .skills-add-form, .settings-form, .settings-provider-editor) :is(input:not([type="checkbox"]), select) {
+  min-height: 36px;
+  background: var(--surface);
+}
+.workspace-page :is(.skills-search, .skills-scope-filter, .skills-add-form) span {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.workspace-page .empty-state { min-height: 220px; box-shadow: none; }
+.workspace-page :is(.agent-card, .metric-card, .skills-stat, .skills-library-card, .settings-card, .provider-card, .search-result-card) { box-shadow: none; }
+
+/* Dashboard: state is visible, while task text gets the space. */
+.workspace-page .dashboard-section { gap: 24px; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+.workspace-page .metric-strip { gap: 0; grid-template-columns: repeat(4, minmax(0, 1fr)); border-block: 1px solid var(--line); }
+.workspace-page .metric-strip .metric-card {
+  min-height: 70px;
+  padding: 12px 16px;
+  gap: 6px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  transform: none;
+}
+.workspace-page .metric-card + .metric-card { border-left: 1px solid var(--line); }
+.workspace-page .metric-strip .metric-card strong { font-size: 22px; font-weight: 600; }
+.workspace-page .metric-card.attention strong { color: var(--warning); }
+.workspace-page .agent-card { grid-template-columns: minmax(0, 1fr); min-width: 0; padding: 18px; gap: 14px; border-radius: 10px; }
+.workspace-page .agent-card:hover { transform: none; border-color: var(--line-strong); box-shadow: none; }
+.workspace-page .agent-card-head strong { font-size: 15px; font-weight: 600; }
+.workspace-page .agent-card-head small { font-size: 12px; color: var(--muted); }
+.workspace-page .agent-card-summary { font-size: 13px; overflow-wrap: anywhere; }
+.workspace-page .agent-card-work { padding: 10px 12px; border: 0; border-radius: 6px; background: var(--surface-soft); }
+.workspace-page .agent-card-work strong { white-space: normal; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.workspace-page :is(.agent-card-work span, .agent-detail-list dt) { text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+/* Search: one clear query surface and a continuous result list. */
+.workspace-page .search-form {
+  grid-template-columns: minmax(0, 1fr) minmax(130px, 180px) 72px auto;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 10px;
+  background: var(--surface-soft);
+  box-shadow: none;
+}
+.workspace-page .search-form label { min-width: 0; font-weight: 500; }
+.workspace-page .search-query input { font-size: 15px; }
+.workspace-page .search-results-head { padding: 0 0 12px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; flex-wrap: wrap; }
+.workspace-page .search-result-list { gap: 0; }
+.workspace-page .search-result-card { padding: 20px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.workspace-page .search-result-preview p { font-size: 14px; line-height: 1.65; }
+.workspace-page .search-result-details { color: var(--muted); }
+
+/* Libraries: browse first, reveal installation when needed. */
+.workspace-page .skills-summary { display: flex; flex-wrap: wrap; gap: 12px 24px; padding-block: 12px; border-block: 1px solid var(--line); }
+.workspace-page .skills-stat { display: flex; align-items: baseline; gap: 8px; padding: 0; border: 0; border-radius: 0; }
+.workspace-page .skills-stat strong { font-size: 18px; font-weight: 600; }
+.workspace-page .skills-stat span { font-size: 12px; font-weight: 500; text-transform: none; }
+.workspace-page .skills-library-card { grid-template-columns: minmax(0, 1fr); min-width: 0; padding: 0; border: 0; border-radius: 0; }
+.workspace-page .skills-library-head { align-items: center; padding-bottom: 12px; }
+.workspace-page .skills-library-head p { margin: 0; }
+.workspace-page .library-install { min-width: 0; border: 1px solid var(--line); border-radius: 8px; }
+.workspace-page .library-install > summary { padding: 10px 12px; cursor: pointer; font-size: 13px; color: var(--muted); }
+.workspace-page .library-install[open] > summary { border-bottom: 1px solid var(--line); color: var(--text); }
+.workspace-page .skills-add-form { grid-template-columns: minmax(140px, .8fr) minmax(0, 2fr) minmax(120px, 1fr) auto; border: 0; margin: 0; padding: 14px 12px; gap: 12px; }
+.workspace-page .skills-add-form label { min-width: 0; }
+.workspace-page .skills-add-help { margin: 0; padding: 0 12px 14px; }
+.workspace-page .template-actions-grid { grid-template-columns: minmax(0, 1fr); }
+.workspace-page .template-actions-grid .skills-add-form { grid-template-columns: minmax(0, 1fr) auto; }
+.workspace-page .template-remote-source-form { grid-template-columns: minmax(0, 1fr) minmax(120px, 180px) auto; }
+.workspace-page .skills-toolbar { grid-template-columns: minmax(0, 1fr) minmax(130px, 180px); margin-block: 4px 8px; }
+.workspace-page .skills-list { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.workspace-page .skills-row { padding: 16px 4px; gap: 20px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+.workspace-page .skills-row:hover { background: var(--surface-soft); }
+.workspace-page .skills-row-open { gap: 4px; }
+.workspace-page .skills-row-open strong { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.workspace-page .skills-row-open p { -webkit-line-clamp: 2; }
+.workspace-page .skills-row-actions { min-width: 0; flex: 0 0 auto; }
+.workspace-page .template-card-grid { grid-template-columns: repeat(auto-fit, minmax(min(280px, 100%), 1fr)); }
+.workspace-page .template-card { border-radius: 10px; min-width: 0; }
+.workspace-page .template-card:hover { background: var(--surface-soft); border-color: var(--line-strong); }
+.workspace-page .template-card-title strong { font-weight: 600; overflow-wrap: anywhere; }
+.workspace-page .template-card-actions { border-top: 1px solid var(--line); padding-top: 12px; flex-wrap: wrap; }
+.workspace-page .template-remote-sources-collapse { margin-top: 0; border-top: 1px solid var(--line); padding-top: 12px; }
+.workspace-page :is(.skills-hero, .skill-detail-hero) { padding: 0 0 20px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+.workspace-page :is(.skills-hero, .skill-detail-hero) h1 { font-size: 24px; font-weight: 650; }
+.workspace-page .skills-detail-meta { grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr)); }
+
+/* Settings: compact status summary, a stable section bar, quiet form sections. */
+.workspace-page .settings-quickstart { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin: 0; border-block: 1px solid var(--line); }
+.workspace-page .settings-quickstart div { padding: 12px 16px; gap: 4px; border: 0; border-radius: 0; background: transparent; }
+.workspace-page .settings-quickstart div + div { border-left: 1px solid var(--line); }
+.workspace-page .settings-quickstart span { font-size: 12px; font-weight: 500; text-transform: none; }
+.workspace-page .settings-quickstart strong { font-size: 13px; font-weight: 600; }
+.workspace-page .settings-quickstart small { overflow-wrap: anywhere; font-size: 11px; }
+.workspace-page .settings-tabs { display: flex; gap: 20px; padding: 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: var(--surface); overflow-x: auto; }
+.workspace-page .settings-tab { flex: 0 0 auto; padding: 10px 2px; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; font-size: 13px; }
+.workspace-page .settings-tab span { font-weight: 500; }
+.workspace-page .settings-tab.active { border-bottom-color: var(--text); color: var(--text); }
+.workspace-page .settings-tab:hover { color: var(--text); }
+.workspace-page .settings-content { grid-template-columns: minmax(0, 1fr); display: grid; gap: 24px; min-width: 0; }
+.workspace-page .settings-card { grid-template-columns: minmax(0, 1fr); padding: 0 0 24px; gap: 16px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; min-width: 0; }
+.workspace-page .settings-card-head button { border-radius: 8px; background: var(--surface); }
+.workspace-page .settings-card-head > div { min-width: 0; }
+.workspace-page .settings-list dt { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.workspace-page .settings-list dd { font-size: 13px; overflow-wrap: anywhere; }
+.workspace-page .settings-provider-editor { border-radius: 8px; background: var(--surface); padding: 16px; }
+.workspace-page .settings-advanced { border-radius: 8px; background: var(--surface-soft); }
+.workspace-page .settings-chip-input { background: var(--surface); border-radius: 8px; }
+.workspace-page .settings-form-row > * { min-width: 0; }
+.workspace-page :is(.settings-callout, .settings-empty, .settings-error-banner) { border-radius: 8px; font-size: 13px; }
+
+@media (max-width: 1100px) {
+  .workspace-page-content { padding: 24px; }
+  .workspace-page .skills-add-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workspace-page .skills-add-form > button { justify-self: start; }
+  .workspace-page .settings-quickstart { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workspace-page .settings-quickstart div:nth-child(3) { border-left: 0; }
+  .workspace-page .settings-quickstart div:nth-child(n+3) { border-top: 1px solid var(--line); }
+}
+@media (max-width: 760px) {
+  .workspace-page-content { padding: 20px 16px 32px; gap: 20px; }
+  .page-heading h1 { font-size: 22px; }
+  .workspace-page .search-form { grid-template-columns: minmax(0, 1fr) 72px auto; }
+  .workspace-page .search-query { grid-column: 1 / -1; }
+  .workspace-page .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .workspace-page .metric-card:nth-child(3) { border-left: 0; }
+  .workspace-page .metric-card:nth-child(n+3) { border-top: 1px solid var(--line); }
+  .workspace-page .skills-row { flex-wrap: wrap; gap: 10px; }
+  .workspace-page .skills-row-open { flex-basis: 100%; }
+  .workspace-page .skills-row-actions { justify-content: flex-start; }
+  .workspace-page :is(.skills-add-form, .template-actions-grid .skills-add-form, .template-remote-source-form, .settings-form-row, .settings-grid) { grid-template-columns: minmax(0, 1fr); }
+  .workspace-page .settings-tabs { gap: 16px; }
+  .workspace-page .settings-card-head { flex-wrap: wrap; }
+  .workspace-page .skills-actions { min-width: 0; }
+  .workspace-page :is(.skills-hero, .skill-detail-hero) { flex-wrap: wrap; }
+  .workspace-page .search-result-details div { grid-template-columns: minmax(0, 1fr); }
+}

@@ -138,6 +138,8 @@ The left navigation contains only global surfaces:
 - **Dashboard:** the home surface for all agents and their current state.
 - **Search:** cross-agent lookup for messages, briefs, WorkItems, tool
   executions, and memory records.
+- **Skills and Agent Templates:** browse installed resources, inspect their contents,
+  and expand installation or remote-source controls when needed.
 - **Settings:** runtime configuration, providers, model defaults, and
   local/remote connection details.
 
@@ -268,6 +270,36 @@ to the conversation. Do not partially cover the conversation or composer.
   then capabilities and settings. Runtime facts and lifecycle controls are
   disclosures. Workspace names open the browser; full paths remain available
   on expansion. Use dividers rather than nested raised cards.
+
+## Global workspace pages
+
+Dashboard, Search, Skills, Agent Templates, and Settings use the same quiet
+surface as the conversation. `PageHeading` provides one 24px page title
+(22px on narrow screens), optional supporting text, and wrapping actions.
+Content is limited to 1180px, with 36px desktop and 16px mobile side padding.
+Body text is 14px, supporting text and form controls 13px. Use neutral surfaces,
+light separators, and 8–10px corners; reserve accent colors for actions and state.
+
+- Dashboard retains the agent roster and visible lifecycle/attention state.
+  Metrics form one compact strip; task text wraps within each agent card.
+- Search keeps the query and filters together and uses a continuous result list.
+  Result provenance, source disclosure, and agent navigation remain available.
+- Skills use a single list so descriptions have room beside actions. Templates
+  retain a responsive card grid. Installation controls and template remote
+  sources are explicit disclosures, collapsed initially; closing a disclosure
+  retains its unsent form values.
+- Settings use a compact runtime summary and one section bar. Arrow keys,
+  Home, and End move the selected tab and focus together; Tab enters its panel.
+  Configuration forms and error feedback keep their existing save semantics.
+- `styles/workspace-pages.css` scopes these rules to `.workspace-page` and is
+  loaded after the legacy shared styles. Conversation and inspector rendering
+  keep their own density. Grid tracks must shrink to zero rather than letting
+  long names or paths force page-level horizontal scrolling.
+
+Verification: real runtime pages inspected at 1440, 1024, 768, and 390px,
+including expanded installation/source forms, library filtering and detail
+navigation, search results, and Settings tabs. Configuration writes and skill
+installation are not performed as part of visual verification.
 
 ## Conversation reading contract
 

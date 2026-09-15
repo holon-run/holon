@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { PageHeading } from "../../components/ui/PageHeading";
 import { Button } from "../../components/ui/Button";
 import { useI18nSettings } from "../../i18n";
 import { LANGUAGE_MODE_OPTIONS } from "../../i18n/types";
@@ -655,11 +656,10 @@ export function SettingsPage({
   }
 
   return (
-    <section className="page settings-page" aria-label={t("settings.settingsAria")}>
-      <div className="page-inner settings-inner">
-        <Card className="summary-panel settings-hero">
-          <span className="eyebrow">{t("settings.runtimeConfig")}</span>
-          <h1>{t("settings.title")}</h1>
+    <section className="page settings-page workspace-page" aria-label={t("settings.settingsAria")}>
+      <div className="page-inner settings-inner workspace-page-content">
+        <PageHeading title={t("settings.title")} description={t("settings.runtimeConfig")} />
+        <section className="settings-overview">
           <div className="settings-quickstart" aria-label={t("settings.settingsOverviewAria")}>
             <div>
               <span>{t("settings.connection")}</span>
@@ -688,12 +688,26 @@ export function SettingsPage({
               <small>{surface?.visionDefault ?? `${visionModels.length} image-capable model${visionModels.length === 1 ? "" : "s"} ready`}</small>
             </div>
           </div>
-        </Card>
+        </section>
 
         <div className="settings-tabs" role="tablist" aria-label={t("settings.settingsSectionsAria")}>
           {settingsTabs.map((tab) => (
             <button
+              id={`settings-tab-${tab.key}`}
+              aria-controls="settings-panel"
               aria-selected={activeTab === tab.key}
+              tabIndex={activeTab === tab.key ? 0 : -1}
+              title={t(tab.descriptionKey)}
+              onKeyDown={(event) => {
+                const index = settingsTabs.findIndex((item) => item.key === tab.key);
+                const next = event.key === "ArrowRight" ? (index + 1) % settingsTabs.length
+                  : event.key === "ArrowLeft" ? (index + settingsTabs.length - 1) % settingsTabs.length
+                  : event.key === "Home" ? 0 : event.key === "End" ? settingsTabs.length - 1 : undefined;
+                if (next === undefined) return;
+                event.preventDefault();
+                setActiveTab(settingsTabs[next].key);
+                document.getElementById(`settings-tab-${settingsTabs[next].key}`)?.focus();
+              }}
               className={`settings-tab ${activeTab === tab.key ? "active" : ""}`}
               key={tab.key}
               onClick={() => setActiveTab(tab.key)}
@@ -701,11 +715,11 @@ export function SettingsPage({
               type="button"
             >
               <span>{t(tab.labelKey)}</span>
-              <small>{t(tab.descriptionKey)}</small>
             </button>
           ))}
         </div>
 
+        <div className="settings-content" id="settings-panel" role="tabpanel" aria-labelledby={`settings-tab-${activeTab}`} tabIndex={0}>
         {activeTab === "general" ? (
           <div className="settings-grid">
             <Card className="settings-card settings-primary-card">
@@ -1765,6 +1779,7 @@ export function SettingsPage({
             </div>
           </details>
         </Card>
+        </div>
       </div>
     </section>
   );

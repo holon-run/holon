@@ -5,6 +5,7 @@ import { I18nProvider } from "./i18n";
 import { App } from "./app/App";
 import "./styles/tokens.css";
 import "./styles/global.css";
+import "./styles/workspace-pages.css";
 
 if (__HOLON_E2E_DIAGNOSTICS__) {
   void import("./e2e/diagnostics-bridge");

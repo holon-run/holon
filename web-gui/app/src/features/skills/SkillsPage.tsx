@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import i18next from "i18next";
 
 import { parseSkillMarkdown } from "./parseSkillMarkdown";
+import { PageHeading } from "../../components/ui/PageHeading";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardHeader } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -81,13 +82,8 @@ export function SkillsPage({
   }
 
   return (
-    <div className="skills-inner scroll-surface">
-      <section className="skills-hero context-card">
-        <div className="skills-hero-copy">
-          <span className="eyebrow">{t("skillsPage.skillLibrary")}</span>
-          <h1>{t("skillsPage.title")}</h1>
-        </div>
-        <div className="skills-actions" aria-label={t("skillsPage.skillLibrary")}>
+    <div className="skills-inner workspace-page workspace-page-content scroll-surface">
+      <PageHeading title={t("skillsPage.title")} actions={<>
           <Button type="button" variant="outline" disabled={loading} onClick={() => void updateSkill()}>
             <RefreshCw size={14} style={{ marginRight: 4 }} />
             {loading ? t("skillsPage.updating") : t("skillsPage.updateAll")}
@@ -95,8 +91,7 @@ export function SkillsPage({
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
-        </div>
-      </section>
+      </>} />
 
       <section className="skills-summary" aria-label={t("skillsPage.librarySummary")}>
         {stats.map((stat) => (
@@ -144,6 +139,8 @@ export function SkillsPage({
           <StatusBadge className="state-chip" kind="connection" value={catalog.source} />
         </CardHeader>
         <CardContent>
+          <details className="library-install">
+            <summary>{t("skillsPage.installSkill")}</summary>
           <form className="skills-add-form" onSubmit={(event) => void handleAddSkill(event)}>
             <label>
               <span>{t("skillsPage.installSkill")}</span>
@@ -192,6 +189,8 @@ export function SkillsPage({
           <p className="skills-add-help">
             {t("skillsPage.addHelp")}
           </p>
+
+          </details>
 
           <div className="skills-toolbar" role="search">
             <label className="skills-search">
@@ -312,7 +311,7 @@ export function SkillDetailPage({
         <span className="breadcrumb-sep" aria-hidden="true">/</span>
         <span className="breadcrumb-current">{skill?.name ?? skillId}</span>
       </nav>
-      <div className="skills-inner skill-detail-page scroll-surface">
+      <div className="skills-inner skill-detail-page workspace-page workspace-page-content scroll-surface">
       <section className="skills-hero context-card">
         <div className="skills-hero-copy">
           <span className="eyebrow">{t("skillsPage.skillDetail")}</span>

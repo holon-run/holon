@@ -3,6 +3,7 @@ import { ArrowLeft, LayoutTemplate, PackageOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { MarkdownContent } from "../../components/MarkdownContent";
+import { PageHeading } from "../../components/ui/PageHeading";
 import { Button } from "../../components/ui/Button";
 import { Card, CardContent, CardHeader } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -136,21 +137,15 @@ export function TemplatesPage({
   }
 
   return (
-    <div className="templates-inner skills-inner scroll-surface">
-      <section className="skills-hero context-card">
-        <div className="skills-hero-copy">
-          <span className="eyebrow">{t("templatesPage.templateLibrary")}</span>
-          <h1>{t("templatesPage.title")}</h1>
-        </div>
-        <div className="skills-actions" aria-label={t("templatesPage.templateLibrary")}>
+    <div className="templates-inner skills-inner workspace-page workspace-page-content scroll-surface">
+      <PageHeading title={t("templatesPage.title")} actions={<>
           <Button type="button" variant="outline" disabled={loading || syncInProgress} onClick={() => void onSyncSources()}>
             {syncInProgress ? t("templatesPage.syncing") : t("templatesPage.syncSources")}
           </Button>
           <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
             {loading ? t("common.refreshing") : t("common.refresh")}
           </Button>
-        </div>
-      </section>
+      </>} />
 
       {error ? (
         <div className="skills-error" role="alert">
@@ -188,6 +183,8 @@ export function TemplatesPage({
           </div>
         </CardHeader>
         <CardContent>
+          <details className="library-install">
+            <summary>{t("templatesPage.installTemplate")}</summary>
           <div className="template-actions-grid">
 
             <form className="skills-add-form" onSubmit={(event) => void handleInstall(event)}>
@@ -208,6 +205,8 @@ export function TemplatesPage({
           <p className="skills-add-help">
             {t("templatesPage.addHelp")}
           </p>
+
+          </details>
 
           <div className="skills-toolbar" role="search">
             <label className="skills-search">
@@ -258,7 +257,7 @@ export function TemplatesPage({
         </CardContent>
       </Card>
 
-      <details className="template-remote-sources-collapse" open>
+      <details className="template-remote-sources-collapse">
         <summary className="template-remote-sources-toggle">
           {t("templatesPage.remoteSources")} ({catalog.sources.length})
         </summary>
@@ -353,7 +352,7 @@ export function TemplateDetailPage({
   const [viewMode, setViewMode] = useState<"rendered" | "source">("rendered");
 
   return (
-    <div className="skills-inner scroll-surface">
+    <div className="skills-inner workspace-page workspace-page-content scroll-surface">
       <section className="skill-detail-hero context-card">
         <div>
           <button className="text-button" type="button" onClick={onBack}>

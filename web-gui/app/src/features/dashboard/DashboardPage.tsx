@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { PageHeading } from "../../components/ui/PageHeading";
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -29,26 +30,21 @@ export function DashboardPage({ agents, metrics, connection, discovery, loading,
   const isRefreshing = loading && hasAgents;
   const isPreview = connection.source === "fixture";
   const dashboardState = getDashboardState({ isBootstrapping, hasAgents, hasConnectionError, isPreview });
-  const connectionLabel = connection.source === "http" ? t("dashboard.liveRuntime") : hasConnectionError ? t("dashboard.runtimeUnavailable") : t("dashboard.previewData");
-  const agentCountLabel = t("dashboard.agentsCount", { count: agents.length });
 
   return (
-    <section className="page dashboard-page" aria-label={t("dashboard.dashboardAria")}>
-      <div className="page-inner dashboard-inner">
+    <section className="page dashboard-page workspace-page" aria-label={t("dashboard.dashboardAria")}>
+      <div className="page-inner dashboard-inner workspace-page-content">
         <section className="dashboard-section dashboard-roster-section">
-          <div className="section-head dashboard-head">
-            <div>
-              <span className="eyebrow">{t("dashboard.roster")}</span>
-              <h2>{t("dashboard.agents")}</h2>
-              <p>{t("dashboard.available", { count: agents.length })}</p>
-            </div>
-            <div className="dashboard-actions">
+          <PageHeading
+            title={t("dashboard.agents")}
+            description={t("dashboard.available", { count: agents.length })}
+            actions={<>
               <StatusBadge className={`connection-pill ${connection.source}`} kind="connection" value={connection.source} />
-              <Button type="button" variant="secondary" disabled={loading} onClick={onRefresh}>
+              <Button type="button" variant="outline" disabled={loading} onClick={onRefresh}>
                 {loading ? t("common.refreshing") : t("common.refresh")}
               </Button>
-            </div>
-          </div>
+            </>}
+          />
 
           {discovery?.freshness === "stale" ? (
             <div className="roster-discovery-banner stale" role="status">
