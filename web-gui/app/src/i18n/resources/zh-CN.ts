@@ -75,10 +75,6 @@ const zh: Record<string, any> = {
   },
   app: {
     newAgent: "新建智能体",
-    displayLevel: "显示级别",
-    info: "信息",
-    verbose: "详细",
-    debug: "调试",
     refreshingAgent: "正在刷新智能体详情",
     refreshAgent: "刷新智能体详情",
     agentId: "智能体 ID",
@@ -363,7 +359,7 @@ const zh: Record<string, any> = {
   },  agentPage: {
     loadEarlier: "加载更早的消息",
     loadingEarlier: "正在加载更早的消息…",
-    conversationEmpty: "发送第一条操作者消息，或切换到详细/调试模式查看底层运行时事件。",
+    conversationEmpty: "发送第一条操作者消息开始对话。",
     send: "发送",
     copyMessage: "复制消息",
     inspectMessage: "检查消息",
@@ -987,7 +983,7 @@ const zh: Record<string, any> = {
     loadEarlier: "加载更早的消息",
     loadingEarlier: "正在加载更早的消息…",
     conversationAria: "智能体对话",
-    conversationEmpty: "发送第一条操作者消息，或切换到详细/调试模式查看底层运行时事件。",
+    conversationEmpty: "发送第一条操作者消息开始对话。",
     noEventsYet: "此智能体暂无运行时事件。尝试刷新会话或发送一条操作者消息。",
     syncRecoveryFailed: "会话同步恢复失败（第 {{attempt}} 次）",
     retrySync: "立即重试同步",

@@ -28,7 +28,6 @@ import { AgentPage } from "../features/agent/AgentPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
-import { SegmentedControl, SegmentedControlButton } from "../components/ui/SegmentedControl";
 import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
@@ -37,7 +36,6 @@ import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
 import { TemplateDetailPage, TemplatesPage } from "../features/templates/TemplatesPage";
 import { deriveAgentDisplayStatus } from "../runtime/agent-status";
-import { availableDisplayLevels } from "../runtime/display-level";
 import {
   getRuntimeTraceRevision,
   isRuntimeTraceEnabled,
@@ -54,7 +52,7 @@ import {
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { AgentSummary, DisplayLevel, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
+import type { AgentSummary, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
 import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation } from "./routes";
 
@@ -89,9 +87,6 @@ export function App() {
   const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
   const selectedSkillAgentId = useRuntimeStore((state) => state.selectedSkillAgentId);
   const selectedTemplateId = useRuntimeStore((state) => state.selectedTemplateId);
-  const displayLevel = useRuntimeStore((state) =>
-    state.displayLevelsByAgentId[selectedAgentId] ?? "info",
-  );
   const rightPanelOpen = useRuntimeStore((state) => state.rightPanelOpen);
   const rightPanelView = useRuntimeStore((state) => state.rightPanelView);
   const rightPanelMode = useRuntimeStore((state) => state.rightPanelMode);
@@ -103,7 +98,6 @@ export function App() {
   const acknowledgeAgentTruncation = useRuntimeStore((state) => state.acknowledgeAgentTruncation);
   const openSkill = useRuntimeStore((state) => state.openSkill);
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
-  const setDisplayLevel = useRuntimeStore((state) => state.setDisplayLevel);
   const disableDeveloperDiagnosticsUi = useRuntimeStore((state) => state.disableDeveloperDiagnosticsUi);
   const setRightPanelOpen = useRuntimeStore((state) => state.setRightPanelOpen);
   const inspectActivity = useRuntimeStore((state) => state.inspectActivity);
@@ -242,13 +236,11 @@ export function App() {
   const renameAgentAction = useRuntimeStore((state) => state.renameAgent);
   const loadAgentWorkItemDetail = useRuntimeStore((state) => state.loadAgentWorkItemDetail);
   const loadAgentTaskDetail = useRuntimeStore((state) => state.loadAgentTaskDetail);
-  const effectiveDisplayLevel =
-    !developerDiagnosticsEnabled && displayLevel === "debug" ? "info" : displayLevel;
   const {
     detail: selectedAgentDetail,
     loading: agentDetailLoading,
     refresh: refreshAgentDetail,
-  } = useAgentDetail(activeAgentId, effectiveDisplayLevel);
+  } = useAgentDetail(activeAgentId);
   const conversationSession = useConversationSession(
     route === "agent" ? activeAgentId : undefined,
   );
@@ -291,19 +283,6 @@ export function App() {
             <RefreshCw size={16} />
           </Button>
         </div>
-        <SegmentedControl className="display-level" label={t("app.displayLevel")}>
-          {availableDisplayLevels(developerDiagnosticsEnabled).map((level) => (
-            <SegmentedControlButton
-              active={displayLevel === level}
-              className={displayLevel === level ? "is-active" : ""}
-              key={level}
-              type="button"
-              onClick={() => setDisplayLevel(level, activeAgentId)}
-            >
-              {level === "info" ? t("app.info") : level === "verbose" ? t("app.verbose") : t("app.debug")}
-            </SegmentedControlButton>
-          ))}
-        </SegmentedControl>
         {developerDiagnosticsEnabled && activeAgentId ? (
           <Button
             type="button"
@@ -400,7 +379,7 @@ export function App() {
 
   useEffect(() => {
     if (!developerDiagnosticsEnabled) {
-      disableDeveloperDiagnosticsUi(selectedAgentId);
+      disableDeveloperDiagnosticsUi();
     }
   }, [developerDiagnosticsEnabled, disableDeveloperDiagnosticsUi, selectedAgentId]);
 
@@ -755,10 +734,10 @@ export function App() {
               void acknowledgeAgentTruncation(activeAgent.id);
             }}
             onRefreshModels={refreshModelCatalog}
-            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, effectiveDisplayLevel, reasoningEffort)}
-            onClearModel={() => clearAgentModel(activeAgent.id, effectiveDisplayLevel)}
+            onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, reasoningEffort)}
+            onClearModel={() => clearAgentModel(activeAgent.id)}
             onRetrySync={() => retryAgentSync(activeAgent.id)}
-            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, effectiveDisplayLevel, attachments)}
+            onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments)}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
           />

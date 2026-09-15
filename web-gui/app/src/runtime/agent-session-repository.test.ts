@@ -45,7 +45,6 @@ function createHarness(
   let state: TestState = {
     route: "agent",
     selectedAgentId: "agent-a",
-    displayLevel: "info",
     globalStreamStatus: "streaming",
     sessionsByAgentId: { "agent-a": session },
     refreshAgentDetail: vi.fn(async () => undefined),

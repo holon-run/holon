@@ -312,8 +312,6 @@ export interface RuntimeStoreState {
   selectedSkillId: string;
   selectedSkillAgentId: string;
   selectedTemplateId: string;
-  displayLevel: DisplayLevel;
-  displayLevelsByAgentId: Record<string, DisplayLevel>;
   rightPanelViewStack: RightPanelView[];
   rightPanelOpen: boolean;
   rightPanelMode: "normal" | "expanded";
@@ -381,8 +379,7 @@ export interface RuntimeStoreState {
   acknowledgeAgentTruncation: (agentId: string) => Promise<void>;
   openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
-  setDisplayLevel: (displayLevel: DisplayLevel, agentId?: string) => void;
-  disableDeveloperDiagnosticsUi: (agentId?: string) => void;
+  disableDeveloperDiagnosticsUi: () => void;
   setRightPanelOpen: (open: boolean) => void;
   toggleRightPanelExpanded: () => void;
   showAgentOverview: (agentId?: string) => void;
@@ -448,20 +445,16 @@ export interface RuntimeStoreState {
   clearCodexDeviceLogin: () => void;
   runSearch: (query: string, options?: RuntimeSearchOptions) => Promise<void>;
   loadSearchResultContent: (sourceRef: string) => Promise<void>;
-  refreshAgentDetail: (
-    agentId: string | undefined,
-    displayLevel: DisplayLevel,
-    options?: AgentDetailRefreshOptions,
-  ) => Promise<void>;
+  refreshAgentDetail: (agentId: string | undefined, options?: AgentDetailRefreshOptions) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;
   refreshAgentState: (agentId: string | undefined) => Promise<void>;
   loadAgentWorkItemDetail: (agentId: string | undefined, workItemId: string | undefined) => Promise<void>;
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity) => Promise<void>;
-  sendOperatorPrompt: (agentId: string | undefined, text: string, displayLevel: DisplayLevel, attachments?: OperatorPromptAttachment[]) => Promise<void>;
+  sendOperatorPrompt: (agentId: string | undefined, text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   abortCurrentRun: (agentId: string | undefined, runId: string | null | undefined) => Promise<void>;
-  setAgentModel: (agentId: string | undefined, model: string, displayLevel: DisplayLevel, reasoningEffort?: string) => Promise<void>;
-  clearAgentModel: (agentId: string | undefined, displayLevel: DisplayLevel) => Promise<void>;
+  setAgentModel: (agentId: string | undefined, model: string, reasoningEffort?: string) => Promise<void>;
+  clearAgentModel: (agentId: string | undefined) => Promise<void>;
   controlAgent: (agentId: string | undefined, action: AgentControlAction) => Promise<void>;
   deleteAgent: (agentId: string | undefined, cascadePrivateChildren?: boolean) => Promise<void>;
   renameAgent: (agentId: string | undefined, name: string) => Promise<void>;
@@ -521,7 +514,6 @@ function resetRightPanelLoading(view: RightPanelView | undefined): RightPanelVie
 const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
 const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
 const RUNTIME_CONNECTION_PROFILES_STORAGE_KEY = "holon.webGui.runtimeConnectionProfiles.v1";
-const DISPLAY_LEVEL_STORAGE_KEY = "holon.webGui.displayLevelsByAgentId.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
@@ -920,37 +912,6 @@ export function isLoopbackWebHostname(hostname: string | undefined): boolean {
   if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
   if (normalized === "::1") return true;
   return /^127(?:\.\d{1,3}){3}$/.test(normalized);
-}
-
-function readStoredDisplayLevels(): Record<string, DisplayLevel> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = window.localStorage.getItem(DISPLAY_LEVEL_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(
-      Object.entries(parsed).filter((entry): entry is [string, DisplayLevel] => {
-        const [agentId, level] = entry;
-        return typeof agentId === "string" && isDisplayLevel(level);
-      }),
-    );
-  } catch {
-    return {};
-  }
-}
-
-function writeStoredDisplayLevels(displayLevelsByAgentId: Record<string, DisplayLevel>): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(DISPLAY_LEVEL_STORAGE_KEY, JSON.stringify(displayLevelsByAgentId));
-  } catch {
-    // Ignore storage failures; the in-memory selection still applies.
-  }
-}
-
-function isDisplayLevel(value: unknown): value is DisplayLevel {
-  return value === "info" || value === "verbose" || value === "debug";
 }
 
 const emptyBootstrap: RuntimeBootstrap = {
@@ -1492,8 +1453,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   selectedSkillId: "",
   selectedSkillAgentId: "",
   selectedTemplateId: "",
-  displayLevel: "info",
-  displayLevelsByAgentId: readStoredDisplayLevels(),
   rightPanelOpen: true,
   rightPanelMode: "normal",
   rightPanelView: undefined,
@@ -1560,7 +1519,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     set((state) => ({
       selectedAgentId: agentId,
       route: "agent",
-      displayLevel: state.displayLevelsByAgentId[agentId] ?? "info",
     })),
   markAgentConversationRead: (agentId) => {
     pendingReadMarkerAgentIds.add(agentId);
@@ -1596,36 +1554,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     publishReadStateInvalidation(agentId);
     await refreshLedgerUnreadInView(agentId);
   },
-  setDisplayLevel: (displayLevel, agentId) =>
+  disableDeveloperDiagnosticsUi: () =>
     set((state) => {
-      const targetAgentId = agentId ?? state.selectedAgentId;
-      if (!targetAgentId) return { displayLevel };
-      const displayLevelsByAgentId = {
-        ...state.displayLevelsByAgentId,
-        [targetAgentId]: displayLevel,
-      };
-      writeStoredDisplayLevels(displayLevelsByAgentId);
-      return { displayLevel, displayLevelsByAgentId };
-    }),
-  disableDeveloperDiagnosticsUi: (agentId) =>
-    set((state) => {
-      const targetAgentId = agentId ?? state.selectedAgentId;
-      const resetStoredDisplayLevel =
-        Boolean(targetAgentId) && state.displayLevelsByAgentId[targetAgentId] === "debug";
-      const resetCurrentDisplayLevel =
-        (!targetAgentId || targetAgentId === state.selectedAgentId) && state.displayLevel === "debug";
-      const displayLevelsByAgentId = resetStoredDisplayLevel && targetAgentId
-        ? { ...state.displayLevelsByAgentId, [targetAgentId]: "info" as const }
-        : state.displayLevelsByAgentId;
-      if (displayLevelsByAgentId !== state.displayLevelsByAgentId) {
-        writeStoredDisplayLevels(displayLevelsByAgentId);
-      }
-
       const timelineEventsView =
         state.rightPanelView?.kind === "timeline_events" ? state.rightPanelView : undefined;
       return {
-        displayLevel: resetCurrentDisplayLevel ? "info" : state.displayLevel,
-        displayLevelsByAgentId,
         rightPanelOpen: timelineEventsView ? false : state.rightPanelOpen,
         rightPanelView: timelineEventsView
           ? { kind: "agent_overview", agentId: timelineEventsView.agentId }
@@ -2949,7 +2882,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  refreshAgentDetail: async (agentId, displayLevel, options = {}) => {
+  refreshAgentDetail: async (agentId, options = {}) => {
     if (!agentId) {
       return;
     }
@@ -2962,7 +2895,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         trigger: options.trigger ?? "manual.refresh",
       });
     const span = startRuntimeSpan(trace, "agent.detail", { retry: Boolean(options.retry) });
-    const key = `${agentId}:${displayLevel}`;
+    const key = agentId;
     const existing = agentDetailRefreshInFlight.get(key);
     if (existing?.generation === request.generation) {
       span.end("deduped");
@@ -2986,12 +2919,12 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     let promise!: Promise<void>;
     promise = (async () => {
       try {
-        const detail = await request.client.getAgentDetail(agentId, displayLevel);
+        const detail = await request.client.getAgentDetail(agentId);
         if (
           !isCurrentClientRequest(request) ||
           agentDetailRequestSequence.get(agentId) !== sequence
         ) return;
-        set((state) => mergeAgentDetailIntoSession(state, agentId, detail, displayLevel));
+        set((state) => mergeAgentDetailIntoSession(state, agentId, detail));
         startRuntimeSpan(trace, "ui.session_state_transition", {
           state: `${get().sessionsByAgentId[agentId]?.contentStatus ?? "unknown"}/${
             get().sessionsByAgentId[agentId]?.syncStatus ?? "idle"
@@ -3001,7 +2934,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           // The detail fetch failed but the merge preserved the last-known-good
           // detail: retry with bounded backoff instead of hydrating placeholder
           // data, so the session recovers automatically once the API responds.
-          scheduleAgentDetailRetry(get, agentId, displayLevel);
+          scheduleAgentDetailRetry(get, agentId);
           span.end("error", { recovery: "last-known-good" });
           return;
         }
@@ -3050,7 +2983,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             },
           }));
           span.end("error", { recovery: true });
-          scheduleAgentDetailRetry(get, agentId, displayLevel);
+          scheduleAgentDetailRetry(get, agentId);
           return;
         }
         set((state) => ({
@@ -3238,7 +3171,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  sendOperatorPrompt: async (agentId, text, displayLevel, attachments = []) => {
+  sendOperatorPrompt: async (agentId, text, attachments = []) => {
     const prompt = text.trim();
     if (!agentId || (!prompt && attachments.length === 0)) {
       return;
@@ -3368,7 +3301,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  setAgentModel: async (agentId, model, displayLevel, reasoningEffort) => {
+  setAgentModel: async (agentId, model, reasoningEffort) => {
     if (!agentId || !model) return;
     const request = captureClientRequest();
     const previousAgent = get().sessionsByAgentId[agentId]?.detail?.agent;
@@ -3383,7 +3316,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
         }),
       );
-      await get().refreshAgentDetail(agentId, displayLevel);
+      await get().refreshAgentDetail(agentId);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -3395,7 +3328,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
   },
 
-  clearAgentModel: async (agentId, displayLevel) => {
+  clearAgentModel: async (agentId) => {
     if (!agentId) return;
     const request = captureClientRequest();
     const previousAgent = get().sessionsByAgentId[agentId]?.detail?.agent;
@@ -3410,7 +3343,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           modelReasoningEffort: modelState?.override_reasoning_effort ?? undefined,
         }),
       );
-      await get().refreshAgentDetail(agentId, displayLevel);
+      await get().refreshAgentDetail(agentId);
     } catch (error) {
       if (!isCurrentClientRequest(request)) return;
       const message = error instanceof Error ? error.message : String(error);
@@ -3440,7 +3373,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     try {
       await request.client.renameAgent(agentId, name);
       if (!isCurrentClientRequest(request)) return;
-      await get().refreshAgentDetail(agentId, get().displayLevel, { trigger: "agent.rename" });
+      await get().refreshAgentDetail(agentId, { trigger: "agent.rename" });
       if (get().discovery.mode === "authoritative") {
         // The authoritative roster owns the displayed identity; one snapshot
         // refresh applies the new name (and any concurrent roster change).
@@ -3691,7 +3624,6 @@ type StoreSet = (
 function scheduleAgentDetailRetry(
   get: () => RuntimeStoreState,
   agentId: string,
-  displayLevel: DisplayLevel,
 ): void {
   if (agentDetailRetryTimers.has(agentId)) return;
   const attempt = agentDetailRetryAttempts.get(agentId) ?? 0;
@@ -3700,7 +3632,7 @@ function scheduleAgentDetailRetry(
   agentDetailRetryAttempts.set(agentId, attempt + 1);
   const timer = window.setTimeout(() => {
     agentDetailRetryTimers.delete(agentId);
-    void get().refreshAgentDetail(agentId, displayLevel, { retry: true });
+    void get().refreshAgentDetail(agentId, { retry: true });
   }, delay);
   agentDetailRetryTimers.set(agentId, timer);
 }
@@ -4363,7 +4295,6 @@ function mergeAgentDetailIntoSession(
   state: RuntimeStoreState,
   agentId: string,
   detail: AgentDetail,
-  displayLevel: DisplayLevel,
 ): Partial<RuntimeStoreState> {
   const epochSession = sessionForEventLogEpoch(
     state.sessionsByAgentId[agentId] ?? emptyAgentSession(),
@@ -4469,7 +4400,7 @@ export function applyStreamEvents(set: StoreSet, agentId: string, events: Stream
         ),
       },
     }));
-    void useRuntimeStore.getState().refreshAgentDetail(agentId, useRuntimeStore.getState().displayLevel);
+    void useRuntimeStore.getState().refreshAgentDetail(agentId);
     return;
   }
   const liveStatus = globalSyncCoordinator.isRecovering(agentId) ? "recovering" : "streaming";

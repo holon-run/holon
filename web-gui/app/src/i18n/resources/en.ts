@@ -73,10 +73,6 @@ const en = {
   },
   app: {
     newAgent: "New Agent",
-    displayLevel: "Display level",
-    info: "Info",
-    verbose: "Verbose",
-    debug: "Debug",
     refreshingAgent: "Refreshing agent detail",
     refreshAgent: "Refresh agent detail",
     agentId: "Agent ID",
@@ -362,7 +358,7 @@ const en = {
   },  agentPage: {
     loadEarlier: "Load earlier",
     loadingEarlier: "Loading earlier…",
-    conversationEmpty: "Send the first operator message, or switch to Verbose/Debug if you want to inspect low-level runtime events.",
+    conversationEmpty: "Send the first operator message to start the conversation.",
     send: "Send",
     copyMessage: "Copy message",
     inspectMessage: "Inspect message",
@@ -986,7 +982,7 @@ const en = {
     loadEarlier: "Load earlier",
     loadingEarlier: "Loading earlier…",
     conversationAria: "Agent conversation",
-    conversationEmpty: "Send the first operator message, or switch to Verbose/Debug to inspect low-level runtime events.",
+    conversationEmpty: "Send the first operator message to start the conversation.",
     noEventsYet: "No runtime events are available for this agent yet. Try refreshing the session or sending an operator message.",
     syncRecoveryFailed: "Conversation sync recovery failed (attempt {{attempt}})",
     retrySync: "Retry sync now",

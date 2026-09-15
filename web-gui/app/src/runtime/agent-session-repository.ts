@@ -60,12 +60,10 @@ export function isSessionCacheContextCurrent(
 export interface AgentSessionRepositoryState {
   route: string;
   selectedAgentId: string;
-  displayLevel: DisplayLevel;
   globalStreamStatus: string;
   sessionsByAgentId: Record<string, AgentSessionState>;
   refreshAgentDetail: (
     agentId: string | undefined,
-    displayLevel: DisplayLevel,
     options?: { force?: boolean; trace?: RuntimeTraceContext; trigger?: string },
   ) => Promise<void>;
   refreshAgentWorkItems: (agentId: string | undefined) => Promise<void>;

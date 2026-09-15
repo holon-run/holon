@@ -2,7 +2,7 @@ import { useCallback } from "react";
 
 import { useRuntimeStore } from "./runtime-store";
 import type { AgentSyncStatus } from "./runtime-store-helpers";
-import type { AgentDetail, DisplayLevel } from "./types";
+import type { AgentDetail } from "./types";
 
 interface AgentDetailState {
   detail: AgentDetail | null;
@@ -12,7 +12,7 @@ interface AgentDetailState {
   refresh: () => Promise<void>;
 }
 
-export function useAgentDetail(agentId: string | undefined, displayLevel: DisplayLevel): AgentDetailState {
+export function useAgentDetail(agentId: string | undefined): AgentDetailState {
   const detail = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.detail ?? null : null));
   const loading = useRuntimeStore((state) => (agentId ? state.sessionsByAgentId[agentId]?.loading ?? false : false));
   const contentStatus = useRuntimeStore((state) =>
@@ -24,8 +24,8 @@ export function useAgentDetail(agentId: string | undefined, displayLevel: Displa
   const refreshAgentDetail = useRuntimeStore((state) => state.refreshAgentDetail);
   const refresh = useCallback(async () => {
     if (agentId === undefined) return;
-    await refreshAgentDetail(agentId, displayLevel, { trigger: "manual.refresh" });
-  }, [agentId, displayLevel, refreshAgentDetail]);
+    await refreshAgentDetail(agentId, { trigger: "manual.refresh" });
+  }, [agentId, refreshAgentDetail]);
 
   // Conversation content now flows from the conversation read model
   // (useConversationSession). Mounting a page must not start the legacy

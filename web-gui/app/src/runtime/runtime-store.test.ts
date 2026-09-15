@@ -124,7 +124,7 @@ describe("sendOperatorPrompt", () => {
 
     try {
       await expect(
-        useRuntimeStore.getState().sendOperatorPrompt("agent-a", "hello", "info"),
+        useRuntimeStore.getState().sendOperatorPrompt("agent-a", "hello"),
       ).rejects.toThrow("Secure random number generation is unavailable");
 
       expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]).toMatchObject({
@@ -359,7 +359,7 @@ describe("refreshAgentDetail last-known-good", () => {
         },
       }, true);
 
-      await useRuntimeStore.getState().refreshAgentDetail("agent-a", "info");
+      await useRuntimeStore.getState().refreshAgentDetail("agent-a");
 
       const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
       expect(session?.detail?.agent.model).toBe("test-model-live");
@@ -384,7 +384,7 @@ describe("refreshAgentDetail last-known-good", () => {
         sessionsByAgentId: { "agent-a": sessionState() },
       }, true);
 
-      await useRuntimeStore.getState().refreshAgentDetail("agent-a", "info");
+      await useRuntimeStore.getState().refreshAgentDetail("agent-a");
 
       const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
       expect(session?.detail?.agent.model).toBe("unavailable");
@@ -769,11 +769,6 @@ describe("timeline events state", () => {
   it("returns developer-only UI to a non-debug closed state when diagnostics are disabled", () => {
     useRuntimeStore.setState({
       selectedAgentId: "agent-a",
-      displayLevel: "debug",
-      displayLevelsByAgentId: {
-        "agent-a": "debug",
-        "agent-b": "verbose",
-      },
       rightPanelOpen: true,
       rightPanelView: { kind: "timeline_events", agentId: "agent-a" },
       rightPanelViewStack: [
@@ -782,14 +777,9 @@ describe("timeline events state", () => {
       ],
     });
 
-    useRuntimeStore.getState().disableDeveloperDiagnosticsUi("agent-a");
+    useRuntimeStore.getState().disableDeveloperDiagnosticsUi();
 
     expect(useRuntimeStore.getState()).toMatchObject({
-      displayLevel: "info",
-      displayLevelsByAgentId: {
-        "agent-a": "info",
-        "agent-b": "verbose",
-      },
       rightPanelOpen: false,
       rightPanelView: { kind: "agent_overview", agentId: "agent-a" },
       rightPanelViewStack: [{ kind: "agent_overview", agentId: "agent-a" }],

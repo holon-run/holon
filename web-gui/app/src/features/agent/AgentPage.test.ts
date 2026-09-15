@@ -16,7 +16,6 @@ import {
   writeStoredComposerDraft,
   resolveModelSwitchReasoningEffort,
 } from "./AgentPage";
-import { availableDisplayLevels } from "../../runtime/display-level";
 import type { RuntimeModelOption } from "../../runtime/types";
 
 class MemoryStorage implements Storage {
@@ -227,13 +226,4 @@ describe("scroll stick intent", () => {
     }
   });
 });
-
-describe("timeline display levels", () => {
-  it("only exposes Debug while developer diagnostics are enabled", () => {
-    expect(availableDisplayLevels(false)).toEqual(["info", "verbose"]);
-    expect(availableDisplayLevels(true)).toEqual(["info", "verbose", "debug"]);
-  });
-
-});
-
 
