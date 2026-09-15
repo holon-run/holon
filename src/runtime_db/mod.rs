@@ -97,8 +97,10 @@ use crate::runtime_db::connection::{
 use crate::runtime_db::migrations::{
     apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
     backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
-    max_known_migration_version, AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION, MIGRATIONS,
-    PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+    max_known_migration_version, AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION,
+    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
+    MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
+    RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
 };
 use crate::runtime_db::storage_domain::{
     read_storage_domain_connection, upsert_storage_domain, upsert_storage_domain_checkpoint_json,
@@ -198,6 +200,23 @@ pub struct RuntimeDbProtectionStatus {
     pub state: RuntimeDbProtectionState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evidence: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConversationInputAssignmentRollbackReport {
+    pub apply: bool,
+    pub eligible: bool,
+    pub changed: bool,
+    pub backup_verified: bool,
+    pub database_path: PathBuf,
+    pub current_version: i64,
+    pub current_name: Option<String>,
+    pub target_version: i64,
+    pub target_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 impl RuntimeDbProtectionStatus {
@@ -447,6 +466,45 @@ impl RuntimeDb {
         Ok(db)
     }
 
+    /// Opens an existing database for the explicit v66 data-only marker rollback
+    /// without applying migrations.
+    pub fn open_for_conversation_input_assignment_rollback(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "conversation input assignment rollback requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let connection = open_connection(&path)?;
+        configure_persistent_database(&connection)?;
+        let has_migration_table: bool = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'schema_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_migration_table {
+            bail!(
+                "conversation input assignment rollback requires schema_migrations in {}",
+                path.display()
+            );
+        }
+        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
+        let db = Self {
+            writer,
+            path,
+            lock_path: lock_path.into(),
+        };
+        db.writer.activate_sidecar_protection()?;
+        Ok(db)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
@@ -504,6 +562,118 @@ impl RuntimeDb {
 
     pub fn create_agent_relation_backfill_backup(&self) -> Result<PathBuf> {
         self.create_verified_backup("agent-relation-backfill")
+    }
+
+    pub fn plan_conversation_input_assignment_rollback(
+        &self,
+    ) -> Result<ConversationInputAssignmentRollbackReport> {
+        let connection = self.connection()?;
+        let head = migration_head(&connection)?;
+        let target = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION - 1)
+            .context("missing conversation input assignment rollback target migration")?;
+        let (current_version, current_name) = head
+            .clone()
+            .map(|(version, name)| (version, Some(name)))
+            .unwrap_or((0, None));
+        let eligible = matches!(
+            head.as_ref(),
+            Some((version, name))
+                if *version == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION
+                    && name == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME
+        );
+        let reason = (!eligible).then(|| match head {
+            Some((version, name)) if version > CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION => {
+                format!(
+                    "runtime database has newer migration {version} ({name}); refusing to remove v66"
+                )
+            }
+            Some((version, name)) if version == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION => {
+                format!(
+                    "migration v66 name mismatch: expected {}, found {name}",
+                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME
+                )
+            }
+            Some((version, name)) => format!(
+                "runtime database head is v{version} ({name}); v66 data-only marker is not applied"
+            ),
+            None => "runtime database has no applied migrations".to_string(),
+        });
+        Ok(ConversationInputAssignmentRollbackReport {
+            apply: false,
+            eligible,
+            changed: false,
+            backup_verified: false,
+            database_path: self.path.clone(),
+            current_version,
+            current_name,
+            target_version: target.version,
+            target_name: target.name.to_string(),
+            backup_path: None,
+            reason,
+        })
+    }
+
+    pub fn apply_conversation_input_assignment_rollback(
+        &self,
+    ) -> Result<ConversationInputAssignmentRollbackReport> {
+        let mut report = self.plan_conversation_input_assignment_rollback()?;
+        if !report.eligible {
+            bail!(
+                "{}",
+                report
+                    .reason
+                    .as_deref()
+                    .unwrap_or("runtime database is not eligible for v66 rollback")
+            );
+        }
+        let backup_path =
+            self.create_verified_backup("conversation-input-assignment-v66-to-v65")?;
+        let backup_head = migration_head(&open_connection(&backup_path)?)?;
+        if backup_head
+            != Some((
+                CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
+                CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME.to_string(),
+            ))
+        {
+            bail!(
+                "runtime database backup {} does not preserve the expected v66 marker",
+                backup_path.display()
+            );
+        }
+        self.transaction_once(|transaction| {
+            let changed = transaction.execute(
+                "DELETE FROM schema_migrations WHERE version = ?1 AND name = ?2",
+                (
+                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
+                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
+                ),
+            )?;
+            if changed != 1 {
+                bail!(
+                    "expected to remove exactly one v66 conversation input assignment marker, removed {changed}"
+                );
+            }
+            let head = migration_head(transaction)?;
+            if head != Some((report.target_version, report.target_name.clone())) {
+                bail!(
+                    "runtime database head after v66 rollback is {:?}, expected v{} ({})",
+                    head,
+                    report.target_version,
+                    report.target_name
+                );
+            }
+            Ok(())
+        })?;
+        report.apply = true;
+        report.changed = true;
+        report.backup_verified = true;
+        report.backup_path = Some(backup_path);
+        report.current_version = report.target_version;
+        report.current_name = Some(report.target_name.clone());
+        report.reason = None;
+        Ok(report)
     }
 
     pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
@@ -1024,6 +1194,20 @@ fn ensure_runtime_identity_metadata(connection: &Connection) -> Result<()> {
         rusqlite::params![crate::ids::capability_id("conversation_cursor"), now],
     )?;
     Ok(())
+}
+
+fn migration_head(connection: &Connection) -> Result<Option<(i64, String)>> {
+    connection
+        .query_row(
+            "SELECT version, name
+             FROM schema_migrations
+             ORDER BY version DESC
+             LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(Into::into)
 }
 
 impl RuntimeDbLock {

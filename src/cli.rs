@@ -800,6 +800,15 @@ pub enum RuntimeDbDebugCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Preflight or remove the data-only v66 conversation input assignment repair marker"
+    )]
+    ConversationInputAssignmentRollback {
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

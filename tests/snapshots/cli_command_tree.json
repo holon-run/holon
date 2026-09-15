@@ -978,6 +978,33 @@
     "aliases": []
   },
   {
+    "path": "debug.runtime-db.conversation-input-assignment-rollback",
+    "positionals": [],
+    "flags": [
+      {
+        "long": "apply",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
+        "long": "json",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "debug.runtime-db.retention",
     "positionals": [],
     "flags": [
