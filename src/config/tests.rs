@@ -169,6 +169,10 @@ fn test_app_config(default_model: &str, fallback_models: &[&str]) -> TestAppConf
         runtime_max_output_tokens: 8192,
         default_tool_output_tokens: crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS as u32,
         max_tool_output_tokens: crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32,
+        command_task_output_retention_bytes: 8 * 1024 * 1024,
+        command_task_output_quota_bytes: 64 * 1024 * 1024,
+        command_task_min_free_disk_bytes: 512 * 1024 * 1024,
+        command_task_min_free_disk_percent: 5,
         disable_provider_fallback: false,
         tui_alternate_screen: crate::config::AltScreenMode::Auto,
         validated_model_overrides: HashMap::new(),
@@ -820,6 +824,62 @@ fn set_get_and_unset_round_trip_tool_output_budgets() {
         get_config_key(&config, "runtime.max_tool_output_tokens").unwrap(),
         Value::Null
     );
+}
+
+#[test]
+fn set_get_and_unset_round_trip_command_task_output_safety_policy() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(
+        &mut config,
+        "runtime.command_task_output_retention_bytes",
+        "1024",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "runtime.command_task_output_quota_bytes",
+        "65536",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "runtime.command_task_min_free_disk_bytes",
+        "1048576",
+    )
+    .unwrap();
+    set_config_key(
+        &mut config,
+        "runtime.command_task_min_free_disk_percent",
+        "150",
+    )
+    .unwrap();
+
+    assert_eq!(
+        get_config_key(&config, "runtime.command_task_output_retention_bytes").unwrap(),
+        json!(4 * 1024)
+    );
+    assert_eq!(
+        get_config_key(&config, "runtime.command_task_output_quota_bytes").unwrap(),
+        json!(65_536)
+    );
+    assert_eq!(
+        get_config_key(&config, "runtime.command_task_min_free_disk_bytes").unwrap(),
+        json!(1_048_576)
+    );
+    assert_eq!(
+        get_config_key(&config, "runtime.command_task_min_free_disk_percent").unwrap(),
+        json!(100)
+    );
+
+    for key in [
+        "runtime.command_task_output_retention_bytes",
+        "runtime.command_task_output_quota_bytes",
+        "runtime.command_task_min_free_disk_bytes",
+        "runtime.command_task_min_free_disk_percent",
+    ] {
+        unset_config_key(&mut config, key).unwrap();
+        assert_eq!(get_config_key(&config, key).unwrap(), Value::Null);
+    }
 }
 
 #[test]
@@ -2302,6 +2362,10 @@ fn schema_contains_expected_keys() {
     assert!(keys.contains(&"runtime.max_output_tokens"));
     assert!(keys.contains(&"runtime.default_tool_output_tokens"));
     assert!(keys.contains(&"runtime.max_tool_output_tokens"));
+    assert!(keys.contains(&"runtime.command_task_output_retention_bytes"));
+    assert!(keys.contains(&"runtime.command_task_output_quota_bytes"));
+    assert!(keys.contains(&"runtime.command_task_min_free_disk_bytes"));
+    assert!(keys.contains(&"runtime.command_task_min_free_disk_percent"));
     assert!(keys.contains(&"runtime.disable_provider_fallback"));
     assert!(!keys.contains(&"runtime.scheduler"));
     assert!(keys.contains(&"tui.alternate_screen"));

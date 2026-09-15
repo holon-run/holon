@@ -115,6 +115,14 @@ impl LocalSystem {
             .with_context(|| format!("failed to open {}", path.display()))
     }
 
+    pub fn filesystem_space(&self, path: &Path) -> Result<(u64, u64)> {
+        let available = fs2::available_space(path)
+            .with_context(|| format!("failed to inspect free space for {}", path.display()))?;
+        let total = fs2::total_space(path)
+            .with_context(|| format!("failed to inspect total space for {}", path.display()))?;
+        Ok((available, total))
+    }
+
     fn build_command(
         &self,
         execution: &EffectiveExecution,

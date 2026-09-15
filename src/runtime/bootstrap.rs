@@ -70,6 +70,7 @@ pub(super) struct ConfigSnapshot {
     pub provider_reconfig: Option<ProviderReconfigurator>,
     pub default_tool_output_tokens: u64,
     pub max_tool_output_tokens: u64,
+    pub command_task_output_policy: crate::types::CommandTaskOutputPolicy,
     pub web_config: crate::web::WebConfig,
     pub x_search_config: Option<crate::config::XSearchRuntimeConfig>,
 }
@@ -102,6 +103,12 @@ impl ConfigSnapshot {
             provider_reconfig,
             default_tool_output_tokens: config.default_tool_output_tokens as u64,
             max_tool_output_tokens: config.max_tool_output_tokens as u64,
+            command_task_output_policy: crate::types::CommandTaskOutputPolicy {
+                retention_bytes: config.command_task_output_retention_bytes,
+                execution_quota_bytes: config.command_task_output_quota_bytes,
+                min_free_disk_bytes: config.command_task_min_free_disk_bytes,
+                min_free_disk_percent: config.command_task_min_free_disk_percent,
+            },
             web_config: config.web_config.clone(),
             x_search_config: crate::config::XSearchRuntimeConfig::from_app_config(config)?,
         })
@@ -385,6 +392,15 @@ impl RuntimeHandle {
             .map(|reconfig| crate::config::XSearchRuntimeConfig::from_app_config(&reconfig.config))
             .transpose()?
             .flatten();
+        let command_task_output_policy = provider_reconfig
+            .as_ref()
+            .map(|reconfig| crate::types::CommandTaskOutputPolicy {
+                retention_bytes: reconfig.config.command_task_output_retention_bytes,
+                execution_quota_bytes: reconfig.config.command_task_output_quota_bytes,
+                min_free_disk_bytes: reconfig.config.command_task_min_free_disk_bytes,
+                min_free_disk_percent: reconfig.config.command_task_min_free_disk_percent,
+            })
+            .unwrap_or_default();
         let config_snapshot = Arc::new(ConfigSnapshot {
             user_home_dir,
             model_catalog: model_catalog.clone(),
@@ -393,6 +409,7 @@ impl RuntimeHandle {
             provider_reconfig: provider_reconfig.clone(),
             default_tool_output_tokens,
             max_tool_output_tokens,
+            command_task_output_policy,
             web_config: web_config.clone(),
             x_search_config,
         });

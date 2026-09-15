@@ -77,6 +77,10 @@ pub struct AppConfig {
     pub runtime_max_output_tokens: u32,
     pub default_tool_output_tokens: u32,
     pub max_tool_output_tokens: u32,
+    pub command_task_output_retention_bytes: u64,
+    pub command_task_output_quota_bytes: u64,
+    pub command_task_min_free_disk_bytes: u64,
+    pub command_task_min_free_disk_percent: u8,
     pub disable_provider_fallback: bool,
     pub tui_alternate_screen: AltScreenMode,
     pub validated_model_overrides: HashMap<ModelRef, ModelRuntimeOverride>,
@@ -260,6 +264,34 @@ impl AppConfig {
             .unwrap_or(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32)
             .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32)
             .max(default_tool_output_tokens);
+        let default_command_task_output_policy = crate::types::CommandTaskOutputPolicy::default();
+        let command_task_output_retention_bytes =
+            env::var("HOLON_COMMAND_TASK_OUTPUT_RETENTION_BYTES")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .or(stored_config.runtime.command_task_output_retention_bytes)
+                .filter(|value| *value > 0)
+                .unwrap_or(default_command_task_output_policy.retention_bytes)
+                .max(4 * 1024);
+        let command_task_output_quota_bytes = env::var("HOLON_COMMAND_TASK_OUTPUT_QUOTA_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .or(stored_config.runtime.command_task_output_quota_bytes)
+            .filter(|value| *value > 0)
+            .unwrap_or(default_command_task_output_policy.execution_quota_bytes)
+            .max(command_task_output_retention_bytes);
+        let command_task_min_free_disk_bytes = env::var("HOLON_COMMAND_TASK_MIN_FREE_DISK_BYTES")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .or(stored_config.runtime.command_task_min_free_disk_bytes)
+            .unwrap_or(default_command_task_output_policy.min_free_disk_bytes);
+        let command_task_min_free_disk_percent =
+            env::var("HOLON_COMMAND_TASK_MIN_FREE_DISK_PERCENT")
+                .ok()
+                .and_then(|value| value.parse::<u8>().ok())
+                .or(stored_config.runtime.command_task_min_free_disk_percent)
+                .unwrap_or(default_command_task_output_policy.min_free_disk_percent)
+                .min(100);
 
         let disable_provider_fallback = resolve_disable_provider_fallback(&stored_config)?;
         validate_retired_scheduler_selector(&stored_config)?;
@@ -348,6 +380,10 @@ impl AppConfig {
             runtime_max_output_tokens,
             default_tool_output_tokens,
             max_tool_output_tokens,
+            command_task_output_retention_bytes,
+            command_task_output_quota_bytes,
+            command_task_min_free_disk_bytes,
+            command_task_min_free_disk_percent,
             disable_provider_fallback,
             tui_alternate_screen,
             validated_model_overrides,

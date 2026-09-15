@@ -154,6 +154,22 @@ BuiltinToolDefinition {
 - Prompt-level tool guidance (in AGENTS.md or system prompt) must not
   contradict the tool's own description.
 
+## Command output safety
+
+`max_output_tokens` controls only the model-visible projection of command
+output. Managed command tasks separately enforce a finite combined artifact
+retention limit, a higher emitted-byte execution quota, and a filesystem
+free-space waterline.
+
+Retention overflow keeps a bounded raw-byte head and tail and continues
+draining stdout/stderr. Execution quota, low disk, and persistence failures are
+typed terminal failures. `TaskStatus` and `TaskOutput` expose the frozen policy,
+byte counters, dropped-byte evidence, and capture truncation through
+`output_capture`; `TaskOutput.output_truncated` remains the independent API
+preview-truncation flag.
+
+See [Command Task Output Safety](../../rfcs/command-task-output-safety.md).
+
 ## Input/result separation
 
 Holon strictly separates tool **startup input** from **result metadata**:

@@ -303,6 +303,14 @@ pub struct RuntimeConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_output_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_task_output_retention_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_task_output_quota_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_task_min_free_disk_bytes: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_task_min_free_disk_percent: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disable_provider_fallback: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler: Option<String>,
@@ -569,6 +577,10 @@ impl RuntimeConfigFile {
         self.max_output_tokens.is_none()
             && self.default_tool_output_tokens.is_none()
             && self.max_tool_output_tokens.is_none()
+            && self.command_task_output_retention_bytes.is_none()
+            && self.command_task_output_quota_bytes.is_none()
+            && self.command_task_min_free_disk_bytes.is_none()
+            && self.command_task_min_free_disk_percent.is_none()
             && self.disable_provider_fallback.is_none()
             && self.scheduler.is_none()
             && self.retention.is_empty()
