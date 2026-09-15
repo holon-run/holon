@@ -85,9 +85,9 @@ impl RuntimeIndexOutboxRepository<'_> {
             .transaction(|tx| insert_runtime_index_changes_tx(tx, changes))
     }
 
-    /// Delete pending runtime-index rows for one agent while preserving its
+    /// Delete all runtime-index outbox rows for one agent while preserving its
     /// monotonic produced watermark.
-    pub fn delete_pending_for_agent(&self, agent_id: &str) -> Result<usize> {
+    pub fn delete_all_for_agent(&self, agent_id: &str) -> Result<usize> {
         let connection = self.db.connection()?;
         connection
             .execute(
@@ -381,11 +381,11 @@ mod tests {
             ])
             .unwrap();
 
-        assert_eq!(outbox.delete_pending_for_agent("agent-a").unwrap(), 2);
+        assert_eq!(outbox.delete_all_for_agent("agent-a").unwrap(), 2);
         assert_eq!(outbox.pending_count_for_agent("agent-a", 0).unwrap(), 0);
         assert_eq!(outbox.pending_count_for_agent("agent-b", 0).unwrap(), 1);
         assert_eq!(outbox.produced_watermark_for_agent("agent-a").unwrap(), 3);
-        assert_eq!(outbox.delete_pending_for_agent("agent-a").unwrap(), 0);
+        assert_eq!(outbox.delete_all_for_agent("agent-a").unwrap(), 0);
     }
 
     #[test]

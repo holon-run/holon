@@ -531,7 +531,7 @@ impl RuntimeHost {
     async fn deletion_phase_index(&self, agent_id: &str) -> Result<()> {
         self.runtime_db()
             .runtime_index_outbox()
-            .delete_pending_for_agent(agent_id)?;
+            .delete_all_for_agent(agent_id)?;
         // The memory index is a shared SQLite database. Remove all rows
         // belonging to this agent.
         let storage = match self.agent_storage(&self.config().default_agent_id) {
