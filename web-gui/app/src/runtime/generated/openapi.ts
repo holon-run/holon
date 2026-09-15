@@ -4040,6 +4040,7 @@ export interface components {
             event_log_epoch: string;
             input: {
                 message_id: string;
+                preview: string;
                 /** Format: uint64 */
                 revision: number;
                 /** @enum {string} */
@@ -4333,6 +4334,7 @@ export interface components {
             oldest_retained_seq: number;
             pending_inputs: {
                 message_id: string;
+                preview: string;
                 /** Format: uint64 */
                 revision: number;
                 /** @enum {string} */

@@ -1123,6 +1123,22 @@ fn turn_and_brief_revisions_are_idempotent_under_late_brief_race() -> Result<()>
 #[test]
 fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut pending_message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator-test".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "check the pending echo".into(),
+        },
+    );
+    pending_message.id = "message-pending".into();
+    pending_message.created_at = timestamp(1);
+    db.evidence().append_message(&pending_message)?;
     let queued = QueueEntryRecord {
         message_id: "message-pending".into(),
         agent_id: AGENT_ID.into(),
@@ -1134,8 +1150,15 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     db.queue_entries().upsert(&queued)?;
     let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
     assert_eq!(page.pending_inputs.len(), 1);
-    assert_eq!(page.pending_inputs[0].revision, 1);
+    assert_eq!(page.pending_inputs[0].revision, 2);
     assert_eq!(page.pending_inputs[0].state, PendingInputState::Queued);
+    assert!(
+        page.pending_inputs[0]
+            .preview
+            .contains("check the pending echo"),
+        "pending preview should carry the input text: {}",
+        page.pending_inputs[0].preview
+    );
 
     let assigning = QueueEntryRecord {
         status: QueueEntryStatus::Dequeued,
@@ -1144,8 +1167,11 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     };
     db.queue_entries().upsert(&assigning)?;
     let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
-    assert_eq!(page.pending_inputs[0].revision, 2);
+    assert_eq!(page.pending_inputs[0].revision, 3);
     assert_eq!(page.pending_inputs[0].state, PendingInputState::Assigning);
+    assert!(page.pending_inputs[0]
+        .preview
+        .contains("check the pending echo"));
 
     let mut assigned = turn("turn-assigned", 1);
     assigned.input_message_ids = vec!["message-pending".into()];

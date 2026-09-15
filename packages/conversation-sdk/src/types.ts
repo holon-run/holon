@@ -30,6 +30,7 @@ export interface PendingInput {
   readonly message_id: string;
   readonly revision: number;
   readonly state: PendingInputState;
+  readonly preview: string;
 }
 
 export type TerminalOutcome =

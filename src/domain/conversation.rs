@@ -104,6 +104,7 @@ pub struct PendingInput {
     pub message_id: String,
     pub revision: u64,
     pub state: PendingInputState,
+    pub preview: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

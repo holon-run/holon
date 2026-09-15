@@ -1807,11 +1807,14 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
     let mut statement = connection.prepare(
         "SELECT queue.message_id,
                 COALESCE(revisions.revision, 1),
-                queue.status
+                queue.status,
+                COALESCE(messages.preview, '')
          FROM queue_entries AS queue
          LEFT JOIN conversation_input_assignments AS assignments
            ON assignments.message_id = queue.message_id
           AND assignments.agent_id = queue.agent_id
+         LEFT JOIN messages
+           ON messages.evidence_id = queue.message_id
          LEFT JOIN conversation_source_revisions AS revisions
            ON revisions.source_kind = 'operator'
           AND revisions.source_id = queue.message_id
@@ -1836,6 +1839,7 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
                     message_id: row.get(0)?,
                     revision: u64::try_from(row.get::<_, i64>(1)?).map_err(sql_integer_error)?,
                     state,
+                    preview: row.get(3)?,
                 })
             },
         )?

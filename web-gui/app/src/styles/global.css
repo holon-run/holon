@@ -7275,13 +7275,19 @@ code {
 
 .conversation-pending-chip {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 8px;
   font-size: 12px;
-  padding: 3px 8px;
-  border-radius: 999px;
+  padding: 6px 10px;
+  border-radius: 10px;
   border: 1px dashed var(--border-muted, rgba(127, 127, 127, 0.4));
   color: var(--text-muted, #8a8a8a);
+  max-width: 100%;
+}
+
+.conversation-pending-chip > svg {
+  flex: none;
+  margin-top: 2px;
 }
 
 .conversation-pending-chip.is-assigning {

@@ -115,6 +115,10 @@ interjected, aborted, dropped, and quarantined inputs are not pending. The
 dequeue-to-turn-assignment transition must be atomic or revisioned so an input
 cannot disappear between the pending set and its owning turn.
 
+Each pending input carries a bounded message-body preview with the same shape
+and limits as assigned turn-input previews, so clients can echo the operator's
+in-flight text while the owning turn is still running.
+
 ### 3.2 Execution, result availability, and attention are separate
 
 A summary must distinguish:
@@ -210,7 +214,7 @@ Logical response fields:
 | `schema_version`, `event_log_epoch` | Response contract and source-log identity |
 | `turns[]` | One bounded page of turn summaries, returned in chronological order |
 | `active_turns[]` | Active summary records for bootstrap/recovery, not activity bodies |
-| `pending_inputs[]` | Visible unassigned inputs for bootstrap/recovery |
+| `pending_inputs[]` | Visible unassigned inputs for bootstrap/recovery, each with the same bounded message-body preview shape as assigned turn inputs |
 | `next_before_cursor`, `has_more` | Older-history navigation, counting turns |
 | `snapshot_cursor` | Stream coverage boundary for this coherent read |
 

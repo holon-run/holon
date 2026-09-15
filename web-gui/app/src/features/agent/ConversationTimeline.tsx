@@ -118,7 +118,7 @@ export const ConversationTimeline = memo(function ConversationTimeline({
 function PendingInputChip({ input }: { input: PendingInput }) {
   const { t } = useTranslation();
   return (
-    <span
+    <div
       className={`conversation-pending-chip is-${input.state}`}
       role="status"
       aria-label={t("agentPage.pendingInputState")}
@@ -128,12 +128,16 @@ function PendingInputChip({ input }: { input: PendingInput }) {
       ) : (
         <Clock size={12} />
       )}
-      <span>
-        {input.state === "assigning"
-          ? t("agentPage.pendingAssigning")
-          : t("agentPage.pendingQueued")}
-      </span>
-    </span>
+      {input.preview ? (
+        <MarkdownContent text={parseInputPreview(input.preview)} compact />
+      ) : (
+        <span>
+          {input.state === "assigning"
+            ? t("agentPage.pendingAssigning")
+            : t("agentPage.pendingQueued")}
+        </span>
+      )}
+    </div>
   );
 }
 

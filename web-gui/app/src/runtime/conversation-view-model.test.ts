@@ -130,7 +130,7 @@ describe("buildConversationSessionModel", () => {
       status: { kind: "ready" },
       view: stateView([], {
         pending_inputs: [
-          { message_id: "m-1", revision: 1, state: "queued" },
+          { message_id: "m-1", revision: 1, state: "queued", preview: "" },
         ],
         next_before_cursor: "history-cursor" as ConversationHistoryCursor,
         has_more: true,

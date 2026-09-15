@@ -301,6 +301,10 @@ export function decodePendingInput(
     message_id: nonEmptyString(source.message_id, `${path}.message_id`),
     revision: safeInteger(source.revision, `${path}.revision`),
     state,
+    preview:
+      source.preview === undefined || source.preview === null
+        ? ""
+        : nonEmptyString(source.preview, `${path}.preview`),
   };
 }
 

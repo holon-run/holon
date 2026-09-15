@@ -6246,6 +6246,9 @@
                   "message_id": {
                     "type": "string"
                   },
+                  "preview": {
+                    "type": "string"
+                  },
                   "revision": {
                     "format": "uint64",
                     "minimum": 0,
@@ -6262,7 +6265,8 @@
                 "required": [
                   "message_id",
                   "revision",
-                  "state"
+                  "state",
+                  "preview"
                 ],
                 "type": "object"
               },
@@ -7452,6 +7456,9 @@
                 "message_id": {
                   "type": "string"
                 },
+                "preview": {
+                  "type": "string"
+                },
                 "revision": {
                   "format": "uint64",
                   "minimum": 0,
@@ -7468,7 +7475,8 @@
               "required": [
                 "message_id",
                 "revision",
-                "state"
+                "state",
+                "preview"
               ],
               "type": "object"
             },

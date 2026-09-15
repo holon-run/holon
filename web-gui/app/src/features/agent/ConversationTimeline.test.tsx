@@ -142,10 +142,26 @@ describe("ConversationTimeline", () => {
   it("renders pending input chips and reconnecting banner", () => {
     const html = renderTimeline([], {
       status: { kind: "reconnecting", attempt: 2, delayMs: 1000 },
-      pendingInputs: [{ message_id: "m-2", revision: 1, state: "queued" }],
+      pendingInputs: [{ message_id: "m-2", revision: 1, state: "queued", preview: "" }],
     } as never);
     expect(html).toContain("Queued, waiting to run");
     expect(html).toContain("reconnecting");
+  });
+
+  it("echoes pending input preview text on the chip", () => {
+    const html = renderTimeline([], {
+      pendingInputs: [
+        {
+          message_id: "m-live",
+          revision: 2,
+          state: "assigning",
+          preview: '{"type":"text","text":"看看这轮渲染"}',
+        },
+        { message_id: "m-legacy", revision: 1, state: "queued", preview: "" },
+      ],
+    } as never);
+    expect(html).toContain("看看这轮渲染");
+    expect(html).toContain("Queued, waiting to run");
   });
 
   it("renders an empty state when ready with no turns", () => {
