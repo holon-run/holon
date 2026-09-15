@@ -236,6 +236,43 @@ runtime should either:
 The important invariant is that a parked WorkItem cannot remain parked after the
 agent has explicitly made it current.
 
+Before resolving frames, `PickWorkItem` analyzes the complete active
+continuation topology for the agent. Duplicate suspended edges, duplicate active
+edges, and cycles are ambiguous and must fail without writes.
+
+If the selected yielded WorkItem belongs to a chain that reaches current focus,
+the runtime preserves the normal nested unwind behavior. If there is no current
+focus, the explicit pick is the new focus decision: the selected frame is
+resumed with reason `explicit_pick`, deeper frames in that disconnected
+component are cancelled with reason
+`orphaned_descendant_without_current_focus`, and the selected WorkItem becomes
+current in one transaction.
+
+If current focus exists but the selected chain ends before reaching it, the
+runtime must not guess that the disconnected component is abandoned. The pick
+returns a structured `continuation_unwind_incomplete` conflict containing the
+missing WorkItem and originating continuation identities, with no partial frame
+or focus mutation.
+
+### Reconciliation And Fences
+
+Continuation cleanup is deterministic and state-based:
+
+- completing an active target resumes an eligible caller;
+- completing a WorkItem whose suspended caller is no longer open cancels that
+  frame;
+- an explicit pick with no current focus reconciles its disconnected component
+  as described above;
+- age alone never authorizes cancellation;
+- ambiguous or cyclic topology is reported rather than guessed.
+
+Focus transitions that analyze active continuations fence the exact agent state,
+the complete active continuation snapshot, and every frame they resolve. The
+focus update, frame column and payload updates, canonical execution commands,
+and audit evidence commit in one SQLite transaction. A changed focus, frame, or
+active topology returns a retryable revision conflict and leaves no partial
+reconciliation.
+
 ### Relation Boundary
 
 WorkItem relations describe durable work structure:
@@ -393,6 +430,8 @@ The runtime should emit audit events for:
 - Phase one active frames form a stack: each suspended WorkItem has at most one
   active callee, each active WorkItem has at most one direct caller, and active
   frames must be acyclic.
+- Continuation reconciliation must validate the complete active topology and
+  commit all selected frame and focus changes atomically.
 - A WorkItem's own wait conditions still belong to that WorkItem, even when it
   is the active target of another WorkItem's continuation frame.
 - Completion of the active WorkItem resumes only frames whose return policy is

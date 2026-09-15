@@ -38,7 +38,8 @@ use crate::{
         AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
         AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
         TaskRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
-        WorkItemContinuationFrame, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
+        WorkItemContinuationFrame, WorkItemContinuationState, WorkItemRecord,
+        WorkItemSchedulingState, WorkItemState,
     },
 };
 
@@ -204,6 +205,8 @@ pub(crate) struct WorkItemFocusTransitionCommand {
     pub agent_id: String,
     pub work_items: Vec<WorkItemMutation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
+    pub active_continuation_expectations: Option<Vec<WorkItemContinuationFrame>>,
+    pub continuation_expectations: Vec<WorkItemContinuationFrame>,
     pub continuations: Vec<WorkItemContinuationFrame>,
     pub agent_state: AgentStateMutation,
     pub brief_evidence: Vec<BriefRecord>,
@@ -241,6 +244,7 @@ pub(crate) struct CompletionTransition {
     pub requires_execution_continuation: bool,
     pub work_items: Vec<WorkItemMutation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
+    pub continuation_expectations: Vec<WorkItemContinuationFrame>,
     pub continuations: Vec<WorkItemContinuationFrame>,
     pub tool_execution: ToolExecutionRecord,
     pub index_changes: Vec<RuntimeIndexChange>,
@@ -756,8 +760,18 @@ impl RuntimeTransitionRepository<'_> {
             for condition in &command.wait_conditions {
                 validate_wait_condition_tx(tx, condition)?;
             }
+            validate_active_work_item_continuations_tx(
+                tx,
+                &command.agent_id,
+                command.active_continuation_expectations.as_deref(),
+                &command.continuations,
+            )?;
             for continuation in &command.continuations {
-                validate_work_item_continuation_tx(tx, continuation)?;
+                validate_work_item_continuation_tx(
+                    tx,
+                    continuation,
+                    &command.continuation_expectations,
+                )?;
             }
             validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
             validate_focus_target_tx(tx, &command.agent_state.record)?;
@@ -776,6 +790,7 @@ impl RuntimeTransitionRepository<'_> {
                     requires_execution_continuation: false,
                     work_items: command.work_items.clone(),
                     wait_conditions: command.wait_conditions.clone(),
+                    continuation_expectations: command.continuation_expectations.clone(),
                     continuations: command.continuations.clone(),
                     tool_execution: tool_execution.clone(),
                     index_changes: command.index_changes.clone(),
@@ -1343,7 +1358,11 @@ impl RuntimeTransitionRepository<'_> {
                     validate_wait_condition_tx(tx, condition)?;
                 }
                 for continuation in &completion.continuations {
-                    validate_work_item_continuation_tx(tx, continuation)?;
+                    validate_work_item_continuation_tx(
+                        tx,
+                        continuation,
+                        &completion.continuation_expectations,
+                    )?;
                 }
             }
             validate_terminal_tool_execution_mutations_tx(
@@ -2023,6 +2042,7 @@ fn validate_scheduler_claim_work_item_tx(
 fn validate_work_item_continuation_tx(
     tx: &Transaction<'_>,
     incoming: &WorkItemContinuationFrame,
+    expectations: &[WorkItemContinuationFrame],
 ) -> Result<()> {
     let existing = tx
         .query_row(
@@ -2033,6 +2053,19 @@ fn validate_work_item_continuation_tx(
         .optional()?
         .map(|payload| serde_json::from_str::<WorkItemContinuationFrame>(&payload))
         .transpose()?;
+    if existing.as_ref() == Some(incoming) {
+        return Ok(());
+    }
+    let expected = expectations
+        .iter()
+        .find(|expected| expected.id == incoming.id);
+    if existing.as_ref() != expected {
+        return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+            "work_item_continuation",
+            &incoming.id,
+        )
+        .into());
+    }
     if let Some(existing) = existing {
         if existing.agent_id != incoming.agent_id
             || existing.suspended_work_item_id != incoming.suspended_work_item_id
@@ -2045,6 +2078,54 @@ fn validate_work_item_continuation_tx(
                 incoming.id
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_active_work_item_continuations_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    expected: Option<&[WorkItemContinuationFrame]>,
+    incoming: &[WorkItemContinuationFrame],
+) -> Result<()> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    let mut statement = tx.prepare(
+        "SELECT payload_json
+         FROM work_item_continuations
+         WHERE agent_id = ?1 AND state = 'active'
+         ORDER BY continuation_id ASC",
+    )?;
+    let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+    let actual = rows
+        .map(|row| {
+            serde_json::from_str::<WorkItemContinuationFrame>(&row?).map_err(anyhow::Error::from)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let actual = actual
+        .into_iter()
+        .map(|frame| (frame.id.clone(), frame))
+        .collect::<BTreeMap<_, _>>();
+    let expected = expected
+        .iter()
+        .cloned()
+        .map(|frame| (frame.id.clone(), frame))
+        .collect::<BTreeMap<_, _>>();
+    let mut committed = expected.clone();
+    for frame in incoming {
+        if frame.state == WorkItemContinuationState::Active {
+            committed.insert(frame.id.clone(), frame.clone());
+        } else {
+            committed.remove(&frame.id);
+        }
+    }
+    if actual != expected && actual != committed {
+        return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+            "work_item_continuation_topology",
+            agent_id,
+        )
+        .into());
     }
     Ok(())
 }
@@ -3194,6 +3275,8 @@ mod tests {
                     agent_id: "agent-a".into(),
                     work_items: Vec::new(),
                     wait_conditions: Vec::new(),
+                    active_continuation_expectations: None,
+                    continuation_expectations: Vec::new(),
                     continuations: vec![continuation],
                     agent_state: AgentStateMutation {
                         expected: Some(Box::new(initial_state.clone())),
@@ -3277,7 +3360,7 @@ mod tests {
             updated_at: now,
         });
         completed.updated_at = now;
-        let resumed = frame.resume("active_work_item_completed");
+        let resumed = frame.clone().resume("active_work_item_completed");
 
         db.transitions()
             .commit_work_item_focus(&WorkItemFocusTransitionCommand {
@@ -3287,6 +3370,8 @@ mod tests {
                     expected_revision: active.revision,
                 }],
                 wait_conditions: Vec::new(),
+                active_continuation_expectations: None,
+                continuation_expectations: vec![frame],
                 continuations: vec![resumed],
                 agent_state: AgentStateMutation {
                     expected: Some(Box::new(initial_state)),
@@ -3333,6 +3418,7 @@ mod tests {
                 expected_revision: active.revision,
             }],
             wait_conditions: Vec::new(),
+            continuation_expectations: vec![frame.clone()],
             continuations: vec![frame.cancel("suspended_work_item_not_open")],
             tool_execution: ToolExecutionRecord {
                 id: "tool-cancel-orphan-continuation".into(),
@@ -3361,6 +3447,143 @@ mod tests {
     }
 
     #[test]
+    fn continuation_update_rejects_stale_expected_frame() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let frame = WorkItemContinuationFrame::new_on_completed(
+            "agent-a",
+            "work-parent",
+            "work-active",
+            None,
+        );
+        db.work_item_continuations().upsert(&frame)?;
+        let concurrent = frame.clone().resume("concurrent_resolution");
+        db.work_item_continuations().upsert(&concurrent)?;
+        let stale_update = frame.clone().cancel("stale_resolution");
+        let mut connection = db.connection()?;
+        let tx = connection.transaction()?;
+
+        let error = validate_work_item_continuation_tx(&tx, &stale_update, &[frame]).unwrap_err();
+
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("stale continuation frame should return typed conflict");
+        assert_eq!(conflict.domain(), "work_item_continuation");
+        assert_eq!(conflict.record_id(), stale_update.id);
+        assert_eq!(conflict.code(), "revision_conflict");
+        assert!(conflict.retryable());
+        assert_eq!(db.work_item_continuations().recent(1)?, vec![concurrent]);
+        Ok(())
+    }
+
+    #[test]
+    fn focus_transition_rejects_stale_active_continuation_topology() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let initial_state = AgentState::new("agent-a");
+        db.agent_states().upsert(&initial_state)?;
+        let frame = WorkItemContinuationFrame::new_on_completed(
+            "agent-a",
+            "work-parent",
+            "work-active",
+            None,
+        );
+        db.work_item_continuations().upsert(&frame)?;
+        let competing = WorkItemContinuationFrame::new_on_completed(
+            "agent-a",
+            "work-parent",
+            "work-competing",
+            None,
+        );
+        db.work_item_continuations().upsert(&competing)?;
+        let mut next_state = initial_state.clone();
+        next_state.current_work_item_id = Some("work-parent".into());
+
+        let error = db
+            .transitions()
+            .commit_work_item_focus(&WorkItemFocusTransitionCommand {
+                agent_id: "agent-a".into(),
+                work_items: Vec::new(),
+                wait_conditions: Vec::new(),
+                active_continuation_expectations: Some(vec![frame.clone()]),
+                continuation_expectations: vec![frame.clone()],
+                continuations: vec![frame.clone().resume("explicit_pick")],
+                agent_state: AgentStateMutation {
+                    expected: Some(Box::new(initial_state.clone())),
+                    record: Box::new(next_state),
+                },
+                brief_evidence: Vec::new(),
+                audit_events: Vec::new(),
+                index_changes: Vec::new(),
+                notify_scheduler: true,
+                fault: None,
+            })
+            .unwrap_err();
+
+        let conflict = error
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .expect("stale topology should return typed conflict");
+        assert_eq!(conflict.domain(), "work_item_continuation_topology");
+        assert_eq!(conflict.record_id(), "agent-a");
+        assert_eq!(conflict.code(), "revision_conflict");
+        assert!(conflict.retryable());
+        assert_eq!(db.agent_states().latest("agent-a")?, Some(initial_state));
+        assert_eq!(
+            db.work_item_continuations()
+                .active_for_agent("agent-a")?
+                .len(),
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn focus_transition_active_continuation_topology_fence_is_idempotent() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let parent = work_item("work-parent");
+        let active = work_item("work-active");
+        db.work_items().insert_new(&parent)?;
+        db.work_items().insert_new(&active)?;
+        let mut initial_state = AgentState::new("agent-a");
+        initial_state.current_work_item_id = Some(active.id.clone());
+        db.agent_states().upsert(&initial_state)?;
+        let frame = WorkItemContinuationFrame::new_on_completed(
+            "agent-a",
+            parent.id.clone(),
+            active.id,
+            None,
+        );
+        db.work_item_continuations().upsert(&frame)?;
+        let mut next_state = initial_state.clone();
+        next_state.current_work_item_id = Some(parent.id);
+        let command = WorkItemFocusTransitionCommand {
+            agent_id: "agent-a".into(),
+            work_items: Vec::new(),
+            wait_conditions: Vec::new(),
+            active_continuation_expectations: Some(vec![frame.clone()]),
+            continuation_expectations: vec![frame.clone()],
+            continuations: vec![frame.resume("explicit_pick")],
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(initial_state)),
+                record: Box::new(next_state.clone()),
+            },
+            brief_evidence: Vec::new(),
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+            notify_scheduler: true,
+            fault: None,
+        };
+
+        db.transitions().commit_work_item_focus(&command)?;
+        db.transitions().commit_work_item_focus(&command)?;
+
+        assert_eq!(db.agent_states().latest("agent-a")?, Some(next_state));
+        assert!(db
+            .work_item_continuations()
+            .active_for_agent("agent-a")?
+            .is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn concurrent_focus_commands_require_the_same_expected_agent_state() -> Result<()> {
         let (_dir, db) = runtime_db()?;
         let first = work_item("work-first");
@@ -3376,6 +3599,8 @@ mod tests {
                 agent_id: "agent-a".into(),
                 work_items: Vec::new(),
                 wait_conditions: Vec::new(),
+                active_continuation_expectations: None,
+                continuation_expectations: Vec::new(),
                 continuations: Vec::new(),
                 agent_state: AgentStateMutation {
                     expected: Some(Box::new(initial_state.clone())),
@@ -3888,6 +4113,7 @@ mod tests {
                 expected_revision: open.revision,
             }],
             wait_conditions: Vec::new(),
+            continuation_expectations: Vec::new(),
             continuations: Vec::new(),
             tool_execution,
             index_changes: vec![index_change],

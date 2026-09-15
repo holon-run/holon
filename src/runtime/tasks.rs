@@ -20,7 +20,7 @@ use crate::types::{
 };
 use schemars::JsonSchema;
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
 const TASK_OUTPUT_MESSAGE_SCAN_LIMIT: usize = 200;
@@ -78,6 +78,100 @@ pub struct PickedWorkItem {
     pub transition: WorkItemFocusTransition,
     pub continuation_created: Option<WorkItemContinuationSummary>,
     pub continuation_resolved: Option<WorkItemContinuationSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum ContinuationPathTermination {
+    ReachesCurrent,
+    NoCurrentFocus,
+    MissingLink {
+        missing_work_item_id: String,
+        originating_continuation_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ContinuationPathAnalysis {
+    frames: Vec<WorkItemContinuationFrame>,
+    termination: ContinuationPathTermination,
+}
+
+fn active_continuations_by_suspended<'a>(
+    active_continuations: &[WorkItemContinuationFrame],
+) -> Result<BTreeMap<&str, &WorkItemContinuationFrame>> {
+    let mut by_suspended = BTreeMap::new();
+    let mut by_active = BTreeMap::new();
+    for frame in active_continuations {
+        if let Some(existing) = by_suspended.insert(frame.suspended_work_item_id.as_str(), frame) {
+            return Err(RuntimeError::validation(
+                "continuation_topology_ambiguous",
+                format!(
+                    "active continuation topology has competing suspended edges {} and {} for work item {}",
+                    existing.id, frame.id, frame.suspended_work_item_id
+                ),
+            )
+            .into());
+        }
+        if let Some(existing) = by_active.insert(frame.active_work_item_id.as_str(), frame) {
+            return Err(RuntimeError::validation(
+                "continuation_topology_ambiguous",
+                format!(
+                    "active continuation topology has competing active edges {} and {} for work item {}",
+                    existing.id, frame.id, frame.active_work_item_id
+                ),
+            )
+            .into());
+        }
+    }
+    Ok(by_suspended)
+}
+
+pub(super) fn analyze_continuation_path(
+    target_work_item_id: &str,
+    current_work_item_id: Option<&str>,
+    active_continuations: &[WorkItemContinuationFrame],
+) -> Result<ContinuationPathAnalysis> {
+    let by_suspended = active_continuations_by_suspended(active_continuations)?;
+    let mut frames: Vec<WorkItemContinuationFrame> = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut work_item_id = target_work_item_id;
+    loop {
+        let Some(frame) = by_suspended.get(work_item_id).copied() else {
+            let originating = frames
+                .last()
+                .expect("continuation path starts from a yielded target");
+            let termination = if current_work_item_id.is_none() {
+                ContinuationPathTermination::NoCurrentFocus
+            } else {
+                ContinuationPathTermination::MissingLink {
+                    missing_work_item_id: work_item_id.to_string(),
+                    originating_continuation_id: originating.id.clone(),
+                }
+            };
+            return Ok(ContinuationPathAnalysis {
+                frames,
+                termination,
+            });
+        };
+        if !visited.insert(frame.id.clone()) {
+            return Err(RuntimeError::validation(
+                "continuation_topology_cycle",
+                format!(
+                    "active continuation topology contains a cycle at continuation {}",
+                    frame.id
+                ),
+            )
+            .into());
+        }
+        frames.push(frame.clone());
+        if current_work_item_id == Some(frame.active_work_item_id.as_str()) {
+            return Ok(ContinuationPathAnalysis {
+                frames,
+                termination: ContinuationPathTermination::ReachesCurrent,
+            });
+        }
+        work_item_id = frame.active_work_item_id.as_str();
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -2812,44 +2906,63 @@ impl RuntimeHandle {
         let mut warnings = Vec::new();
         let mut continuation_created = None;
         let mut continuation_resolved = None;
+        let mut continuation_expectations = Vec::new();
         let mut continuation_records = Vec::new();
         let active_continuations = self
             .inner
             .storage
             .latest_active_work_item_continuations_for_agent(&agent_id)?;
-        let by_suspended = active_continuations
-            .iter()
-            .map(|frame| (frame.suspended_work_item_id.as_str(), frame))
-            .collect::<BTreeMap<_, _>>();
+        let by_suspended = active_continuations_by_suspended(&active_continuations)?;
         let target_was_yielded = by_suspended.contains_key(record.id.as_str());
-        let mut resolved_frame_ids = std::collections::BTreeSet::new();
         if target_was_yielded {
-            let mut parent_id = record.id.as_str();
-            let mut first = true;
-            loop {
-                let frame = by_suspended
-                    .get(parent_id)
-                    .copied()
-                    .ok_or_else(|| anyhow!("continuation unwind path is incomplete"))?;
-                anyhow::ensure!(
-                    resolved_frame_ids.insert(frame.id.clone()),
-                    "continuation unwind path contains a cycle"
-                );
-                let (resolved, reason, event_kind) = if first {
+            let analysis = analyze_continuation_path(
+                &record.id,
+                current_id.as_deref(),
+                &active_continuations,
+            )?;
+            if let ContinuationPathTermination::MissingLink {
+                missing_work_item_id,
+                originating_continuation_id,
+            } = &analysis.termination
+            {
+                return Err(RuntimeError::new(
+                    RuntimeErrorDomain::Conflict,
+                    "continuation_unwind_incomplete",
+                    format!(
+                        "continuation unwind from work item {} is disconnected from current focus; chain breaks at work item {} after continuation {}",
+                        record.id, missing_work_item_id, originating_continuation_id
+                    ),
+                )
+                .with_safe_context("work_item_id", missing_work_item_id)
+                .with_safe_context("record_id", originating_continuation_id)
+                .with_recovery_hint(
+                    "refresh continuation state or run scheduler recovery before retrying the pick",
+                )
+                .into());
+            }
+            for (index, frame) in analysis.frames.iter().enumerate() {
+                let (resolved, reason, event_kind) = if index == 0 {
                     (
                         frame.clone().resume("explicit_pick"),
                         "explicit_pick",
                         "work_item_continuation_resumed",
                     )
                 } else {
+                    let reason = match &analysis.termination {
+                        ContinuationPathTermination::NoCurrentFocus => {
+                            "orphaned_descendant_without_current_focus"
+                        }
+                        ContinuationPathTermination::ReachesCurrent => "current_focus_reselected",
+                        ContinuationPathTermination::MissingLink { .. } => unreachable!(),
+                    };
                     (
-                        frame.clone().cancel("current_focus_reselected"),
-                        "current_focus_reselected",
+                        frame.clone().cancel(reason),
+                        reason,
                         "work_item_continuation_cancelled",
                     )
                 };
                 let summary = continuation_summary(&resolved, reason);
-                if first {
+                if index == 0 {
                     continuation_resolved = Some(summary.clone());
                 }
                 audit_events.push(AuditEvent::legacy(
@@ -2859,14 +2972,11 @@ impl RuntimeHandle {
                         "continuation": summary,
                     }),
                 ));
+                continuation_expectations.push(frame.clone());
                 continuation_records.push(resolved);
-                if current_id.as_deref() == Some(frame.active_work_item_id.as_str()) {
-                    break;
-                }
-                parent_id = frame.active_work_item_id.as_str();
-                first = false;
             }
         } else if let Some(id) = current_id.as_deref() {
+            let mut resolved_frame_ids = BTreeSet::new();
             let mut parent_id = id;
             while let Some(frame) = by_suspended.get(parent_id).copied() {
                 anyhow::ensure!(
@@ -2884,6 +2994,7 @@ impl RuntimeHandle {
                         ),
                     }),
                 ));
+                continuation_expectations.push(frame.clone());
                 continuation_records.push(cancelled);
                 parent_id = frame.active_work_item_id.as_str();
             }
@@ -3052,6 +3163,8 @@ impl RuntimeHandle {
                 agent_id: agent_id.clone(),
                 work_items,
                 wait_conditions,
+                active_continuation_expectations: Some(active_continuations),
+                continuation_expectations,
                 continuations: continuation_records,
                 agent_state: crate::runtime_db::transitions::AgentStateMutation {
                     expected: Some(Box::new(state)),
@@ -3445,6 +3558,8 @@ impl RuntimeHandle {
                     expected_revision: existing.revision,
                 }],
                 wait_conditions,
+                active_continuation_expectations: None,
+                continuation_expectations: Vec::new(),
                 continuations: Vec::new(),
                 agent_state: crate::runtime_db::transitions::AgentStateMutation {
                     expected: Some(Box::new(state)),
@@ -4024,6 +4139,8 @@ impl RuntimeHandle {
                         expected_revision: record.revision - 1,
                     }],
                     wait_conditions: prepared.wait_conditions,
+                    active_continuation_expectations: None,
+                    continuation_expectations: prepared.continuation_expectations,
                     continuations: prepared.continuations,
                     agent_state: crate::runtime_db::transitions::AgentStateMutation {
                         expected: Some(Box::new(prepared.expected_agent_state)),
@@ -4084,6 +4201,8 @@ impl RuntimeHandle {
                 expected_revision: record.revision - 1,
             }],
             wait_conditions: prepared.wait_conditions,
+            active_continuation_expectations: None,
+            continuation_expectations: prepared.continuation_expectations,
             continuations: prepared.continuations,
             agent_state: crate::runtime_db::transitions::AgentStateMutation {
                 expected: Some(Box::new(prepared.expected_agent_state)),
@@ -4452,6 +4571,7 @@ impl RuntimeHandle {
             ));
         }
 
+        let mut continuation_expectations = Vec::new();
         let mut continuation_records = Vec::new();
         let mut continuation_resumed = None;
         if let Some(frame) = self
@@ -4459,6 +4579,7 @@ impl RuntimeHandle {
             .storage
             .latest_active_work_item_continuation_for_active(&agent_id, &record.id)?
         {
+            continuation_expectations.push(frame.clone());
             let suspended = self
                 .inner
                 .runtime_db
@@ -4544,6 +4665,7 @@ impl RuntimeHandle {
             expected_agent_state,
             committed_agent_state: state,
             wait_conditions,
+            continuation_expectations,
             continuations: continuation_records,
             continuation_resumed,
             audit_events,
