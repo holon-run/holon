@@ -304,7 +304,7 @@ export function decodePendingInput(
     preview:
       source.preview === undefined || source.preview === null
         ? ""
-        : nonEmptyString(source.preview, `${path}.preview`),
+        : stringValue(source.preview, `${path}.preview`),
   };
 }
 
@@ -318,7 +318,7 @@ export function decodeTurnInputSummary(
     preview:
       source.preview === undefined || source.preview === null
         ? ""
-        : nonEmptyString(source.preview, `${path}.preview`),
+        : stringValue(source.preview, `${path}.preview`),
   };
 }
 
