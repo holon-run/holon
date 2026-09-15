@@ -107,11 +107,17 @@ export type PresentationClass =
   | "system"
   | "operational";
 
+export interface TurnInputSummary {
+  readonly message_id: string;
+  readonly preview: string;
+}
+
 export interface ConversationTurnSummary {
   readonly turn_id: string;
   readonly key: TurnKey;
   readonly revision: number;
   readonly presentation_class: PresentationClass;
+  readonly inputs: readonly TurnInputSummary[];
   readonly execution: ExecutionState;
   readonly result: ResultState;
   readonly settled: boolean;

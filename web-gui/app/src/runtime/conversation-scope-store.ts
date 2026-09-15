@@ -2,6 +2,7 @@ import { create } from "zustand";
 import {
   ConversationClient,
   ConversationController,
+  type ConversationClientLike,
   type ConversationControllerOptions,
   type ConversationStateView,
   type ConversationStatus,
@@ -82,7 +83,7 @@ const registry = new Map<ConversationScopeKey, RegistryEntry>();
 
 export type ConversationClientFactory = (
   connection: ConversationConnectionOptions,
-) => ConversationClient;
+) => ConversationClientLike;
 
 const defaultClientFactory: ConversationClientFactory = (connection) =>
   new ConversationClient({

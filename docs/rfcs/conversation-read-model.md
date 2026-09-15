@@ -122,10 +122,18 @@ A summary must distinguish:
 | Dimension | Proposed meaning |
 | --- | --- |
 | Execution | Whether the turn is active or terminal; a safe typed terminal outcome |
+| Input previews | Canonical message ids plus bounded text previews for inputs assigned to the turn |
 | Result availability | Whether known briefs are resolved, explicitly absent, or durably unavailable |
 | Result finality | Whether canonical delivery lifecycle proves the result set is settled |
 | Attention | Safe error/interruption/wait information requiring visibility |
 | Detail availability | Whether activity is available, partial, unavailable, or unknown |
+
+`inputs` on a turn summary carries the assigned input message ids with bounded
+message-body previews (at most 8 per turn). This lets history pages render
+inputs without issuing per-turn activity detail requests; the authoritative
+activity sequence remains in turn detail. Input assignment bumps the turn
+summary revision, so stream consumers receive refreshed previews on the same
+revision path.
 
 `brief_upsert` does not terminate a turn. Agent idle and WorkItem completion
 are not substitutes for a turn terminal record. A wait may close the current

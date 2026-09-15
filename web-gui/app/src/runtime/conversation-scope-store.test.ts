@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { ConversationClientLike } from "@holon/conversation-sdk";
+import type {
+  ConversationClientLike,
+  ConversationStreamItem,
+} from "@holon/conversation-sdk";
 
 import {
   acquireConversationScope,
@@ -106,11 +109,10 @@ function fakeClient() {
     async brief() {
       throw new Error("not used");
     },
-    async *stream() {
+    async *stream(): AsyncGenerator<ConversationStreamItem> {
       calls.stream += 1;
-      yield* hub.iterate(
-        typeof AbortSignal !== "undefined" ? new AbortController().signal : undefined as never,
-      );
+      const signal = new AbortController().signal;
+      yield* hub.iterate(signal) as AsyncGenerator<ConversationStreamItem>;
     },
   };
   return { client, hub, calls };

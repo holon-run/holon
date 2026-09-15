@@ -18,6 +18,7 @@ export function turn(
     },
     revision,
     presentation_class: "operator",
+    inputs: [],
     execution: { kind: "active" },
     result: { kind: "pending" },
     settled: false,

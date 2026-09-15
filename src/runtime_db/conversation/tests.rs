@@ -379,6 +379,49 @@ fn history_keyset_preserves_upper_bound_and_legacy_ties() -> Result<()> {
 }
 
 #[test]
+fn summary_includes_assigned_input_previews() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator-test".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "summarize the release".into(),
+        },
+    );
+    message.id = "message-input-preview".into();
+    message.turn_id = Some("turn-input-preview".into());
+    message.created_at = timestamp(1);
+    db.evidence().append_message(&message)?;
+
+    let mut source = turn("turn-input-preview", 1);
+    source.trigger = Some(TurnTriggerSummary::from_message(&message));
+    source.input_message_ids = vec![message.id.clone()];
+    db.turn_records()
+        .upsert(&terminal(source, TurnTerminalKind::Completed, None))?;
+
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    let summary = page
+        .turns
+        .iter()
+        .find(|turn| turn.turn_id == "turn-input-preview")
+        .expect("turn summary");
+    assert_eq!(summary.inputs.len(), 1);
+    assert_eq!(summary.inputs[0].message_id, "message-input-preview");
+    assert!(
+        summary.inputs[0].preview.contains("summarize the release"),
+        "preview should carry the input text: {}",
+        summary.inputs[0].preview
+    );
+    Ok(())
+}
+
+#[test]
 fn replayed_input_keeps_source_turn_assignment() -> Result<()> {
     let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
     let mut message = MessageEnvelope::new(

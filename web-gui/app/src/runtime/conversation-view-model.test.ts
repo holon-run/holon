@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type {
+  ConversationCheckpoint,
+  ConversationHistoryCursor,
   ConversationStateView,
   ConversationTurnSummary,
 } from "@holon/conversation-sdk";
@@ -22,6 +24,7 @@ function turnSummary(
     key: { turn_index: turnIndex, turn_id: turnId },
     revision: 1,
     presentation_class: "operator",
+    inputs: [],
     execution: { kind: "active" },
     result: { kind: "pending" },
     settled: false,
@@ -52,7 +55,7 @@ function stateView(
     details: [],
     next_before_cursor: null,
     has_more: false,
-    checkpoint: "checkpoint-10",
+    checkpoint: "checkpoint-10" as ConversationCheckpoint,
     through_seq: 10,
     reset_reason: null,
     ...overrides,
@@ -64,6 +67,7 @@ const group = (turn: ConversationTurnSummary): ConversationTurnGroup => ({
   turnIndex: turn.key.turn_index,
   revision: turn.revision,
   presentationClass: turn.presentation_class,
+  inputs: turn.inputs,
   execution: turn.execution,
   result: turn.result,
   settled: turn.settled,
@@ -129,7 +133,7 @@ describe("buildConversationSessionModel", () => {
         pending_inputs: [
           { message_id: "m-1", revision: 1, state: "queued" },
         ],
-        next_before_cursor: "history-cursor",
+        next_before_cursor: "history-cursor" as ConversationHistoryCursor,
         has_more: true,
       }),
       historyState: { kind: "loading" },

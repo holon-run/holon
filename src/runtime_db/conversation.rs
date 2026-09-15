@@ -16,7 +16,8 @@ use crate::domain::conversation::{
     ConversationSummaryPage, ConversationTurnSummary, CursorBinding, CursorCodec,
     CursorDecodeError, DetailCoverage, DetailCoverageReason, DetailCursor, ExecutionState,
     HistoryCursor, PendingInput, PendingInputState, PresentationClass, StreamCursor,
-    TerminalOutcome, TurnKey, CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
+    TerminalOutcome, TurnInputSummary, TurnKey, CONVERSATION_QUERY_VERSION,
+    CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::types::ConversationRepository;
 use crate::types::{TurnRecord, TurnTerminalKind};
@@ -202,6 +203,7 @@ LIMIT ?6";
 const MAX_ACTIVE_TURNS: usize = 32;
 const MAX_PENDING_INPUTS: usize = 100;
 const MAX_BRIEFS_PER_TURN: usize = 64;
+const MAX_INPUTS_PER_TURN: usize = 8;
 const MAX_CONVERSATION_SHADOW_MISMATCH_SAMPLES: usize = 32;
 pub(crate) const MAX_CONVERSATION_CHANGE_EVENTS: usize = 256;
 pub(crate) const MAX_CONVERSATION_CHANGE_ACTIVITIES: usize = 64;
@@ -1912,6 +1914,7 @@ fn decode_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnSummaryRow> 
             },
             revision: summary_revision,
             presentation_class,
+            inputs: Vec::new(),
             execution,
             result: crate::domain::conversation::ResultState::Pending,
             settled: false,
@@ -1927,6 +1930,8 @@ fn decode_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnSummaryRow> 
 
 fn hydrate_turn_summary(connection: &Connection, row: &mut TurnSummaryRow) -> Result<()> {
     row.summary.brief_ids = brief_ids(connection, &row.record.agent_id, &row.record.turn_id)?;
+    row.summary.inputs =
+        turn_input_previews(connection, &row.record.agent_id, &row.record.turn_id)?;
     let (result, settled) = map_result(
         row.summary.brief_ids.len(),
         row.record
@@ -1963,6 +1968,34 @@ fn brief_ids(connection: &Connection, agent_id: &str, turn_id: &str) -> Result<V
         }
         .into());
     }
+    Ok(rows)
+}
+
+fn turn_input_previews(
+    connection: &Connection,
+    agent_id: &str,
+    turn_id: &str,
+) -> Result<Vec<TurnInputSummary>> {
+    let mut statement = connection.prepare(
+        "SELECT assignments.message_id, COALESCE(messages.preview, '')
+         FROM conversation_input_assignments AS assignments
+         LEFT JOIN messages
+           ON messages.evidence_id = assignments.message_id
+         WHERE assignments.agent_id = ?1 AND assignments.turn_id = ?2
+         ORDER BY assignments.assigned_at, assignments.message_id
+         LIMIT ?3",
+    )?;
+    let rows = statement
+        .query_map(
+            params![agent_id, turn_id, i64::try_from(MAX_INPUTS_PER_TURN)?],
+            |row| {
+                Ok(TurnInputSummary {
+                    message_id: row.get(0)?,
+                    preview: row.get(1)?,
+                })
+            },
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     Ok(rows)
 }
 

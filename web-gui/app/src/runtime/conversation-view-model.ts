@@ -15,6 +15,7 @@ import type {
   ResultUnavailableReason,
   TerminalOutcome,
   Attention,
+  TurnInputSummary,
 } from "@holon/conversation-sdk";
 
 /**
@@ -26,6 +27,7 @@ export interface ConversationTurnGroup {
   readonly turnIndex: number;
   readonly revision: number;
   readonly presentationClass: PresentationClass;
+  readonly inputs: readonly TurnInputSummary[];
   readonly execution: ExecutionState;
   readonly result: ResultState;
   readonly settled: boolean;
@@ -70,6 +72,7 @@ export function buildConversationSessionModel(
       turnIndex: turn.key.turn_index,
       revision: turn.revision,
       presentationClass: turn.presentation_class,
+      inputs: turn.inputs,
       execution: turn.execution,
       result: turn.result,
       settled: turn.settled,
