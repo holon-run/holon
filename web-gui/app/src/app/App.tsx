@@ -731,6 +731,12 @@ export function App() {
                 ? undefined
                 : {
                     model: conversationSession.model,
+                    onLoadOlderHistory: conversationSession.loadOlderHistory,
+                    onInspectActivity: (activity) => {
+                      if (activeAgentId !== undefined) {
+                        inspectActivity(activeAgentId, activity);
+                      }
+                    },
                     onLoadBrief: conversationSession.loadBrief,
                     onLoadDetail: conversationSession.loadDetail,
                     onLoadOlderActivities: conversationSession.loadOlderActivities,

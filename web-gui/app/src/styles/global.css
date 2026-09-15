@@ -7533,3 +7533,13 @@ code {
   font-size: 11px;
   color: var(--text-faint, #6a6a6a);
 }
+
+.conversation-activity.is-inspectable {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 2px 4px;
+}
+
+.conversation-activity.is-inspectable:hover {
+  background: var(--surface-raised, rgba(127, 127, 127, 0.12));
+}

@@ -37,6 +37,7 @@ import type { OperatorPromptAttachment } from "../../runtime/client";
 
 export interface ConversationTimelineBundle extends ConversationTimelineActions {
   model: ConversationSessionModel;
+  onLoadOlderHistory: () => void;
 }
 
 interface AgentPageProps {
@@ -574,6 +575,21 @@ export function AgentPage({
     }
   }, [timelineVersion, syncStatus, onConversationRead]);
 
+  const conversationContentVersion =
+    conversation === undefined
+      ? ""
+      : `${conversation.model.turns.length}:${conversation.model.turns.at(-1)?.turnId ?? ""}:${conversation.model.pendingInputs.length}:${conversation.model.status.kind}`;
+  useLayoutEffect(() => {
+    if (conversation === undefined) return;
+    const list = messageListRef.current;
+    if (!list) return;
+    if (stickToBottomRef.current) {
+      scrollToConversationBottom();
+      onConversationRead();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationContentVersion, onConversationRead]);
+
   useEffect(() => {
     const markReadIfVisible = () => {
       const list = messageListRef.current;
@@ -841,7 +857,24 @@ export function AgentPage({
       <div className="agent-workbench">
         <section className="conversation-pane">
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll}>
-            {historyLoadAction !== "none" ? (
+            {conversation !== undefined ? (
+              conversation.model.hasMoreHistory ||
+              conversation.model.historyState.kind === "loading" ? (
+                <div className="history-loader">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    disabled={conversation.model.historyState.kind === "loading"}
+                    onClick={() => conversation.onLoadOlderHistory()}
+                  >
+                    {conversation.model.historyState.kind === "loading"
+                      ? t("agent.loadingEarlier")
+                      : t("agent.loadEarlier")}
+                  </Button>
+                </div>
+              ) : null
+            ) : historyLoadAction !== "none" ? (
               <div className="history-loader">
                 <Button type="button" size="sm" variant="secondary" disabled={loadingNetworkHistory} onClick={handleLoadOlderEvents}>
                   {loadingNetworkHistory ? t("agent.loadingEarlier") : t("agent.loadEarlier")}
@@ -871,6 +904,7 @@ export function AgentPage({
             {conversation ? (
               <ConversationTimeline
                 model={conversation.model}
+                onInspectActivity={conversation.onInspectActivity}
                 onLoadBrief={conversation.onLoadBrief}
                 onLoadDetail={conversation.onLoadDetail}
                 onLoadOlderActivities={conversation.onLoadOlderActivities}

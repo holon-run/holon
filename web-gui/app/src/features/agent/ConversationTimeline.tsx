@@ -26,6 +26,7 @@ import type {
 
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { EmptyState } from "../../components/ui/EmptyState";
+import type { AgentTimelineActivity } from "../../runtime/types";
 import {
   turnResultPresentation,
   type ConversationSessionModel,
@@ -37,6 +38,7 @@ export interface ConversationTimelineActions {
   onLoadDetail: (turnId: string) => void;
   onLoadOlderActivities: (turnId: string) => void;
   onRetry: () => void;
+  onInspectActivity?: (activity: AgentTimelineActivity) => void;
   briefRecord: (briefId: string) => BriefRecord | null;
   briefLoadState: (briefId: string) => ConversationBriefLoadState | null;
   detailLoadState: (turnId: string) => ConversationDetailLoadState;
@@ -411,6 +413,7 @@ function ConversationDetailPanel({
             <ConversationActivityRow
               activity={activity}
               key={activity.id}
+              onInspectActivity={actions.onInspectActivity}
             />
           ))}
         </ol>
@@ -433,7 +436,13 @@ function ChevronUpLoadMore() {
   return <ChevronDown size={13} className="is-flipped" />;
 }
 
-function ConversationActivityRow({ activity }: { activity: ConversationActivity }) {
+function ConversationActivityRow({
+  activity,
+  onInspectActivity,
+}: {
+  activity: ConversationActivity;
+  onInspectActivity?: (activity: AgentTimelineActivity) => void;
+}) {
   const { t } = useTranslation();
   const summary = useMemo(
     () => summarizeActivity(activity),
@@ -441,8 +450,14 @@ function ConversationActivityRow({ activity }: { activity: ConversationActivity 
   );
   const icon = activityIcon(activity);
   const kindLabel = t(`agentPage.activityKind.${activity.kind}`);
+  const inspect = onInspectActivity === undefined ? undefined : () =>
+    onInspectActivity(conversationActivityToInspectorActivity(activity));
   return (
-    <li className={`conversation-activity is-${activity.kind}`} data-activity-id={activity.id}>
+    <li
+      className={`conversation-activity is-${activity.kind}${inspect === undefined ? "" : " is-inspectable"}`}
+      data-activity-id={activity.id}
+      {...(inspect === undefined ? {} : { onClick: inspect })}
+    >
       <span className="conversation-activity-icon">{icon}</span>
       <span className="conversation-activity-kind">{kindLabel}</span>
       <span className="conversation-activity-summary" title={summary.plain}>
@@ -451,6 +466,28 @@ function ConversationActivityRow({ activity }: { activity: ConversationActivity 
       <span className="conversation-activity-seq">#{activity.key.event_seq}</span>
     </li>
   );
+}
+
+/** Adapt a read-model activity into the Debug inspector's activity shape. */
+export function conversationActivityToInspectorActivity(
+  activity: ConversationActivity,
+): AgentTimelineActivity {
+  const summary = summarizeActivity(activity);
+  return {
+    id: activity.id,
+    kind:
+      activity.kind === "operator" ||
+      activity.kind === "assistant" ||
+      activity.kind === "tool"
+        ? activity.kind
+        : "event",
+    label: activity.kind,
+    body: summary.plain,
+    timestamp: "",
+    meta: `#${activity.key.event_seq} r${activity.revision}`,
+    minDisplayLevel: "info",
+    sourceIds: [activity.id],
+  };
 }
 
 function activityIcon(activity: ConversationActivity) {
