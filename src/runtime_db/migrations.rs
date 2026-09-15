@@ -4279,8 +4279,48 @@ fn repair_conversation_input_assignments(transaction: &Transaction<'_>) -> Resul
     transaction.execute_batch(&format!(
         r#"
 DROP TABLE IF EXISTS temp.conversation_replay_input_sources;
+DROP TABLE IF EXISTS temp.conversation_replay_conflicting_messages;
 CREATE TEMP TABLE conversation_replay_input_sources AS
-{CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL};
+WITH replay AS (
+{CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL}
+)
+SELECT
+  replay.*,
+  CASE
+    WHEN COALESCE(replay.message_id_is_text, 0) = 0
+      OR COALESCE(replay.source_turn_id_is_text, 0) = 0
+      OR TRIM(COALESCE(replay.message_id, '')) = ''
+      OR TRIM(COALESCE(replay.canonical_turn_id, '')) = ''
+      THEN 'incomplete_provenance'
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM json_each(
+        replay_turn.payload_json, '$.input_message_ids'
+      ) AS input
+      WHERE input.type = 'text'
+        AND input.value = replay.message_id
+    )
+      THEN 'replay_missing_input'
+    WHEN source_turn.turn_id IS NULL
+      THEN 'missing_source_turn'
+    WHEN source_turn.agent_id <> replay.agent_id
+      THEN 'cross_agent_source'
+    WHEN NOT EXISTS (
+      SELECT 1
+      FROM json_each(
+        source_turn.payload_json, '$.input_message_ids'
+      ) AS input
+      WHERE input.type = 'text'
+        AND input.value = replay.message_id
+    )
+      THEN 'source_missing_input'
+    ELSE NULL
+  END AS invalid_reason
+FROM replay
+JOIN turn_records AS replay_turn
+  ON replay_turn.turn_id = replay.replay_turn_id
+LEFT JOIN turn_records AS source_turn
+  ON source_turn.turn_id = replay.canonical_turn_id;
 
 CREATE INDEX conversation_replay_input_sources_message
   ON conversation_replay_input_sources(message_id);
@@ -4300,112 +4340,147 @@ CREATE INDEX conversation_replay_input_sources_source_turn
         replay_count,
         "repairing conversation input assignments"
     );
-    fail_on_conversation_repair_diagnostics(
-        transaction,
-        "replay turns with incomplete provenance",
-        "SELECT COUNT(*)
-         FROM conversation_replay_input_sources
-         WHERE COALESCE(message_id_is_text, 0) = 0
-            OR COALESCE(source_turn_id_is_text, 0) = 0
-            OR TRIM(COALESCE(message_id, '')) = ''
-            OR TRIM(COALESCE(canonical_turn_id, '')) = ''",
-        "SELECT replay_turn_id
-         FROM conversation_replay_input_sources
-         WHERE COALESCE(message_id_is_text, 0) = 0
-            OR COALESCE(source_turn_id_is_text, 0) = 0
-            OR TRIM(COALESCE(message_id, '')) = ''
-            OR TRIM(COALESCE(canonical_turn_id, '')) = ''
-         ORDER BY replay_turn_id
-         LIMIT 5",
+    let (
+        invalid_replay_count,
+        incomplete_provenance_count,
+        replay_missing_input_count,
+        missing_source_turn_count,
+        cross_agent_source_count,
+        source_missing_input_count,
+    ): (i64, i64, i64, i64, i64, i64) = transaction.query_row(
+        "SELECT
+           COUNT(*) FILTER (WHERE invalid_reason IS NOT NULL),
+           COUNT(*) FILTER (WHERE invalid_reason = 'incomplete_provenance'),
+           COUNT(*) FILTER (WHERE invalid_reason = 'replay_missing_input'),
+           COUNT(*) FILTER (WHERE invalid_reason = 'missing_source_turn'),
+           COUNT(*) FILTER (WHERE invalid_reason = 'cross_agent_source'),
+           COUNT(*) FILTER (WHERE invalid_reason = 'source_missing_input')
+         FROM conversation_replay_input_sources",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        },
     )?;
-    fail_on_conversation_repair_diagnostics(
-        transaction,
-        "replay turns whose source message is not attached as input",
-        "SELECT COUNT(*)
-         FROM conversation_replay_input_sources AS replay
-         JOIN turn_records AS replay_turn
-           ON replay_turn.turn_id = replay.replay_turn_id
-         WHERE NOT EXISTS (
-           SELECT 1
-           FROM json_each(
-             replay_turn.payload_json, '$.input_message_ids'
-           ) AS input
-           WHERE input.type = 'text'
-             AND input.value = replay.message_id
-         )",
-        "SELECT replay.replay_turn_id
-         FROM conversation_replay_input_sources AS replay
-         JOIN turn_records AS replay_turn
-           ON replay_turn.turn_id = replay.replay_turn_id
-         WHERE NOT EXISTS (
-           SELECT 1
-           FROM json_each(
-             replay_turn.payload_json, '$.input_message_ids'
-           ) AS input
-           WHERE input.type = 'text'
-             AND input.value = replay.message_id
-         )
-         ORDER BY replay.replay_turn_id
-         LIMIT 5",
-    )?;
-    fail_on_conversation_repair_diagnostics(
-        transaction,
-        "messages with conflicting replay source ownership",
-        "SELECT COUNT(*)
-         FROM (
-           SELECT message_id
-           FROM conversation_replay_input_sources
-           GROUP BY message_id
-           HAVING MIN(agent_id) <> MAX(agent_id)
-              OR MIN(canonical_turn_id) <> MAX(canonical_turn_id)
-         )",
-        "SELECT message_id
+    if invalid_replay_count > 0 {
+        let invalid_samples = transaction
+            .prepare(
+                "SELECT replay_turn_id || ':' || invalid_reason
+                 FROM conversation_replay_input_sources
+                 WHERE invalid_reason IS NOT NULL
+                 ORDER BY replay_turn_id
+                 LIMIT 5",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        tracing::warn!(
+            migration_version = 66,
+            migration_name = "conversation_input_assignment_repair",
+            stage = "discard_invalid_replay_provenance",
+            invalid_replay_count,
+            incomplete_provenance_count,
+            replay_missing_input_count,
+            missing_source_turn_count,
+            cross_agent_source_count,
+            source_missing_input_count,
+            samples = %invalid_samples.join(", "),
+            "discarding invalid replay provenance during conversation input assignment repair"
+        );
+        let cleaned_replay_count = transaction.execute(
+            "UPDATE turn_records
+             SET payload_json = json_remove(payload_json, '$.replay')
+             WHERE turn_id IN (
+               SELECT replay_turn_id
+               FROM conversation_replay_input_sources
+               WHERE invalid_reason IS NOT NULL
+             )",
+            [],
+        )?;
+        if i64::try_from(cleaned_replay_count)? != invalid_replay_count {
+            bail!(
+                "conversation input assignment repair classified \
+                 {invalid_replay_count} invalid replay records but cleaned \
+                 {cleaned_replay_count}"
+            );
+        }
+        transaction.execute(
+            "DELETE FROM conversation_replay_input_sources
+             WHERE invalid_reason IS NOT NULL",
+            [],
+        )?;
+    }
+    transaction.execute_batch(
+        "CREATE TEMP TABLE conversation_replay_conflicting_messages AS
+         SELECT message_id
          FROM conversation_replay_input_sources
          GROUP BY message_id
          HAVING MIN(agent_id) <> MAX(agent_id)
-            OR MIN(canonical_turn_id) <> MAX(canonical_turn_id)
-         ORDER BY message_id
-         LIMIT 5",
+            OR MIN(canonical_turn_id) <> MAX(canonical_turn_id);
+
+         CREATE UNIQUE INDEX conversation_replay_conflicting_messages_message
+           ON conversation_replay_conflicting_messages(message_id);",
     )?;
-    fail_on_conversation_repair_diagnostics(
-        transaction,
-        "replay sources that are missing, cross-agent, or do not contain the input",
+    let conflicting_message_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM conversation_replay_conflicting_messages",
+        [],
+        |row| row.get(0),
+    )?;
+    let skipped_conflicting_replay_count: i64 = transaction.query_row(
         "SELECT COUNT(*)
          FROM conversation_replay_input_sources AS replay
-         LEFT JOIN turn_records AS source_turn
-           ON source_turn.turn_id = replay.canonical_turn_id
-         WHERE source_turn.turn_id IS NULL
-            OR source_turn.agent_id <> replay.agent_id
-            OR NOT EXISTS (
-              SELECT 1
-              FROM json_each(
-                source_turn.payload_json, '$.input_message_ids'
-              ) AS input
-              WHERE input.type = 'text'
-                AND input.value = replay.message_id
-            )",
-        "SELECT replay.message_id || ':' || replay.canonical_turn_id
-         FROM conversation_replay_input_sources AS replay
-         LEFT JOIN turn_records AS source_turn
-           ON source_turn.turn_id = replay.canonical_turn_id
-         WHERE source_turn.turn_id IS NULL
-            OR source_turn.agent_id <> replay.agent_id
-            OR NOT EXISTS (
-              SELECT 1
-              FROM json_each(
-                source_turn.payload_json, '$.input_message_ids'
-              ) AS input
-              WHERE input.type = 'text'
-                AND input.value = replay.message_id
-            )
-         ORDER BY replay.message_id, replay.canonical_turn_id
-         LIMIT 5",
+         JOIN conversation_replay_conflicting_messages AS conflict
+           ON conflict.message_id = replay.message_id",
+        [],
+        |row| row.get(0),
+    )?;
+    if conflicting_message_count > 0 {
+        let conflict_samples = transaction
+            .prepare(
+                "SELECT message_id
+                 FROM conversation_replay_conflicting_messages
+                 ORDER BY message_id
+                 LIMIT 5",
+            )?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        tracing::warn!(
+            migration_version = 66,
+            migration_name = "conversation_input_assignment_repair",
+            stage = "skip_conflicting_replay_sources",
+            conflicting_message_count,
+            skipped_conflicting_replay_count,
+            samples = %conflict_samples.join(", "),
+            "skipping conflicting replay sources during conversation input assignment repair"
+        );
+        transaction.execute(
+            "DELETE FROM conversation_replay_input_sources
+             WHERE message_id IN (
+               SELECT message_id
+               FROM conversation_replay_conflicting_messages
+             )",
+            [],
+        )?;
+    }
+    let repair_candidate_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM conversation_replay_input_sources",
+        [],
+        |row| row.get(0),
     )?;
     tracing::info!(
         migration_version = 66,
         migration_name = "conversation_input_assignment_repair",
         stage = "apply_replay_assignments",
         replay_count,
+        invalid_replay_count,
+        conflicting_message_count,
+        skipped_conflicting_replay_count,
+        repair_candidate_count,
         "repairing conversation input assignments"
     );
     let changed_count = transaction.execute(
@@ -4441,36 +4516,23 @@ WHERE conversation_input_assignments.agent_id <> excluded.agent_id
 "#,
         [],
     )?;
-    transaction.execute_batch("DROP TABLE conversation_replay_input_sources;")?;
+    transaction.execute_batch(
+        "DROP TABLE conversation_replay_conflicting_messages;
+         DROP TABLE conversation_replay_input_sources;",
+    )?;
     tracing::info!(
         migration_version = 66,
         migration_name = "conversation_input_assignment_repair",
         stage = "complete",
         replay_count,
+        invalid_replay_count,
+        conflicting_message_count,
+        skipped_conflicting_replay_count,
+        repair_candidate_count,
         changed_count,
         "repaired conversation input assignments"
     );
     Ok(())
-}
-
-fn fail_on_conversation_repair_diagnostics(
-    transaction: &Transaction<'_>,
-    description: &str,
-    count_sql: &str,
-    sample_sql: &str,
-) -> Result<()> {
-    let count: i64 = transaction.query_row(count_sql, [], |row| row.get(0))?;
-    if count == 0 {
-        return Ok(());
-    }
-    let samples = transaction
-        .prepare(sample_sql)?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    bail!(
-        "conversation input assignment repair found {count} {description}; samples: {}",
-        samples.join(", ")
-    );
 }
 
 fn ensure_authentication_login_verifier_schema(transaction: &Transaction<'_>) -> Result<()> {
