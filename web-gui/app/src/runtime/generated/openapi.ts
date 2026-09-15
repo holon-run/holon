@@ -5343,6 +5343,14 @@ export interface components {
                     };
                     kind: string;
                 }[];
+                /** Format: uint64 */
+                command_task_min_free_disk_bytes: number;
+                /** Format: uint8 */
+                command_task_min_free_disk_percent: number;
+                /** Format: uint64 */
+                command_task_output_quota_bytes: number;
+                /** Format: uint64 */
+                command_task_output_retention_bytes: number;
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
                 disable_provider_fallback: boolean;
@@ -5460,6 +5468,14 @@ export interface components {
                     };
                     kind: string;
                 }[];
+                /** Format: uint64 */
+                command_task_min_free_disk_bytes: number;
+                /** Format: uint8 */
+                command_task_min_free_disk_percent: number;
+                /** Format: uint64 */
+                command_task_output_quota_bytes: number;
+                /** Format: uint64 */
+                command_task_output_retention_bytes: number;
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
                 disable_provider_fallback: boolean;
@@ -5948,6 +5964,27 @@ export interface components {
                     exit_status?: number | null;
                     input_target?: string | null;
                     login?: boolean | null;
+                    output_capture?: {
+                        /** Format: uint64 */
+                        available_disk_bytes?: number | null;
+                        /** Format: uint64 */
+                        decoded_bytes: number;
+                        /** Format: uint64 */
+                        dropped_bytes: number;
+                        /** Format: uint64 */
+                        emitted_bytes: number;
+                        /** Format: uint64 */
+                        execution_quota_bytes: number;
+                        /** @enum {string|null} */
+                        failure_code?: "output_limit_exceeded" | "low_disk_space" | "output_persistence_failed" | null;
+                        /** Format: uint64 */
+                        required_free_disk_bytes?: number | null;
+                        /** Format: uint64 */
+                        retained_bytes: number;
+                        /** Format: uint64 */
+                        retention_limit_bytes: number;
+                        truncated: boolean;
+                    } | null;
                     output_path?: string | null;
                     promoted_from_exec_command?: boolean | null;
                     result_summary?: string | null;
@@ -6085,6 +6122,27 @@ export interface components {
                 kind: string;
                 /** Format: uint */
                 output_artifact?: number | null;
+                output_capture?: {
+                    /** Format: uint64 */
+                    available_disk_bytes?: number | null;
+                    /** Format: uint64 */
+                    decoded_bytes: number;
+                    /** Format: uint64 */
+                    dropped_bytes: number;
+                    /** Format: uint64 */
+                    emitted_bytes: number;
+                    /** Format: uint64 */
+                    execution_quota_bytes: number;
+                    /** @enum {string|null} */
+                    failure_code?: "output_limit_exceeded" | "low_disk_space" | "output_persistence_failed" | null;
+                    /** Format: uint64 */
+                    required_free_disk_bytes?: number | null;
+                    /** Format: uint64 */
+                    retained_bytes: number;
+                    /** Format: uint64 */
+                    retention_limit_bytes: number;
+                    truncated: boolean;
+                } | null;
                 output_preview: string;
                 output_truncated: boolean;
                 result_summary?: string | null;
@@ -6166,6 +6224,27 @@ export interface components {
                 exit_status?: number | null;
                 input_target?: string | null;
                 login?: boolean | null;
+                output_capture?: {
+                    /** Format: uint64 */
+                    available_disk_bytes?: number | null;
+                    /** Format: uint64 */
+                    decoded_bytes: number;
+                    /** Format: uint64 */
+                    dropped_bytes: number;
+                    /** Format: uint64 */
+                    emitted_bytes: number;
+                    /** Format: uint64 */
+                    execution_quota_bytes: number;
+                    /** @enum {string|null} */
+                    failure_code?: "output_limit_exceeded" | "low_disk_space" | "output_persistence_failed" | null;
+                    /** Format: uint64 */
+                    required_free_disk_bytes?: number | null;
+                    /** Format: uint64 */
+                    retained_bytes: number;
+                    /** Format: uint64 */
+                    retention_limit_bytes: number;
+                    truncated: boolean;
+                } | null;
                 output_path?: string | null;
                 promoted_from_exec_command?: boolean | null;
                 result_summary?: string | null;
@@ -6287,6 +6366,27 @@ export interface components {
                     exit_status?: number | null;
                     input_target?: string | null;
                     login?: boolean | null;
+                    output_capture?: {
+                        /** Format: uint64 */
+                        available_disk_bytes?: number | null;
+                        /** Format: uint64 */
+                        decoded_bytes: number;
+                        /** Format: uint64 */
+                        dropped_bytes: number;
+                        /** Format: uint64 */
+                        emitted_bytes: number;
+                        /** Format: uint64 */
+                        execution_quota_bytes: number;
+                        /** @enum {string|null} */
+                        failure_code?: "output_limit_exceeded" | "low_disk_space" | "output_persistence_failed" | null;
+                        /** Format: uint64 */
+                        required_free_disk_bytes?: number | null;
+                        /** Format: uint64 */
+                        retained_bytes: number;
+                        /** Format: uint64 */
+                        retention_limit_bytes: number;
+                        truncated: boolean;
+                    } | null;
                     output_path?: string | null;
                     promoted_from_exec_command?: boolean | null;
                     result_summary?: string | null;
