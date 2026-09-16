@@ -16,7 +16,7 @@ use crate::types::{
     WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
     WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemDelegationRecord,
     WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
-    CHILD_AGENT_TASK_KIND,
+    AGENT_MESSAGE_WAIT_TASK_KIND, CHILD_AGENT_TASK_KIND,
 };
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -462,6 +462,120 @@ impl RuntimeHandle {
         ))
         .await?;
         Ok(task)
+    }
+
+    pub(super) async fn create_agent_message_wait_task(
+        &self,
+        summary: String,
+        message: String,
+        target_agent_id: String,
+        authority_class: AuthorityClass,
+    ) -> Result<TaskRecord> {
+        self.ensure_background_tasks_allowed(AGENT_MESSAGE_WAIT_TASK_KIND)
+            .await?;
+        let agent_id = self.agent_id().await?;
+        let work_item_id = self.task_work_item_binding().await;
+        let recovery = TaskRecoverySpec::AgentMessageWait {
+            summary: summary.clone(),
+            message,
+            target_agent_id: target_agent_id.clone(),
+            authority_class,
+            delivery_id: None,
+            after_delivery_rowid: None,
+        };
+        let task_id = crate::ids::task_id();
+        let detail = self
+            .task_creation_detail(
+                &task_id,
+                serde_json::json!({
+                    "wait_policy": crate::types::TaskWaitPolicy::Background,
+                    "target_agent_id": target_agent_id,
+                    "business_completion": false,
+                }),
+            )
+            .await?;
+        let task = TaskRecord {
+            id: task_id,
+            agent_id,
+            kind: TaskKind::AgentMessageWait,
+            status: TaskStatus::Queued,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id,
+            summary: Some(summary),
+            detail: Some(detail),
+            recovery: Some(recovery),
+        };
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &task,
+            "task_created",
+        ))
+        .await?;
+        Ok(task)
+    }
+
+    pub(super) async fn start_agent_message_wait_monitor(
+        &self,
+        task: TaskRecord,
+        authority_class: AuthorityClass,
+        target_agent_id: String,
+        delivery_id: String,
+        after_delivery_rowid: i64,
+        task_detail: serde_json::Value,
+        recovered: bool,
+    ) -> Result<TaskRecord> {
+        let mut queued_task = TaskRecord {
+            updated_at: Utc::now(),
+            detail: Some(self.task_detail_preserving_rejoin_contract(&task, task_detail.clone())),
+            ..task
+        };
+        if let Some(TaskRecoverySpec::AgentMessageWait {
+            delivery_id: recovery_delivery_id,
+            after_delivery_rowid: recovery_after_delivery_rowid,
+            ..
+        }) = queued_task.recovery.as_mut()
+        {
+            *recovery_delivery_id = Some(delivery_id);
+            *recovery_after_delivery_rowid = Some(after_delivery_rowid);
+        }
+        self.apply_task_transition(task_state_reducer::TaskTransition::new(
+            &queued_task,
+            "task_agent_message_wait_admitted",
+        ))
+        .await?;
+
+        let runtime = self.clone();
+        let task_record = queued_task.clone();
+        let task_id = queued_task.id.clone();
+        let handle = tokio::spawn(async move {
+            let _ = runtime
+                .monitor_agent_message_wait(
+                    task_record,
+                    authority_class,
+                    target_agent_id,
+                    after_delivery_rowid,
+                    task_detail,
+                    recovered,
+                )
+                .await;
+            runtime.inner.task_handles.lock().await.remove(&task_id);
+        });
+        self.inner.task_handles.lock().await.insert(
+            queued_task.id.clone(),
+            command_task::ManagedTaskHandle::Async(handle),
+        );
+        Ok(queued_task)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn abort_async_task_monitor_for_test(&self, task_id: &str) {
+        let handle = self.inner.task_handles.lock().await.remove(task_id);
+        let Some(command_task::ManagedTaskHandle::Async(handle)) = handle else {
+            panic!("expected async task monitor for {task_id}");
+        };
+        handle.abort();
+        let _ = handle.await;
     }
 
     pub(super) async fn start_agent_invocation_monitor(
@@ -1189,6 +1303,121 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    async fn monitor_agent_message_wait(
+        &self,
+        task_record: TaskRecord,
+        authority_class: AuthorityClass,
+        target_agent_id: String,
+        after_delivery_rowid: i64,
+        task_detail: serde_json::Value,
+        recovered: bool,
+    ) -> Result<()> {
+        let Some(bridge) = self.inner.host_bridge.clone() else {
+            return Err(anyhow!("agent message wait requires a host bridge"));
+        };
+        let agent_id = self.agent_id().await?;
+        let running_message = MessageEnvelope {
+            metadata: Some(serde_json::json!({
+                "task_id": task_record.id,
+                "task_kind": task_record.kind,
+                "task_status": "running",
+                "task_summary": task_record.summary,
+                "task_recovery": task_record.recovery,
+                "work_item_id": task_record.work_item_id.clone(),
+                "task_detail": task_detail.clone(),
+            })),
+            ..MessageEnvelope::new(
+                agent_id.clone(),
+                MessageKind::TaskStatus,
+                MessageOrigin::Task {
+                    task_id: task_record.id.clone(),
+                },
+                authority_class,
+                Priority::Background,
+                MessageBody::Text {
+                    text: format!(
+                        "agent message wait {}: {}",
+                        if recovered { "restarted" } else { "started" },
+                        task_record.summary.clone().unwrap_or_default()
+                    ),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::TaskRejoin,
+                AdmissionContext::RuntimeOwned,
+            )
+        };
+        let _ = self.enqueue(running_message).await;
+
+        let result = bridge
+            .await_agent_message(&agent_id, &target_agent_id, after_delivery_rowid)
+            .await;
+        let (text, status, mut terminal_detail) = match result {
+            Ok(result) => {
+                let mut detail = task_detail;
+                if let Some(result_detail) = result.task_detail {
+                    if let (Some(detail), Some(result_detail)) =
+                        (detail.as_object_mut(), result_detail.as_object())
+                    {
+                        detail.extend(result_detail.clone());
+                    } else {
+                        detail = result_detail;
+                    }
+                }
+                (result.text, result.status, detail)
+            }
+            Err(error) => (
+                format!("agent message wait failed: {error:#}"),
+                TaskStatus::Failed,
+                task_detail,
+            ),
+        };
+        terminal_detail["output_summary"] = serde_json::json!(text.clone());
+        let result_message = MessageEnvelope {
+            turn_id: Some(crate::ids::turn_id()),
+            metadata: Some(serde_json::json!({
+                "task_id": task_record.id,
+                "task_kind": task_record.kind,
+                "task_status": status,
+                "task_summary": task_record.summary,
+                "task_recovery": task_record.recovery,
+                "work_item_id": task_record.work_item_id.clone(),
+                "task_detail": terminal_detail.clone(),
+            })),
+            ..MessageEnvelope::new(
+                agent_id,
+                MessageKind::TaskResult,
+                MessageOrigin::Task {
+                    task_id: task_record.id.clone(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Next,
+                MessageBody::Text { text },
+            )
+            .with_admission(
+                MessageDeliverySurface::TaskRejoin,
+                AdmissionContext::RuntimeOwned,
+            )
+        };
+        let terminal_task =
+            task_with_result_message(&task_record, status, Some(terminal_detail), &result_message);
+        if let Err(error) = self
+            .commit_terminal_task_result(
+                &terminal_task,
+                "task_agent_message_wait_completed",
+                &result_message,
+            )
+            .await
+        {
+            tracing::warn!(
+                task_id = %terminal_task.id,
+                error = %error,
+                "failed to persist terminal agent message wait before task result"
+            );
+        }
+        Ok(())
+    }
+
     pub(super) async fn monitor_spawned_child_agent_task(
         &self,
         task_record: TaskRecord,
@@ -1436,6 +1665,93 @@ impl RuntimeHandle {
         let mut remaining = Vec::new();
 
         for task in tasks {
+            if let Some(TaskRecoverySpec::AgentMessageWait {
+                message,
+                target_agent_id,
+                authority_class,
+                delivery_id,
+                after_delivery_rowid,
+                ..
+            }) = task.recovery.clone()
+            {
+                if !bridge.reusable_agent_exists(&target_agent_id).await? {
+                    remaining.push(task);
+                    continue;
+                }
+                let recovery = async {
+                    if let (Some(delivery_id), Some(after_delivery_rowid)) =
+                        (delivery_id, after_delivery_rowid)
+                    {
+                        let mut task_detail =
+                            task.detail.clone().unwrap_or_else(|| serde_json::json!({}));
+                        task_detail["request_delivery_id"] = serde_json::json!(&delivery_id);
+                        if let Some(detail) = task_detail.as_object_mut() {
+                            detail.remove("delivery_id");
+                        }
+                        task_detail["message_wait_after_delivery_rowid"] =
+                            serde_json::json!(after_delivery_rowid);
+                        task_detail["business_completion"] = serde_json::json!(false);
+                        return self
+                            .start_agent_message_wait_monitor(
+                                task.clone(),
+                                authority_class.clone(),
+                                target_agent_id.clone(),
+                                delivery_id,
+                                after_delivery_rowid,
+                                task_detail,
+                                true,
+                            )
+                            .await;
+                    }
+                    let mut admitted = bridge
+                        .invoke_existing_agent(
+                            &task,
+                            &target_agent_id,
+                            message,
+                            authority_class.clone(),
+                        )
+                        .await?;
+                    let delivery_id = admitted.delivery_id.clone().ok_or_else(|| {
+                        anyhow!("accepted agent message invocation is missing its delivery id")
+                    })?;
+                    let after_delivery_rowid = bridge.agent_message_delivery_rowid(&delivery_id)?;
+                    admitted.task_detail["created_new_subagent"] = serde_json::json!(false);
+                    admitted.task_detail["request_delivery_id"] = serde_json::json!(&delivery_id);
+                    if let Some(detail) = admitted.task_detail.as_object_mut() {
+                        detail.remove("delivery_id");
+                    }
+                    admitted.task_detail["message_wait_after_delivery_rowid"] =
+                        serde_json::json!(after_delivery_rowid);
+                    admitted.task_detail["business_completion"] = serde_json::json!(false);
+                    self.start_agent_message_wait_monitor(
+                        task.clone(),
+                        authority_class.clone(),
+                        target_agent_id.clone(),
+                        delivery_id,
+                        after_delivery_rowid,
+                        admitted.task_detail,
+                        true,
+                    )
+                    .await
+                }
+                .await;
+                match recovery {
+                    Ok(_) => reattached.push(task),
+                    Err(error) => {
+                        self.inner.storage.append_event(&AuditEvent::legacy(
+                            "agent_message_wait_recovery_failed",
+                            serde_json::json!({
+                                "task_id": task.id,
+                                "target_agent_id": target_agent_id,
+                                "error": error.to_string(),
+                            }),
+                        ))?;
+                        remaining.push(task);
+                    }
+                }
+                continue;
+            }
+
             let (prompt, authority_class, worktree, invocation_target) =
                 match task.recovery.as_ref() {
                     Some(TaskRecoverySpec::AgentInvocation {

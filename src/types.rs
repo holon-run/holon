@@ -354,9 +354,11 @@ impl AgentProfilePreset {
 
     pub fn agent_tool_surface_summary(self) -> &'static str {
         match self {
-            Self::PrivateChild => "this profile cannot create or invoke other agents",
+            Self::PrivateChild => {
+                "this profile can message authorized agents but cannot create or invoke them"
+            }
             Self::PublicNamed => {
-                "CreateAgent creates independent identities; InvokeAgent returns result-bearing task handles"
+                "CreateAgent creates independent identities; SendAgentMessage sends asynchronously; InvokeAgent returns message-wait or child-result task handles"
             }
         }
     }
@@ -1454,12 +1456,14 @@ pub enum TaskWaitPolicy {
 
 pub const CHILD_AGENT_TASK_KIND: &str = "child_agent_task";
 pub const ACTOR_INVOCATION_TASK_KIND: &str = "actor_invocation";
+pub const AGENT_MESSAGE_WAIT_TASK_KIND: &str = "agent_message_wait";
 pub const LEGACY_SUBAGENT_TASK_KIND: &str = "subagent_task";
 pub const LEGACY_WORKTREE_SUBAGENT_TASK_KIND: &str = "worktree_subagent_task";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskKind {
+    AgentMessageWait,
     ActorInvocation,
     CommandTask,
     ChildAgentTask,
@@ -1471,6 +1475,7 @@ pub enum TaskKind {
 impl TaskKind {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::AgentMessageWait => AGENT_MESSAGE_WAIT_TASK_KIND,
             Self::ActorInvocation => ACTOR_INVOCATION_TASK_KIND,
             Self::CommandTask => "command_task",
             Self::ChildAgentTask => CHILD_AGENT_TASK_KIND,
@@ -4466,6 +4471,17 @@ fn is_false(value: &bool) -> bool {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TaskRecoverySpec {
+    AgentMessageWait {
+        summary: String,
+        message: String,
+        target_agent_id: String,
+        #[serde(alias = "trust")]
+        authority_class: AuthorityClass,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        delivery_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        after_delivery_rowid: Option<i64>,
+    },
     AgentInvocation {
         summary: String,
         prompt: String,
@@ -4548,6 +4564,7 @@ impl TaskRecoverySpec {
 
     pub fn child_agent_workspace_mode(&self) -> Option<ChildAgentWorkspaceMode> {
         match self {
+            TaskRecoverySpec::AgentMessageWait { .. } => None,
             TaskRecoverySpec::AgentInvocation { workspace_mode, .. } => Some(*workspace_mode),
             TaskRecoverySpec::ChildAgentTask { workspace_mode, .. } => Some(*workspace_mode),
             TaskRecoverySpec::SubagentTask { .. } => Some(ChildAgentWorkspaceMode::Inherit),
@@ -4560,6 +4577,7 @@ impl TaskRecoverySpec {
 
     pub fn wait_policy(&self) -> TaskWaitPolicy {
         match self {
+            TaskRecoverySpec::AgentMessageWait { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::AgentInvocation { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::ChildAgentTask { .. } => TaskWaitPolicy::Background,
             TaskRecoverySpec::SubagentTask { .. } => TaskWaitPolicy::Background,
@@ -4571,7 +4589,8 @@ impl TaskRecoverySpec {
     pub fn terminal_reentry(&self) -> bool {
         match self {
             TaskRecoverySpec::CommandTask { spec, .. } => spec.terminal_reentry,
-            TaskRecoverySpec::AgentInvocation { .. }
+            TaskRecoverySpec::AgentMessageWait { .. }
+            | TaskRecoverySpec::AgentInvocation { .. }
             | TaskRecoverySpec::ChildAgentTask { .. }
             | TaskRecoverySpec::SubagentTask { .. }
             | TaskRecoverySpec::WorktreeSubagentTask { .. } => false,

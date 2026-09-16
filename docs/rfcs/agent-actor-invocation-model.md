@@ -10,12 +10,11 @@ status: superseded
 > [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
 > RFC is the normative contract. This document is retained only as historical
 > design context; any conflicting operation, migration, or lifecycle text below
-> is non-normative. In particular, `InvokeAgent` is the only first-release
-> result-bearing invocation tool and may target an existing agent or create a
-> supervised subagent. Ordinary asynchronous delivery returns a receipt without
-> creating an invocation task. `SpawnAgent`, `ActorSend`, and a general
-> agent-facing message-send tool are not compatibility or implementation
-> targets.
+> is non-normative. In particular, `SendAgentMessage` is the durable
+> asynchronous primitive. `InvokeAgent(existing_agent)` is a message-send
+> convenience that returns a message-arrival wait handle, while
+> `InvokeAgent(new_subagent)` remains result-bearing. `SpawnAgent` and
+> `ActorSend` are not compatibility or implementation targets.
 
 ## Summary
 

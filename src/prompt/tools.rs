@@ -67,7 +67,10 @@ pub fn tool_sections_with_context(
             guidance(include_str!("tool_guidance/tool_timer.md")),
         ));
     }
-    if names.contains(&tn::CREATE_AGENT) || names.contains(&tn::INVOKE_AGENT) {
+    if names.contains(&tn::CREATE_AGENT)
+        || names.contains(&tn::INVOKE_AGENT)
+        || names.contains(&tn::SEND_AGENT_MESSAGE)
+    {
         sections.push(section(
             "tool_agent_invocation",
             PromptStability::Stable,
@@ -269,21 +272,32 @@ mod tests {
             .content
             .contains("Select exactly one target variant"));
         assert!(section.content.contains("private supervised child"));
+        assert!(section.content.contains("Do not poll merely to wait"));
         assert!(section
             .content
-            .contains("Do not poll merely to wait for ordinary completion"));
+            .contains("use SendAgentMessage for durable asynchronous communication"));
         assert!(section
             .content
-            .contains("there is no SendAgentMessage tool"));
+            .contains("concurrent waits may observe the same message"));
         assert!(section
             .content
-            .contains("A terminal task is a historical result or diagnostic evidence"));
+            .contains("A terminal task is historical evidence"));
         assert!(section
             .content
-            .contains("a new InvokeAgent call to the existing agent"));
+            .contains("send another message or start a new invocation"));
         assert!(section
             .content
             .contains("rather than creating a same-named replacement"));
+
+        let send_only_sections = tool_sections(&[ToolSpec {
+            name: "SendAgentMessage".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: None,
+        }]);
+        assert!(send_only_sections
+            .iter()
+            .any(|section| section.name == "tool_agent_invocation"));
     }
 
     #[test]

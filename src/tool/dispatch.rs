@@ -353,6 +353,7 @@ mod tests {
             "GetAgent",
             "WaitFor",
             "CreateAgent",
+            "SendAgentMessage",
             "InvokeAgent",
             "ListTasks",
             "TaskInput",
@@ -381,7 +382,6 @@ mod tests {
         }
         assert!(!names.iter().any(|name| name == "Sleep"));
         assert!(!names.iter().any(|name| name == "SpawnAgent"));
-        assert!(!names.iter().any(|name| name == "SendAgentMessage"));
 
         for removed in [
             "Glob",

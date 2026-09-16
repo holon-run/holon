@@ -15,25 +15,28 @@ classes. A subagent is an agent with explicit lineage, supervision, durability,
 lifecycle attachment, and policy relations. It is not a hidden or lesser
 runtime species.
 
-The first agent-facing native tool surface should separate two operations that
-are currently combined by `SpawnAgent`:
+The first agent-facing native tool surface should separate three operations
+that are currently combined by `SpawnAgent` or hidden behind invocation:
 
 1. `CreateAgent` creates an independently managed agent identity.
-2. `InvokeAgent` creates a result-bearing invocation against an existing agent
-   or creates a supervised subagent as the invocation target.
+2. `SendAgentMessage` durably admits one asynchronous message to an existing
+   authorized agent.
+3. `InvokeAgent` is a convenience operation: for `existing_agent` it sends a
+   message and returns a message-arrival wait handle; for `new_subagent` it
+   creates a supervised child and returns a result-bearing task handle.
 
-The runtime also needs an internal `AgentMessageDeliveryService` that admits an
-asynchronous message to an existing authorized agent. The first release does
-not expose a general `SendAgentMessage` native tool. Invocation, operator
-ingress, and future protocol adapters must reuse the same delivery contract
-rather than create private queue paths.
+The runtime uses one internal `AgentMessageDeliveryService` for
+`SendAgentMessage`, existing-agent invocation, operator ingress, and future
+protocol adapters. None of those surfaces may create a private queue path.
 
 Every adapter must call the same application service. Native runtime tools must
 not fork the CLI to implement runtime semantics.
 
 Message delivery is not synchronous RPC. Acceptance means that Holon durably
 admitted one message under an identity-lifecycle fence. It does not mean that a
-turn completed or that the target produced a result.
+turn completed or that the target produced a result. A message-arrival wait
+handle means only that a later message from the selected agent reached the
+caller's durable inbox boundary; it does not represent business completion.
 
 This RFC also defines the migration away from:
 
@@ -126,7 +129,8 @@ idempotency, and result semantics.
 - show subagents in an operator-visible tree with independent detail and
   conversation entry points;
 - keep operator discoverability separate from peer-agent authorization;
-- separate independent create, result-bearing invocation, and message delivery;
+- separate independent create, pure message delivery, message-arrival waiting,
+  and supervised child result settlement;
 - define an asynchronous, durable, idempotent delivery receipt;
 - linearize message admission against stop and delete lifecycle state;
 - preserve immutable origin, trust, authority, and causation evidence;
@@ -140,6 +144,8 @@ idempotency, and result semantics.
 
 - synchronous agent RPC;
 - treating message acceptance as task completion;
+- defining `Reply`, required-response, business-final, or runtime-owned
+  request/result correlation semantics for peer messages;
 - replacing `WorkItem`, `Task`, `Waiting`, or continuation semantics;
 - making all CLI commands provider tools;
 - implementing native tools by spawning `holon` CLI processes;
@@ -431,11 +437,28 @@ It is bootstrap input, does not create a result-bearing task, and must never
 turn an already-existing identity into a message target. A caller that needs a
 terminal brief uses `InvokeAgent`.
 
-### 5.2 `InvokeAgent`
+### 5.2 `SendAgentMessage`
 
-`InvokeAgent` creates one result-bearing `ActorInvocation` task. It is
-asynchronous: the operation returns a `TaskHandle` immediately, and callers use
-the normal `WaitFor(task_result)` contract when they need the terminal brief.
+`SendAgentMessage` admits one message to an existing authorized agent. It
+returns a delivery receipt, not a task handle, and never waits for a response.
+
+The runtime binds the caller agent identity, origin, authority, turn, task, and
+WorkItem provenance. The caller supplies only the target and content. A stable
+tool-call idempotency key may be supplied by the adapter, but it is not a
+business correlation identifier and is never interpreted as a required reply.
+
+Two independent sends remain two deliveries even when their content is equal.
+Retrying the same durable tool call reuses its idempotency key and must not
+enqueue a duplicate delivery.
+
+The recipient responds, when appropriate, by calling `SendAgentMessage` back to
+the sender. There is no `Reply` operation and no requirement to carry a waiting
+handle, request id, final flag, or result slot.
+
+### 5.3 `InvokeAgent`
+
+`InvokeAgent` remains an asynchronous convenience operation with an explicit
+target union, but its handle semantics depend on the target kind.
 
 The target is an explicit discriminated union:
 
@@ -448,7 +471,15 @@ new_subagent
 ```
 
 For `existing_agent`, invocation does not create, reconfigure, reparent,
-detach, or acquire lifecycle authority over the target.
+detach, or acquire lifecycle authority over the target. It persists an
+`AgentMessageWait` task, sends one message through
+`AgentMessageDeliveryService`, and anchors the wait boundary to that request's
+durable delivery row. The handle settles when a later accepted message from the
+selected sender is present after the boundary. It does not wait for the target
+agent's turn, WorkItem, lifecycle, or business task to become terminal.
+Recovery reuses the persisted delivery and boundary; if a crash happened
+before they were attached to the task, admission is retried with the task's
+same idempotency key.
 
 For `new_subagent`, the same application-level operation:
 
@@ -458,34 +489,33 @@ For `new_subagent`, the same application-level operation:
 - applies the default ephemeral, supervision-attached lifecycle policy; and
 - admits the initial invocation message.
 
-The operation returns the target `agent_id`, whether it was created by this
-request, and the invocation `TaskHandle`. Delegation remains bounded.
-Workspace/worktree selection remains an execution projection property governed
-by the delegation contract.
+`new_subagent` returns the result-bearing `ActorInvocation` task handle used by
+the existing child supervision and task-result settlement contract. Delegation
+remains bounded. Workspace/worktree selection remains an execution projection
+property governed by the delegation contract.
+
+Both variants return the target `agent_id`, whether it was created by this
+request, and a typed `TaskHandle`. The handle's `task_kind` distinguishes
+`agent_message_wait` from `actor_invocation`; callers must not interpret a
+message wait as child-task completion.
 
 The parent may later invoke the same child through `existing_agent`. Completing
-an invocation closes only that task; it does not close supervision or delete
-the child.
+that message wait closes only the wait handle; it does not close supervision,
+stop shared work, or delete the child.
 
-### 5.3 Internal Agent Message Delivery
+### 5.4 Internal Agent Message Delivery
 
 `AgentMessageDeliveryService` targets an existing agent identity. It does not
 create, reconfigure, reparent, detach, or change the model of that agent.
 
 The internal operation returns a delivery receipt, not a task result. It is
-used by `InvokeAgent`, operator ingress, and runtime adapters that have an
-explicitly authorized route.
+used by `SendAgentMessage`, `InvokeAgent(existing_agent)`, operator ingress, and
+runtime adapters that have an explicitly authorized route.
 
-If a caller needs a result-bearing invocation, a higher-level facade may:
-
-1. create an invocation task or WorkItem correlation;
-2. admit one message through the delivery service; and
-3. wait through the normal task/WorkItem continuation contract.
-
-That facade must not change the message admission semantics defined here.
-
-A general agent-facing `SendAgentMessage` tool is deferred until a concrete
-fire-and-forget use case justifies a second public messaging entry point.
+A caller that needs business completion owns that interpretation above the
+message layer through its own WorkItem, protocol, or application state. The
+runtime does not infer completion from recipient turns, waits, later messages,
+or lifecycle state.
 
 ## 6. Message Delivery Request
 
@@ -638,12 +668,13 @@ rejected
 `consumed` means that the admitted message was incorporated into a target turn.
 It does not mean that requested work completed successfully.
 
-When a delivery backs a result-bearing actor invocation, queue claim also binds
-the delivery to the canonical execution activation and turn in the same
-transaction. The invocation observes that activation's execution outcome and
-continuations; it must not infer completion from the target agent's latest turn,
-global idle state, or a later unrelated runtime error. Delivery state remains
-the incorporation ledger: `consumed` alone is never an invocation result.
+When a delivery bootstraps a result-bearing `new_subagent` invocation, queue
+claim also binds the delivery to the canonical execution activation and turn in
+the same transaction. The child task observes that activation's execution
+outcome and continuations; it must not infer completion from the target agent's
+latest turn, global idle state, or a later unrelated runtime error. Delivery
+state remains the incorporation ledger: `consumed` alone is never a task
+result. Existing-agent message waits do not use this result path.
 
 Adapters may initially return only `queued` or `rejected`, while later
 observation surfaces expose subsequent state.
@@ -831,6 +862,7 @@ First-release agent-facing tools:
 
 ```text
 CreateAgent
+SendAgentMessage
 InvokeAgent
 ```
 
@@ -839,8 +871,9 @@ object qualification only when needed to distinguish the operation. Service
 and domain type names may remain noun-oriented and must not define a second
 tool naming convention.
 
-`InvokeAgent` remains asynchronous despite the result-bearing name: it returns
-a `TaskHandle`, not the terminal result.
+`SendAgentMessage` returns a durable delivery receipt. `InvokeAgent` remains
+asynchronous and returns a typed `TaskHandle`: `agent_message_wait` for an
+existing agent and `actor_invocation` for a newly created supervised child.
 
 ### CLI
 
@@ -1131,7 +1164,8 @@ The following are not open:
 - canonical relation and policy state uses normalized records;
 - the first release supports reuse, stop, and delete but defers explicit
   detach/persist;
-- the first native tool surface contains only `CreateAgent` and `InvokeAgent`;
+- the first native tool surface contains `CreateAgent`, `SendAgentMessage`, and
+  `InvokeAgent`;
 - `SpawnAgent` has no versioned agent-facing compatibility window;
 - authenticated operator HTTP invoke is deferred;
 - create, invocation, and internal message delivery are separate state
@@ -1144,9 +1178,9 @@ Adopt one agent identity model, express subagent behavior through explicit
 relations, and deprecate private/public agent classification.
 
 Introduce a dedicated asynchronous message delivery service with idempotent
-receipts and a deletion-aware lifecycle fence, but do not expose a general
-`SendAgentMessage` native tool in the first release.
+receipts and a deletion-aware lifecycle fence, and expose it through
+`SendAgentMessage`.
 
-Expose `CreateAgent` and `InvokeAgent`, remove `SpawnAgent` from the
-agent-facing tool surface without a versioned compatibility window, and defer
-explicit detach/persist plus authenticated operator HTTP invoke.
+Expose `CreateAgent`, `SendAgentMessage`, and `InvokeAgent`; remove `SpawnAgent`
+from the agent-facing tool surface without a versioned compatibility window;
+and defer explicit detach/persist plus authenticated operator HTTP invoke.

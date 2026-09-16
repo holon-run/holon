@@ -31,11 +31,12 @@ order: 26
 - 模型可见的工具描述
 
 版本 2 清单当前覆盖以下工具的结果 schema：`CreateTimer`、`ListTimers`、
-`GetTimer`、`CancelTimer`、`Enqueue`、`CreateAgent`、`InvokeAgent`、
-`ListTasks`、`TaskStatus`、`TaskInput`、`TaskOutput`、`TaskStop` 和
-`GenerateImage`。未覆盖的工具保留其结果类型名和显式的 `null` schema；这样
-可以避免把推断出的或不完整的形状当作稳定契约。只有当具体 Rust 结果类型派生
-`schemars::JsonSchema` 时，覆盖范围才能扩展。
+`GetTimer`、`CancelTimer`、`Enqueue`、`CreateAgent`、
+`SendAgentMessage`、`InvokeAgent`、`ListTasks`、`TaskStatus`、
+`TaskInput`、`TaskOutput`、`TaskStop` 和 `GenerateImage`。未覆盖的工具保留其
+结果类型名和显式的 `null` schema；这样可以避免把推断出的或不完整的形状当作
+稳定契约。只有当具体 Rust 结果类型派生 `schemars::JsonSchema` 时，覆盖范围
+才能扩展。
 
 ## 能力家族
 
@@ -44,7 +45,7 @@ order: 26
 
 | 家族 | 说明 | 示例工具 |
 |--------|-------------|---------------|
-| `CoreAgent` | 核心 agent 操作（状态、记忆、工作项、调度、CLI/配置内省） | MemorySearch, WaitFor, ListWorkItems, ListModelProviders |
+| `CoreAgent` | 核心 agent 操作（状态、消息、记忆、工作项、调度、CLI/配置内省） | SendAgentMessage, MemorySearch, WaitFor, ListWorkItems |
 | `LocalEnvironment` | 工作区本地操作 | ExecCommand, ApplyPatch, ViewImage, GetWorkspaceState, SwitchWorkspace, CreateWorktree |
 | `Web` | 公共 Web 访问 | WebFetch, WebSearch |
 | `AgentCreation` | agent 创建与受监督调用 | CreateAgent, InvokeAgent |

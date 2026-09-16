@@ -958,10 +958,14 @@ impl RuntimeHandle {
             {
                 ExecutionOutcome::WorkItem(WorkItemOutcome::Continue)
             }
-            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. }
-                if task.work_item_id.is_none() =>
-            {
-                ExecutionOutcome::Conversation(ConversationOutcome::Replied)
+            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
+                if let Some(work_item_id) = task.work_item_id.as_deref() {
+                    ExecutionOutcome::Conversation(ConversationOutcome::HandoffToWorkItemContinue {
+                        work_item_id: work_item_id.to_string(),
+                    })
+                } else {
+                    ExecutionOutcome::Conversation(ConversationOutcome::Replied)
+                }
             }
             ExecutionBinding::Command => {
                 return Err(anyhow!("command execution cannot settle through WaitFor"));

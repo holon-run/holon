@@ -37,6 +37,7 @@ pub mod tool_names {
     pub const MEMORY_SEARCH: &str = "MemorySearch";
     pub const PICK_WORK_ITEM: &str = "PickWorkItem";
     pub const REMOVE_WORKTREE: &str = "RemoveWorktree";
+    pub const SEND_AGENT_MESSAGE: &str = "SendAgentMessage";
     pub const SLEEP: &str = "Sleep";
     pub const TASK_INPUT: &str = "TaskInput";
     /// Legacy alias kept for backward-compatible dispatch.
@@ -87,6 +88,7 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     MEMORY_SEARCH,
     PICK_WORK_ITEM,
     REMOVE_WORKTREE,
+    SEND_AGENT_MESSAGE,
     SLEEP,
     SWITCH_WORKSPACE,
     TASK_INPUT,
@@ -155,6 +157,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     MEMORY_SEARCH,
     PICK_WORK_ITEM,
     REMOVE_WORKTREE,
+    SEND_AGENT_MESSAGE,
     SLEEP,
     SWITCH_WORKSPACE,
     TASK_INPUT,

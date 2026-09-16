@@ -260,6 +260,7 @@ pub struct AgentMessageCallerContext {
 #[serde(rename_all = "snake_case")]
 pub enum AgentMessageDerivedGrant {
     PersistentIndependentPeerInvocation,
+    PersistentIndependentPeerMessage,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

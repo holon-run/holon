@@ -40,6 +40,47 @@ impl AgentMessageDeliveryAdmissionDecision {
 }
 
 impl AgentMessageDeliveryRepository<'_> {
+    pub(crate) fn rowid(&self, delivery_id: &str) -> Result<Option<i64>> {
+        let connection = self.db.connection()?;
+        connection
+            .query_row(
+                "SELECT rowid
+                 FROM agent_message_deliveries
+                 WHERE delivery_id = ?1",
+                [delivery_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("reading agent message delivery rowid")
+    }
+
+    pub(crate) fn first_accepted_from_sender_after(
+        &self,
+        target_agent_id: &str,
+        sender_agent_id: &str,
+        after_rowid: i64,
+    ) -> Result<Option<AgentMessageDeliveryRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM agent_message_deliveries
+             WHERE rowid > ?1
+               AND target_agent_id = ?2
+               AND outcome = 'accepted'
+             ORDER BY rowid ASC",
+        )?;
+        let rows = statement.query_map(params![after_rowid, target_agent_id], |row| {
+            row.get::<_, String>(0)
+        })?;
+        for payload in rows {
+            let record = decode_delivery(&payload?)?;
+            if record.caller.caller_agent_id.as_deref() == Some(sender_agent_id) {
+                return Ok(Some(record));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn latest(&self, delivery_id: &str) -> Result<Option<AgentMessageDeliveryRecord>> {
         let connection = self.db.connection()?;
         delivery_by_id(&connection, delivery_id)
@@ -218,12 +259,15 @@ pub(crate) fn prepare_delivery_admission_tx(
                     .is_none_or(|expected| expected == candidate.caller.route)
         })
     });
-    let derived_grant = matched_rule.is_none()
+    let derived_grant = (matched_rule.is_none()
         && identity
             .as_ref()
             .is_some_and(|identity| identity.status == AgentRegistryStatus::Active)
         && candidate.caller.principal_kind == AgentMessagePrincipalKind::PeerAgent
-        && candidate.caller.route == "agent_invocation"
+        && matches!(
+            candidate.caller.route.as_str(),
+            "agent_invocation" | "agent_message"
+        )
         && relations.as_ref().is_some_and(|relations| {
             relations
                 .durability
@@ -235,10 +279,14 @@ pub(crate) fn prepare_delivery_admission_tx(
                     .is_some_and(|record| {
                         record.attachment == AgentLifecycleAttachment::Independent
                     })
-        });
+        }))
+    .then(|| match candidate.caller.route.as_str() {
+        "agent_message" => AgentMessageDerivedGrant::PersistentIndependentPeerMessage,
+        _ => AgentMessageDerivedGrant::PersistentIndependentPeerInvocation,
+    });
     let allowed = matched_rule.map_or_else(
         || {
-            derived_grant
+            derived_grant.is_some()
                 || policy.is_some_and(|policy| policy.default_effect == AgentPolicyEffect::Allow)
         },
         |(_, rule)| rule.effect == AgentPolicyEffect::Allow,
@@ -259,8 +307,7 @@ pub(crate) fn prepare_delivery_admission_tx(
         principal_id: Some(principal_id.to_string()),
         route: candidate.caller.route.clone(),
         matched_rule_index: matched_rule.map(|(index, _)| index),
-        derived_grant: derived_grant
-            .then_some(AgentMessageDerivedGrant::PersistentIndependentPeerInvocation),
+        derived_grant,
     };
     let rejection = match identity.as_ref().map(|identity| identity.status) {
         None => Some((

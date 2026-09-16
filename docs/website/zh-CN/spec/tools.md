@@ -34,7 +34,7 @@ schema/分发对齐，以及结果信封约定。
 
 | 家族 | 工具 | 权限 |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`、`GetAgent`、`Enqueue`、`CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer`、`ListTasks`、`TaskStatus`、`TaskInput`、`TaskOutput`、`TaskStop`、`ListModelProviders`、`ListProviderModels`、工作项工具、`MemorySearch`、`MemoryGet` | 所有 Agent profile |
+| `CoreAgent` | `WaitFor`、`GetAgent`、`SendAgentMessage`、`Enqueue`、`CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer`、`ListTasks`、`TaskStatus`、`TaskInput`、`TaskOutput`、`TaskStop`、`ListModelProviders`、`ListProviderModels`、工作项工具、`MemorySearch`、`MemoryGet` | 所有 Agent profile |
 | `LocalEnvironment` | `ExecCommand`、`ExecCommandBatch`、`ApplyPatch`、`ViewImage`、`GenerateImage`、`GetWorkspaceState`、`SwitchWorkspace`、`CreateWorktree` | 所有 profile |
 | `AuthorityExpanding` | `AttachWorkspace`、`DetachWorkspace`、`RemoveWorktree` | 公有具名 Agent |
 | `Web` | `WebFetch`、`WebSearch`、`XSearch` | 所有 profile |
@@ -80,7 +80,8 @@ schema/分发对齐，以及结果信封约定。
 | `WaitFor` | 记录显式等待状态后发出轮次结束信号 |
 | `Enqueue` | 安排自我后续消息 |
 | `CreateAgent` | 创建一个长期、可寻址的 Agent |
-| `InvokeAgent` | 通过父级监督的任务句柄委派工作 |
+| `SendAgentMessage` | 向获授权 Agent 持久发送异步消息 |
+| `InvokeAgent` | 向常驻 Agent 发送并等待消息，或创建返回结果的受监督子 Agent |
 
 ### 定时器平面
 

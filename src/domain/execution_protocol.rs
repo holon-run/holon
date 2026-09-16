@@ -460,6 +460,9 @@ pub enum ExecutionOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ConversationOutcome {
     Replied,
+    HandoffToWorkItemContinue {
+        work_item_id: String,
+    },
     Wait {
         wait: WaitReference,
     },
