@@ -337,3 +337,27 @@ test("pending hydration survives reload and close without crossing the read gate
   });
   await expect(reopened.getByText("Brief 2", { exact: true })).toHaveCount(1);
 });
+
+test("dashboard-only tab receives unread changes and a covered conversation stays unread", async ({ page, context, request }, info) => {
+  const session = sessionFor(info);
+  const agentId = "panel-read-agent";
+  await configure(request, session, { visibleAgentIds: [agentId], ledgerEnabledAgentIds: [agentId],
+    eventsByAgentId: { [agentId]: [envelope(agentId, 1), envelope(agentId, 2, "brief_created", { brief_id: "brief-2" })] },
+    briefsById: { "brief-2": brief(agentId, 2) },
+  });
+  await attachSession(context, session);
+  await page.goto("/");
+  await expect.poll(() => ledger(page, agentId)).toMatchObject({ unreadCount: 1 });
+  const sibling = await context.newPage();
+  await sibling.addInitScript(() => localStorage.setItem("holon.webGui.contextPanel.v1", JSON.stringify({ open: true, mode: "expanded" })));
+  await sibling.goto(`/agents/${agentId}/conversation`);
+  await expect(sibling.locator(".side-panel")).toBeVisible();
+  await expect.poll(() => ledger(sibling, agentId)).toMatchObject({ readGateDecision: { mayAdvance: false, reason: "conversation_covered" } });
+  expect((await ledger(sibling, agentId))?.readThroughEventSeq).toBeUndefined();
+  await sibling.keyboard.press("Escape");
+  await expect.poll(() => ledger(sibling, agentId)).toMatchObject({ readThroughEventSeq: 2, unreadCount: 0 });
+  // The first tab has never entered a conversation or published a read marker.
+  await expect.poll(() => ledger(page, agentId)).toMatchObject({ unreadCount: 0 });
+  await expect(page.locator(".agent-row-unread")).toHaveCount(0);
+  await sibling.close();
+});

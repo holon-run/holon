@@ -22,7 +22,7 @@ import {
   buildConversationSessionModel,
   type ConversationSessionModel,
 } from "./conversation-view-model";
-import { getRuntimeConnectionConfig, useRuntimeStore } from "./runtime-store";
+import { getRuntimeConnectionConfig, retryPendingReadMarker, useRuntimeStore } from "./runtime-store";
 import { currentRemoteKey } from "./session-cache";
 
 export interface UseConversationSessionResult {
@@ -105,7 +105,7 @@ export function useConversationSession(
   // visibility, and ledger readiness, so this only re-attempts the advance.
   useEffect(() => {
     if (!conversationReady || agentId === undefined) return;
-    useRuntimeStore.getState().markAgentConversationRead(agentId);
+    void retryPendingReadMarker(agentId);
   }, [conversationReady, agentId]);
 
   const model = useMemo(() => {

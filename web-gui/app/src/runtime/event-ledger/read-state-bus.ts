@@ -31,10 +31,11 @@ export class ReadStateBus {
   private disposed = false;
 
   constructor(onMessage: (message: ReadStateBusMessage) => void) {
-    this.channel =
-      typeof BroadcastChannel === "undefined"
-        ? null
-        : new BroadcastChannel(READ_STATE_BUS_CHANNEL);
+    try {
+      this.channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel(READ_STATE_BUS_CHANNEL);
+    } catch {
+      this.channel = null;
+    }
     this.channel?.addEventListener("message", (event) => {
       if (this.disposed) return;
       if (isReadStateBusMessage(event.data)) onMessage(event.data);

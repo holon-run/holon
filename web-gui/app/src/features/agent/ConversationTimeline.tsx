@@ -1,3 +1,4 @@
+import { inputInspectorActivity, inputPresentation } from "../../runtime/conversation-input";
 import { TurnElapsedTime } from "./TurnElapsedTime";
 import {
   Bot,
@@ -101,11 +102,11 @@ export const ConversationTimeline = memo(function ConversationTimeline({
       ) : null}
       {model.turns.map((turn, index) => (
         <Fragment key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}>
-          {index === model.turns.length - 1 ? <PendingEvents inputs={backgroundInputs} /> : null}
+          {index === model.turns.length - 1 ? <PendingEvents inputs={backgroundInputs} onInspectActivity={actions.onInspectActivity} /> : null}
           <ConversationTurnCard turn={turn} syncing={status.kind !== "ready"} {...actions} />
         </Fragment>
       ))}
-      {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} /> : null}
+      {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} onInspectActivity={actions.onInspectActivity} /> : null}
       {operatorInputs.length > 0 ? (
         <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingInputs")}>
           {operatorInputs.map((input) => (
@@ -134,7 +135,7 @@ export const ConversationTimeline = memo(function ConversationTimeline({
   );
 });
 
-function PendingEvents({ inputs }: { inputs: readonly PendingInput[] }) {
+function PendingEvents({ inputs, onInspectActivity }: { inputs: readonly PendingInput[]; onInspectActivity?: ConversationTimelineActions["onInspectActivity"] }) {
   const { t } = useTranslation();
   if (inputs.length === 0) return null;
   return (
@@ -144,7 +145,7 @@ function PendingEvents({ inputs }: { inputs: readonly PendingInput[] }) {
       </summary>
       <div className="conversation-pending-event-list">
         {inputs.map((input) => {
-          const text = parseInputPreview(input.preview);
+          const text = inputPresentation(input.preview).summary;
           return (
             <details key={input.message_id} className="conversation-pending-event"
               data-conversation-anchor={`input:${input.message_id}`}>
@@ -159,13 +160,24 @@ function PendingEvents({ inputs }: { inputs: readonly PendingInput[] }) {
                 {t(input.state === "assigning" ? "agentPage.pendingAssigning" : "agentPage.pendingQueued")}
                 {input.created_at ? <time dateTime={input.created_at}>{new Date(input.created_at).toLocaleString()}</time> : null}
               </div>
-              <div className="conversation-pending-event-body"><MarkdownContent text={text} compact /></div>
+              <ConversationEventInput input={input} source={input.presentation_class ?? "external"} onInspectActivity={onInspectActivity} />
             </details>
           );
         })}
       </div>
     </details>
   );
+}
+
+function ConversationEventInput({ input, source, onInspectActivity }: {
+  input: TurnInputSummary; source: string; onInspectActivity?: ConversationTimelineActions["onInspectActivity"];
+}) {
+  const { t } = useTranslation();
+  const summary = inputPresentation(input.preview).summary;
+  return <button type="button" className="conversation-event-link" disabled={!onInspectActivity}
+    title={t("agentPage.openEventDetail")} onClick={() => onInspectActivity?.(inputInspectorActivity(input, source))}>
+    <span>{summary}</span><ExternalLink size={13} /><span className="sr-only">{t("agentPage.openEventDetail")}</span>
+  </button>;
 }
 
 function PendingInputChip({ input }: { input: PendingInput }) {
@@ -251,7 +263,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
       )) : (
         <details className="conversation-source" data-conversation-anchor={`source:${turn.turnId}`}>
           <summary><Bot size={13} />{t(`agentPage.turnSource.${turn.presentationClass}`)}<ChevronRight size={12} /></summary>
-          {turn.inputs.map((input) => <MarkdownContent key={input.message_id} text={parseInputPreview(input.preview)} compact />)}
+          {turn.inputs.map((input) => <ConversationEventInput key={input.message_id} input={input} source={turn.presentationClass} onInspectActivity={actions.onInspectActivity} />)}
           <span className="conversation-source-id">{`#${turn.turnIndex}`}</span>
         </details>
       )}

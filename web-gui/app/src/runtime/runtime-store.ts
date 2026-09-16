@@ -1,3 +1,7 @@
+import i18next from "i18next";
+import { hydrateInputActivity } from "./conversation-input";
+import { readPanelPreferences, writePanelPreferences, rememberPanelView } from "./panel-preferences";
+import { panelLayout, PANEL_DEFAULT } from "../features/right-panel/panel-layout";
 import { clearConversationCaches } from "./conversation-cache-lifecycle";
 import type { CurrentUser } from "./client";
 import { create } from "zustand";
@@ -1076,14 +1080,18 @@ export function observerSyncDiagnostics(): ObserverSyncDiagnostics {
  */
 let readStateBus: ReadStateBus | null = null;
 
-function publishReadStateInvalidation(agentId: string): void {
+function ensureReadStateBus(): ReadStateBus {
   if (!readStateBus) {
     readStateBus = new ReadStateBus((message) => {
       if (message.remoteKey !== currentRemoteKey(runtimeConnectionConfig)) return;
       void refreshLedgerUnreadInView(message.agentId);
     });
   }
-  readStateBus.publish({
+  return readStateBus;
+}
+
+function publishReadStateInvalidation(agentId: string): void {
+  ensureReadStateBus().publish({
     kind: "read_state_changed",
     remoteKey: currentRemoteKey(runtimeConnectionConfig),
     agentId,
@@ -1107,10 +1115,12 @@ async function refreshLedgerUnreadInView(agentId: string): Promise<void> {
     return;
   }
   unreadRefreshInFlight.add(agentId);
+  const generation = clientGeneration;
   try {
     const snapshot = await agentSessionRepository
       .unreadSnapshot(agentId)
       .catch(() => null);
+    if (!isCurrentClientGeneration(generation)) return;
     const state = useRuntimeStore.getState();
     const existing = state.ledgerUnreadByAgentId[agentId];
     if (!snapshot) {
@@ -1158,6 +1168,8 @@ export function ledgerReadMarkerDecision(agentId: string) {
     state.currentUser,
   );
   const scope = conversationScopeSnapshot(scopeKey);
+  const covered = state.rightPanelOpen && (state.rightPanelMode === "expanded"
+    || (typeof window !== "undefined" && panelLayout(window.innerWidth, true, false, state.navCollapsed, PANEL_DEFAULT).full));
   return evaluateLedgerReadMarkerGate(
     {
       route: state.route,
@@ -1165,6 +1177,7 @@ export function ledgerReadMarkerDecision(agentId: string) {
       documentVisible:
         typeof document !== "undefined" && document.visibilityState === "visible",
       conversationReady: scope.status.kind === "ready" && scope.view !== null,
+      conversationVisible: !covered,
       discoveryFresh: state.discovery.freshness === "fresh",
       readiness,
     },
@@ -1250,6 +1263,8 @@ function collapseRightPanelExpansion(state: {
   };
 }
 
+const panelPreferences = readPanelPreferences();
+
 export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   agentSessionRepository = new AgentSessionRepository<RuntimeStoreState>({
     get,
@@ -1317,9 +1332,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   selectedSkillId: "",
   selectedSkillAgentId: "",
   selectedTemplateId: "",
-  rightPanelOpen: false,
-  rightPanelMode: "normal",
-  rightPanelView: undefined,
+  rightPanelOpen: panelPreferences.open,
+  rightPanelMode: panelPreferences.mode,
+  rightPanelView: panelPreferences.view,
   rightPanelViewStack: [],
   timelineEventsByAgentId: {},
   navCollapsed: false,
@@ -3572,6 +3587,24 @@ function hydrateInspectorActivityDetail(
   agentId: string,
   activity: AgentTimelineActivity,
 ): void {
+  if (activity.messageId) {
+    const request = captureClientRequest();
+    setInspectorActivityDetailState(set, agentId, activity.id, { loading: true, error: undefined });
+    void request.client.getAgentMessagesBatch(agentId, [activity.messageId]).then((response) => {
+      if (!isCurrentClientRequest(request)) return;
+      const message = response.messages?.find((item) => item.id === activity.messageId);
+      if (!message) throw new Error(i18next.t("agentPage.eventUnavailable"));
+      set((state) => {
+        const selected = state.rightPanelView;
+        if (selected?.kind !== "activity_inspector" || selected.agentId !== agentId || selected.activity.id !== activity.id) return {};
+        return { rightPanelView: { ...selected, activity: hydrateInputActivity(activity, message), detailState: { loading: false } } };
+      });
+    }).catch((error) => {
+      if (!isCurrentClientRequest(request)) return;
+      setInspectorActivityDetailState(set, agentId, activity.id, { loading: false, error: error instanceof Error ? error.message : String(error) });
+    });
+    return;
+  }
   const refs = inspectorDetailRefs(activity);
   if (!refs.toolExecutionId && !refs.taskId) return;
 
@@ -4550,3 +4583,12 @@ function formatTime(value: string | null | undefined): string {
   if (Number.isNaN(date.getTime())) return "—";
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
 }
+
+// Subscribe before the first read: a dashboard-only tab must hear sibling reads.
+if (typeof window !== "undefined") ensureReadStateBus();
+useRuntimeStore.subscribe((state, previous) => {
+  if (state.rightPanelView !== previous.rightPanelView) rememberPanelView(state.rightPanelView);
+  if (state.rightPanelOpen !== previous.rightPanelOpen || state.rightPanelMode !== previous.rightPanelMode) {
+    writePanelPreferences({ ...readPanelPreferences(), open: state.rightPanelOpen, mode: state.rightPanelMode });
+  }
+});

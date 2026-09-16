@@ -661,6 +661,8 @@ export type TimelineStateObjectRef =
     };
 
 export interface AgentTimelineActivity {
+  /** Canonical message to hydrate when the bounded input preview is inspected. */
+  messageId?: string;
   id: string;
   kind: AgentTimelineItemKind;
   label: string;
