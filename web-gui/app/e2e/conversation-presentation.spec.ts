@@ -233,9 +233,10 @@ test("turn clock survives refresh, freezes before brief delivery, and opens a fl
     completed_at: new Date(start + 85000).toISOString(), duration_ms: 83000 };
   await update();
   await expect(disclosure).toContainText("Waiting for result");
-  await expect(clock).toHaveText("Took 1:23");
+  // Waiting for result hides the live clock entirely; nothing ticks while the brief is pending.
+  await expect(clock).toBeHidden();
   await page.clock.runFor(10000);
-  await expect(clock).toHaveText("Took 1:23");
+  await expect(clock).toBeHidden();
   await expect(disclosure).toHaveAttribute("aria-expanded", "true");
 
   await request.post(control("/__e2e__/configure"), { data: { briefsById: {
@@ -246,6 +247,8 @@ test("turn clock survives refresh, freezes before brief delivery, and opens a fl
   await update();
   await expect(card.getByText("Timing is ready.")).toBeVisible();
   await expect(disclosure).toContainText("Completed");
+  // The clock returns with the frozen terminal duration, not the advanced wall clock.
+  await expect(clock).toHaveText("Took 1:23");
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
   await clock.click();
   await page.clock.runFor(250);
