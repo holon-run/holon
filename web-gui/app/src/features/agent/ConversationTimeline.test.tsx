@@ -310,6 +310,35 @@ describe("summarizeActivity", () => {
 
 
 describe("conversation presentation boundaries", () => {
+  it("does not render reducer-only task updates as empty conversation turns", () => {
+    const html = renderTimeline([turnSummary("receipt", 1, {
+      presentation_class: "task", execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+      settled: true,
+    }), turnSummary("response", 2, {
+      presentation_class: "task", execution: { kind: "terminal", outcome: "completed" },
+      brief_ids: ["brief-1"], result: { kind: "available" }, settled: true,
+    })]);
+    expect(html).not.toContain('data-turn-id="receipt"');
+    expect(html).toContain('data-turn-id="response"');
+    expect(html).toContain("这是结果内容 markdown");
+  });
+
+  it("omits elapsed time on waiting labels while keeping completed execution duration", () => {
+    for (const attention of [null, { kind: "waiting" as const }]) {
+      const html = renderTimeline([turnSummary("waiting", 1, {
+        execution: { kind: "terminal", outcome: "completed" }, duration_ms: 60000, attention,
+      })]);
+      expect(html).not.toContain('class="conversation-turn-elapsed"');
+    }
+    const html = renderTimeline([turnSummary("completed", 1, {
+      execution: { kind: "terminal", outcome: "completed" }, duration_ms: 60000,
+      brief_ids: ["brief-1"], result: { kind: "available" }, settled: true,
+    })]);
+    expect(html).toContain('class="conversation-turn-elapsed"');
+    expect(html).toContain("Took 1:00");
+  });
+
   it("preserves Markdown links and ordinary JSON in display text", () => {
     for (const raw of ['[Source](https://example.com)', '{"files": 3}', '[1, 2]']) {
       expect(summarizeActivity({ kind: "assistant", id: "a", key: { event_seq: 1, activity_id: "a" }, revision: 1, summary: raw }))

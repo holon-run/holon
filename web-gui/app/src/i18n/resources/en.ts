@@ -136,7 +136,6 @@ const en = {
     background: "Running in background",
     completed: "Completed",
     waitingFor: "Waiting for {{task}}",
-    waited: "Waiting",
     taskAge: "Elapsed",
     taskCount_one: "{{count}} background task",
     taskCount_other: "{{count}} background tasks",

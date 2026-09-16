@@ -96,7 +96,12 @@ export function buildConversationSessionModel(
   return {
     status: input.status,
     view,
-    turns,
+    // Reducer-only task receipts update runtime state without a model response.
+    // Keep them in the canonical view and input deduplication, out of chat history.
+    turns: turns.filter((turn) => !(turn.presentationClass === "task"
+      && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
+      && turn.settled && !turn.attention && turn.briefIds.length === 0
+      && turn.result.kind === "none" && turn.result.reason.kind === "reducer_only")),
     pendingInputs: (view?.pending_inputs ?? []).filter(
       (input) => !turns.some((turn) => turn.inputs.some((assigned) => assigned.message_id === input.message_id)),
     ),

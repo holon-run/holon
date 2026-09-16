@@ -78,6 +78,45 @@ const group = (turn: ConversationTurnSummary): ConversationTurnGroup => ({
 });
 
 describe("buildConversationSessionModel", () => {
+  it("hides settled task receipts without losing canonical history, paging or input assignment", () => {
+    const receipt = turnSummary("receipt", 1, {
+      presentation_class: "task",
+      inputs: [{ message_id: "receipt-input", preview: "Task completed" }],
+      execution: { kind: "terminal", outcome: "completed" },
+      result: { kind: "none", reason: { kind: "reducer_only", reason: "task_result_without_model_reentry" } },
+      settled: true,
+    });
+    const preservedCases: Partial<ConversationTurnSummary>[] = [
+      { execution: { kind: "active" }, result: { kind: "pending" }, settled: false, duration_ms: 0 },
+      { brief_ids: ["brief-1"] },
+      { execution: { kind: "terminal", outcome: "provider_failed_needs_recovery" } },
+      { attention: { kind: "waiting" } },
+      { settled: false },
+      { presentation_class: "operator" },
+      { result: { kind: "none", reason: { kind: "tool_only_wait" } } },
+    ];
+    const retained = preservedCases.map((overrides, index) => ({
+      ...receipt, ...overrides, turn_id: `retained-${index}`,
+      key: { turn_index: index + 2, turn_id: `retained-${index}` },
+    }));
+    const view = stateView([receipt, ...retained], {
+      pending_inputs: [{ message_id: "receipt-input", revision: 1, state: "queued", preview: "Task completed", presentation_class: "task" }],
+      has_more: true,
+      next_before_cursor: "older" as ConversationHistoryCursor,
+    });
+    const model = buildConversationSessionModel({
+      status: { kind: "ready" }, view, historyState: { kind: "idle" },
+      briefs: new Map(), briefLoadStates: new Map(), detailLoadStates: new Map(),
+    });
+    expect(model.turns.map((turn) => turn.turnId)).toEqual(retained.map((turn) => turn.turn_id));
+    expect(model.activeTurn?.turnId).toBe(retained[0].turn_id);
+    expect(model.pendingInputs).toEqual([]);
+    expect(model.view).toBe(view);
+    expect(model.view?.turns).toHaveLength(8);
+    expect(model.hasMoreHistory).toBe(true);
+    expect(model.view?.next_before_cursor).toBe("older");
+  });
+
   it("maps turns in ascending order and attaches matching details", () => {
     const view = stateView(
       [turnSummary("turn-2", 2), turnSummary("turn-1", 1)],

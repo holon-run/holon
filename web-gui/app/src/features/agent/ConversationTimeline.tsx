@@ -257,7 +257,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           <ChevronRight size={14} className="conversation-disclosure-chevron" />
           {execution === "running" ? <LoaderCircle size={14} className="is-spinning" /> : null}
           <span>{t(`agentPage.turnTimingStatus.${timingStatus}`)}</span>
-          <TurnElapsedTime turn={turn} />
+          {timingStatus !== "waiting" && timingStatus !== "waitingResult" ? <TurnElapsedTime turn={turn} /> : null}
         </button>
         <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
           aria-hidden={!expanded} inert={!expanded}>

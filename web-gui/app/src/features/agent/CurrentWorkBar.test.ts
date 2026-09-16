@@ -12,25 +12,25 @@ const wait = { id: "wait", work_item_id: "w", kind: "task", status: "active", ta
 
 describe("current work status", () => {
   it("does not infer waiting just because a background task exists", () => {
-    expect(deriveCurrentWorkStatus(agent)).toMatchObject({ state: "background", waitingSince: undefined });
+    expect(deriveCurrentWorkStatus(agent)).toMatchObject({ state: "background" });
   });
   it("prefers the current work's explicit wait over aggregate agent posture", () => {
     expect(deriveCurrentWorkStatus({ ...agent, waits: [wait], waitingReason: "awaiting_operator_input", posture: "waiting-for-operator" }).state).toBe("waitingTask");
   });
-  it("uses explicit task bindings and the wait timestamp", () => {
-    expect(deriveCurrentWorkStatus({ ...agent, waits: [wait] })).toMatchObject({ state: "waitingTask", waitingTask: { id: "t" }, waitingSince: wait.created_at });
+  it("uses explicit task bindings", () => {
+    expect(deriveCurrentWorkStatus({ ...agent, waits: [wait] })).toMatchObject({ state: "waitingTask", waitingTask: { id: "t" } });
   });
   it("does not attribute another work item's wait to current work", () => {
-    expect(deriveCurrentWorkStatus({ ...agent, waitingReason: "awaiting_task_result", waits: [{ ...wait, work_item_id: "other" }] })).toMatchObject({ state: "background", waitingSince: undefined });
+    expect(deriveCurrentWorkStatus({ ...agent, waitingReason: "awaiting_task_result", waits: [{ ...wait, work_item_id: "other" }] })).toMatchObject({ state: "background" });
   });
   it("shows active execution while background waits remain", () => {
-    expect(deriveCurrentWorkStatus({ ...agent, currentRunId: "run", waits: [wait] })).toMatchObject({ state: "running", waitingSince: undefined });
+    expect(deriveCurrentWorkStatus({ ...agent, currentRunId: "run", waits: [wait] })).toMatchObject({ state: "running" });
   });
   it("keeps triggered results distinct from active waits", () => {
-    expect(deriveCurrentWorkStatus({ ...agent, tasks: [], waits: [{ ...wait, status: "triggered" }] })).toMatchObject({ state: "resultReady", waitingSince: undefined });
+    expect(deriveCurrentWorkStatus({ ...agent, tasks: [], waits: [{ ...wait, status: "triggered" }] })).toMatchObject({ state: "resultReady" });
   });
-  it("supports older servers without inventing waiting timestamps", () => {
-    expect(deriveCurrentWorkStatus({ ...agent, waitingReason: "awaiting_task_result" })).toMatchObject({ state: "waitingTask", waitingSince: undefined, waitingTask: undefined });
+  it("supports older servers without explicit wait records", () => {
+    expect(deriveCurrentWorkStatus({ ...agent, waitingReason: "awaiting_task_result" })).toMatchObject({ state: "waitingTask", waitingTask: undefined });
   });
   it("shows stopped and operator-input states explicitly", () => {
     expect(deriveCurrentWorkStatus({ ...agent, lifecycle: "stopped", waits: [wait] }).state).toBe("stopped");

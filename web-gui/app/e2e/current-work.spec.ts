@@ -5,6 +5,27 @@ const work = { id: "work-current", objective: "Restore session after login", sta
 const task = { id: "task-tests", agent_id: "bootstrap-agent", work_item_id: work.id, kind: "command_task", status: "running", summary: "Run login regression tests", created_at: created, updated_at: created };
 const wait = { id: "wait-tests", work_item_id: work.id, kind: "task", status: "active", task_ids: [task.id], created_at: created };
 
+test("all waiting statuses stay visible without a waiting timer", async ({ page }) => {
+  let kind = "operator";
+  await page.route("**/api/agents/bootstrap-agent/state", async (route) => {
+    const body = await (await route.fetch()).json();
+    body.agent.agent.current_work_item_id = work.id;
+    body.work_items = [work]; body.tasks = [task]; body.waits = [{ ...wait, kind }];
+    await route.fulfill({ json: body });
+  });
+  await page.goto("/agents/bootstrap-agent/conversation");
+  const bar = page.locator(".current-work-bar");
+  for (const [next, expected] of [["operator", "needsInput"], ["task", "waitingTask"], ["timer", "waitingTimer"], ["external", "waitingExternal"], ["system", "waitingExternal"]]) {
+    kind = next;
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await expect(bar).toHaveAttribute("data-state", expected);
+    await expect(bar.getByRole("status")).not.toBeEmpty();
+    await expect(bar.locator(".current-work-status time")).toHaveCount(0);
+  }
+  await bar.getByRole("button", { name: "Expand", exact: true }).click();
+  await expect(bar.locator(".current-work-task time")).toContainText("Elapsed");
+});
+
 test("current work stays visible with the panel closed and opens work/task details", async ({ page }) => {
   await page.route("**/api/agents/bootstrap-agent/state", async (route) => {
     const body = await (await route.fetch()).json();
@@ -21,7 +42,7 @@ test("current work stays visible with the panel closed and opens work/task detai
   await expect(bar).toBeVisible();
   await expect(bar).toHaveAttribute("data-state", "waitingTask");
   await expect(bar.getByRole("status")).toContainText("Waiting for Run login regression tests");
-  await expect(bar.locator(".current-work-duration")).toContainText("Waiting");
+  await expect(bar.locator(".current-work-status time")).toHaveCount(0);
   await bar.getByRole("button", { name: work.objective, exact: true }).click();
   await expect(page.locator(".side-panel")).toBeVisible();
   await expect(page.locator(".detail-plan-preview")).toContainText("Login repair plan");

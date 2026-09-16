@@ -40,8 +40,7 @@ export function deriveCurrentWorkStatus(agent: AgentSummary) {
   else if (tasks.length > 0 || agent.activeTaskCount > 0) state = "background";
   const waitingTask = state === "waitingTask" && activeWait?.task_ids.length === 1
     ? tasks.find((task) => task.id === activeWait.task_ids[0]) : undefined;
-  const waitingSince = !running && !stopped && state !== "needsInput" && activeWait ? activeWait.created_at : undefined;
-  return { work, tasks, taskCount: Math.max(tasks.length, agent.activeTaskCount || 0), waits, state, waitingTask, waitingSince };
+  return { work, tasks, taskCount: Math.max(tasks.length, agent.activeTaskCount || 0), waits, state, waitingTask };
 }
 
 function Duration({ since, label }: { since: string; label: string }) {
@@ -105,7 +104,6 @@ export function CurrentWorkBar({ agent, conversation, onOpenWorkItem, onOpenTask
       <div className="current-work-status">
         <Icon size={13} className={!snapshot.stale && ["running", "background"].includes(state) ? "spin" : undefined} />
         <span className="current-work-status-text" role="status" title={statusText}>{statusText}</span>
-        {!snapshot.stale && view.waitingSince ? <Duration since={view.waitingSince} label={t("currentWork.waited")} /> : null}
         {view.taskCount > 0 ? <span className="current-work-count">{t("currentWork.taskCount", { count: view.taskCount })}</span> : null}
         <button className="current-work-toggle" type="button" aria-expanded={expanded}
           aria-controls={`current-work-details-${agent.id}`} onClick={() => setExpanded(!expanded)}>

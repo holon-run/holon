@@ -138,7 +138,6 @@ const zh: Record<string, any> = {
     background: "后台运行中",
     completed: "已完成",
     waitingFor: "等待 {{task}}",
-    waited: "已等待",
     taskAge: "已持续",
     taskCount_one: "{{count}} 个后台任务",
     taskCount_other: "{{count}} 个后台任务",
