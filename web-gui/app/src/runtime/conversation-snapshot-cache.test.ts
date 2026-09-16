@@ -10,6 +10,8 @@ import type {
 import { createConversationSnapshotCache } from "./conversation-snapshot-cache";
 import {
   SNAPSHOT_CACHE_SCHEMA_VERSION,
+  cacheClearRemote,
+  cacheClearRemoteSnapshots,
   cachePutConversationSnapshot,
 } from "./idb-cache";
 
@@ -72,5 +74,20 @@ describe("conversation snapshot cache", () => {
     });
     const cache = createConversationSnapshotCache("remote-a", "web");
     expect(await cache.load()).toBeNull();
+  });
+
+  it("clears cached snapshots per remote, including via cacheClearRemote", async () => {
+    const cache = createConversationSnapshotCache("remote-a", "web");
+    await cache.store({ etag: "etag-10", summary: summarySnapshot(10) });
+    const otherRemote = createConversationSnapshotCache("remote-b", "web");
+    await otherRemote.store({ etag: "etag-11", summary: summarySnapshot(11) });
+
+    await cacheClearRemoteSnapshots("remote-a");
+    expect(await cache.load()).toBeNull();
+    expect((await otherRemote.load())?.etag).toBe("etag-11");
+
+    await otherRemote.store({ etag: "etag-12", summary: summarySnapshot(12) });
+    await cacheClearRemote("remote-b");
+    expect(await otherRemote.load()).toBeNull();
   });
 });

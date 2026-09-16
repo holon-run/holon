@@ -876,6 +876,9 @@ fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
 
     let mut layer = CorsLayer::new()
         .allow_origin(allow_origin)
+        // Conditional conversation revalidation reads the ETag header; without
+        // exposing it, cross-origin clients silently degrade to full 200s.
+        .expose_headers([ETAG])
         .allow_methods(methods)
         .allow_headers(headers)
         .max_age(Duration::from_secs(config.max_age_seconds()));
@@ -963,7 +966,8 @@ pub(crate) fn etag_for_bytes(bytes: &[u8]) -> String {
 }
 
 /// RFC 9110 If-None-Match evaluation: satisfied when any listed entity tag
-/// matches the current one, or when the client sent `*`.
+/// weakly matches the current one, or when the client sent `*`. If-None-Match
+/// always uses weak comparison, so `W/"x"` matches `"x"`.
 pub(crate) fn if_none_match_satisfied(headers: &HeaderMap, etag: &str) -> bool {
     let Some(raw) = headers
         .get(IF_NONE_MATCH)
@@ -971,9 +975,13 @@ pub(crate) fn if_none_match_satisfied(headers: &HeaderMap, etag: &str) -> bool {
     else {
         return false;
     };
+    fn opaque_tag(tag: &str) -> &str {
+        tag.strip_prefix("W/").unwrap_or(tag)
+    }
+    let current = opaque_tag(etag);
     raw.split(',').any(|candidate| {
         let candidate = candidate.trim();
-        candidate == etag || candidate == "*"
+        candidate == "*" || opaque_tag(candidate) == current
     })
 }
 
@@ -1645,8 +1653,8 @@ pub async fn serve_unix(
 mod tests {
     use super::{
         add_retry_after_to_service_unavailable, authenticate_session, error_response,
-        projection_gate_error_response, router, session_credential, AppState, ProjectionGate,
-        ProjectionGateError,
+        if_none_match_satisfied, projection_gate_error_response, router, session_credential,
+        AppState, ProjectionGate, ProjectionGateError,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -2278,5 +2286,27 @@ mod tests {
         assert_eq!(body["code"], "runtime_error");
         assert_eq!(body["domain"], "unknown");
         assert_eq!(body["retryable"], false);
+    }
+
+    #[test]
+    fn if_none_match_satisfied_uses_weak_comparison() {
+        let headers = |value: &str| {
+            let mut map = HeaderMap::new();
+            map.insert(header::IF_NONE_MATCH, HeaderValue::from_str(value).unwrap());
+            map
+        };
+        // Strong echo and `*` both satisfy.
+        assert!(if_none_match_satisfied(&headers("\"abc\""), "\"abc\""));
+        assert!(if_none_match_satisfied(&headers("*"), "\"abc\""));
+        // RFC 9110: If-None-Match compares weakly, so W/"abc" matches "abc".
+        assert!(if_none_match_satisfied(&headers("W/\"abc\""), "\"abc\""));
+        assert!(if_none_match_satisfied(
+            &headers("\"x\", W/\"abc\""),
+            "\"abc\""
+        ));
+        // Different opaque tags never satisfy, and neither does a missing header.
+        assert!(!if_none_match_satisfied(&headers("\"stale\""), "\"abc\""));
+        assert!(!if_none_match_satisfied(&headers("W/\"stale\""), "\"abc\""));
+        assert!(!if_none_match_satisfied(&HeaderMap::new(), "\"abc\""));
     }
 }

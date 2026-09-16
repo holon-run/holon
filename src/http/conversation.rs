@@ -1463,6 +1463,16 @@ mod tests {
         assert_eq!(repeat_etag.as_deref(), Some(etag.as_str()));
         assert_eq!(body, Value::Null, "304 responses carry no body");
 
+        // RFC 9110 weak comparison: W/"etag" also satisfies If-None-Match.
+        let weak_echo = format!("W/{etag}");
+        let (status, _, _) = get_with_headers(
+            state.clone(),
+            "/api/agents/web/conversation",
+            &[("if-none-match", weak_echo.as_str())],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+
         // A different page (limit) is different content and a different tag.
         let (status, limited_etag, _) =
             get_with_headers(state.clone(), "/api/agents/web/conversation?limit=1", &[]).await;
