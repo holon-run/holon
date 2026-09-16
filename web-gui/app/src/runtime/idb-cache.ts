@@ -6,12 +6,18 @@
  * can silently fall back to a memory-only mode.
  */
 
+import type { BriefRecord } from "@holon/conversation-sdk";
+
 const DB_NAME = "holon-webgui-cache";
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 export const CACHE_SCHEMA_VERSION = 5;
+export const BRIEF_CACHE_SCHEMA_VERSION = 1;
+export const SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
 const SESSIONS_STORE = "sessions";
 const META_STORE = "meta";
 const MODEL_CATALOG_STORE = "modelCatalog";
+const BRIEFS_STORE = "briefs";
+const SNAPSHOTS_STORE = "snapshots";
 
 export interface CachedSyncCoverage {
   eventLogEpoch?: string;
@@ -61,6 +67,24 @@ export interface CachedModelCatalog {
   cachedAt: number;
 }
 
+export interface CachedConversationBrief {
+  remoteKey: string;
+  agentId: string;
+  briefId: string;
+  schemaVersion: number;
+  brief: BriefRecord;
+  cachedAt: number;
+}
+
+export interface CachedConversationSnapshot {
+  remoteKey: string;
+  agentId: string;
+  schemaVersion: number;
+  etag: string | null;
+  summary: unknown;
+  cachedAt: number;
+}
+
 let dbPromise: Promise<IDBDatabase | null> | null = null;
 
 function openDB(): Promise<IDBDatabase | null> {
@@ -89,6 +113,12 @@ function openDB(): Promise<IDBDatabase | null> {
       }
       if (!db.objectStoreNames.contains(MODEL_CATALOG_STORE)) {
         db.createObjectStore(MODEL_CATALOG_STORE, { keyPath: "remoteKey" });
+      }
+      if (!db.objectStoreNames.contains(BRIEFS_STORE)) {
+        db.createObjectStore(BRIEFS_STORE, { keyPath: ["remoteKey", "agentId", "briefId"] });
+      }
+      if (!db.objectStoreNames.contains(SNAPSHOTS_STORE)) {
+        db.createObjectStore(SNAPSHOTS_STORE, { keyPath: ["remoteKey", "agentId"] });
       }
     };
     request.onsuccess = () => resolve(request.result);
@@ -220,10 +250,96 @@ export async function cacheGetModelCatalog(remoteKey: string): Promise<CachedMod
   }
 }
 
+export async function cachePutConversationBrief(
+  entry: CachedConversationBrief,
+): Promise<void> {
+  const db = await openDB();
+  if (!db) return;
+  try {
+    await runRequest(db, BRIEFS_STORE, "readwrite", (store) => store.put(entry));
+  } catch {
+    // Silent fallback — cache is best-effort.
+  }
+}
+
+export async function cacheGetConversationBrief(
+  remoteKey: string,
+  agentId: string,
+  briefId: string,
+): Promise<CachedConversationBrief | undefined> {
+  const db = await openDB();
+  if (!db) return undefined;
+  try {
+    return await runRequest<CachedConversationBrief>(db, BRIEFS_STORE, "readonly", (store) =>
+      store.get([remoteKey, agentId, briefId]),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export async function cachePutConversationSnapshot(
+  entry: CachedConversationSnapshot,
+): Promise<void> {
+  const db = await openDB();
+  if (!db) return;
+  try {
+    await runRequest(db, SNAPSHOTS_STORE, "readwrite", (store) => store.put(entry));
+  } catch {
+    // Silent fallback — cache is best-effort.
+  }
+}
+
+export async function cacheGetConversationSnapshot(
+  remoteKey: string,
+  agentId: string,
+): Promise<CachedConversationSnapshot | undefined> {
+  const db = await openDB();
+  if (!db) return undefined;
+  try {
+    return await runRequest<CachedConversationSnapshot>(
+      db,
+      SNAPSHOTS_STORE,
+      "readonly",
+      (store) => store.get([remoteKey, agentId]),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** Delete every cached brief for one remote (connection switch, sign-out). */
+export async function cacheClearRemoteBriefs(remoteKey: string): Promise<void> {
+  const db = await openDB();
+  if (!db) return;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const store = db.transaction(BRIEFS_STORE, "readwrite").objectStore(BRIEFS_STORE);
+      const request = store.openCursor();
+      request.onsuccess = () => {
+        const cursor = request.result;
+        if (cursor) {
+          const entry = cursor.value as CachedConversationBrief;
+          if (entry.remoteKey === remoteKey) {
+            cursor.delete();
+          }
+          cursor.continue();
+        } else {
+          resolve();
+        }
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch {
+    // Silent fallback.
+  }
+}
+
 export async function cacheClearRemote(remoteKey: string): Promise<void> {
   const db = await openDB();
   if (!db) return;
   try {
+    await cacheClearRemoteBriefs(remoteKey);
     await Promise.all([
       new Promise<void>((resolve, reject) => {
         const store = db.transaction(SESSIONS_STORE, "readwrite").objectStore(SESSIONS_STORE);

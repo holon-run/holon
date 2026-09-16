@@ -13,16 +13,20 @@ import {
   ConversationProtocolState,
   type ConversationStateView,
 } from "./state.js";
-import type {
-  BriefRecord,
-  ConversationActivityResponse,
-  ConversationCheckpoint,
-  ConversationDetailCursor,
-  ConversationHistoryCursor,
-  ConversationRequestIdentity,
-  ConversationStateLimits,
-  ConversationStreamItem,
-  ConversationSummaryResponse,
+import {
+  CONVERSATION_SCHEMA_VERSION,
+  CONVERSATION_QUERY_VERSION,
+  type BriefRecord,
+  type ConversationActivityResponse,
+  type ConversationCheckpoint,
+  type ConversationDetailCursor,
+  type ConversationHistoryCursor,
+  type ConversationRequestIdentity,
+  type ConversationSnapshotCacheEntry,
+  type ConversationStateLimits,
+  type ConversationStreamItem,
+  type ConversationSummaryResult,
+  type ConversationSummaryResponse,
 } from "./types.js";
 
 /**
@@ -37,9 +41,10 @@ export interface ConversationClientLike {
     options?: {
       readonly limit?: number;
       readonly before?: ConversationHistoryCursor;
+      readonly ifNoneMatch?: string;
       readonly signal?: AbortSignal;
     },
-  ): Promise<ConversationSummaryResponse>;
+  ): Promise<ConversationSummaryResult>;
   activities(
     agentId: string,
     turnId: string,
@@ -157,6 +162,29 @@ export interface ConversationRetryOptions {
   readonly stableUptimeMs?: number;
 }
 
+/**
+ * Best-effort persistent cache for brief records. Briefs are final,
+ * immutable artifacts, so entries never need invalidation; implementations
+ * must tolerate rejections (storage unavailable, quota exceeded) without
+ * throwing into the controller lifecycle.
+ */
+export interface ConversationBriefCache {
+  /** Return the cached brief, or null/undefined when absent. */
+  get(briefId: string): Promise<BriefRecord | null | undefined>;
+  /** Persist a successfully fetched brief. */
+  put(briefId: string, brief: BriefRecord): Promise<void>;
+}
+
+/**
+ * Best-effort persistent cache of the most recent bootstrap snapshot for one
+ * agent scope. Implementations must tolerate rejections without throwing
+ * into the controller lifecycle.
+ */
+export interface ConversationSnapshotCache {
+  load(): Promise<ConversationSnapshotCacheEntry | null | undefined>;
+  store(entry: ConversationSnapshotCacheEntry): Promise<void>;
+}
+
 export interface ConversationControllerOptions {
   readonly client: ConversationClientLike;
   readonly agentId: string;
@@ -166,6 +194,8 @@ export interface ConversationControllerOptions {
   readonly historyPageSize?: number;
   readonly activityPageSize?: number;
   readonly maxBriefCache?: number;
+  readonly briefCache?: ConversationBriefCache;
+  readonly snapshotCache?: ConversationSnapshotCache;
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly random?: () => number;
   readonly now?: () => number;
@@ -258,6 +288,8 @@ export class ConversationController {
   readonly #historyPageSize: number;
   readonly #activityPageSize: number;
   readonly #maxBriefCache: number;
+  readonly #briefCache: ConversationBriefCache | undefined;
+  readonly #snapshotCache: ConversationSnapshotCache | undefined;
   readonly #sleep: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly #random: () => number;
   readonly #now: () => number;
@@ -276,6 +308,11 @@ export class ConversationController {
   #handshakePromise: Promise<unknown> | null = null;
   #disposed = false;
   #starting = false;
+  // Set when the protocol state was hydrated from the snapshot cache and a
+  // conditional revalidation must succeed before streaming; the stale cache
+  // is never streamed from without a server-confirmed 304.
+  #pendingRevalidate: { readonly etag: string | null } | undefined;
+  #hydrateAttempted = false;
 
   constructor(options: ConversationControllerOptions) {
     if (options.agentId.length === 0) {
@@ -303,6 +340,8 @@ export class ConversationController {
     this.#activityPageSize =
       options.activityPageSize ?? DEFAULT_ACTIVITY_PAGE_SIZE;
     this.#maxBriefCache = options.maxBriefCache ?? DEFAULT_MAX_BRIEF_CACHE;
+    this.#briefCache = options.briefCache;
+    this.#snapshotCache = options.snapshotCache;
     this.#sleep = options.sleep ?? defaultSleep;
     this.#random = options.random ?? Math.random;
     this.#now = options.now ?? Date.now;
@@ -418,11 +457,17 @@ export class ConversationController {
     this.#historyState = { kind: "loading" };
     this.#emitChange();
     try {
-      const page = await this.#client.summary(this.agentId, {
+      const result = await this.#client.summary(this.agentId, {
         limit: this.#historyPageSize,
         before,
         signal: this.#requestSignal(),
       });
+      if (result.summary === null) {
+        throw new ConversationProtocolError(
+          "older-page summary returned 304 unexpectedly",
+        );
+      }
+      const page = result.summary;
       if (this.#disposed) {
         return { kind: "idle" };
       }
@@ -473,6 +518,30 @@ export class ConversationController {
     this.#briefOrder.push(briefId);
     this.#evictBriefCache();
     this.#emitChange();
+    if (this.#briefCache !== undefined) {
+      let cached: BriefRecord | null | undefined;
+      try {
+        cached = await this.#briefCache.get(briefId);
+      } catch {
+        // Persistent cache read failure falls through to the network.
+      }
+      if (this.#disposed) {
+        return { kind: "loading" };
+      }
+      if (
+        cached != null &&
+        cached.id === briefId &&
+        cached.agent_id === this.agentId
+      ) {
+        const cachedReady: ConversationBriefLoadState = {
+          kind: "ready",
+          brief: cached,
+        };
+        this.#briefStates.set(briefId, cachedReady);
+        this.#emitChange();
+        return cachedReady;
+      }
+    }
     try {
       const brief = await this.#client.brief(
         this.agentId,
@@ -485,6 +554,12 @@ export class ConversationController {
       const ready: ConversationBriefLoadState = { kind: "ready", brief };
       this.#briefStates.set(briefId, ready);
       this.#emitChange();
+      if (this.#briefCache !== undefined) {
+        // Best-effort persistence; cache failures never fail the load.
+        void Promise.resolve(this.#briefCache.put(briefId, brief)).catch(
+          () => {},
+        );
+      }
       return ready;
     } catch (error) {
       if (this.#disposed) {
@@ -615,6 +690,24 @@ export class ConversationController {
         }
         if (this.#state.reconnectCheckpoint() === null) {
           this.#setStatus({ kind: "loading" });
+          if (!this.#hydrateAttempted) {
+            this.#hydrateAttempted = true;
+            await this.#hydrateCachedSnapshot(runToken);
+            if (!this.#alive(runToken)) {
+              return;
+            }
+          }
+        }
+        if (this.#pendingRevalidate !== undefined) {
+          // Stale-while-revalidate: render the cached snapshot now, confirm
+          // with the server before streaming from it.
+          this.#setStatus({ kind: "loading" });
+          await this.#revalidateSnapshot(runToken);
+          if (!this.#alive(runToken)) {
+            return;
+          }
+        } else if (this.#state.reconnectCheckpoint() === null) {
+          this.#setStatus({ kind: "loading" });
           await this.#bootstrap(runToken);
           if (!this.#alive(runToken)) {
             return;
@@ -698,20 +791,99 @@ export class ConversationController {
     }
   }
 
+  #historyStateFor(
+    snapshot: ConversationSummaryResponse,
+  ): ConversationHistoryLoadState {
+    return snapshot.has_more && snapshot.next_before_cursor !== null
+      ? { kind: "idle" }
+      : { kind: "complete" };
+  }
+
+  async #hydrateCachedSnapshot(runToken: number): Promise<void> {
+    if (this.#snapshotCache === undefined) {
+      return;
+    }
+    let entry: ConversationSnapshotCacheEntry | null | undefined;
+    try {
+      entry = await this.#snapshotCache.load();
+    } catch {
+      return; // Cache read failure falls through to a network bootstrap.
+    }
+    if (!this.#alive(runToken) || entry == null) {
+      return;
+    }
+    const snapshot = entry.summary;
+    if (
+      snapshot.schema_version !== CONVERSATION_SCHEMA_VERSION ||
+      snapshot.query_version !== CONVERSATION_QUERY_VERSION ||
+      typeof snapshot.snapshot_cursor !== "string" ||
+      snapshot.snapshot_cursor.length === 0
+    ) {
+      return;
+    }
+    try {
+      this.#state.bootstrap(this.#identity, snapshot);
+    } catch {
+      return; // Incompatible snapshot falls back to a network bootstrap.
+    }
+    this.#historyState = this.#historyStateFor(snapshot);
+    this.#pendingRevalidate = { etag: entry.etag };
+    this.#emitView("bootstrap");
+  }
+
+  async #revalidateSnapshot(runToken: number): Promise<void> {
+    const etag = this.#pendingRevalidate?.etag ?? null;
+    const result = await this.#client.summary(this.agentId, {
+      limit: this.#historyPageSize,
+      ...(etag === null ? {} : { ifNoneMatch: etag }),
+      signal: this.#runSignal(),
+    });
+    if (!this.#alive(runToken)) {
+      return;
+    }
+    if (result.summary === null) {
+      // 304: the hydrated snapshot still matches the server; keep it and
+      // clear the pending revalidation so the stream may attach.
+      this.#pendingRevalidate = undefined;
+      return;
+    }
+    this.#state.bootstrap(this.#identity, result.summary);
+    this.#historyState = this.#historyStateFor(result.summary);
+    this.#emitView("bootstrap");
+    this.#persistSnapshot(result.summary, result.etag);
+    this.#pendingRevalidate = undefined;
+  }
+
   async #bootstrap(runToken: number): Promise<void> {
-    const snapshot = await this.#client.summary(this.agentId, {
+    const result = await this.#client.summary(this.agentId, {
       limit: this.#historyPageSize,
       signal: this.#runSignal(),
     });
     if (!this.#alive(runToken)) {
       return;
     }
+    if (result.summary === null) {
+      throw new ConversationProtocolError(
+        "summary bootstrap returned 304 unexpectedly",
+      );
+    }
+    const snapshot = result.summary;
     this.#state.bootstrap(this.#identity, snapshot);
-    this.#historyState =
-      snapshot.has_more && snapshot.next_before_cursor !== null
-        ? { kind: "idle" }
-        : { kind: "complete" };
+    this.#historyState = this.#historyStateFor(snapshot);
     this.#emitView("bootstrap");
+    this.#persistSnapshot(snapshot, result.etag);
+  }
+
+  #persistSnapshot(
+    snapshot: ConversationSummaryResponse,
+    etag: string | null,
+  ): void {
+    if (this.#snapshotCache === undefined) {
+      return;
+    }
+    // Best-effort persistence; cache failures never fail the controller.
+    void Promise.resolve(this.#snapshotCache.store({ etag, summary: snapshot }))
+      .catch(() => {});
   }
 
   async #pumpStream(runToken: number): Promise<void> {

@@ -191,12 +191,29 @@ export interface ConversationBoundary {
   readonly snapshot_cursor: ConversationCheckpoint;
 }
 
+/**
+ * Result of a summary fetch. `summary` is null when the server answered
+ * 304 Not Modified for a conditional request; `etag` carries the response
+ * ETag when the server provides one.
+ */
+export interface ConversationSummaryResult {
+  readonly summary: ConversationSummaryResponse | null;
+  readonly etag: string | null;
+}
+
 export interface ConversationSummaryResponse extends ConversationBoundary {
   readonly turns: readonly ConversationTurnSummary[];
   readonly active_turns: readonly ConversationTurnSummary[];
   readonly pending_inputs: readonly PendingInput[];
   readonly next_before_cursor: ConversationHistoryCursor | null;
   readonly has_more: boolean;
+}
+
+/** A cached bootstrap snapshot plus the ETag that conditional
+ * revalidation can present back to the server. */
+export interface ConversationSnapshotCacheEntry {
+  readonly etag: string | null;
+  readonly summary: ConversationSummaryResponse;
 }
 
 export interface ConversationActivityResponse extends ConversationBoundary {

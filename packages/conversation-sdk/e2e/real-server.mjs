@@ -92,7 +92,8 @@ const client = new ConversationClient({ baseUrl });
 await client.requireCapability();
 
 const state = new ConversationProtocolState();
-const snapshot = await client.summary("web", { limit: 2 });
+const { summary: snapshot } = await client.summary("web", { limit: 2 });
+assert.ok(snapshot, "unconditional summary must return a snapshot body");
 assert.equal(snapshot.turns.length, 2);
 assert.equal(snapshot.has_more, true);
 assert.ok(snapshot.next_before_cursor);
@@ -115,10 +116,11 @@ assert.ok(resultTurn.brief_ids.includes("brief-late"));
 
 const olderCursor = state.view().next_before_cursor;
 assert.ok(olderCursor);
-const older = await client.summary("web", {
+const { summary: older } = await client.summary("web", {
   limit: 2,
   before: olderCursor,
 });
+assert.ok(older, "unconditional older page must return a snapshot body");
 state.applyOlderPage(identity, olderCursor, older);
 assert.deepEqual(
   state.view().turns.map((turn) => turn.turn_id),
@@ -186,7 +188,8 @@ await assert.rejects(
 state.reset("retention_expired");
 assert.equal(state.reconnectCheckpoint(), null);
 
-const recovered = await client.summary("web", { limit: 2 });
+const { summary: recovered } = await client.summary("web", { limit: 2 });
+assert.ok(recovered, "post-reset summary must return a snapshot body");
 state.bootstrap(identity, recovered);
 const iterator = client
   .stream("web", { after: recovered.snapshot_cursor })

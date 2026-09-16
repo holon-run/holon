@@ -26,6 +26,7 @@ import {
   type ConversationHandshake,
   type ConversationHistoryCursor,
   type ConversationStreamItem,
+  type ConversationSummaryResult,
   type ConversationSummaryResponse,
 } from "./types.js";
 
@@ -54,6 +55,7 @@ export interface ConversationClientOptions {
 export interface ConversationPageOptions {
   readonly limit?: number;
   readonly before?: ConversationHistoryCursor;
+  readonly ifNoneMatch?: string;
   readonly signal?: AbortSignal;
 }
 
@@ -121,7 +123,7 @@ export class ConversationClient {
   async summary(
     agentId: string,
     options: ConversationPageOptions = {},
-  ): Promise<ConversationSummaryResponse> {
+  ): Promise<ConversationSummaryResult> {
     const query = new URLSearchParams();
     if (options.limit !== undefined) {
       query.set("limit", String(options.limit));
@@ -129,11 +131,40 @@ export class ConversationClient {
     if (options.before !== undefined) {
       query.set("before", options.before);
     }
-    return this.#getJson(
-      this.#agentPath(agentId, `/conversation${query.size === 0 ? "" : `?${query}`}`),
-      options.signal,
-      decodeConversationSummaryResponse,
+    const headers = await this.#requestHeaders();
+    headers.set("accept", "application/json");
+    if (options.ifNoneMatch !== undefined) {
+      headers.set("if-none-match", options.ifNoneMatch);
+    }
+    const response = await this.#fetch(
+      this.#url(
+        this.#agentPath(
+          agentId,
+          `/conversation${query.size === 0 ? "" : `?${query}`}`,
+        ),
+      ),
+      {
+        method: "GET",
+        headers,
+        ...(options.signal === undefined ? {} : { signal: options.signal }),
+      },
     );
+    const etag = response.headers.get("etag");
+    if (response.status === 304) {
+      return { summary: null, etag };
+    }
+    if (!response.ok) {
+      await this.#throwResponseError(response);
+    }
+    let value: unknown;
+    try {
+      value = await response.json();
+    } catch (error) {
+      throw new ConversationDecodeError("$response", "invalid JSON", {
+        cause: error,
+      });
+    }
+    return { summary: decodeConversationSummaryResponse(value), etag };
   }
 
   async activities(

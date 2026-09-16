@@ -15,7 +15,7 @@ const client = new ConversationClient({
 });
 
 await client.requireCapability();
-const snapshot = await client.summary("main", { limit: 30 });
+const { summary: snapshot } = await client.summary("main", { limit: 30 });
 const state = new ConversationProtocolState();
 const identity = {
   remote_id: client.baseUrl,
