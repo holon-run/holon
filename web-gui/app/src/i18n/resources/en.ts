@@ -431,6 +431,7 @@ const en = {
       failed: "Failed",
       waiting: "Waiting",
     },
+    resultOnlyProcess: "This turn produced the result shown below.",
     executionProcess: "View execution process",
     detailLoadFailed: "Failed to load activity detail.",
     detailLoading: "Loading activity detail…",

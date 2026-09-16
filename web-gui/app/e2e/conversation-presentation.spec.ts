@@ -257,3 +257,57 @@ test("turn clock survives refresh, freezes before brief delivery, and opens a fl
   await expect(clock).toHaveText("Took 1:23");
   await expect(disclosure).toHaveAttribute("aria-expanded", "false");
 });
+
+test("a delivered brief replaces only the duplicate final activity, including after reload", async ({ page, context, request }, info) => {
+  const session = `dedup-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  let current = turn("dedup", 1);
+  const result = "The final answer is ready.";
+  const progress = Array.from({ length: 8 }, (_, index) => activity(index, `Progress step ${index}.`));
+  const update = () => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], activitiesByTurnId: { dedup: [...progress, activity(9, result)] },
+  } });
+  await update();
+  await page.goto(`/agents/${agentId}/conversation`);
+  const card = page.locator('[data-turn-id="dedup"]');
+  const disclosure = card.locator(".conversation-detail-toggle");
+  const finalActivity = card.locator('[data-activity-id="assistant:9"]');
+  await expect(finalActivity).toContainText(result);
+  current = { ...current, revision: 2, execution: { kind: "terminal", outcome: "completed" } };
+  await update();
+  await expect(disclosure).toContainText("Waiting for result");
+  await expect(finalActivity).toBeVisible();
+
+  // Delay the actual brief response so result metadata alone cannot hide the output.
+  let releaseBrief!: () => void;
+  const briefReady = new Promise<void>((resolve) => { releaseBrief = resolve; });
+  await page.route(/\/briefs(?:\/|:)/, async (route) => {
+    await briefReady;
+    await route.continue();
+  });
+  await request.post(control("/__e2e__/configure"), { data: { briefsById: {
+    "dedup-brief": { id: "dedup-brief", agent_id: agentId, workspace_id: "holon", kind: "result",
+      text: result, created_at: "2026-09-16T00:00:00Z", content_source: { kind: "inline" } },
+  } } });
+  current = { ...current, revision: 3, result: { kind: "available" }, settled: true, brief_ids: ["dedup-brief"] };
+  await update();
+  await expect(card.locator(".conversation-brief")).toBeVisible();
+  await expect(finalActivity).toBeVisible();
+  releaseBrief();
+  await expect(card.locator(".conversation-brief")).toContainText(result);
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await disclosure.click();
+  await expect(finalActivity).toHaveCount(0);
+  await expect(card.getByText(result, { exact: true })).toHaveCount(1);
+  // Deduplication precedes the recent-eight limit so no real progress is displaced.
+  await expect(card.locator(".conversation-activity")).toHaveCount(8);
+  await expect(card.getByText("Progress step 0.", { exact: true })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Show earlier activity" })).toHaveCount(0);
+  await page.reload();
+  await expect(card.locator(".conversation-brief")).toContainText(result);
+  await disclosure.click();
+  await expect(card.locator(".conversation-activity")).toHaveCount(8);
+  await expect(finalActivity).toHaveCount(0);
+  await expect(card.getByText(result, { exact: true })).toHaveCount(1);
+});

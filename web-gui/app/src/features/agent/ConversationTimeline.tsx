@@ -388,6 +388,16 @@ function ConversationDetailPanel({
       </div>
     );
   }
+  const activities = executionProcessActivities(
+    detail.activities,
+    turn.briefIds.flatMap((id) => {
+      const brief = actions.briefRecord(id);
+      return brief ? [brief.text] : [];
+    }),
+    turn.execution.kind === "terminal",
+  );
+  const onlyResult = activities.length === 0 && detail.activities.some((activity) => activity.kind === "assistant")
+    && !detail.has_more && !detail.truncated;
   return (
     <div className="conversation-detail">
       {detail.invalidated ? (
@@ -412,17 +422,17 @@ function ConversationDetailPanel({
           <span>{t("agentPage.loadOlderActivities")}</span>
         </button>
       ) : null}
-      {!showEarlier && detail.activities.length > 8 ? (
+      {!showEarlier && activities.length > 8 ? (
         <button type="button" className="conversation-detail-older" onClick={() => setShowEarlier(true)}>
           <ChevronDown size={13} />{t("agentPage.showEarlierProcess")}
         </button>
       ) : null}
-      {detail.activities.every((activity) => activity.kind === "operator") ? (
-        <div className="conversation-detail-notice">{t(turn.execution.kind === "active" ? "agentPage.awaitingActivity" : "agentPage.detailEmpty")}</div>
+      {activities.length === 0 ? (
+        <div className="conversation-detail-notice">{t(turn.execution.kind === "active" ? "agentPage.awaitingActivity" : onlyResult ? "agentPage.resultOnlyProcess" : "agentPage.detailEmpty")}</div>
       ) : (
         <ol className="conversation-activities">
-          {detail.activities.filter((activity, index) =>
-            activity.kind !== "operator" && (showEarlier || index >= detail.activities.length - 8 || activity.kind === "error" || activity.kind === "wait")
+          {activities.filter((activity, index) =>
+            showEarlier || index >= activities.length - 8 || activity.kind === "error" || activity.kind === "wait"
           ).map((activity) => (
             <ConversationActivityRow
               activity={activity}
@@ -438,6 +448,29 @@ function ConversationDetailPanel({
 
     </div>
   );
+}
+
+/** Deduplicate only a delivered final response, never in-flight progress or evidence. */
+export function executionProcessActivities(
+  activities: readonly ConversationActivity[],
+  readableBriefs: readonly string[],
+  terminal: boolean,
+): readonly ConversationActivity[] {
+  const process = activities.filter((activity) => activity.kind !== "operator");
+  if (!terminal || readableBriefs.length === 0) return process;
+  // Keep Markdown/code whitespace intact; only normalize line endings and outer space.
+  const normalize = (text: string) => text.replace(/\r\n/g, "\n").trim();
+  let lastAssistant = -1;
+  for (let index = process.length - 1; index >= 0; index--) {
+    if (process[index].kind === "assistant" && normalize(summarizeActivity(process[index]).display)) {
+      lastAssistant = index;
+      break;
+    }
+  }
+  if (lastAssistant < 0) return process;
+  const finalText = normalize(summarizeActivity(process[lastAssistant]).display);
+  if (!readableBriefs.some((text) => normalize(text) === finalText)) return process;
+  return process.filter((_, index) => index !== lastAssistant);
 }
 
 function ChevronUpLoadMore() {

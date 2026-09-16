@@ -310,6 +310,12 @@ start/terminal timing, updates only its own component once per second, and
 freezes at execution termination even if the result has not loaded. Cancellation
 and setup failures record elapsed processing time rather than a zero placeholder. Old
 runtimes without timing still show the status, without an invented duration.
+After execution ends, omit the last non-empty assistant activity from the process
+only when its full displayed text matches a loaded Brief in the same turn (apart
+from outer whitespace and CRLF line endings). Keep it while Briefs are loading,
+on Brief load failure, or when the text differs; do not use substring/fuzzy matching or
+alter the canonical activity log. Earlier assistant progress, tools, errors,
+and waits remain visible. Apply the recent-activity limit after this filtering.
 Process content and Briefs share the same left edge and width; no enclosing
 process card, left rule, or extra indentation implies a nested result. Activity
 uses secondary text and keeps its object-inspector links. Existing automatic

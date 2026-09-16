@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type {
   BriefRecord,
+  ConversationActivity,
   ConversationBriefLoadState,
   ConversationDetailLoadState,
   ConversationStateView,
@@ -10,7 +11,7 @@ import type {
 } from "@holon/conversation-sdk";
 
 import "../../i18n";
-import { ConversationTimeline, parseInputPreview, summarizeActivity } from "./ConversationTimeline";
+import { ConversationTimeline, executionProcessActivities, parseInputPreview, summarizeActivity } from "./ConversationTimeline";
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
 
 function turnSummary(
@@ -105,6 +106,52 @@ function renderTimeline(
     />,
   );
 }
+
+describe("executionProcessActivities", () => {
+  const activity = (id: string, summary: string, kind: ConversationActivity["kind"] = "assistant"): ConversationActivity => ({
+    id, summary, kind, revision: 1, key: { event_seq: 1, activity_id: id },
+  });
+
+  it("removes only the final duplicate and preserves progress, tools, errors and waits without mutating the log", () => {
+    const entries = [activity("input", "Question", "operator"), activity("progress", "Done"),
+      activity("tool", "Read file", "tool"), activity("final", "Done"),
+      activity("error", "Delivery error", "error"), activity("wait", "Waiting", "wait")];
+    const original = structuredClone(entries);
+    expect(executionProcessActivities(entries, ["Other brief", "Done"], true).map((item) => item.id))
+      .toEqual(["progress", "tool", "error", "wait"]);
+    expect(entries).toEqual(original);
+  });
+
+  it("keeps the final output during execution and until a readable matching brief arrives", () => {
+    const entries = [activity("final", "Done")];
+    expect(executionProcessActivities(entries, ["Done"], false)).toEqual(entries);
+    expect(executionProcessActivities(entries, [], true)).toEqual(entries);
+    expect(executionProcessActivities(entries, ["Different"], true)).toEqual(entries);
+  });
+
+  it("does not remove earlier matching progress or a truncated prefix", () => {
+    const entries = [activity("progress", "Done"), activity("final", "Done with details")];
+    expect(executionProcessActivities(entries, ["Done"], true)).toEqual(entries);
+    expect(executionProcessActivities([entries[0]], ["Done with details"], true)).toEqual([entries[0]]);
+  });
+
+  it("normalizes line endings and outer whitespace but preserves Markdown code indentation", () => {
+    expect(executionProcessActivities([activity("final", "\nDone\r\n\r\n```\r\n  code\r\n```\n")],
+      ["Done\n\n```\n  code\n```"], true)).toEqual([]);
+    const entries = [activity("final", "Done\n\n```\n  code\n```")];
+    expect(executionProcessActivities(entries, ["Done\n\n```\ncode\n```"], true)).toEqual(entries);
+  });
+
+  it("compares legacy assistant text blocks through the existing safe renderer", () => {
+    const entries = [activity("final", JSON.stringify({ blocks: [
+      { type: "thinking", thinking: "private" }, { type: "text", text: "Done" },
+      { type: "text", text: "Details" },
+    ] }))];
+    expect(executionProcessActivities(entries, ["Done\n\nDetails"], true)).toEqual([]);
+    const hidden = [activity("thinking", JSON.stringify({ blocks: [{ type: "thinking", thinking: "private" }] }))];
+    expect(executionProcessActivities(hidden, [""], true)).toEqual(hidden);
+  });
+});
 
 describe("ConversationTimeline", () => {
   it("renders inputs and briefs without visible turn chrome", () => {

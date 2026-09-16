@@ -432,6 +432,7 @@ const zh: Record<string, any> = {
       failed: "执行失败",
       waiting: "等待中",
     },
+    resultOnlyProcess: "本轮输出已在下方结果中展示。",
     executionProcess: "查看执行过程",
     detailLoadFailed: "活动详情加载失败。",
     detailLoading: "正在加载活动详情…",
