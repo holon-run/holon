@@ -356,27 +356,7 @@ impl RuntimeDb {
             let queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
-            let replacement_sources = {
-                let mut statement = tx.prepare(
-                    "SELECT agent_id, payload_json
-                     FROM turn_records
-                     ORDER BY agent_id, turn_index, turn_id",
-                )?;
-                let rows = statement
-                    .query_map([], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })?
-                    .collect::<std::result::Result<Vec<_>, _>>()?;
-                let mut sources = BTreeSet::new();
-                for (agent_id, payload) in rows {
-                    let record = serde_json::from_str::<TurnRecord>(&payload)?;
-                    if let Some(replay) = record.replay {
-                        sources.insert((agent_id, replay.source_turn_id));
-                    }
-                }
-                sources
-            };
-            let active_turns = {
+            let mut active_turns = {
                 let mut statement = tx.prepare(
                     "SELECT payload_json
                      FROM turn_records
@@ -389,6 +369,38 @@ impl RuntimeDb {
                     .collect::<Result<Vec<_>>>()?;
                 records
             };
+            let mut replacement_sources = BTreeSet::new();
+            {
+                let mut replay_statement = tx.prepare(
+                    "SELECT EXISTS(
+                         SELECT 1
+                         FROM turn_records
+                         WHERE agent_id = ?1
+                           AND replay_source_turn_id = ?2
+                     )",
+                )?;
+                let mut brief_statement = tx.prepare(
+                    "SELECT evidence_id
+                     FROM briefs
+                     WHERE agent_id = ?1
+                       AND turn_id = ?2
+                     ORDER BY created_at, evidence_id",
+                )?;
+                for turn in &mut active_turns {
+                    let is_replaced = replay_statement
+                        .query_row(params![&turn.agent_id, &turn.turn_id], |row| {
+                            row.get::<_, bool>(0)
+                        })?;
+                    if is_replaced {
+                        replacement_sources.insert((turn.agent_id.clone(), turn.turn_id.clone()));
+                    }
+                    turn.produced_brief_ids = brief_statement
+                        .query_map(params![&turn.agent_id, &turn.turn_id], |row| {
+                            row.get::<_, String>(0)
+                        })?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                }
+            }
 
             let mut report = StartupRuntimeRecoveryReport {
                 recovered_queue_agent_ids: queue_recovery.recovered_agents,
@@ -429,7 +441,10 @@ impl RuntimeDb {
                 turn.terminal = Some(TurnTerminalSummary {
                     kind: TurnTerminalKind::Interrupted,
                     reason: Some(reason.to_string()),
-                    no_brief_reason: Some(TurnNoBriefReason::Interrupted),
+                    no_brief_reason: turn
+                        .produced_brief_ids
+                        .is_empty()
+                        .then_some(TurnNoBriefReason::Interrupted),
                     completed_at: recovered_at,
                     duration_ms,
                 });
@@ -4889,6 +4904,67 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_preserves_existing_brief_settlement() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-existing-brief";
+        let turn_id = "turn-startup-existing-brief";
+        let created_at = Utc::now() - chrono::Duration::seconds(2);
+        db.turn_records()
+            .upsert(&active_turn(agent_id, turn_id, 1, None, created_at))?;
+        let mut brief = BriefRecord::new(
+            agent_id,
+            BriefKind::Result,
+            "persisted before terminal transition",
+            None,
+            None,
+        );
+        brief.turn_id = Some(turn_id.into());
+        brief.turn_index = Some(1);
+        db.evidence().append_brief(&brief)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 1);
+        let recovered = db.turn_records().by_id(Some(agent_id), turn_id)?.unwrap();
+        assert_eq!(recovered.produced_brief_ids, vec![brief.id]);
+        let terminal = recovered.terminal.unwrap();
+        assert_eq!(terminal.kind, TurnTerminalKind::Interrupted);
+        assert_eq!(terminal.no_brief_reason, None);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_ignores_terminal_history_payloads() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-bounded-history";
+        let turn = active_turn(
+            agent_id,
+            "turn-startup-bounded-history",
+            2,
+            None,
+            Utc::now() - chrono::Duration::seconds(2),
+        );
+        db.turn_records().upsert(&turn)?;
+        db.connection()?.execute(
+            "INSERT INTO turn_records (
+                turn_id, turn_index, agent_id, terminal_kind, created_at, payload_json
+             ) VALUES (?1, ?2, ?3, 'completed', ?4, 'not-json')",
+            params![
+                "turn-corrupt-terminal-history",
+                1_i64,
+                agent_id,
+                crate::runtime_db::repositories::timestamp(
+                    turn.created_at - chrono::Duration::seconds(1),
+                ),
+            ],
+        )?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 1);
+        assert_eq!(report.daemon_restart_turns, 1);
         Ok(())
     }
 
