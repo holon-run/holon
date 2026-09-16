@@ -191,7 +191,19 @@ export interface AttachedWorkspaceEntry {
   repoName?: string;
 }
 
+export interface WorkWaitSummary {
+  id: string;
+  work_item_id?: string | null;
+  kind: string;
+  status: string;
+  created_at: string;
+  task_ids: string[];
+}
+
 export interface TaskSummary {
+  workItemId?: string;
+  createdAt?: string;
+  updatedAt?: string;
   id: string;
   kind: string;
   status: string;
@@ -351,6 +363,8 @@ export interface AgentSummary {
   workspaceSummary?: WorkspaceSummary;
   attachedWorkspaces?: AttachedWorkspaceEntry[];
   tasks?: TaskSummary[];
+  waits?: WorkWaitSummary[];
+  waitingReason?: string;
   workItems?: WorkItemSummary[];
 }
 

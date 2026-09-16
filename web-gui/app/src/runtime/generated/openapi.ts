@@ -3162,6 +3162,18 @@ export interface components {
                 summary?: string | null;
             }[];
             /** @default [] */
+            waits: {
+                /** Format: date-time */
+                created_at: string;
+                id: string;
+                /** @enum {string} */
+                kind: "task" | "external" | "operator" | "timer" | "system";
+                /** @enum {string} */
+                status: "active" | "triggered" | "resolved" | "cancelled" | "expired";
+                task_ids: string[];
+                work_item_id?: string | null;
+            }[];
+            /** @default [] */
             work_items: {
                 agent_id: string;
                 blocked_by?: string | null;

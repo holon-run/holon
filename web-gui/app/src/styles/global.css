@@ -953,6 +953,8 @@ button {
 
 .agent-page {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -1601,6 +1603,8 @@ code {
 
 .agent-workbench {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
 }
 
@@ -1611,6 +1615,8 @@ code {
 
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   min-height: 0;
 }
 
@@ -7207,3 +7213,52 @@ code {
 
 .file-browser-image { flex: 1; min-height: 0; width: 100%; object-fit: contain; }
 @media (prefers-reduced-motion: reduce) { .panel-resizer, .agent-overview-stack summary::before { transition: none; } }
+
+/* Persistent cross-turn work context, aligned with the message composer. */
+.current-work-bar {
+  width: min(var(--conversation-content-max), calc(100% - 60px));
+  min-width: 0;
+  margin: 0 auto 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--sidebar);
+  color: var(--muted);
+  font-size: 12px;
+}
+.current-work-bar button { font: inherit; color: inherit; cursor: pointer; }
+.current-work-title { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; padding: 2px 0 6px; border: 0; background: transparent; text-align: left; }
+.current-work-title strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; color: var(--text); }
+.current-work-title svg { flex-shrink: 0; }
+.current-work-title:hover strong { text-decoration: underline; text-underline-offset: 3px; }
+.current-work-status { display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 11px; }
+.current-work-status > svg { flex-shrink: 0; }
+.current-work-status-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.current-work-duration, .current-work-count { flex-shrink: 0; white-space: nowrap; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.current-work-toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; padding: 4px; flex-shrink: 0; border: 0; border-radius: 4px; background: transparent; }
+.current-work-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+.current-work-toggle:hover, .current-work-task:hover, .current-work-objective:hover { background: var(--sidebar-soft); }
+.current-work-details { max-height: min(240px, 30dvh); overflow-y: auto; overscroll-behavior: contain; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.current-work-details p { margin: 6px 0; line-height: 1.5; overflow-wrap: anywhere; }
+.current-work-objective { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; border: 0; border-radius: 6px; padding: 6px; background: transparent; text-align: left; overflow-wrap: anywhere; }
+.current-work-task { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 6px; border: 0; border-radius: 6px; background: transparent; text-align: left; }
+.current-work-task > span { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.current-work-task strong { font-weight: 500; color: var(--text); overflow-wrap: anywhere; }
+.current-work-task small { font-size: 10px; overflow-wrap: anywhere; }
+.current-work-task > svg { flex-shrink: 0; }
+.current-work-retry { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); padding: 5px 10px; }
+.current-work-bar[data-state="needsInput"], .current-work-bar[data-state="blocked"], .current-work-bar[data-state="stale"] { border-color: color-mix(in srgb, var(--warning) 30%, var(--line)); }
+@media (max-width: 980px) { .current-work-bar { width: calc(100% - 24px); } }
+@media (max-width: 600px) {
+  .current-work-status { flex-wrap: wrap; }
+  .current-work-status-text { flex: 1; min-width: 0; }
+  .current-work-count { display: none; }
+  .current-work-task { flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) { .current-work-bar .spin { animation: none; } }
+
+.current-work-status > .current-work-duration::before,
+.current-work-count::before { content: "·"; margin-right: 6px; }
+.composer-right, .model-picker, .model-button { min-width: 0; }
+.composer-right { max-width: 100%; }
+.composer-right > .attachment-button, .composer-right > .send-button { flex-shrink: 0; }

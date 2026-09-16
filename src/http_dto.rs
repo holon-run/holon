@@ -30,6 +30,8 @@ pub struct AgentStateSnapshotDto {
     pub session: StateSessionSnapshotDto,
     pub tasks: Vec<SlimTaskDto>,
     #[serde(default)]
+    pub waits: Vec<SlimWaitDto>,
+    #[serde(default)]
     pub timers: Vec<TimerRecord>,
     #[serde(default)]
     pub work_items: Vec<SlimWorkItemDto>,
@@ -37,6 +39,37 @@ pub struct AgentStateSnapshotDto {
     pub external_triggers: Vec<ExternalTriggerStateSnapshot>,
     #[serde(default)]
     pub workspace: StateWorkspaceSnapshotDto,
+}
+
+/// Public waiting metadata; excludes continuation payloads and callback details.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct SlimWaitDto {
+    pub id: String,
+    pub work_item_id: Option<String>,
+    pub kind: crate::types::WaitConditionKind,
+    pub status: crate::types::WaitConditionStatus,
+    pub created_at: DateTime<Utc>,
+    pub task_ids: Vec<String>,
+}
+
+impl From<crate::types::WaitConditionRecord> for SlimWaitDto {
+    fn from(wait: crate::types::WaitConditionRecord) -> Self {
+        Self {
+            id: wait.id,
+            work_item_id: wait.work_item_id,
+            kind: wait.kind,
+            status: wait.status,
+            created_at: wait.created_at,
+            task_ids: wait
+                .wake_sources
+                .into_iter()
+                .filter_map(|source| match source {
+                    crate::types::WakeSource::TaskResult { task_id } => Some(task_id),
+                    _ => None,
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -577,5 +610,28 @@ impl From<SlimChildObservabilityDto> for ChildAgentObservabilitySnapshot {
             last_progress_brief: observability.last_progress_brief,
             last_result_brief: observability.last_result_brief,
         }
+    }
+}
+
+#[cfg(test)]
+mod work_status_tests {
+    use super::*;
+
+    #[test]
+    fn slim_wait_keeps_timing_and_task_binding_without_internal_payloads() {
+        let record: crate::types::WaitConditionRecord = serde_json::from_value(serde_json::json!({
+            "id": "wait-1", "agent_id": "agent-1", "work_item_id": "work-1",
+            "kind": "task", "status": "active", "waiting_for": "task_completed",
+            "created_at": "2026-09-16T00:00:00Z", "updated_at": "2026-09-16T00:01:00Z",
+            "wake_sources": [{"kind": "task_result", "task_id": "task-1"}, {"kind": "operator_input"}],
+            "continuation": {"private": "internal"}, "subject_ref": "private-callback"
+        })).unwrap();
+        let value = serde_json::to_value(SlimWaitDto::from(record)).unwrap();
+        assert_eq!(value["task_ids"], serde_json::json!(["task-1"]));
+        assert_eq!(value["work_item_id"], "work-1");
+        assert_eq!(value["created_at"], "2026-09-16T00:00:00Z");
+        assert!(value.get("continuation").is_none());
+        assert!(value.get("subject_ref").is_none());
+        assert!(value.get("waiting_for").is_none());
     }
 }

@@ -335,3 +335,19 @@ should be described explicitly as external trigger tools rather than as generic
 callback utilities.
 
 This gives Holon a cleaner public story for blocked work and future resumption.
+
+## Conversation work status projection
+
+The agent `/state` bootstrap includes a bounded `waits` list (up to 50 unresolved
+records) alongside slim tasks and WorkItems. Each wait exposes only its id,
+WorkItem owner, kind, status, creation timestamp, and explicit task-result source
+ids. Continuation payloads and external callback details remain internal.
+Older servers may omit this additive field.
+
+The conversation footer uses this metadata to separate active execution from
+waiting and from a triggered result awaiting processing. Waiting duration uses
+the wait creation timestamp; task age and turn execution duration stay separate.
+Task presence alone is not evidence that the agent is waiting for that task.
+The selected conversation refreshes its lightweight state while visible, with
+bounded polling as a fallback to conversation changes. A failed refresh keeps the
+last snapshot visibly marked stale instead of presenting completion.

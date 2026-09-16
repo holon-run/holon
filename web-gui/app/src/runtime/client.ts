@@ -2309,7 +2309,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const tasks = projectTasks(state?.tasks ?? []);
   const pending = state?.session?.pending_count ?? entry.pending ?? 0;
-  const activeTaskCount = state?.tasks?.length ?? state?.agent?.active_task_count ?? 0;
+  const activeTaskCount = state?.agent?.active_task_count ?? state?.tasks?.length ?? 0;
   const waitingCount = state?.agent.closure.waiting_reason || entry.waiting_reason ? 1 : 0;
   const posture = state?.agent?.scheduling_posture?.posture ?? entry.scheduling_posture?.posture ?? "unknown";
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
@@ -2349,6 +2349,8 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     workspaceSummary,
     attachedWorkspaces,
     tasks,
+    waits: state?.waits ?? [],
+    waitingReason: state?.agent.closure.waiting_reason ?? (typeof entry.waiting_reason === "string" ? entry.waiting_reason : undefined),
     workItems,
   };
 }
@@ -2484,6 +2486,9 @@ function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[]
       kind: task.kind,
       status: task.status,
       summary: task.summary ?? task.id,
+      workItemId: task.work_item_id ?? undefined,
+      createdAt: task.created_at,
+      updatedAt: task.updated_at,
     }));
 }
 
@@ -2620,13 +2625,7 @@ function selectCurrentWork(
   if (!currentWorkItemId) return undefined;
   const selected = workItems.find((item) => item.id === currentWorkItemId);
   if (!selected) return undefined;
-  return {
-    id: selected.id,
-    objective: selected.objective,
-    state: selected.state,
-    planStatus: selected.plan_status,
-    current: true,
-  };
+  return projectWorkItem(selected, currentWorkItemId);
 }
 
 function projectWorkItems(

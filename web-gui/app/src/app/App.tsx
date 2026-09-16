@@ -742,6 +742,13 @@ export function App() {
                     onLoadDetail: conversationSession.loadDetail,
                     onLoadOlderActivities: conversationSession.loadOlderActivities,
                     onRetry: conversationSession.retry,
+                    onOpenWorkItemId: async (id) => {
+                      await loadAgentWorkItemDetail(activeAgent.id, id);
+                      const state = useRuntimeStore.getState();
+                      if (state.selectedAgentId !== activeAgent.id) return;
+                      const work = state.sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
+                      showWorkItemDetail(activeAgent.id, work ?? { id, objective: id, state: "unknown" });
+                    },
                     briefRecord: conversationSession.briefRecord,
                     briefLoadState: conversationSession.briefState,
                     detailLoadState: conversationSession.detailState,
@@ -768,6 +775,14 @@ export function App() {
             onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments)}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
+            onOpenWorkItem={(work) => {
+              showWorkItemDetail(activeAgent.id, work);
+              void loadAgentWorkItemDetail(activeAgent.id, work.id);
+            }}
+            onOpenTask={(task) => {
+              showTaskDetail(activeAgent.id, task);
+              void loadAgentTaskDetail(activeAgent.id, task.id);
+            }}
           />
         ) : null}
         {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}

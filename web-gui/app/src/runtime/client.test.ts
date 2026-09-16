@@ -59,6 +59,7 @@ function agentStateFixture(agentId: string): components["schemas"]["AgentStateSn
       last_turn: null,
     },
     tasks: [],
+    waits: [],
     timers: [],
     work_items: [],
     external_triggers: [],

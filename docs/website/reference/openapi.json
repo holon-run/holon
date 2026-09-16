@@ -2835,6 +2835,62 @@
             },
             "type": "array"
           },
+          "waits": {
+            "default": [],
+            "items": {
+              "description": "Public waiting metadata; excludes continuation payloads and callback details.",
+              "properties": {
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "task",
+                    "external",
+                    "operator",
+                    "timer",
+                    "system"
+                  ],
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "triggered",
+                    "resolved",
+                    "cancelled",
+                    "expired"
+                  ],
+                  "type": "string"
+                },
+                "task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "work_item_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "status",
+                "created_at",
+                "task_ids"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "work_items": {
             "default": [],
             "items": {

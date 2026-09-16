@@ -38,6 +38,7 @@ import {
 } from "../../runtime/conversation-view-model";
 
 export interface ConversationTimelineActions {
+  onOpenWorkItemId?: (workItemId: string) => void;
   onLoadBrief: (briefId: string) => void;
   onLoadDetail: (turnId: string) => void;
   onLoadOlderActivities: (turnId: string) => void;
@@ -349,10 +350,10 @@ const ConversationBriefCard = memo(function ConversationBriefCard({
       </div>
     );
   }
-  return <BriefCardBody brief={brief} />;
+  return <BriefCardBody brief={brief} onOpenWorkItemId={actions.onOpenWorkItemId} />;
 });
 
-function BriefCardBody({ brief }: { brief: BriefRecord }) {
+function BriefCardBody({ brief, onOpenWorkItemId }: { brief: BriefRecord; onOpenWorkItemId?: (id: string) => void }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const created = useMemo(
@@ -370,6 +371,8 @@ function BriefCardBody({ brief }: { brief: BriefRecord }) {
         compact={false}
       />
       <div className="conversation-brief-actions">
+        {brief.work_item_id && onOpenWorkItemId ? <button type="button" className="conversation-work-link"
+          onClick={() => onOpenWorkItemId(brief.work_item_id!)}>{t("currentWork.viewWork")}<ExternalLink size={12} /></button> : null}
         <button type="button" aria-label={t(copied ? "agentPage.copiedReply" : "agentPage.copyReply")}
           onClick={async () => {
             try { await navigator.clipboard.writeText(brief.text); setCopied(true); }

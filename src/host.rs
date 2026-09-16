@@ -199,6 +199,7 @@ impl AgentStateProjectionSource {
 }
 
 pub(crate) struct AgentStateReadProjection {
+    pub(crate) waits: Vec<crate::types::WaitConditionRecord>,
     pub(crate) source: AgentStateProjectionSource,
     pub(crate) agent: LightweightAgentStateProjection,
     pub(crate) tasks: Vec<TaskRecord>,
@@ -2538,6 +2539,15 @@ impl RuntimeHost {
                 .map(|entry| entry.runtime.clone())
         };
 
+        let waits = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .raw_unresolved_wait_conditions_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .into_iter()
+            .take(50)
+            .collect();
+
         if let Some(runtime) = runtime {
             crate::diagnostics::record_projection_state_source_loaded();
             tracing::debug!(
@@ -2576,6 +2586,7 @@ impl RuntimeHost {
             );
 
             return Ok(AgentStateReadProjection {
+                waits,
                 source: AgentStateProjectionSource::Loaded,
                 agent,
                 tasks,
@@ -2650,6 +2661,7 @@ impl RuntimeHost {
         crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
 
         Ok(AgentStateReadProjection {
+            waits,
             source: AgentStateProjectionSource::Storage,
             agent,
             tasks,
