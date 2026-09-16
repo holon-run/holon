@@ -84,7 +84,7 @@ export function TaskDetailPanel({ task, detailState, agentId, onOpenWorkItem }: 
   }, [taskRecord]);
 
   return (
-    <article className="task-detail inspector-list-item featured">
+    <article className="task-detail detail-surface">
       <TaskDetailHeader
         summary={summary}
         status={effectiveStatus}
@@ -137,10 +137,10 @@ function TaskDetailHeader({
   const duration = createdAt ? computeDuration(createdAt, updatedAt ?? createdAt, isRunning) : null;
 
   return (
-    <div className="task-detail-header">
+    <div className="task-detail-header detail-heading">
       <div className="inspector-list-head">
         <strong>{summary || t("inspector.taskOutput")}</strong>
-        <StatusBadge className="state-chip" kind="task" value={status} />
+        <StatusBadge className="state-chip" kind="task" value={status} showLabel />
       </div>
       <div className="task-detail-subhead">
         <span className="task-detail-kind">{kind}</span>

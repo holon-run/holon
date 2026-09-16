@@ -523,3 +523,22 @@ Commit discipline:
 - Production integration should call the existing HTTP control plane and stream
   events through the existing event surfaces rather than inventing a second
   runtime protocol.
+
+## Inspector detail surfaces
+
+Work items, tool executions, background tasks, and activity details use the same
+flat white reading surface as the conversation. The heading carries the objective
+or tool name, followed by compact status and timing. Results and plans use readable
+Markdown; work item IDs/revisions and raw tool records are explicit disclosures.
+Commands, parameters, and output share neutral monospace blocks with bounded
+scrolling. Error states retain their semantic color. Search results, command
+batches, TODOs, and references use separators instead of nested tinted cards.
+
+`styles/detail-panels.css` scopes the shared typography and spacing to
+`.side-panel .detail-surface`. Maximized details center at a maximum of 1040px;
+narrow panels retain wrapping and access to all metadata. Existing tool-specific
+renderers, file links, task refresh, panel history, and maximize/restore behavior
+remain the source of interaction behavior.
+Detail status badges include a text label. Each detail object owns its disclosure
+and scroll state: a new object uses its own defaults, and revisiting one restores the
+reader's state without transferring it to another object.

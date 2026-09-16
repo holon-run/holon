@@ -6,6 +6,7 @@ import { App } from "./app/App";
 import "./styles/tokens.css";
 import "./styles/global.css";
 import "./styles/workspace-pages.css";
+import "./styles/detail-panels.css";
 
 if (__HOLON_E2E_DIAGNOSTICS__) {
   void import("./e2e/diagnostics-bridge");

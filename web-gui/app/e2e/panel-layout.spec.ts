@@ -140,14 +140,24 @@ test("reading a maximized file keeps the live turn updating and returns to its t
     presentation_class: "operator", inputs: [{ message_id: "input-panel", preview: "Check files" }],
     execution: { kind: "active" }, result: { kind: "pending" }, settled: false,
     attention: null, detail_coverage: { kind: "complete" }, brief_ids: [] as string[] };
-  const activities = [{ kind: "tool", id: "tool:panel-command", key: { event_seq: 1, activity_id: "tool:panel-command" }, revision: 1, summary: "ExecCommand · success" }];
+  const activities = ["panel-command", "second-command"].map((id, index) => ({ kind: "tool", id: `tool:${id}`, key: { event_seq: index + 1, activity_id: `tool:${id}` }, revision: 1, summary: "ExecCommand · success" }));
   await request.post(control("/__e2e__/configure"), { data: {
-    toolExecutionsById: { "panel-command": { id: "panel-command", tool_name: "ExecCommand", status: "success", input: { cmd: "cat README.md" }, output: { stdout: "Ready", exit_status: 0 } } },
+    toolExecutionsById: {
+      "panel-command": { id: "panel-command", tool_name: "ExecCommand", status: "success", input: { cmd: "cat README.md" }, output: { stdout: "Ready", exit_status: 0 } },
+      "second-command": { id: "second-command", tool_name: "ExecCommand", status: "success", input: { cmd: "echo second" }, output: { stdout: "Second output", exit_status: 0 } },
+    },
     briefsById: { "panel-result": { id: "panel-result", agent_id: "bootstrap-agent", workspace_id: "files-test", kind: "result", text: "Finished while you read.", created_at: "2026-09-16T01:00:00Z", content_source: { kind: "inline" } } },
   } });
   await request.post(control("/__e2e__/conversation"), { data: { agentId: "bootstrap-agent", turns: [turn], activitiesByTurnId: { "live-panel": activities } } });
   await page.locator('[data-activity-id="tool:panel-command"] button').click();
   await expect(panel.getByText("Ready", { exact: true })).toBeVisible();
+  await expect(panel.locator(".detail-meta .state-chip")).toHaveText("Completed");
+  await panel.locator(".inspector-raw-detail > summary").click();
+  await page.locator('[data-activity-id="tool:second-command"] button').click();
+  await expect(panel.getByText("Second output", { exact: true })).toBeVisible();
+  await expect(panel.locator(".inspector-raw-detail")).not.toHaveAttribute("open", "");
+  await page.locator('[data-activity-id="tool:panel-command"] button').click();
+  await expect(panel.locator(".inspector-raw-detail")).toHaveAttribute("open", "");
   await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
   await panel.getByRole("button", { name: "README.md", exact: false }).click();
   await expect(panel.locator(".file-browser-markdown")).toBeVisible();
@@ -161,4 +171,38 @@ test("reading a maximized file keeps the live turn updating and returns to its t
   await panel.getByRole("button", { name: "Back to conversation" }).click();
   await expect(page.getByText("Finished while you read.", { exact: true })).toBeVisible();
   await expect(page.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+});
+
+test("work item details prioritize results and keep technical fields and plan navigation available", async ({ page, request }, info) => {
+  const work = { id: "work-detail-style", objective: "Review the release checklist", state: "open", readiness: "ready",
+    revision: 7, updated_at: "2026-09-16T01:00:00Z", result_summary: "**Checks passed**\n\n- Build complete\n- Tests complete",
+    plan_artifact: { path: "/test/README.md", relative_path: "README.md", workspace_id: "files-test", preview: "## Release plan\n\n- Verify artifacts", preview_complete: true },
+    todo_list: [{ text: "Verify artifacts", state: "completed" }], work_refs: [] };
+  await page.route("**/api/agents/bootstrap-agent/work-items**", async (route) => {
+    await route.fulfill({ json: new URL(route.request().url()).pathname.endsWith(work.id) ? work : [work] });
+  });
+  await request.post(`/__e2e__/append-event?session=${encodeURIComponent(`panel-${info.testId}`)}`, { data: { envelope: {
+    id: "work-written", event_seq: 1, event_log_epoch: "e2e-epoch", contract_version: 2,
+    ts: "2026-09-16T01:00:00Z", agent_id: "bootstrap-agent", type: "work_item_written",
+    payload_schema: "holon.runtime_event.work_item_written", payload_schema_version: 1,
+    payload: { work_item: { id: work.id, objective: work.objective, state: work.state, revision: work.revision }, work_item_id: work.id },
+  } } });
+  await page.reload();
+  const panel = page.locator(".side-panel");
+  if (!await panel.isVisible()) await page.getByRole("button", { name: "Context side panel", exact: true }).click();
+  await panel.locator(".work-item-button").filter({ hasText: work.objective }).click();
+  const detail = panel.locator(".work-item-detail");
+  await expect(detail.locator(".detail-title")).toHaveText(work.objective);
+  await expect(detail.locator("strong").filter({ hasText: "Checks passed" })).toBeVisible();
+  await expect(detail.getByRole("heading", { name: "Release plan" })).toBeVisible();
+  await expect(detail.locator(".detail-technical")).not.toHaveAttribute("open", "");
+  await detail.getByText("Technical details", { exact: true }).click();
+  await expect(detail.getByText(work.id, { exact: true })).toBeVisible();
+  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await expect(detail.getByText(work.id, { exact: true })).toBeVisible();
+  expect((await detail.boundingBox())!.width).toBeLessThanOrEqual(1040);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+  await detail.locator(".workspace-path-link").click();
+  await expect(panel.locator(".file-browser-viewer-head > strong")).toHaveText("README.md");
 });

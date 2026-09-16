@@ -613,7 +613,7 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
   const structuredDetail = showTimelineDetail || Boolean(detail) || hydratedDetail || activity.stateObjectRef?.kind === "tool_execution";
 
   return (
-    <div className="inspector-stack">
+    <div className="inspector-stack detail-surface activity-detail-surface">
       <section className="context-card inspector-card">
         <div className="context-head">
           <span className="eyebrow">{t("inspector.timelineActivity")}</span>
