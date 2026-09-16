@@ -1,9 +1,9 @@
 ---
 title: CLI 参考
-summary: Holon 命令行界面——基于 holon --help 验证（v0.39.0）。
+summary: Holon 命令行界面——基于 holon --help 验证（v0.40.0）。
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.39.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.40.0. -->
 
 # CLI 参考
 
@@ -16,13 +16,14 @@ Holon 的命令行界面。所有命令都接受 `--help`，用于查看详细�
 ## 命令树
 
 ```
-holon (v0.39.0)
+holon (v0.40.0)
 ├── context      显示本次 CLI 调用的声明式调用方上下文
 ├── commands     显示机器可读的 CLI 命令元数据
 ├── serve        启动 HTTP 控制平面服务
 ├── onboard      交互式配置向导或对密钥安全的诊断
 ├── daemon       后台 daemon 生命周期
 │   ├── start    启动 daemon
+│   ├── prepare-update 停止 daemon 且不改变期望的自启状态
 │   ├── stop     停止 daemon
 │   ├── status   查看 daemon 状态
 │   ├── restart  重启 daemon
@@ -56,6 +57,7 @@ holon (v0.39.0)
 │   └── stream   以换行分隔 JSON 流式输出事件信封
 ├── task         把命令作为后台任务运行
 │   ├── list     列出任务
+│   ├── run      把命令作为受管后台任务运行
 │   ├── status   显示任务生命周期状态
 │   ├── output   读取任务输出
 │   ├── input    向任务发送文本输入
@@ -67,7 +69,10 @@ holon (v0.39.0)
 │   ├── pick     把 WorkItem 选为当前焦点
 │   ├── update   更新 WorkItem
 │   └── complete 完成 WorkItem
-├── timer        创建延时或周期性定时器
+├── timer        创建、列出或取消定时器
+│   ├── create   创建延时或周期性定时器
+│   ├── list     列出活跃定时器
+│   └── cancel   取消活跃定时器
 ├── control      [已废弃] 请改用 `holon agent start|stop|abort`
 ├── agent        Agent 管理
 │   ├── list     列出所有 Agent
@@ -116,7 +121,12 @@ holon (v0.39.0)
 │   ├── latency  显示延迟指标
 │   ├── performance  显示性能指标
 │   ├── trace    按 id 或搜索查看端到端 trace
-│   ├── runtime-db   运行时数据库审计与保留策略
+│   ├── runtime-db   运行时数据库审计、保留与维护
+│   │   ├── agent-relations 报告或回填规范 Agent 关系记录
+│   │   ├── audit    审计运行时数据库不变式
+│   │   ├── retention 对历史数据库记录执行保留清理
+│   │   ├── compact  压缩运行时数据库
+│   │   └── conversation-input-assignment-rollback 预检或回滚 v66 修复标记
 │   ├── scheduler-recovery  查看/应用调度器恢复
 │   └── scheduler-fixture 生成调度器夹具数据
 └── help         打印帮助
@@ -314,6 +324,16 @@ holon work-item complete <WORK_ITEM_ID>
 `/agents/:agent_id/work-items/:work_item_id` 返回的 HTTP 读模型
 `WorkItemRecord` JSON 结构。`create`、`update`、`pick` 和 `complete` 子命令会
 修改 WorkItem 状态，并返回对应的控制平面响应。
+
+### 定时器
+
+```bash
+holon timer create --after-ms 60000 --summary "心跳检查"
+holon timer list
+holon timer cancel <TIMER_ID>
+```
+
+`holon timer` 用于为 Agent 调度延时或周期性定时器（默认为默认 Agent，或通过 `--agent <AGENT>` 指定）。
 
 ### 事件
 

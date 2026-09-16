@@ -72,6 +72,31 @@ holon config migrate-model-routes --write  # 经校验的规范化重写
 写入会创建一次性配置备份，并在一个 SQLite 事务中更新所有 Agent 状态。无效或有歧义的
 引用会阻止部分写入。
 
+### 认证与 Session 设置
+
+Holon 控制平面支持基于 Cookie 的 Session 认证（适用于浏览器和 Web UI 客户端）以及 Bearer Token 认证。
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `auth.mode` | string (`"local"` \| `"oidc"`) | `"local"` | 认证模式。`"local"` 支持 Bearer Token 与本地 Cookie Session；`"oidc"` 启用 OpenID Connect 登录流程。变更需重启 daemon 生效。 |
+| `auth.oidc.issuer_url` | string | unset | OIDC Issuer 发现 URL（如 `https://auth.example.com/realms/holon`） |
+| `auth.oidc.client_id` | string | unset | 向 Issuer 注册的 OIDC 客户端 ID |
+| `auth.oidc.client_secret_env` | string | unset | 包含 OIDC 客户端密钥的环境变量名 |
+| `auth.oidc.redirect_uri` | string | unset | 回调重定向 URI（如 `http://localhost:7878/api/auth/oidc/callback`） |
+| `auth.session.absolute_ttl_seconds` | positive_integer_or_null | unset (`null`) | 绝对 Session 生命周期（秒，`null` 表示无绝对上限） |
+| `auth.session.idle_ttl_seconds` | positive_integer | `86400`（24小时） | 空闲超时时间（秒），无交互超过该时长后 Session 失效 |
+
+```bash
+# 配置 Session 超时
+holon config set auth.session.idle_ttl_seconds 43200
+
+# 启用 OIDC 认证
+holon config set auth.mode "oidc"
+holon config set auth.oidc.issuer_url "https://auth.example.com/realms/holon"
+holon config set auth.oidc.client_id "holon-client"
+holon config set auth.oidc.client_secret_env "HOLON_OIDC_CLIENT_SECRET"
+```
+
 ### HTTP API CORS
 
 CORS 默认对任意端口的 localhost/loopback 浏览器来源启用：
@@ -94,6 +119,13 @@ holon config set api.cors.max_age_seconds 600
 
 不要同时设置 `api.cors.allow_credentials=true` 和
 `api.cors.allowed_origins=["*"]`；Holon 会拒绝这个不安全的组合。
+
+### Projection Gate
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `api.projection.max_leaders` | integer | `16` | 并发 projection 构建的上限；在 leader 释放前，更多不同 key 会得到 `429 projection_busy` |
+| `api.projection.cache_ttl_ms` | integer | `500` | 已完成的 projection 构建被缓存并复用的毫秒数 |
 
 ### 调度器
 
@@ -362,14 +394,6 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 
 | 键 | 类型 | 默认值 | 说明 |
 |-----|------|---------|-------------|
-| `api.cors.enabled` | boolean | `true` | 在 HTTP/控制 API 上启用 CORS 响应；默认允许 localhost/loopback 来源 |
-| `api.cors.allowed_origins` | string_list | `[]` | 允许调用 API 的额外显式浏览器来源 |
-| `api.cors.allowed_methods` | string_list | `["GET","POST","PUT","PATCH","DELETE","OPTIONS"]` | CORS 预检允许的 HTTP 方法 |
-| `api.cors.allowed_headers` | string_list | `["content-type","authorization"]` | CORS 预检允许的请求头 |
-| `api.cors.allow_credentials` | boolean | `false` | 允许带凭据的 CORS 请求；与通配符来源不兼容 |
-| `api.cors.max_age_seconds` | integer | `600` | 预检响应的浏览器缓存时长 |
-| `api.projection.max_leaders` | integer | `16` | 并发 projection 构建的上限；在 leader 释放前，更多不同 key 会得到 `429 projection_busy` |
-| `api.projection.cache_ttl_ms` | integer | `500` | 已完成的 projection 构建被缓存并复用的毫秒数 |
 | `web.fetch.enabled` | boolean | `true` | 启用 WebFetch 工具 |
 | `web.fetch.max_chars` | integer | `20000` | 返回给模型的最大字符数 |
 | `web.fetch.max_response_bytes` | integer | `750000` | 截断前的最大响应字节数 |
@@ -378,6 +402,7 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `web.fetch.allowed_hosts` | string_list | `[]` | 允许的主机（为空表示全部） |
 | `web.fetch.denied_hosts` | string_list | `[]` | 被屏蔽的主机 |
 | `web.search.enabled` | boolean | `true` | 启用 WebSearch 工具 |
+| `web.search.builtin_provider.enabled` | boolean | `true` | 当活跃模型提供商支持时，默认启用提供商声明的内置网页搜索 |
 | `web.search.provider` | string | `"auto"` | 默认搜索提供商，或 `auto` |
 | `web.search.mode` | enum | `"fallback"` | 路由模式：`single`、`fallback` 或 `aggregate` |
 | `web.search.providers` | string_list | `[]` | auto 模式下显式的提供商尝试顺序 |
@@ -390,6 +415,30 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `web.providers.<name>.base_url` | string | unset | 自定义提供商端点 |
 | `web.providers.<name>.credential_profile` | string | unset | API 型提供商的凭据 profile |
 | `web.providers.<name>.capabilities` | json_object | derived | `holon config get` 和路由诊断暴露的只读能力元数据 |
+| `web.providers.<name>.command.argv` | string_list | unset | `kind=command` WebSearch 提供商的命令参数模板（支持 `{{query}}` 和 `{{max_results}}`） |
+| `web.providers.<name>.output.format` | enum | `"json"` | 命令提供商 stdout 格式 |
+| `web.providers.<name>.output.mapping.title` | string | unset | 用于映射结果标题的 JSON 路径 |
+| `web.providers.<name>.output.mapping.url` | string | unset | 用于映射结果 URL 的 JSON 路径 |
+| `web.providers.<name>.output.mapping.snippet` | string | unset | 用于映射结果摘要的可选 JSON 路径 |
+| `web.providers.<name>.output.mapping.published_at` | string | unset | 用于映射发布时间戳的可选 JSON 路径 |
+| `web.providers.<name>.limits.timeout_ms` | integer | `10000` | 命令提供商执行超时（毫秒） |
+| `web.providers.<name>.limits.max_output_bytes` | integer | `200000` | 命令提供商 stdout 字节数上限 |
+
+## 运行时数据库保留策略（Retention）
+
+为 SQLite 运行时事件、对话记录和工具执行配置自动保留清理：
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `runtime.retention.enabled` | boolean | `false` | 启用有界运行时 SQLite 保留清理。除非显式配置，否则默认禁用。 |
+| `runtime.retention.interval_hours` | positive integer | `6` | 启用保留时，daemon 执行保留清理轮次的间隔小时数。 |
+| `runtime.retention.audit_events_days` | positive integer | `30` | 审计事件保留的天数窗口。 |
+| `runtime.retention.audit_events_min_rows_per_scope` | positive integer | `4096` | 每个 Agent 或 host scope 独立保留的最小审计事件行数。 |
+| `runtime.retention.transcript_entries_days` | positive integer | `90` | 对话记录保留的天数窗口。 |
+| `runtime.retention.transcript_entries_min_rows` | positive integer | `20000` | 全局保留的最小对话记录行数。 |
+| `runtime.retention.tool_executions_days` | positive integer | `90` | 工具执行保留的天数窗口。 |
+| `runtime.retention.tool_executions_min_rows` | positive integer | `15000` | 全局保留的最小工具执行行数。 |
+| `runtime.retention.incremental_vacuum_pages` | positive integer | `256` | 保留清理后向 SQLite 增量 vacuum 请求的最大页数。 |
 
 ## Agent 模板远程源
 

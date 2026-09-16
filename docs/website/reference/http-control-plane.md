@@ -24,8 +24,18 @@ and read-only routes (agent state, events, tasks) require it for remote
 access as well. Without a control token, the server runs in **local mode**
 and trusts the local process boundary.
 
+Starting in v0.36.0, Holon supports a **session-first authentication** architecture. Browser and Web UI clients can authenticate using HTTP-only session cookies in addition to bearer tokens:
+
+- **`GET /api/auth/method`** — Returns current auth mode (`"local"` or `"oidc"`).
+- **`POST /api/auth/session/exchange`** — Exchange a bearer token for an HTTP-only session cookie.
+- **`GET /api/auth/session/me`** — Inspect the authenticated session identity, role, and expiry.
+- **`POST /api/auth/session/logout`** — Invalidate current session and clear session cookies.
+- **`GET /api/auth/oidc/start`** and **`GET /api/auth/oidc/callback`** — Initiate and complete OpenID Connect PKCE authorization code flow when `auth.mode="oidc"`.
+- **`POST /api/auth/:provider/device/start`** — Initiate OAuth device authorization flows (e.g. OpenAI Codex).
+
 ```
 GET /api/handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
+GET /api/auth/method → { "mode": "local" | "oidc" }
 ```
 
 ## Ingress trust and auth boundaries
@@ -138,6 +148,18 @@ Returns a bounded task output result. Query parameters:
 **`GET /api/agents/:id/timers`** — Recent timers
 
 Returns recent timer records.
+
+**`GET /api/agents/:id/conversation`** — Conversation read-model summary
+
+Returns conversation overview, current turn state, and visible message history.
+
+**`GET /api/agents/:id/conversation/stream`** — Stream conversation updates
+
+Server-sent events stream for active conversation turns, message streaming, and model thoughts.
+
+**`GET /api/agents/:id/turns/:turn_id/activities`** — Turn activities detail
+
+Returns fine-grained tool calls and internal activities for a specific conversation turn.
 
 **`GET /api/agents/:id/timers/:timer_id`** — Timer detail
 
@@ -339,6 +361,46 @@ Creating an id whose deletion job fully completed starts a new incarnation
 (`identity.incarnation` increments; the old state is never revived). While a
 deletion is still in flight or failed, the request fails with
 `409` / `deletion_incomplete`.
+
+**`GET /api/control/agents/tree`** — Agent hierarchy tree
+
+Returns the full tree of agents, including public self-owned agents and supervised child subagents with lineage relations.
+
+**`GET /api/control/agents/:id/detail`** — Canonical agent detail
+
+Returns complete canonical projection for an agent: identity, display name, incarnation, configuration, model override, state, and lineage.
+
+**`PATCH /api/control/agents/:id/name`** — Rename agent display name
+
+Updates the display name of a public self-owned agent. The canonical `agent_id` remains unchanged.
+
+```json
+{ "name": "Lead Reviewer" }
+```
+
+**`POST /api/control/agents/:id/repair`** — Repair agent bootstrap
+
+Retries incomplete post-create bootstrap steps (template files, workspace binding, initial message) without recreating the agent identity.
+
+**`DELETE /api/control/agents/:id`** — Permanently delete agent
+
+Schedules asynchronous deletion of an agent and its data. Pass `?cascade_private_children=true` to delete private subagents. Returns a deletion job handle.
+
+**`GET /api/control/agents/:id/delete-status`** — Query deletion job status
+
+Returns lifecycle progress of an agent deletion job.
+
+**`POST /api/control/agents/:id/timers`** — Create timer
+
+Creates a persistent delayed or recurring timer for the agent.
+
+```json
+{ "after_ms": 60000, "every_ms": null, "summary": "Health check" }
+```
+
+**`POST /api/control/agents/:id/timers/:timer_id/cancel`** — Cancel timer
+
+Cancels an active timer by id.
 
 **`POST /api/control/agents/:id/tasks`** — Create command task
 

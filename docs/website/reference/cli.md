@@ -1,9 +1,9 @@
 ---
 title: CLI reference
-summary: Holon's command-line interface — verified against holon --help (v0.39.0).
+summary: Holon's command-line interface — verified against holon --help (v0.40.0).
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.39.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.40.0. -->
 
 # CLI Reference
 
@@ -16,13 +16,14 @@ For scripting guidance, stability levels, and support policy, see
 ## Command Tree
 
 ```
-holon (v0.39.0)
+holon (v0.40.0)
 ├── context      Show the declared caller context
 ├── commands     Show machine-readable CLI command metadata
 ├── serve        Start HTTP control plane server
 ├── onboard      Interactive setup wizard or secret-safe diagnostics
 ├── daemon       Background daemon lifecycle
 │   ├── start    Start the daemon
+│   ├── prepare-update Stop the daemon without altering desired auto-start state
 │   ├── stop     Stop the daemon
 │   ├── status   Check daemon status
 │   ├── restart  Restart the daemon
@@ -56,6 +57,7 @@ holon (v0.39.0)
 │   └── stream   Stream event envelopes as newline-delimited JSON
 ├── task         Run a command as a background task
 │   ├── list     List tasks
+│   ├── run      Run a command as a managed background task
 │   ├── status   Show task lifecycle status
 │   ├── output   Read task output
 │   ├── input    Send text input to a task
@@ -67,7 +69,10 @@ holon (v0.39.0)
 │   ├── pick     Pick a WorkItem as current focus
 │   ├── update   Update a WorkItem
 │   └── complete Complete a WorkItem
-├── timer        Create a delayed or recurring timer
+├── timer        Create, list, or cancel timers
+│   ├── create   Create a delayed or recurring timer
+│   ├── list     List active timers
+│   └── cancel   Cancel an active timer
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
 │   ├── list     List all agents
@@ -116,7 +121,12 @@ holon (v0.39.0)
 │   ├── latency  Show latency metrics
 │   ├── performance  Show performance metrics
 │   ├── trace    Show end-to-end trace by id or search
-│   ├── runtime-db   Runtime database audit and retention
+│   ├── runtime-db   Runtime database audit, retention, and maintenance
+│   │   ├── agent-relations Report or backfill canonical agent relation records
+│   │   ├── audit    Audit runtime database invariants
+│   │   ├── retention Run retention cleanup on old database records
+│   │   ├── compact  Compact the runtime database
+│   │   └── conversation-input-assignment-rollback Preflight or rollback v66 repair marker
 │   ├── scheduler-recovery  Inspect/apply scheduler recovery
 │   └── scheduler-fixture Generate scheduler fixture data
 └── help         Print help
@@ -326,6 +336,17 @@ JSON shape returned by `/agents/:agent_id/work-items` and
 `/agents/:agent_id/work-items/:work_item_id`. The `create`, `update`, `pick`,
 and `complete` subcommands mutate WorkItem state and return the corresponding
 control-plane response.
+
+### Timers
+
+```bash
+holon timer create --after-ms 60000 --summary "Heartbeat check"
+holon timer list
+holon timer cancel <TIMER_ID>
+```
+
+`holon timer` schedules delayed or recurring timers for an agent (defaults to
+the default agent, or pass `--agent <AGENT>`).
 
 ### Events
 

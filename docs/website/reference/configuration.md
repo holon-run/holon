@@ -76,6 +76,31 @@ holon config migrate-model-routes --write  # validated canonical rewrite
 The write creates a one-time config backup and updates all agent state in a
 SQLite transaction. Invalid or ambiguous refs prevent partial writes.
 
+### Authentication & Session Settings
+
+Holon supports session-based authentication for browser and Web UI clients alongside bearer token authentication.
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `auth.mode` | string (`"local"` \| `"oidc"`) | `"local"` | Authentication mode. `"local"` supports bearer tokens and local cookie sessions; `"oidc"` enables OpenID Connect login flows. Changes require daemon restart. |
+| `auth.oidc.issuer_url` | string | unset | OIDC issuer discovery URL (e.g. `https://auth.example.com/realms/holon`) |
+| `auth.oidc.client_id` | string | unset | OIDC client identifier registered with the issuer |
+| `auth.oidc.client_secret_env` | string | unset | Environment variable containing the OIDC client secret |
+| `auth.oidc.redirect_uri` | string | unset | Callback redirect URI (e.g. `http://localhost:7878/api/auth/oidc/callback`) |
+| `auth.session.absolute_ttl_seconds` | positive_integer_or_null | unset (`null`) | Absolute session lifetime in seconds (`null` means unlimited) |
+| `auth.session.idle_ttl_seconds` | positive_integer | `86400` (24h) | Inactivity timeout in seconds before a session expires |
+
+```bash
+# Configure session timeouts
+holon config set auth.session.idle_ttl_seconds 43200
+
+# Enable OIDC authentication
+holon config set auth.mode "oidc"
+holon config set auth.oidc.issuer_url "https://auth.example.com/realms/holon"
+holon config set auth.oidc.client_id "holon-client"
+holon config set auth.oidc.client_secret_env "HOLON_OIDC_CLIENT_SECRET"
+```
+
 ### HTTP API CORS
 
 CORS is enabled by default for localhost/loopback browser origins on any port:
@@ -100,6 +125,13 @@ holon config set api.cors.max_age_seconds 600
 
 Do not combine `api.cors.allow_credentials=true` with
 `api.cors.allowed_origins=["*"]`; Holon rejects that unsafe combination.
+
+### Projection Gate
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `api.projection.max_leaders` | integer | `16` | Max concurrent projection builds; more distinct keys get `429 projection_busy` until a leader frees up |
+| `api.projection.cache_ttl_ms` | integer | `500` | Milliseconds a finished projection build is cached and reused |
 
 ### Scheduler
 
@@ -384,14 +416,6 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `api.cors.enabled` | boolean | `true` | Enable CORS responses on the HTTP/control API; localhost/loopback origins are allowed by default |
-| `api.cors.allowed_origins` | string_list | `[]` | Additional explicit browser origins allowed to call the API |
-| `api.cors.allowed_methods` | string_list | `["GET","POST","PUT","PATCH","DELETE","OPTIONS"]` | HTTP methods allowed by CORS preflight |
-| `api.cors.allowed_headers` | string_list | `["content-type","authorization"]` | Request headers allowed by CORS preflight |
-| `api.cors.allow_credentials` | boolean | `false` | Allow credentialed CORS requests; incompatible with wildcard origins |
-| `api.cors.max_age_seconds` | integer | `600` | Browser cache lifetime for preflight responses |
-| `api.projection.max_leaders` | integer | `16` | Max concurrent projection builds; more distinct keys get `429 projection_busy` until a leader frees up |
-| `api.projection.cache_ttl_ms` | integer | `500` | Milliseconds a finished projection build is cached and reused |
 | `web.fetch.enabled` | boolean | `true` | Enable WebFetch tool |
 | `web.fetch.max_chars` | integer | `20000` | Max characters returned to model |
 | `web.fetch.max_response_bytes` | integer | `750000` | Max response bytes before truncation |
@@ -400,6 +424,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `web.fetch.allowed_hosts` | string_list | `[]` | Hosts allowed (empty = all) |
 | `web.fetch.denied_hosts` | string_list | `[]` | Hosts blocked |
 | `web.search.enabled` | boolean | `true` | Enable WebSearch tool |
+| `web.search.builtin_provider.enabled` | boolean | `true` | Enable provider-declared builtin web search by default when active provider supports it |
 | `web.search.provider` | string | `"auto"` | Default search provider or `auto` |
 | `web.search.mode` | enum | `"fallback"` | Routing mode: `single`, `fallback`, or `aggregate` |
 | `web.search.providers` | string_list | `[]` | Explicit auto-mode provider attempt order |
@@ -412,6 +437,30 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
 | `web.providers.<name>.capabilities` | json_object | derived | Read-only capability metadata surfaced by `holon config get` and routing diagnostics |
+| `web.providers.<name>.command.argv` | string_list | unset | Command argv template for `kind=command` WebSearch providers (supports `{{query}}` and `{{max_results}}`) |
+| `web.providers.<name>.output.format` | enum | `"json"` | Command provider stdout format |
+| `web.providers.<name>.output.mapping.title` | string | unset | JSON path to map result title |
+| `web.providers.<name>.output.mapping.url` | string | unset | JSON path to map result URL |
+| `web.providers.<name>.output.mapping.snippet` | string | unset | JSON path to map result snippet |
+| `web.providers.<name>.output.mapping.published_at` | string | unset | Optional JSON path to map result publication timestamp |
+| `web.providers.<name>.limits.timeout_ms` | integer | `10000` | Command provider execution timeout in milliseconds |
+| `web.providers.<name>.limits.max_output_bytes` | integer | `200000` | Command provider stdout byte limit |
+
+## Runtime Database Retention
+
+Configure automatic retention cleanup for SQLite runtime events, transcripts, and tool executions:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `runtime.retention.enabled` | boolean | `false` | Enable bounded runtime SQLite retention. Disabled unless explicitly configured. |
+| `runtime.retention.interval_hours` | positive integer | `6` | Hours between daemon retention passes while retention is enabled. |
+| `runtime.retention.audit_events_days` | positive integer | `30` | Age window in days for audit event retention. |
+| `runtime.retention.audit_events_min_rows_per_scope` | positive integer | `4096` | Minimum audit event rows retained independently for each agent or host scope. |
+| `runtime.retention.transcript_entries_days` | positive integer | `90` | Age window in days for transcript entry retention. |
+| `runtime.retention.transcript_entries_min_rows` | positive integer | `20000` | Minimum transcript rows retained globally. |
+| `runtime.retention.tool_executions_days` | positive integer | `90` | Age window in days for tool execution retention. |
+| `runtime.retention.tool_executions_min_rows` | positive integer | `15000` | Minimum tool execution rows retained globally. |
+| `runtime.retention.incremental_vacuum_pages` | positive integer | `256` | Maximum pages requested from SQLite incremental vacuum after a retention pass. |
 
 ## Agent Template Remote Sources
 

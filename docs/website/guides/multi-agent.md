@@ -13,10 +13,19 @@ agents for parallel work, delegation, and specialized subtasks.
 
 ### Agent operations
 
-| Operation | Return value | When to use |
-|-----------|--------------|-------------|
-| `CreateAgent` | `agent_id` | Create a long-lived, addressable agent |
-| `InvokeAgent` | `agent_id` + `task_handle` | Run a parent-supervised delegated task |
+| Tool / Operation | Return value | When to use |
+|------------------|--------------|-------------|
+| `CreateAgent` | `agent_id` | Create an independent, persistent, self-owned agent identity with an optional template, display name, and bootstrap message |
+| `InvokeAgent` (new subagent) | `agent_id` + `task_handle` | Run a parent-supervised child task with result-bearing lifecycle and optional worktree isolation |
+| `InvokeAgent` (existing agent) | `agent_id` + `task_handle` | Peer invocation: send a message to an existing authorized agent and wait for its next durable response |
+| `SendAgentMessage` | delivery receipt | Send an asynchronous durable message to an existing authorized agent without creating a task wait handle |
+| `GetAgent` | agent summary | Read agent-plane state (identity, display name, lifecycle, active work focus, waiting state, and child lineage) |
+
+### Agent Identity & Display Names
+
+- **Permanent Agent ID**: The canonical identifier (e.g. `reviewer`, `builder`) is permanent and cannot be changed.
+- **Display Name**: Self-owned public agents can have a human-readable display name, updated via CLI (`holon agent rename <id> --name <name>`) or HTTP API (`PATCH /api/agents/:id/rename`). The default agent cannot be renamed.
+- **Incarnation**: A durable sequence tracking lifecycle resets and runtime reload generations for an agent.
 
 ### Workspace Modes
 
@@ -27,13 +36,47 @@ agents for parallel work, delegation, and specialized subtasks.
 
 ### Task Handle Supervision
 
-When calling `InvokeAgent`, the parent receives a `task_handle` with a `task_id`.
-Use this to:
+When calling `InvokeAgent`, the caller receives a `task_handle` with a `task_id`.
+
+For **new subagents** (`kind: "new_subagent"`), the handle represents a supervised child task that produces a final completion result. Use this to:
 
 - **TaskStatus** — Inspect lifecycle, waiting state, and metadata
 - **TaskOutput** — Read bounded output or wait for completion
 - **TaskInput** — Send follow-up input to the child
 - **TaskStop** — Stop the child agent explicitly
+
+For **existing agents** (`kind: "existing_agent"`), the handle waits for the first subsequent durable message emitted by the target agent. It satisfies the wait condition but is not a parent-child lifecycle containment boundary.
+
+## Invocation Styles
+
+### Supervised Child Subagent
+
+Create a private subordinate agent strictly supervised by the current agent:
+
+```json
+{
+  "target": {
+    "kind": "new_subagent",
+    "template": "code-reviewer",
+    "workspace_mode": "worktree"
+  },
+  "initial_message": "Review pull request changes in src/runtime/"
+}
+```
+
+### Peer Invocation
+
+Invoke an existing long-lived agent as an equal peer:
+
+```json
+{
+  "target": {
+    "kind": "existing_agent",
+    "agent_id": "auditor"
+  },
+  "initial_message": "Please audit runtime SQLite database retention rules."
+}
+```
 
 ### Child Agent Token Usage
 
