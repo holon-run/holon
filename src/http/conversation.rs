@@ -852,6 +852,12 @@ fn conversation_capability_available(state: &AppState) -> bool {
 
 fn capability_unavailable() -> (StatusCode, Json<Value>) {
     crate::diagnostics::record_conversation_capability_unavailable();
+    tracing::warn!(
+        capability = "agents.conversation-read.v1",
+        "observer-sync capability gate rejected the request; the durable \
+         verification for this database is failing (see \
+         observer_sync_capability_verifications rows)"
+    );
     http_error(
         StatusCode::SERVICE_UNAVAILABLE,
         HttpErrorEnvelope::new(

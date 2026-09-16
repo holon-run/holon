@@ -5386,6 +5386,177 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn completed_deletion_finalize_reentry_converges_legacy_archived_identity() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let (tombstone, completed_job) = fully_delete_agent(&db, "stale-archive")?;
+        assert_eq!(completed_job.status, AgentDeletionStatus::Completed);
+        assert_eq!(tombstone.status, AgentRegistryStatus::Deleted);
+
+        // Replay the incident residue: a completed deletion whose registry
+        // row still carries the legacy `archived` status text (without
+        // deleted_at) plus an active reservation.
+        {
+            let connection = db.connection()?;
+            connection.execute(
+                "UPDATE agent_identities
+                 SET payload_json = json_set(payload_json, '$.status', 'archived', '$.deleted_at', json('null'))
+                 WHERE agent_id = 'stale-archive'",
+                [],
+            )?;
+            connection.execute(
+                "UPDATE agent_identity_reservations
+                 SET reservation_state = 'active', retired_at = NULL
+                 WHERE agent_id = 'stale-archive'",
+                [],
+            )?;
+        }
+
+        // Reopening must observe the violation: the stale failing verdict is
+        // exactly what froze the roster capability in the incident.
+        drop(db);
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(!db.observer_sync_foundations()?.agent_identity_reserved);
+
+        // Idempotent finalize re-entry must converge the identity to the
+        // canonical tombstone and retire the reservation.
+        let (identity, _) = db.agent_deletions().finalize(&completed_job)?;
+        assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        assert!(identity.deleted_at.is_some());
+        {
+            let connection = db.connection()?;
+            let (stored_status, deleted_at): (String, Option<String>) = connection.query_row(
+                "SELECT json_extract(payload_json, '$.status'),
+                        json_extract(payload_json, '$.deleted_at')
+                 FROM agent_identities WHERE agent_id = 'stale-archive'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(stored_status, "deleted");
+            assert!(deleted_at.is_some(), "tombstone must carry deleted_at");
+            let (reservation_state, retired_at): (String, Option<String>) = connection.query_row(
+                "SELECT reservation_state, retired_at
+                 FROM agent_identity_reservations WHERE agent_id = 'stale-archive'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(reservation_state, "retired");
+            assert!(retired_at.is_some());
+        }
+
+        // A fresh open must verify the identity capability again.
+        drop(db);
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db.observer_sync_foundations()?.agent_identity_reserved);
+        Ok(())
+    }
+
+    #[test]
+    fn completed_deletion_finalize_reentry_spares_sanctioned_reincarnation() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let (tombstone, completed_job) = fully_delete_agent(&db, "reborn-spare")?;
+        let identity = db
+            .agent_identities()
+            .reincarnate_with_bootstrap_and_relations(
+                "reborn-spare",
+                "operator:test",
+                fresh_incarnation,
+            )?;
+        assert_eq!(identity.status, AgentRegistryStatus::Active);
+        assert_eq!(identity.incarnation, tombstone.incarnation + 1);
+
+        // A repeated finalize of the completed predecessor job must leave
+        // the sanctioned reincarnation untouched.
+        let (after, _) = db.agent_deletions().finalize(&completed_job)?;
+        assert_eq!(after, identity);
+        let connection = db.connection()?;
+        let (reservation_state, source): (String, String) = connection.query_row(
+            "SELECT reservation_state, source
+             FROM agent_identity_reservations WHERE agent_id = 'reborn-spare'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(reservation_state, "active");
+        assert_eq!(source, "reincarnation");
+
+        // The convergence must keep the observer-sync identity capability.
+        drop(db);
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db.observer_sync_foundations()?.agent_identity_reserved);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_self_heal_reverifies_stale_failing_verdict_within_throttle() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        assert!(db.observer_sync_foundations()?.agent_identity_reserved);
+
+        // Simulate the incident: a failing verdict persisted against a
+        // since-converged database.
+        {
+            let connection = db.connection()?;
+            connection.execute(
+                "UPDATE observer_sync_capability_verifications SET verified = 0
+                 WHERE capability = ?1",
+                [crate::runtime_db::observer_sync::AGENT_IDENTITY_RESERVED],
+            )?;
+        }
+        assert!(!db.observer_sync_foundations()?.agent_identity_reserved);
+
+        // Inside the throttle window the stale verdict is served as-is.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        db.observer_sync_self_heal_last_attempt_ms
+            .store(now_ms, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            !db.observer_sync_foundations_with_self_heal()?
+                .agent_identity_reserved
+        );
+        {
+            let connection = db.connection()?;
+            let persisted: i64 = connection.query_row(
+                "SELECT verified FROM observer_sync_capability_verifications
+                 WHERE capability = ?1",
+                [crate::runtime_db::observer_sync::AGENT_IDENTITY_RESERVED],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                persisted, 0,
+                "throttled window must not rewrite the verdict"
+            );
+        }
+
+        // Outside the window the heal re-verifies and converges the row.
+        db.observer_sync_self_heal_last_attempt_ms
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            db.observer_sync_foundations_with_self_heal()?
+                .agent_identity_reserved
+        );
+        {
+            let connection = db.connection()?;
+            let persisted: i64 = connection.query_row(
+                "SELECT verified FROM observer_sync_capability_verifications
+                 WHERE capability = ?1",
+                [crate::runtime_db::observer_sync::AGENT_IDENTITY_RESERVED],
+                |row| row.get(0),
+            )?;
+            assert_eq!(persisted, 1);
+        }
+
+        // A passing verdict is never re-checked, so it can never downgrade.
+        assert!(
+            db.observer_sync_foundations_with_self_heal()?
+                .agent_identity_reserved
+        );
+        Ok(())
+    }
+
+    #[test]
     fn agent_reincarnation_continues_incarnation_and_releases_reservation() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;

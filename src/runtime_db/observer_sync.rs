@@ -10,6 +10,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
 use std::collections::HashMap;
+use std::sync::atomic::Ordering;
 
 use crate::runtime_db::agent_relations::canonical_relations_from_connection;
 use crate::runtime_db::evidence::upsert_agent_identity_tx;
@@ -1324,6 +1325,72 @@ fn persist_verification(
 }
 
 impl crate::runtime_db::RuntimeDb {
+    /// Read-side self-heal throttle: while the persisted S1 verdict is
+    /// failing, the verification is re-run at most once per window.
+    const OBSERVER_SYNC_SELF_HEAL_MIN_INTERVAL_MS: u64 = 60_000;
+
+    /// Loads the persisted S1 foundation verification, re-running the
+    /// verification at most once per throttle window while the persisted
+    /// verdict is failing. This is the daemon's only recovery path from a
+    /// verification that was persisted against a since-converged database:
+    /// without it a stale failing row keeps the observer-sync capabilities
+    /// disabled until the next daemon restart. A passing verdict is never
+    /// re-checked here, so the heal can never downgrade it.
+    pub fn observer_sync_foundations_with_self_heal(
+        &self,
+    ) -> Result<ObserverSyncFoundationVerification> {
+        let foundations = self.observer_sync_foundations()?;
+        if foundations.runtime_identity_stable && foundations.agent_identity_reserved {
+            return Ok(foundations);
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let last_attempt_ms = self
+            .observer_sync_self_heal_last_attempt_ms
+            .load(Ordering::Relaxed);
+        if last_attempt_ms != 0
+            && now_ms.saturating_sub(last_attempt_ms)
+                < Self::OBSERVER_SYNC_SELF_HEAL_MIN_INTERVAL_MS
+        {
+            return Ok(foundations);
+        }
+        if self
+            .observer_sync_self_heal_last_attempt_ms
+            .compare_exchange(
+                last_attempt_ms,
+                now_ms,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            // Another caller won the heal slot for this window.
+            return Ok(foundations);
+        }
+        let mut connection = self.connection()?;
+        match verify_observer_sync_foundations(&mut connection) {
+            Ok(()) => {
+                let healed = self.observer_sync_foundations()?;
+                if healed.agent_identity_reserved && !foundations.agent_identity_reserved {
+                    tracing::info!(
+                        "observer-sync identity-reservation verification self-healed \
+                         after the database converged"
+                    );
+                }
+                Ok(healed)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "observer-sync self-heal re-verification failed; keeping the persisted verdict"
+                );
+                Ok(foundations)
+            }
+        }
+    }
+
     /// Loads the durable observer-sync verification results. Missing rows
     /// read as false; load errors should degrade, not fail, the caller.
     pub fn observer_sync_foundations(&self) -> Result<ObserverSyncFoundationVerification> {

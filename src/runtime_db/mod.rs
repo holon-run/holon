@@ -352,6 +352,10 @@ pub struct RuntimeDb {
     path: PathBuf,
     lock_path: PathBuf,
     writer: RuntimeDbWriter,
+    /// Unix millis of the last observer-sync read-side self-heal attempt.
+    /// Throttles the heal so a failing capability gate does not re-run the
+    /// S1 verification on every request.
+    observer_sync_self_heal_last_attempt_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl fmt::Debug for RuntimeDb {
@@ -381,6 +385,9 @@ impl RuntimeDb {
             writer,
             path,
             lock_path: lock_path.into(),
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
         };
         db.migrate()?;
         db.writer.activate_sidecar_protection()?;
@@ -409,6 +416,9 @@ impl RuntimeDb {
         let db = Self {
             writer,
             path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
             lock_path: lock_path.into(),
         };
         let current_version: i64 = db.connection()?.query_row(
@@ -448,6 +458,9 @@ impl RuntimeDb {
         let db = Self {
             writer,
             path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
             lock_path: lock_path.into(),
         };
         let current_version = db.current_schema_version()?;
@@ -499,6 +512,9 @@ impl RuntimeDb {
         let db = Self {
             writer,
             path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
             lock_path: lock_path.into(),
         };
         db.writer.activate_sidecar_protection()?;

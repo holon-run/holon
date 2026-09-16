@@ -317,6 +317,15 @@ pub async fn agent_roster_snapshot(
     }
     let verification = load_observer_sync_verification(&state);
     if !advertised_observer_sync_capabilities(&verification).contains(&ROSTER_SNAPSHOT_CAPABILITY) {
+        tracing::warn!(
+            capability = "agents.roster-snapshot.v1",
+            runtime_identity_stable = verification.runtime_identity_stable,
+            agent_identity_reserved = verification.agent_identity_reserved,
+            roster_snapshot_verified = verification.roster_snapshot_verified,
+            "observer-sync capability gate rejected the request; the durable \
+             verification for this database is failing (see \
+             observer_sync_capability_verifications rows)"
+        );
         diagnostics::record_roster_snapshot_failure();
         return http_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -470,6 +479,15 @@ pub async fn agent_projection_snapshot(
     if !advertised_observer_sync_capabilities(&verification)
         .contains(&PROJECTION_SNAPSHOT_CAPABILITY)
     {
+        tracing::warn!(
+            capability = "agents.projection-snapshot.v1",
+            runtime_identity_stable = verification.runtime_identity_stable,
+            agent_identity_reserved = verification.agent_identity_reserved,
+            projection_snapshot_verified = verification.projection_snapshot_verified,
+            "observer-sync capability gate rejected the request; the durable \
+             verification for this database is failing (see \
+             observer_sync_capability_verifications rows)"
+        );
         diagnostics::record_projection_snapshot_failure();
         return http_error(
             StatusCode::SERVICE_UNAVAILABLE,
