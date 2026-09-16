@@ -3716,6 +3716,7 @@ impl RuntimeHandle {
         } else {
             None
         };
+        #[allow(deprecated)]
         let canonical_execution_binding = match execution_admission_provenance.as_ref() {
             Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) => {
                 let message = message.ok_or_else(|| {

@@ -2612,7 +2612,6 @@ async fn interactive_tool_execution_binds_current_turn_work_item() {
     runtime
         .process_interactive_message(
             &message,
-            None,
             LoopControlOptions {
                 max_tool_rounds: None,
             },
@@ -5051,7 +5050,6 @@ async fn repeated_complete_work_item_does_not_overwrite_existing_report() {
     runtime
         .process_interactive_message(
             &message,
-            None,
             LoopControlOptions {
                 max_tool_rounds: None,
             },
@@ -6348,12 +6346,10 @@ async fn external_wake_records_wait_reconciliation_and_resolves_wait() {
     );
 
     runtime
-        .process_message(
+        .process_message_with_plan(
             scheduled.message,
-            closure_decision(
-                ClosureOutcome::Waiting,
-                Some(WaitingReason::AwaitingExternalChange),
-            ),
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
         )
         .await
         .unwrap();

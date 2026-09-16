@@ -40,16 +40,30 @@ impl RuntimeHandle {
     pub(super) async fn process_interactive_message(
         &self,
         message: &MessageEnvelope,
-        continuation_resolution: Option<&ContinuationResolution>,
         loop_control: LoopControlOptions,
     ) -> Result<()> {
+        let persisted_message = self.enqueue(message.clone()).await?;
+        let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .poll()
+            .await?
+        {
+            scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+            _ => return Err(anyhow!("test message was not admitted by the scheduler")),
+        };
+        if scheduled.message.id != persisted_message.id {
+            return Err(anyhow!("scheduler claimed an unexpected test message"));
+        }
         let terminal_transition = self
             .process_interactive_message_deferred_with_cleanup(
-                message,
-                continuation_resolution,
-                None,
+                &scheduled.message,
+                scheduled.dispatch_plan.continuation_resolution.as_ref(),
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
                 loop_control,
-                message
+                scheduled
+                    .message
                     .trace_context
                     .as_ref()
                     .map(crate::observability::TraceContext::child),

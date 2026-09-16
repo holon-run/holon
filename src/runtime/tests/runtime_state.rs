@@ -944,6 +944,7 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
 }
 
 #[tokio::test]
+#[allow(deprecated)]
 async fn legacy_compat_provenance_cannot_start_a_new_turn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

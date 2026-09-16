@@ -2616,6 +2616,7 @@ pub enum ExecutionAdmissionProvenance {
     /// Historical persisted shape retained for read compatibility only.
     ///
     /// New runtime execution must never create or admit a turn from this variant.
+    #[deprecated(note = "historical serde read-only; do not construct in new code")]
     LegacyCompat {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scenario_class: Option<SchedulerScenarioClass>,
@@ -5934,6 +5935,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[allow(deprecated)]
     fn execution_admission_provenance_reads_legacy_compat_history() {
         let provenance: ExecutionAdmissionProvenance = serde_json::from_value(serde_json::json!({
             "kind": "legacy_compat",

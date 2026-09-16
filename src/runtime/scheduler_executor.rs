@@ -608,6 +608,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 "canonical_activation_admitted",
             )
             .message(&persisted_message)
+            .boundary(scheduler::SchedulerBoundary::RunLoop.as_str())
             .model_reentry(true)
             .evidence(format!("canonical_activation={}", plan.activation_id));
             if let Some(work_item_id) = plan.work_item_id.as_deref() {
@@ -620,6 +621,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 "canonical_reducer_only",
             )
             .message(&persisted_message)
+            .boundary(scheduler::SchedulerBoundary::RunLoop.as_str())
             .model_reentry(false)
         };
         let scheduler_decision_events =
