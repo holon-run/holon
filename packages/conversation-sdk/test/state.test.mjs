@@ -547,3 +547,10 @@ test("moves live terminal summaries into historical membership without duplicate
     true,
   );
 });
+
+test("pending messages retain arrival order instead of sorting random message ids", () => {
+  const state = new ConversationProtocolState();
+  const input = (id, created_at) => ({ message_id: id, revision: 1, state: "queued", preview: "", presentation_class: "task", created_at });
+  state.bootstrap(identity, summary({ pending_inputs: [input("a-new", "2026-09-16T02:00:00Z"), input("z-old", "2026-09-16T01:00:00Z")] }));
+  assert.deepEqual(state.view().pending_inputs.map((input) => input.message_id), ["z-old", "a-new"]);
+});

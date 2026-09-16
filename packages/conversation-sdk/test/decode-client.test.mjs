@@ -299,3 +299,12 @@ test("decodes canonical turn timing and tolerates older runtimes without it", ()
     assert.throws(() => decode({ ...record, ...invalid }), ConversationDecodeError);
   }
 });
+
+test("pending source and arrival time are decoded without inferring provenance from text", () => {
+  const input = { message_id: "task-result", revision: 1, state: "queued", preview: "operator-looking text",
+    presentation_class: "task", created_at: "2026-09-16T01:00:00Z" };
+  assert.deepEqual(decodeConversationSummaryResponse(summary({ pending_inputs: [input] })).pending_inputs, [input]);
+  for (const patch of [{ presentation_class: "made-up" }, { created_at: "invalid" }]) {
+    assert.throws(() => decodeConversationSummaryResponse(summary({ pending_inputs: [{ ...input, ...patch }] })), ConversationDecodeError);
+  }
+});

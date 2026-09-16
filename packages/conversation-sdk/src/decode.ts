@@ -301,6 +301,12 @@ export function decodePendingInput(
     message_id: nonEmptyString(source.message_id, `${path}.message_id`),
     revision: safeInteger(source.revision, `${path}.revision`),
     state,
+    ...(source.presentation_class === undefined ? {} : {
+      presentation_class: enumValue(source.presentation_class, presentationClasses, `${path}.presentation_class`),
+    }),
+    ...(source.created_at === undefined ? {} : {
+      created_at: optionalTimestamp(source.created_at, `${path}.created_at`),
+    }),
     preview:
       source.preview === undefined || source.preview === null
         ? ""

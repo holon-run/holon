@@ -337,9 +337,21 @@ describe("conversation presentation boundaries", () => {
       presentation_class: "system", inputs: [{ message_id: "system", preview: "recheck" }],
       execution: { kind: "terminal", outcome: "completed" }, result: { kind: "available" },
       settled: true, brief_ids: ["brief-1"],
-    })], { pendingInputs: [{ message_id: "queued", revision: 1, state: "queued", preview: "new prompt" }] } as never);
+    })], { pendingInputs: [{ message_id: "queued", revision: 1, state: "queued", preview: "new prompt", presentation_class: "operator" }] } as never);
     expect(html).toContain("System wake");
     expect(html).not.toContain('class="conversation-input-line"');
     expect(html.indexOf("new prompt")).toBeGreaterThan(html.indexOf("这是结果内容 markdown"));
+  });
+
+  it("keeps task and unknown pending sources in a collapsed event area before the latest turn", () => {
+    const html = renderTimeline([turnSummary("latest", 1)], { pendingInputs: [
+      { message_id: "task", revision: 1, state: "queued", preview: "command task completed", presentation_class: "task" },
+      { message_id: "legacy", revision: 1, state: "queued", preview: "unknown provenance" },
+    ] } as never);
+    expect(html).toContain("Task update");
+    expect(html).toContain("Incoming message");
+    expect(html).not.toContain('class="conversation-pending-chip"');
+    expect(html).not.toContain(' open=""');
+    expect(html.indexOf("Pending events")).toBeLessThan(html.indexOf('data-turn-id="latest"'));
   });
 });

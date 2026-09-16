@@ -397,6 +397,8 @@ const en = {
     conversationError: "Conversation read failed.",
     retry: "Retry",
     pendingInputs: "Pending inputs",
+    pendingEvents: "Pending events",
+    pendingSourceUnknown: "Incoming message",
     pendingInputState: "Pending input state",
     pendingQueued: "Queued, waiting to run",
     pendingAssigning: "Assigning to a turn",

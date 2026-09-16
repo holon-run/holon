@@ -10,17 +10,17 @@ use rusqlite::{
 use serde_json::Value;
 
 use crate::domain::conversation::{
-    map_result, presentation_class, ActivityItem, ActivityKey, Attention, ConversationActivity,
-    ConversationActivityPage, ConversationChange, ConversationShadowDiagnostics,
-    ConversationShadowMetadata, ConversationShadowMismatch, ConversationShadowMismatchKind,
-    ConversationSummaryPage, ConversationTurnSummary, CursorBinding, CursorCodec,
-    CursorDecodeError, DetailCoverage, DetailCoverageReason, DetailCursor, ExecutionState,
-    HistoryCursor, PendingInput, PendingInputState, PresentationClass, StreamCursor,
-    TerminalOutcome, TurnInputSummary, TurnKey, CONVERSATION_QUERY_VERSION,
-    CONVERSATION_SCHEMA_VERSION,
+    map_result, message_presentation_class, presentation_class, ActivityItem, ActivityKey,
+    Attention, ConversationActivity, ConversationActivityPage, ConversationChange,
+    ConversationShadowDiagnostics, ConversationShadowMetadata, ConversationShadowMismatch,
+    ConversationShadowMismatchKind, ConversationSummaryPage, ConversationTurnSummary,
+    CursorBinding, CursorCodec, CursorDecodeError, DetailCoverage, DetailCoverageReason,
+    DetailCursor, ExecutionState, HistoryCursor, PendingInput, PendingInputState,
+    PresentationClass, StreamCursor, TerminalOutcome, TurnInputSummary, TurnKey,
+    CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
 use crate::runtime_db::types::ConversationRepository;
-use crate::types::{TurnRecord, TurnTerminalKind};
+use crate::types::{ContinuationTriggerKind, MessageKind, TurnRecord, TurnTerminalKind};
 
 const MAX_CHANGE_ID_JSON_DEPTH: usize = 32;
 
@@ -1830,7 +1830,10 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
         "SELECT queue.message_id,
                 COALESCE(revisions.revision, 1),
                 queue.status,
-                COALESCE(messages.preview, '')
+                COALESCE(messages.preview, ''),
+                json_extract(messages.payload_json, '$.kind'),
+                json_extract(messages.payload_json, '$.trigger_kind'),
+                queue.created_at
          FROM queue_entries AS queue
          LEFT JOIN conversation_input_assignments AS assignments
            ON assignments.message_id = queue.message_id
@@ -1862,6 +1865,19 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
                     revision: u64::try_from(row.get::<_, i64>(1)?).map_err(sql_integer_error)?,
                     state,
                     preview: row.get(3)?,
+                    presentation_class: {
+                        let kind = row.get::<_, Option<String>>(4)?.and_then(|value| {
+                            serde_json::from_value::<MessageKind>(Value::String(value)).ok()
+                        });
+                        let trigger_kind = row.get::<_, Option<String>>(5)?.and_then(|value| {
+                            serde_json::from_value::<ContinuationTriggerKind>(Value::String(value))
+                                .ok()
+                        });
+                        kind.as_ref()
+                            .map(|kind| message_presentation_class(kind, trigger_kind))
+                            .unwrap_or(PresentationClass::Operational)
+                    },
+                    created_at: row.get(6)?,
                 })
             },
         )?

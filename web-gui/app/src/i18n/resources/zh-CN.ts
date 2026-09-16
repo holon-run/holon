@@ -398,6 +398,8 @@ const zh: Record<string, any> = {
     conversationError: "会话读取失败。",
     retry: "重试",
     pendingInputs: "待处理输入",
+    pendingEvents: "待处理事件",
+    pendingSourceUnknown: "待收消息",
     pendingInputState: "待处理输入状态",
     pendingQueued: "已排队，等待执行",
     pendingAssigning: "正在分配到执行轮次",

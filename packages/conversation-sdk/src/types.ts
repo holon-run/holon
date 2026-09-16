@@ -31,6 +31,9 @@ export interface PendingInput {
   readonly revision: number;
   readonly state: PendingInputState;
   readonly preview: string;
+  /** Absent on older daemons; do not infer operator provenance from preview text. */
+  readonly presentation_class?: PresentationClass;
+  readonly created_at?: string | null;
 }
 
 export type TerminalOutcome =

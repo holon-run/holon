@@ -269,7 +269,8 @@ export class ConversationProtocolState {
   view(): ConversationStateView {
     const turns = [...this.#state.turns.values()].sort(compareTurns);
     const pendingInputs = [...this.#state.pendingInputs.values()].sort((a, b) =>
-      a.message_id.localeCompare(b.message_id),
+      (a.created_at ? Date.parse(a.created_at) : 0) - (b.created_at ? Date.parse(b.created_at) : 0)
+        || a.message_id.localeCompare(b.message_id),
     );
     const details = this.#state.detailOrder
       .map((turnId) => this.#state.details.get(turnId))

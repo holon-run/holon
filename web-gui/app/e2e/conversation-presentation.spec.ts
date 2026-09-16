@@ -315,3 +315,42 @@ test("a delivered brief replaces only the duplicate final activity, including af
   await expect(finalActivity).toHaveCount(0);
   await expect(card.getByText(result, { exact: true })).toHaveCount(1);
 });
+
+test("queued task results are compact events above the latest turn while operator input stays below", async ({ page, context, request }, info) => {
+  const session = `pending-events-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const pending = [
+    { message_id: "a-new", revision: 1, state: "queued", presentation_class: "task", created_at: "2026-09-16T01:01:00Z", preview: "Second task finished" },
+    { message_id: "z-old", revision: 1, state: "queued", presentation_class: "task", created_at: "2026-09-16T01:00:00Z", preview: "First task finished\n\n" + "Detailed command output\n".repeat(100) },
+    { message_id: "operator", revision: 1, state: "queued", presentation_class: "operator", created_at: "2026-09-16T01:02:00Z", preview: "Please continue checking" },
+  ];
+  let current = turn("current", 1);
+  const update = () => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], pending_inputs: pending, activitiesByTurnId: { current: [activity(1, "Working on the request.")] },
+  } });
+  await update();
+  await page.goto(`/agents/${agentId}/conversation`);
+  const events = page.locator(".conversation-pending-events");
+  await expect(events.locator(".conversation-pending-count")).toHaveText("2");
+  await expect(events).not.toHaveAttribute("open", "");
+  await expect(page.locator(".conversation-pending-chip")).toHaveCount(1);
+  await expect(page.locator(".conversation-pending-chip")).toContainText("Please continue checking");
+  const card = page.locator('[data-turn-id="current"]');
+  expect((await events.boundingBox())!.y).toBeLessThan((await card.boundingBox())!.y);
+  expect((await page.locator(".conversation-pending-chip").boundingBox())!.y).toBeGreaterThan((await card.boundingBox())!.y);
+  await events.locator(":scope > summary").click();
+  const rows = events.locator(".conversation-pending-event");
+  await expect(rows.first()).toContainText("First task finished");
+  await expect(rows.last()).toContainText("Second task finished");
+  await rows.first().locator("summary").click();
+  await expect(rows.first().locator(".conversation-pending-event-body")).toBeVisible();
+  expect((await rows.first().locator(".conversation-pending-event-body").boundingBox())!.height).toBeLessThanOrEqual(260);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+  // Turn assignment atomically removes the pending presentation even if an older queue snapshot remains.
+  current = { ...current, revision: 2, presentation_class: "task", inputs: pending.slice(0, 2).map(({ message_id, preview }) => ({ message_id, preview })) };
+  await update();
+  await expect(events).toHaveCount(0);
+  await expect(page.locator(".conversation-pending-chip")).toHaveCount(1);
+});

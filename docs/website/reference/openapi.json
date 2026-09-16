@@ -6288,7 +6288,22 @@
               },
               "input": {
                 "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
                   "message_id": {
+                    "type": "string"
+                  },
+                  "presentation_class": {
+                    "enum": [
+                      "operator",
+                      "task",
+                      "external",
+                      "timer",
+                      "internal",
+                      "system",
+                      "operational"
+                    ],
                     "type": "string"
                   },
                   "preview": {
@@ -6311,7 +6326,9 @@
                   "message_id",
                   "revision",
                   "state",
-                  "preview"
+                  "preview",
+                  "presentation_class",
+                  "created_at"
                 ],
                 "type": "object"
               },
@@ -7538,7 +7555,22 @@
           "pending_inputs": {
             "items": {
               "properties": {
+                "created_at": {
+                  "type": "string"
+                },
                 "message_id": {
+                  "type": "string"
+                },
+                "presentation_class": {
+                  "enum": [
+                    "operator",
+                    "task",
+                    "external",
+                    "timer",
+                    "internal",
+                    "system",
+                    "operational"
+                  ],
                   "type": "string"
                 },
                 "preview": {
@@ -7561,7 +7593,9 @@
                 "message_id",
                 "revision",
                 "state",
-                "preview"
+                "preview",
+                "presentation_class",
+                "created_at"
               ],
               "type": "object"
             },

@@ -113,7 +113,7 @@ revision 1; a turn-summary revision covers input assignment, Brief membership,
 execution/result/finality, attention, and detail-coverage changes.
 
 `pending_inputs` is a projection, not another lifecycle. It contains visible
-operator inputs whose canonical queue/assignment state is `queued` or
+messages (including operator input and task results) whose canonical queue/assignment state is `queued` or
 `assigning` and which may still form a future turn. Assigned, processed,
 interjected, aborted, dropped, and quarantined inputs are not pending. The
 dequeue-to-turn-assignment transition must be atomic or revisioned so an input
@@ -121,7 +121,13 @@ cannot disappear between the pending set and its owning turn.
 
 Each pending input carries a bounded message-body preview with the same shape
 and limits as assigned turn-input previews, so clients can echo the operator's
-in-flight text while the owning turn is still running.
+in-flight text while the owning turn is still running. Each pending input also
+carries `presentation_class`, derived from the canonical message kind and
+continuation trigger with the same rules as turn classification, and `created_at`
+from the queue entry. Clients order pending inputs by this timestamp, distinguish
+operator input from background events, and must not infer provenance from body
+text. Older servers may omit these additive fields; display unknown sources
+neutrally and retain message-id ordering when timestamps are unavailable.
 
 ### 3.2 Execution, result availability, and attention are separate
 

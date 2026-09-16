@@ -303,6 +303,14 @@ installation are not performed as part of visual verification.
 
 ## Conversation reading contract
 
+Pending operator messages remain user bubbles below the conversation. Pending
+task, timer, external, and other background messages share a collapsed
+"Pending events" disclosure before the latest turn, with a count and compact
+source-labelled rows. Expand a row to read its bounded preview in a scrollable
+area. Source comes from canonical metadata, never body text; older daemons
+without source metadata use a neutral label. Order events by queue arrival time,
+and remove them from this area when assigned to a turn.
+
 Each turn has a status-and-duration disclosure above its result: `Working ·
 0:23` while active, then `Completed · Took 1:23` (or stopped/failed/waiting).
 The whole row toggles execution details. The timer uses summary-level canonical

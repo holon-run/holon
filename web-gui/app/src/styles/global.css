@@ -7258,6 +7258,20 @@ code {
 .conversation-pending-chip .markdown-content { font-size: 15px; line-height: 1.65; }
 .conversation-pending-inputs { display: flex; flex-direction: column; gap: 12px; }
 .conversation-pending-chip { margin-bottom: 0; }
+.conversation-pending-events { min-width: 0; color: var(--muted); font-size: 12px; }
+.conversation-pending-events summary { display: flex; align-items: center; gap: 7px; cursor: pointer; padding: 8px 0; list-style: none; }
+.conversation-pending-events summary::-webkit-details-marker { display: none; }
+.conversation-pending-events > summary { width: fit-content; }
+.conversation-pending-events[open] > summary > svg:first-child,
+.conversation-pending-event[open] > summary > svg:last-child { transform: rotate(90deg); }
+.conversation-pending-events summary svg { flex-shrink: 0; }
+.conversation-pending-count { background: var(--bubble); border-radius: 8px; padding: 1px 6px; font-variant-numeric: tabular-nums; }
+.conversation-pending-event-list { border-top: 1px solid var(--line); margin-top: 4px; }
+.conversation-pending-event { border-bottom: 1px solid var(--line); padding: 4px 0; }
+.conversation-pending-event-source { flex-shrink: 0; }
+.conversation-pending-event-preview { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-pending-event-body { max-height: 240px; overflow: auto; padding: 10px 0; color: var(--text); overflow-wrap: anywhere; }
+.conversation-pending-event .conversation-input-status { flex-wrap: wrap; margin-top: 0; }
 .conversation-input-status { display: flex; align-items: center; gap: 6px; margin-top: 6px; color: var(--muted); font-size: 12px; }
 .conversation-source { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
 .conversation-source summary { display: flex; align-items: center; gap: 7px; cursor: pointer; width: fit-content; padding: 4px 0; }

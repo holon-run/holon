@@ -4060,7 +4060,10 @@ export interface components {
         } | {
             event_log_epoch: string;
             input: {
+                created_at: string;
                 message_id: string;
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
                 preview: string;
                 /** Format: uint64 */
                 revision: number;
@@ -4366,7 +4369,10 @@ export interface components {
             /** Format: uint64 */
             oldest_retained_seq: number;
             pending_inputs: {
+                created_at: string;
                 message_id: string;
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
                 preview: string;
                 /** Format: uint64 */
                 revision: number;

@@ -14,7 +14,7 @@ import {
   Wrench,
   ExternalLink,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useState, useRef, useId } from "react";
+import { Fragment, memo, useEffect, useMemo, useState, useRef, useId } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -67,6 +67,8 @@ export const ConversationTimeline = memo(function ConversationTimeline({
 }: ConversationTimelineProps) {
   const { t } = useTranslation();
   const status = model.status;
+  const operatorInputs = model.pendingInputs.filter((input) => input.presentation_class === "operator");
+  const backgroundInputs = model.pendingInputs.filter((input) => input.presentation_class !== "operator");
   return (
     <div className="conversation-timeline" aria-label={t("agent.conversationAria")}>
       {status.kind === "reconnecting" ? (
@@ -91,16 +93,16 @@ export const ConversationTimeline = memo(function ConversationTimeline({
           </button>
         </div>
       ) : null}
-      {model.turns.map((turn) => (
-        <ConversationTurnCard
-          key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}
-          turn={turn}
-          {...actions}
-        />
+      {model.turns.map((turn, index) => (
+        <Fragment key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}>
+          {index === model.turns.length - 1 ? <PendingEvents inputs={backgroundInputs} /> : null}
+          <ConversationTurnCard turn={turn} {...actions} />
+        </Fragment>
       ))}
-      {model.pendingInputs.length > 0 ? (
+      {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} /> : null}
+      {operatorInputs.length > 0 ? (
         <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingInputs")}>
-          {model.pendingInputs.map((input) => (
+          {operatorInputs.map((input) => (
             <PendingInputChip key={input.message_id} input={input} />
           ))}
         </div>
@@ -125,6 +127,40 @@ export const ConversationTimeline = memo(function ConversationTimeline({
     </div>
   );
 });
+
+function PendingEvents({ inputs }: { inputs: readonly PendingInput[] }) {
+  const { t } = useTranslation();
+  if (inputs.length === 0) return null;
+  return (
+    <details className="conversation-pending-events" aria-label={t("agentPage.pendingEvents")}>
+      <summary><ChevronRight size={13} /><Clock size={13} />
+        <span>{t("agentPage.pendingEvents")}</span><span className="conversation-pending-count">{inputs.length}</span>
+      </summary>
+      <div className="conversation-pending-event-list">
+        {inputs.map((input) => {
+          const text = parseInputPreview(input.preview);
+          return (
+            <details key={input.message_id} className="conversation-pending-event"
+              data-conversation-anchor={`input:${input.message_id}`}>
+              <summary>
+                <Bot size={13} />
+                <span className="conversation-pending-event-source">{t(input.presentation_class
+                  ? `agentPage.turnSource.${input.presentation_class}` : "agentPage.pendingSourceUnknown")}</span>
+                <span className="conversation-pending-event-preview">{text.split("\n")[0].slice(0, 180)}</span>
+                <ChevronRight size={12} />
+              </summary>
+              <div className="conversation-input-status">
+                {t(input.state === "assigning" ? "agentPage.pendingAssigning" : "agentPage.pendingQueued")}
+                {input.created_at ? <time dateTime={input.created_at}>{new Date(input.created_at).toLocaleString()}</time> : null}
+              </div>
+              <div className="conversation-pending-event-body"><MarkdownContent text={text} compact /></div>
+            </details>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
 
 function PendingInputChip({ input }: { input: PendingInput }) {
   const { t } = useTranslation();
