@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceFileUrl,
   createRuntimeClient,
+  resolveRuntimeApiBase,
   httpRetryAfterMs,
   isTimeoutAbortError,
   projectModelOptions,
@@ -58,6 +59,7 @@ function agentStateFixture(agentId: string): components["schemas"]["AgentStateSn
       last_turn: null,
     },
     tasks: [],
+    waits: [],
     timers: [],
     work_items: [],
     external_triggers: [],
@@ -1567,5 +1569,20 @@ describe("per-endpoint timeout classes", () => {
     expect(isTimeoutAbortError(new Error("fetch failed"))).toBe(false);
     expect(isTimeoutAbortError("aborted")).toBe(false);
     expect(isTimeoutAbortError(undefined)).toBe(false);
+  });
+});
+
+
+describe("same-origin GUI API base", () => {
+  it("keeps the runtime and auxiliary clients on /api despite a legacy build override", async () => {
+    vi.stubEnv("VITE_HOLON_API_BASE", "https://retired.example/api");
+    try {
+      expect(resolveRuntimeApiBase({ mode: "local", baseUrl: "https://retired.example/api" })).toBe("/api");
+      const fetchImpl = vi.fn().mockResolvedValue(new Response("{}", { status: 503 }));
+      await createRuntimeClient({ mode: "local", fetchImpl }).getBootstrap();
+      expect(fetchImpl.mock.calls[0][0]).toBe("/api/handshake");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -124,6 +124,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::WAIT_FOR => "WaitForResult",
         tn::CREATE_AGENT => "AgentCreateResult",
         tn::INVOKE_AGENT => "AgentInvocationReceipt",
+        tn::SEND_AGENT_MESSAGE => "AgentMessageDeliveryReceipt",
         tn::TASK_INPUT => "TaskInputResult",
         tn::LIST_TASKS => "ListTasksResult",
         tn::TASK_OUTPUT => "TaskOutputResult",
@@ -149,6 +150,9 @@ fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
         tn::LIST_TASKS => schema::tool_result_schema::<tools::task_list::ListTasksResult>()?,
         tn::CREATE_AGENT => schema::tool_result_schema::<crate::types::AgentCreateResult>()?,
         tn::INVOKE_AGENT => schema::tool_result_schema::<crate::types::AgentInvocationReceipt>()?,
+        tn::SEND_AGENT_MESSAGE => {
+            schema::tool_result_schema::<crate::types::AgentMessageDeliveryReceipt>()?
+        }
         tn::TASK_INPUT => schema::tool_result_schema::<TaskInputResult>()?,
         tn::TASK_OUTPUT => schema::tool_result_schema::<TaskOutputResult>()?,
         tn::TASK_STATUS => schema::tool_result_schema::<TaskStatusResult>()?,

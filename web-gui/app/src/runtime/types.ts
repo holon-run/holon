@@ -9,6 +9,7 @@ export interface RuntimeConnection {
   summary: string;
   baseUrl?: string;
   hasToken?: boolean;
+  controlTokenRequired?: boolean;
   authRequired?: boolean;
   source: "http" | "fixture";
   error?: string;
@@ -18,11 +19,6 @@ export interface RuntimeConnectionConfig {
   mode: "local" | "remote";
   baseUrl?: string;
   token?: string;
-}
-
-export interface RuntimeConnectionProfile {
-  baseUrl: string;
-  hasToken: boolean;
 }
 
 export type SkillScope = "user" | "user_global" | "agent" | "workspace";
@@ -196,7 +192,19 @@ export interface AttachedWorkspaceEntry {
   repoName?: string;
 }
 
+export interface WorkWaitSummary {
+  id: string;
+  work_item_id?: string | null;
+  kind: string;
+  status: string;
+  created_at: string;
+  task_ids: string[];
+}
+
 export interface TaskSummary {
+  workItemId?: string;
+  createdAt?: string;
+  updatedAt?: string;
   id: string;
   kind: string;
   status: string;
@@ -356,6 +364,8 @@ export interface AgentSummary {
   workspaceSummary?: WorkspaceSummary;
   attachedWorkspaces?: AttachedWorkspaceEntry[];
   tasks?: TaskSummary[];
+  waits?: WorkWaitSummary[];
+  waitingReason?: string;
   workItems?: WorkItemSummary[];
 }
 

@@ -33,12 +33,12 @@ Each built-in tool entry records:
 - model-visible tool description
 
 The version 2 inventory currently covers result schemas for `CreateTimer`,
-`ListTimers`, `GetTimer`, `CancelTimer`, `Enqueue`, `CreateAgent`, `InvokeAgent`,
-`ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, `TaskStop`, and
-`GenerateImage`. Uncovered tools keep their result type name and an explicit
-`null` schema; this avoids presenting an inferred or partial shape as a stable
-contract. Coverage can expand only when the concrete Rust result type derives
-`schemars::JsonSchema`.
+`ListTimers`, `GetTimer`, `CancelTimer`, `Enqueue`, `CreateAgent`,
+`SendAgentMessage`, `InvokeAgent`, `ListTasks`, `TaskStatus`, `TaskInput`,
+`TaskOutput`, `TaskStop`, and `GenerateImage`. Uncovered tools keep their result
+type name and an explicit `null` schema; this avoids presenting an inferred or
+partial shape as a stable contract. Coverage can expand only when the concrete
+Rust result type derives `schemars::JsonSchema`.
 
 ## Capability families
 
@@ -47,7 +47,7 @@ families in `src/types.rs` (`ToolCapabilityFamily`):
 
 | Family | Description | Example tools |
 |--------|-------------|---------------|
-| `CoreAgent` | Core agent operations (state, memory, work items, scheduling, CLI/config introspection) | MemorySearch, WaitFor, ListWorkItems, ListModelProviders |
+| `CoreAgent` | Core agent operations (state, messaging, memory, work items, scheduling, CLI/config introspection) | SendAgentMessage, MemorySearch, WaitFor, ListWorkItems |
 | `LocalEnvironment` | Workspace-local operations | ExecCommand, ApplyPatch, ViewImage, GetWorkspaceState, SwitchWorkspace, CreateWorktree |
 | `Web` | Public web access | WebFetch, WebSearch |
 | `AgentCreation` | Agent creation and supervised invocation | CreateAgent, InvokeAgent |

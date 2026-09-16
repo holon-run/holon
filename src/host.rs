@@ -65,12 +65,12 @@ use crate::{
         AgentCanonicalDurability, AgentCreateReceipt, AgentCreateResult, AgentCreateStage,
         AgentDeletionJob, AgentDeletionStatus, AgentDetail, AgentDurability, AgentIdentityRecord,
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentListEntry,
-        AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryRejectionCode,
-        AgentMessageDeliveryState, AgentMessagePrincipalKind, AgentMessageSendRequest,
-        AgentModelResolution, AgentModelResolutionStatus, AgentOwnership, AgentProfilePreset,
-        AgentRegistryStatus, AgentState, AgentStatus, AgentSummary, AgentSupervisionState,
-        AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection, AgentVisibility,
-        AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
+        AgentMessageCallerContext, AgentMessageDeliveryOutcome, AgentMessageDeliveryReceipt,
+        AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState, AgentMessagePrincipalKind,
+        AgentMessageSendRequest, AgentModelResolution, AgentModelResolutionStatus, AgentOwnership,
+        AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus, AgentSummary,
+        AgentSupervisionState, AgentTokenUsageSummary, AgentTreeNode, AgentTreeProjection,
+        AgentVisibility, AuthorityClass, ChildAgentSummary, ClosureOutcome, CreateAgentRequest,
         ExternalTriggerRecord, ExternalTriggerStatus, ExternalTriggerSummary, LoadedAgentsMdView,
         MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskKind,
@@ -199,6 +199,7 @@ impl AgentStateProjectionSource {
 }
 
 pub(crate) struct AgentStateReadProjection {
+    pub(crate) waits: Vec<crate::types::WaitConditionRecord>,
     pub(crate) source: AgentStateProjectionSource,
     pub(crate) agent: LightweightAgentStateProjection,
     pub(crate) tasks: Vec<TaskRecord>,
@@ -463,6 +464,13 @@ pub(crate) struct ChildTaskSpawn {
     pub child_turn_baseline: u64,
     pub delivery_id: Option<String>,
     pub task_detail: Value,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentMessageAdmission {
+    pub identity: AgentIdentityRecord,
+    pub receipt: AgentMessageDeliveryReceipt,
+    pub target_turn_baseline: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2531,6 +2539,15 @@ impl RuntimeHost {
                 .map(|entry| entry.runtime.clone())
         };
 
+        let waits = self
+            .agent_storage_read_only(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .raw_unresolved_wait_conditions_for_agent(agent_id)
+            .map_err(PublicAgentError::Runtime)?
+            .into_iter()
+            .take(50)
+            .collect();
+
         if let Some(runtime) = runtime {
             crate::diagnostics::record_projection_state_source_loaded();
             tracing::debug!(
@@ -2569,6 +2586,7 @@ impl RuntimeHost {
             );
 
             return Ok(AgentStateReadProjection {
+                waits,
                 source: AgentStateProjectionSource::Loaded,
                 agent,
                 tasks,
@@ -2643,6 +2661,7 @@ impl RuntimeHost {
         crate::diagnostics::record_projection_state_external_triggers(triggers_started.elapsed());
 
         Ok(AgentStateReadProjection {
+            waits,
             source: AgentStateProjectionSource::Storage,
             agent,
             tasks,
@@ -4829,6 +4848,114 @@ impl RuntimeHost {
         })
     }
 
+    async fn deliver_agent_message(
+        &self,
+        prepared: &crate::runtime::PreparedAgentMessageDelivery,
+        task_id: Option<&str>,
+    ) -> Result<AgentMessageAdmission> {
+        let target_agent_id = &prepared.record.target_agent_id;
+        let identity = self.agent_identity_record(target_agent_id)?;
+        let (identity, runtime, target_turn_baseline, receipt) = match identity {
+            Some(identity) if identity.status == AgentRegistryStatus::Active => {
+                match self.get_or_create_agent(target_agent_id).await {
+                    Ok(runtime) => {
+                        let target_turn_baseline = runtime.agent_state().await?.turn_index;
+                        let receipt = runtime
+                            .agent_message_delivery_service()
+                            .deliver(prepared)
+                            .await?;
+                        (
+                            Some(identity),
+                            Some(runtime),
+                            Some(target_turn_baseline),
+                            receipt,
+                        )
+                    }
+                    Err(activation_error) => {
+                        let latest_identity = self.agent_identity_record(target_agent_id)?;
+                        if latest_identity
+                            .as_ref()
+                            .is_none_or(|latest| latest.status != AgentRegistryStatus::Active)
+                        {
+                            let receipt = self
+                                .runtime_db()
+                                .agent_message_deliveries()
+                                .admit_without_queue(&prepared.record)?;
+                            (
+                                Some(latest_identity.unwrap_or(identity)),
+                                None,
+                                None,
+                                receipt,
+                            )
+                        } else {
+                            return Err(activation_error);
+                        }
+                    }
+                }
+            }
+            _ => {
+                let receipt = self
+                    .runtime_db()
+                    .agent_message_deliveries()
+                    .admit_without_queue(&prepared.record)?;
+                (identity, None, None, receipt)
+            }
+        };
+        if receipt.outcome != AgentMessageDeliveryOutcome::Accepted {
+            if matches!(
+                receipt.rejection_code,
+                Some(
+                    AgentMessageDeliveryRejectionCode::TargetNotFound
+                        | AgentMessageDeliveryRejectionCode::MessageNotAuthorized
+                )
+            ) {
+                let mut error = RuntimeError::not_found(
+                    "agent_target_unavailable",
+                    "agent target was not found or is not available to this caller",
+                )
+                .with_recovery_hint(
+                    "use an agent id already available through the caller's authorized agent context",
+                );
+                if let Some(task_id) = task_id {
+                    error = error.with_safe_context("task_id", task_id);
+                }
+                return Err(anyhow!(error));
+            }
+            return Err(anyhow!(
+                "agent message delivery {} was rejected: {:?}",
+                receipt.delivery_id,
+                receipt.rejection_code
+            ));
+        }
+        let identity = identity.ok_or_else(|| {
+            anyhow!(RuntimeError::not_found(
+                "agent_target_unavailable",
+                "agent target was not found or is not available to this caller",
+            )
+            .with_recovery_hint(
+                "use an agent id already available through the caller's authorized agent context",
+            ))
+        })?;
+        runtime.ok_or_else(|| {
+            anyhow!(
+                "accepted delivery {} targets an inactive agent",
+                receipt.delivery_id
+            )
+        })?;
+        let target_turn_baseline = target_turn_baseline.ok_or_else(|| {
+            anyhow!(
+                "accepted delivery {} is missing its pre-delivery turn baseline",
+                receipt.delivery_id
+            )
+        })?;
+
+        Ok(AgentMessageAdmission {
+            identity,
+            receipt,
+            target_turn_baseline,
+        })
+    }
+
     async fn invoke_existing_agent(
         &self,
         task: &TaskRecord,
@@ -4889,98 +5016,12 @@ impl RuntimeHost {
             },
             caller,
         )?;
-        let identity = self.agent_identity_record(target_agent_id)?;
-        let (identity, runtime, child_turn_baseline, receipt) = match identity {
-            Some(identity) if identity.status == AgentRegistryStatus::Active => {
-                match self.get_or_create_agent(target_agent_id).await {
-                    Ok(runtime) => {
-                        let child_turn_baseline = runtime.agent_state().await?.turn_index;
-                        let receipt = runtime
-                            .agent_message_delivery_service()
-                            .deliver(&prepared)
-                            .await?;
-                        (
-                            Some(identity),
-                            Some(runtime),
-                            Some(child_turn_baseline),
-                            receipt,
-                        )
-                    }
-                    Err(activation_error) => {
-                        let latest_identity = self.agent_identity_record(target_agent_id)?;
-                        if latest_identity
-                            .as_ref()
-                            .is_none_or(|latest| latest.status != AgentRegistryStatus::Active)
-                        {
-                            let receipt = self
-                                .runtime_db()
-                                .agent_message_deliveries()
-                                .admit_without_queue(&prepared.record)?;
-                            (
-                                Some(latest_identity.unwrap_or(identity)),
-                                None,
-                                None,
-                                receipt,
-                            )
-                        } else {
-                            return Err(activation_error);
-                        }
-                    }
-                }
-            }
-            _ => {
-                let receipt = self
-                    .runtime_db()
-                    .agent_message_deliveries()
-                    .admit_without_queue(&prepared.record)?;
-                (identity, None, None, receipt)
-            }
-        };
-        if receipt.outcome != AgentMessageDeliveryOutcome::Accepted {
-            if matches!(
-                receipt.rejection_code,
-                Some(
-                    AgentMessageDeliveryRejectionCode::TargetNotFound
-                        | AgentMessageDeliveryRejectionCode::MessageNotAuthorized
-                )
-            ) {
-                return Err(anyhow!(RuntimeError::not_found(
-                    "agent_target_unavailable",
-                    "agent target was not found or is not available to this caller",
-                )
-                .with_safe_context("task_id", &task.id)
-                .with_recovery_hint(
-                    "use an agent id already available through the caller's authorized agent context",
-                )));
-            }
-            return Err(anyhow!(
-                "agent message delivery {} was rejected: {:?}",
-                receipt.delivery_id,
-                receipt.rejection_code
-            ));
-        }
-        let identity = identity.ok_or_else(|| {
-            anyhow!(RuntimeError::not_found(
-                "agent_target_unavailable",
-                "agent target was not found or is not available to this caller",
-            )
-            .with_safe_context("task_id", &task.id)
-            .with_recovery_hint(
-                "use an agent id already available through the caller's authorized agent context",
-            ))
-        })?;
-        runtime.ok_or_else(|| {
-            anyhow!(
-                "accepted delivery {} targets an inactive agent",
-                receipt.delivery_id
-            )
-        })?;
-        let child_turn_baseline = child_turn_baseline.ok_or_else(|| {
-            anyhow!(
-                "accepted delivery {} is missing its pre-delivery turn baseline",
-                receipt.delivery_id
-            )
-        })?;
+        let admission = self
+            .deliver_agent_message(&prepared, Some(&task.id))
+            .await?;
+        let identity = admission.identity;
+        let receipt = admission.receipt;
+        let child_turn_baseline = admission.target_turn_baseline;
 
         let mut task_detail = json!({
             "target_agent_id": target_agent_id,
@@ -5233,6 +5274,59 @@ impl RuntimeHost {
                         worktree,
                     )
                     .await;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    async fn await_agent_message(
+        &self,
+        recipient_agent_id: &str,
+        sender_agent_id: &str,
+        after_delivery_rowid: i64,
+    ) -> Result<ChildTaskTerminalResult> {
+        let storage = self.agent_storage(recipient_agent_id)?;
+        loop {
+            if let Some(delivery) = self
+                .runtime_db()
+                .agent_message_deliveries()
+                .first_accepted_from_sender_after(
+                    recipient_agent_id,
+                    sender_agent_id,
+                    after_delivery_rowid,
+                )?
+            {
+                let message_id = delivery.message_id.clone().ok_or_else(|| {
+                    anyhow!(
+                        "accepted agent message delivery {} is missing its message id",
+                        delivery.delivery_id
+                    )
+                })?;
+                let message = storage.read_message_by_id(&message_id)?.ok_or_else(|| {
+                    anyhow!(
+                        "accepted agent message delivery {} is missing message {}",
+                        delivery.delivery_id,
+                        message_id
+                    )
+                })?;
+                let text = match &message.body {
+                    MessageBody::Text { text } => text.clone(),
+                    MessageBody::Brief { text, .. } => text.clone(),
+                    MessageBody::Json { value } => serde_json::to_string(value)?,
+                };
+                return Ok(ChildTaskTerminalResult {
+                    status: TaskStatus::Completed,
+                    text,
+                    task_detail: Some(json!({
+                        "message_wait_satisfied": true,
+                        "sender_agent_id": sender_agent_id,
+                        "recipient_agent_id": recipient_agent_id,
+                        "response_delivery_id": delivery.delivery_id,
+                        "message_id": message_id,
+                        "message_wait_after_delivery_rowid": after_delivery_rowid,
+                        "business_completion": false,
+                    })),
+                });
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -5525,6 +5619,11 @@ impl RuntimeHost {
                         }
                         ExecutionOutcome::Conversation(
                             ConversationOutcome::HandoffToWorkItemWait { work_item_id, .. },
+                        ) => {
+                            cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
+                        }
+                        ExecutionOutcome::Conversation(
+                            ConversationOutcome::HandoffToWorkItemContinue { work_item_id },
                         ) => {
                             cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
                         }
@@ -6251,6 +6350,13 @@ impl RuntimeHostBridge {
         .await
     }
 
+    pub(crate) async fn deliver_agent_message(
+        &self,
+        prepared: &crate::runtime::PreparedAgentMessageDelivery,
+    ) -> Result<AgentMessageAdmission> {
+        Box::pin(self.host()?.deliver_agent_message(prepared, None)).await
+    }
+
     pub(crate) async fn create_agent(
         &self,
         parent_runtime: RuntimeHandle,
@@ -6312,6 +6418,29 @@ impl RuntimeHostBridge {
                 worktree,
                 cleanup_agent_on_terminal,
             )
+            .await
+    }
+
+    pub(crate) fn agent_message_delivery_rowid(&self, delivery_id: &str) -> Result<i64> {
+        self.host()?
+            .runtime_db()
+            .agent_message_deliveries()
+            .rowid(delivery_id)?
+            .ok_or_else(|| {
+                anyhow!(
+                    "accepted agent message delivery {delivery_id} is missing from the durable ledger"
+                )
+            })
+    }
+
+    pub(crate) async fn await_agent_message(
+        &self,
+        recipient_agent_id: &str,
+        sender_agent_id: &str,
+        after_delivery_rowid: i64,
+    ) -> Result<ChildTaskTerminalResult> {
+        self.host()?
+            .await_agent_message(recipient_agent_id, sender_agent_id, after_delivery_rowid)
             .await
     }
 
@@ -6517,6 +6646,9 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::Notify;
 
+    static DELIVERY_CHECKPOINT_TEST_LOCK: tokio::sync::Mutex<()> =
+        tokio::sync::Mutex::const_new(());
+
     use crate::{
         config::{provider_registry_for_tests, ControlAuthMode, ModelRouteRef},
         domain::execution_protocol::{
@@ -6530,14 +6662,15 @@ mod tests {
         storage::AppStorage,
         system::WorkspaceProjectionKind,
         types::{
-            AgentDeletionMode, AgentDeletionPhase, AgentDeletionStatus, AgentKind, AgentOwnership,
-            AgentProfilePreset, AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass,
-            BriefKind, BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
-            InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
-            MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
-            TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TurnTerminalKind,
-            WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
-            WorkItemRecord, WorkItemState, ACTOR_INVOCATION_TASK_KIND,
+            AgentDeletionMode, AgentDeletionPhase, AgentDeletionStatus, AgentKind,
+            AgentMessageSendRequest, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
+            AgentStatus, AgentVisibility, AuthorityClass, BriefKind, BriefRecord,
+            ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord, InvokeAgentRequest,
+            InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+            QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskRecoverySpec, TaskStatus,
+            TimerRecord, TimerStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
+            WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
+            ACTOR_INVOCATION_TASK_KIND, AGENT_MESSAGE_WAIT_TASK_KIND,
         },
     };
 
@@ -7015,6 +7148,31 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         panic!("timed out waiting for task {task_id} to become terminal");
+    }
+
+    async fn send_agent_message(
+        runtime: &RuntimeHandle,
+        target_agent_id: &str,
+        idempotency_key: &str,
+        text: &str,
+    ) -> crate::types::AgentMessageDeliveryReceipt {
+        runtime
+            .agent_messaging_service()
+            .send(
+                AgentMessageSendRequest {
+                    target_agent_id: target_agent_id.to_string(),
+                    content: MessageBody::Text {
+                        text: text.to_string(),
+                    },
+                    client_idempotency_key: idempotency_key.to_string(),
+                    correlation_id: None,
+                    causation_id: None,
+                    requested_priority: Some(Priority::Normal),
+                },
+                AuthorityClass::RuntimeInstruction,
+            )
+            .await
+            .unwrap()
     }
 
     async fn invoke_new_subagent(
@@ -8020,13 +8178,13 @@ mod tests {
 
         assert!(!receipt.created);
         assert_eq!(receipt.agent_id, "canonical-existing");
-        assert_eq!(receipt.task_handle.task_kind, ACTOR_INVOCATION_TASK_KIND);
+        assert_eq!(receipt.task_handle.task_kind, AGENT_MESSAGE_WAIT_TASK_KIND);
         let task = parent
             .storage()
             .latest_task_record(&receipt.task_handle.task_id)
             .unwrap()
             .unwrap();
-        assert_eq!(task.kind, TaskKind::ActorInvocation);
+        assert_eq!(task.kind, TaskKind::AgentMessageWait);
 
         let after_summary = target.agent_summary().await.unwrap();
         let after_relations = host
@@ -8052,8 +8210,19 @@ mod tests {
         );
         assert_eq!(after_relations, before_relations);
 
+        let response = send_agent_message(
+            &target,
+            &parent_agent_id,
+            "canonical-existing-response",
+            "message accepted",
+        )
+        .await;
         let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
         assert_eq!(terminal.status, TaskStatus::Completed);
+        let detail = terminal.detail.unwrap();
+        assert_eq!(detail["sender_agent_id"], "canonical-existing");
+        assert_eq!(detail["response_delivery_id"], response.delivery_id);
+        assert_eq!(detail["business_completion"], false);
     }
 
     #[tokio::test]
@@ -8101,6 +8270,15 @@ mod tests {
             .unwrap();
         assert!(!reused.created);
         assert_eq!(reused.agent_id, created.agent_id);
+        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        send_agent_message(
+            &child,
+            &parent_agent_id,
+            "canonical-new-subagent-reuse-response",
+            "second invocation accepted",
+        )
+        .await;
         let second_terminal = wait_for_terminal_task(&parent, &reused.task_handle.task_id).await;
         assert_eq!(second_terminal.status, TaskStatus::Completed);
 
@@ -8117,7 +8295,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn existing_agent_samples_child_turn_before_delivery_admission() {
+    async fn agent_message_wait_for_existing_agent_captures_reply_before_invoke_returns() {
+        let _delivery_checkpoint_test_lock = DELIVERY_CHECKPOINT_TEST_LOCK.lock().await;
+
         struct DeliveryCheckpointGuard;
 
         impl Drop for DeliveryCheckpointGuard {
@@ -8145,13 +8325,7 @@ mod tests {
         assert_eq!(first_terminal.status, TaskStatus::Completed);
 
         let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
-        for _ in 0..100 {
-            if child.agent_state().await.unwrap().status == AgentStatus::Asleep {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        let child_turn_baseline = child.agent_state().await.unwrap().turn_index;
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
 
         crate::runtime::enable_delivery_checkpoint(created.agent_id.clone());
         let _checkpoint_guard = DeliveryCheckpointGuard;
@@ -8171,82 +8345,188 @@ mod tests {
         });
 
         crate::runtime::wait_for_delivery_checkpoint().await;
-        for _ in 0..100 {
-            let state = child.agent_state().await.unwrap();
-            if state.turn_index > child_turn_baseline && state.status == AgentStatus::Asleep {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        let child_state = child.agent_state().await.unwrap();
-        assert!(child_state.turn_index > child_turn_baseline);
-        assert_eq!(child_state.status, AgentStatus::Asleep);
-        let invocation_turn_index = child_state.turn_index;
-
-        child
-            .enqueue(
-                MessageEnvelope::new(
-                    created.agent_id.clone(),
-                    MessageKind::InternalFollowup,
-                    MessageOrigin::System {
-                        subsystem: "unrelated-test-message".into(),
-                    },
-                    AuthorityClass::RuntimeInstruction,
-                    Priority::Normal,
-                    MessageBody::Text {
-                        text: "unrelated turn after invocation".into(),
-                    },
-                )
-                .with_admission(
-                    MessageDeliverySurface::RuntimeSystem,
-                    AdmissionContext::RuntimeOwned,
-                ),
-            )
-            .await
-            .unwrap();
-        for _ in 0..100 {
-            let state = child.agent_state().await.unwrap();
-            if state.turn_index > invocation_turn_index && state.status == AgentStatus::Asleep {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        let unrelated_turn_id = child
-            .agent_state()
-            .await
-            .unwrap()
-            .last_turn_terminal
-            .expect("unrelated turn should complete")
-            .turn_id;
+        let response = send_agent_message(
+            &child,
+            &parent_agent_id,
+            "reply-before-invoke-returns",
+            "fast reply",
+        )
+        .await;
 
         crate::runtime::release_delivery_checkpoint();
         let receipt = invocation.await.unwrap().unwrap();
+        assert_eq!(receipt.task_handle.task_kind, AGENT_MESSAGE_WAIT_TASK_KIND);
         let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
         assert_eq!(terminal.status, TaskStatus::Completed);
-        assert_eq!(
-            terminal
-                .detail
-                .as_ref()
-                .and_then(|detail| detail.get("child_turn_baseline"))
-                .and_then(Value::as_u64),
-            Some(child_turn_baseline)
-        );
         let detail = terminal.detail.as_ref().unwrap();
-        let delivery_id = detail["delivery_id"].as_str().unwrap();
-        let delivery = host
+        let request_delivery_id = detail["request_delivery_id"].as_str().unwrap();
+        let request_rowid = host
             .runtime_db()
             .agent_message_deliveries()
-            .latest(delivery_id)
+            .rowid(request_delivery_id)
             .unwrap()
-            .expect("invocation delivery should remain persisted");
-        assert!(delivery.activation_id.is_some());
-        assert_eq!(detail["activation_id"], delivery.activation_id.unwrap());
-        assert_eq!(detail["turn_id"], delivery.turn_id.unwrap());
-        assert_ne!(detail["turn_id"], unrelated_turn_id);
+            .unwrap();
+        let response_rowid = host
+            .runtime_db()
+            .agent_message_deliveries()
+            .rowid(&response.delivery_id)
+            .unwrap()
+            .unwrap();
+        assert!(response_rowid > request_rowid);
+        assert_eq!(detail["message_wait_after_delivery_rowid"], request_rowid);
+        assert_eq!(detail["response_delivery_id"], response.delivery_id);
+        assert_eq!(detail["message_wait_satisfied"], true);
     }
 
     #[tokio::test]
-    async fn concurrent_existing_agent_invocations_keep_distinct_execution_results() {
+    async fn agent_message_wait_recovery_reuses_the_persisted_delivery() {
+        let _delivery_checkpoint_test_lock = DELIVERY_CHECKPOINT_TEST_LOCK.lock().await;
+
+        struct DeliveryCheckpointGuard;
+
+        impl Drop for DeliveryCheckpointGuard {
+            fn drop(&mut self) {
+                crate::runtime::release_delivery_checkpoint();
+            }
+        }
+
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        host.create_named_agent("message-wait-recovery", None)
+            .await
+            .unwrap();
+        let target = host
+            .get_public_agent("message-wait-recovery")
+            .await
+            .unwrap();
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let receipt = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::ExistingAgent {
+                    agent_id: "message-wait-recovery".into(),
+                },
+                message: "persist this request once".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        let task = parent
+            .storage()
+            .latest_task_record(&receipt.task_handle.task_id)
+            .unwrap()
+            .unwrap();
+        let (request_delivery_id, request_rowid) = match task.recovery.as_ref().unwrap() {
+            TaskRecoverySpec::AgentMessageWait {
+                delivery_id: Some(delivery_id),
+                after_delivery_rowid: Some(after_delivery_rowid),
+                ..
+            } => (delivery_id.clone(), *after_delivery_rowid),
+            recovery => panic!("unexpected message wait recovery: {recovery:?}"),
+        };
+        parent
+            .abort_async_task_monitor_for_test(&receipt.task_handle.task_id)
+            .await;
+
+        crate::runtime::enable_delivery_checkpoint("message-wait-recovery");
+        let _checkpoint_guard = DeliveryCheckpointGuard;
+        let (reattached, remaining) = tokio::time::timeout(
+            Duration::from_millis(500),
+            parent.recover_supervised_child_tasks(vec![task]),
+        )
+        .await
+        .expect("recovery with a persisted cursor must not resend the request")
+        .unwrap();
+        assert_eq!(reattached.len(), 1);
+        assert!(remaining.is_empty());
+
+        let response = send_agent_message(
+            &target,
+            &parent_agent_id,
+            "message-wait-recovery-response",
+            "recovered response",
+        )
+        .await;
+        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        assert_eq!(terminal.status, TaskStatus::Completed);
+        let detail = terminal.detail.unwrap();
+        assert_eq!(detail["request_delivery_id"], request_delivery_id);
+        assert_eq!(detail["message_wait_after_delivery_rowid"], request_rowid);
+        assert_eq!(detail["response_delivery_id"], response.delivery_id);
+    }
+
+    #[tokio::test]
+    async fn cancelling_agent_message_wait_does_not_stop_the_target_or_late_messages() {
+        let (_home, host) = test_host();
+        let parent = host.default_runtime().await.unwrap();
+        host.create_named_agent("message-wait-cancel", None)
+            .await
+            .unwrap();
+        let target = host.get_public_agent("message-wait-cancel").await.unwrap();
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let receipt = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::ExistingAgent {
+                    agent_id: "message-wait-cancel".into(),
+                },
+                message: "wait until cancelled".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+
+        let stopped = parent
+            .stop_task(
+                &receipt.task_handle.task_id,
+                &AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped.status, TaskStatus::Cancelled);
+        assert_eq!(stopped.kind, TaskKind::AgentMessageWait);
+        assert_eq!(
+            target.agent_summary().await.unwrap().identity.status,
+            AgentRegistryStatus::Active
+        );
+
+        let response = send_agent_message(
+            &target,
+            &parent_agent_id,
+            "late-message-after-cancel",
+            "late but still durable",
+        )
+        .await;
+        assert_eq!(response.outcome, AgentMessageDeliveryOutcome::Accepted);
+        let response_message_id = host
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest(&response.delivery_id)
+            .unwrap()
+            .unwrap()
+            .message_id
+            .unwrap();
+        assert_eq!(
+            parent
+                .storage()
+                .read_message_by_id(&response_message_id)
+                .unwrap()
+                .unwrap()
+                .body,
+            MessageBody::Text {
+                text: "late but still durable".into()
+            }
+        );
+        let terminal = parent
+            .storage()
+            .latest_task_record(&receipt.task_handle.task_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.status, TaskStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn concurrent_existing_agent_waits_share_the_first_later_message() {
         let (_home, host) = test_host();
         let parent = host.default_runtime().await.unwrap();
         let created = parent
@@ -8284,6 +8564,15 @@ mod tests {
         let (first, second) = tokio::join!(first, second);
         let first = first.unwrap();
         let second = second.unwrap();
+        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+        let parent_agent_id = parent.agent_summary().await.unwrap().identity.agent_id;
+        let response = send_agent_message(
+            &child,
+            &parent_agent_id,
+            "shared-concurrent-response",
+            "one message for the shared channel",
+        )
+        .await;
         let first_task = wait_for_terminal_task(&parent, &first.task_handle.task_id).await;
         let second_task = wait_for_terminal_task(&parent, &second.task_handle.task_id).await;
         assert_eq!(first_task.status, TaskStatus::Completed);
@@ -8291,31 +8580,14 @@ mod tests {
 
         let first_detail = first_task.detail.as_ref().unwrap();
         let second_detail = second_task.detail.as_ref().unwrap();
-        let first_delivery = host
-            .runtime_db()
-            .agent_message_deliveries()
-            .latest(first_detail["delivery_id"].as_str().unwrap())
-            .unwrap()
-            .unwrap();
-        let second_delivery = host
-            .runtime_db()
-            .agent_message_deliveries()
-            .latest(second_detail["delivery_id"].as_str().unwrap())
-            .unwrap()
-            .unwrap();
-        assert_ne!(first_delivery.delivery_id, second_delivery.delivery_id);
-        assert_ne!(first_delivery.activation_id, second_delivery.activation_id);
-        assert_ne!(first_delivery.turn_id, second_delivery.turn_id);
-        assert_eq!(
-            first_detail["activation_id"],
-            first_delivery.activation_id.unwrap()
+        assert_eq!(first_detail["response_delivery_id"], response.delivery_id);
+        assert_eq!(second_detail["response_delivery_id"], response.delivery_id);
+        assert_ne!(
+            first_detail["request_delivery_id"],
+            second_detail["request_delivery_id"]
         );
-        assert_eq!(first_detail["turn_id"], first_delivery.turn_id.unwrap());
-        assert_eq!(
-            second_detail["activation_id"],
-            second_delivery.activation_id.unwrap()
-        );
-        assert_eq!(second_detail["turn_id"], second_delivery.turn_id.unwrap());
+        assert_eq!(first_detail["business_completion"], false);
+        assert_eq!(second_detail["business_completion"], false);
     }
 
     #[tokio::test]

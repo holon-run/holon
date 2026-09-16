@@ -35,7 +35,7 @@ Tools are grouped by capability family for authority gating:
 
 | Family | Tools | Authority |
 |--------|-------|-----------|
-| `CoreAgent` | `WaitFor`, `GetAgent`, `Enqueue`, `CreateTimer`, `ListTimers`, `GetTimer`, `CancelTimer`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, `TaskStop`, `ListModelProviders`, `ListProviderModels`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
+| `CoreAgent` | `WaitFor`, `GetAgent`, `SendAgentMessage`, `Enqueue`, `CreateTimer`, `ListTimers`, `GetTimer`, `CancelTimer`, `ListTasks`, `TaskStatus`, `TaskInput`, `TaskOutput`, `TaskStop`, `ListModelProviders`, `ListProviderModels`, WorkItem tools, `MemorySearch`, `MemoryGet` | All agent profiles |
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `ViewImage`, `GenerateImage`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch`, `XSearch` | All profiles |
@@ -83,7 +83,8 @@ out of the model-facing surface.
 | `WaitFor` | Signal turn-end after recording explicit wait state |
 | `Enqueue` | Schedule self-follow-up message |
 | `CreateAgent` | Create a long-lived, addressable agent |
-| `InvokeAgent` | Delegate work through a parent-supervised task handle |
+| `SendAgentMessage` | Durably send an asynchronous message to an authorized agent |
+| `InvokeAgent` | Send and wait for an existing-agent message, or create a result-bearing supervised child |
 
 ### Timer plane
 

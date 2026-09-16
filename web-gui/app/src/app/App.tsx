@@ -32,6 +32,7 @@ import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { usePanelLayout } from "../features/right-panel/usePanelLayout";
+import { NAV_WIDTH } from "../features/right-panel/panel-layout";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
@@ -45,15 +46,14 @@ import {
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
 import { unreadBadgeView, type LedgerUnreadView } from "../runtime/read-state";
 import {
-  canUseRemoteRuntimeConnections,
-  readStoredRemoteConnectionProfiles,
+  clearStoredRuntimeConnectionToken,
   skillDetailCacheKey,
   useRuntimeStore,
 } from "../runtime/runtime-store";
 import { useAgentDetail } from "../runtime/useAgentDetail";
 import { useConversationSession } from "../runtime/useConversationSession";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
-import type { AgentSummary, RouteKey, RuntimeConnection, RuntimeConnectionConfig, RuntimeConnectionProfile } from "../runtime/types";
+import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
 import { pushBrowserRoute, replaceBrowserRoute, routeFromLocation } from "./routes";
 
@@ -67,9 +67,8 @@ const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }>
 
 const APP_WINDOW_TITLE = "Holon";
 
-// Sidebar agent rows cap at two lines: the second line is either the current
-// work-item objective (width-truncated) or, when idle, the agent id for named
-// agents. 40 units ~= 40 latin or 20 CJK glyphs at the 11px meta font.
+// Keep the optional work objective compact below the agent name.
+// 40 units ~= 40 latin or 20 CJK glyphs at the 11px meta font.
 const AGENT_ROW_SUMMARY_MAX_WIDTH = 40;
 
 export function App() {
@@ -129,7 +128,6 @@ export function App() {
   const restoreRightPanelView = useRuntimeStore((state) => state.restoreRightPanelView);
   const toggleRightPanel = useRuntimeStore((state) => state.toggleRightPanel);
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
-  const setRuntimeConnection = useRuntimeStore((state) => state.setRuntimeConnection);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
   const ledgerUnreadByAgentId = useRuntimeStore((state) => state.ledgerUnreadByAgentId);
@@ -392,8 +390,8 @@ export function App() {
   }, [agentSkillCatalog, agentSkillCatalogLoading, refreshAgentSkillCatalog, sidePanelAgentId]);
 
   useEffect(() => {
-    document.title = browserWindowTitle(bootstrap.connection);
-  }, [bootstrap.connection.baseUrl, bootstrap.connection.mode]);
+    document.title = browserWindowTitle();
+  }, []);
 
   useEffect(() => {
     if (!developerDiagnosticsEnabled) {
@@ -490,7 +488,7 @@ export function App() {
   }
 
   if (isInitialBootstrapping) {
-    return <BootstrappingPage connection={bootstrap.connection} onSetConnection={setRuntimeConnection} />;
+    return <BootstrappingPage />;
   }
   if (bootstrap.connection.authRequired) {
     return <LoginPage />;
@@ -503,7 +501,7 @@ export function App() {
       data-panel-mode={rightPanelMode}
       data-nav-collapsed={navCollapsed}
       data-panel-full={panelLayout.full}
-      style={{ "--panel-w": `${panelLayout.width}px` } as CSSProperties}
+      style={{ "--panel-w": `${panelLayout.width}px`, "--nav-w": `${NAV_WIDTH}px` } as CSSProperties}
     >
       <aside className="sidebar" aria-label="Holon navigation">
         <div className="sidebar-brand">
@@ -643,7 +641,7 @@ export function App() {
         </section>
 
         <div className="sidebar-bottom">
-          <ConnectionSwitcher connection={bootstrap.connection} onSetConnection={setRuntimeConnection} />
+          <ConnectionStatus connection={bootstrap.connection} loading={loading} onRetry={() => refresh()} />
         </div>
       </aside>
 
@@ -744,6 +742,13 @@ export function App() {
                     onLoadDetail: conversationSession.loadDetail,
                     onLoadOlderActivities: conversationSession.loadOlderActivities,
                     onRetry: conversationSession.retry,
+                    onOpenWorkItemId: async (id) => {
+                      await loadAgentWorkItemDetail(activeAgent.id, id);
+                      const state = useRuntimeStore.getState();
+                      if (state.selectedAgentId !== activeAgent.id) return;
+                      const work = state.sessionsByAgentId[activeAgent.id]?.workItemDetailsById[id]?.workItem;
+                      showWorkItemDetail(activeAgent.id, work ?? { id, objective: id, state: "unknown" });
+                    },
                     briefRecord: conversationSession.briefRecord,
                     briefLoadState: conversationSession.briefState,
                     detailLoadState: conversationSession.detailState,
@@ -770,6 +775,14 @@ export function App() {
             onSendPrompt={(text, attachments) => sendOperatorPrompt(activeAgent.id, text, attachments)}
             onAbortCurrentRun={(runId) => abortCurrentRun(activeAgent.id, runId)}
             onConversationRead={markSelectedAgentConversationRead}
+            onOpenWorkItem={(work) => {
+              showWorkItemDetail(activeAgent.id, work);
+              void loadAgentWorkItemDetail(activeAgent.id, work.id);
+            }}
+            onOpenTask={(task) => {
+              showTaskDetail(activeAgent.id, task);
+              void loadAgentTaskDetail(activeAgent.id, task.id);
+            }}
           />
         ) : null}
         {route === "agent" && !activeAgent ? <MissingAgentPage agentId={selectedAgentId} loading={loading} /> : null}
@@ -983,244 +996,90 @@ export function App() {
   );
 }
 
-function BootstrappingPage({
-  connection,
-  onSetConnection,
-}: {
-  connection: RuntimeConnection;
-  onSetConnection: (config: RuntimeConnectionConfig) => Promise<void>;
-}) {
+function BootstrappingPage() {
   const { t } = useTranslation();
   return (
-    <main className="boot-page" aria-label="Holon is loading">
+    <main className="boot-page" aria-label={t("boot.title")}>
       <section className="boot-card" role="status" aria-live="polite">
-        <span className="boot-mark">◎</span>
-        <div>
-          <p>{t("boot.title")}</p>
-          <h1>{t("boot.preparing")}</h1>
-          <span>{t("boot.body")}</span>
-          <ConnectionSwitcher connection={connection} onSetConnection={onSetConnection} compact={false} />
-        </div>
+        <img className="boot-mark" src={holonMarkUrl} alt="Holon" />
+        <h1>{t("boot.preparing")}</h1>
+        <p>{t("boot.body")}</p>
+        <span className="site-address">{window.location.host}</span>
+        <LoaderCircle className="boot-spinner" size={18} aria-hidden="true" />
       </section>
     </main>
   );
 }
 
-function ConnectionSwitcher({
-  connection,
-  onSetConnection,
-  compact = true,
-}: {
+function ConnectionStatus({ connection, loading, onRetry }: {
   connection: RuntimeConnection;
-  onSetConnection: (config: RuntimeConnectionConfig) => Promise<void>;
-  compact?: boolean;
+  loading: boolean;
+  onRetry: () => Promise<void>;
 }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(!compact || Boolean(connection.error));
-  const [baseUrl, setBaseUrl] = useState(connection.mode === "remote" ? connection.baseUrl ?? "" : "");
-  const [token, setToken] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [formError, setFormError] = useState<string | undefined>();
-  const remoteConnectionsAllowed = canUseRemoteRuntimeConnections();
-  const [savedRemotes, setSavedRemotes] = useState<RuntimeConnectionProfile[]>(() => readStoredRemoteConnectionProfiles());
-  const switcherRef = useRef<HTMLDivElement>(null);
-  const authRequired = Boolean(connection.authRequired);
+  const currentUser = useRuntimeStore((state) => state.currentUser);
+  // OIDC sessions may exist even when the control token is not required.
+  const unauthenticatedLocal = currentUser?.authMethod === "local_control"
+    && connection.controlTokenRequired === false && !connection.hasToken;
+  const [open, setOpen] = useState(false);
+  const [retryError, setRetryError] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const status = loading ? t("connection.connecting")
+    : connection.error ? t("connection.disconnected") : t("connection.connected");
 
   useEffect(() => {
-    if (connection.mode === "remote") setBaseUrl(connection.baseUrl ?? "");
-  }, [connection.baseUrl, connection.mode]);
-
-  useEffect(() => {
-    if (!compact || !open) return;
-    const closeOnOutside = (event: MouseEvent) => {
-      if (!switcherRef.current?.contains(event.target as Node)) setOpen(false);
+    if (!open) return;
+    closeRef.current?.focus();
+    const outside = (event: MouseEvent) => {
+      if (!panelRef.current?.contains(event.target as Node)) setOpen(false);
     };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
     };
-    document.addEventListener("mousedown", closeOnOutside);
-    document.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("mousedown", outside);
+    document.addEventListener("keydown", escape);
     return () => {
-      document.removeEventListener("mousedown", closeOnOutside);
-      document.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("mousedown", outside);
+      document.removeEventListener("keydown", escape);
     };
-  }, [compact, open]);
-
-  function toggleOpen() {
-    setOpen((value) => {
-      const nextOpen = !value;
-      if (nextOpen) {
-        setSavedRemotes(readStoredRemoteConnectionProfiles());
-        setFormError(undefined);
-      }
-      return nextOpen;
-    });
-  }
-
-  async function applyConnection(config: RuntimeConnectionConfig) {
-    setSaving(true);
-    setFormError(undefined);
-    try {
-      await onSetConnection(config);
-      setSavedRemotes(readStoredRemoteConnectionProfiles());
-      if (compact && !connection.authRequired) setOpen(false);
-    } catch (error) {
-      setFormError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSaving(false);
-    }
-  }
+  }, [open]);
 
   return (
-    <div className={`connection-switcher ${open ? "is-open" : ""} ${compact ? "is-popover" : ""}`} ref={switcherRef}>
-      <button
-        className="connection-status"
-        type="button"
-        aria-expanded={open}
-        aria-haspopup={compact ? "dialog" : undefined}
-        title={connection.baseUrl ?? connection.summary}
-        onClick={toggleOpen}
-      >
-        <span className={`runtime-dot ${connection.error ? "error" : ""}`} />
-        <span>
-          <strong>
-            {connection.mode === "local" && !remoteConnectionsAllowed ? t("connection.currentServer") : connection.mode}
-          </strong>
-          <small>
-            {connection.mode === "local" && !remoteConnectionsAllowed
-              ? globalThis.location?.host ?? connection.summary
-              : connection.summary}
-          </small>
-        </span>
+    <div className="connection-switcher is-popover" ref={panelRef}>
+      <button className="connection-status" type="button" ref={triggerRef}
+        aria-expanded={open} aria-haspopup="dialog" aria-controls="connection-panel"
+        aria-label={`${t("connection.title")}: ${status} · ${window.location.host}`}
+        title={window.location.origin} onClick={() => setOpen(!open)}>
+        <span className={`runtime-dot ${loading ? "connecting" : connection.error ? "error" : ""}`} />
+        <span><strong>{status}</strong><small>{window.location.host}</small></span>
       </button>
       {open ? (
-        <form
-          className="connection-panel"
-          role={compact ? "dialog" : undefined}
-          aria-label={t("connection.title")}
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (authRequired) {
-              const trimmedToken = token.trim();
-              if (!trimmedToken) {
-                setFormError(t("connection.tokenRequired"));
-                return;
-              }
-              const retryConfig: RuntimeConnectionConfig =
-                connection.mode === "remote"
-                  ? { mode: "remote", baseUrl: baseUrl.trim() || connection.baseUrl, token: trimmedToken }
-                  : { mode: "local", token: trimmedToken };
-              void applyConnection(retryConfig);
-              return;
-            }
-            const trimmedBaseUrl = baseUrl.trim();
-            if (!trimmedBaseUrl) {
-              setFormError(t("connection.urlRequired"));
-              return;
-            }
-            void applyConnection({ mode: "remote", baseUrl: trimmedBaseUrl });
-          }}
-        >
+        <div className="connection-panel" id="connection-panel" role="dialog" aria-label={t("connection.title")}>
           <div className="connection-panel-head">
-            <div>
-              <strong>{t("connection.title")}</strong>
-              <span>
-                {authRequired
-                  ? t("connection.authRequired")
-                  : remoteConnectionsAllowed
-                  ? t("connection.canSwitch")
-                  : t("connection.locked")}
-              </span>
-            </div>
-            {compact ? (
-              <button type="button" aria-label={t("connection.closePanel")} onClick={() => setOpen(false)}>
-                ×
-              </button>
-            ) : null}
+            <div><strong>{t("connection.title")}</strong><span>{t("connection.locked")}</span></div>
+            <button type="button" ref={closeRef} aria-label={t("connection.closePanel")}
+              onClick={() => { setOpen(false); triggerRef.current?.focus(); }}>×</button>
           </div>
-          <button
-            className={`saved-remote-row ${connection.mode === "local" ? "is-selected" : ""}`}
-            type="button"
-            disabled={saving}
-            onClick={() => void applyConnection({ mode: "local" })}
-          >
-            <span>
-              <strong>
-                {remoteConnectionsAllowed ? t("connection.localhost") : t("connection.currentServer")}
-              </strong>
-              <small>
-                {remoteConnectionsAllowed
-                  ? t("connection.localRuntime")
-                  : globalThis.location?.host ?? t("connection.currentSite")}
-              </small>
-            </span>
-            <span>{connection.mode === "local" ? t("status.current") : t("status.use")}</span>
-          </button>
-          {remoteConnectionsAllowed ? (
-            <>
-              <div className="saved-remotes" aria-label={t("connection.savedRemotes")}>
-                <span className="connection-section-label">{t("connection.savedRemotes")}</span>
-                {savedRemotes.length > 0 ? (
-                  savedRemotes.map((remote) => {
-                    const selected = connection.mode === "remote" && connection.baseUrl === remote.baseUrl;
-                    return (
-                      <button
-                        className={`saved-remote-row ${selected ? "is-selected" : ""}`}
-                        type="button"
-                        key={remote.baseUrl}
-                        title={remote.baseUrl}
-                        disabled={saving}
-                        onClick={() => void applyConnection({ mode: "remote", baseUrl: remote.baseUrl })}
-                      >
-                        <span>
-                          <strong>{remoteLabel(remote.baseUrl)}</strong>
-                          <small>{remote.baseUrl}</small>
-                        </span>
-                        <span>{selected ? t("status.current") : remote.hasToken ? t("connection.token") : t("status.use")}</span>
-                      </button>
-                    );
-                  })
-                ) : (
-                  <p className="saved-remotes-empty">{t("connection.noSavedRemotes")}</p>
-                )}
-              </div>
-              <span className="connection-section-label">{t("connection.addRemote")}</span>
-              <label>
-                {t("connection.remoteUrl")}
-                <input
-                  value={baseUrl}
-                  onChange={(event) => setBaseUrl(event.target.value)}
-                  placeholder="http://192.168.1.10:7878"
-                  inputMode="url"
-                />
-              </label>
-            </>
-          ) : (
-            <p className="saved-remotes-empty">{t("connection.remoteOnly")}</p>
-          )}
-          {authRequired ? (
-            <label>
-              {t("connection.bearerToken")}
-              <input
-                value={token}
-                onChange={(event) => setToken(event.target.value)}
-                placeholder={connection.hasToken ? t("connection.replaceToken") : t("connection.pasteToken")}
-                type="password"
-                autoComplete="current-password"
-                autoFocus
-              />
-            </label>
-          ) : null}
-          {formError ? <span className="connection-error">{formError}</span> : null}
-          {remoteConnectionsAllowed || authRequired ? (
-            <div className="connection-actions">
-              <Button type="submit" size="sm" disabled={saving}>
-                {saving ? t("connection.connecting") : authRequired ? t("connection.retryWithToken") : t("connection.useRemote")}
-              </Button>
-            </div>
-          ) : null}
-          {!connection.hasToken ? <SessionLogout /> : null}
-        </form>
+          <div className="connection-site">
+            <span>{t("connection.currentServer")}</span>
+            <strong>{window.location.origin}</strong>
+          </div>
+          <div className="connection-health" role="status">
+            <span className={`runtime-dot ${loading ? "connecting" : connection.error ? "error" : ""}`} />
+            <span>{status}</span>
+          </div>
+          {connection.error ? <p className="connection-error">{t("connection.unavailable")}</p> : null}
+          {retryError ? <p className="connection-error" role="alert">{t("connection.retryFailed")}</p> : null}
+          <Button variant="outline" size="sm" disabled={loading} onClick={() => {
+            setRetryError(false);
+            void onRetry().catch(() => setRetryError(true));
+          }}><RefreshCw size={14} />{t("connection.retry")}</Button>
+          {!unauthenticatedLocal ? <SessionLogout /> : null}
+        </div>
       ) : null}
     </div>
   );
@@ -1241,6 +1100,7 @@ function SessionLogout() {
         headers: { Accept: "application/json" },
       });
       if (!response.ok) throw new Error("Logout failed");
+      clearStoredRuntimeConnectionToken();
       const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
       window.location.replace(`/login?return_to=${encodeURIComponent(returnTo || "/")}`);
     } catch {
@@ -1267,38 +1127,9 @@ function SessionLogout() {
   );
 }
 
-function remoteLabel(baseUrl: string): string {
-  try {
-    return new URL(baseUrl).host;
-  } catch {
-    return baseUrl;
-  }
-}
-
-function browserWindowTitle(connection: RuntimeConnection): string {
-  const runtimeLabel = browserRuntimeTitleLabel(connection);
-  return runtimeLabel ? `${APP_WINDOW_TITLE} · ${runtimeLabel}` : APP_WINDOW_TITLE;
-}
-
-function browserRuntimeTitleLabel(connection: RuntimeConnection): string {
-  const baseUrl = connection.baseUrl?.trim();
-  const host = baseUrl ? browserHostForBaseUrl(baseUrl) : browserWindowHost();
-  if (!host) return connection.mode === "remote" ? "remote" : "";
-  return connection.mode === "remote" ? `remote ${host}` : host;
-}
-
-function browserHostForBaseUrl(baseUrl: string): string | undefined {
-  try {
-    const url = typeof window === "undefined" ? new URL(baseUrl) : new URL(baseUrl, window.location.href);
-    return url.host || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function browserWindowHost(): string | undefined {
-  if (typeof window === "undefined") return undefined;
-  return window.location.host || window.location.hostname || undefined;
+function browserWindowTitle(): string {
+  const host = typeof window === "undefined" ? "" : window.location.host;
+  return host ? `${APP_WINDOW_TITLE} · ${host}` : APP_WINDOW_TITLE;
 }
 
 function MissingAgentPage({ agentId, loading }: { agentId: string; loading: boolean }) {

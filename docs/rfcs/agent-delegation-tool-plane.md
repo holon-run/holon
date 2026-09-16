@@ -9,10 +9,10 @@ status: draft
 > **Supersession note:** The draft
 > [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
 > RFC preserves bounded delegation while replacing the combined `SpawnAgent`
-> product surface with `CreateAgent` and result-bearing `InvokeAgent`; reliable
-> message delivery remains an internal runtime contract in the first release.
-> `InvokeAgent(target = new_subagent)` is the canonical bounded delegation
-> entrypoint.
+> product surface with `CreateAgent`, `SendAgentMessage`, and `InvokeAgent`.
+> `InvokeAgent(target = existing_agent)` returns a message-arrival wait handle;
+> `InvokeAgent(target = new_subagent)` remains the canonical result-bearing
+> bounded delegation entrypoint.
 
 ## Summary
 

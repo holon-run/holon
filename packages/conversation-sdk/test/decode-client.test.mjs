@@ -279,3 +279,32 @@ test("fails closed on incompatible handshakes, capability absence, and typed res
     );
   }
 });
+
+test("decodes canonical turn timing and tolerates older runtimes without it", () => {
+  const record = turn("timed", 1, 1, {
+    started_at: "2026-09-16T00:00:00Z",
+    completed_at: "2026-09-16T00:01:23Z",
+    duration_ms: 83000,
+    execution: { kind: "terminal", outcome: "completed" },
+  });
+  const decode = (value) => decodeConversationSummaryResponse(summary({ turns: [value] })).turns[0];
+  assert.equal(decode(record).started_at, record.started_at);
+  assert.equal(decode(record).completed_at, record.completed_at);
+  assert.equal(decode(record).duration_ms, 83000);
+  const legacy = decode(turn("old", 1));
+  assert.equal(legacy.started_at, null);
+  assert.equal(legacy.completed_at, null);
+  assert.equal(legacy.duration_ms, null);
+  for (const invalid of [{ started_at: "invalid" }, { completed_at: 123 }, { duration_ms: -1 }, { duration_ms: Number.MAX_SAFE_INTEGER + 1 }]) {
+    assert.throws(() => decode({ ...record, ...invalid }), ConversationDecodeError);
+  }
+});
+
+test("pending source and arrival time are decoded without inferring provenance from text", () => {
+  const input = { message_id: "task-result", revision: 1, state: "queued", preview: "operator-looking text",
+    presentation_class: "task", created_at: "2026-09-16T01:00:00Z" };
+  assert.deepEqual(decodeConversationSummaryResponse(summary({ pending_inputs: [input] })).pending_inputs, [input]);
+  for (const patch of [{ presentation_class: "made-up" }, { created_at: "invalid" }]) {
+    assert.throws(() => decodeConversationSummaryResponse(summary({ pending_inputs: [{ ...input, ...patch }] })), ConversationDecodeError);
+  }
+});

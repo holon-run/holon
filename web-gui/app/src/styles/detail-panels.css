@@ -1,0 +1,84 @@
+/* Detail pages share the conversation's quiet surface; semantic states keep their color. */
+.side-panel .detail-surface {
+  display: grid;
+  align-content: start;
+  gap: 20px;
+  width: 100%;
+  max-width: 1040px;
+  min-width: 0;
+  margin: 0 auto;
+  padding: 4px 0 24px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.side-panel .detail-heading { display: grid; gap: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.side-panel .detail-title,
+.side-panel .detail-heading .inspector-list-head > strong { margin: 0; color: var(--text); font-size: 16px; line-height: 1.5; font-weight: 600; overflow-wrap: anywhere; }
+.side-panel .detail-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; color: var(--muted); font-size: 12px; }
+.side-panel .detail-updated { margin: 0; color: var(--muted); font-size: 12px; }
+.side-panel .detail-notice { display: grid; gap: 4px; padding: 10px 12px; border-left: 2px solid var(--warning); background: color-mix(in srgb, var(--warning) 5%, var(--surface)); overflow-wrap: anywhere; }
+.side-panel .detail-surface .inspector-facts { gap: 10px; margin: 0; }
+.side-panel .detail-surface .inspector-facts > div { display: grid; grid-template-columns: minmax(80px, 28%) minmax(0, 1fr); align-items: baseline; gap: 12px; }
+.side-panel .detail-surface :is(.inspector-facts dt, .tool-detail-simple-label) { font-size: 12px; font-weight: 400; letter-spacing: normal; text-transform: none; color: var(--muted); }
+.side-panel .detail-surface .inspector-facts dd { font-size: 12px; line-height: 1.6; color: var(--text); }
+.side-panel .detail-surface :is(.tool-detail-field-label, .work-item-detail-section h3, .task-detail-section-title, .tool-detail-batch-item-title) { margin: 0; font-size: 13px; font-weight: 600; letter-spacing: normal; text-transform: none; color: var(--text); }
+.side-panel .detail-surface :is(.work-item-detail-section, .tool-detail-field, .task-detail-section) { display: grid; gap: 10px; margin: 0; min-width: 0; }
+.side-panel .detail-surface :is(.tool-detail-field-content, .inspector-detail pre, .inspector-raw-detail pre) {
+  max-height: min(55vh, 560px);
+  overflow: auto;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--sidebar);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  tab-size: 2;
+}
+.side-panel .detail-surface .tool-detail-field--error .tool-detail-field-content,
+.side-panel .detail-surface .task-detail-output-body .tool-detail-field-content.error { border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); background: color-mix(in srgb, var(--danger) 4%, var(--surface)); color: var(--danger); }
+.side-panel .detail-surface .tool-detail-field--diff .tool-detail-field-content { border-left: 2px solid var(--accent); }
+.side-panel .detail-surface :is(.tool-detail-result-card, .tool-detail-batch-item) { min-width: 0; margin: 0; padding: 14px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+.side-panel .detail-surface .tool-detail-batch-item { gap: 12px; }
+.side-panel .detail-surface .tool-detail-result-title { font-size: 13px; line-height: 1.5; }
+.side-panel .detail-surface .tool-detail-result-snippet { font-size: 13px; line-height: 1.6; }
+.side-panel .detail-surface .tool-detail-simple { margin: 0; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; }
+.side-panel .detail-surface .tool-detail-meta-grid { grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); }
+.side-panel .detail-surface .inspector-list { margin: 0; gap: 0; }
+.side-panel .detail-surface .inspector-list > li { padding: 12px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+.side-panel .detail-surface .inspector-list-head strong { font-weight: 500; line-height: 1.6; }
+.side-panel .detail-prose .markdown-content { font-size: 13px; line-height: 1.7; }
+.side-panel .detail-prose .markdown-content :is(h1, h2, h3) { font-size: 14px; line-height: 1.5; }
+.side-panel .detail-plan-preview { max-height: 360px; overflow: auto; padding-right: 8px; }
+.side-panel .detail-surface :is(.detail-technical, .task-detail-technical, .inspector-raw-detail, .work-item-detail-refs) { margin: 0; padding-top: 14px; border-top: 1px solid var(--line); }
+.side-panel .detail-surface :is(.detail-technical, .task-detail-technical, .inspector-raw-detail, .work-item-detail-refs) > summary { cursor: pointer; color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: normal; text-transform: none; }
+.side-panel .detail-surface details[open] > summary { margin-bottom: 14px; }
+.side-panel .detail-surface .detail-heading + .detail-technical { padding-top: 0; border-top: 0; }
+.side-panel .detail-surface .inspector-breadcrumb { margin: 0; padding: 0; border: 0; }
+.side-panel .detail-surface .breadcrumb-link { padding: 0; font-size: 12px; text-align: left; overflow-wrap: anywhere; }
+.side-panel .detail-surface .task-detail-subhead { margin: 0; }
+.side-panel .detail-surface .task-detail-copy { opacity: 1; background: var(--surface); border-color: var(--line); }
+.side-panel .detail-surface .task-detail-tabs { gap: 4px; border-bottom: 1px solid var(--line); }
+.side-panel .detail-surface .task-detail-tab { padding: 7px 10px; border-radius: 6px 6px 0 0; }
+.side-panel .activity-detail-surface > .context-card { min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.side-panel .activity-detail-surface > .context-card + .context-card { padding-top: 16px; border-top: 1px solid var(--line); }
+.side-panel .activity-detail-surface h2 { font-size: 14px; font-weight: 500; line-height: 1.6; overflow-wrap: anywhere; }
+.side-panel .activity-detail-surface .context-head { margin-bottom: 10px; }
+.side-panel .activity-detail-surface .eyebrow { font-size: 12px; letter-spacing: normal; text-transform: none; }
+.side-panel .work-item-button { background: var(--surface); border-color: var(--line); box-shadow: none; }
+.side-panel .work-item-button:hover,
+.side-panel .work-item-button.selected { background: var(--sidebar); border-color: var(--line-strong); }
+.side-panel .detail-surface :is(button, a, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }
+@media (max-width: 480px) {
+  .side-panel .detail-title,
+  .side-panel .detail-heading .inspector-list-head > strong { font-size: 15px; }
+  .side-panel .detail-surface .inspector-facts > div { grid-template-columns: minmax(72px, 26%) minmax(0, 1fr); gap: 8px; }
+}

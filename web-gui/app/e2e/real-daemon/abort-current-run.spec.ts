@@ -1,4 +1,5 @@
 import http from "node:http";
+import type { ConversationSummaryResponse } from "@holon/conversation-sdk";
 import type { Server } from "node:http";
 import net from "node:net";
 
@@ -79,10 +80,12 @@ async function agentState(daemon: DaemonApi, agentId: string): Promise<AgentRunt
 
 test("turn-scoped abort settles the current run and keeps the agent schedulable against a real daemon", async ({
   daemonFactory,
+  page,
 }) => {
+  test.setTimeout(60000);
   const provider = await startHangingProvider();
   const daemon = await daemonFactory({
-    webDist: "dist-e2e",
+    webDist: "dist",
     env: {
       HOLON_OPENAI_BASE_URL: provider.baseUrl,
       OPENAI_API_KEY: "e2e-provider-key",
@@ -106,6 +109,25 @@ test("turn-scoped abort settles the current run and keeps the agent schedulable 
     const runId = (await agentState(daemon, agentId)).agent.agent.current_run_id as string;
     await expect.poll(() => provider.requests.length, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
 
+    const conversation = () => daemon.api(`/agents/${agentId}/conversation`)
+      .then((response) => response.json() as Promise<ConversationSummaryResponse>);
+    await expect.poll(async () => (await conversation()).active_turns.length).toBeGreaterThan(0);
+    const active = (await conversation()).active_turns[0];
+    expect(Number.isFinite(Date.parse(active.started_at!))).toBe(true);
+    expect(active.completed_at).toBeNull();
+    expect(active.duration_ms).toBeNull();
+    await page.addInitScript((token) => {
+      sessionStorage.setItem("holon.webGui.activeRuntimeConnection.v1", JSON.stringify({ mode: "local", token }));
+    }, daemon.token);
+    await page.goto(`${daemon.baseUrl}/agents/${agentId}/conversation`);
+    const clock = page.locator(`[data-turn-id="${active.turn_id}"] .conversation-turn-elapsed`);
+    await expect(clock).toBeVisible();
+    const firstDuration = await clock.getAttribute("datetime");
+    await expect.poll(() => clock.getAttribute("datetime")).not.toBe(firstDuration);
+    await page.reload();
+    await expect(clock).toBeVisible();
+    expect((await conversation()).active_turns[0].started_at).toBe(active.started_at);
+
     // The turn-scoped abort carries the run id and settles quickly.
     const abort = await daemon.api(`/control/agents/${agentId}/current-run/abort`, {
       method: "POST",
@@ -126,6 +148,16 @@ test("turn-scoped abort settles the current run and keeps the agent schedulable 
     }, { timeout: 20_000 }).toBeGreaterThanOrEqual(2);
     await expect.poll(async () => (await agentState(daemon, agentId)).agent.agent.current_run_id, { timeout: 20_000 }).toBeNull();
     expect((await agentState(daemon, agentId)).agent.agent.status).not.toBe("stopped");
+
+    const finished = (await conversation()).turns.find((turn) => turn.turn_id === active.turn_id)!;
+    expect(finished.started_at).toBe(active.started_at);
+    expect(Number.isFinite(Date.parse(finished.completed_at!))).toBe(true);
+    expect(finished.duration_ms).toBeGreaterThan(0);
+    const finalDuration = `PT${Math.floor(finished.duration_ms! / 1000)}S`;
+    await expect(clock).toHaveAttribute("datetime", finalDuration);
+    await expect(page.locator(`[data-turn-id="${active.turn_id}"] .conversation-detail-toggle`)).toContainText("Stopped");
+    await page.reload();
+    await expect(clock).toHaveAttribute("datetime", finalDuration);
 
     // The abort is turn-scoped, not a lifecycle stop: the very next prompt is
     // admitted without a start and begins a fresh provider turn.

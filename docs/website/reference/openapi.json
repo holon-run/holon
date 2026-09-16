@@ -2699,6 +2699,7 @@
                 },
                 "kind": {
                   "enum": [
+                    "agent_message_wait",
                     "actor_invocation",
                     "command_task",
                     "child_agent_task",
@@ -2829,6 +2830,62 @@
                 "created_at",
                 "duration_ms",
                 "repeat"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "waits": {
+            "default": [],
+            "items": {
+              "description": "Public waiting metadata; excludes continuation payloads and callback details.",
+              "properties": {
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "task",
+                    "external",
+                    "operator",
+                    "timer",
+                    "system"
+                  ],
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "active",
+                    "triggered",
+                    "resolved",
+                    "cancelled",
+                    "expired"
+                  ],
+                  "type": "string"
+                },
+                "task_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "work_item_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "status",
+                "created_at",
+                "task_ids"
               ],
               "type": "object"
             },
@@ -5607,6 +5664,13 @@
                 },
                 "type": "array"
               },
+              "completed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "detail_coverage": {
                 "oneOf": [
                   {
@@ -5677,6 +5741,14 @@
                     ],
                     "type": "object"
                   }
+                ]
+              },
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
                 ]
               },
               "execution": {
@@ -5884,6 +5956,10 @@
               "settled": {
                 "type": "boolean"
               },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              },
               "turn_id": {
                 "type": "string"
               }
@@ -5895,6 +5971,7 @@
               "presentation_class",
               "inputs",
               "execution",
+              "started_at",
               "result",
               "settled",
               "detail_coverage",
@@ -6267,7 +6344,22 @@
               },
               "input": {
                 "properties": {
+                  "created_at": {
+                    "type": "string"
+                  },
                   "message_id": {
+                    "type": "string"
+                  },
+                  "presentation_class": {
+                    "enum": [
+                      "operator",
+                      "task",
+                      "external",
+                      "timer",
+                      "internal",
+                      "system",
+                      "operational"
+                    ],
                     "type": "string"
                   },
                   "preview": {
@@ -6290,7 +6382,9 @@
                   "message_id",
                   "revision",
                   "state",
-                  "preview"
+                  "preview",
+                  "presentation_class",
+                  "created_at"
                 ],
                 "type": "object"
               },
@@ -6411,6 +6505,13 @@
                     },
                     "type": "array"
                   },
+                  "completed_at": {
+                    "format": "date-time",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "detail_coverage": {
                     "oneOf": [
                       {
@@ -6481,6 +6582,14 @@
                         ],
                         "type": "object"
                       }
+                    ]
+                  },
+                  "duration_ms": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
                     ]
                   },
                   "execution": {
@@ -6688,6 +6797,10 @@
                   "settled": {
                     "type": "boolean"
                   },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
                   "turn_id": {
                     "type": "string"
                   }
@@ -6699,6 +6812,7 @@
                   "presentation_class",
                   "inputs",
                   "execution",
+                  "started_at",
                   "result",
                   "settled",
                   "detail_coverage",
@@ -7155,6 +7269,13 @@
                   },
                   "type": "array"
                 },
+                "completed_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "detail_coverage": {
                   "oneOf": [
                     {
@@ -7225,6 +7346,14 @@
                       ],
                       "type": "object"
                     }
+                  ]
+                },
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
                   ]
                 },
                 "execution": {
@@ -7432,6 +7561,10 @@
                 "settled": {
                   "type": "boolean"
                 },
+                "started_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
                 "turn_id": {
                   "type": "string"
                 }
@@ -7443,6 +7576,7 @@
                 "presentation_class",
                 "inputs",
                 "execution",
+                "started_at",
                 "result",
                 "settled",
                 "detail_coverage",
@@ -7477,7 +7611,22 @@
           "pending_inputs": {
             "items": {
               "properties": {
+                "created_at": {
+                  "type": "string"
+                },
                 "message_id": {
+                  "type": "string"
+                },
+                "presentation_class": {
+                  "enum": [
+                    "operator",
+                    "task",
+                    "external",
+                    "timer",
+                    "internal",
+                    "system",
+                    "operational"
+                  ],
                   "type": "string"
                 },
                 "preview": {
@@ -7500,7 +7649,9 @@
                 "message_id",
                 "revision",
                 "state",
-                "preview"
+                "preview",
+                "presentation_class",
+                "created_at"
               ],
               "type": "object"
             },
@@ -7594,6 +7745,13 @@
                   },
                   "type": "array"
                 },
+                "completed_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "detail_coverage": {
                   "oneOf": [
                     {
@@ -7664,6 +7822,14 @@
                       ],
                       "type": "object"
                     }
+                  ]
+                },
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
                   ]
                 },
                 "execution": {
@@ -7871,6 +8037,10 @@
                 "settled": {
                   "type": "boolean"
                 },
+                "started_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
                 "turn_id": {
                   "type": "string"
                 }
@@ -7882,6 +8052,7 @@
                 "presentation_class",
                 "inputs",
                 "execution",
+                "started_at",
                 "result",
                 "settled",
                 "detail_coverage",
@@ -12247,6 +12418,7 @@
           },
           "kind": {
             "enum": [
+              "agent_message_wait",
               "actor_invocation",
               "command_task",
               "child_agent_task",

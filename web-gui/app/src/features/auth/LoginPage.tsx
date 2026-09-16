@@ -11,6 +11,8 @@ export function LoginPage() {
   const [token, setToken] = useState("");
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [methodAttempt, setMethodAttempt] = useState(0);
+  const [methodError, setMethodError] = useState(false);
   const [oidc, setOidc] = useState<boolean>();
   const returnTo = useMemo(() => {
     const requested = new URLSearchParams(window.location.search).get("return_to");
@@ -22,7 +24,10 @@ export function LoginPage() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+    setMethodError(false);
     void fetch("/api/auth/method", {
+      signal: controller.signal,
       credentials: "include",
       headers: { Accept: "application/json" },
     })
@@ -36,8 +41,9 @@ export function LoginPage() {
         }
         setOidc(body.mode === "oidc");
       })
-      .catch(() => setOidc(true));
-  }, []);
+      .catch(() => { if (!controller.signal.aborted) setMethodError(true); });
+    return () => controller.abort();
+  }, [methodAttempt]);
 
   useEffect(() => {
     if (oidc !== true) return;
@@ -56,6 +62,7 @@ export function LoginPage() {
         body: JSON.stringify({ credential: token }),
       });
       if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
+      clearStoredRuntimeConnectionToken();
       window.location.replace(returnTo || "/");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("auth.loginFailed"));
@@ -81,15 +88,14 @@ export function LoginPage() {
         </div>
         <section className="login-card" aria-labelledby="login-title">
           <div className="login-card-header">
-            <span className="login-card-icon" aria-hidden="true">
-              <KeyRound size={20} strokeWidth={2} />
-            </span>
             <div>
-              <p className="login-eyebrow">{t("auth.runtimeAccess")}</p>
               <h1 id="login-title">{t("auth.signInTitle")}</h1>
-              <p className="login-description">{description}</p>
+              <p className="login-description" role="status">{methodError ? t("auth.authMethodError") : description}</p>
             </div>
           </div>
+          {methodError ? (
+            <Button variant="outline" onClick={() => setMethodAttempt((value) => value + 1)}>{t("connection.retry")}</Button>
+          ) : null}
           {oidc === true ? (
             <a className="login-action" href={oidcStart}>
               {t("auth.organizationLogin")}
@@ -125,6 +131,7 @@ export function LoginPage() {
             </form>
           ) : null}
         </section>
+        <div className="login-site"><span>{t("connection.currentServer")}</span><span className="site-address">{window.location.host}</span></div>
       </div>
     </main>
   );

@@ -326,6 +326,11 @@ async fn build_agent_state_projection(
         .await
         .map_err(agent_access_error)
         .map_err(ProjectionFailure::from)?;
+    let waits = projection
+        .waits
+        .into_iter()
+        .map(crate::http_dto::SlimWaitDto::from)
+        .collect();
     let source = projection.source;
     let tasks = projection
         .tasks
@@ -391,6 +396,7 @@ async fn build_agent_state_projection(
             agent: agent_dto,
             session,
             tasks,
+            waits,
             timers,
             work_items,
             external_triggers,

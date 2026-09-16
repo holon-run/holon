@@ -303,6 +303,37 @@ installation are not performed as part of visual verification.
 
 ## Conversation reading contract
 
+Pending operator messages remain user bubbles below the conversation. Pending
+task, timer, external, and other background messages share a collapsed
+"Pending events" disclosure before the latest turn, with a count and compact
+source-labelled rows. Expand a row to read its bounded preview in a scrollable
+area. Source comes from canonical metadata, never body text; older daemons
+without source metadata use a neutral label. Order events by queue arrival time,
+and remove them from this area when assigned to a turn.
+
+Each turn has a status-and-duration disclosure above its result: `Working ·
+0:23` while active, then `Completed · Took 1:23` (or stopped/failed/waiting).
+The whole row toggles execution details. The timer uses summary-level canonical
+start/terminal timing, updates only its own component once per second, and
+freezes at execution termination even if the result has not loaded. Cancellation
+and setup failures record elapsed processing time rather than a zero placeholder. Old
+runtimes without timing still show the status, without an invented duration.
+Omit assistant rounds without displayable text (including thinking/tool-only
+rounds) from the process, while retaining their separate tool activities and
+canonical records. If a later revision adds text, render it normally.
+After execution ends, omit the last non-empty assistant activity from the process
+only when its full displayed text matches a loaded Brief in the same turn (apart
+from outer whitespace and CRLF line endings). Keep it while Briefs are loading,
+on Brief load failure, or when the text differs; do not use substring/fuzzy matching or
+alter the canonical activity log. Earlier assistant progress, tools, errors,
+and waits remain visible. Apply the recent-activity limit after this filtering.
+Process content and Briefs share the same left edge and width; no enclosing
+process card, left rule, or extra indentation implies a nested result. Activity
+uses secondary text and keeps its object-inspector links. Existing automatic
+folding waits for a readable Brief and preserves explicit expansion or active
+reading of the process.
+
+
 - Center a column up to 760px wide on a white surface. Use 16px result text,
   14px progress text, and 12–13px metadata. The neutral navigation is 240px
   wide; the object inspector starts closed and becomes an overlay below 1340px.
@@ -492,3 +523,22 @@ Commit discipline:
 - Production integration should call the existing HTTP control plane and stream
   events through the existing event surfaces rather than inventing a second
   runtime protocol.
+
+## Inspector detail surfaces
+
+Work items, tool executions, background tasks, and activity details use the same
+flat white reading surface as the conversation. The heading carries the objective
+or tool name, followed by compact status and timing. Results and plans use readable
+Markdown; work item IDs/revisions and raw tool records are explicit disclosures.
+Commands, parameters, and output share neutral monospace blocks with bounded
+scrolling. Error states retain their semantic color. Search results, command
+batches, TODOs, and references use separators instead of nested tinted cards.
+
+`styles/detail-panels.css` scopes the shared typography and spacing to
+`.side-panel .detail-surface`. Maximized details center at a maximum of 1040px;
+narrow panels retain wrapping and access to all metadata. Existing tool-specific
+renderers, file links, task refresh, panel history, and maximize/restore behavior
+remain the source of interaction behavior.
+Detail status badges include a text label. Each detail object owns its disclosure
+and scroll state: a new object uses its own defaults, and revisiting one restores the
+reader's state without transferring it to another object.

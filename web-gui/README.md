@@ -40,29 +40,20 @@ npm install
 npm run dev
 ```
 
-By default the app uses fixture fallback data so it can be reviewed without a
-running Holon server.
+The GUI connects to `/api` on the origin serving the page. It does not offer
+remote connection profiles or restore old remote selections. Authentication
+uses this server's sign-in page and browser session.
 
-To point it at the default local Holon HTTP server through the Vite dev proxy,
-set `VITE_HOLON_API_BASE` to the same-origin proxy prefix:
-
-```bash
-cd web-gui/app
-VITE_HOLON_API_BASE=/holon-api npm run dev
-```
-
-The dev proxy forwards `/holon-api/*` to `http://127.0.0.1:7878/*` by default.
-If Holon is listening on a different local endpoint, override the proxy target:
+The Vite dev proxy forwards `/api/*` to `http://127.0.0.1:7878/api/*` by default.
+For another development daemon, configure the proxy target:
 
 ```bash
 cd web-gui/app
-HOLON_API_PROXY_TARGET=http://127.0.0.1:<holon-port> VITE_HOLON_API_BASE=/holon-api npm run dev
+HOLON_API_PROXY_TARGET=http://127.0.0.1:<holon-port> npm run dev
 ```
 
-Direct absolute API URLs such as
-`VITE_HOLON_API_BASE=http://127.0.0.1:<holon-port>` are still supported by the
-client, but local browser debugging may be blocked unless the Holon HTTP server
-also sends matching CORS headers.
+The browser still uses same-origin `/api`; `VITE_HOLON_API_BASE` is no longer
+used. An unavailable server shows a connection error instead of fixture data.
 
 Build/check commands:
 
@@ -78,7 +69,7 @@ The standalone app currently implements:
 
 - a Dashboard runtime overview and agent roster;
 - an Agent conversation page with Info/Verbose/Debug display levels;
-- fixture fallback when no local Holon endpoint is configured or reachable;
+- same-origin server connection, sign-in, and reconnect controls;
 - direct reuse of existing Holon routes only.
 
 The app intentionally remains independent from `holon serve`; it is not bundled

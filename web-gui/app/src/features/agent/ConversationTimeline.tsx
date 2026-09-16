@@ -1,3 +1,4 @@
+import { TurnElapsedTime } from "./TurnElapsedTime";
 import {
   Bot,
   ChevronDown,
@@ -13,7 +14,7 @@ import {
   Wrench,
   ExternalLink,
 } from "lucide-react";
-import { memo, useEffect, useMemo, useState, useRef, useId } from "react";
+import { Fragment, memo, useEffect, useMemo, useState, useRef, useId } from "react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -37,6 +38,7 @@ import {
 } from "../../runtime/conversation-view-model";
 
 export interface ConversationTimelineActions {
+  onOpenWorkItemId?: (workItemId: string) => void;
   onLoadBrief: (briefId: string) => void;
   onLoadDetail: (turnId: string) => void;
   onLoadOlderActivities: (turnId: string) => void;
@@ -66,6 +68,8 @@ export const ConversationTimeline = memo(function ConversationTimeline({
 }: ConversationTimelineProps) {
   const { t } = useTranslation();
   const status = model.status;
+  const operatorInputs = model.pendingInputs.filter((input) => input.presentation_class === "operator");
+  const backgroundInputs = model.pendingInputs.filter((input) => input.presentation_class !== "operator");
   return (
     <div className="conversation-timeline" aria-label={t("agent.conversationAria")}>
       {status.kind === "reconnecting" ? (
@@ -90,16 +94,16 @@ export const ConversationTimeline = memo(function ConversationTimeline({
           </button>
         </div>
       ) : null}
-      {model.turns.map((turn) => (
-        <ConversationTurnCard
-          key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}
-          turn={turn}
-          {...actions}
-        />
+      {model.turns.map((turn, index) => (
+        <Fragment key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}>
+          {index === model.turns.length - 1 ? <PendingEvents inputs={backgroundInputs} /> : null}
+          <ConversationTurnCard turn={turn} {...actions} />
+        </Fragment>
       ))}
-      {model.pendingInputs.length > 0 ? (
+      {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} /> : null}
+      {operatorInputs.length > 0 ? (
         <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingInputs")}>
-          {model.pendingInputs.map((input) => (
+          {operatorInputs.map((input) => (
             <PendingInputChip key={input.message_id} input={input} />
           ))}
         </div>
@@ -124,6 +128,40 @@ export const ConversationTimeline = memo(function ConversationTimeline({
     </div>
   );
 });
+
+function PendingEvents({ inputs }: { inputs: readonly PendingInput[] }) {
+  const { t } = useTranslation();
+  if (inputs.length === 0) return null;
+  return (
+    <details className="conversation-pending-events" aria-label={t("agentPage.pendingEvents")}>
+      <summary><ChevronRight size={13} /><Clock size={13} />
+        <span>{t("agentPage.pendingEvents")}</span><span className="conversation-pending-count">{inputs.length}</span>
+      </summary>
+      <div className="conversation-pending-event-list">
+        {inputs.map((input) => {
+          const text = parseInputPreview(input.preview);
+          return (
+            <details key={input.message_id} className="conversation-pending-event"
+              data-conversation-anchor={`input:${input.message_id}`}>
+              <summary>
+                <Bot size={13} />
+                <span className="conversation-pending-event-source">{t(input.presentation_class
+                  ? `agentPage.turnSource.${input.presentation_class}` : "agentPage.pendingSourceUnknown")}</span>
+                <span className="conversation-pending-event-preview">{text.split("\n")[0].slice(0, 180)}</span>
+                <ChevronRight size={12} />
+              </summary>
+              <div className="conversation-input-status">
+                {t(input.state === "assigning" ? "agentPage.pendingAssigning" : "agentPage.pendingQueued")}
+                {input.created_at ? <time dateTime={input.created_at}>{new Date(input.created_at).toLocaleString()}</time> : null}
+              </div>
+              <div className="conversation-pending-event-body"><MarkdownContent text={text} compact /></div>
+            </details>
+          );
+        })}
+      </div>
+    </details>
+  );
+}
 
 function PendingInputChip({ input }: { input: PendingInput }) {
   const { t } = useTranslation();
@@ -157,6 +195,9 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     && !(execution === "waitingResult" && hasReadableBrief);
   const awaitingResult = (execution === "waitingResult" && !hasReadableBrief)
     || (turn.briefIds.length > 0 && !briefReady);
+  const timingStatus = execution === "waitingResult" && hasReadableBrief ? "completed"
+    : execution !== "running" && turn.briefIds.length > 0 && !briefReady && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
+      ? "loadingResult" : execution;
   const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
   const expanded = manualExpanded ?? (autoExpanded || readingDetail);
   const [mounted, setMounted] = useState(expanded);
@@ -211,10 +252,12 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
       <div className="conversation-response">
         <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
           data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
+          title={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionProcess")}
           onClick={() => setManualExpanded(!expanded)}>
           <ChevronRight size={14} className="conversation-disclosure-chevron" />
           {execution === "running" ? <LoaderCircle size={14} className="is-spinning" /> : null}
-          <span>{t(execution === "running" ? "agentPage.turnWorking" : "agentPage.executionProcess")}</span>
+          <span>{t(`agentPage.turnTimingStatus.${timingStatus}`)}</span>
+          <TurnElapsedTime turn={turn} />
         </button>
         <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
           aria-hidden={!expanded} inert={!expanded}>
@@ -307,10 +350,10 @@ const ConversationBriefCard = memo(function ConversationBriefCard({
       </div>
     );
   }
-  return <BriefCardBody brief={brief} />;
+  return <BriefCardBody brief={brief} onOpenWorkItemId={actions.onOpenWorkItemId} />;
 });
 
-function BriefCardBody({ brief }: { brief: BriefRecord }) {
+function BriefCardBody({ brief, onOpenWorkItemId }: { brief: BriefRecord; onOpenWorkItemId?: (id: string) => void }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const created = useMemo(
@@ -328,6 +371,8 @@ function BriefCardBody({ brief }: { brief: BriefRecord }) {
         compact={false}
       />
       <div className="conversation-brief-actions">
+        {brief.work_item_id && onOpenWorkItemId ? <button type="button" className="conversation-work-link"
+          onClick={() => onOpenWorkItemId(brief.work_item_id!)}>{t("currentWork.viewWork")}<ExternalLink size={12} /></button> : null}
         <button type="button" aria-label={t(copied ? "agentPage.copiedReply" : "agentPage.copyReply")}
           onClick={async () => {
             try { await navigator.clipboard.writeText(brief.text); setCopied(true); }
@@ -382,6 +427,17 @@ function ConversationDetailPanel({
       </div>
     );
   }
+  const activities = executionProcessActivities(
+    detail.activities,
+    turn.briefIds.flatMap((id) => {
+      const brief = actions.briefRecord(id);
+      return brief ? [brief.text] : [];
+    }),
+    turn.execution.kind === "terminal",
+  );
+  const onlyResult = activities.length === 0 && detail.activities.some((activity) =>
+    activity.kind === "assistant" && summarizeActivity(activity).display.trim().length > 0)
+    && !detail.has_more && !detail.truncated;
   return (
     <div className="conversation-detail">
       {detail.invalidated ? (
@@ -406,17 +462,17 @@ function ConversationDetailPanel({
           <span>{t("agentPage.loadOlderActivities")}</span>
         </button>
       ) : null}
-      {!showEarlier && detail.activities.length > 8 ? (
+      {!showEarlier && activities.length > 8 ? (
         <button type="button" className="conversation-detail-older" onClick={() => setShowEarlier(true)}>
           <ChevronDown size={13} />{t("agentPage.showEarlierProcess")}
         </button>
       ) : null}
-      {detail.activities.every((activity) => activity.kind === "operator") ? (
-        <div className="conversation-detail-notice">{t(turn.execution.kind === "active" ? "agentPage.awaitingActivity" : "agentPage.detailEmpty")}</div>
+      {activities.length === 0 ? (
+        <div className="conversation-detail-notice">{t(turn.execution.kind === "active" ? "agentPage.awaitingActivity" : onlyResult ? "agentPage.resultOnlyProcess" : "agentPage.detailEmpty")}</div>
       ) : (
         <ol className="conversation-activities">
-          {detail.activities.filter((activity, index) =>
-            activity.kind !== "operator" && (showEarlier || index >= detail.activities.length - 8 || activity.kind === "error" || activity.kind === "wait")
+          {activities.filter((activity, index) =>
+            showEarlier || index >= activities.length - 8 || activity.kind === "error" || activity.kind === "wait"
           ).map((activity) => (
             <ConversationActivityRow
               activity={activity}
@@ -432,6 +488,30 @@ function ConversationDetailPanel({
 
     </div>
   );
+}
+
+/** Hide assistant rounds without display text and final responses already delivered as Briefs. */
+export function executionProcessActivities(
+  activities: readonly ConversationActivity[],
+  readableBriefs: readonly string[],
+  terminal: boolean,
+): readonly ConversationActivity[] {
+  const process = activities.filter((activity) => activity.kind !== "operator"
+    && (activity.kind !== "assistant" || summarizeActivity(activity).display.trim().length > 0));
+  if (!terminal || readableBriefs.length === 0) return process;
+  // Keep Markdown/code whitespace intact; only normalize line endings and outer space.
+  const normalize = (text: string) => text.replace(/\r\n/g, "\n").trim();
+  let lastAssistant = -1;
+  for (let index = process.length - 1; index >= 0; index--) {
+    if (process[index].kind === "assistant" && normalize(summarizeActivity(process[index]).display)) {
+      lastAssistant = index;
+      break;
+    }
+  }
+  if (lastAssistant < 0) return process;
+  const finalText = normalize(summarizeActivity(process[lastAssistant]).display);
+  if (!readableBriefs.some((text) => normalize(text) === finalText)) return process;
+  return process.filter((_, index) => index !== lastAssistant);
 }
 
 function ChevronUpLoadMore() {

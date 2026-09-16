@@ -250,7 +250,8 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
                     connection,
                     "SELECT COUNT(*) FROM agent_identities i
                      JOIN agent_identity_reservations r ON r.agent_id = i.agent_id
-                     WHERE (i.status = 'deleted') != (r.reservation_state = 'retired')",
+                     WHERE (i.status IN ('deleted', 'archived')) !=
+                           (r.reservation_state = 'retired')",
                 )?,
             )
         } else {
@@ -273,7 +274,7 @@ pub(crate) fn verify_observer_sync_foundations(connection: &mut Connection) -> R
              JOIN agent_identities i ON i.agent_id = d.agent_id
              LEFT JOIN agent_identity_reservations r ON r.agent_id = d.agent_id
              WHERE d.status = 'completed'
-               AND i.status != 'deleted'
+               AND i.status NOT IN ('deleted', 'archived')
                AND NOT (i.status = 'active' AND COALESCE(r.source, '') = 'reincarnation')",
         )?
     } else {

@@ -1029,7 +1029,201 @@
       "stability": "stable"
     },
     {
-      "description": "Invoke an agent asynchronously and return its `agent_id`, whether this request created it, and a result-bearing `TaskHandle`. `target` is a strict discriminated union: use `kind=existing_agent` with only `agent_id`, or `kind=new_subagent` with optional `template`, `workspace_mode`, and `model`. `initial_message` is required. Existing-agent invocation never reconfigures or reparents the target; new-subagent invocation creates a private supervised child. Caller provenance and authority are bound by the current runtime context and cannot be supplied in the request.\n",
+      "description": "Send one durable asynchronous message to an existing authorized agent.\n\nSending succeeds when the runtime persistently accepts the delivery. It does\nnot create a task handle, wait for a reply, or mean that the target finished\nany business work. The recipient may respond with its own `SendAgentMessage`\ncall.\n\nThe runtime binds the caller identity, provenance, authority, and idempotency\nkey. Do not include a reply handle or attempt to claim another sender identity.\n",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "message"
+        ],
+        "type": "object"
+      },
+      "name": "SendAgentMessage",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "AgentMessageDeliveryReceipt",
+        "success_result_schema": {
+          "properties": {
+            "accepted_at": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "correlation_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "delivery_id": {
+              "type": "string"
+            },
+            "idempotent_replay": {
+              "type": "boolean"
+            },
+            "lifecycle_snapshot": {
+              "properties": {
+                "derived_grant": {
+                  "enum": [
+                    "persistent_independent_peer_invocation",
+                    "persistent_independent_peer_message",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "identity_revision": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "identity_status": {
+                  "enum": [
+                    "active",
+                    "deleting",
+                    "deleted",
+                    null
+                  ],
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "matched_rule_index": {
+                  "format": "uint",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "message_policy_revision": {
+                  "format": "uint64",
+                  "minimum": 0.0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "principal_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "principal_kind": {
+                  "enum": [
+                    "operator",
+                    "supervising_parent",
+                    "peer_agent",
+                    "external_ingress",
+                    "runtime_capability"
+                  ],
+                  "type": "string"
+                },
+                "route": {
+                  "type": "string"
+                },
+                "runtime_status": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "principal_kind",
+                "route"
+              ],
+              "type": "object"
+            },
+            "outcome": {
+              "enum": [
+                "accepted",
+                "rejected"
+              ],
+              "type": "string"
+            },
+            "rejection_code": {
+              "enum": [
+                "target_not_found",
+                "message_not_authorized",
+                "invalid_message",
+                "invalid_correlation",
+                "invalid_priority",
+                "idempotency_conflict",
+                "agent_stopped",
+                "agent_deleting",
+                "agent_deleted",
+                "queue_unavailable",
+                null
+              ],
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "retryable": {
+              "type": "boolean"
+            },
+            "state": {
+              "enum": [
+                "queued",
+                "dispatched",
+                "consumed",
+                "failed",
+                "cancelled_by_deletion",
+                "rejected"
+              ],
+              "type": "string"
+            },
+            "target_agent_id": {
+              "type": "string"
+            },
+            "terminal_at": {
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "delivery_id",
+            "target_agent_id",
+            "outcome",
+            "state",
+            "idempotent_replay",
+            "retryable",
+            "lifecycle_snapshot"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Invoke an agent asynchronously and return its `agent_id`, whether this request\ncreated it, and a `TaskHandle`. `target` is a strict discriminated union: use\n`kind=existing_agent` with only `agent_id`, or `kind=new_subagent` with optional\n`template`, `workspace_mode`, and `model`. `initial_message` is required.\n\nFor `existing_agent`, the handle waits for the first later durable message from\nthat agent. The message satisfies the wait but is not a business-completion\nresult, and concurrent waits may observe the same later message. The target is\nnever reconfigured or reparented.\n\nFor `new_subagent`, the handle remains a result-bearing supervised child task.\nCaller provenance and authority are bound by the current runtime context and\ncannot be supplied in the request.\n",
       "family": "agent_creation",
       "freeform_grammar": null,
       "input_schema": {

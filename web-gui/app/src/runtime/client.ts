@@ -72,7 +72,7 @@ interface OperatorPromptResponseDto {
   message_id?: string;
 }
 
-const DEFAULT_DEV_API_BASE = "/api";
+const SAME_ORIGIN_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
 const CONFIG_UPDATE_TIMEOUT_MS = 30_000;
@@ -782,24 +782,17 @@ function projectFileMeta(response: WorkspaceFileMetaDto): WorkspaceFileMeta {
   };
 }
 
-/**
- * Resolve the normalized API base for auxiliary clients (conversation SDK,
- * stream consumers) using the same rules as the main runtime client:
- * explicit config baseUrl, then VITE_HOLON_API_BASE, then the local dev
- * default. Returns undefined when nothing resolves.
- */
+/** Shared base for the main client, conversation streams, and file links. */
 export function resolveRuntimeApiBase(
   config: Pick<RuntimeClientOptions, "mode" | "baseUrl">,
 ): string | undefined {
   const connectionMode = config.mode ?? (config.baseUrl ? "remote" : "local");
-  const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
-  return normalizeBaseUrl(config.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
+  return connectionMode === "local" ? SAME_ORIGIN_API_BASE : normalizeBaseUrl(config.baseUrl);
 }
 
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
-  const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
-  const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
+  const baseUrl = resolveRuntimeApiBase(options);
   const rawFetchImpl = options.fetchImpl ?? fetch;
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
     rawFetchImpl(input, { ...init, credentials: "include" })) as typeof fetch;
@@ -1846,7 +1839,7 @@ async function fetchRuntimeBootstrap(
   hasToken: boolean,
 ): Promise<RuntimeBootstrap> {
   const handshake = await getJson<{
-    auth?: { mode?: string };
+    auth?: { mode?: string; required?: boolean };
     capabilities?: string[];
   }>(fetchImpl, baseUrl, "/handshake", { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS });
   assertObserverSyncCapabilities(handshake.capabilities ?? []);
@@ -1861,6 +1854,7 @@ async function fetchRuntimeBootstrap(
     source: "http",
     baseUrl,
     hasToken,
+    controlTokenRequired: handshake.auth?.required,
     summary: `${connectionBaseLabel(baseUrl)} · ${connectionMode}${hasToken ? " · Token" : ""}`,
   };
 
@@ -2316,7 +2310,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
   const workItems = selectWorkItems(workItemRecords ?? state?.work_items ?? [], state?.agent?.agent?.current_work_item_id);
   const tasks = projectTasks(state?.tasks ?? []);
   const pending = state?.session?.pending_count ?? entry.pending ?? 0;
-  const activeTaskCount = state?.tasks?.length ?? state?.agent?.active_task_count ?? 0;
+  const activeTaskCount = state?.agent?.active_task_count ?? state?.tasks?.length ?? 0;
   const waitingCount = state?.agent.closure.waiting_reason || entry.waiting_reason ? 1 : 0;
   const posture = state?.agent?.scheduling_posture?.posture ?? entry.scheduling_posture?.posture ?? "unknown";
   const postureReason = state?.agent?.scheduling_posture?.reason ?? entry.scheduling_posture?.reason ?? "posture unavailable";
@@ -2356,6 +2350,8 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     workspaceSummary,
     attachedWorkspaces,
     tasks,
+    waits: state?.waits ?? [],
+    waitingReason: state?.agent.closure.waiting_reason ?? (typeof entry.waiting_reason === "string" ? entry.waiting_reason : undefined),
     workItems,
   };
 }
@@ -2491,6 +2487,9 @@ function projectTasks(tasks: NonNullable<AgentStateDto["tasks"]>): TaskSummary[]
       kind: task.kind,
       status: task.status,
       summary: task.summary ?? task.id,
+      workItemId: task.work_item_id ?? undefined,
+      createdAt: task.created_at,
+      updatedAt: task.updated_at,
     }));
 }
 
@@ -2627,13 +2626,7 @@ function selectCurrentWork(
   if (!currentWorkItemId) return undefined;
   const selected = workItems.find((item) => item.id === currentWorkItemId);
   if (!selected) return undefined;
-  return {
-    id: selected.id,
-    objective: selected.objective,
-    state: selected.state,
-    planStatus: selected.plan_status,
-    current: true,
-  };
+  return projectWorkItem(selected, currentWorkItemId);
 }
 
 function projectWorkItems(

@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Check, Inbox, Loader2, Pencil, Play, Square, Trash2, X } from "lucide-react";
 import type React from "react";
 
+import { MarkdownContent } from "../../components/MarkdownContent";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusBadge } from "../../components/ui/StatusChip";
 import { agentRenameErrorKey, isAgentRenameable, validateAgentDisplayName } from "./agent-rename";
@@ -736,50 +737,25 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
   const loading = detailState?.loading && !detailState.workItem;
   const plan = workItem.planArtifact;
   return (
-    <article className="work-item-detail inspector-list-item featured">
-      <div className="inspector-list-head">
-        <strong>{t("panel.details")}</strong>
-        {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
-      </div>
+    <article className="work-item-detail detail-surface">
+      <header className="detail-heading">
+        <h2 className="detail-title">{workItem.objective || t("rightPanel.workItem")}</h2>
+        <div className="detail-meta">
+          <StatusBadge className="state-chip" kind="work" value={workItem.readiness ?? workItem.state} showLabel />
+          {workItem.current ? <span>{t("status.current")}</span> : null}
+          {workItem.planStatus ? <span>{workItem.planStatus}</span> : null}
+          {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
+        </div>
+        {workItem.updatedAt ? <p className="detail-updated">{t("rightPanel.updated")} · {formatDateTime(workItem.updatedAt)}</p> : null}
+      </header>
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
-      <dl className="inspector-facts">
-        <div>
-          <dt>{t("rightPanel.objective")}</dt>
-          <dd>{workItem.objective}</dd>
-        </div>
-        <div>
-          <dt>{t("rightPanel.workItem")}</dt>
-          <dd>{workItem.id}</dd>
-        </div>
-        <div>
-          <dt>{t("common.status")}</dt>
-          <dd>{compactMeta([workItem.current ? t("status.current") : undefined, workItem.readiness ?? workItem.state, workItem.planStatus])}</dd>
-        </div>
-        {workItem.revision != null ? (
-          <div>
-            <dt>{t("rightPanel.revision")}</dt>
-            <dd>{workItem.revision}</dd>
-          </div>
-        ) : null}
-        {workItem.blockedBy ? (
-          <div>
-            <dt>{t("rightPanel.blockedBy")}</dt>
-            <dd>{workItem.blockedBy}</dd>
-          </div>
-        ) : null}
-        {workItem.resultSummary ? (
-          <div>
-            <dt>{t("inspector.result")}</dt>
-            <dd>{workItem.resultSummary}</dd>
-          </div>
-        ) : null}
-        {workItem.updatedAt ? (
-          <div>
-            <dt>{t("rightPanel.updated")}</dt>
-            <dd>{formatDateTime(workItem.updatedAt)}</dd>
-          </div>
-        ) : null}
-      </dl>
+      {workItem.blockedBy ? <div className="detail-notice"><strong>{t("rightPanel.blockedBy")}</strong><span>{workItem.blockedBy}</span></div> : null}
+      {workItem.resultSummary ? (
+        <section className="work-item-detail-section detail-prose">
+          <h3>{t("inspector.result")}</h3>
+          <MarkdownContent text={workItem.resultSummary} compact />
+        </section>
+      ) : null}
       {plan?.preview || plan?.path ? (
         <section className="work-item-detail-section">
           <h3>{t("rightPanel.plan")}</h3>
@@ -792,7 +768,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
               <code>{plan.path}</code>
             )
           ) : null}
-          {plan.preview ? <pre>{plan.preview}</pre> : null}
+          {plan.preview ? <div className="detail-prose detail-plan-preview"><MarkdownContent text={plan.preview} compact /></div> : null}
         </section>
       ) : null}
       {workItem.todoList?.length ? (
@@ -803,7 +779,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
               <li key={`${item.state}-${index}`}>
                 <div className="inspector-list-head">
                   <strong>{item.text}</strong>
-                  <StatusBadge className="state-chip" kind="work" value={item.state} />
+                  <StatusBadge className="state-chip" kind="work" value={item.state} showLabel />
                 </div>
               </li>
             ))}
@@ -827,6 +803,13 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
           </ul>
         </details>
       ) : null}
+      <details className="detail-technical">
+        <summary>{t("inspector.technicalDetails")}</summary>
+        <dl className="inspector-facts">
+          <div><dt>{t("rightPanel.workItem")}</dt><dd><code>{workItem.id}</code></dd></div>
+          {workItem.revision != null ? <div><dt>{t("rightPanel.revision")}</dt><dd>{workItem.revision}</dd></div> : null}
+        </dl>
+      </details>
     </article>
   );
 }
@@ -853,7 +836,7 @@ export function ToolExecutionDetailPanel({
   const record = detailState?.toolExecution;
 
   return (
-    <article className="tool-execution-detail inspector-list-item featured">
+    <article className="tool-execution-detail detail-surface">
       {relatedStateObjectRef ? (
         <div className="inspector-breadcrumb">
           {relatedStateObjectRef.kind === "work_item" && onOpenWorkItem ? (
@@ -876,28 +859,20 @@ export function ToolExecutionDetailPanel({
           ) : null}
         </div>
       ) : null}
-      <div className="inspector-list-head">
-        <strong>{toolName ?? record?.tool_name ?? t("inspector.toolExecution")}</strong>
-        {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
-      </div>
+      <header className="detail-heading">
+        <h2 className="detail-title">{record?.tool_name ?? toolName ?? t("inspector.toolExecution")}</h2>
+        <div className="detail-meta">
+          {record?.status ? <StatusBadge className="state-chip" kind="task" value={record.status === "success" ? "completed" : record.status} showLabel /> : null}
+          {record?.duration_ms != null ? <span>{t("inspector.duration")} · {record.duration_ms < 1000 ? `${record.duration_ms}ms` : `${(record.duration_ms / 1000).toFixed(1)}s`}</span> : null}
+          {loading ? <StatusBadge className="state-chip" kind="runtime" value="loading" /> : null}
+        </div>
+      </header>
       {detailState?.error ? <p className="inspector-error">{detailState.error}</p> : null}
-      <dl className="inspector-facts">
-        <div>
-          <dt>{t("inspector.tool")}</dt>
-          <dd>{record?.tool_name ?? toolName ?? "—"}</dd>
-        </div>
-        <div>
-          <dt>{t("common.status")}</dt>
-          <dd>{record?.status ?? "—"}</dd>
-        </div>
-        {record?.duration_ms != null ? (
-          <div>
-            <dt>{t("inspector.duration")}</dt>
-            <dd>{record.duration_ms}ms</dd>
-          </div>
-        ) : null}
-      </dl>
       {record ? <ToolExecutionContent record={record} onBrowseFiles={onBrowseFiles} /> : null}
+      <details className="inspector-raw-detail detail-technical">
+        <summary>{t("inspector.rawJson")}</summary>
+        <pre>{record ? JSON.stringify(record, null, 2) : toolExecutionId}</pre>
+      </details>
     </article>
   );
 }
@@ -910,4 +885,3 @@ function formatDateTime(value: string): string {
 function compactMeta(parts: Array<string | undefined>): string {
   return parts.filter(Boolean).join(" · ") || "—";
 }
-

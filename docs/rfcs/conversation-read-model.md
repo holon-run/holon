@@ -113,7 +113,7 @@ revision 1; a turn-summary revision covers input assignment, Brief membership,
 execution/result/finality, attention, and detail-coverage changes.
 
 `pending_inputs` is a projection, not another lifecycle. It contains visible
-operator inputs whose canonical queue/assignment state is `queued` or
+messages (including operator input and task results) whose canonical queue/assignment state is `queued` or
 `assigning` and which may still form a future turn. Assigned, processed,
 interjected, aborted, dropped, and quarantined inputs are not pending. The
 dequeue-to-turn-assignment transition must be atomic or revisioned so an input
@@ -121,7 +121,13 @@ cannot disappear between the pending set and its owning turn.
 
 Each pending input carries a bounded message-body preview with the same shape
 and limits as assigned turn-input previews, so clients can echo the operator's
-in-flight text while the owning turn is still running.
+in-flight text while the owning turn is still running. Each pending input also
+carries `presentation_class`, derived from the canonical message kind and
+continuation trigger with the same rules as turn classification, and `created_at`
+from the queue entry. Clients order pending inputs by this timestamp, distinguish
+operator input from background events, and must not infer provenance from body
+text. Older servers may omit these additive fields; display unknown sources
+neutrally and retain message-id ordering when timestamps are unavailable.
 
 ### 3.2 Execution, result availability, and attention are separate
 
@@ -142,6 +148,22 @@ inputs without issuing per-turn activity detail requests; the authoritative
 activity sequence remains in turn detail. Input assignment bumps the turn
 summary revision, so stream consumers receive refreshed previews on the same
 revision path.
+
+Turn summaries expose canonical execution timing without loading activity:
+
+- `started_at`: the persisted `TurnRecord.created_at` when execution starts,
+  excluding input queue time.
+- `completed_at`: terminal record completion time, or null while active.
+- `duration_ms`: terminal record execution duration, or null while active.
+  Clients prefer this recorded duration to subtracting wall-clock timestamps.
+
+These additive fields share the turn summary's existing revision and stream
+path. They do not advance with a frontend timer. While active, clients may
+render elapsed wall time from `started_at`; once terminal, they freeze on the
+recorded duration, even if Brief delivery or hydration is still pending.
+Older servers may omit timing fields; clients display a status without an
+invented duration. Historical turns use persisted timing, not activity fetch
+time, last activity time, or Brief creation time.
 
 `brief_upsert` does not terminate a turn. Agent idle and WorkItem completion
 are not substitutes for a turn terminal record. A wait may close the current
@@ -198,9 +220,11 @@ means the source remains readable for diagnostics but prevents
 
 Phase 1 replaced these blockers with durable source revisions, canonical turn
 ownership/assignment linkage, atomic source-event coverage, and a recomputed
-`conversation_read_verified` proof. Phase 2 still evaluates that persisted
-proof at request time: route registration and OpenAPI publication alone never
-advertise or serve `agents.conversation-read.v1`.
+`conversation_read_verified` diagnostic. The capability now identifies binary
+protocol support: once schema migration succeeds, the runtime advertises and
+serves `agents.conversation-read.v1` even when historical diagnostic checks
+report projection drift. Migration repairs proven assignment drift, while
+individual reads retain typed failures instead of disabling the whole node.
 
 ## 4. Summary snapshot and history pagination
 
@@ -572,9 +596,9 @@ GUI or forcing a shared external Session model.
 ## 9. Compatibility, rollout, and security
 
 - Preserve `/briefs`, `/events`, `/events/stream`, and existing diagnostic reads.
-- Advertise `agents.conversation-read.v1` only after its durable verification
-  succeeds. Capability absence means the surface is unavailable; route
-  registration or partial source coverage is insufficient.
+- Advertise `agents.conversation-read.v1` whenever the running binary supports
+  the migrated contract. `conversation_read_verified` remains diagnostic and
+  must not act as a node-wide feature flag.
 - Ordinary conversation startup must not also initialize old raw-history
   catch-up/transcript hydration through roster or unread recovery side paths.
 - Keep debug/trace separate. Reuse verbose visibility rules, not arbitrary raw

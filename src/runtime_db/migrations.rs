@@ -39,6 +39,8 @@ pub(crate) const AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION: i64 = 59;
 pub(crate) const CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION: i64 = 66;
 pub(crate) const CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME: &str =
     "conversation_input_assignment_repair";
+pub(crate) const OBSERVER_SYNC_LEGACY_RECONCILE_VERSION: i64 = 67;
+pub(crate) const OBSERVER_SYNC_LEGACY_RECONCILE_NAME: &str = "observer_sync_legacy_reconcile";
 pub(crate) const CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL: &str = r#"
 SELECT
   json_extract(
@@ -3584,6 +3586,11 @@ CREATE INDEX IF NOT EXISTS idx_task_result_settlements_activation
         name: CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
         sql: "",
     },
+    Migration {
+        version: OBSERVER_SYNC_LEGACY_RECONCILE_VERSION,
+        name: OBSERVER_SYNC_LEGACY_RECONCILE_NAME,
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3865,6 +3872,10 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "conversation_input_assignment_repair" {
         repair_conversation_input_assignments(transaction)?;
+    }
+    if migration.name == OBSERVER_SYNC_LEGACY_RECONCILE_NAME {
+        repair_orphaned_conversation_input_assignments(transaction)?;
+        reconcile_legacy_archived_identities(transaction)?;
     }
     if migration.name == "authentication_login_verifier" {
         ensure_authentication_login_verifier_schema(transaction)?;
@@ -4261,6 +4272,238 @@ CREATE INDEX IF NOT EXISTS idx_conversation_input_assignments_agent_turn
          WHERE updated_at = ''",
         [&now],
     )?;
+    Ok(())
+}
+
+fn repair_orphaned_conversation_input_assignments(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "turn_records")?
+        || !table_exists_tx(transaction, "conversation_input_assignments")?
+    {
+        return Ok(());
+    }
+    let repaired_at = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    transaction.execute_batch(
+        r#"
+DROP TABLE IF EXISTS temp.conversation_orphan_assignment_repairs;
+CREATE TEMP TABLE conversation_orphan_assignment_repairs AS
+WITH orphan AS (
+  SELECT assignment.message_id,
+         assignment.agent_id,
+         assignment.turn_id AS orphan_turn_id
+  FROM conversation_input_assignments AS assignment
+  LEFT JOIN turn_records AS assigned_turn
+    ON assigned_turn.agent_id = assignment.agent_id
+   AND assigned_turn.turn_id = assignment.turn_id
+  WHERE assigned_turn.turn_id IS NULL
+),
+candidate AS (
+  SELECT orphan.message_id,
+         orphan.agent_id,
+         replay_turn.turn_id AS candidate_turn_id,
+         replay_turn.created_at AS candidate_created_at
+  FROM orphan
+  JOIN turn_records AS replay_turn
+    ON replay_turn.agent_id = orphan.agent_id
+   AND json_type(
+         CASE WHEN json_valid(replay_turn.payload_json)
+              THEN replay_turn.payload_json ELSE '{}' END,
+         '$.replay.source_message_id'
+       ) = 'text'
+   AND json_extract(replay_turn.payload_json, '$.replay.source_message_id') =
+       orphan.message_id
+   AND EXISTS (
+         SELECT 1
+         FROM json_each(
+           CASE WHEN json_valid(replay_turn.payload_json)
+                THEN replay_turn.payload_json ELSE '{}' END,
+           '$.input_message_ids'
+         ) AS input
+         WHERE input.type = 'text' AND input.value = orphan.message_id
+       )
+)
+SELECT orphan.message_id,
+       orphan.agent_id,
+       orphan.orphan_turn_id,
+       COUNT(candidate.candidate_turn_id) AS candidate_count,
+       CASE WHEN COUNT(candidate.candidate_turn_id) = 1
+            THEN MIN(candidate.candidate_turn_id) END AS candidate_turn_id,
+       CASE WHEN COUNT(candidate.candidate_turn_id) = 1
+            THEN MIN(candidate.candidate_created_at) END AS candidate_created_at
+FROM orphan
+LEFT JOIN candidate
+  ON candidate.message_id = orphan.message_id
+ AND candidate.agent_id = orphan.agent_id
+GROUP BY orphan.message_id, orphan.agent_id, orphan.orphan_turn_id;
+"#,
+    )?;
+    let orphan_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM conversation_orphan_assignment_repairs",
+        [],
+        |row| row.get(0),
+    )?;
+    let repaired_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM conversation_orphan_assignment_repairs
+         WHERE candidate_count = 1",
+        [],
+        |row| row.get(0),
+    )?;
+    let discarded_count = orphan_count - repaired_count;
+    transaction.execute(
+        r#"
+UPDATE conversation_input_assignments
+SET turn_id = (
+      SELECT repair.candidate_turn_id
+      FROM conversation_orphan_assignment_repairs AS repair
+      WHERE repair.message_id = conversation_input_assignments.message_id
+    ),
+    revision = revision + 1,
+    assigned_at = COALESCE(
+      (SELECT repair.candidate_created_at
+       FROM conversation_orphan_assignment_repairs AS repair
+       WHERE repair.message_id = conversation_input_assignments.message_id),
+      assigned_at
+    )
+WHERE message_id IN (
+  SELECT message_id
+  FROM conversation_orphan_assignment_repairs
+  WHERE candidate_count = 1
+)
+"#,
+        [],
+    )?;
+    transaction.execute(
+        r#"
+INSERT INTO conversation_source_revisions (
+  source_kind, source_id, agent_id, turn_id, activity_seq, revision, updated_at
+)
+SELECT 'operator', repair.message_id, repair.agent_id,
+       repair.candidate_turn_id, NULL, 1, ?1
+FROM conversation_orphan_assignment_repairs AS repair
+WHERE repair.candidate_count = 1
+ON CONFLICT(source_kind, source_id) DO UPDATE SET
+  agent_id = excluded.agent_id,
+  turn_id = excluded.turn_id,
+  revision = conversation_source_revisions.revision + 1,
+  updated_at = excluded.updated_at
+"#,
+        [&repaired_at],
+    )?;
+    transaction.execute(
+        r#"
+INSERT INTO conversation_turn_revisions (
+  agent_id, turn_id, summary_revision, detail_revision, result_settled, updated_at
+)
+SELECT repair.agent_id, repair.candidate_turn_id, 1, 1, 0, ?1
+FROM conversation_orphan_assignment_repairs AS repair
+WHERE repair.candidate_count = 1
+ON CONFLICT(agent_id, turn_id) DO UPDATE SET
+  summary_revision = conversation_turn_revisions.summary_revision + 1,
+  detail_revision = conversation_turn_revisions.detail_revision + 1,
+  updated_at = excluded.updated_at
+"#,
+        [&repaired_at],
+    )?;
+    transaction.execute(
+        r#"
+UPDATE conversation_source_revisions
+SET turn_id = NULL,
+    revision = revision + 1,
+    updated_at = ?1
+WHERE source_kind = 'operator'
+  AND source_id IN (
+    SELECT message_id
+    FROM conversation_orphan_assignment_repairs
+    WHERE candidate_count != 1
+  )
+"#,
+        [&repaired_at],
+    )?;
+    transaction.execute(
+        "DELETE FROM conversation_input_assignments
+         WHERE message_id IN (
+           SELECT message_id
+           FROM conversation_orphan_assignment_repairs
+           WHERE candidate_count != 1
+         )",
+        [],
+    )?;
+    transaction.execute_batch("DROP TABLE conversation_orphan_assignment_repairs;")?;
+    tracing::info!(
+        migration_version = OBSERVER_SYNC_LEGACY_RECONCILE_VERSION,
+        migration_name = OBSERVER_SYNC_LEGACY_RECONCILE_NAME,
+        orphan_count,
+        repaired_count,
+        discarded_count,
+        "reconciled orphaned conversation input assignments"
+    );
+    Ok(())
+}
+
+fn reconcile_legacy_archived_identities(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "agent_identities")? {
+        return Ok(());
+    }
+    transaction.execute_batch(
+        r#"
+DROP TABLE IF EXISTS temp.legacy_archived_identity_reconcile;
+CREATE TEMP TABLE legacy_archived_identity_reconcile AS
+SELECT agent_id,
+       COALESCE(archived_at, updated_at) AS retired_at
+FROM agent_identities
+WHERE status = 'archived';
+
+UPDATE agent_identities
+SET status = 'deleted',
+    archived_at = COALESCE(archived_at, updated_at),
+    payload_json = CASE
+      WHEN json_valid(payload_json)
+      THEN json_set(payload_json, '$.status', 'deleted')
+      ELSE payload_json
+    END
+WHERE agent_id IN (
+  SELECT agent_id FROM legacy_archived_identity_reconcile
+);
+"#,
+    )?;
+    if table_exists_tx(transaction, "agent_identity_reservations")? {
+        transaction.execute_batch(
+            r#"
+INSERT OR IGNORE INTO agent_identity_reservations (
+  agent_id, reservation_state, reserved_at, retired_at, source
+)
+SELECT legacy.agent_id, 'retired',
+       COALESCE(identity.created_at, legacy.retired_at),
+       legacy.retired_at,
+       'migration:legacy-archived'
+FROM legacy_archived_identity_reconcile AS legacy
+JOIN agent_identities AS identity ON identity.agent_id = legacy.agent_id;
+
+UPDATE agent_identity_reservations
+SET reservation_state = 'retired',
+    retired_at = COALESCE(
+      retired_at,
+      (SELECT legacy.retired_at
+       FROM legacy_archived_identity_reconcile AS legacy
+       WHERE legacy.agent_id = agent_identity_reservations.agent_id)
+    )
+WHERE agent_id IN (
+  SELECT agent_id FROM legacy_archived_identity_reconcile
+);
+"#,
+        )?;
+    }
+    let reconciled_count: i64 = transaction.query_row(
+        "SELECT COUNT(*) FROM legacy_archived_identity_reconcile",
+        [],
+        |row| row.get(0),
+    )?;
+    transaction.execute_batch("DROP TABLE legacy_archived_identity_reconcile;")?;
+    tracing::info!(
+        migration_version = OBSERVER_SYNC_LEGACY_RECONCILE_VERSION,
+        migration_name = OBSERVER_SYNC_LEGACY_RECONCILE_NAME,
+        reconciled_count,
+        "canonicalized legacy archived identities"
+    );
     Ok(())
 }
 
@@ -4755,9 +4998,10 @@ fn backfill_observer_sync_identity_foundations(transaction: &Transaction<'_>) ->
             r#"
 INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
 SELECT agent_id,
-       CASE WHEN status = 'deleted' THEN 'retired' ELSE 'active' END,
+       CASE WHEN status IN ('deleted', 'archived') THEN 'retired' ELSE 'active' END,
        created_at,
-       CASE WHEN status = 'deleted' THEN COALESCE(archived_at, updated_at) ELSE NULL END,
+       CASE WHEN status IN ('deleted', 'archived')
+            THEN COALESCE(archived_at, updated_at) ELSE NULL END,
        'agent_registry'
 FROM agent_identities
 "#,
@@ -4774,7 +5018,11 @@ SET reservation_state = 'retired',
          WHERE i.agent_id = agent_identity_reservations.agent_id)
     )
 WHERE reservation_state != 'retired'
-  AND agent_id IN (SELECT agent_id FROM agent_identities WHERE status = 'deleted')
+  AND agent_id IN (
+    SELECT agent_id
+    FROM agent_identities
+    WHERE status IN ('deleted', 'archived')
+  )
 "#,
             [],
         )?;

@@ -30,6 +30,9 @@ pub struct ConversationTurnSummary {
     pub presentation_class: PresentationClass,
     pub inputs: Vec<TurnInputSummary>,
     pub execution: ExecutionState,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub duration_ms: Option<u64>,
     pub result: ResultState,
     pub settled: bool,
     pub attention: Option<Attention>,
@@ -105,6 +108,8 @@ pub struct PendingInput {
     pub revision: u64,
     pub state: PendingInputState,
     pub preview: String,
+    pub presentation_class: PresentationClass,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -225,14 +230,22 @@ pub enum PresentationClass {
 
 /// Derives immutable presentation membership only from the recorded creation trigger.
 pub fn presentation_class(trigger: &TurnTriggerSummary) -> PresentationClass {
-    match trigger.trigger_kind {
+    message_presentation_class(&trigger.kind, trigger.trigger_kind)
+}
+
+/// Use the same canonical source classification before and after turn assignment.
+pub fn message_presentation_class(
+    kind: &MessageKind,
+    trigger_kind: Option<ContinuationTriggerKind>,
+) -> PresentationClass {
+    match trigger_kind {
         Some(ContinuationTriggerKind::OperatorInput) => PresentationClass::Operator,
         Some(ContinuationTriggerKind::TaskResult) => PresentationClass::Task,
         Some(ContinuationTriggerKind::ExternalEvent) => PresentationClass::External,
         Some(ContinuationTriggerKind::TimerFire) => PresentationClass::Timer,
         Some(ContinuationTriggerKind::InternalFollowup) => PresentationClass::Internal,
         Some(ContinuationTriggerKind::SystemTick) => PresentationClass::System,
-        None => match trigger.kind {
+        None => match kind {
             MessageKind::OperatorPrompt => PresentationClass::Operator,
             MessageKind::TaskResult | MessageKind::TaskStatus => PresentationClass::Task,
             MessageKind::ChannelEvent | MessageKind::WebhookEvent | MessageKind::CallbackEvent => {

@@ -149,6 +149,7 @@ interface StatusChipProps extends HTMLAttributes<HTMLSpanElement> {
 }
 
 interface StatusBadgeProps extends Omit<HTMLAttributes<HTMLSpanElement>, "children"> {
+  showLabel?: boolean;
   kind?: StatusKind;
   value?: string | null;
   children?: ReactNode;
@@ -187,13 +188,13 @@ export function StatusChip({ tone = "idle", iconOnly, children, title, ...props 
   return <Badge tone={toneToBadge(tone)} {...props} title={title} data-tooltip={title}>{children}</Badge>;
 }
 
-export function StatusBadge({ kind = "runtime", value, children, title, ...props }: StatusBadgeProps) {
+export function StatusBadge({ kind = "runtime", value, children, title, showLabel = false, ...props }: StatusBadgeProps) {
   const { t } = useTranslation();
   const status = describeStatus(kind, value, t);
   const normalizedValue = normalizeStatus(value);
   return (
     <StatusChip tone={status.tone} title={title ?? status.title} {...props}>
-      {children ?? <StatusBadgeIcon kind={kind} value={normalizedValue} />}
+      {children ?? <><StatusBadgeIcon kind={kind} value={normalizedValue} />{showLabel ? <span>{status.label}</span> : null}</>}
     </StatusChip>
   );
 }

@@ -15,12 +15,15 @@ import { createPortal } from "react-dom";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
+import { CurrentWorkBar } from "./CurrentWorkBar";
 import { ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
 import { useTranslation } from "react-i18next";
 import type {
   AgentDetail,
   AgentSummary,
+  TaskSummary,
+  WorkItemSummary,
   RuntimeModelCatalog,
   RuntimeModelOption,
 } from "../../runtime/types";
@@ -55,6 +58,8 @@ interface AgentPageProps {
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   onAbortCurrentRun: (runId: string) => Promise<void>;
   onConversationRead: () => void;
+  onOpenWorkItem: (work: WorkItemSummary) => void;
+  onOpenTask: (task: TaskSummary) => void;
 }
 
 const BOTTOM_SCROLL_THRESHOLD = 96;
@@ -153,6 +158,8 @@ export function AgentPage({
   onSendPrompt,
   onAbortCurrentRun,
   onConversationRead,
+  onOpenWorkItem,
+  onOpenTask,
 }: AgentPageProps) {
   const { t } = useTranslation();
   const [prompt, setPrompt] = useState(() => readStoredComposerDraft(agent.id));
@@ -612,6 +619,7 @@ export function AgentPage({
               {conversation ? (
                 <ConversationTimeline
                   model={conversation.model}
+                  onOpenWorkItemId={conversation.onOpenWorkItemId}
                   toolDetails={conversation.toolDetails}
                   selectedActivityId={conversation.selectedActivityId}
                   onLoadToolDetail={conversation.onLoadToolDetail}
@@ -638,6 +646,8 @@ export function AgentPage({
             </button>
           ) : null}
 
+          <CurrentWorkBar key={activeAgent.id} agent={activeAgent}
+            conversation={conversation?.model} onOpenWorkItem={onOpenWorkItem} onOpenTask={onOpenTask} />
           <form
             className={composerDragActive ? "composer composer--drag" : "composer"}
             aria-label={t("agent.sendInputAria", { id: activeAgent.id })}

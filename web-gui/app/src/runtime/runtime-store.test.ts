@@ -8,16 +8,13 @@ import {
   agentDetailErrorKind,
   applyStreamEvents,
   backfillRetryDelayMs,
-  canUseRemoteRuntimeConnections,
   isSessionCacheContextCurrent,
-  isLoopbackWebHostname,
   materializeProjectionDetail,
   mergeBootstrapAgentState,
   mergeTimelineEventPage,
   modelCatalogCacheKey,
   observerSyncDiagnostics,
   clearStoredRuntimeConnectionToken,
-  readStoredRemoteConnectionProfiles,
   retryPendingReadMarker,
   resetSessionsForResume,
   resetTransientRuntimeStateForResume,
@@ -888,129 +885,54 @@ function installWindow(localStorage: Storage, sessionStorage: Storage, hostname 
 }
 
 describe("runtime connection storage", () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
+  afterEach(() => vi.unstubAllGlobals());
 
-  it("keeps active runtime connections isolated per window session", () => {
-    const sharedLocalStorage = new MemoryStorage();
-    const remoteWindowSession = new MemoryStorage();
-    const localWindowSession = new MemoryStorage();
+  it.each(["localhost", "127.0.0.1", "::1", "holon.example.test"])(
+    "ignores old remote selections and credentials on %s", (hostname) => {
+      const local = new MemoryStorage();
+      const session = new MemoryStorage();
+      installWindow(local, session, hostname);
+      const remote = { mode: "remote", baseUrl: "https://old.example", token: "remote-secret" };
+      local.setItem("holon.webGui.runtimeConnection.v1", JSON.stringify(remote));
+      local.setItem("holon.webGui.runtimeConnectionProfiles.v1", JSON.stringify({ "https://old.example": remote }));
+      session.setItem("holon.webGui.activeRuntimeConnection.v1", JSON.stringify(remote));
+      expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
+      expect(session.getItem("holon.webGui.activeRuntimeConnection.v1")).not.toContain("remote-secret");
+      // Legacy selections also cannot reactivate a remote in a fresh tab.
+      installWindow(local, new MemoryStorage(), hostname);
+      expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
+    },
+  );
 
-    installWindow(sharedLocalStorage, remoteWindowSession);
-    writeStoredRuntimeConnectionConfig({
-      mode: "remote",
-      baseUrl: "http://remote.example:7878/",
-      token: "remote-token",
-    });
-
-    installWindow(sharedLocalStorage, localWindowSession);
-    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
-    writeStoredRuntimeConnectionConfig({ mode: "local" });
-
-    installWindow(sharedLocalStorage, remoteWindowSession);
-    expect(readStoredRuntimeConnectionConfig()).toEqual({
-      mode: "remote",
-      baseUrl: "http://remote.example:7878",
-      token: "remote-token",
-    });
-
-    installWindow(sharedLocalStorage, localWindowSession);
+  it("does not save a remote credential as a same-origin credential", () => {
+    installWindow(new MemoryStorage(), new MemoryStorage());
+    writeStoredRuntimeConnectionConfig({ mode: "remote", baseUrl: "https://old.example", token: "remote-secret" });
     expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
   });
 
-  it("retains saved remote tokens without making new windows remote by default", () => {
-    const sharedLocalStorage = new MemoryStorage();
-    const firstWindowSession = new MemoryStorage();
-    const secondWindowSession = new MemoryStorage();
-
-    installWindow(sharedLocalStorage, firstWindowSession);
-    writeStoredRuntimeConnectionConfig({
-      mode: "remote",
-      baseUrl: "http://remote.example:7878",
-      token: "saved-token",
-    });
-
-    installWindow(sharedLocalStorage, secondWindowSession);
-    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
-    writeStoredRuntimeConnectionConfig({ mode: "remote", baseUrl: "http://remote.example:7878" });
-
-    expect(readStoredRuntimeConnectionConfig()).toEqual({
-      mode: "remote",
-      baseUrl: "http://remote.example:7878",
-      token: "saved-token",
-    });
-  });
-
-  it("keeps same-origin runtime tokens in the active window session", () => {
-    const sharedLocalStorage = new MemoryStorage();
-    const windowSession = new MemoryStorage();
-
-    installWindow(sharedLocalStorage, windowSession, "100.92.113.47");
+  it("keeps same-origin credentials isolated per window session", () => {
+    const local = new MemoryStorage();
+    const session = new MemoryStorage();
+    installWindow(local, session);
     writeStoredRuntimeConnectionConfig({ mode: "local", token: "same-origin-token" });
-
-    expect(readStoredRuntimeConnectionConfig()).toEqual({
-      mode: "local",
-      token: "same-origin-token",
-    });
-    expect(readStoredRemoteConnectionProfiles()).toEqual([]);
-  });
-
-  it("detects loopback page origins as eligible for remote runtime connections", () => {
-    expect(isLoopbackWebHostname("localhost")).toBe(true);
-    expect(isLoopbackWebHostname("127.0.0.1")).toBe(true);
-    expect(isLoopbackWebHostname("127.42.0.9")).toBe(true);
-    expect(isLoopbackWebHostname("::1")).toBe(true);
-    expect(isLoopbackWebHostname("100.92.113.47")).toBe(false);
-    expect(isLoopbackWebHostname("holon.example.test")).toBe(false);
-  });
-
-  it("forces same-origin local mode on non-loopback embedded pages", () => {
-    const sharedLocalStorage = new MemoryStorage();
-    const remoteWindowSession = new MemoryStorage();
-
-    installWindow(sharedLocalStorage, remoteWindowSession, "100.92.113.47");
-    expect(canUseRemoteRuntimeConnections()).toBe(false);
-
-    writeStoredRuntimeConnectionConfig({
-      mode: "remote",
-      baseUrl: "http://127.0.0.1:7878",
-      token: "saved-token",
-    });
-
+    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local", token: "same-origin-token" });
+    installWindow(local, new MemoryStorage());
     expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
-    expect(readStoredRemoteConnectionProfiles()).toEqual([]);
-  });
-
-  it("clears stale stored tokens once an oidc runtime is confirmed", () => {
-    const sharedLocalStorage = new MemoryStorage();
-    const windowSession = new MemoryStorage();
-
-    installWindow(sharedLocalStorage, windowSession);
-    writeStoredRuntimeConnectionConfig({
-      mode: "remote",
-      baseUrl: "https://holon.example",
-      token: "stale-static-token",
-    });
-    expect(readStoredRuntimeConnectionConfig()).toEqual({
-      mode: "remote",
-      baseUrl: "https://holon.example",
-      token: "stale-static-token",
-    });
-
+    installWindow(local, session);
+    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local", token: "same-origin-token" });
     clearStoredRuntimeConnectionToken();
-
-    expect(readStoredRuntimeConnectionConfig()).toEqual({
-      mode: "remote",
-      baseUrl: "https://holon.example",
-    });
-
-    // A fresh window session must not rehydrate the stale profile token.
-    installWindow(sharedLocalStorage, new MemoryStorage());
     expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
-    expect(readStoredRemoteConnectionProfiles()).toEqual([
-      { baseUrl: "https://holon.example", hasToken: false },
-    ]);
+  });
+
+  it("migrates legacy same-origin tokens and tolerates malformed stored tokens", () => {
+    const local = new MemoryStorage();
+    const session = new MemoryStorage();
+    installWindow(local, session);
+    local.setItem("holon.webGui.runtimeConnection.v1", JSON.stringify({ mode: "local", token: "legacy-token" }));
+    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local", token: "legacy-token" });
+    expect(local.getItem("holon.webGui.runtimeConnection.v1")).toBeNull();
+    session.setItem("holon.webGui.activeRuntimeConnection.v1", JSON.stringify({ mode: "local", token: 42 }));
+    expect(readStoredRuntimeConnectionConfig()).toEqual({ mode: "local" });
   });
 });
 

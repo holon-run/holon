@@ -140,10 +140,12 @@ test("an invalidated active process refreshes before its brief and opens the exi
   await update([activity(1, "Starting the live check.")]);
   await page.goto(`/agents/${agentId}/conversation`);
   await expect(page.getByText("Starting the live check.")).toBeVisible();
-  await update([activity(1, "Starting the live check."), tool]);
+  await update([activity(1, "Starting the live check."), activity(3, ""), tool]);
   const toolRow = page.locator('[data-activity-id="tool:exec-live"] button');
   await expect(toolRow).toContainText("printf live-marker");
   await expect(toolRow).toContainText("ExecCommand · success");
+  await expect(page.locator('[data-activity-id="assistant:3"]')).toHaveCount(0);
+  await expect(page.getByText("Activity summary unavailable", { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-turn-id="live-detail"] .conversation-brief')).toHaveCount(0);
   await toolRow.click();
   await expect(page.locator(".side-panel")).toBeVisible();
@@ -157,7 +159,9 @@ test("an invalidated active process refreshes before its brief and opens the exi
     "exec-live": { id: "exec-live", agent_id: agentId, tool_name: "ExecCommand", status: "error",
       input: { cmd: "printf live-marker" }, output: { stderr: "updated failure", exit_status: 1 }, duration_ms: 1250 },
   } } });
-  await update([activity(1, "Starting the live check."), { ...tool, revision: 2, summary: "ExecCommand · error" }]);
+  await update([activity(1, "Starting the live check."), { ...activity(3, "Tool output received."), revision: 2 },
+    { ...tool, revision: 2, summary: "ExecCommand · error" }]);
+  await expect(page.locator('[data-activity-id="assistant:3"]')).toContainText("Tool output received.");
   await expect(toolRow).toContainText("ExecCommand · error · 1.3s");
   await expect(page.locator(".side-panel").getByText("updated failure", { exact: true })).toBeVisible();
   expect(await toolRequests()).toHaveLength(2);
@@ -200,4 +204,153 @@ test("tool summaries load only for visible expanded rows and failed loads remain
   await toggle.click();
   await expect(page.getByText("echo 8", { exact: true })).toBeVisible();
   expect(await toolRequests()).toHaveLength(10);
+});
+
+test("turn clock survives refresh, freezes before brief delivery, and opens a flush-aligned process", async ({ page, context, request }, info) => {
+  const session = `timing-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const start = Date.parse("2026-09-16T00:00:00Z");
+  await page.clock.install({ time: new Date(start + 23000) });
+  await page.clock.pauseAt(new Date(start + 24000));
+  let current = turn("timed", 1, { started_at: new Date(start).toISOString() });
+  const update = () => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], activitiesByTurnId: { timed: [activity(1, "Checking elapsed time.")] },
+  } });
+  await update();
+  await page.goto(`/agents/${agentId}/conversation`);
+  const card = page.locator('[data-turn-id="timed"]');
+  const clock = card.locator(".conversation-turn-elapsed");
+  const disclosure = card.locator(".conversation-detail-toggle");
+  await expect(clock).toHaveText("0:24");
+  await page.clock.runFor(2000);
+  await expect(clock).toHaveText("0:26");
+  await page.reload();
+  await expect(clock).toHaveText("0:26");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+
+  current = { ...current, revision: 2, execution: { kind: "terminal", outcome: "completed" },
+    completed_at: new Date(start + 85000).toISOString(), duration_ms: 83000 };
+  await update();
+  await expect(disclosure).toContainText("Waiting for result");
+  await expect(clock).toHaveText("Took 1:23");
+  await page.clock.runFor(10000);
+  await expect(clock).toHaveText("Took 1:23");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+
+  await request.post(control("/__e2e__/configure"), { data: { briefsById: {
+    "timed-brief": { id: "timed-brief", agent_id: agentId, workspace_id: "holon", kind: "result",
+      text: "Timing is ready.", created_at: new Date(start + 100000).toISOString(), content_source: { kind: "inline" } },
+  } } });
+  current = { ...current, revision: 3, result: { kind: "available" }, settled: true, brief_ids: ["timed-brief"] };
+  await update();
+  await expect(card.getByText("Timing is ready.")).toBeVisible();
+  await expect(disclosure).toContainText("Completed");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await clock.click();
+  await page.clock.runFor(250);
+  await expect(card.getByText("Checking elapsed time.")).toBeVisible();
+  const process = (await card.locator(".conversation-detail").boundingBox())!;
+  const result = (await card.locator(".conversation-brief").boundingBox())!;
+  expect(process.x).toBe(result.x);
+  expect(process.width).toBe(result.width);
+  current = { ...current, revision: 4 };
+  await update();
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  await page.reload();
+  await expect(clock).toHaveText("Took 1:23");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+});
+
+test("a delivered brief replaces only the duplicate final activity, including after reload", async ({ page, context, request }, info) => {
+  const session = `dedup-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  let current = turn("dedup", 1);
+  const result = "The final answer is ready.";
+  const progress = Array.from({ length: 8 }, (_, index) => activity(index, `Progress step ${index}.`));
+  const update = () => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], activitiesByTurnId: { dedup: [...progress, activity(9, result)] },
+  } });
+  await update();
+  await page.goto(`/agents/${agentId}/conversation`);
+  const card = page.locator('[data-turn-id="dedup"]');
+  const disclosure = card.locator(".conversation-detail-toggle");
+  const finalActivity = card.locator('[data-activity-id="assistant:9"]');
+  await expect(finalActivity).toContainText(result);
+  current = { ...current, revision: 2, execution: { kind: "terminal", outcome: "completed" } };
+  await update();
+  await expect(disclosure).toContainText("Waiting for result");
+  await expect(finalActivity).toBeVisible();
+
+  // Delay the actual brief response so result metadata alone cannot hide the output.
+  let releaseBrief!: () => void;
+  const briefReady = new Promise<void>((resolve) => { releaseBrief = resolve; });
+  await page.route(/\/briefs(?:\/|:)/, async (route) => {
+    await briefReady;
+    await route.continue();
+  });
+  await request.post(control("/__e2e__/configure"), { data: { briefsById: {
+    "dedup-brief": { id: "dedup-brief", agent_id: agentId, workspace_id: "holon", kind: "result",
+      text: result, created_at: "2026-09-16T00:00:00Z", content_source: { kind: "inline" } },
+  } } });
+  current = { ...current, revision: 3, result: { kind: "available" }, settled: true, brief_ids: ["dedup-brief"] };
+  await update();
+  await expect(card.locator(".conversation-brief")).toBeVisible();
+  await expect(finalActivity).toBeVisible();
+  releaseBrief();
+  await expect(card.locator(".conversation-brief")).toContainText(result);
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await disclosure.click();
+  await expect(finalActivity).toHaveCount(0);
+  await expect(card.getByText(result, { exact: true })).toHaveCount(1);
+  // Deduplication precedes the recent-eight limit so no real progress is displaced.
+  await expect(card.locator(".conversation-activity")).toHaveCount(8);
+  await expect(card.getByText("Progress step 0.", { exact: true })).toBeVisible();
+  await expect(card.getByRole("button", { name: "Show earlier activity" })).toHaveCount(0);
+  await page.reload();
+  await expect(card.locator(".conversation-brief")).toContainText(result);
+  await disclosure.click();
+  await expect(card.locator(".conversation-activity")).toHaveCount(8);
+  await expect(finalActivity).toHaveCount(0);
+  await expect(card.getByText(result, { exact: true })).toHaveCount(1);
+});
+
+test("queued task results are compact events above the latest turn while operator input stays below", async ({ page, context, request }, info) => {
+  const session = `pending-events-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const pending = [
+    { message_id: "a-new", revision: 1, state: "queued", presentation_class: "task", created_at: "2026-09-16T01:01:00Z", preview: "Second task finished" },
+    { message_id: "z-old", revision: 1, state: "queued", presentation_class: "task", created_at: "2026-09-16T01:00:00Z", preview: "First task finished\n\n" + "Detailed command output\n".repeat(100) },
+    { message_id: "operator", revision: 1, state: "queued", presentation_class: "operator", created_at: "2026-09-16T01:02:00Z", preview: "Please continue checking" },
+  ];
+  let current = turn("current", 1);
+  const update = () => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], pending_inputs: pending, activitiesByTurnId: { current: [activity(1, "Working on the request.")] },
+  } });
+  await update();
+  await page.goto(`/agents/${agentId}/conversation`);
+  const events = page.locator(".conversation-pending-events");
+  await expect(events.locator(".conversation-pending-count")).toHaveText("2");
+  await expect(events).not.toHaveAttribute("open", "");
+  await expect(page.locator(".conversation-pending-chip")).toHaveCount(1);
+  await expect(page.locator(".conversation-pending-chip")).toContainText("Please continue checking");
+  const card = page.locator('[data-turn-id="current"]');
+  expect((await events.boundingBox())!.y).toBeLessThan((await card.boundingBox())!.y);
+  expect((await page.locator(".conversation-pending-chip").boundingBox())!.y).toBeGreaterThan((await card.boundingBox())!.y);
+  await events.locator(":scope > summary").click();
+  const rows = events.locator(".conversation-pending-event");
+  await expect(rows.first()).toContainText("First task finished");
+  await expect(rows.last()).toContainText("Second task finished");
+  await rows.first().locator("summary").click();
+  await expect(rows.first().locator(".conversation-pending-event-body")).toBeVisible();
+  expect((await rows.first().locator(".conversation-pending-event-body").boundingBox())!.height).toBeLessThanOrEqual(260);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+  // Turn assignment atomically removes the pending presentation even if an older queue snapshot remains.
+  current = { ...current, revision: 2, presentation_class: "task", inputs: pending.slice(0, 2).map(({ message_id, preview }) => ({ message_id, preview })) };
+  await update();
+  await expect(events).toHaveCount(0);
+  await expect(page.locator(".conversation-pending-chip")).toHaveCount(1);
 });

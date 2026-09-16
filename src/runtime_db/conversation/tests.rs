@@ -475,6 +475,156 @@ fn replayed_input_keeps_source_turn_assignment() -> Result<()> {
 }
 
 #[test]
+fn replayed_input_falls_back_to_persisted_replay_turn() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let mut message = MessageEnvelope::new(
+        AGENT_ID,
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "resume interrupted claim".into(),
+        },
+    );
+    message.id = "message-missing-source".into();
+    message.turn_id = Some("turn-never-persisted".into());
+    message.created_at = timestamp(1);
+    db.evidence().append_message(&message)?;
+
+    let mut replay = turn("turn-persisted-replay", 2);
+    replay.trigger = Some(TurnTriggerSummary::from_message(&message));
+    replay.input_message_ids = vec![message.id.clone()];
+    replay.replay = Some(TurnReplayProvenance {
+        source_message_id: message.id.clone(),
+        source_turn_id: "turn-never-persisted".into(),
+        reason: "interrupted_queue_claim_reentry".into(),
+        prior_terminal: None,
+    });
+    db.turn_records().upsert(&replay)?;
+
+    let assignment = db.connection()?.query_row(
+        "SELECT turn_id, revision
+         FROM conversation_input_assignments
+         WHERE message_id = ?1",
+        [&message.id],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    assert_eq!(assignment, (replay.turn_id, 1));
+    Ok(())
+}
+
+#[test]
+fn migration_repairs_unique_orphan_and_discards_unproven_assignments() -> Result<()> {
+    let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
+    db.connection()?.execute_batch(
+        r#"
+INSERT INTO turn_records (
+  turn_id, turn_index, agent_id, created_at, payload_json
+) VALUES
+(
+  'orphan-replay-unique', 10, 'agent-conversation-test',
+  '2026-09-16T00:00:10Z',
+  json_object(
+    'turn_id', 'orphan-replay-unique',
+    'turn_index', 10,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('orphan-message-unique'),
+    'replay', json_object(
+      'source_message_id', 'orphan-message-unique',
+      'source_turn_id', 'orphan-source-missing'
+    ),
+    'created_at', '2026-09-16T00:00:10Z'
+  )
+),
+(
+  'orphan-replay-ambiguous-a', 11, 'agent-conversation-test',
+  '2026-09-16T00:00:11Z',
+  json_object(
+    'turn_id', 'orphan-replay-ambiguous-a',
+    'turn_index', 11,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('orphan-message-ambiguous'),
+    'replay', json_object(
+      'source_message_id', 'orphan-message-ambiguous',
+      'source_turn_id', 'orphan-source-ambiguous'
+    ),
+    'created_at', '2026-09-16T00:00:11Z'
+  )
+),
+(
+  'orphan-replay-ambiguous-b', 12, 'agent-conversation-test',
+  '2026-09-16T00:00:12Z',
+  json_object(
+    'turn_id', 'orphan-replay-ambiguous-b',
+    'turn_index', 12,
+    'agent_id', 'agent-conversation-test',
+    'input_message_ids', json_array('orphan-message-ambiguous'),
+    'replay', json_object(
+      'source_message_id', 'orphan-message-ambiguous',
+      'source_turn_id', 'orphan-source-ambiguous'
+    ),
+    'created_at', '2026-09-16T00:00:12Z'
+  )
+);
+
+INSERT INTO conversation_input_assignments (
+  message_id, agent_id, turn_id, revision, assigned_at
+) VALUES
+  ('orphan-message-unique', 'agent-conversation-test',
+   'orphan-source-missing', 1, '2026-09-16T00:00:10Z'),
+  ('orphan-message-none', 'agent-conversation-test',
+   'orphan-source-none', 1, '2026-09-16T00:00:13Z'),
+  ('orphan-message-ambiguous', 'agent-conversation-test',
+   'orphan-source-ambiguous', 1, '2026-09-16T00:00:11Z');
+
+INSERT INTO conversation_source_revisions (
+  source_kind, source_id, agent_id, turn_id, revision, updated_at
+) VALUES
+  ('operator', 'orphan-message-unique', 'agent-conversation-test',
+   'orphan-source-missing', 1, '2026-09-16T00:00:10Z'),
+  ('operator', 'orphan-message-none', 'agent-conversation-test',
+   'orphan-source-none', 1, '2026-09-16T00:00:13Z'),
+  ('operator', 'orphan-message-ambiguous', 'agent-conversation-test',
+   'orphan-source-ambiguous', 1, '2026-09-16T00:00:11Z');
+
+DELETE FROM schema_migrations WHERE version = 67;
+"#,
+    )?;
+    drop(db);
+
+    let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let unique_assignment = db.connection()?.query_row(
+        "SELECT turn_id, revision
+         FROM conversation_input_assignments
+         WHERE message_id = 'orphan-message-unique'",
+        [],
+        |row| Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?)),
+    )?;
+    assert_eq!(unique_assignment, ("orphan-replay-unique".into(), 2));
+    let discarded_count: i64 = db.connection()?.query_row(
+        "SELECT COUNT(*) FROM conversation_input_assignments
+         WHERE message_id IN ('orphan-message-none', 'orphan-message-ambiguous')",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(discarded_count, 0);
+    let detached_source_count: i64 = db.connection()?.query_row(
+        "SELECT COUNT(*) FROM conversation_source_revisions
+         WHERE source_kind = 'operator'
+           AND source_id IN ('orphan-message-none', 'orphan-message-ambiguous')
+           AND turn_id IS NULL
+           AND revision = 2",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(detached_source_count, 2);
+    Ok(())
+}
+
+#[test]
 fn legacy_schema_migration_backfills_visible_activity_sequences() -> Result<()> {
     let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
     let mut message = MessageEnvelope::new(
@@ -729,7 +879,7 @@ DELETE FROM schema_migrations WHERE version = 66;
     drop(db);
 
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-    assert_eq!(db.current_schema_version()?, 66);
+    assert_eq!(db.current_schema_version()?, 67);
     let assignment_count: i64 = db.connection()?.query_row(
         "SELECT COUNT(*)
          FROM conversation_input_assignments
@@ -780,7 +930,7 @@ fn migration_skips_conflicting_replay_input_sources() -> Result<()> {
     drop(db);
 
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-    assert_eq!(db.current_schema_version()?, 66);
+    assert_eq!(db.current_schema_version()?, 67);
     let assignment = db.connection()?.query_row(
         "SELECT turn_id, revision
          FROM conversation_input_assignments
@@ -948,7 +1098,7 @@ DELETE FROM schema_migrations WHERE version = 66;
     drop(db);
 
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-    assert_eq!(db.current_schema_version()?, 66);
+    assert_eq!(db.current_schema_version()?, 67);
     let cleaned_replay_count: i64 = db.connection()?.query_row(
         "SELECT COUNT(*)
          FROM turn_records
@@ -2034,5 +2184,93 @@ fn activity_display_extracts_text_before_truncation_and_omits_provider_state() -
         .unwrap();
     assert!(activity_item(&updated.activities[0]).summary.is_empty());
     assert_eq!(activity_item(&updated.activities[0]).revision, 2);
+    Ok(())
+}
+
+#[test]
+fn summary_timing_uses_canonical_turn_records_without_brief_delivery() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let record = turn("timed-turn", 1);
+    db.turn_records().upsert(&record)?;
+    let active = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(active.turns[0].started_at, record.created_at);
+    assert_eq!(active.turns[0].completed_at, None);
+    assert_eq!(active.turns[0].duration_ms, None);
+
+    let mut finished = terminal(record, TurnTerminalKind::Aborted, None);
+    // The measured duration is authoritative even if wall time differs.
+    finished.terminal.as_mut().unwrap().duration_ms = 830;
+    db.turn_records().upsert(&finished)?;
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(page.turns[0].started_at, finished.created_at);
+    assert_eq!(
+        page.turns[0].completed_at,
+        Some(finished.created_at + Duration::seconds(1))
+    );
+    assert_eq!(page.turns[0].duration_ms, Some(830));
+    assert!(page.turns[0].brief_ids.is_empty());
+    assert!(page.turns[0].revision > active.turns[0].revision);
+    Ok(())
+}
+
+#[test]
+fn pending_inputs_classify_canonical_sources_before_turn_assignment() -> Result<()> {
+    use crate::domain::conversation::PresentationClass;
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    for (index, (kind, trigger_kind, expected)) in [
+        (
+            MessageKind::OperatorPrompt,
+            None,
+            PresentationClass::Operator,
+        ),
+        (MessageKind::TaskResult, None, PresentationClass::Task),
+        (MessageKind::TaskStatus, None, PresentationClass::Task),
+        (MessageKind::TimerTick, None, PresentationClass::Timer),
+        (MessageKind::ChannelEvent, None, PresentationClass::External),
+        (
+            MessageKind::OperatorPrompt,
+            Some(ContinuationTriggerKind::TaskResult),
+            PresentationClass::Task,
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut message = MessageEnvelope::new(
+            AGENT_ID,
+            kind,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "identical body, different canonical source".into(),
+            },
+        );
+        message.id = format!("pending-source-{index}");
+        message.trigger_kind = trigger_kind;
+        db.evidence().append_message(&message)?;
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: AGENT_ID.into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: timestamp(index as i64),
+            updated_at: timestamp(index as i64),
+        })?;
+        let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+        let pending = page
+            .pending_inputs
+            .iter()
+            .find(|input| input.message_id == message.id)
+            .unwrap();
+        assert_eq!(pending.presentation_class, expected);
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(&pending.created_at)?.with_timezone(&Utc),
+            timestamp(index as i64)
+        );
+    }
     Ok(())
 }

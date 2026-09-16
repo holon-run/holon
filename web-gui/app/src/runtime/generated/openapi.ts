@@ -3119,7 +3119,7 @@ export interface components {
                 created_at: string;
                 id: string;
                 /** @enum {string} */
-                kind: "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
+                kind: "agent_message_wait" | "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
                 parent_message_id?: string | null;
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -3160,6 +3160,18 @@ export interface components {
                  */
                 status: "active" | "completed" | "cancelled";
                 summary?: string | null;
+            }[];
+            /** @default [] */
+            waits: {
+                /** Format: date-time */
+                created_at: string;
+                id: string;
+                /** @enum {string} */
+                kind: "task" | "external" | "operator" | "timer" | "system";
+                /** @enum {string} */
+                status: "active" | "triggered" | "resolved" | "cancelled" | "expired";
+                task_ids: string[];
+                work_item_id?: string | null;
             }[];
             /** @default [] */
             work_items: {
@@ -3890,6 +3902,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -3907,6 +3921,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -3957,6 +3973,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             };
             visibility_scope_id: string;
@@ -4054,7 +4072,10 @@ export interface components {
         } | {
             event_log_epoch: string;
             input: {
+                created_at: string;
                 message_id: string;
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
                 preview: string;
                 /** Format: uint64 */
                 revision: number;
@@ -4088,6 +4109,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -4105,6 +4128,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -4155,6 +4180,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             };
             /** @constant */
@@ -4271,6 +4298,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -4288,6 +4317,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -4338,6 +4369,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             }[];
             /** Format: uint64 */
@@ -4348,7 +4381,10 @@ export interface components {
             /** Format: uint64 */
             oldest_retained_seq: number;
             pending_inputs: {
+                created_at: string;
                 message_id: string;
+                /** @enum {string} */
+                presentation_class: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational";
                 preview: string;
                 /** Format: uint64 */
                 revision: number;
@@ -4377,6 +4413,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -4394,6 +4432,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -4444,6 +4484,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             }[];
             visibility_scope_id: string;
@@ -5837,7 +5879,7 @@ export interface components {
             created_at: string;
             id: string;
             /** @enum {string} */
-            kind: "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
+            kind: "agent_message_wait" | "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
             parent_message_id?: string | null;
             /** @enum {string} */
             status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";

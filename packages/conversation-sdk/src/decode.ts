@@ -301,6 +301,12 @@ export function decodePendingInput(
     message_id: nonEmptyString(source.message_id, `${path}.message_id`),
     revision: safeInteger(source.revision, `${path}.revision`),
     state,
+    ...(source.presentation_class === undefined ? {} : {
+      presentation_class: enumValue(source.presentation_class, presentationClasses, `${path}.presentation_class`),
+    }),
+    ...(source.created_at === undefined ? {} : {
+      created_at: optionalTimestamp(source.created_at, `${path}.created_at`),
+    }),
     preview:
       source.preview === undefined || source.preview === null
         ? ""
@@ -320,6 +326,13 @@ export function decodeTurnInputSummary(
         ? ""
         : stringValue(source.preview, `${path}.preview`),
   };
+}
+
+function optionalTimestamp(value: unknown, path: string): string | null {
+  if (value == null) return null;
+  const decoded = stringValue(value, path);
+  if (!Number.isFinite(Date.parse(decoded))) fail(path, "expected timestamp");
+  return decoded;
 }
 
 export function decodeTurnSummary(
@@ -345,6 +358,9 @@ export function decodeTurnSummary(
       (input, index) => decodeTurnInputSummary(input, `${path}.inputs[${index}]`),
     ),
     execution: decodeExecutionState(source.execution, `${path}.execution`),
+    started_at: optionalTimestamp(source.started_at, `${path}.started_at`),
+    completed_at: optionalTimestamp(source.completed_at, `${path}.completed_at`),
+    duration_ms: source.duration_ms == null ? null : safeInteger(source.duration_ms, `${path}.duration_ms`),
     result: decodeResultState(source.result, `${path}.result`),
     settled: booleanValue(source.settled, `${path}.settled`),
     attention: decodeAttention(source.attention, `${path}.attention`),

@@ -227,11 +227,18 @@ export function RightSidePanel({
             ? ((fileTitle?.viewKey === viewKey ? fileTitle.path : activeView.initialFilePath)?.split("/").pop() ?? t("rightPanel.fileBrowser"))
           : t("panel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
-  const detailWorkItem = activeView.kind === "work_item_detail"
+  const listedWorkItem = activeView.kind === "work_item_detail"
     ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
-      ?? detailState?.workItem
       ?? activeView.workItem
     : undefined;
+  // Keep live list status while filling in fields omitted from slim projections.
+  const detailWorkItem = detailState?.workItem && listedWorkItem ? {
+    ...listedWorkItem,
+    planArtifact: detailState.workItem.planArtifact,
+    todoList: detailState.workItem.todoList,
+    workRefs: detailState.workItem.workRefs,
+    resultSummary: listedWorkItem.resultSummary ?? detailState.workItem.resultSummary,
+  } : detailState?.workItem ?? listedWorkItem;
   const taskDetailState = activeView.kind === "task_detail" ? activeView.detailState ?? taskDetailsById[activeView.task.id] : undefined;
   const toolExecutionDetailState = activeView.kind === "tool_execution_detail"
     ? toolExecutionDetailsById[activeView.toolExecutionId] ?? activeView.detailState
@@ -314,7 +321,7 @@ export function RightSidePanel({
         onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles(selected.workspaceId, selected.executionRootId); }}>
         {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
       </select> : null}
-      <div className="panel-body" ref={bodyRef}>
+      <div className="panel-body" ref={bodyRef} key={viewKey}>
         {open && (runtimeTraceActive ? (
           <RuntimeTracePanel agentId={agent.id} connection={connection} />
         ) : skillManagerActive ? (

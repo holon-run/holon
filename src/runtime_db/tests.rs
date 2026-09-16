@@ -3608,6 +3608,10 @@ CREATE TABLE working_memory_deltas (
     ) -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        open_connection(&db_path)?.execute(
+            "DELETE FROM schema_migrations WHERE version > ?1",
+            [CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION],
+        )?;
         let db = RuntimeDb::open_for_conversation_input_assignment_rollback(&db_path, &lock_path)?;
 
         let plan = db.plan_conversation_input_assignment_rollback()?;
@@ -3644,17 +3648,6 @@ CREATE TABLE working_memory_deltas (
     fn conversation_input_assignment_rollback_rejects_ineligible_heads() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        {
-            let connection = open_connection(&db_path)?;
-            connection.execute(
-                "INSERT INTO schema_migrations (version, name, applied_at)
-                 VALUES (?1, 'future_test', ?2)",
-                (
-                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION + 1,
-                    Utc::now().to_rfc3339(),
-                ),
-            )?;
-        }
         let db = RuntimeDb::open_for_conversation_input_assignment_rollback(&db_path, &lock_path)?;
         let plan = db.plan_conversation_input_assignment_rollback()?;
         assert!(!plan.eligible);
@@ -3677,10 +3670,13 @@ CREATE TABLE working_memory_deltas (
     fn conversation_input_assignment_rollback_rejects_v66_name_mismatch() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-        open_connection(&db_path)?.execute(
-            "UPDATE schema_migrations SET name = 'wrong_name' WHERE version = ?1",
-            [CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION],
-        )?;
+        open_connection(&db_path)?.execute_batch(&format!(
+            "DELETE FROM schema_migrations
+             WHERE version > {CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION};
+             UPDATE schema_migrations
+             SET name = 'wrong_name'
+             WHERE version = {CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION};"
+        ))?;
         let db = RuntimeDb::open_for_conversation_input_assignment_rollback(&db_path, &lock_path)?;
         let plan = db.plan_conversation_input_assignment_rollback()?;
         assert!(!plan.eligible);
@@ -8372,6 +8368,72 @@ CREATE TABLE working_memory_deltas (
         let foundations = db.observer_sync_foundations()?;
         assert!(foundations.runtime_identity_stable);
         assert!(foundations.agent_identity_reserved);
+        Ok(())
+    }
+
+    #[test]
+    fn observer_sync_migration_canonicalizes_legacy_archived_identities() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        for agent_id in ["agent-archived-job", "agent-archived-orphan"] {
+            let mut identity = agent_identity(agent_id, 0);
+            identity.status = AgentRegistryStatus::Deleted;
+            identity.deleted_at = Some(Utc::now());
+            db.agent_identities().upsert(&identity)?;
+        }
+        db.connection()?.execute_batch(
+            r#"
+UPDATE agent_identities
+SET status = 'archived',
+    payload_json = json_set(payload_json, '$.status', 'archived')
+WHERE agent_id IN ('agent-archived-job', 'agent-archived-orphan');
+
+UPDATE agent_identity_reservations
+SET reservation_state = 'active',
+    retired_at = NULL
+WHERE agent_id IN ('agent-archived-job', 'agent-archived-orphan');
+
+INSERT INTO agent_deletion_jobs (
+  deletion_id, agent_id, status, phase, created_at, updated_at,
+  completed_at, payload_json
+) VALUES (
+  'deletion-archived-job', 'agent-archived-job', 'completed', 'finalize',
+  '2026-09-16T00:00:00Z', '2026-09-16T00:00:00Z',
+  '2026-09-16T00:00:00Z', '{}'
+);
+
+DELETE FROM schema_migrations WHERE version = 67;
+"#,
+        )?;
+        drop(db);
+
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let canonical_identity_count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM agent_identities
+             WHERE agent_id IN ('agent-archived-job', 'agent-archived-orphan')
+               AND status = 'deleted'
+               AND json_extract(payload_json, '$.status') = 'deleted'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(canonical_identity_count, 2);
+        let retired_reservation_count: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM agent_identity_reservations
+             WHERE agent_id IN ('agent-archived-job', 'agent-archived-orphan')
+               AND reservation_state = 'retired'
+               AND retired_at IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(retired_reservation_count, 2);
+        for agent_id in ["agent-archived-job", "agent-archived-orphan"] {
+            let identity = db
+                .agent_identities()
+                .latest(agent_id)?
+                .expect("canonicalized identity");
+            assert_eq!(identity.status, AgentRegistryStatus::Deleted);
+        }
+        assert!(db.observer_sync_foundations()?.agent_identity_reserved);
         Ok(())
     }
 
