@@ -206,3 +206,21 @@ test("work item details prioritize results and keep technical fields and plan na
   await detail.locator(".workspace-path-link").click();
   await expect(panel.locator(".file-browser-viewer-head > strong")).toHaveText("README.md");
 });
+
+test("panel open mode and selected file survive reload while closed stays closed", async ({ page }) => {
+  const panel = page.locator(".side-panel");
+  await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
+  await panel.getByRole("button", { name: "README.md", exact: false }).click();
+  await expect(panel.locator(".file-browser-viewer-head > strong")).toHaveText("README.md");
+  await panel.getByRole("button", { name: "Expand side panel", exact: true }).click();
+  await page.reload();
+  await expect(panel).toBeVisible();
+  await expect(panel).toHaveAttribute("data-mode", "expanded");
+  await expect(panel.locator(".file-browser-viewer-head > strong")).toHaveText("README.md");
+  await expect(panel.locator(".file-browser-markdown")).toContainText("File reading test");
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  await expect(panel).not.toBeVisible();
+  await page.reload();
+  await expect(panel).not.toBeVisible();
+});

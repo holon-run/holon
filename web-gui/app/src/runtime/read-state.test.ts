@@ -225,6 +225,11 @@ describe("ledger read-marker gate", () => {
     };
   }
 
+  it("does not advance when an expanded panel covers the conversation", () => {
+    expect(evaluateLedgerReadMarkerGate(gateInput({ conversationVisible: false }), "agent-a"))
+      .toEqual({ mayAdvance: false, reason: "conversation_covered" });
+  });
+
   it("advances to the observed head when every gate condition passes", () => {
     const decision = evaluateLedgerReadMarkerGate(gateInput(), "agent-a");
     expect(decision).toEqual({ mayAdvance: true, candidateSeq: 12 });

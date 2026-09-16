@@ -82,3 +82,28 @@
   .side-panel .detail-heading .inspector-list-head > strong { font-size: 15px; }
   .side-panel .detail-surface .inspector-facts > div { grid-template-columns: minmax(72px, 26%) minmax(0, 1fr); gap: 8px; }
 }
+
+.conversation-event-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+.conversation-event-link > span:first-child {
+  flex: 1;
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.conversation-event-link svg { flex-shrink: 0; }
+.conversation-event-link:hover, .conversation-event-link:focus-visible { color: var(--text); }

@@ -572,3 +572,26 @@ reader's state without transferring it to another object.
 HTTP 304 responses save payload transfer. The current server still computes the
 summary before comparing its ETag; avoiding that work needs a separate server
 revision contract covering every input to the summary.
+
+## Panel continuity and event inspection
+
+- Remember the context panel's open/closed state and normal/expanded mode in
+  origin-local preferences. Restore the Files view and its current directory or
+  selected file by reference, fetching content again. Transient tool/event
+  payloads and navigation history are not persisted; those details restore to
+  the agent overview. Storage failures preserve the in-memory interaction.
+- Subscribe to browser-local read-state notifications at startup, including on
+  dashboard-only tabs. A maximized or narrow-screen panel covering the conversation
+  blocks read-marker advancement. SDK readiness retries an existing read intent;
+  it does not create a new read intent while the user is reading older history.
+- System/task/external inputs use a short readable summary and an explicit full
+  detail action. Serialized MessageBody wrappers are protocol structure, while
+  the inner JSON belongs to the event producer and may have different schemas.
+  Unknown or truncated JSON is labelled as a structured event rather than shown
+  as a broken JSON prefix.
+- The inspector loads the canonical message on demand using its message ID.
+  Wake hints prefer `metadata.wake_hint.body`, because the wake's text reason may
+  already be truncated by the runtime. Render fields and untruncated text, retain
+  the complete raw envelope behind disclosure, and keep the preview plus an error
+  if the original message is unavailable. A late response cannot replace another
+  selected event or a different connection's inspector.

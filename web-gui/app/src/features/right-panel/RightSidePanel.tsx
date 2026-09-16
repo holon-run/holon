@@ -1,3 +1,4 @@
+import { rememberPanelFileLocation } from "../../runtime/panel-preferences";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import { CONVERSATION_MIN, PANEL_MIN } from "./panel-layout";
 
@@ -364,6 +365,7 @@ export function RightSidePanel({
           <FileBrowserPanel key={viewKey} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
             snapshot={fileSnapshots.current.get(viewKey)} onSnapshot={(snapshot) => {
               if (snapshot.selectedFile?.loading || !snapshot.listing) return;
+              rememberPanelFileLocation({ ...activeView, initialPath: snapshot.currentPath, initialFilePath: snapshot.selectedFile?.path });
               if (fileTitle?.viewKey !== viewKey || fileTitle.path !== snapshot.selectedFile?.path) setFileTitle({ viewKey, path: snapshot.selectedFile?.path });
               fileSnapshots.current.delete(viewKey);
               fileSnapshots.current.set(viewKey, snapshot);

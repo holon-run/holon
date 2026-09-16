@@ -622,7 +622,7 @@ export function ActivityInspectorPanel({ activity, detailState }: { activity: Ag
         <h2>{activity.body || activity.label}</h2>
         <dl className="inspector-facts">
           <div>
-            <dt>{t("inspector.tool")}</dt>
+            <dt>{t(activity.messageId ? "inspector.source" : "inspector.tool")}</dt>
             <dd>{activity.label}</dd>
           </div>
           <div>

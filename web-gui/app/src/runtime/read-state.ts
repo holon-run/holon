@@ -128,6 +128,8 @@ export interface LedgerUnreadView {
 export interface LedgerReadMarkerGateInput extends ConversationReadContext {
   /** Authoritative discovery settled fresh (W4 roster snapshot). */
   discoveryFresh: boolean;
+  /** False when the context panel covers the conversation. */
+  conversationVisible?: boolean;
   /** Durable readiness gate; null when the ledger path is unavailable. */
   readiness: {
     readyThroughSeq: number;
@@ -139,6 +141,7 @@ export interface LedgerReadMarkerGateInput extends ConversationReadContext {
 
 export type ReadMarkerGateReason =
   | "not_selected"
+  | "conversation_covered"
   | "document_hidden"
   | "session_not_ready"
   | "discovery_stale"
@@ -167,6 +170,7 @@ export function evaluateLedgerReadMarkerGate(
   if (input.route !== "agent" || input.selectedAgentId !== agentId) {
     return { mayAdvance: false, reason: "not_selected" };
   }
+  if (input.conversationVisible === false) return { mayAdvance: false, reason: "conversation_covered" };
   if (!input.documentVisible) return { mayAdvance: false, reason: "document_hidden" };
   if (!canMarkConversationRead(input, agentId)) {
     return { mayAdvance: false, reason: "session_not_ready" };
