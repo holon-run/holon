@@ -201,3 +201,59 @@ test("tool summaries load only for visible expanded rows and failed loads remain
   await expect(page.getByText("echo 8", { exact: true })).toBeVisible();
   expect(await toolRequests()).toHaveLength(10);
 });
+
+test("turn clock survives refresh, freezes before brief delivery, and opens a flush-aligned process", async ({ page, context, request }, info) => {
+  const session = `timing-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const start = Date.parse("2026-09-16T00:00:00Z");
+  await page.clock.install({ time: new Date(start + 23000) });
+  await page.clock.pauseAt(new Date(start + 24000));
+  let current = turn("timed", 1, { started_at: new Date(start).toISOString() });
+  const update = () => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], activitiesByTurnId: { timed: [activity(1, "Checking elapsed time.")] },
+  } });
+  await update();
+  await page.goto(`/agents/${agentId}/conversation`);
+  const card = page.locator('[data-turn-id="timed"]');
+  const clock = card.locator(".conversation-turn-elapsed");
+  const disclosure = card.locator(".conversation-detail-toggle");
+  await expect(clock).toHaveText("0:24");
+  await page.clock.runFor(2000);
+  await expect(clock).toHaveText("0:26");
+  await page.reload();
+  await expect(clock).toHaveText("0:26");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+
+  current = { ...current, revision: 2, execution: { kind: "terminal", outcome: "completed" },
+    completed_at: new Date(start + 85000).toISOString(), duration_ms: 83000 };
+  await update();
+  await expect(disclosure).toContainText("Waiting for result");
+  await expect(clock).toHaveText("Took 1:23");
+  await page.clock.runFor(10000);
+  await expect(clock).toHaveText("Took 1:23");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+
+  await request.post(control("/__e2e__/configure"), { data: { briefsById: {
+    "timed-brief": { id: "timed-brief", agent_id: agentId, workspace_id: "holon", kind: "result",
+      text: "Timing is ready.", created_at: new Date(start + 100000).toISOString(), content_source: { kind: "inline" } },
+  } } });
+  current = { ...current, revision: 3, result: { kind: "available" }, settled: true, brief_ids: ["timed-brief"] };
+  await update();
+  await expect(card.getByText("Timing is ready.")).toBeVisible();
+  await expect(disclosure).toContainText("Completed");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+  await clock.click();
+  await page.clock.runFor(250);
+  await expect(card.getByText("Checking elapsed time.")).toBeVisible();
+  const process = (await card.locator(".conversation-detail").boundingBox())!;
+  const result = (await card.locator(".conversation-brief").boundingBox())!;
+  expect(process.x).toBe(result.x);
+  expect(process.width).toBe(result.width);
+  current = { ...current, revision: 4 };
+  await update();
+  await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+  await page.reload();
+  await expect(clock).toHaveText("Took 1:23");
+  await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+});

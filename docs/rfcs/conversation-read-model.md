@@ -143,6 +143,22 @@ activity sequence remains in turn detail. Input assignment bumps the turn
 summary revision, so stream consumers receive refreshed previews on the same
 revision path.
 
+Turn summaries expose canonical execution timing without loading activity:
+
+- `started_at`: the persisted `TurnRecord.created_at` when execution starts,
+  excluding input queue time.
+- `completed_at`: terminal record completion time, or null while active.
+- `duration_ms`: terminal record execution duration, or null while active.
+  Clients prefer this recorded duration to subtracting wall-clock timestamps.
+
+These additive fields share the turn summary's existing revision and stream
+path. They do not advance with a frontend timer. While active, clients may
+render elapsed wall time from `started_at`; once terminal, they freeze on the
+recorded duration, even if Brief delivery or hydration is still pending.
+Older servers may omit timing fields; clients display a status without an
+invented duration. Historical turns use persisted timing, not activity fetch
+time, last activity time, or Brief creation time.
+
 `brief_upsert` does not terminate a turn. Agent idle and WorkItem completion
 are not substitutes for a turn terminal record. A wait may close the current
 turn while a WorkItem or background task remains open.

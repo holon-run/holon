@@ -2036,3 +2036,29 @@ fn activity_display_extracts_text_before_truncation_and_omits_provider_state() -
     assert_eq!(activity_item(&updated.activities[0]).revision, 2);
     Ok(())
 }
+
+#[test]
+fn summary_timing_uses_canonical_turn_records_without_brief_delivery() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    let record = turn("timed-turn", 1);
+    db.turn_records().upsert(&record)?;
+    let active = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(active.turns[0].started_at, record.created_at);
+    assert_eq!(active.turns[0].completed_at, None);
+    assert_eq!(active.turns[0].duration_ms, None);
+
+    let mut finished = terminal(record, TurnTerminalKind::Aborted, None);
+    // The measured duration is authoritative even if wall time differs.
+    finished.terminal.as_mut().unwrap().duration_ms = 830;
+    db.turn_records().upsert(&finished)?;
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(page.turns[0].started_at, finished.created_at);
+    assert_eq!(
+        page.turns[0].completed_at,
+        Some(finished.created_at + Duration::seconds(1))
+    );
+    assert_eq!(page.turns[0].duration_ms, Some(830));
+    assert!(page.turns[0].brief_ids.is_empty());
+    assert!(page.turns[0].revision > active.turns[0].revision);
+    Ok(())
+}

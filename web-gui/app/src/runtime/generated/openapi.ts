@@ -3890,6 +3890,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -3907,6 +3909,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -3957,6 +3961,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             };
             visibility_scope_id: string;
@@ -4088,6 +4094,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -4105,6 +4113,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -4155,6 +4165,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             };
             /** @constant */
@@ -4271,6 +4283,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -4288,6 +4302,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -4338,6 +4354,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             }[];
             /** Format: uint64 */
@@ -4377,6 +4395,8 @@ export interface components {
                     kind: "waiting";
                 }) | null;
                 brief_ids: string[];
+                /** Format: date-time */
+                completed_at?: string | null;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -4394,6 +4414,8 @@ export interface components {
                     /** @constant */
                     kind: "unknown";
                 };
+                /** Format: uint64 */
+                duration_ms?: number | null;
                 execution: {
                     /** @constant */
                     kind: "active";
@@ -4444,6 +4466,8 @@ export interface components {
                 /** Format: uint64 */
                 revision: number;
                 settled: boolean;
+                /** Format: date-time */
+                started_at: string;
                 turn_id: string;
             }[];
             visibility_scope_id: string;

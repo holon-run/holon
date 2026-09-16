@@ -29,6 +29,9 @@ export interface ConversationTurnGroup {
   readonly presentationClass: PresentationClass;
   readonly inputs: readonly TurnInputSummary[];
   readonly execution: ExecutionState;
+  readonly startedAt?: string | null;
+  readonly completedAt?: string | null;
+  readonly durationMs?: number | null;
   readonly result: ResultState;
   readonly settled: boolean;
   readonly attention: Attention | null;
@@ -74,6 +77,9 @@ export function buildConversationSessionModel(
       presentationClass: turn.presentation_class,
       inputs: turn.inputs,
       execution: turn.execution,
+      startedAt: turn.started_at,
+      completedAt: turn.completed_at,
+      durationMs: turn.duration_ms,
       result: turn.result,
       settled: turn.settled,
       attention: turn.attention,

@@ -5608,6 +5608,13 @@
                 },
                 "type": "array"
               },
+              "completed_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "detail_coverage": {
                 "oneOf": [
                   {
@@ -5678,6 +5685,14 @@
                     ],
                     "type": "object"
                   }
+                ]
+              },
+              "duration_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
                 ]
               },
               "execution": {
@@ -5885,6 +5900,10 @@
               "settled": {
                 "type": "boolean"
               },
+              "started_at": {
+                "format": "date-time",
+                "type": "string"
+              },
               "turn_id": {
                 "type": "string"
               }
@@ -5896,6 +5915,7 @@
               "presentation_class",
               "inputs",
               "execution",
+              "started_at",
               "result",
               "settled",
               "detail_coverage",
@@ -6412,6 +6432,13 @@
                     },
                     "type": "array"
                   },
+                  "completed_at": {
+                    "format": "date-time",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "detail_coverage": {
                     "oneOf": [
                       {
@@ -6482,6 +6509,14 @@
                         ],
                         "type": "object"
                       }
+                    ]
+                  },
+                  "duration_ms": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
                     ]
                   },
                   "execution": {
@@ -6689,6 +6724,10 @@
                   "settled": {
                     "type": "boolean"
                   },
+                  "started_at": {
+                    "format": "date-time",
+                    "type": "string"
+                  },
                   "turn_id": {
                     "type": "string"
                   }
@@ -6700,6 +6739,7 @@
                   "presentation_class",
                   "inputs",
                   "execution",
+                  "started_at",
                   "result",
                   "settled",
                   "detail_coverage",
@@ -7156,6 +7196,13 @@
                   },
                   "type": "array"
                 },
+                "completed_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "detail_coverage": {
                   "oneOf": [
                     {
@@ -7226,6 +7273,14 @@
                       ],
                       "type": "object"
                     }
+                  ]
+                },
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
                   ]
                 },
                 "execution": {
@@ -7433,6 +7488,10 @@
                 "settled": {
                   "type": "boolean"
                 },
+                "started_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
                 "turn_id": {
                   "type": "string"
                 }
@@ -7444,6 +7503,7 @@
                 "presentation_class",
                 "inputs",
                 "execution",
+                "started_at",
                 "result",
                 "settled",
                 "detail_coverage",
@@ -7595,6 +7655,13 @@
                   },
                   "type": "array"
                 },
+                "completed_at": {
+                  "format": "date-time",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "detail_coverage": {
                   "oneOf": [
                     {
@@ -7665,6 +7732,14 @@
                       ],
                       "type": "object"
                     }
+                  ]
+                },
+                "duration_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
                   ]
                 },
                 "execution": {
@@ -7872,6 +7947,10 @@
                 "settled": {
                   "type": "boolean"
                 },
+                "started_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
                 "turn_id": {
                   "type": "string"
                 }
@@ -7883,6 +7962,7 @@
                 "presentation_class",
                 "inputs",
                 "execution",
+                "started_at",
                 "result",
                 "settled",
                 "detail_coverage",

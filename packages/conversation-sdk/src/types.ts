@@ -120,6 +120,11 @@ export interface ConversationTurnSummary {
   readonly presentation_class: PresentationClass;
   readonly inputs: readonly TurnInputSummary[];
   readonly execution: ExecutionState;
+  /** Canonical turn start; absent on older runtimes. */
+  readonly started_at?: string | null;
+  readonly completed_at?: string | null;
+  /** Authoritative terminal execution duration, independent of brief delivery. */
+  readonly duration_ms?: number | null;
   readonly result: ResultState;
   readonly settled: boolean;
   readonly attention: Attention | null;

@@ -1942,6 +1942,15 @@ fn decode_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnSummaryRow> 
             presentation_class,
             inputs: Vec::new(),
             execution,
+            started_at: record.created_at,
+            completed_at: record
+                .terminal
+                .as_ref()
+                .map(|terminal| terminal.completed_at),
+            duration_ms: record
+                .terminal
+                .as_ref()
+                .map(|terminal| terminal.duration_ms),
             result: crate::domain::conversation::ResultState::Pending,
             settled: false,
             attention: None,

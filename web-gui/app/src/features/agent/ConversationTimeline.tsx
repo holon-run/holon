@@ -1,3 +1,4 @@
+import { TurnElapsedTime } from "./TurnElapsedTime";
 import {
   Bot,
   ChevronDown,
@@ -157,6 +158,9 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     && !(execution === "waitingResult" && hasReadableBrief);
   const awaitingResult = (execution === "waitingResult" && !hasReadableBrief)
     || (turn.briefIds.length > 0 && !briefReady);
+  const timingStatus = execution === "waitingResult" && hasReadableBrief ? "completed"
+    : execution !== "running" && turn.briefIds.length > 0 && !briefReady && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
+      ? "loadingResult" : execution;
   const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
   const expanded = manualExpanded ?? (autoExpanded || readingDetail);
   const [mounted, setMounted] = useState(expanded);
@@ -211,10 +215,12 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
       <div className="conversation-response">
         <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
           data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
+          title={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionProcess")}
           onClick={() => setManualExpanded(!expanded)}>
           <ChevronRight size={14} className="conversation-disclosure-chevron" />
           {execution === "running" ? <LoaderCircle size={14} className="is-spinning" /> : null}
-          <span>{t(execution === "running" ? "agentPage.turnWorking" : "agentPage.executionProcess")}</span>
+          <span>{t(`agentPage.turnTimingStatus.${timingStatus}`)}</span>
+          <TurnElapsedTime turn={turn} />
         </button>
         <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
           aria-hidden={!expanded} inert={!expanded}>

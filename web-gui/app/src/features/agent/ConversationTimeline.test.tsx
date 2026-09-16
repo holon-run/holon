@@ -123,7 +123,7 @@ describe("ConversationTimeline", () => {
     expect(html).toContain("这是结果内容 markdown");
     expect(html).toContain('aria-label="Conversation turn 2"');
     expect(html).not.toContain("timeline-turn-rail");
-    expect(html.indexOf("View execution process")).toBeLessThan(html.indexOf("这是结果内容 markdown"));
+    expect(html.indexOf("Completed")).toBeLessThan(html.indexOf("这是结果内容 markdown"));
   });
 
   it("keeps legacy historical briefs readable without claiming delivery is pending", () => {
@@ -270,7 +270,7 @@ describe("conversation presentation boundaries", () => {
   });
   it("shows an early Brief while execution is still active", () => {
     const html = renderTimeline([turnSummary("active", 1, { brief_ids: ["brief-1"], result: { kind: "available" } })]);
-    expect(html).toContain("Working…");
+    expect(html).toContain("Working");
     expect(html).toContain("这是结果内容 markdown");
   });
   it("puts queued input after history and exposes system provenance without a user bubble", () => {

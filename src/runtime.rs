@@ -5060,6 +5060,8 @@ impl RuntimeHandle {
             }
             self.append_state_changed_events(&scheduled.running_state)?;
 
+            // Cancellation and setup failures can bypass the provider's turn timer.
+            let processing_started = std::time::Instant::now();
             let terminal_transition = match self
                 .process_message_with_plan_deferred(
                     scheduled.message,
@@ -5074,8 +5076,13 @@ impl RuntimeHandle {
                     let (terminal, queue_status, mut audit_events, failure_artifacts) =
                         if let Some(aborted) = aborted.as_ref() {
                             (
-                                self.build_turn_aborted_record(&aborted.reason, None, 0)
-                                    .await,
+                                self.build_turn_aborted_record(
+                                    &aborted.reason,
+                                    None,
+                                    u64::try_from(processing_started.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX),
+                                )
+                                .await,
                                 QueueEntryStatus::Interrupted,
                                 vec![AuditEvent::legacy(
                                     "message_processing_aborted",
@@ -5091,7 +5098,12 @@ impl RuntimeHandle {
                         } else {
                             let descriptor = describe_runtime_error(&err);
                             let terminal = self
-                                .build_turn_aborted_record("runtime_error", None, 0)
+                                .build_turn_aborted_record(
+                                    "runtime_error",
+                                    None,
+                                    u64::try_from(processing_started.elapsed().as_millis())
+                                        .unwrap_or(u64::MAX),
+                                )
                                 .await;
                             error!(
                                 message_id = %message.id,

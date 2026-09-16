@@ -303,6 +303,20 @@ installation are not performed as part of visual verification.
 
 ## Conversation reading contract
 
+Each turn has a status-and-duration disclosure above its result: `Working ·
+0:23` while active, then `Completed · Took 1:23` (or stopped/failed/waiting).
+The whole row toggles execution details. The timer uses summary-level canonical
+start/terminal timing, updates only its own component once per second, and
+freezes at execution termination even if the result has not loaded. Cancellation
+and setup failures record elapsed processing time rather than a zero placeholder. Old
+runtimes without timing still show the status, without an invented duration.
+Process content and Briefs share the same left edge and width; no enclosing
+process card, left rule, or extra indentation implies a nested result. Activity
+uses secondary text and keeps its object-inspector links. Existing automatic
+folding waits for a readable Brief and preserves explicit expansion or active
+reading of the process.
+
+
 - Center a column up to 760px wide on a white surface. Use 16px result text,
   14px progress text, and 12–13px metadata. The neutral navigation is 240px
   wide; the object inspector starts closed and becomes an overlay below 1340px.

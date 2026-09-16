@@ -7301,7 +7301,8 @@ code {
 .conversation-detail-collapse { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 220ms ease, opacity 160ms ease; }
 .conversation-detail-collapse.is-expanded { grid-template-rows: 1fr; opacity: 1; }
 .conversation-detail-clip { min-height: 0; overflow: hidden; }
-.conversation-detail { display: flex; flex-direction: column; gap: 8px; border-left: 1px solid var(--line); padding: 0 0 8px 18px; margin: 0 0 16px 6px; }
+.conversation-detail { display: flex; flex-direction: column; gap: 8px; padding: 0 0 8px; margin: 0 0 16px; }
+.conversation-turn-elapsed { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .conversation-detail-notice,
 .conversation-detail-invalidated { font-size: 12px; color: var(--muted); }
 .conversation-detail-invalidated { display: flex; align-items: center; gap: 8px; }
