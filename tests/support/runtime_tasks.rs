@@ -346,6 +346,7 @@ impl AgentProvider for FastPathWaitProvider {
                     input: json!({
                         "reason": "wait for the completed check task",
                         "wake": "task_result",
+                        "delivery": "silent",
                         "resource": task_id
                     }),
                     kind: holon::provider::ModelToolCallKind::Function,

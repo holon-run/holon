@@ -653,6 +653,7 @@ impl AgentProvider for WakeHintProvider {
                         name: "WaitFor".into(),
                         input: json!({
                             "reason": "waiting for external wake hint",
+                            "delivery": "silent",
                             "wake": "external"
                         }),
                         kind: holon::provider::ModelToolCallKind::Function,

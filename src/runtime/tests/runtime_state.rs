@@ -11103,6 +11103,101 @@ async fn register_wait_for_validates_required_runtime_resources() {
 }
 
 #[tokio::test]
+async fn prepared_task_wait_rejects_task_completion_race_without_registering_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("task wait race".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+    append_running_rejoin_task(&runtime, "task-wait-race", &work_item.id);
+
+    let prepared = match runtime
+        .prepare_wait_for_outcome(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-wait-race".into()),
+            "waiting for task race".into(),
+            None,
+        )
+        .await
+        .unwrap()
+    {
+        PrepareWaitForOutcome::Prepared(prepared) => prepared,
+        PrepareWaitForOutcome::Immediate(_) => panic!("running task should prepare a wait"),
+    };
+
+    let mut result = task_result_message("task-wait-race").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.task_id = Some("task-wait-race".into());
+    result.work_item_id = Some(work_item.id.clone());
+    result.turn_id = Some("turn-task-wait-race-result".into());
+    runtime
+        .commit_terminal_task_result(
+            &TaskRecord {
+                id: "task-wait-race".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: Some(result.id.clone()),
+                work_item_id: Some(work_item.id.clone()),
+                summary: Some("task wait race completed".into()),
+                detail: None,
+                recovery: None,
+            },
+            "task_completed",
+            &result,
+        )
+        .await
+        .unwrap();
+
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_wait_with_execution_protocol_and_task_expectation(
+            &prepared.command,
+            &prepared.execution_protocol,
+            prepared.expected_task.as_ref(),
+        )
+        .expect_err("completed task must invalidate the prepared wait");
+    assert!(runtime
+        .storage()
+        .raw_active_wait_conditions_for_agent("default")
+        .unwrap()
+        .iter()
+        .all(|condition| condition.id != prepared.registration.condition.id));
+    assert_eq!(
+        runtime
+            .latest_work_item(&work_item.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .readiness(),
+        crate::types::WorkItemReadiness::Runnable
+    );
+}
+
+#[tokio::test]
 async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

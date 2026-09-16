@@ -252,6 +252,26 @@ impl RuntimeHandle {
             // The completion report brief, WorkItem transition, tool execution,
             // Turn terminal, queue claim, and execution outcome are committed
             // together by the outer canonical terminal settlement.
+        } else if let Some(prepared) = outcome.prepared_wait_for.as_mut() {
+            if prepared.delivery == crate::tool::tools::wait_for::WaitForDeliveryArg::Final
+                && !outcome.final_text.trim().is_empty()
+            {
+                let mut brief =
+                    brief::make_result(&message.agent_id, message, outcome.final_text.clone());
+                if !outcome.final_citations.is_empty() {
+                    brief.citations = Some(outcome.final_citations.clone());
+                }
+                brief.turn_index = Some(outcome.turn_index);
+                bind_brief_to_assistant_round(
+                    &mut brief,
+                    outcome.final_text_source_assistant_round_id.as_deref(),
+                );
+                prepared.brief = Some(brief);
+                outcome.terminal.no_brief_reason = None;
+            } else if prepared.delivery == crate::tool::tools::wait_for::WaitForDeliveryArg::Silent
+            {
+                outcome.terminal.no_brief_reason = Some(TurnNoBriefReason::ToolOnlyWait);
+            }
         } else if outcome.terminal_kind.is_failure() {
             let mut brief =
                 brief::make_failure(&message.agent_id, message, outcome.final_text.clone());
@@ -322,9 +342,34 @@ impl RuntimeHandle {
                 }
             }
         }
+        if let Some(prepared) = outcome.prepared_wait_for.as_ref() {
+            if let Some(brief) = prepared.brief.as_ref() {
+                if !turn_record.produced_brief_ids.contains(&brief.id) {
+                    turn_record.produced_brief_ids.push(brief.id.clone());
+                }
+            }
+            if !turn_record
+                .waiting_condition_ids
+                .contains(&prepared.registration.condition.id)
+            {
+                turn_record
+                    .waiting_condition_ids
+                    .push(prepared.registration.condition.id.clone());
+            }
+            if let Some(tool_execution) = prepared.tool_execution.as_ref() {
+                if !turn_record.tool_execution_ids.contains(&tool_execution.id) {
+                    turn_record
+                        .tool_execution_ids
+                        .push(tool_execution.id.clone());
+                }
+            }
+        }
         self.promote_turn_active_skills().await?;
 
-        if outcome.should_sleep && outcome.prepared_work_item_completion.is_none() {
+        if outcome.should_sleep
+            && outcome.prepared_work_item_completion.is_none()
+            && outcome.prepared_wait_for.is_none()
+        {
             if outcome.allow_sleep_runnable_work_override {
                 self.transition_to_sleep(outcome.sleep_duration_ms).await?;
             } else {
@@ -344,6 +389,7 @@ impl RuntimeHandle {
             terminal: outcome.terminal,
             turn_record,
             prepared_work_item_completion: outcome.prepared_work_item_completion,
+            prepared_wait_for: outcome.prepared_wait_for,
             terminal_tool_executions: outcome.terminal_tool_executions,
         })
     }

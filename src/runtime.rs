@@ -55,7 +55,10 @@ pub use tasks::{
     PickedWorkItem, WorkItemContinuationSummary, WorkItemFocusTransition,
     WorkItemFocusTransitionWarning,
 };
-pub(crate) use waiting::{WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind};
+pub(crate) use waiting::{
+    PrepareWaitForOutcome, PreparedWaitForSettlement, WaitForRegistrationOutcome, WaitForScope,
+    WaitForWakeKind,
+};
 pub(crate) use worktree::format_worktree_task_summary;
 
 #[cfg(test)]
@@ -3019,6 +3022,18 @@ impl RuntimeHandle {
                 });
             }
         }
+        if !effects.queued_messages.is_empty() {
+            let mut guard = self.inner.agent.lock().await;
+            for message in &effects.queued_messages {
+                if guard
+                    .queue
+                    .peek_next_matching(|queued| queued.id == message.id)
+                    .is_none()
+                {
+                    guard.queue.push(message.clone());
+                }
+            }
+        }
         if effects.fault == Some(TransitionFaultPoint::BeforeEventPublication) {
             warnings.push(PostCommitWarning {
                 effect: "event_publication",
@@ -4549,6 +4564,12 @@ impl RuntimeHandle {
         }
         let prepared_completion = terminal_transition
             .and_then(|transition| transition.prepared_work_item_completion.as_ref());
+        let mut prepared_wait =
+            terminal_transition.and_then(|transition| transition.prepared_wait_for.clone());
+        anyhow::ensure!(
+            prepared_completion.is_none() || prepared_wait.is_none(),
+            "terminal settlement cannot complete a WorkItem and register WaitFor together"
+        );
         let task_result_settlement = if terminal_transition
             .is_some_and(|transition| !transition.terminal.kind.is_failure())
         {
@@ -4584,6 +4605,8 @@ impl RuntimeHandle {
                     .expect("prepared completion requires a terminal Turn"),
                 prepared,
             )?
+        } else if let Some(prepared) = prepared_wait.as_deref() {
+            prepared.execution_protocol.clone()
         } else {
             execution_protocol_settlement_transition_from_facts(
                 &self.inner.storage,
@@ -4657,6 +4680,12 @@ impl RuntimeHandle {
                         .into_iter()
                         .map(|prepared| prepared.brief.clone()),
                 )
+                .chain(
+                    prepared_wait
+                        .as_deref()
+                        .into_iter()
+                        .filter_map(|prepared| prepared.brief.clone()),
+                )
                 .collect(),
         };
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
@@ -4665,11 +4694,38 @@ impl RuntimeHandle {
                 let guard = self.inner.agent.lock().await;
                 let mut state = if let Some(prepared) = prepared_completion {
                     rebase_prepared_completion_agent_state(prepared, &guard.last_persisted_state)?
+                } else if let Some(prepared) = prepared_wait.as_deref() {
+                    if let Some(mutation) = prepared.command.agent_state.as_ref() {
+                        rebase_committed_agent_state(
+                            mutation.expected.as_deref().ok_or_else(|| {
+                                anyhow!("prepared wait is missing its agent state baseline")
+                            })?,
+                            &mutation.record,
+                            &guard.state,
+                        )?
+                        .0
+                    } else {
+                        guard.state.clone()
+                    }
                 } else {
                     committed_agent_state
                         .clone()
                         .unwrap_or_else(|| guard.state.clone())
                 };
+                if let Some(admission) = prepared_wait
+                    .as_ref()
+                    .and_then(|wait| wait.command.task_result_admission.as_ref())
+                {
+                    state.pending = guard.queue.len()
+                        + usize::from(
+                            guard
+                                .queue
+                                .peek_next_matching(|message| message.id == admission.message.id)
+                                .is_none(),
+                        );
+                    state.last_wake_reason = Some("TaskResult".into());
+                    scheduler::apply_message_wake_projection(&mut state);
+                }
                 let agent_state = if let Some(transition) = terminal_transition {
                     state.current_turn_id = Some(transition.terminal.turn_id.clone());
                     state.last_turn_terminal = Some(transition.terminal.clone());
@@ -4697,6 +4753,11 @@ impl RuntimeHandle {
             if let Some(prepared) = prepared_completion {
                 command.audit_events.extend(prepared.audit_events.clone());
             }
+            if let Some(prepared) = prepared_wait.as_deref() {
+                command
+                    .audit_events
+                    .extend(prepared.command.audit_events.clone());
+            }
             command.fault = self.take_transition_fault();
             let commit = if let Some(prepared) = prepared_completion {
                 let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
@@ -4722,6 +4783,29 @@ impl RuntimeHandle {
                     &[],
                     task_result_settlement.as_ref(),
                 )
+            } else if let Some(prepared) = prepared_wait.as_deref() {
+                let terminal_tool_executions = prepared
+                    .tool_execution
+                    .as_ref()
+                    .into_iter()
+                    .chain(
+                        terminal_transition
+                            .into_iter()
+                            .flat_map(|transition| &transition.terminal_tool_executions),
+                    )
+                    .cloned()
+                    .collect::<Vec<_>>();
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_terminal_with_wait(
+                        &command,
+                        &execution_protocol,
+                        &prepared.command,
+                        prepared.expected_task.as_ref(),
+                        &terminal_tool_executions,
+                        task_result_settlement.as_ref(),
+                    )
             } else if terminal_transition
                 .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
             {
@@ -4748,6 +4832,54 @@ impl RuntimeHandle {
                     return Ok(self.apply_transition_commit(commit).await.applied);
                 }
                 Err(error) => {
+                    let wait_conflict = prepared_wait.is_some()
+                        && error
+                            .downcast_ref::<RuntimeStateTransitionConflict>()
+                            .is_some_and(|conflict| {
+                                conflict.retryable()
+                                    && matches!(
+                                        conflict.domain(),
+                                        "task_wait" | "task_result_admission"
+                                    )
+                            });
+                    if wait_conflict && attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
+                        let previous = prepared_wait.as_deref().expect("prepared wait conflict");
+                        let condition = &previous.registration.condition;
+                        let PrepareWaitForOutcome::Prepared(mut refreshed) = self
+                            .prepare_wait_for_outcome_with_id(
+                                &record.agent_id,
+                                condition.work_item_id.clone(),
+                                previous.wake,
+                                condition.subject_ref.clone(),
+                                condition.waiting_for.clone(),
+                                previous.registration.recheck_after_ms,
+                                Some(condition.id.clone()),
+                            )
+                            .await?
+                        else {
+                            return Err(error);
+                        };
+                        refreshed.delivery = previous.delivery;
+                        refreshed.tool_execution = previous.tool_execution.clone();
+                        refreshed.brief = previous.brief.clone();
+                        // Preparation owns wait audit events; retain only the tool/report evidence.
+                        refreshed.command.audit_events.extend(
+                            previous
+                                .command
+                                .audit_events
+                                .iter()
+                                .filter(|event| {
+                                    matches!(
+                                        event.kind.as_str(),
+                                        "tool_executed" | "wait_report_request_completed"
+                                    )
+                                })
+                                .cloned(),
+                        );
+                        execution_protocol = refreshed.execution_protocol.clone();
+                        prepared_wait = Some(refreshed);
+                        continue;
+                    }
                     let can_retry = attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
                         && retryable_enqueue_conflict(&error, &record.agent_id);
                     if !can_retry
@@ -5188,6 +5320,7 @@ impl RuntimeHandle {
                         terminal,
                         turn_record,
                         prepared_work_item_completion: None,
+                        prepared_wait_for: None,
                         terminal_tool_executions: Vec::new(),
                     };
                     let committed_state = {

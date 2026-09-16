@@ -121,6 +121,7 @@ pub(crate) enum QueueOperation {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
     pub agent_state: Option<AgentStateMutation>,
+    pub queued_messages: Vec<MessageEnvelope>,
     pub work_items: Vec<WorkItemRecord>,
     pub tasks: Vec<TaskRecord>,
     pub audit_events: Vec<AuditEvent>,
@@ -167,11 +168,46 @@ pub(crate) struct WaitTransitionCommand {
     pub expected_wait_conditions: Vec<WaitConditionExpectation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
     pub timer_wake: Option<TimerWakeClaim>,
+    pub task_result_admission: Option<WaitTaskResultAdmission>,
     pub agent_state: Option<AgentStateMutation>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WaitTaskResultAdmission {
+    pub message: MessageEnvelope,
+    pub expected: Option<QueueEntryRecord>,
+    pub record: QueueEntryRecord,
+}
+
+fn admit_wait_task_result_tx(
+    tx: &Transaction<'_>,
+    admission: Option<&WaitTaskResultAdmission>,
+) -> Result<bool> {
+    let Some(admission) = admission else {
+        return Ok(false);
+    };
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+            [&admission.record.message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
+        .transpose()?;
+    if existing != admission.expected {
+        return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+            "task_result_admission",
+            &admission.record.message_id,
+        )
+        .into());
+    }
+    validate_queue_mutation_tx(tx, &QueueMutation::Upsert(admission.record.clone()))?;
+    upsert_queue_entry_tx(tx, &admission.record)
 }
 
 #[derive(Debug, Clone)]
@@ -1161,7 +1197,8 @@ impl RuntimeTransitionRepository<'_> {
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
-            let mut applied = false;
+            let mut applied =
+                admit_wait_task_result_tx(tx, command.task_result_admission.as_ref())?;
             let mut work_items = Vec::new();
             for work_item in &command.work_items {
                 let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
@@ -1197,6 +1234,11 @@ impl RuntimeTransitionRepository<'_> {
                         .then(|| command.agent_state.clone())
                         .flatten(),
                     work_items,
+                    queued_messages: command
+                        .task_result_admission
+                        .iter()
+                        .map(|admission| admission.message.clone())
+                        .collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
@@ -1279,6 +1321,33 @@ impl RuntimeTransitionRepository<'_> {
         )
     }
 
+    pub fn commit_queue_terminal_with_wait(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol: &ExecutionProtocolTransition,
+        wait_registration: &WaitTransitionCommand,
+        task_expectation: Option<&TaskExpectation>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
+    ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_full(
+            command,
+            execution_protocol,
+            None,
+            task_expectation,
+            None,
+            Some(wait_registration),
+            terminal_tool_executions,
+            &[],
+            None,
+            DeliverySynchronization::Required,
+            wait_registration.timer_wake.as_ref(),
+            task_result_settlement,
+        )
+    }
+
     pub fn commit_queue_with_wait_trigger(
         &self,
         command: &QueueTransitionCommand,
@@ -1313,26 +1382,6 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             &[],
             timer_wake_claim,
-            None,
-        )
-    }
-
-    pub fn commit_queue_with_execution_protocol_task_expectation_and_wait_conditions(
-        &self,
-        command: &QueueTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-        task_expectation: &TaskExpectation,
-        wait_conditions: &[crate::types::WaitConditionRecord],
-    ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(
-            command,
-            execution_protocol,
-            None,
-            Some(task_expectation),
-            None,
-            &[],
-            wait_conditions,
-            None,
             None,
         )
     }
@@ -1424,6 +1473,39 @@ impl RuntimeTransitionRepository<'_> {
             &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
         >,
     ) -> Result<TransitionCommit> {
+        self.commit_queue_transaction_full(
+            command,
+            execution_protocol_transition,
+            wait_transition,
+            task_expectation,
+            completion,
+            None,
+            terminal_tool_executions,
+            extra_wait_conditions,
+            delivery,
+            delivery_synchronization,
+            timer_wake_claim,
+            task_result_settlement,
+        )
+    }
+
+    fn commit_queue_transaction_full(
+        &self,
+        command: &QueueTransitionCommand,
+        execution_protocol_transition: &ExecutionProtocolTransition,
+        wait_transition: Option<&QueueWaitTransition>,
+        task_expectation: Option<&TaskExpectation>,
+        completion: Option<&CompletionTransition>,
+        wait_registration: Option<&WaitTransitionCommand>,
+        terminal_tool_executions: &[ToolExecutionRecord],
+        extra_wait_conditions: &[crate::types::WaitConditionRecord],
+        delivery: Option<&AgentMessageDeliveryRecord>,
+        delivery_synchronization: DeliverySynchronization,
+        timer_wake_claim: Option<&TimerWakeClaim>,
+        task_result_settlement: Option<
+            &crate::runtime_db::task_result_settlement::TaskResultActivationSettlement,
+        >,
+    ) -> Result<TransitionCommit> {
         self.db.transaction(|tx| {
             let synchronize_delivery = match delivery_synchronization {
                 DeliverySynchronization::Required => true,
@@ -1485,6 +1567,17 @@ impl RuntimeTransitionRepository<'_> {
             }
             if let Some(task_expectation) = task_expectation {
                 validate_task_expectation_tx(tx, task_expectation)?;
+            }
+            if let Some(wait_registration) = wait_registration {
+                for work_item in &wait_registration.work_items {
+                    validate_work_item_mutation_tx(tx, work_item)?;
+                }
+                for condition in &wait_registration.wait_conditions {
+                    validate_wait_condition_tx(tx, condition)?;
+                }
+                for expected in &wait_registration.expected_wait_conditions {
+                    validate_wait_condition_expectation_tx(tx, expected)?;
+                }
             }
             if let Some(completion) = completion {
                 validate_completion_transition_tx(tx, &command.agent_id, completion)?;
@@ -1553,7 +1646,9 @@ impl RuntimeTransitionRepository<'_> {
                 command.operation,
                 command.scheduler_claim_work_item.as_ref(),
             )?;
-            let execution_work_items = if let Some(work_item) =
+            let execution_work_items = if let Some(wait_registration) = wait_registration {
+                wait_registration.work_items.as_slice()
+            } else if let Some(work_item) =
                 wait_transition.and_then(|transition| transition.work_item.as_ref())
             {
                 std::slice::from_ref(work_item)
@@ -1562,7 +1657,9 @@ impl RuntimeTransitionRepository<'_> {
                     .map(|completion| completion.work_items.as_slice())
                     .unwrap_or_default()
             };
-            let execution_wait_conditions = if let Some(wait_transition) = wait_transition {
+            let execution_wait_conditions = if let Some(wait_registration) = wait_registration {
+                wait_registration.wait_conditions.as_slice()
+            } else if let Some(wait_transition) = wait_transition {
                 std::slice::from_ref(&wait_transition.record)
             } else {
                 completion
@@ -1646,6 +1743,25 @@ impl RuntimeTransitionRepository<'_> {
                 .map(|wait_transition| upsert_wait_condition_tx(tx, &wait_transition.record))
                 .transpose()?
                 .unwrap_or(false);
+            let mut wait_registration_work_items = Vec::new();
+            let wait_registration_applied = if let Some(wait_registration) = wait_registration {
+                let mut applied = admit_wait_task_result_tx(
+                    tx,
+                    wait_registration.task_result_admission.as_ref(),
+                )?;
+                for work_item in &wait_registration.work_items {
+                    if apply_work_item_mutation_tx(tx, work_item)? {
+                        wait_registration_work_items.push(work_item.record().clone());
+                        applied = true;
+                    }
+                }
+                for condition in &wait_registration.wait_conditions {
+                    applied |= upsert_wait_condition_tx(tx, condition)?;
+                }
+                applied
+            } else {
+                false
+            };
             let mut extra_wait_conditions_applied = false;
             for condition in extra_wait_conditions {
                 extra_wait_conditions_applied |= upsert_wait_condition_tx(tx, condition)?;
@@ -1734,6 +1850,7 @@ impl RuntimeTransitionRepository<'_> {
                 || agent_state_applied
                 || execution_protocol_applied
                 || wait_transition_applied
+                || wait_registration_applied
                 || extra_wait_conditions_applied
                 || wait_work_item_applied
                 || completion_applied
@@ -1773,8 +1890,9 @@ impl RuntimeTransitionRepository<'_> {
                 insert_brief_evidence_tx(tx, brief)?;
             }
             inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-            let mut index_changes = wait_transition
+            let mut index_changes = wait_registration
                 .map(|transition| transition.index_changes.clone())
+                .or_else(|| wait_transition.map(|transition| transition.index_changes.clone()))
                 .or_else(|| completion.map(|completion| completion.index_changes.clone()))
                 .unwrap_or_default();
             index_changes.extend(message_index_changes);
@@ -1789,9 +1907,15 @@ impl RuntimeTransitionRepository<'_> {
                     agent_state: agent_state_applied
                         .then(|| command.agent_state.clone())
                         .flatten(),
-                    work_items: wait_work_items
+                    work_items: wait_registration_work_items
                         .into_iter()
+                        .chain(wait_work_items)
                         .chain(completion_work_items)
+                        .collect(),
+                    queued_messages: wait_registration
+                        .and_then(|wait| wait.task_result_admission.as_ref())
+                        .map(|admission| admission.message.clone())
+                        .into_iter()
                         .collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
@@ -2279,11 +2403,14 @@ fn validate_terminal_tool_execution_mutations_tx(
     incoming: &[ToolExecutionRecord],
 ) -> Result<()> {
     for terminal in incoming {
+        let wait_success = terminal.tool_name == crate::tool::names::WAIT_FOR
+            && terminal.status == crate::types::ToolExecutionStatus::Success;
         anyhow::ensure!(
             terminal.agent_id == agent_id
-                && terminal.status == crate::types::ToolExecutionStatus::Interrupted
+                && (terminal.status == crate::types::ToolExecutionStatus::Interrupted
+                    || wait_success)
                 && terminal.completed_at.is_some(),
-            "terminal tool execution mutation must be a completed interruption for the same agent"
+            "terminal tool execution mutation must be a completed interruption or WaitFor success for the same agent"
         );
         let existing = tx
             .query_row(
@@ -2293,8 +2420,16 @@ fn validate_terminal_tool_execution_mutations_tx(
             )
             .optional()?
             .map(|payload| serde_json::from_str::<ToolExecutionRecord>(&payload))
-            .transpose()?
-            .ok_or_else(|| anyhow!("deferred tool execution {} is missing", terminal.id))?;
+            .transpose()?;
+        if existing.is_none() {
+            anyhow::ensure!(
+                wait_success,
+                "deferred tool execution {} is missing",
+                terminal.id
+            );
+            continue;
+        }
+        let existing = existing.expect("existing tool execution was checked");
         anyhow::ensure!(
             existing.status == crate::types::ToolExecutionStatus::Deferred
                 && existing.agent_id == terminal.agent_id
@@ -3831,6 +3966,7 @@ mod tests {
 
         db.transitions()
             .commit_wait(&WaitTransitionCommand {
+                task_result_admission: None,
                 agent_id: "agent-a".into(),
                 work_items: vec![WorkItemMutation::Update {
                     record: blocked,
@@ -4398,6 +4534,7 @@ mod tests {
             db.transitions()
                 .commit_wait_with_execution_protocol(
                     &WaitTransitionCommand {
+                        task_result_admission: None,
                         agent_id: "agent-a".into(),
                         work_items: Vec::new(),
                         expected_wait_conditions: Vec::new(),
@@ -4425,6 +4562,7 @@ mod tests {
 
             db.transitions().commit_wait_with_execution_protocol(
                 &WaitTransitionCommand {
+                    task_result_admission: None,
                     agent_id: "agent-a".into(),
                     work_items: Vec::new(),
                     expected_wait_conditions: Vec::new(),

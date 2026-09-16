@@ -8,7 +8,7 @@ use crate::{
     runtime::{RuntimeHandle, WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind},
     tool::{
         helpers::{invalid_tool_input, parse_tool_args, validate_non_empty},
-        spec::typed_spec,
+        spec::{typed_spec, AwaitWaitReportDirective, ToolExecutionContext, ToolLoopDirective},
         ToolResult,
     },
     types::{AuthorityClass, ToolCapabilityFamily, WaitConditionSummary},
@@ -31,11 +31,19 @@ pub(crate) enum WaitForWakeArg {
     System,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WaitForDeliveryArg {
+    Final,
+    Silent,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WaitForArgs {
     pub(crate) reason: String,
     pub(crate) wake: WaitForWakeArg,
+    pub(crate) delivery: WaitForDeliveryArg,
     #[serde(default)]
     pub(crate) work_item_id: Option<String>,
     #[serde(default)]
@@ -82,10 +90,43 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     agent_id: &str,
-    _authority_class: &AuthorityClass,
+    authority_class: &AuthorityClass,
     input: &Value,
+    context: &ToolExecutionContext,
 ) -> Result<ToolResult> {
     let args = parse_wait_for_args(input)?;
+    if args.delivery == WaitForDeliveryArg::Final && context.completion_report_candidate.is_none() {
+        return Ok(ToolResult::deferred(
+            NAME,
+            json!({
+                "disposition": "awaiting_final_report",
+                "wait_registered": false,
+                "expected_output": "final_text_only",
+            }),
+            Some("Awaiting the final operator-facing report before committing the wait.".into()),
+            ToolLoopDirective::AwaitWaitReport(AwaitWaitReportDirective {
+                input: input.clone(),
+            }),
+        ));
+    }
+    prepare_settlement(runtime, agent_id, authority_class, args).await
+}
+
+pub(crate) async fn prepare_settlement(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    _authority_class: &AuthorityClass,
+    args: WaitForArgs,
+) -> Result<ToolResult> {
+    settle_impl(runtime, agent_id, args, true).await
+}
+
+async fn settle_impl(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    args: WaitForArgs,
+    prepare_only: bool,
+) -> Result<ToolResult> {
     let reason = validate_non_empty(args.reason, NAME, "reason")?;
     let resource = optional_resource(args.resource);
     validate_resource_for_wake(args.wake, resource.as_deref())?;
@@ -105,61 +146,70 @@ pub(crate) async fn execute(
                     .or_else(|| context.current_work_item_id.clone())
             })
     });
-    let registration = runtime
-        .register_wait_for_outcome(
-            agent_id,
-            work_item_id.clone(),
-            args.wake.into(),
-            resource.clone(),
-            reason.clone(),
-            args.recheck_after_ms,
-        )
-        .await?;
-    let registration = match registration {
-        WaitForRegistrationOutcome::TaskResultQueued {
-            task_id,
-            result_message_id,
-            wait_condition_id,
-        } => {
-            let mut result = ToolResult::success(
-                NAME,
-                json!({
-                    "disposition": "task_result_queued",
-                    "task_id": task_id,
-                    "result_message_id": result_message_id,
-                    "wait_condition_id": wait_condition_id,
-                }),
-                Some(format!(
-                    "task result already completed; queued exact result message {result_message_id} and registered the triggered wait"
-                )),
-            );
-            result.should_sleep = true;
-            result.terminal_transition = true;
-            return Ok(result);
+    let (registration, prepared_wait_for) = if prepare_only {
+        match runtime
+            .prepare_wait_for_outcome(
+                agent_id,
+                work_item_id.clone(),
+                args.wake.into(),
+                resource.clone(),
+                reason.clone(),
+                args.recheck_after_ms,
+            )
+            .await?
+        {
+            crate::runtime::PrepareWaitForOutcome::Prepared(mut prepared) => {
+                prepared.delivery = args.delivery;
+                if prepared.command.task_result_admission.is_some() {
+                    let mut result = immediate_result(prepared.outcome())?;
+                    result.prepared_wait_for = Some(prepared);
+                    return Ok(result);
+                }
+                (prepared.registration.clone(), Some(prepared))
+            }
+            crate::runtime::PrepareWaitForOutcome::Immediate(outcome) => {
+                return immediate_result(outcome);
+            }
         }
-        WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
-            task_id,
-            result_message_id,
-        } => {
-            return Ok(ToolResult::success(
-                NAME,
-                json!({
-                    "disposition": "task_result_already_consumed",
-                    "task_id": task_id,
-                    "result_message_id": result_message_id,
-                }),
-                Some(format!(
-                    "task result was already consumed: {result_message_id}"
-                )),
-            ));
+    } else {
+        let outcome = runtime
+            .register_wait_for_outcome(
+                agent_id,
+                work_item_id.clone(),
+                args.wake.into(),
+                resource.clone(),
+                reason.clone(),
+                args.recheck_after_ms,
+            )
+            .await?;
+        match outcome {
+            WaitForRegistrationOutcome::Registered { registration } => (registration, None),
+            outcome => return immediate_result(outcome),
         }
-        WaitForRegistrationOutcome::Registered { registration } => registration,
     };
     let updated_context = query_context(runtime).await?;
+    let pending_condition = registration.condition.clone();
     let work_item = match registration.work_item {
-        Some(record) => {
-            Some(view_for_record(runtime, &updated_context, record, true, None, None).await?)
-        }
+        Some(record) => Some(
+            view_for_record(
+                runtime,
+                &updated_context,
+                record.clone(),
+                true,
+                None,
+                Some(crate::work_item_scheduling::derive_work_item_scheduling(
+                    crate::work_item_scheduling::WorkItemSchedulingFacts {
+                        work_item: &record,
+                        is_current: updated_context.current_work_item_id.as_deref()
+                            == Some(record.id.as_str()),
+                        is_yielded: false,
+                        active_wait_conditions: std::slice::from_ref(&pending_condition),
+                        trigger_delivery_by_id: &std::collections::BTreeMap::new(),
+                    },
+                )),
+            )
+            .await?,
+        ),
         None => None,
     };
     let owner = work_item_id
@@ -182,7 +232,7 @@ pub(crate) async fn execute(
         cancelled_wait_condition_ids: registration.cancelled_wait_condition_ids,
     };
     let value = serde_json::to_value(&result)?;
-    Ok(ToolResult::sleep(
+    let mut result = ToolResult::sleep(
         NAME,
         value,
         Some(match result.scope {
@@ -190,10 +240,56 @@ pub(crate) async fn execute(
             WaitForScope::Agent => format!("waiting at agent scope: {reason}"),
         }),
         None,
-    ))
+    );
+    result.terminal_transition = true;
+    result.prepared_wait_for = prepared_wait_for;
+    Ok(result)
 }
 
-fn parse_wait_for_args(input: &Value) -> Result<WaitForArgs> {
+fn immediate_result(outcome: WaitForRegistrationOutcome) -> Result<ToolResult> {
+    match outcome {
+        WaitForRegistrationOutcome::TaskResultQueued {
+            task_id,
+            result_message_id,
+            wait_condition_id,
+        } => {
+            let mut result = ToolResult::success(
+                NAME,
+                json!({
+                    "disposition": "task_result_queued",
+                    "task_id": task_id,
+                    "result_message_id": result_message_id,
+                    "wait_condition_id": wait_condition_id,
+                }),
+                Some(format!(
+                    "task result already completed; queued exact result message {result_message_id} and registered the triggered wait"
+                )),
+            );
+            result.should_sleep = true;
+            result.terminal_transition = true;
+            Ok(result)
+        }
+        WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
+            task_id,
+            result_message_id,
+        } => Ok(ToolResult::success(
+            NAME,
+            json!({
+                "disposition": "task_result_already_consumed",
+                "task_id": task_id,
+                "result_message_id": result_message_id,
+            }),
+            Some(format!(
+                "task result was already consumed: {result_message_id}"
+            )),
+        )),
+        WaitForRegistrationOutcome::Registered { .. } => {
+            unreachable!("registered wait is handled by settle_impl")
+        }
+    }
+}
+
+pub(crate) fn parse_wait_for_args(input: &Value) -> Result<WaitForArgs> {
     parse_tool_args(NAME, input)
 }
 
@@ -311,6 +407,7 @@ mod tests {
         let args = parse_wait_for_args(&json!({
             "reason": "wait",
             "wake": "external",
+            "delivery": "silent",
             "recheck_after_ms": 300000,
         }))
         .unwrap();

@@ -82,6 +82,12 @@ struct PendingCompletionReport {
     corrective_retry_attempted: bool,
 }
 
+struct PendingWaitReport {
+    input: Value,
+    tool_execution: ToolExecutionRecord,
+    corrective_retry_attempted: bool,
+}
+
 fn tool_capability_projection_fingerprint(tools: &[ToolSpec]) -> String {
     let encoded = serde_json::to_vec(tools).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(encoded))
@@ -171,6 +177,7 @@ impl RuntimeHandle {
             allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             terminal_tool_executions: Vec::new(),
         }))
     }
@@ -237,6 +244,7 @@ impl RuntimeHandle {
                 turn_record: self.build_turn_record(&record).await?,
                 terminal: record.clone(),
                 prepared_work_item_completion: None,
+                prepared_wait_for: None,
                 terminal_tool_executions,
             };
             self.persist_terminal_transition(&transition).await?;
@@ -290,6 +298,7 @@ impl RuntimeHandle {
             allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             terminal_tool_executions: vec![pending.tool_execution.clone()],
         })
     }
@@ -493,6 +502,7 @@ impl RuntimeHandle {
             allow_sleep_runnable_work_override: false,
             terminal_kind,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             terminal_tool_executions: Vec::new(),
         }))
     }
@@ -925,6 +935,7 @@ impl RuntimeHandle {
             terminal: outcome.terminal.clone(),
             turn_record,
             prepared_work_item_completion: outcome.prepared_work_item_completion.clone(),
+            prepared_wait_for: outcome.prepared_wait_for.clone(),
             terminal_tool_executions: outcome.terminal_tool_executions.clone(),
         })
         .await?;
@@ -1530,7 +1541,9 @@ impl TurnExecution<'_> {
         let mut sleep_duration_ms = None;
         let mut completed_work_item_this_turn = false;
         let mut prepared_work_item_completion = None;
+        let mut prepared_wait_for = None;
         let mut pending_completion_report: Option<PendingCompletionReport> = None;
+        let mut pending_wait_report: Option<PendingWaitReport> = None;
         let mut round = 0usize;
         let mut truncated_text_history = Vec::new();
         let mut truncated_citation_history = Vec::<Citation>::new();
@@ -1706,11 +1719,12 @@ impl TurnExecution<'_> {
                         allow_sleep_runnable_work_override: false,
                         terminal_kind: TurnTerminalKind::Aborted,
                         prepared_work_item_completion: None,
+                        prepared_wait_for: None,
                         terminal_tool_executions: Vec::new(),
                     });
                 }
             }
-            if round > 1 && pending_completion_report.is_none() {
+            if round > 1 && pending_completion_report.is_none() && pending_wait_report.is_none() {
                 runtime
                     .append_operator_interjections_to_last_round(
                         agent_id,
@@ -1989,6 +2003,7 @@ impl TurnExecution<'_> {
                                 allow_sleep_runnable_work_override: false,
                                 terminal_kind: TurnTerminalKind::BaselineOverBudget,
                                 prepared_work_item_completion: None,
+                                prepared_wait_for: None,
                                 terminal_tool_executions: Vec::new(),
                             });
                         }
@@ -2509,6 +2524,135 @@ impl TurnExecution<'_> {
                 }),
             ))?;
 
+            if let Some(mut pending) = pending_wait_report.take() {
+                if !tool_calls.is_empty() || combined_text.trim().is_empty() {
+                    if !pending.corrective_retry_attempted {
+                        pending.corrective_retry_attempted = true;
+                        let continuation_text = "Final wait report expected. Reply with non-empty operator-facing final text only. Do not call any tool.".to_string();
+                        completed_rounds.push(TurnRoundRecord {
+                            round,
+                            estimated_tokens: build_round_estimated_tokens(
+                                &completed_round_assistant_blocks,
+                                &[],
+                                std::slice::from_ref(&continuation_text),
+                            ),
+                            assistant_blocks: completed_round_assistant_blocks,
+                            text_blocks,
+                            tool_calls: Vec::new(),
+                            tool_results: Vec::new(),
+                            tool_result_envelopes: Vec::new(),
+                            follow_up_user_texts: vec![continuation_text.clone()],
+                        });
+                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                            agent_id.to_string(),
+                            TranscriptEntryKind::ContinuationPrompt,
+                            Some(round),
+                            None,
+                            serde_json::json!({
+                                "text": continuation_text,
+                                "reason": "wait_report_corrective_retry",
+                            }),
+                        ))?;
+                        pending_wait_report = Some(pending);
+                        continue;
+                    }
+                    anyhow::bail!("wait final report protocol abandoned after corrective retry");
+                }
+
+                let args = crate::tool::tools::wait_for::parse_wait_for_args(&pending.input)?;
+                let mut result = crate::tool::tools::wait_for::prepare_settlement(
+                    runtime,
+                    agent_id,
+                    &authority_class,
+                    args,
+                )
+                .await?;
+                let mut success_record = pending.tool_execution;
+                let completed_at = Utc::now();
+                success_record.completed_at = Some(completed_at);
+                success_record.duration_ms = completed_at
+                    .signed_duration_since(success_record.created_at)
+                    .num_milliseconds()
+                    .max(0) as u64;
+                success_record.status = ToolExecutionStatus::Success;
+                success_record.output = serde_json::json!({
+                    "envelope": result.envelope,
+                    "is_error": false,
+                    "should_sleep": result.should_sleep,
+                    "sleep_duration_ms": result.sleep_duration_ms,
+                    "error": null,
+                });
+                success_record.summary =
+                    crate::tool::summary::tool_result_summary(&result.envelope);
+                if let Some(mut prepared) = result.prepared_wait_for.take() {
+                    prepared.tool_execution = Some(success_record.clone());
+                    prepared.command.audit_events.push(AuditEvent::legacy(
+                        "wait_report_request_completed",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "report_assistant_round_id": assistant_round_id,
+                            "source": "followup_final_text",
+                        }),
+                    ));
+                    prepared_wait_for = Some(prepared);
+                } else {
+                    runtime.persist_tool_execution_evidence(&success_record)?;
+                }
+                if !result.should_sleep {
+                    completed_rounds.push(TurnRoundRecord {
+                        round,
+                        estimated_tokens: build_round_estimated_tokens(
+                            &completed_round_assistant_blocks,
+                            &[],
+                            &[],
+                        ),
+                        assistant_blocks: completed_round_assistant_blocks,
+                        text_blocks,
+                        tool_calls: Vec::new(),
+                        tool_results: Vec::new(),
+                        tool_result_envelopes: Vec::new(),
+                        follow_up_user_texts: Vec::new(),
+                    });
+                    continue;
+                }
+                let state = runtime.agent_state().await?;
+                let final_text = combined_text;
+                let atomic_wait_settlement = prepared_wait_for.is_some();
+                let terminal = TurnTerminalRecord {
+                    turn_id: state
+                        .current_turn_id
+                        .clone()
+                        .filter(|turn_id| !turn_id.trim().is_empty())
+                        .unwrap_or_else(crate::ids::turn_id),
+                    turn_index,
+                    kind: TurnTerminalKind::Completed,
+                    reason: None,
+                    last_assistant_message: Some(final_text.clone()),
+                    no_brief_reason: None,
+                    checkpoint: terminal_checkpoint_from_state(&checkpoint_state, turn_index),
+                    completed_at: Utc::now(),
+                    duration_ms: turn_started_at.elapsed().as_millis() as u64,
+                };
+                return Ok(AgentLoopOutcome {
+                    final_text,
+                    final_citations: citation_blocks,
+                    final_text_source_assistant_round_id: Some(assistant_round_id),
+                    turn_index,
+                    terminal,
+                    should_sleep: true,
+                    sleep_duration_ms: result.sleep_duration_ms,
+                    allow_sleep_runnable_work_override: true,
+                    terminal_kind: TurnTerminalKind::Completed,
+                    prepared_work_item_completion: None,
+                    prepared_wait_for: prepared_wait_for.take(),
+                    terminal_tool_executions: if atomic_wait_settlement {
+                        Vec::new()
+                    } else {
+                        vec![success_record]
+                    },
+                });
+            }
+
             if let Some(mut pending) = pending_completion_report.take() {
                 if !tool_calls.is_empty() || combined_text.trim().is_empty() {
                     let reason = if !tool_calls.is_empty() {
@@ -2764,6 +2908,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: true,
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -2928,6 +3073,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: false,
                     terminal_kind: TurnTerminalKind::Aborted,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -3009,6 +3155,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -3380,7 +3527,8 @@ impl TurnExecution<'_> {
                                 reason: None,
                             }),
                         );
-                        let stops_tool_batch = result.prepared_work_item_completion.is_some();
+                        let stops_tool_batch = result.prepared_work_item_completion.is_some()
+                            || result.prepared_wait_for.is_some();
                         let persist_started_at = chrono::Utc::now();
                         let persist_result: Result<()> = async {
                             if let Some(mut prepared) = result.prepared_work_item_completion.take()
@@ -3396,6 +3544,10 @@ impl TurnExecution<'_> {
                                 } else {
                                     prepared_work_item_completion = Some(prepared);
                                 }
+                            } else if let Some(mut prepared) = result.prepared_wait_for.take() {
+                                prepared.tool_execution = Some(record.clone());
+                                prepared.command.audit_events.push(tool_executed_event);
+                                prepared_wait_for = Some(prepared);
                             } else {
                                 runtime.persist_tool_execution_evidence(&record)?;
                                 runtime.inner.storage.append_event(&tool_executed_event)?;
@@ -3430,7 +3582,7 @@ impl TurnExecution<'_> {
                         persist_result?;
                         if let Some(crate::tool::spec::ToolLoopDirective::AwaitCompletionReport(
                             directive,
-                        )) = loop_directive
+                        )) = loop_directive.as_ref()
                         {
                             let execution_binding = execution_binding.clone().ok_or_else(|| {
                                 anyhow::anyhow!(
@@ -3456,8 +3608,8 @@ impl TurnExecution<'_> {
                                 }),
                             ))?;
                             pending_completion_report = Some(PendingCompletionReport {
-                                request_id: directive.request_id,
-                                work_item_id: directive.work_item_id,
+                                request_id: directive.request_id.clone(),
+                                work_item_id: directive.work_item_id.clone(),
                                 expected_work_revision: directive.expected_work_revision,
                                 execution_binding,
                                 effective_work_item_id: pre_tool_work_item_id.clone(),
@@ -3466,7 +3618,21 @@ impl TurnExecution<'_> {
                                 request_assistant_round_id: assistant_round_id.clone(),
                                 request_tool_call_id: tool_call_id.clone(),
                                 tool_execution: record.clone(),
-                                warnings: directive.warnings,
+                                warnings: directive.warnings.clone(),
+                                corrective_retry_attempted: false,
+                            });
+                        }
+                        if let Some(crate::tool::spec::ToolLoopDirective::AwaitWaitReport(
+                            directive,
+                        )) = loop_directive.as_ref()
+                        {
+                            anyhow::ensure!(
+                                record.status == ToolExecutionStatus::Deferred,
+                                "wait report request must persist a deferred tool execution"
+                            );
+                            pending_wait_report = Some(PendingWaitReport {
+                                input: directive.input.clone(),
+                                tool_execution: record.clone(),
                                 corrective_retry_attempted: false,
                             });
                         }
@@ -3488,7 +3654,7 @@ impl TurnExecution<'_> {
                             is_error: result.is_error(),
                             error: result.tool_error().cloned(),
                         });
-                        if pending_completion_report.is_some() {
+                        if pending_completion_report.is_some() || pending_wait_report.is_some() {
                             break;
                         }
                         if result.terminal_transition || stops_tool_batch {
@@ -3654,18 +3820,20 @@ impl TurnExecution<'_> {
             } else {
                 runtime.persist_transcript_evidence(&tool_results_transcript)?;
             }
-            let after_tool_results_interjections =
-                if pending_completion_report.is_some() || prepared_work_item_completion.is_some() {
-                    Vec::new()
-                } else {
-                    runtime
-                        .drain_operator_interjections(
-                            agent_id,
-                            round,
-                            scheduler::InterjectionBoundary::AfterToolResults,
-                        )
-                        .await?
-                };
+            let after_tool_results_interjections = if pending_completion_report.is_some()
+                || pending_wait_report.is_some()
+                || prepared_work_item_completion.is_some()
+            {
+                Vec::new()
+            } else {
+                runtime
+                    .drain_operator_interjections(
+                        agent_id,
+                        round,
+                        scheduler::InterjectionBoundary::AfterToolResults,
+                    )
+                    .await?
+            };
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
@@ -3729,6 +3897,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }
