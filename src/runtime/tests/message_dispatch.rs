@@ -8,10 +8,9 @@
 use super::super::message_dispatch::MessageDispatchPlan;
 use super::super::*;
 use super::support::*;
-use crate::domain::scheduler::ScenarioMode;
 use crate::types::{
-    AuthorityClass, ClosureDecision, ClosureOutcome, ExecutionAdmissionProvenance, MessageBody,
-    MessageKind, MessageOrigin, Priority, RuntimePosture, TurnTerminalKind, TurnTerminalSummary,
+    AuthorityClass, ClosureDecision, ClosureOutcome, MessageBody, MessageKind, MessageOrigin,
+    Priority, RuntimePosture, TurnTerminalKind, TurnTerminalSummary,
 };
 use chrono::Utc;
 
@@ -514,9 +513,6 @@ fn message_dispatch_plan_public_fields_are_constructible_from_tests() {
         continuation_trigger: None,
         continuation_resolution: None,
         model_turn_allowed: false,
-        execution_admission_provenance: ExecutionAdmissionProvenance::LegacyCompat {
-            scenario_class: None,
-            effective_mode: ScenarioMode::Off,
-        },
+        execution_admission_provenance: None,
     };
 }

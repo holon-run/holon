@@ -493,7 +493,6 @@ async fn ordinary_final_response_persists_canonical_brief_settlement() {
     runtime
         .process_interactive_message(
             &message,
-            None,
             LoopControlOptions {
                 max_tool_rounds: None,
             },
@@ -1713,7 +1712,6 @@ async fn context_length_exceeded_turn_fails_fast_without_runtime_error() {
     runtime
         .process_interactive_message(
             &message,
-            None,
             LoopControlOptions {
                 max_tool_rounds: None,
             },

@@ -76,8 +76,11 @@ made model-visible without corrupting provider protocol state.
 
 A claim-time typed fact attached to the running turn:
 
-- `Canonical(scenario_class, activation_id)`, or
-- `LegacyCompat(scenario_class?, effective_mode)`.
+- `Canonical(scenario_class, activation_id)`.
+
+The published `LegacyCompat(scenario_class?, effective_mode)` serde shape is
+retained only for reading historical turn and state records. It has no current
+admission authority and must not start or control a new turn.
 
 Safe points must not infer this provenance from current rollout configuration.
 
@@ -107,25 +110,18 @@ placeholder WorkItem.
 Queue consumption, attachment persistence, incoming transcript evidence, and
 `operator_interjection_admitted` remain one atomic transition.
 
-### Legacy-Compatible Running Turn
+### Retired Legacy-Compatible Running Turn
 
-If the running turn has explicit claim-time `LegacyCompat` provenance and no
-canonical activation, the safe point must:
+The former `LegacyCompat` safe-point defer path is retired. A current running
+turn must have canonical provenance whose activation matches the unified
+execution attempt. Missing execution binding, missing typed provenance,
+historical `LegacyCompat` provenance, canonical provenance without its
+activation, unknown activation, or owner/generation/Turn mismatch must fail
+closed.
 
-1. leave the interjection queue entry `Queued`;
-2. emit no `operator_interjection_admitted` evidence;
-3. append no provider-visible follow-up;
-4. record at most one deferred diagnostic per
-   `(turn_id, message_id, boundary)`;
-5. let the current turn settle normally.
-
-The scheduler subsequently claims that same high-priority message as ordinary
-input. This path must remain exactly-once and restart-safe. It is a compatibility
-defer, not a successful interjection.
-
-Missing execution binding, missing typed provenance, canonical provenance
-without its activation, unknown activation, or owner/generation/Turn mismatch
-must fail closed rather than defer.
+New runtime execution must not emit
+`operator_interjection_deferred_no_canonical_activation`. Historical events of
+that kind remain readable as audit evidence.
 
 ### Before Provider Request
 

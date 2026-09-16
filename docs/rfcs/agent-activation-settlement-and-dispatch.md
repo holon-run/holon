@@ -1657,6 +1657,12 @@ scenario, or incompatible WorkItem state cannot silently fall back to a
 legacy model turn and cannot return an ordinary pre-claim error that leaves a
 hot retry loop.
 
+`ReduceOnly` is also a final canonical admission outcome. In particular, an
+unbound terminal task result without an exact durable wait and without
+unconditional terminal re-entry must be reduced and settled with
+`model_reentry=false`; a continuation decision cannot reopen a provider turn
+after canonical planning selects reducer-only execution.
+
 An external input carrying an exact wait correlation is terminally dropped only
 when durable authority proves that wait generation is obsolete, inactive, or
 no longer the WorkItem execution generation. The runtime never downgrades that

@@ -3681,7 +3681,7 @@ impl RuntimeHandle {
         message: Option<&MessageEnvelope>,
         operator_binding_id: Option<&str>,
         operator_reply_route_id: Option<&str>,
-        execution_admission_provenance: ExecutionAdmissionProvenance,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
     ) -> Result<()> {
         let replay_source = if let Some(message) = message {
             if let Some(source_turn_id) = message.source_refs.get("replay_source_turn_id") {
@@ -3716,8 +3716,9 @@ impl RuntimeHandle {
         } else {
             None
         };
-        let canonical_execution_binding = match &execution_admission_provenance {
-            ExecutionAdmissionProvenance::Canonical { activation_id, .. } => {
+        #[allow(deprecated)]
+        let canonical_execution_binding = match execution_admission_provenance.as_ref() {
+            Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) => {
                 let message = message.ok_or_else(|| {
                     anyhow!("canonical execution admission requires a source message")
                 })?;
@@ -3747,7 +3748,12 @@ impl RuntimeHandle {
                 };
                 Some((activation_id.clone(), owner, claimed_work_revision))
             }
-            ExecutionAdmissionProvenance::LegacyCompat { .. } => None,
+            Some(ExecutionAdmissionProvenance::LegacyCompat { .. }) => {
+                return Err(anyhow!(
+                    "legacy-compatible execution admission is historical read-only state"
+                ));
+            }
+            None => None,
         };
         if let Some(message) = message {
             let work_item_id = message.work_item_id.clone().or_else(|| {
@@ -3845,7 +3851,7 @@ impl RuntimeHandle {
                     .map(|(activation_id, _, _)| activation_id.clone());
                 WorkItemExecutionBinding {
                     activation_id,
-                    admission_provenance: Some(execution_admission_provenance.clone()),
+                    admission_provenance: execution_admission_provenance.clone(),
                     source_message_id: message.id.clone(),
                     turn_id,
                     owner: canonical_execution_binding
@@ -3935,18 +3941,15 @@ impl RuntimeHandle {
                     scheduler::canonical_activation_candidate(message, None, None)?
                         .map(|candidate| candidate.scenario_class())
                         .unwrap_or(scheduler::EXACT_WAIT_RESUME_SCENARIO);
-                ExecutionAdmissionProvenance::Canonical {
+                Some(ExecutionAdmissionProvenance::Canonical {
                     scenario_class,
                     activation_id,
-                }
+                })
             } else {
-                self.execution_admission_provenance(message, None, None)?
+                None
             }
         } else {
-            ExecutionAdmissionProvenance::LegacyCompat {
-                scenario_class: None,
-                effective_mode: crate::domain::scheduler::ScenarioMode::Off,
-            }
+            None
         };
         self.begin_interactive_turn_with_provenance(
             message,
@@ -3967,10 +3970,7 @@ impl RuntimeHandle {
             None,
             operator_binding_id,
             operator_reply_route_id,
-            ExecutionAdmissionProvenance::LegacyCompat {
-                scenario_class: None,
-                effective_mode: crate::domain::scheduler::ScenarioMode::Off,
-            },
+            None,
         )
         .await
     }

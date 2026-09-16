@@ -2615,6 +2615,10 @@ pub enum ExecutionAdmissionProvenance {
         scenario_class: SchedulerScenarioClass,
         activation_id: String,
     },
+    /// Historical persisted shape retained for read compatibility only.
+    ///
+    /// New runtime execution must never create or admit a turn from this variant.
+    #[deprecated(note = "historical serde read-only; do not construct in new code")]
     LegacyCompat {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scenario_class: Option<SchedulerScenarioClass>,
@@ -5931,6 +5935,25 @@ impl AgentListEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(deprecated)]
+    fn execution_admission_provenance_reads_legacy_compat_history() {
+        let provenance: ExecutionAdmissionProvenance = serde_json::from_value(serde_json::json!({
+            "kind": "legacy_compat",
+            "scenario_class": "exact_wait_resume",
+            "effective_mode": "shadow",
+        }))
+        .unwrap();
+
+        assert_eq!(
+            provenance,
+            ExecutionAdmissionProvenance::LegacyCompat {
+                scenario_class: Some(SchedulerScenarioClass::ExactWaitResume),
+                effective_mode: ScenarioMode::Shadow,
+            }
+        );
+    }
 
     #[test]
     fn operator_origin_reads_ledger_entries_without_display_name() {

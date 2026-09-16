@@ -513,15 +513,13 @@ impl RuntimeHandle {
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
     ) -> Result<()> {
-        let execution_admission_provenance =
-            self.execution_admission_provenance(message, continuation_resolution, Some(&task))?;
         let transition = self
             .reduce_task_result_message_deferred(
                 message,
                 task,
                 model_reentry,
                 continuation_resolution,
-                execution_admission_provenance,
+                None,
             )
             .await?;
         self.persist_terminal_transition(&transition).await?;
@@ -534,7 +532,7 @@ impl RuntimeHandle {
         task: TaskRecord,
         model_reentry: bool,
         continuation_resolution: Option<&ContinuationResolution>,
-        execution_admission_provenance: ExecutionAdmissionProvenance,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
     ) -> Result<turn::TurnTerminalTransition> {
         let settlement = self
             .inner
@@ -542,8 +540,8 @@ impl RuntimeHandle {
             .task_result_settlements()
             .ensure_pending(&task, message, self.now())?;
         if settlement.is_some() && model_reentry {
-            if let ExecutionAdmissionProvenance::Canonical { activation_id, .. } =
-                &execution_admission_provenance
+            if let Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) =
+                execution_admission_provenance.as_ref()
             {
                 self.inner
                     .runtime_db
@@ -572,8 +570,7 @@ impl RuntimeHandle {
             }
         }
         if should_ignore_task_update(self.inner.runtime_db.tasks().latest(&task.id)?, &task) {
-            self.begin_reducer_only_turn(message, execution_admission_provenance)
-                .await?;
+            self.begin_reducer_only_turn(message).await?;
             return self
                 .build_reducer_only_terminal_transition("reducer_only/duplicate_task_result", false)
                 .await;
@@ -581,8 +578,7 @@ impl RuntimeHandle {
         let parent_turn_already_delivered =
             task_result_parent_turn_already_delivered(&self.inner.storage, &task)?;
         if !model_reentry || parent_turn_already_delivered {
-            self.begin_reducer_only_turn(message, execution_admission_provenance.clone())
-                .await?;
+            self.begin_reducer_only_turn(message).await?;
         }
         self.persist_task_transition(&task, "task_result_received")
             .await?;
@@ -1351,21 +1347,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_reentry_task_result_binds_turn_to_work_item() {
+    async fn model_reentry_task_result_requires_canonical_provenance() {
         let runtime = runtime();
         let mut task = task("task-1", TaskStatus::Completed, false);
         task.work_item_id = Some("work-1".into());
         let mut message = task_result_message("task-1");
         message.work_item_id = Some("work-1".into());
 
-        runtime
+        let error = runtime
             .reduce_task_result_message(&message, task, true, None)
             .await
-            .unwrap();
+            .unwrap_err();
 
-        let state = runtime.agent_state().await.unwrap();
-        assert_eq!(state.current_turn_work_item_id.as_deref(), Some("work-1"));
-        assert!(state.last_turn_terminal.is_some());
+        assert!(error
+            .to_string()
+            .contains("model turn requires canonical execution admission provenance"));
     }
 
     #[tokio::test]

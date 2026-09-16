@@ -919,10 +919,10 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
             Some(&message),
             None,
             None,
-            crate::types::ExecutionAdmissionProvenance::Canonical {
+            Some(crate::types::ExecutionAdmissionProvenance::Canonical {
                 scenario_class: scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
                 activation_id,
-            },
+            }),
         )
         .await
         .unwrap();
@@ -941,6 +941,48 @@ async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_wo
             .and_then(|binding| binding.claimed_work_revision),
         None
     );
+}
+
+#[tokio::test]
+#[allow(deprecated)]
+async fn legacy_compat_provenance_cannot_start_a_new_turn() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = trusted_operator_prompt(None, "historical provenance must not execute");
+
+    let error = runtime
+        .begin_interactive_turn_with_provenance(
+            Some(&message),
+            None,
+            None,
+            Some(crate::types::ExecutionAdmissionProvenance::LegacyCompat {
+                scenario_class: None,
+                effective_mode: crate::domain::scheduler::ScenarioMode::Off,
+            }),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(error.to_string().contains("historical read-only state"));
+    assert!(runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .is_none());
 }
 
 #[tokio::test]
@@ -2862,7 +2904,7 @@ async fn bootstrap_recovery_replays_task_result_claim_after_canonical_revision_s
     assert!(
         matches!(
             scheduled.dispatch_plan.execution_admission_provenance,
-            crate::types::ExecutionAdmissionProvenance::Canonical { .. }
+            Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
         ),
         "expected canonical replay admission, got {:?}",
         scheduled.dispatch_plan.execution_admission_provenance
@@ -6841,7 +6883,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
 }
 
 #[tokio::test]
-async fn terminal_task_result_without_work_item_uses_reentrant_dispatch() {
+async fn terminal_task_result_without_work_item_is_canonical_reducer_only() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -6910,9 +6952,13 @@ async fn terminal_task_result_without_work_item_uses_reentrant_dispatch() {
     assert_eq!(scheduled.message.id, message.id);
     assert_eq!(
         scheduled.scheduler_decision.kind,
-        scheduler::SchedulerDecisionKind::StartModelTurn
+        scheduler::SchedulerDecisionKind::ReduceMessageOnly
     );
-    assert!(scheduled.scheduler_decision.model_reentry);
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    assert!(scheduled
+        .dispatch_plan
+        .execution_admission_provenance
+        .is_none());
     assert!(scheduled
         .dispatch_plan
         .continuation_resolution
@@ -7590,8 +7636,10 @@ async fn trusted_operator_conversation_owner_flows_from_admission_to_terminal_tu
     };
 
     runtime
-        .begin_reducer_only_turn(
-            &scheduled.message,
+        .begin_interactive_turn_with_provenance(
+            Some(&scheduled.message),
+            None,
+            None,
             scheduled
                 .dispatch_plan
                 .execution_admission_provenance
@@ -11332,7 +11380,7 @@ async fn resolved_task_result_uses_canonical_wait() {
     assert!(scheduled.scheduler_decision.model_reentry);
     assert!(matches!(
         scheduled.dispatch_plan.execution_admission_provenance,
-        crate::types::ExecutionAdmissionProvenance::Canonical { .. }
+        Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
     ));
     let execution = runtime
         .inner
@@ -14735,7 +14783,7 @@ async fn abort_current_run_rejects_stale_run_id() {
 }
 
 #[tokio::test]
-async fn model_reentry_operator_and_timer_events_run_interactive_turn() {
+async fn operator_event_runs_canonical_interactive_turn() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -14753,53 +14801,37 @@ async fn model_reentry_operator_and_timer_events_run_interactive_turn() {
     )
     .unwrap();
 
-    let operator = MessageEnvelope::new(
-        "default",
-        MessageKind::OperatorPrompt,
-        MessageOrigin::Operator {
-            actor_id: None,
-            actor_display_name: None,
-        },
-        AuthorityClass::OperatorInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "plan the next step".into(),
-        },
-    );
-    runtime
-        .process_message(operator, closure_decision(ClosureOutcome::Completed, None))
+    let operator = runtime
+        .enqueue(trusted_operator_prompt(None, "plan the next step"))
         .await
         .unwrap();
-
-    let timer = MessageEnvelope::new(
-        "default",
-        MessageKind::TimerTick,
-        MessageOrigin::Timer {
-            timer_id: "timer-1".into(),
-        },
-        AuthorityClass::RuntimeInstruction,
-        Priority::Normal,
-        MessageBody::Text {
-            text: "timer fired".into(),
-        },
-    );
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("operator prompt should enter a canonical model turn");
+    };
+    assert_eq!(scheduled.message.id, operator.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    assert!(matches!(
+        scheduled.dispatch_plan.execution_admission_provenance,
+        Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
+    ));
     runtime
-        .process_message(
-            timer,
-            closure_decision(ClosureOutcome::Waiting, Some(WaitingReason::AwaitingTimer)),
+        .process_message_with_plan(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
         )
         .await
         .unwrap();
 
-    assert_eq!(provider.call_count().await, 2);
+    assert_eq!(provider.call_count().await, 1);
     let transcript = runtime.storage().read_recent_transcript(10).unwrap();
-    assert!(
-        transcript
-            .iter()
-            .filter(|entry| entry.kind == TranscriptEntryKind::AssistantRound)
-            .count()
-            >= 2
-    );
+    assert!(transcript
+        .iter()
+        .any(|entry| entry.kind == TranscriptEntryKind::AssistantRound));
 }
 
 #[tokio::test]
@@ -14905,7 +14937,7 @@ fn task_rejoin_fence_requires_live_persisted_contract() {
 }
 
 #[tokio::test]
-async fn unbound_task_result_reenters_the_model() {
+async fn unbound_task_result_reduces_without_model_reentry() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let provider = Arc::new(CountingProvider {
@@ -14960,18 +14992,42 @@ async fn unbound_task_result_reenters_the_model() {
         "task_detail": { "wait_policy": "blocking" },
     }));
 
+    let message = runtime.enqueue(message).await.unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("unbound terminal task result should be reducer-only");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    assert_eq!(
+        scheduled.scheduler_decision.kind,
+        scheduler::SchedulerDecisionKind::ReduceMessageOnly
+    );
+    assert!(!scheduled.scheduler_decision.model_reentry);
+    assert!(scheduled
+        .dispatch_plan
+        .execution_admission_provenance
+        .is_none());
     runtime
-        .process_message(
-            message,
-            closure_decision(
-                ClosureOutcome::Waiting,
-                Some(WaitingReason::AwaitingTaskResult),
-            ),
+        .process_message_with_plan(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
         )
         .await
         .unwrap();
 
-    assert_eq!(provider.call_count().await, 1);
+    assert_eq!(provider.call_count().await, 0);
+    let binding = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .expect("reducer-only turn should retain its turn binding");
+    assert!(binding.activation_id.is_none());
+    assert!(binding.admission_provenance.is_none());
     let active_tasks = runtime.active_tasks(10).await.unwrap();
     assert!(!active_tasks.iter().any(|task| task.id == "task-1"));
     let events = runtime.storage().read_recent_events(100).unwrap();
@@ -14998,36 +15054,29 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
         context_config(),
     )
     .unwrap();
-    let now = Utc::now();
-    let mut work_item = WorkItemRecord::new("default", "task wait", WorkItemState::Open);
-    work_item.id = "wi-1".into();
-    runtime.storage().append_work_item(&work_item).unwrap();
-    runtime
-        .storage()
-        .append_wait_condition(&WaitConditionRecord {
-            id: "wait-task-1".into(),
-            agent_id: "default".into(),
-            work_item_id: Some("wi-1".into()),
-            status: WaitConditionStatus::Active,
-            kind: WaitConditionKind::Task,
-            source: None,
-            subject_ref: Some("task-1".into()),
-            waiting_for: "task result".into(),
-            wake_sources: vec![WakeSource::TaskResult {
-                task_id: "task-1".into(),
-            }],
-            continuation: None,
-            created_at: now,
-            updated_at: now,
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-
-            turn_id: None,
-            trigger_message_id: None,
-            triggered_at: None,
-        })
+    let work_item = runtime
+        .create_work_item("task wait".into(), None, None, Vec::new())
+        .await
         .unwrap();
+    append_running_rejoin_task(&runtime, "task-1", &work_item.id);
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-1".into()),
+            "waiting for task result".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id);
+    let wait_id = registration.condition.id.clone();
 
     let mut message = MessageEnvelope::new(
         "default",
@@ -15047,20 +15096,53 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
     );
     message.metadata = Some(serde_json::json!({
         "task_id": "task-1",
-        "task_kind": "child_agent_task",
+        "task_kind": "command_task",
         "task_status": "completed",
-        "work_item_id": "wi-1",
+        "task_result_id": "result-task-1",
+        "work_item_id": work_item.id,
     }));
     message.task_id = Some("task-1".into());
-    message.work_item_id = Some("wi-1".into());
+    message.work_item_id = Some(work_item.id.clone());
 
+    let task = TaskRecord {
+        id: "task-1".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(message.id.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("task completed".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-1",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-task-1-parent",
+        })),
+        recovery: None,
+    };
     runtime
-        .process_message(
-            message,
-            closure_decision(
-                ClosureOutcome::Waiting,
-                Some(WaitingReason::AwaitingTaskResult),
-            ),
+        .commit_terminal_task_result(&task, "task_status_updated", &message)
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("task result with an exact wait should enter a canonical model turn");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    assert!(matches!(
+        scheduled.dispatch_plan.execution_admission_provenance,
+        Some(crate::types::ExecutionAdmissionProvenance::Canonical { .. })
+    ));
+    runtime
+        .process_message_with_plan(
+            scheduled.message,
+            scheduled.dispatch_plan,
+            &scheduled.scheduler_decision,
         )
         .await
         .unwrap();
@@ -15070,7 +15152,7 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
         event.kind == "wait_conditions_resolved"
             && event.data["wait_condition_ids"]
                 .as_array()
-                .is_some_and(|ids| ids.iter().any(|id| id == "wait-task-1"))
+                .is_some_and(|ids| ids.iter().any(|id| id == &wait_id))
     }));
 
     let active_conditions = runtime
@@ -15079,10 +15161,10 @@ async fn task_result_records_wait_reconciliation_and_resolves_task_wait_conditio
         .unwrap();
     assert!(!active_conditions
         .iter()
-        .any(|condition| condition.id == "wait-task-1"));
+        .any(|condition| condition.id == wait_id));
     let latest_conditions = runtime.storage().latest_wait_conditions().unwrap();
     assert!(latest_conditions.iter().any(|condition| {
-        condition.id == "wait-task-1" && condition.status == WaitConditionStatus::Resolved
+        condition.id == wait_id && condition.status == WaitConditionStatus::Resolved
     }));
 }
 
@@ -15173,7 +15255,7 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
         ),
     ] {
         runtime
-            .process_message(message, closure_decision(ClosureOutcome::Completed, None))
+            .record_wait_reconciliation_signals(&message)
             .await
             .unwrap();
     }
@@ -15259,10 +15341,7 @@ async fn same_turn_message_does_not_reconcile_wait_condition() {
     );
     seed_message.turn_id = Some("turn-seed".into());
     runtime
-        .process_message(
-            seed_message,
-            closure_decision(ClosureOutcome::Completed, None),
-        )
+        .record_wait_reconciliation_signals(&seed_message)
         .await
         .unwrap();
 
