@@ -962,10 +962,10 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
                 Some(&message),
                 None,
                 None,
-                ExecutionAdmissionProvenance::Canonical {
+                Some(ExecutionAdmissionProvenance::Canonical {
                     scenario_class: scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
                     activation_id: scheduler_executor::canonical_activation_id(&message.id),
-                },
+                }),
             )
             .await?;
         let picked = runtime
@@ -1088,10 +1088,10 @@ async fn seed_scheduler_targeted_yield_restart_fixture(
                 Some(&target_message),
                 None,
                 None,
-                ExecutionAdmissionProvenance::Canonical {
+                Some(ExecutionAdmissionProvenance::Canonical {
                     scenario_class: scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
                     activation_id: scheduler_executor::canonical_activation_id(&target_message.id),
-                },
+                }),
             )
             .await?;
         let completed = runtime

@@ -7,7 +7,7 @@ pub(super) struct MessageDispatchPlan {
     pub(super) continuation_trigger: Option<ContinuationTrigger>,
     pub(super) continuation_resolution: Option<ContinuationResolution>,
     pub(super) model_turn_allowed: bool,
-    pub(super) execution_admission_provenance: ExecutionAdmissionProvenance,
+    pub(super) execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
 }
 
 impl RuntimeHandle {
@@ -134,18 +134,13 @@ impl RuntimeHandle {
             resolve_continuation(&prior_closure, trigger, continuation_work_item_id)
         });
         let model_turn_allowed = !matches!(scheduler_state.status, AgentStatus::Stopped);
-        let execution_admission_provenance = self.execution_admission_provenance(
-            message,
-            continuation_resolution.as_ref(),
-            task.as_ref().ok().and_then(Option::as_ref),
-        )?;
         Ok(MessageDispatchPlan {
             prior_closure,
             task,
             continuation_trigger,
             continuation_resolution,
             model_turn_allowed,
-            execution_admission_provenance,
+            execution_admission_provenance: None,
         })
     }
 
@@ -296,8 +291,7 @@ impl RuntimeHandle {
             MessageKind::TaskResult => false,
         };
         if reducer_only_dispatch {
-            self.begin_reducer_only_turn(&message, execution_admission_provenance.clone())
-                .await?;
+            self.begin_reducer_only_turn(&message).await?;
         }
         let task = task?;
         let mut terminal_transition = None;
@@ -327,6 +321,10 @@ impl RuntimeHandle {
             | MessageKind::ChannelEvent
             | MessageKind::InternalFollowup => {
                 if model_reentry {
+                    let execution_admission_provenance =
+                        execution_admission_provenance.clone().ok_or_else(|| {
+                            anyhow!("model turn requires canonical execution admission provenance")
+                        })?;
                     if let Some(work_item_id) = message.work_item_id.as_deref() {
                         let mut guard = self.inner.agent.lock().await;
                         guard.state.current_turn_work_item_id = Some(work_item_id.to_string());
@@ -336,7 +334,7 @@ impl RuntimeHandle {
                         self.process_interactive_message_deferred_with_cleanup(
                             &message,
                             continuation_resolution.as_ref(),
-                            execution_admission_provenance.clone(),
+                            Some(execution_admission_provenance.clone()),
                             LoopControlOptions {
                                 max_tool_rounds: None,
                             },

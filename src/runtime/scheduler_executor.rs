@@ -117,7 +117,6 @@ struct CanonicalClaimPlan {
 
 enum CanonicalClaimOutcome {
     ReduceOnly,
-    ReduceOnlyWithoutModelReentry,
     Plan(CanonicalClaimPlan),
     RejectQueued {
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
@@ -185,30 +184,6 @@ struct QueueCandidate {
 enum PrepareMessageOutcome {
     Poll(RunLoopPoll),
     Replan,
-}
-
-impl RuntimeHandle {
-    pub(super) fn execution_admission_provenance(
-        &self,
-        message: &MessageEnvelope,
-        continuation_resolution: Option<&ContinuationResolution>,
-        task: Option<&TaskRecord>,
-    ) -> Result<ExecutionAdmissionProvenance> {
-        let scenario_class = if matches!(
-            message.kind,
-            crate::types::MessageKind::TaskStatus | crate::types::MessageKind::TaskResult
-        ) && task.is_none()
-        {
-            None
-        } else {
-            scheduler::canonical_activation_candidate(message, continuation_resolution, task)?
-                .map(|candidate| candidate.scenario_class())
-        };
-        Ok(ExecutionAdmissionProvenance::LegacyCompat {
-            scenario_class,
-            effective_mode: crate::domain::scheduler::ScenarioMode::Off,
-        })
-    }
 }
 
 impl<'a> SchedulerDecisionExecutor<'a> {
@@ -537,7 +512,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             candidate.queue_len,
             self.runtime.now(),
         )?;
-        let legacy_decision = scheduler::decide_next_action(
+        let continuation_decision = scheduler::decide_next_action(
             &projection,
             scheduler::SchedulerBoundary::RunLoop,
             scheduler::SchedulerInput::Message {
@@ -546,20 +521,17 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 continuation_resolution: dispatch_plan.continuation_resolution.as_ref(),
             },
         );
-        let scheduler_decision_events =
-            scheduler::scheduler_decision_events(&persisted_message.agent_id, &legacy_decision)?;
         let replay_source_turn_id = queue_entry
             .filter(|entry| entry.status == QueueEntryStatus::Interrupted)
             .and_then(|_| persisted_message.turn_id.clone());
-        let (canonical_claim, canonical_reduce_only) = match self.canonical_activation_plan(
+        let canonical_claim = match self.canonical_activation_plan(
             &projection,
             &persisted_message,
             &dispatch_plan,
-            legacy_decision.model_reentry,
+            continuation_decision.model_reentry,
         ) {
-            Ok(CanonicalClaimOutcome::ReduceOnly) => (None, false),
-            Ok(CanonicalClaimOutcome::ReduceOnlyWithoutModelReentry) => (None, true),
-            Ok(CanonicalClaimOutcome::Plan(plan)) => (Some(plan), false),
+            Ok(CanonicalClaimOutcome::ReduceOnly) => None,
+            Ok(CanonicalClaimOutcome::Plan(plan)) => Some(plan),
             Ok(CanonicalClaimOutcome::RejectQueued {
                 scenario_class,
                 reason,
@@ -625,10 +597,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         };
         if let Some(plan) = canonical_claim.as_ref() {
             dispatch_plan.execution_admission_provenance =
-                ExecutionAdmissionProvenance::Canonical {
+                Some(ExecutionAdmissionProvenance::Canonical {
                     scenario_class: plan.scenario_class,
                     activation_id: plan.activation_id.clone(),
-                };
+                });
         }
         let effective_decision = if let Some(plan) = canonical_claim.as_ref() {
             let mut decision = scheduler::SchedulerDecision::new(
@@ -642,16 +614,16 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 decision = decision.work_item_id(work_item_id);
             }
             decision
-        } else if canonical_reduce_only {
+        } else {
             scheduler::SchedulerDecision::new(
                 scheduler::SchedulerDecisionKind::ReduceMessageOnly,
                 "canonical_reducer_only",
             )
             .message(&persisted_message)
             .model_reentry(false)
-        } else {
-            legacy_decision
         };
+        let scheduler_decision_events =
+            scheduler::scheduler_decision_events(&persisted_message.agent_id, &effective_decision)?;
         scheduler::append_scheduling_advisories(
             &self.runtime.inner.storage,
             &candidate.prior_state,
@@ -1140,7 +1112,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 // ledger without consuming an unrelated wait or opening a
                 // model turn. A later canonical activation for the same owner
                 // will bind and deliver the pending result.
-                return Ok(CanonicalClaimOutcome::ReduceOnlyWithoutModelReentry);
+                return Ok(CanonicalClaimOutcome::ReduceOnly);
             }
             if stale_task_rejoin {
                 return Ok(CanonicalClaimOutcome::RejectQueued {

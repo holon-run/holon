@@ -3059,10 +3059,10 @@ async fn standalone_turn_writer_rejects_prepared_completion() {
         .process_interactive_message_deferred_with_cleanup(
             &message,
             None,
-            ExecutionAdmissionProvenance::Canonical {
+            Some(ExecutionAdmissionProvenance::Canonical {
                 scenario_class: scheduler::WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
                 activation_id,
-            },
+            }),
             LoopControlOptions {
                 max_tool_rounds: None,
             },

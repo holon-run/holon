@@ -23,9 +23,8 @@ use crate::config::ModelRouteRef;
 use crate::provider::{ModelBlock, ToolResultBlock};
 use crate::tool::{spec::ToolResultEnvelope, ToolCall};
 use crate::types::{
-    AuditEvent, BriefKind, Citation, ExecutionAdmissionProvenance, MessageEnvelope,
-    TurnNoBriefReason, TurnRecord, TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary,
-    TurnTriggerSummary,
+    AuditEvent, BriefKind, Citation, MessageEnvelope, TurnNoBriefReason, TurnRecord,
+    TurnTerminalKind, TurnTerminalRecord, TurnTerminalSummary, TurnTriggerSummary,
 };
 
 use super::{message_dispatch::message_text, RuntimeHandle};
@@ -238,18 +237,14 @@ impl RuntimeHandle {
         self.inner.storage.append_turn(&record)
     }
 
-    pub(super) async fn begin_reducer_only_turn(
-        &self,
-        message: &MessageEnvelope,
-        execution_admission_provenance: ExecutionAdmissionProvenance,
-    ) -> Result<()> {
+    pub(super) async fn begin_reducer_only_turn(&self, message: &MessageEnvelope) -> Result<()> {
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
         self.begin_interactive_turn_with_provenance(
             Some(message),
             operator_binding_id.as_deref(),
             operator_reply_route_id.as_deref(),
-            execution_admission_provenance,
+            None,
         )
         .await
     }

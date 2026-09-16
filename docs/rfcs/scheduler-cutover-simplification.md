@@ -152,6 +152,12 @@ Historical tables and wire shapes may remain only for published-migration
 compatibility or read-only diagnosis until a later destructive migration
 removes them.
 
+This includes the published `ExecutionAdmissionProvenance::LegacyCompat` serde
+shape. It may be decoded for historical diagnosis, but it cannot be produced as
+new claim provenance, start a model turn, or authorize operator interjection
+handling. A canonical reducer-only outcome is final and cannot fall back to a
+pre-cutover continuation decision.
+
 ## Preserved Canonical Contract
 
 Simplifying cutover must not weaken the scheduler protocol. The following

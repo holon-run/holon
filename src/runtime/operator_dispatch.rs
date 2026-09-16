@@ -47,7 +47,7 @@ impl RuntimeHandle {
             .process_interactive_message_deferred_with_cleanup(
                 message,
                 continuation_resolution,
-                self.execution_admission_provenance(message, continuation_resolution, None)?,
+                None,
                 loop_control,
                 message
                     .trace_context
@@ -64,7 +64,7 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         continuation_resolution: Option<&ContinuationResolution>,
-        execution_admission_provenance: ExecutionAdmissionProvenance,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<TurnTerminalTransition> {
@@ -91,10 +91,18 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
         continuation_resolution: Option<&ContinuationResolution>,
-        execution_admission_provenance: ExecutionAdmissionProvenance,
+        execution_admission_provenance: Option<ExecutionAdmissionProvenance>,
         loop_control: LoopControlOptions,
         trace_context: Option<crate::observability::TraceContext>,
     ) -> Result<TurnTerminalTransition> {
+        if !matches!(
+            execution_admission_provenance.as_ref(),
+            Some(ExecutionAdmissionProvenance::Canonical { .. })
+        ) {
+            return Err(anyhow!(
+                "model turn requires canonical execution admission provenance"
+            ));
+        }
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
         self.begin_interactive_turn_with_provenance(

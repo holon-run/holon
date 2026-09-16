@@ -65,10 +65,6 @@ use crate::runtime::{
 
 enum OperatorInterjectionPlan {
     Admit,
-    LegacyTurnDeferred {
-        scenario_class: Option<crate::domain::scheduler::SchedulerScenarioClass>,
-        effective_mode: crate::domain::scheduler::ScenarioMode,
-    },
 }
 
 struct PendingCompletionReport {
@@ -599,22 +595,6 @@ impl RuntimeHandle {
                         boundary_str,
                     )? {
                         OperatorInterjectionPlan::Admit => {}
-                        OperatorInterjectionPlan::LegacyTurnDeferred {
-                            scenario_class,
-                            effective_mode,
-                        } => {
-                            drop(guard);
-                            self.record_deferred_operator_interjection(
-                                agent_id,
-                                &expected_state,
-                                &message,
-                                round,
-                                boundary_str,
-                                scenario_class,
-                                effective_mode,
-                            )?;
-                            break 'outer;
-                        }
                     }
                     let mut committed_state = expected_state.clone();
                     committed_state.pending = guard.queue.len().saturating_sub(1);
@@ -729,7 +709,6 @@ impl RuntimeHandle {
         round: usize,
         boundary: &str,
     ) -> Result<OperatorInterjectionPlan> {
-        use crate::domain::scheduler::ScenarioMode;
         use crate::types::ExecutionAdmissionProvenance;
 
         let execution_binding = expected_state
@@ -757,18 +736,6 @@ impl RuntimeHandle {
                     ..
                 }),
             ) if activation_id == provenance_activation_id => activation_id,
-            (
-                None,
-                Some(ExecutionAdmissionProvenance::LegacyCompat {
-                    scenario_class,
-                    effective_mode,
-                }),
-            ) if matches!(effective_mode, ScenarioMode::Off | ScenarioMode::Shadow) => {
-                return Ok(OperatorInterjectionPlan::LegacyTurnDeferred {
-                    scenario_class: *scenario_class,
-                    effective_mode: *effective_mode,
-                });
-            }
             (None, Some(ExecutionAdmissionProvenance::Canonical { .. })) => {
                 return Err(anyhow::anyhow!(
                     "canonical operator interjection admission is missing its activation"
@@ -842,41 +809,6 @@ impl RuntimeHandle {
 
         let _ = (message, round, boundary);
         Ok(OperatorInterjectionPlan::Admit)
-    }
-
-    fn record_deferred_operator_interjection(
-        &self,
-        agent_id: &str,
-        expected_state: &crate::types::AgentState,
-        message: &MessageEnvelope,
-        round: usize,
-        boundary: &str,
-        scenario_class: Option<crate::domain::scheduler::SchedulerScenarioClass>,
-        effective_mode: crate::domain::scheduler::ScenarioMode,
-    ) -> Result<()> {
-        let turn_id = expected_state
-            .current_turn_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("deferred interjection requires a current turn"))?;
-        let mut event = AuditEvent::legacy(
-            "operator_interjection_deferred_no_canonical_activation",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "turn_id": turn_id,
-                "message_id": message.id,
-                "round": round,
-                "boundary": boundary,
-                "scenario_class": scenario_class.map(|scenario| scenario.as_str()),
-                "effective_mode": effective_mode,
-            }),
-        );
-        event.id = format!(
-            "operator_interjection_deferred:{}:{}:{}",
-            turn_id, message.id, boundary
-        );
-        event.created_at = message.created_at;
-        self.inner.storage.append_event(&event)?;
-        Ok(())
     }
 
     pub(super) async fn append_operator_interjections_to_last_round(
