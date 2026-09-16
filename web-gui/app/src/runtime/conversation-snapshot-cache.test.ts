@@ -2,7 +2,10 @@ import "fake-indexeddb/auto";
 
 import { describe, expect, it } from "vitest";
 
-import type { ConversationSummaryResponse } from "@holon/conversation-sdk";
+import type {
+  ConversationCheckpoint,
+  ConversationSummaryResponse,
+} from "@holon/conversation-sdk";
 
 import { createConversationSnapshotCache } from "./conversation-snapshot-cache";
 import {
@@ -20,7 +23,7 @@ function summarySnapshot(throughSeq = 10): ConversationSummaryResponse {
     snapshot_through_seq: throughSeq,
     event_head_seq: throughSeq,
     oldest_retained_seq: 1,
-    snapshot_cursor: `checkpoint-${throughSeq}`,
+    snapshot_cursor: `checkpoint-${throughSeq}` as ConversationCheckpoint,
     turns: [],
     active_turns: [],
     pending_inputs: [],
