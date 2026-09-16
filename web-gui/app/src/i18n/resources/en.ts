@@ -418,6 +418,7 @@ const en = {
     wakeNotification: "Wake notification",
     eventPreview: "Message preview",
     openEventDetail: "Open full event details",
+    inputsTruncated: "This turn exceeds the display limit of 128 inputs. Additional messages are not shown.",
     eventUnavailable: "This message is no longer available; the preview is shown below.",
     pendingEvents: "Pending events",
     pendingSourceUnknown: "Incoming message",

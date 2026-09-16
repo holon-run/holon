@@ -273,3 +273,16 @@ Also cover:
 - rollout upgrade rejection when dependencies are not authoritative;
 - dependency downgrade and hard-blocker rollback cascade interjection to
   shadow.
+
+## Conversation visibility of admitted input
+
+The conversation projection must publish queue consumption and input attachment
+atomically. Admission persists the interjected message id on the already-started
+TurnRecord in the same queue transition as incoming transcript and audit evidence;
+this uses the validated current execution binding and does not rewrite the
+immutable message envelope or change scheduler authority. The incoming transcript
+and `operator_interjection_admitted` audit event record the owning turn, round,
+and boundary. Terminal record assembly preserves the admitted input ids.
+
+See [Conversation Read Model](./conversation-read-model.md#operator-interjections-in-the-conversation-projection)
+for additive per-input provenance and stable ordering fields used by the GUI.

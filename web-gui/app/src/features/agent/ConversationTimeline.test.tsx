@@ -117,9 +117,17 @@ describe("executionProcessActivities", () => {
       activity("tool", "Read file", "tool"), activity("final", "Done"),
       activity("error", "Delivery error", "error"), activity("wait", "Waiting", "wait")];
     const original = structuredClone(entries);
-    expect(executionProcessActivities(entries, ["Other brief", "Done"], true).map((item) => item.id))
+    const inputs = [{ message_id: "message", preview: "Question", activity_key: entries[0].key }];
+    expect(executionProcessActivities(entries, ["Other brief", "Done"], true, inputs).map((item) => item.id))
       .toEqual(["progress", "tool", "error", "wait"]);
     expect(entries).toEqual(original);
+  });
+
+  it("preserves operator activities outside the bounded input summary", () => {
+    const represented = activity("represented", "Question", "operator");
+    const overflow = activity("overflow", "Earlier question", "operator");
+    const inputs = [{ message_id: "message", preview: "Question", activity_key: represented.key }];
+    expect(executionProcessActivities([represented, overflow], [], false, inputs)).toEqual([overflow]);
   });
 
   it("keeps the final output during execution and until a readable matching brief arrives", () => {

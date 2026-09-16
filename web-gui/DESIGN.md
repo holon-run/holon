@@ -595,3 +595,17 @@ revision contract covering every input to the summary.
   the complete raw envelope behind disclosure, and keep the preview plus an error
   if the original message is unavailable. A late response cannot replace another
   selected event or a different connection's inspector.
+
+### Operator input during execution
+
+A turn may contain more than its initial input. Operator interjections remain
+visible as user messages even when the turn was triggered by a system wake or
+task. The turn retains one execution status, elapsed clock, and process toggle.
+In the expanded view, input activity keys place admitted inputs among execution
+records; in the collapsed view, only execution records disappear. Briefs and
+operator inputs remain visible, and no operator activity duplicates its input
+bubble. Input summaries render without loading historical execution details.
+Pending-to-admitted transitions use the same canonical message identity for
+reconciliation and reading anchors. Source provenance is per input, with the
+turn's source retained as a fallback for older servers. A truncated input list
+is explicitly labeled rather than silently omitting messages.

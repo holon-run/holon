@@ -107,3 +107,6 @@
 }
 .conversation-event-link svg { flex-shrink: 0; }
 .conversation-event-link:hover, .conversation-event-link:focus-visible { color: var(--text); }
+
+.conversation-interjection { list-style: none; margin: 12px 0; }
+.conversation-interjection .conversation-input-line { margin: 0 0 0 auto; }

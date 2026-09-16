@@ -323,6 +323,9 @@ export function decodeTurnInputSummary(
   const source = record(value, path);
   return {
     message_id: nonEmptyString(source.message_id, `${path}.message_id`),
+    ...(source.presentation_class == null ? {} : { presentation_class: enumValue(source.presentation_class, presentationClasses, `${path}.presentation_class`) }),
+    ...(source.activity_key == null ? {} : { activity_key: decodeActivityKey(source.activity_key, `${path}.activity_key`) }),
+    ...(source.interjected === undefined ? {} : { interjected: booleanValue(source.interjected, `${path}.interjected`) }),
     preview:
       source.preview === undefined || source.preview === null
         ? ""
@@ -359,6 +362,7 @@ export function decodeTurnSummary(
     inputs: arrayValue(source.inputs, `${path}.inputs`).map(
       (input, index) => decodeTurnInputSummary(input, `${path}.inputs[${index}]`),
     ),
+    ...(source.inputs_truncated === undefined ? {} : { inputs_truncated: booleanValue(source.inputs_truncated, `${path}.inputs_truncated`) }),
     execution: decodeExecutionState(source.execution, `${path}.execution`),
     started_at: optionalTimestamp(source.started_at, `${path}.started_at`),
     completed_at: optionalTimestamp(source.completed_at, `${path}.completed_at`),

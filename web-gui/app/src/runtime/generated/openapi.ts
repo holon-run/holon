@@ -3939,9 +3939,20 @@ export interface components {
                     outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
+                    activity_key?: {
+                        activity_id: string;
+                        /** Format: uint64 */
+                        event_seq: number;
+                    } | null;
+                    /** @default false */
+                    interjected: boolean;
                     message_id: string;
+                    /** @enum {string|null} */
+                    presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
                 }[];
+                /** @default false */
+                inputs_truncated: boolean;
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4149,9 +4160,20 @@ export interface components {
                     outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
+                    activity_key?: {
+                        activity_id: string;
+                        /** Format: uint64 */
+                        event_seq: number;
+                    } | null;
+                    /** @default false */
+                    interjected: boolean;
                     message_id: string;
+                    /** @enum {string|null} */
+                    presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
                 }[];
+                /** @default false */
+                inputs_truncated: boolean;
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4341,9 +4363,20 @@ export interface components {
                     outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
+                    activity_key?: {
+                        activity_id: string;
+                        /** Format: uint64 */
+                        event_seq: number;
+                    } | null;
+                    /** @default false */
+                    interjected: boolean;
                     message_id: string;
+                    /** @enum {string|null} */
+                    presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
                 }[];
+                /** @default false */
+                inputs_truncated: boolean;
                 key: {
                     turn_id: string;
                     /** Format: uint64 */
@@ -4459,9 +4492,20 @@ export interface components {
                     outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
+                    activity_key?: {
+                        activity_id: string;
+                        /** Format: uint64 */
+                        event_seq: number;
+                    } | null;
+                    /** @default false */
+                    interjected: boolean;
                     message_id: string;
+                    /** @enum {string|null} */
+                    presentation_class?: "operator" | "task" | "external" | "timer" | "internal" | "system" | "operational" | null;
                     preview: string;
                 }[];
+                /** @default false */
+                inputs_truncated: boolean;
                 key: {
                     turn_id: string;
                     /** Format: uint64 */

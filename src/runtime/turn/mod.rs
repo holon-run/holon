@@ -382,10 +382,13 @@ impl RuntimeHandle {
                 .map(|message| TurnTriggerSummary::from_message(message));
             record
         };
-        record.input_message_ids = input_messages
-            .iter()
-            .map(|message| message.id.clone())
-            .collect();
+        // Interjections are attached at admission without rewriting immutable messages.
+        // Preserve those durable identities when assembling the terminal record.
+        for message in &input_messages {
+            if !record.input_message_ids.contains(&message.id) {
+                record.input_message_ids.push(message.id.clone());
+            }
+        }
         record.tool_execution_ids = tools
             .iter()
             .filter(|tool| turn_optional_id_matches(tool.turn_id.as_deref(), turn_id))

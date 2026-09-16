@@ -14654,6 +14654,32 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
                 == Some("before_tool_execution")
     }));
 
+    let page = runtime
+        .inner
+        .runtime_db
+        .conversation()
+        .summary_page("default", 10, None, None)
+        .unwrap();
+    assert_eq!(
+        page.turns.len(),
+        1,
+        "interjection does not create another turn"
+    );
+    let input = page.turns[0]
+        .inputs
+        .iter()
+        .find(|input| input.message_id == interjection_id)
+        .unwrap();
+    assert!(
+        input.interjected,
+        "terminal settlement preserves the admitted input"
+    );
+    let stored = runtime
+        .storage()
+        .read_turn_by_id(&page.turns[0].turn_id)
+        .unwrap()
+        .unwrap();
+    assert!(stored.input_message_ids.contains(&interjection_id));
     runner.abort();
 }
 
@@ -14703,6 +14729,33 @@ async fn operator_interjection_preserves_unified_lifecycle_attempt() {
     let mut interjection = trusted_operator_prompt(None, "use the smaller lifecycle fix");
     interjection.priority = Priority::Interject;
     let interjection = runtime.enqueue(interjection).await.unwrap();
+    // A failed admission must leave both queue visibility and turn membership unchanged.
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+    );
+    let error = runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::BeforeToolExecution,
+        )
+        .await
+        .unwrap_err();
+    assert_injected_transition_fault(&error);
+    let before = runtime
+        .inner
+        .runtime_db
+        .conversation()
+        .summary_page("default", 10, None, None)
+        .unwrap();
+    assert!(before
+        .pending_inputs
+        .iter()
+        .any(|input| input.message_id == interjection.id));
+    assert!(!before.active_turns[0]
+        .inputs
+        .iter()
+        .any(|input| input.message_id == interjection.id));
     let follow_ups = runtime
         .drain_operator_interjections(
             "default",
@@ -14712,6 +14765,39 @@ async fn operator_interjection_preserves_unified_lifecycle_attempt() {
         .await
         .unwrap();
     assert_eq!(follow_ups.len(), 1);
+    let after = runtime
+        .inner
+        .runtime_db
+        .conversation()
+        .summary_page("default", 10, None, None)
+        .unwrap();
+    assert!(!after
+        .pending_inputs
+        .iter()
+        .any(|input| input.message_id == interjection.id));
+    let active = &after.active_turns[0];
+    let input = active
+        .inputs
+        .iter()
+        .find(|input| input.message_id == interjection.id)
+        .unwrap();
+    assert!(input.interjected);
+    assert_eq!(
+        input.presentation_class,
+        Some(crate::domain::conversation::PresentationClass::Operator)
+    );
+    assert!(input.activity_key.is_some());
+    assert!(active.revision > before.active_turns[0].revision);
+    let detail = runtime
+        .inner
+        .runtime_db
+        .conversation()
+        .activities("default", &active.turn_id, 100, None, None)
+        .unwrap()
+        .unwrap();
+    assert!(detail.activities.iter().any(|activity| matches!(activity,
+        crate::domain::conversation::ConversationActivity::Operator(item) if Some(&item.key) == input.activity_key.as_ref()
+    )));
 
     let execution_after = runtime
         .inner

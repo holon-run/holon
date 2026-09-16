@@ -225,7 +225,7 @@ LIMIT ?6";
 const MAX_ACTIVE_TURNS: usize = 32;
 const MAX_PENDING_INPUTS: usize = 100;
 const MAX_BRIEFS_PER_TURN: usize = 64;
-const MAX_INPUTS_PER_TURN: usize = 8;
+const MAX_INPUTS_PER_TURN: usize = 128;
 const MAX_CONVERSATION_SHADOW_MISMATCH_SAMPLES: usize = 32;
 pub(crate) const MAX_CONVERSATION_CHANGE_EVENTS: usize = 256;
 pub(crate) const MAX_CONVERSATION_CHANGE_ACTIVITIES: usize = 64;
@@ -1957,6 +1957,7 @@ fn decode_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnSummaryRow> 
             revision: summary_revision,
             presentation_class,
             inputs: Vec::new(),
+            inputs_truncated: false,
             execution,
             started_at: record.created_at,
             completed_at: record
@@ -1983,6 +1984,8 @@ fn hydrate_turn_summary(connection: &Connection, row: &mut TurnSummaryRow) -> Re
     row.summary.brief_ids = brief_ids(connection, &row.record.agent_id, &row.record.turn_id)?;
     row.summary.inputs =
         turn_input_previews(connection, &row.record.agent_id, &row.record.turn_id)?;
+    row.summary.inputs_truncated = row.summary.inputs.len() > MAX_INPUTS_PER_TURN;
+    row.summary.inputs.truncate(MAX_INPUTS_PER_TURN);
     let (result, settled) = map_result(
         row.summary.brief_ids.len(),
         row.record
@@ -2028,21 +2031,49 @@ fn turn_input_previews(
     turn_id: &str,
 ) -> Result<Vec<TurnInputSummary>> {
     let mut statement = connection.prepare(
-        "SELECT assignments.message_id, COALESCE(messages.preview, '')
+        "SELECT assignments.message_id, COALESCE(messages.preview, ''),
+                json_extract(messages.payload_json, '$.kind'),
+                json_extract(messages.payload_json, '$.trigger_kind'),
+                sources.activity_seq, COALESCE(queue.status = 'interjected', 0)
          FROM conversation_input_assignments AS assignments
          LEFT JOIN messages
            ON messages.evidence_id = assignments.message_id
+         LEFT JOIN conversation_source_revisions AS sources
+           ON sources.source_kind = 'operator' AND sources.source_id = assignments.message_id
+          AND sources.agent_id = assignments.agent_id AND sources.turn_id = assignments.turn_id
+         LEFT JOIN queue_entries AS queue
+           ON queue.message_id = assignments.message_id AND queue.agent_id = assignments.agent_id
          WHERE assignments.agent_id = ?1 AND assignments.turn_id = ?2
-         ORDER BY assignments.assigned_at, assignments.message_id
+         ORDER BY sources.activity_seq, assignments.assigned_at, assignments.message_id
          LIMIT ?3",
     )?;
     let rows = statement
         .query_map(
-            params![agent_id, turn_id, i64::try_from(MAX_INPUTS_PER_TURN)?],
+            params![agent_id, turn_id, i64::try_from(MAX_INPUTS_PER_TURN + 1)?],
             |row| {
+                let message_id: String = row.get(0)?;
+                let kind = row.get::<_, Option<String>>(2)?.and_then(|value| {
+                    serde_json::from_value::<MessageKind>(Value::String(value)).ok()
+                });
+                let trigger = row.get::<_, Option<String>>(3)?.and_then(|value| {
+                    serde_json::from_value::<ContinuationTriggerKind>(Value::String(value)).ok()
+                });
+                let activity_seq = row.get::<_, Option<i64>>(4)?;
                 Ok(TurnInputSummary {
-                    message_id: row.get(0)?,
+                    activity_key: activity_seq
+                        .map(|seq| {
+                            Ok::<_, rusqlite::Error>(ActivityKey {
+                                event_seq: u64::try_from(seq).map_err(sql_integer_error)?,
+                                activity_id: activity_id(SOURCE_OPERATOR, &message_id),
+                            })
+                        })
+                        .transpose()?,
+                    message_id,
                     preview: row.get(1)?,
+                    presentation_class: kind
+                        .as_ref()
+                        .map(|kind| message_presentation_class(kind, trigger)),
+                    interjected: row.get(5)?,
                 })
             },
         )?
