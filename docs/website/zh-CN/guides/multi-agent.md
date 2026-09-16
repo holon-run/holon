@@ -13,10 +13,19 @@ Holon 支持创建可寻址的 Agent，并调用私有的受监督子 Agent，�
 
 ### Agent 操作
 
-| 操作 | 返回值 | 适用场景 |
-|------|--------|----------|
-| `CreateAgent` | `agent_id` | 创建一个长期存在、可寻址的 Agent |
-| `InvokeAgent` | `agent_id` + `task_handle` | 运行一个由父 Agent 监督的委托任务 |
+| 工具 / 操作 | 返回值 | 适用场景 |
+|------------|--------|----------|
+| `CreateAgent` | `agent_id` | 创建独立、持久、自属的 Agent 身份（可指定 template、显示名称与引导消息） |
+| `InvokeAgent`（新建子 Agent） | `agent_id` + `task_handle` | 运行由父级监督的子任务，具备结果导向生命周期与可选 worktree 隔离 |
+| `InvokeAgent`（已有 Agent） | `agent_id` + `task_handle` | 同级调用（Peer Invocation）：向已有授权 Agent 发送消息并等待其下一条持久回复 |
+| `SendAgentMessage` | 投递回执 | 向已有授权 Agent 发送异步持久消息，不创建任务等待句柄 |
+| `GetAgent` | Agent 摘要 | 读取 Agent 平面状态（身份、显示名称、生命周期、活跃焦点、等待状态与子级血统） |
+
+### Agent 标识与显示名称
+
+- **永久 Agent ID**：规范标识符（如 `reviewer`、`builder`）是持久且不可更改的。
+- **显示名称（Display Name）**：自属的公开 Agent 可拥有人类可读的显示名称，可通过 CLI（`holon agent rename <id> --name <name>`）或 HTTP API（`PATCH /api/control/agents/:id/name`）修改。默认 Agent 不可重命名。
+- **Incarnation（化身代际）**：跟踪 Agent 生命周期重置与运行时重载代际的持久序列号。
 
 ### Workspace 模式
 
@@ -27,13 +36,47 @@ Holon 支持创建可寻址的 Agent，并调用私有的受监督子 Agent，�
 
 ### 任务句柄监督
 
-调用 `InvokeAgent` 时，父 Agent 会拿到一个带 `task_id` 的 `task_handle`。
-可以用它做这些事：
+调用 `InvokeAgent` 时，调用方会拿到一个带 `task_id` 的 `task_handle`。
+
+对于**新建子 Agent**（`kind: "new_subagent"`），句柄代表由父级监督的子任务，会产生最终交付结果。可以用它做这些事：
 
 - **TaskStatus** — 查看生命周期、等待状态和元数据
 - **TaskOutput** — 读取有界输出，或等待完成
 - **TaskInput** — 向子 Agent 发送后续输入
 - **TaskStop** — 显式停止子 Agent
+
+对于**已有 Agent**（`kind: "existing_agent"`），句柄等待目标 Agent 发出的第一条后续持久消息。满足等待条件但不是父子生命周期包含边界。
+
+## 调用风格
+
+### 受监督子任务（Subagent）
+
+创建由当前 Agent 严格监督的私有附属 Agent：
+
+```json
+{
+  "target": {
+    "kind": "new_subagent",
+    "template": "code-reviewer",
+    "workspace_mode": "worktree"
+  },
+  "initial_message": "审查 src/runtime/ 下的 Pull Request 改动"
+}
+```
+
+### 同级调用（Peer Invocation）
+
+作为对等实体调用长期存在的已有 Agent：
+
+```json
+{
+  "target": {
+    "kind": "existing_agent",
+    "agent_id": "auditor"
+  },
+  "initial_message": "请审计运行时 SQLite 数据库的保留策略规则。"
+}
+```
 
 ### 子 Agent 的 token 用量
 

@@ -19,8 +19,18 @@ Holon 在设计上是无头的。HTTP 和事件驱动的集成接口应当保留
 只读路由（agent 状态、事件、任务）在远程访问时也要求该头。没有 control token
 时，服务端运行在 **local 模式**，信任本地进程边界。
 
+从 v0.36.0 开始，Holon 支持**优先 Session（Session-first）**的认证架构。除 Bearer Token 外，浏览器和 Web UI 客户端还支持通过 HTTP-only Session Cookie 进行认证：
+
+- **`GET /api/auth/method`** — 返回当前认证模式（`"local"` 或 `"oidc"`）。
+- **`POST /api/auth/session/exchange`** — 使用有效 Token 换取 HTTP-only Session Cookie。
+- **`GET /api/auth/session/me`** — 查询当前已认证 Session 的身份、角色与过期时间。
+- **`POST /api/auth/session/logout`** — 注销当前 Session 并清除 Session Cookie。
+- **`GET /api/auth/oidc/start`** 与 **`GET /api/auth/oidc/callback`** — 当 `auth.mode="oidc"` 时发起并完成 OpenID Connect PKCE 授权码流程。
+- **`POST /api/auth/:provider/device/start`** — 发起 OAuth 设备授权码流程（如 OpenAI Codex）。
+
 ```
 GET /api/handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
+GET /api/auth/method → { "mode": "local" | "oidc" }
 ```
 
 ## 入口信任与认证边界
@@ -126,6 +136,18 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
 **`GET /api/agents/:id/timers`** — 近期 timer
 
 返回近期 timer 记录。
+
+**`GET /api/agents/:id/conversation`** — 对话读模型概要
+
+返回对话总览、当前轮次状态与可见历史消息。
+
+**`GET /api/agents/:id/conversation/stream`** — 对话流式更新
+
+用于监听活跃对话轮次、流式文本输出与模型思考过程的 Server-Sent Events 流。
+
+**`GET /api/agents/:id/turns/:turn_id/activities`** — 轮次活动详情
+
+返回特定对话轮次中细粒度的工具调用与内部活动。
 
 **`GET /api/agents/:id/timers/:timer_id`** — Timer 详情
 
@@ -314,6 +336,46 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 创建某个删除任务已完全完成的 id 会开启一个新化身
 （`identity.incarnation` 递增；旧状态绝不会被复活）。当删除仍在进行中或已失败时，
 请求会以 `409` / `deletion_incomplete` 失败。
+
+**`GET /api/control/agents/tree`** — Agent 层次结构树
+
+返回完整的 Agent 树，包括公开自属 Agent、受监督子 Agent 及其血统关系。
+
+**`GET /api/control/agents/:id/detail`** — 规范 Agent 详情
+
+返回 Agent 的完整规范投影：身份、显示名称、化身代际、配置、模型覆盖、状态与血统。
+
+**`PATCH /api/control/agents/:id/name`** — 重命名 Agent 显示名称
+
+更新公开自属 Agent 的显示名称。规范 `agent_id` 保持不变。
+
+```json
+{ "name": "Lead Reviewer" }
+```
+
+**`POST /api/control/agents/:id/repair`** — 修复 Agent 引导步骤
+
+重试创建后未完成的引导步骤（模板文件、工作区绑定、初始消息），无需重新创建 Agent 身份。
+
+**`DELETE /api/control/agents/:id`** — 永久删除 Agent
+
+调度异步删除 Agent 及其关联数据。传入 `?cascade_private_children=true` 可级联删除私有子 Agent。返回删除作业句柄。
+
+**`GET /api/control/agents/:id/delete-status`** — 查询删除作业状态
+
+返回 Agent 删除作业的生命周期进度。
+
+**`POST /api/control/agents/:id/timers`** — 创建定时器
+
+为该 Agent 创建持久的延时或周期性定时器。
+
+```json
+{ "after_ms": 60000, "every_ms": null, "summary": "心跳检查" }
+```
+
+**`POST /api/control/agents/:id/timers/:timer_id/cancel`** — 取消定时器
+
+按 id 取消活跃的定时器。
 
 **`POST /api/control/agents/:id/tasks`** — 创建命令任务
 
