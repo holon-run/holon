@@ -206,7 +206,7 @@ test("tool summaries load only for visible expanded rows and failed loads remain
   expect(await toolRequests()).toHaveLength(10);
 });
 
-test("turn clock survives refresh, freezes before brief delivery, and opens a flush-aligned process", async ({ page, context, request }, info) => {
+test("turn clock survives refresh, hides while waiting for a brief, and opens a flush-aligned process", async ({ page, context, request }, info) => {
   const session = `timing-${info.testId}`;
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
@@ -234,9 +234,9 @@ test("turn clock survives refresh, freezes before brief delivery, and opens a fl
   await update();
   await expect(disclosure).toContainText("Waiting for result");
   // Waiting for result hides the live clock entirely; nothing ticks while the brief is pending.
-  await expect(clock).toBeHidden();
+  await expect(clock).toHaveCount(0);
   await page.clock.runFor(10000);
-  await expect(clock).toBeHidden();
+  await expect(clock).toHaveCount(0);
   await expect(disclosure).toHaveAttribute("aria-expanded", "true");
 
   await request.post(control("/__e2e__/configure"), { data: { briefsById: {
