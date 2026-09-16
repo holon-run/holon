@@ -3710,10 +3710,7 @@ CREATE TABLE working_memory_deltas (
             .apply_conversation_input_assignment_rollback()
             .expect_err("newer migration must block rollback");
         assert!(error.to_string().contains("newer migration"));
-        assert_eq!(
-            db.current_schema_version()?,
-            CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION + 1
-        );
+        assert_eq!(db.current_schema_version()?, max_known_migration_version());
         Ok(())
     }
 

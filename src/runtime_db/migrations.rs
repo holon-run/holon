@@ -3596,18 +3596,7 @@ CREATE INDEX IF NOT EXISTS idx_task_result_settlements_activation
     Migration {
         version: TURN_REPLAY_SOURCE_INDEX_VERSION,
         name: TURN_REPLAY_SOURCE_INDEX_NAME,
-        sql: r#"
-ALTER TABLE turn_records ADD COLUMN replay_source_turn_id TEXT;
-
-UPDATE turn_records
-SET replay_source_turn_id = json_extract(payload_json, '$.replay.source_turn_id')
-WHERE json_valid(payload_json)
-  AND json_type(payload_json, '$.replay.source_turn_id') = 'text';
-
-CREATE INDEX idx_turn_records_replay_source
-  ON turn_records(agent_id, replay_source_turn_id)
-  WHERE replay_source_turn_id IS NOT NULL;
-"#,
+        sql: "",
     },
 ];
 
@@ -3895,6 +3884,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
         repair_orphaned_conversation_input_assignments(transaction)?;
         reconcile_legacy_archived_identities(transaction)?;
     }
+    if migration.name == TURN_REPLAY_SOURCE_INDEX_NAME {
+        ensure_turn_replay_source_index_schema(transaction)?;
+    }
     if migration.name == "authentication_login_verifier" {
         ensure_authentication_login_verifier_schema(transaction)?;
     }
@@ -3930,6 +3922,38 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
             migration.name,
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
+    )?;
+    Ok(())
+}
+
+fn ensure_turn_replay_source_index_schema(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "turn_records")? {
+        return Ok(());
+    }
+
+    let columns = transaction
+        .prepare("PRAGMA table_info(turn_records)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !columns
+        .iter()
+        .any(|column| column == "replay_source_turn_id")
+    {
+        transaction
+            .execute_batch("ALTER TABLE turn_records ADD COLUMN replay_source_turn_id TEXT")?;
+    }
+    transaction.execute_batch(
+        r#"
+UPDATE turn_records
+SET replay_source_turn_id = json_extract(payload_json, '$.replay.source_turn_id')
+WHERE replay_source_turn_id IS NULL
+  AND json_valid(payload_json)
+  AND json_type(payload_json, '$.replay.source_turn_id') = 'text';
+
+CREATE INDEX IF NOT EXISTS idx_turn_records_replay_source
+  ON turn_records(agent_id, replay_source_turn_id)
+  WHERE replay_source_turn_id IS NOT NULL;
+"#,
     )?;
     Ok(())
 }
