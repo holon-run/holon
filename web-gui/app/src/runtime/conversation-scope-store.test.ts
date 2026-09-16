@@ -104,7 +104,7 @@ function fakeClient() {
     },
     async summary() {
       calls.summary += 1;
-      return summarySnapshot() as never;
+      return { summary: summarySnapshot(), etag: null } as never;
     },
     async activities() {
       throw new Error("not used");

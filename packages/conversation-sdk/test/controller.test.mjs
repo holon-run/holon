@@ -97,10 +97,13 @@ function fakeClient(overrides = {}) {
     async summary(agentId, options = {}) {
       calls.summary.push({ agentId, ...options });
       const handler = overrides.summary;
+      let result;
       if (handler) {
-        return handler(options, calls.summary.length);
+        result = handler(options, calls.summary.length);
+      } else {
+        result = summary();
       }
-      return summary();
+      return normalizeSummaryResult(result);
     },
     async activities(agentId, turnId, options = {}) {
       calls.activities.push({ agentId, turnId, ...options });
@@ -136,6 +139,23 @@ function fakeClient(overrides = {}) {
     calls,
   };
   return client;
+}
+
+// Accept either a raw summary snapshot (legacy handler style) or a
+// { summary, etag } result, including 304-style { summary: null, etag }.
+async function normalizeSummaryResult(result) {
+  const value = await result;
+  if (
+    result &&
+    value &&
+    typeof result === "object" &&
+    typeof value === "object" &&
+    "summary" in value &&
+    !("turns" in value)
+  ) {
+    return value;
+  }
+  return { summary: value ?? null, etag: null };
 }
 
 function immediateSleep(log = []) {
@@ -646,6 +666,133 @@ test("brief cache entries bound to another agent or id are ignored", async () =>
   assert.equal(state.kind, "ready");
   assert.equal(state.brief.agent_id, identity.agent_id);
   assert.equal(client.calls.brief.length, 1);
+  controller.dispose();
+});
+
+test("snapshot cache hydrates instantly and a 304 revalidation skips refetch", async () => {
+  const hub = new StreamQueue();
+  const client = fakeClient({
+    summary: (options) => {
+      // The only summary call is the conditional revalidation.
+      assert.equal(options.ifNoneMatch, "etag-10");
+      return { summary: null, etag: "etag-10" };
+    },
+    hub,
+  });
+  let stored = { etag: "etag-10", summary: summary() };
+  const snapshotCache = {
+    async load() {
+      return stored;
+    },
+    async store(entry) {
+      stored = entry;
+    },
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    snapshotCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  controller.start();
+  // The cached snapshot renders before the network confirms it.
+  await waitFor(() => (controller.view().turns ?? []).length === 1);
+  assert.equal(controller.view().checkpoint, "checkpoint-10");
+  await waitFor(() => controller.status.kind === "ready");
+  assert.equal(client.calls.summary.length, 1);
+  assert.equal(client.calls.summary[0].ifNoneMatch, "etag-10");
+  assert.equal(client.calls.stream.length, 1);
+  assert.equal(client.calls.stream[0].after, "checkpoint-10");
+  controller.dispose();
+});
+
+test("snapshot cache revalidates with a fresh snapshot when content changed", async () => {
+  const hub = new StreamQueue();
+  const fresh = summary({
+    snapshot_through_seq: 12,
+    event_head_seq: 12,
+    snapshot_cursor: "checkpoint-12",
+    turns: [turn("turn-12", 12)],
+  });
+  const client = fakeClient({
+    summary: () => ({ summary: fresh, etag: "etag-12" }),
+    hub,
+  });
+  let stored = { etag: "etag-10", summary: summary() };
+  const snapshotCache = {
+    async load() {
+      return stored;
+    },
+    async store(entry) {
+      stored = entry;
+    },
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    snapshotCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  controller.start();
+  await waitFor(() => controller.status.kind === "ready");
+  assert.equal(controller.view().checkpoint, "checkpoint-12");
+  assert.equal(client.calls.summary.length, 1);
+  assert.equal(client.calls.summary[0].ifNoneMatch, "etag-10");
+  assert.equal(client.calls.stream[0].after, "checkpoint-12");
+  // The fresh snapshot replaces the cached entry for the next open.
+  await waitFor(() => stored?.etag === "etag-12");
+  controller.dispose();
+});
+
+test("fresh bootstraps persist their snapshot for later opens", async () => {
+  const hub = new StreamQueue();
+  const client = fakeClient({ hub });
+  let stored = null;
+  const snapshotCache = {
+    async load() {
+      return stored;
+    },
+    async store(entry) {
+      stored = entry;
+    },
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    snapshotCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  controller.start();
+  await waitFor(() => controller.status.kind === "ready");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(stored?.etag, null);
+  assert.equal(stored?.summary.snapshot_through_seq, 10);
+  controller.dispose();
+});
+
+test("incompatible cached snapshots fall back to a plain network bootstrap", async () => {
+  const hub = new StreamQueue();
+  const client = fakeClient({ hub });
+  const snapshotCache = {
+    async load() {
+      return { etag: "etag-9", summary: summary({ schema_version: 2 }) };
+    },
+    async store() {},
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    snapshotCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  controller.start();
+  await waitFor(() => controller.status.kind === "ready");
+  assert.equal(client.calls.summary.length, 1);
+  assert.equal(client.calls.summary[0].ifNoneMatch, undefined);
   controller.dispose();
 });
 

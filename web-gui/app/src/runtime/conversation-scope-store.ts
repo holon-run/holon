@@ -9,6 +9,7 @@ import {
 } from "@holon/conversation-sdk";
 
 import { createConversationBriefCache } from "./conversation-brief-cache";
+import { createConversationSnapshotCache } from "./conversation-snapshot-cache";
 
 /**
  * Runtime connection inputs needed to build a conversation client. Mirrors
@@ -141,12 +142,21 @@ export function acquireConversationScope(
   const factory = options.clientFactory ?? defaultClientFactory;
   const controller = new ConversationController({
     ...(options.controllerOptions ?? {}),
-    // Default-inject the persistent brief cache unless the caller supplied
-    // its own (tests inject in-memory fakes). Storage-less environments
-    // silently degrade to memory-only caching inside the adapter.
+    // Default-inject the persistent brief/snapshot caches unless the caller
+    // supplied its own (tests inject in-memory fakes). Storage-less
+    // environments silently degrade to memory-only caching inside the
+    // adapters.
     ...(options.controllerOptions?.briefCache === undefined
       ? {
           briefCache: createConversationBriefCache(
+            options.remoteId ?? "",
+            options.agentId,
+          ),
+        }
+      : {}),
+    ...(options.controllerOptions?.snapshotCache === undefined
+      ? {
+          snapshotCache: createConversationSnapshotCache(
             options.remoteId ?? "",
             options.agentId,
           ),
