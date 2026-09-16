@@ -1,3 +1,4 @@
+import { conversationTimelineEntries } from "../../runtime/conversation-timeline-entries";
 import { inputInspectorActivity, inputPresentation } from "../../runtime/conversation-input";
 import { TurnElapsedTime } from "./TurnElapsedTime";
 import {
@@ -219,7 +220,8 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
   const expanded = manualExpanded ?? (autoExpanded || readingDetail);
   const [mounted, setMounted] = useState(expanded);
-  const operator = turn.presentationClass === "operator";
+  const initialInputs = turn.inputs.filter((input) => !input.interjected);
+  const interjections = turn.inputs.filter((input) => input.interjected);
 
   useEffect(() => {
     if (turn.execution.kind === "active") wasActive.current = true;
@@ -242,9 +244,13 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     const updateReading = () => {
       const node = detailRef.current;
       const selection = window.getSelection();
+      const isExecutionContent = (target: Node | null) => {
+        const element = target instanceof Element ? target : target?.parentElement;
+        return node?.contains(target) && !element?.closest(".conversation-interjection");
+      };
       setReadingDetail(Boolean(node && (
-        node.contains(document.activeElement) ||
-        (selection && !selection.isCollapsed && node.contains(selection.anchorNode))
+        isExecutionContent(document.activeElement) ||
+        (selection && !selection.isCollapsed && isExecutionContent(selection.anchorNode))
       )));
     };
     document.addEventListener("selectionchange", updateReading);
@@ -258,15 +264,15 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   return (
     <section className={`conversation-turn is-${execution}`} data-turn-id={turn.turnId}
       aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
-      {operator ? turn.inputs.map((input) => (
+      {initialInputs.map((input) => (input.presentation_class ?? turn.presentationClass) === "operator" ? (
         <ConversationInputLine key={input.message_id} input={input} />
-      )) : (
-        <details className="conversation-source" data-conversation-anchor={`source:${turn.turnId}`}>
-          <summary><Bot size={13} />{t(`agentPage.turnSource.${turn.presentationClass}`)}<ChevronRight size={12} /></summary>
-          {turn.inputs.map((input) => <ConversationEventInput key={input.message_id} input={input} source={turn.presentationClass} onInspectActivity={actions.onInspectActivity} />)}
+      ) : (
+        <details key={input.message_id} className="conversation-source" data-conversation-anchor={`input:${input.message_id}`}>
+          <summary><Bot size={13} />{t(`agentPage.turnSource.${input.presentation_class ?? turn.presentationClass}`)}<ChevronRight size={12} /></summary>
+          <ConversationEventInput input={input} source={input.presentation_class ?? turn.presentationClass} onInspectActivity={actions.onInspectActivity} />
           <span className="conversation-source-id">{`#${turn.turnIndex}`}</span>
         </details>
-      )}
+      ))}
       <div className="conversation-response">
         <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
           data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
@@ -277,12 +283,19 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           <span>{t(`agentPage.turnTimingStatus.${timingStatus}`)}</span>
           {timingStatus !== "syncing" && timingStatus !== "waiting" && timingStatus !== "waitingResult" ? <TurnElapsedTime turn={turn} /> : null}
         </button>
-        <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
-          aria-hidden={!expanded} inert={!expanded}>
-          <div className="conversation-detail-clip">
-            {mounted || expanded ? <ConversationDetailPanel turn={turn} detailState={detailState} actions={actions} /> : null}
+        {turn.inputsTruncated ? <div className="conversation-detail-notice">{t("agentPage.inputsTruncated")}</div> : null}
+        {interjections.length > 0 ? (
+          <div id={detailId} ref={detailRef}>
+            <ConversationDetailPanel turn={turn} detailState={detailState} actions={actions} expanded={expanded} inputs={interjections} />
           </div>
-        </div>
+        ) : (
+          <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
+            aria-hidden={!expanded} inert={!expanded}>
+            <div className="conversation-detail-clip">
+              {mounted || expanded ? <ConversationDetailPanel turn={turn} detailState={detailState} actions={actions} /> : null}
+            </div>
+          </div>
+        )}
         {showExecutionNotice ? (
           <div className={`conversation-turn-notice is-${execution}`} role="status">
             {execution === "failed" ? <CircleAlert size={14} /> : <Clock size={14} />}
@@ -417,7 +430,11 @@ function ConversationDetailPanel({
   turn,
   detailState,
   actions,
+  expanded = true,
+  inputs = [],
 }: {
+  expanded?: boolean;
+  inputs?: readonly TurnInputSummary[];
   turn: ConversationTurnGroup;
   detailState: ConversationDetailLoadState;
   actions: ConversationTimelineActions;
@@ -425,25 +442,23 @@ function ConversationDetailPanel({
   const { t } = useTranslation();
   const detail = turn.detail;
   const [showEarlier, setShowEarlier] = useState(false);
+  const inputRow = (input: TurnInputSummary) => (
+    <li className="conversation-interjection" key={input.message_id}>
+      {(input.presentation_class ?? "operator") === "operator"
+        ? <ConversationInputLine input={input} />
+        : <ConversationEventInput input={input} source={input.presentation_class!} onInspectActivity={actions.onInspectActivity} />}
+    </li>
+  );
   if (detail === null) {
-    if (detailState.kind === "error") {
-      return (
+    return <div className="conversation-detail">
+      {expanded ? detailState.kind === "error" ? (
         <div className="conversation-detail is-error" role="alert">
-          <CircleAlert size={14} />
-          <span>{t("agentPage.detailLoadFailed")}</span>
-          <button type="button" onClick={() => actions.onLoadDetail(turn.turnId)}>
-            <RefreshCw size={13} />
-            {t("agentPage.retry")}
-          </button>
+          <CircleAlert size={14} /><span>{t("agentPage.detailLoadFailed")}</span>
+          <button type="button" onClick={() => actions.onLoadDetail(turn.turnId)}><RefreshCw size={13} />{t("agentPage.retry")}</button>
         </div>
-      );
-    }
-    return (
-      <div className="conversation-detail is-loading" role="status">
-        <LoaderCircle size={14} className="is-spinning" />
-        <span>{t("agentPage.detailLoading")}</span>
-      </div>
-    );
+      ) : <div className="conversation-detail is-loading" role="status"><LoaderCircle size={14} className="is-spinning" /><span>{t("agentPage.detailLoading")}</span></div> : null}
+      <ol className="conversation-activities">{inputs.map(inputRow)}</ol>
+    </div>;
   }
   const activities = executionProcessActivities(
     detail.activities,
@@ -458,7 +473,7 @@ function ConversationDetailPanel({
     && !detail.has_more && !detail.truncated;
   return (
     <div className="conversation-detail">
-      {detail.invalidated ? (
+      {expanded && detail.invalidated ? (
         <div className="conversation-detail-invalidated" role="status">
           <span>{t("agentPage.detailStale")}</span>
           <button type="button" onClick={() => actions.onLoadDetail(turn.turnId)}>
@@ -467,10 +482,10 @@ function ConversationDetailPanel({
           </button>
         </div>
       ) : null}
-      {detail.truncated ? (
+      {expanded && detail.truncated ? (
         <div className="conversation-detail-notice">{t("agentPage.detailTruncated")}</div>
       ) : null}
-      {detail.has_more && detail.next_before_cursor !== null ? (
+      {expanded && detail.has_more && detail.next_before_cursor !== null ? (
         <button
           type="button"
           className="conversation-detail-older"
@@ -480,29 +495,23 @@ function ConversationDetailPanel({
           <span>{t("agentPage.loadOlderActivities")}</span>
         </button>
       ) : null}
-      {!showEarlier && activities.length > 8 ? (
+      {expanded && !showEarlier && activities.length > 8 ? (
         <button type="button" className="conversation-detail-older" onClick={() => setShowEarlier(true)}>
           <ChevronDown size={13} />{t("agentPage.showEarlierProcess")}
         </button>
       ) : null}
-      {activities.length === 0 ? (
+      {expanded && activities.length === 0 ? (
         <div className="conversation-detail-notice">{t(turn.execution.kind === "active" ? "agentPage.awaitingActivity" : onlyResult ? "agentPage.resultOnlyProcess" : "agentPage.detailEmpty")}</div>
-      ) : (
-        <ol className="conversation-activities">
-          {activities.filter((activity, index) =>
-            showEarlier || index >= activities.length - 8 || activity.kind === "error" || activity.kind === "wait"
-          ).map((activity) => (
-            <ConversationActivityRow
-              activity={activity}
-              key={activity.id}
-              onInspectActivity={actions.onInspectActivity}
-              onLoadToolDetail={actions.onLoadToolDetail}
-              toolDetail={actions.toolDetails?.[activity.id.slice(5)]}
-              selected={actions.selectedActivityId === activity.id}
-            />
-          ))}
-        </ol>
-      )}
+      ) : null}
+      <ol className="conversation-activities">
+        {conversationTimelineEntries(inputs, expanded ? activities.filter((activity, index) =>
+          showEarlier || index >= activities.length - 8 || activity.kind === "error" || activity.kind === "wait"
+        ) : []).map((entry) => entry.kind === "input" ? inputRow(entry.input) : (
+          <ConversationActivityRow activity={entry.activity} key={entry.id}
+            onInspectActivity={actions.onInspectActivity} onLoadToolDetail={actions.onLoadToolDetail}
+            toolDetail={actions.toolDetails?.[entry.id.slice(5)]} selected={actions.selectedActivityId === entry.id} />
+        ))}
+      </ol>
 
     </div>
   );

@@ -1,7 +1,7 @@
 # 执行中 operator 插入消息的会话展示
 
 - 日期：2026-09-16
-- 状态：方案已确认，实施中
+- 状态：已实施并验证（2026-09-17）；本地 daemon 尚未部署新版后端
 - 分支：`codex/operator-interjection-timeline`
 - 依据：用户提供的 Codex 收起/展开截图、[会话读模型 RFC](../../docs/rfcs/conversation-read-model.md)、[operator 插入契约](../../docs/rfcs/operator-interjection-safe-points.md)。
 
@@ -55,3 +55,16 @@
 ## 实施记录
 
 后续在此记录最终选择、验证结果及尚未完成的事项，避免只依赖任务上下文。
+
+
+### 最终实现与验证（2026-09-17）
+
+- 接纳时在原队列事务内更新已有 TurnRecord.input_message_ids，写入包含 turn/round/boundary 的 transcript 和审计证据。复用 assignment/revision/stream；无需新增数据库表或迁移。
+- 终态构建保留已接纳的输入身份。消息 envelope 不重写；旧消息没有明确归属证据时不猜测补挂。
+- 输入摘要新增可选来源、activity_key 和 interjected 标记。排序复用消息到达时分配的不可变 activity_seq；接纳不移动已有顺序，也不声称模型已处理消息。
+- GUI 使用一个 turn 级开关，只隐藏执行条目。用户输入始终显示，历史详情未加载时也能渲染。
+- 原有每轮 8 条摘要上限提高到 128 条，并添加 inputs_truncated 提示。超过 128 条仍有明确展示限制；完整持久消息未删除，本轮未另做输入分页 API。
+- 已通过：11 个插入相关 Rust 测试（含事务回滚、终态保留、重开数据库、流通知和 detail 分页）；30 个已有会话读模型测试；50 个 SDK 测试；599 个 GUI 单测；41 个 Chromium 测试。
+- cargo fmt 检查、RUSTFLAGS="-D warnings" cargo check --all-targets、OpenAPI 快照与 TypeScript 生成物检查、make web 通过。Rust 测试链接器有本机的大 __eh_frame 提示，检查构建无 warning。
+- 使用隔离浏览器 fixture 验证展开/收起及刷新恢复，截图位于 /tmp/holon-interjections-{collapsed,expanded}.png；未停止或重启当前 daemon，也未向真实 agent 发送测试输入。
+- 生效条件：部署含本分支改动的 Rust 后端，再刷新生产前端。只刷新现有旧后端页面不能补齐本轮新增的持久关系；此前缺少归属证据的历史插入不自动恢复。

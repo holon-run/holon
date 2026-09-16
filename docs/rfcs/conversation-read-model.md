@@ -143,11 +143,37 @@ A summary must distinguish:
 | Detail availability | Whether activity is available, partial, unavailable, or unknown |
 
 `inputs` on a turn summary carries the assigned input message ids with bounded
-message-body previews (at most 8 per turn). This lets history pages render
+message-body previews (at most 128 per turn, with `inputs_truncated` explicitly
+reporting overflow). This lets history pages render
 inputs without issuing per-turn activity detail requests; the authoritative
 activity sequence remains in turn detail. Input assignment bumps the turn
 summary revision, so stream consumers receive refreshed previews on the same
 revision path.
+
+### Operator interjections in the conversation projection
+
+Interjection admission atomically appends the message identity to the persisted
+active TurnRecord alongside queue consumption and its incoming transcript/audit
+evidence. Terminal assembly preserves these attached identities; immutable
+message envelopes are not rewritten. The existing input-assignment and source
+revision machinery publishes pending removal and updated turn membership in the
+same conversation change batch.
+
+Each input summary additionally carries its own `presentation_class`, an
+`interjected` flag from the canonical queue disposition, and an optional
+`activity_key` sharing the input activity's stable ordering key. This sequence
+records arrival among execution evidence, not a claim that the model has already
+read the input. Safe-point admission round and boundary remain in transcript and
+audit evidence. Existing keys do not move when a queued input is admitted.
+
+Clients keep initial inputs before the process disclosure and interleave
+interjected inputs with execution activities by their keys. Folding hides only
+execution content: operator inputs and briefs remain visible. Per-input
+provenance prevents operator messages inside system/task turns from being
+rendered as system events. Older servers may omit these additive fields; clients
+retain the previous summary layout rather than guessing interjection boundaries.
+Old unassigned interjections with no explicit owning turn evidence are not
+retrospectively attached based on timestamps or the latest active turn.
 
 Turn summaries expose canonical execution timing without loading activity:
 

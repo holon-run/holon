@@ -5822,8 +5822,48 @@
                 "items": {
                   "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
                   "properties": {
+                    "activity_key": {
+                      "properties": {
+                        "activity_id": {
+                          "type": "string"
+                        },
+                        "event_seq": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "event_seq",
+                        "activity_id"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
+                    },
+                    "interjected": {
+                      "default": false,
+                      "type": "boolean"
+                    },
                     "message_id": {
                       "type": "string"
+                    },
+                    "presentation_class": {
+                      "enum": [
+                        "operator",
+                        "task",
+                        "external",
+                        "timer",
+                        "internal",
+                        "system",
+                        "operational",
+                        null
+                      ],
+                      "type": [
+                        "string",
+                        "null"
+                      ]
                     },
                     "preview": {
                       "type": "string"
@@ -5836,6 +5876,10 @@
                   "type": "object"
                 },
                 "type": "array"
+              },
+              "inputs_truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "key": {
                 "properties": {
@@ -6677,8 +6721,48 @@
                     "items": {
                       "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
                       "properties": {
+                        "activity_key": {
+                          "properties": {
+                            "activity_id": {
+                              "type": "string"
+                            },
+                            "event_seq": {
+                              "format": "uint64",
+                              "minimum": 0,
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "event_seq",
+                            "activity_id"
+                          ],
+                          "type": [
+                            "object",
+                            "null"
+                          ]
+                        },
+                        "interjected": {
+                          "default": false,
+                          "type": "boolean"
+                        },
                         "message_id": {
                           "type": "string"
+                        },
+                        "presentation_class": {
+                          "enum": [
+                            "operator",
+                            "task",
+                            "external",
+                            "timer",
+                            "internal",
+                            "system",
+                            "operational",
+                            null
+                          ],
+                          "type": [
+                            "string",
+                            "null"
+                          ]
                         },
                         "preview": {
                           "type": "string"
@@ -6691,6 +6775,10 @@
                       "type": "object"
                     },
                     "type": "array"
+                  },
+                  "inputs_truncated": {
+                    "default": false,
+                    "type": "boolean"
                   },
                   "key": {
                     "properties": {
@@ -7455,8 +7543,48 @@
                   "items": {
                     "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
                     "properties": {
+                      "activity_key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "interjected": {
+                        "default": false,
+                        "type": "boolean"
+                      },
                       "message_id": {
                         "type": "string"
+                      },
+                      "presentation_class": {
+                        "enum": [
+                          "operator",
+                          "task",
+                          "external",
+                          "timer",
+                          "internal",
+                          "system",
+                          "operational",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "preview": {
                         "type": "string"
@@ -7469,6 +7597,10 @@
                     "type": "object"
                   },
                   "type": "array"
+                },
+                "inputs_truncated": {
+                  "default": false,
+                  "type": "boolean"
                 },
                 "key": {
                   "properties": {
@@ -7945,8 +8077,48 @@
                   "items": {
                     "description": "Canonical operator input attached to a turn, for summary-level rendering\n without loading turn activity detail. Bounded per turn by the read model.",
                     "properties": {
+                      "activity_key": {
+                        "properties": {
+                          "activity_id": {
+                            "type": "string"
+                          },
+                          "event_seq": {
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          }
+                        },
+                        "required": [
+                          "event_seq",
+                          "activity_id"
+                        ],
+                        "type": [
+                          "object",
+                          "null"
+                        ]
+                      },
+                      "interjected": {
+                        "default": false,
+                        "type": "boolean"
+                      },
                       "message_id": {
                         "type": "string"
+                      },
+                      "presentation_class": {
+                        "enum": [
+                          "operator",
+                          "task",
+                          "external",
+                          "timer",
+                          "internal",
+                          "system",
+                          "operational",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       },
                       "preview": {
                         "type": "string"
@@ -7959,6 +8131,10 @@
                     "type": "object"
                   },
                   "type": "array"
+                },
+                "inputs_truncated": {
+                  "default": false,
+                  "type": "boolean"
                 },
                 "key": {
                   "properties": {

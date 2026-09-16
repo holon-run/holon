@@ -20,6 +20,12 @@ pub const CONVERSATION_QUERY_VERSION: u32 = 1;
 pub struct TurnInputSummary {
     pub message_id: String,
     pub preview: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation_class: Option<PresentationClass>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity_key: Option<ActivityKey>,
+    #[serde(default)]
+    pub interjected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -29,6 +35,8 @@ pub struct ConversationTurnSummary {
     pub revision: u64,
     pub presentation_class: PresentationClass,
     pub inputs: Vec<TurnInputSummary>,
+    #[serde(default)]
+    pub inputs_truncated: bool,
     pub execution: ExecutionState,
     pub started_at: chrono::DateTime<chrono::Utc>,
     pub completed_at: Option<chrono::DateTime<chrono::Utc>>,

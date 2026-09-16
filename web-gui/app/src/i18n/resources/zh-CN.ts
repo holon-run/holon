@@ -419,6 +419,7 @@ const zh: Record<string, any> = {
     wakeNotification: "唤醒通知",
     eventPreview: "消息预览",
     openEventDetail: "查看完整事件",
+    inputsTruncated: "本轮输入超过展示上限，仅显示前 128 条。",
     eventUnavailable: "该消息已不可用，下方保留已有预览。",
     pendingEvents: "待处理事件",
     pendingSourceUnknown: "待收消息",

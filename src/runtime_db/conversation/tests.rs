@@ -2274,3 +2274,125 @@ fn pending_inputs_classify_canonical_sources_before_turn_assignment() -> Result<
     }
     Ok(())
 }
+
+#[test]
+fn interjection_membership_stream_and_order_survive_restart() -> Result<()> {
+    use crate::domain::conversation::PresentationClass;
+    use crate::runtime_db::transitions::{QueueMutation, QueueOperation, QueueTransitionCommand};
+    let (_temp, db_path, lock_path, db) = runtime_db()?;
+    register_public_agent(&db)?;
+    let mut record = turn("steered-system-turn", 1);
+    record.trigger = Some(trigger(MessageKind::SystemTick));
+    db.turn_records().upsert(&record)?;
+    let snapshot = db
+        .conversation()
+        .summary_snapshot(AGENT_ID, 10, None, "test-principal", "public")?
+        .unwrap();
+    // More than the old eight-input limit, with explicit provenance in a system turn.
+    for index in 0..10 {
+        let mut message = MessageEnvelope::new(
+            AGENT_ID,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Interject,
+            MessageBody::Text {
+                text: format!("correction {index}"),
+            },
+        );
+        message.id = format!("steer-{index}");
+        db.evidence().append_message(&message)?;
+        let mut queued = QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: AGENT_ID.into(),
+            priority: Priority::Interject,
+            status: QueueEntryStatus::Queued,
+            created_at: message.created_at,
+            updated_at: message.created_at,
+        };
+        db.queue_entries().upsert(&queued)?;
+        record.input_message_ids.push(message.id.clone());
+        queued.status = QueueEntryStatus::Interjected;
+        let audit = AuditEvent::legacy(
+            "operator_interjection_admitted",
+            serde_json::json!({
+                "agent_id": AGENT_ID, "turn_id": record.turn_id, "message_id": message.id, "round": index + 1,
+            }),
+        );
+        assert!(
+            db.transitions()
+                .commit_queue(&QueueTransitionCommand {
+                    agent_id: AGENT_ID.into(),
+                    operation: QueueOperation::Interject,
+                    mutation: QueueMutation::Consume(queued),
+                    scheduler_claim_work_item: None,
+                    agent_state: None,
+                    message_evidence: vec![],
+                    transcript_entries: vec![],
+                    turn_record: Some(record.clone()),
+                    audit_events: vec![audit],
+                    notify_scheduler: false,
+                    fault: None,
+                    brief_evidence: vec![],
+                })?
+                .applied
+        );
+    }
+    let batch = db
+        .conversation()
+        .change_batch(
+            AGENT_ID,
+            Some(&snapshot.snapshot_cursor),
+            100,
+            64,
+            "test-principal",
+            "public",
+        )?
+        .unwrap();
+    let updated = batch
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::TurnSummaryUpsert { turn } => Some(turn),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(updated.presentation_class, PresentationClass::System);
+    assert_eq!(updated.inputs.len(), 10);
+    assert!(!updated.inputs_truncated);
+    for (index, input) in updated.inputs.iter().enumerate() {
+        assert_eq!(input.message_id, format!("steer-{index}"));
+        assert_eq!(input.presentation_class, Some(PresentationClass::Operator));
+        assert!(input.interjected);
+        assert!(batch.changes.iter().any(|change| matches!(change,
+            ConversationChange::OperatorRemove { message_id, .. } if message_id == &input.message_id)));
+    }
+    let keys = updated
+        .inputs
+        .iter()
+        .map(|input| input.activity_key.clone().unwrap())
+        .collect::<Vec<_>>();
+    assert!(keys.windows(2).all(|pair| pair[0] < pair[1]));
+    let expected = updated.inputs.clone();
+    drop(db);
+    let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+    let restored = reopened
+        .conversation()
+        .summary_page(AGENT_ID, 10, None, None)?;
+    assert!(restored.pending_inputs.is_empty());
+    assert_eq!(restored.active_turns[0].inputs, expected);
+    let page = reopened
+        .conversation()
+        .activities(AGENT_ID, &record.turn_id, 3, None, None)?
+        .unwrap();
+    assert!(page.has_more);
+    assert_eq!(
+        page.turn.inputs, expected,
+        "detail pagination never pages away summary inputs"
+    );
+    assert_eq!(activity_item(&page.activities[0]).key, keys[7]);
+    Ok(())
+}

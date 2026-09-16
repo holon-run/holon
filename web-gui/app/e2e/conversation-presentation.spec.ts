@@ -392,3 +392,58 @@ test("wake and task JSON open full canonical messages in the inspector", async (
   expect(requested).toEqual(["wake-message", "task-message"]);
   await page.screenshot({ path: "/tmp/holon-event-inspector.png" });
 });
+
+test("operator interjections survive admission, folding, refresh and interrupted turns in a system wake", async ({ page, context, request }, info) => {
+  const session = `interjections-${info.testId}`;
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const source = { message_id: "wake-input", preview: "Scheduled deployment check", presentation_class: "system" as const };
+  const steer = (id: string, seq: number, preview: string) => ({ message_id: id, preview, presentation_class: "operator" as const,
+    interjected: true, activity_key: { event_seq: seq, activity_id: `operator:${id}` } });
+  const first = steer("steer-a", 2, "Do not restart the service");
+  const second = steer("steer-b", 4, "Check the logs first");
+  let current = turn("steered", 1, { presentation_class: "system", inputs: [source], started_at: "2026-09-16T00:00:00Z" });
+  const progress = [activity(1, "Inspecting configuration."), activity(3, "Checking without a restart."), activity(5, "Reading service logs.")];
+  const update = (pending_inputs: unknown[] = []) => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], pending_inputs, activitiesByTurnId: { steered: [...progress,
+      { kind: "operator", id: "operator:steer-a", key: first.activity_key, revision: 1, summary: first.preview },
+      { kind: "operator", id: "operator:steer-b", key: second.activity_key, revision: 1, summary: second.preview },
+    ] },
+  } });
+  await request.post(control("/__e2e__/configure"), { data: { briefsById: { "steered-result": {
+    id: "steered-result", agent_id: agentId, workspace_id: "holon", kind: "result", text: "Checked the logs; no restart performed.",
+    created_at: "2026-09-16T00:02:00Z", content_source: { kind: "inline" },
+  } } } });
+  await update([{ ...first, revision: 1, state: "queued" }]);
+  await page.goto(`/agents/${agentId}/conversation`);
+  await expect(page.getByText(first.preview, { exact: true })).toBeVisible();
+  const live = page.locator('[data-turn-id="steered"]');
+  current = { ...current, revision: 2, inputs: [source, first, second] };
+  await update();
+  await expect(page.locator(".conversation-pending-chip")).toHaveCount(0);
+  await expect(page.getByText(first.preview, { exact: true })).toHaveCount(1);
+  await expect(live.locator(".conversation-input-line")).toHaveCount(2);
+  const order = () => live.locator(".conversation-activities > li").allTextContents();
+  await expect.poll(order).toEqual([progress[0].summary, first.preview, progress[1].summary, second.preview, progress[2].summary]);
+  await expect(live.locator(".conversation-detail-toggle")).toHaveCount(1);
+  await page.reload();
+  await expect.poll(order).toEqual([progress[0].summary, first.preview, progress[1].summary, second.preview, progress[2].summary]);
+  current = { ...current, revision: 3, execution: { kind: "terminal", outcome: "completed" }, result: { kind: "available" },
+    brief_ids: ["steered-result"], settled: true, completed_at: "2026-09-16T00:02:00Z", duration_ms: 120000 };
+  await update();
+  await expect(live.getByText("Checked the logs; no restart performed.")).toBeVisible();
+  await expect(live.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  await expect.poll(order).toEqual([first.preview, second.preview]);
+  await page.reload();
+  await expect.poll(order).toEqual([first.preview, second.preview]);
+  await live.locator(".conversation-detail-toggle").click();
+  await expect.poll(order).toEqual([progress[0].summary, first.preview, progress[1].summary, second.preview, progress[2].summary]);
+  current = { ...current, revision: 4, execution: { kind: "terminal", outcome: "interrupted" }, attention: { kind: "interrupted" } };
+  await update();
+  await live.locator(".conversation-detail-toggle").click();
+  await expect.poll(order).toEqual([first.preview, second.preview]);
+  await expect(live.getByText("This turn was stopped")).toBeVisible();
+  await page.screenshot({ path: "/tmp/holon-interjections-collapsed.png", fullPage: true });
+  await live.locator(".conversation-detail-toggle").click();
+  await page.screenshot({ path: "/tmp/holon-interjections-expanded.png", fullPage: true });
+});

@@ -326,3 +326,14 @@ test("pending source and arrival time are decoded without inferring provenance f
     assert.throws(() => decodeConversationSummaryResponse(summary({ pending_inputs: [{ ...input, ...patch }] })), ConversationDecodeError);
   }
 });
+
+test("decodes interjection provenance and ordering without requiring it from older servers", () => {
+  const input = { message_id: "steer", preview: "Do not restart", presentation_class: "operator",
+    interjected: true, activity_key: { event_seq: 42, activity_id: "operator:steer" } };
+  const response = summary({ turns: [turn("wake", 1, 2, { presentation_class: "system", inputs: [input], inputs_truncated: true })] });
+  const decoded = decodeConversationSummaryResponse(response);
+  assert.deepEqual(decoded.turns[0].inputs[0], input);
+  assert.equal(decoded.turns[0].inputs_truncated, true);
+  input.activity_key.event_seq = Number.MAX_SAFE_INTEGER + 1;
+  assert.throws(() => decodeConversationSummaryResponse(response), ConversationDecodeError);
+});

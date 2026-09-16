@@ -116,6 +116,10 @@ export type PresentationClass =
 export interface TurnInputSummary {
   readonly message_id: string;
   readonly preview: string;
+  readonly presentation_class?: PresentationClass;
+  /** Shares the immutable ordering key of this input's operator activity. */
+  readonly activity_key?: ActivityKey;
+  readonly interjected?: boolean;
 }
 
 export interface ConversationTurnSummary {
@@ -124,6 +128,7 @@ export interface ConversationTurnSummary {
   readonly revision: number;
   readonly presentation_class: PresentationClass;
   readonly inputs: readonly TurnInputSummary[];
+  readonly inputs_truncated?: boolean;
   readonly execution: ExecutionState;
   /** Canonical turn start; absent on older runtimes. */
   readonly started_at?: string | null;

@@ -28,6 +28,7 @@ export interface ConversationTurnGroup {
   readonly revision: number;
   readonly presentationClass: PresentationClass;
   readonly inputs: readonly TurnInputSummary[];
+  readonly inputsTruncated?: boolean;
   readonly execution: ExecutionState;
   readonly startedAt?: string | null;
   readonly completedAt?: string | null;
@@ -76,6 +77,7 @@ export function buildConversationSessionModel(
       revision: turn.revision,
       presentationClass: turn.presentation_class,
       inputs: turn.inputs,
+      inputsTruncated: turn.inputs_truncated,
       execution: turn.execution,
       startedAt: turn.started_at,
       completedAt: turn.completed_at,

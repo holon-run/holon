@@ -596,15 +596,33 @@ impl RuntimeHandle {
                     )? {
                         OperatorInterjectionPlan::Admit => {}
                     }
+                    let turn_id = expected_state
+                        .current_turn_id
+                        .as_deref()
+                        .ok_or_else(|| anyhow::anyhow!("interjection has no current turn"))?;
+                    let mut turn_record = self
+                        .inner
+                        .storage
+                        .read_turn_by_id(turn_id)?
+                        .ok_or_else(|| anyhow::anyhow!("interjection turn is not persisted"))?;
+                    anyhow::ensure!(
+                        turn_record.terminal.is_none(),
+                        "interjection turn is already terminal"
+                    );
+                    if !turn_record.input_message_ids.contains(&message.id) {
+                        turn_record.input_message_ids.push(message.id.clone());
+                    }
                     let mut committed_state = expected_state.clone();
                     committed_state.pending = guard.queue.len().saturating_sub(1);
                     let text = render_operator_interjection_text(&message);
                     let transcript = TranscriptEntry::new(
                         message.agent_id.clone(),
                         TranscriptEntryKind::IncomingMessage,
-                        None,
+                        Some(round),
                         Some(message.id.clone()),
                         serde_json::json!({
+                            "turn_id": turn_id,
+                            "boundary": boundary_str,
                             "authority_class": message.authority_class,
                             "delivery_surface": message.delivery_surface,
                             "admission_context": message.admission_context,
@@ -628,6 +646,7 @@ impl RuntimeHandle {
                         "operator_interjection_admitted",
                         serde_json::json!({
                             "agent_id": agent_id,
+                            "turn_id": turn_id,
                             "round": round,
                             "boundary": boundary_str,
                             "message_id": message.id,
@@ -656,7 +675,7 @@ impl RuntimeHandle {
                             }),
                             message_evidence: Vec::new(),
                             transcript_entries: vec![transcript],
-                            turn_record: None,
+                            turn_record: Some(turn_record),
                             audit_events: vec![audit_event],
                             notify_scheduler: false,
                             fault: self.take_transition_fault(),
