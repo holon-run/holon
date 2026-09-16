@@ -157,6 +157,19 @@ export interface ConversationRetryOptions {
   readonly stableUptimeMs?: number;
 }
 
+/**
+ * Best-effort persistent cache for brief records. Briefs are final,
+ * immutable artifacts, so entries never need invalidation; implementations
+ * must tolerate rejections (storage unavailable, quota exceeded) without
+ * throwing into the controller lifecycle.
+ */
+export interface ConversationBriefCache {
+  /** Return the cached brief, or null/undefined when absent. */
+  get(briefId: string): Promise<BriefRecord | null | undefined>;
+  /** Persist a successfully fetched brief. */
+  put(briefId: string, brief: BriefRecord): Promise<void>;
+}
+
 export interface ConversationControllerOptions {
   readonly client: ConversationClientLike;
   readonly agentId: string;
@@ -166,6 +179,7 @@ export interface ConversationControllerOptions {
   readonly historyPageSize?: number;
   readonly activityPageSize?: number;
   readonly maxBriefCache?: number;
+  readonly briefCache?: ConversationBriefCache;
   readonly sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly random?: () => number;
   readonly now?: () => number;
@@ -258,6 +272,7 @@ export class ConversationController {
   readonly #historyPageSize: number;
   readonly #activityPageSize: number;
   readonly #maxBriefCache: number;
+  readonly #briefCache: ConversationBriefCache | undefined;
   readonly #sleep: (ms: number, signal: AbortSignal) => Promise<void>;
   readonly #random: () => number;
   readonly #now: () => number;
@@ -303,6 +318,7 @@ export class ConversationController {
     this.#activityPageSize =
       options.activityPageSize ?? DEFAULT_ACTIVITY_PAGE_SIZE;
     this.#maxBriefCache = options.maxBriefCache ?? DEFAULT_MAX_BRIEF_CACHE;
+    this.#briefCache = options.briefCache;
     this.#sleep = options.sleep ?? defaultSleep;
     this.#random = options.random ?? Math.random;
     this.#now = options.now ?? Date.now;
@@ -473,6 +489,30 @@ export class ConversationController {
     this.#briefOrder.push(briefId);
     this.#evictBriefCache();
     this.#emitChange();
+    if (this.#briefCache !== undefined) {
+      let cached: BriefRecord | null | undefined;
+      try {
+        cached = await this.#briefCache.get(briefId);
+      } catch {
+        // Persistent cache read failure falls through to the network.
+      }
+      if (this.#disposed) {
+        return { kind: "loading" };
+      }
+      if (
+        cached != null &&
+        cached.id === briefId &&
+        cached.agent_id === this.agentId
+      ) {
+        const cachedReady: ConversationBriefLoadState = {
+          kind: "ready",
+          brief: cached,
+        };
+        this.#briefStates.set(briefId, cachedReady);
+        this.#emitChange();
+        return cachedReady;
+      }
+    }
     try {
       const brief = await this.#client.brief(
         this.agentId,
@@ -485,6 +525,12 @@ export class ConversationController {
       const ready: ConversationBriefLoadState = { kind: "ready", brief };
       this.#briefStates.set(briefId, ready);
       this.#emitChange();
+      if (this.#briefCache !== undefined) {
+        // Best-effort persistence; cache failures never fail the load.
+        void Promise.resolve(this.#briefCache.put(briefId, brief)).catch(
+          () => {},
+        );
+      }
       return ready;
     } catch (error) {
       if (this.#disposed) {

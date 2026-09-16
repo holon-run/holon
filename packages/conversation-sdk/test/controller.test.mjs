@@ -585,3 +585,89 @@ test("brief loads are deduped, cached, and bounded", async () => {
   assert.notEqual(controller.briefState("brief-3"), null);
   controller.dispose();
 });
+
+test("brief cache hits skip the network and fetched briefs are persisted", async () => {
+  const client = fakeClient();
+  const store = new Map();
+  const briefCache = {
+    async get(briefId) {
+      return store.get(briefId) ?? null;
+    },
+    async put(briefId, brief) {
+      store.set(briefId, brief);
+    },
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    briefCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  const fetched = await controller.loadBrief("brief-1");
+  assert.equal(fetched.kind, "ready");
+  assert.equal(client.calls.brief.length, 1);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.ok(store.has("brief-1"));
+  controller.dispose();
+
+  // A fresh controller (e.g. after a page reload) serves from the cache.
+  const second = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    briefCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  const cached = await second.loadBrief("brief-1");
+  assert.equal(cached.kind, "ready");
+  assert.equal(cached.brief.text, "brief brief-1");
+  assert.equal(client.calls.brief.length, 1);
+  second.dispose();
+});
+
+test("brief cache entries bound to another agent or id are ignored", async () => {
+  const client = fakeClient();
+  const foreign = { ...briefRecord("brief-1"), agent_id: "other-agent" };
+  const briefCache = {
+    async get(briefId) {
+      return briefId === "brief-1" ? foreign : null;
+    },
+    async put() {},
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    briefCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  const state = await controller.loadBrief("brief-1");
+  assert.equal(state.kind, "ready");
+  assert.equal(state.brief.agent_id, identity.agent_id);
+  assert.equal(client.calls.brief.length, 1);
+  controller.dispose();
+});
+
+test("brief cache read or write failures fall back to the network", async () => {
+  const client = fakeClient();
+  const briefCache = {
+    async get() {
+      throw new Error("storage unavailable");
+    },
+    async put() {
+      throw new Error("storage unavailable");
+    },
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    briefCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  const state = await controller.loadBrief("brief-1");
+  assert.equal(state.kind, "ready");
+  assert.equal(client.calls.brief.length, 1);
+  controller.dispose();
+});
