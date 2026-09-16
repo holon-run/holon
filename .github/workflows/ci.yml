@@ -172,7 +172,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust build cache
-        uses: Swatinem/rust-cache@6323deb102da6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           prefix-key: v1-rust
           key: ci-conversation-sdk
