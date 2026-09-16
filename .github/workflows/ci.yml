@@ -80,6 +80,7 @@ jobs:
     outputs:
       docker: ${{ steps.filter.outputs.docker }}
       rust: ${{ steps.filter.outputs.rust }}
+      conversation_sdk: ${{ steps.filter.outputs.conversation_sdk }}
       web: ${{ steps.filter.outputs.web }}
       macos_app: ${{ steps.filter.outputs.macos_app }}
     steps:
@@ -106,7 +107,6 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'src/**'
               - 'tests/**'
-              - 'packages/conversation-sdk/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
@@ -115,6 +115,9 @@ jobs:
               - 'builtin_templates/**'
               - 'docs/website/reference/openapi.json'
               - 'scripts/ci_timing.py'
+            conversation_sdk:
+              - 'packages/conversation-sdk/**'
+              - '.github/workflows/ci.yml'
             web:
               - 'web-gui/**'
               - '.github/workflows/ci.yml'
@@ -149,6 +152,35 @@ jobs:
 
       - name: Test and build web GUI
         run: make web-ci
+
+  conversation-sdk:
+    name: Conversation SDK
+    runs-on: ubuntu-latest
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.conversation_sdk == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: packages/conversation-sdk/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102da6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: v1-rust
+          key: ci-conversation-sdk
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Test conversation SDK protocol
+        run: make conversation-sdk-ci
 
   macos-app:
     name: Build macOS menu app
@@ -311,6 +343,7 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Set up Node.js
+        if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.conversation_sdk != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '24'
@@ -318,6 +351,7 @@ jobs:
           cache-dependency-path: packages/conversation-sdk/package-lock.json
 
       - name: Test conversation SDK protocol
+        if: github.event_name != 'workflow_dispatch' && needs.changes.outputs.conversation_sdk != 'true'
         run: make conversation-sdk-ci
 
       - name: Check formatting
