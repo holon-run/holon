@@ -149,7 +149,19 @@ describe("executionProcessActivities", () => {
     ] }))];
     expect(executionProcessActivities(entries, ["Done\n\nDetails"], true)).toEqual([]);
     const hidden = [activity("thinking", JSON.stringify({ blocks: [{ type: "thinking", thinking: "private" }] }))];
-    expect(executionProcessActivities(hidden, [""], true)).toEqual(hidden);
+    expect(executionProcessActivities(hidden, [""], true)).toEqual([]);
+  });
+
+  it.each([false, true])("skips assistant rounds without display text while preserving other activities (terminal=%s)", (terminal) => {
+    const hidden = [activity("empty", ""), activity("space", " \n\t"),
+      activity("tools-only", JSON.stringify({ blocks: [{ type: "tool_use", name: "ExecCommand" }] })),
+      activity("partial-legacy", '{"blocks":[')];
+    const visible = [activity("progress", "Reading files"), activity("tool", "", "tool"),
+      activity("error", "", "error"), activity("wait", "", "wait")];
+    expect(executionProcessActivities([...hidden, ...visible], [], terminal)).toEqual(visible);
+    // An initially empty round becomes visible when the next revision contains text.
+    expect(executionProcessActivities([{ ...hidden[0], revision: 2, summary: "Now reading" }], [], terminal))
+      .toEqual([{ ...hidden[0], revision: 2, summary: "Now reading" }]);
   });
 });
 

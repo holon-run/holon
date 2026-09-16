@@ -140,10 +140,12 @@ test("an invalidated active process refreshes before its brief and opens the exi
   await update([activity(1, "Starting the live check.")]);
   await page.goto(`/agents/${agentId}/conversation`);
   await expect(page.getByText("Starting the live check.")).toBeVisible();
-  await update([activity(1, "Starting the live check."), tool]);
+  await update([activity(1, "Starting the live check."), activity(3, ""), tool]);
   const toolRow = page.locator('[data-activity-id="tool:exec-live"] button');
   await expect(toolRow).toContainText("printf live-marker");
   await expect(toolRow).toContainText("ExecCommand · success");
+  await expect(page.locator('[data-activity-id="assistant:3"]')).toHaveCount(0);
+  await expect(page.getByText("Activity summary unavailable", { exact: true })).toHaveCount(0);
   await expect(page.locator('[data-turn-id="live-detail"] .conversation-brief')).toHaveCount(0);
   await toolRow.click();
   await expect(page.locator(".side-panel")).toBeVisible();
@@ -157,7 +159,9 @@ test("an invalidated active process refreshes before its brief and opens the exi
     "exec-live": { id: "exec-live", agent_id: agentId, tool_name: "ExecCommand", status: "error",
       input: { cmd: "printf live-marker" }, output: { stderr: "updated failure", exit_status: 1 }, duration_ms: 1250 },
   } } });
-  await update([activity(1, "Starting the live check."), { ...tool, revision: 2, summary: "ExecCommand · error" }]);
+  await update([activity(1, "Starting the live check."), { ...activity(3, "Tool output received."), revision: 2 },
+    { ...tool, revision: 2, summary: "ExecCommand · error" }]);
+  await expect(page.locator('[data-activity-id="assistant:3"]')).toContainText("Tool output received.");
   await expect(toolRow).toContainText("ExecCommand · error · 1.3s");
   await expect(page.locator(".side-panel").getByText("updated failure", { exact: true })).toBeVisible();
   expect(await toolRequests()).toHaveLength(2);

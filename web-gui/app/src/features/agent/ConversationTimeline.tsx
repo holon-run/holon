@@ -396,7 +396,8 @@ function ConversationDetailPanel({
     }),
     turn.execution.kind === "terminal",
   );
-  const onlyResult = activities.length === 0 && detail.activities.some((activity) => activity.kind === "assistant")
+  const onlyResult = activities.length === 0 && detail.activities.some((activity) =>
+    activity.kind === "assistant" && summarizeActivity(activity).display.trim().length > 0)
     && !detail.has_more && !detail.truncated;
   return (
     <div className="conversation-detail">
@@ -450,13 +451,14 @@ function ConversationDetailPanel({
   );
 }
 
-/** Deduplicate only a delivered final response, never in-flight progress or evidence. */
+/** Hide assistant rounds without display text and final responses already delivered as Briefs. */
 export function executionProcessActivities(
   activities: readonly ConversationActivity[],
   readableBriefs: readonly string[],
   terminal: boolean,
 ): readonly ConversationActivity[] {
-  const process = activities.filter((activity) => activity.kind !== "operator");
+  const process = activities.filter((activity) => activity.kind !== "operator"
+    && (activity.kind !== "assistant" || summarizeActivity(activity).display.trim().length > 0));
   if (!terminal || readableBriefs.length === 0) return process;
   // Keep Markdown/code whitespace intact; only normalize line endings and outer space.
   const normalize = (text: string) => text.replace(/\r\n/g, "\n").trim();

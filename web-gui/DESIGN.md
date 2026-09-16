@@ -310,6 +310,9 @@ start/terminal timing, updates only its own component once per second, and
 freezes at execution termination even if the result has not loaded. Cancellation
 and setup failures record elapsed processing time rather than a zero placeholder. Old
 runtimes without timing still show the status, without an invented duration.
+Omit assistant rounds without displayable text (including thinking/tool-only
+rounds) from the process, while retaining their separate tool activities and
+canonical records. If a later revision adds text, render it normally.
 After execution ends, omit the last non-empty assistant activity from the process
 only when its full displayed text matches a loaded Brief in the same turn (apart
 from outer whitespace and CRLF line endings). Keep it while Briefs are loading,
