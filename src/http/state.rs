@@ -1145,7 +1145,16 @@ pub async fn brief(
     else {
         return Err(not_found(format!("brief {brief_id} not found")));
     };
-    Ok(Json(brief))
+    let bytes = serde_json::to_vec(&brief).map_err(|err| error_response(err.into()))?;
+    let etag = etag_for_bytes(&bytes);
+    if if_none_match_satisfied(&headers, &etag) {
+        return Ok(not_modified_response(etag));
+    }
+    Ok((
+        [(CONTENT_TYPE, "application/json"), (ETAG, etag.as_str())],
+        Bytes::from(bytes),
+    )
+        .into_response())
 }
 
 pub async fn briefs_batch_get(

@@ -638,8 +638,12 @@ pub async fn summary(
         )
         .into_response();
     }
+    let etag = etag_for_bytes(&bytes);
+    if if_none_match_satisfied(&headers, &etag) {
+        return not_modified_response(etag);
+    }
     crate::diagnostics::record_conversation_summary(started_at.elapsed(), bytes.len());
-    traced_json_bytes("/agents/{agent_id}/conversation", started_at, bytes)
+    traced_json_bytes_with_etag("/agents/{agent_id}/conversation", started_at, bytes, etag)
 }
 
 pub async fn activities(
@@ -1167,6 +1171,30 @@ mod tests {
         (status, value)
     }
 
+    async fn get_with_headers(
+        state: AppState,
+        uri: &str,
+        headers: &[(&'static str, &str)],
+    ) -> (StatusCode, Option<String>, Value) {
+        let mut builder = Request::builder().method("GET").uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let response = crate::http::router(state)
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let etag = response
+            .headers()
+            .get(ETAG)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        (status, etag, value)
+    }
+
     fn stream_batch() -> ConversationChangeBatch {
         ConversationChangeBatch {
             runtime_id: "runtime-test".into(),
@@ -1410,6 +1438,59 @@ mod tests {
             serde_json::to_value(DetailCoverage::Unknown).unwrap(),
             serde_json::json!({"kind": "unknown"})
         );
+    }
+
+    #[tokio::test]
+    async fn summary_and_brief_honor_if_none_match() {
+        let (_home, host) = test_host().await;
+        seed_conversation(&host);
+        let state = AppState::for_tcp(host);
+
+        // Summary: 200 with a strong content-addressed ETag, then 304.
+        let (status, etag, body) =
+            get_with_headers(state.clone(), "/api/agents/web/conversation", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        let etag = etag.expect("summary response carries an ETag");
+        assert!(etag.starts_with('"') && etag.ends_with('"'));
+        assert!(body.get("turns").is_some());
+        let (status, repeat_etag, body) = get_with_headers(
+            state.clone(),
+            "/api/agents/web/conversation",
+            &[("if-none-match", etag.as_str())],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+        assert_eq!(repeat_etag.as_deref(), Some(etag.as_str()));
+        assert_eq!(body, Value::Null, "304 responses carry no body");
+
+        // A different page (limit) is different content and a different tag.
+        let (status, limited_etag, _) =
+            get_with_headers(state.clone(), "/api/agents/web/conversation?limit=1", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_ne!(limited_etag.as_deref(), Some(etag.as_str()));
+
+        // Brief: same conditional behavior on the compatibility endpoint.
+        let (status, brief_etag, _) =
+            get_with_headers(state.clone(), "/api/agents/web/briefs/brief-one", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        let brief_etag = brief_etag.expect("brief response carries an ETag");
+        let (status, _, _) = get_with_headers(
+            state.clone(),
+            "/api/agents/web/briefs/brief-one",
+            &[("if-none-match", brief_etag.as_str())],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED);
+
+        // A non-matching validator still returns the full payload.
+        let (status, _, body) = get_with_headers(
+            state.clone(),
+            "/api/agents/web/conversation",
+            &[("if-none-match", "\"stale-etag\"")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.get("turns").is_some());
     }
 
     #[tokio::test]

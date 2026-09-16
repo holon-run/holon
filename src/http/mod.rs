@@ -12,7 +12,9 @@ pub(crate) use axum::{
     body::{Body, Bytes},
     extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{
-        header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, LOCATION, SET_COOKIE},
+        header::{
+            ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH, LOCATION, SET_COOKIE,
+        },
         HeaderMap, HeaderName, HeaderValue, Method, Request as AxumRequest, Response, StatusCode,
         Uri,
     },
@@ -944,6 +946,56 @@ pub(crate) fn traced_json_bytes(
         );
     }
     ([(CONTENT_TYPE, "application/json")], bytes).into_response()
+}
+
+/// Strong ETag derived from the serialized response body. Content-addressed
+/// so any change to the payload (epoch, seq, rendering) yields a new tag.
+pub(crate) fn etag_for_bytes(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut etag = String::with_capacity(26);
+    etag.push('"');
+    for byte in digest.iter().take(12) {
+        etag.push_str(&format!("{byte:02x}"));
+    }
+    etag.push('"');
+    etag
+}
+
+/// RFC 9110 If-None-Match evaluation: satisfied when any listed entity tag
+/// matches the current one, or when the client sent `*`.
+pub(crate) fn if_none_match_satisfied(headers: &HeaderMap, etag: &str) -> bool {
+    let Some(raw) = headers
+        .get(IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+    else {
+        return false;
+    };
+    raw.split(',').any(|candidate| {
+        let candidate = candidate.trim();
+        candidate == etag || candidate == "*"
+    })
+}
+
+/// 200 JSON response carrying the ETag, with the standard tracing/diagnostics.
+pub(crate) fn traced_json_bytes_with_etag(
+    route: &'static str,
+    started_at: std::time::Instant,
+    bytes: Bytes,
+    etag: String,
+) -> AxumResponse {
+    let build_elapsed = started_at.elapsed();
+    diagnostics::record_http_json_response(route, build_elapsed, bytes.len());
+    (
+        [(CONTENT_TYPE, "application/json"), (ETAG, etag.as_str())],
+        bytes,
+    )
+        .into_response()
+}
+
+/// 304 Not Modified carrying the still-valid ETag and no body.
+pub(crate) fn not_modified_response(etag: String) -> AxumResponse {
+    (StatusCode::NOT_MODIFIED, [(ETAG, etag.as_str())]).into_response()
 }
 
 pub(crate) fn projection_gate_error_response(error: ProjectionGateError) -> AxumResponse {
