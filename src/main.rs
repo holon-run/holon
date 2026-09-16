@@ -907,6 +907,14 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         exporter.install();
     }
     let runtime_service = RuntimeServiceHandle::new_starting(&config)?;
+    host.recover_orphaned_queue_claims_at_startup().await?;
+    let runtime = host.default_runtime().await?;
+    host.spawn_daemon_memory_indexer();
+    host.spawn_daemon_runtime_db_retention();
+    host.spawn_daemon_deletion_coordinator();
+    spawn_stale_agent_template_remote_source_sync(&config, &host);
+    emit_first_run_intro(&config, &runtime).await;
+
     #[cfg(unix)]
     let unix_server = {
         ensure_socket_parent(&config.socket_path)?;
@@ -918,21 +926,12 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             AppState::for_unix_with_runtime_service(host.clone(), Some(runtime_service.clone()))
                 .with_web_dist(web_dist.clone()),
         );
-        Some(tokio::spawn(http::serve_unix(
+        tokio::spawn(http::serve_unix(
             unix_listener,
             unix_router,
             runtime_service.shutdown_signal(),
-        )))
+        ))
     };
-
-    host.recover_orphaned_queue_claims_at_startup().await?;
-    let runtime = host.default_runtime().await?;
-    host.spawn_daemon_memory_indexer();
-    host.spawn_daemon_runtime_db_retention();
-    host.spawn_daemon_deletion_coordinator();
-    spawn_stale_agent_template_remote_source_sync(&config, &host);
-    emit_first_run_intro(&config, &runtime).await;
-    runtime_service.mark_healthy();
 
     let tcp_router = http::router(
         AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
@@ -966,6 +965,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     } else {
         None
     };
+    runtime_service.mark_healthy();
 
     #[cfg(unix)]
     {
@@ -976,8 +976,6 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                 .context("TCP server failed")?;
             Ok::<(), anyhow::Error>(())
         };
-        let unix_server =
-            unix_server.expect("unix control server was initialized before runtime recovery");
         let unix_server = async {
             unix_server
                 .await

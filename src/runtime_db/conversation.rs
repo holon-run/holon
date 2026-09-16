@@ -2058,6 +2058,7 @@ fn attention(connection: &Connection, record: &TurnRecord) -> Result<Option<Atte
                 outcome: TerminalOutcome::BaselineOverBudget,
             }),
             TurnTerminalKind::Aborted
+            | TurnTerminalKind::Interrupted
             | TurnTerminalKind::DeferredToFallback
             | TurnTerminalKind::ProviderFailedNeedsRecovery => Some(Attention::Interrupted),
         });

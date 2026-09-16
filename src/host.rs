@@ -1855,9 +1855,18 @@ impl RuntimeHost {
     }
 
     pub async fn recover_orphaned_queue_claims_at_startup(&self) -> Result<Vec<String>> {
-        let recovered_queue_agent_ids = self
+        let recovery_report = self
             .runtime_db()
-            .recover_orphaned_dequeued_claims_at_startup()?;
+            .recover_interrupted_runtime_state_at_startup()?;
+        tracing::info!(
+            queue_entries_changed = recovery_report.queue_entries_changed,
+            interrupted_turns = recovery_report.interrupted_turns,
+            superseded_turns = recovery_report.superseded_turns,
+            orphaned_claim_turns = recovery_report.orphaned_claim_turns,
+            daemon_restart_turns = recovery_report.daemon_restart_turns,
+            "startup runtime state recovery completed"
+        );
+        let recovered_queue_agent_ids = recovery_report.recovered_queue_agent_ids;
         let queue_recovery_candidate_ids = self
             .runtime_db()
             .queue_entries()

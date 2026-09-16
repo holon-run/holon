@@ -37,6 +37,7 @@ type JsonRecord = Record<string, unknown>;
 const terminalOutcomes = new Set<TerminalOutcome>([
   "completed",
   "aborted",
+  "interrupted",
   "baseline_over_budget",
   "deferred_to_fallback",
   "provider_failed_needs_recovery",
@@ -209,6 +210,7 @@ function decodeNoBriefReason(value: unknown, path: string): NoBriefReason {
         reason: stringValue(source.reason, `${path}.reason`),
       };
     case "aborted":
+    case "interrupted":
     case "tool_only_wait":
       return { kind };
     default:

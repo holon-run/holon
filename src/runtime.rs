@@ -4441,6 +4441,7 @@ impl RuntimeHandle {
             }
             (TurnTerminalKind::Completed, Some(TurnNoBriefReason::ToolOnlyWait)) => true,
             (TurnTerminalKind::Aborted, Some(TurnNoBriefReason::Aborted)) => true,
+            (TurnTerminalKind::Interrupted, Some(TurnNoBriefReason::Interrupted)) => true,
             _ => false,
         };
         if has_brief ^ valid_no_brief {

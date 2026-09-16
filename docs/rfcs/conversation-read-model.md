@@ -171,10 +171,13 @@ turn while a WorkItem or background task remains open.
 
 Native records already carry `TurnTerminalKind` and optional
 `TurnNoBriefReason`. The public mapping must handle completed, aborted,
-baseline-budget failure, deferred fallback, and provider-recovery outcomes
-without treating every terminal turn as successful or every recovery as final
-failure of the user's objective. Raw reason strings and checkpoints are not
-public summary fields.
+interrupted, baseline-budget failure, deferred fallback, and provider-recovery
+outcomes without treating every terminal turn as successful or every recovery
+as final failure of the user's objective. An `interrupted` outcome records a
+turn that could not continue across a runtime-process boundary; it is terminal,
+settles result availability with the matching typed no-brief reason, and must
+not remain in the active execution projection. Raw reason strings and
+checkpoints are not public summary fields.
 
 Proposed result states are `pending`, `available`, `none`, and `unavailable`:
 

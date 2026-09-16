@@ -2950,7 +2950,7 @@ export interface components {
                         /** Format: uint64 */
                         duration_ms: number;
                         /** @enum {string} */
-                        kind: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                        kind: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                         last_assistant_message?: string | null;
                         no_brief_reason?: ({
                             /** @constant */
@@ -2959,6 +2959,9 @@ export interface components {
                         } | {
                             /** @constant */
                             kind: "aborted";
+                        } | {
+                            /** @constant */
+                            kind: "interrupted";
                         } | {
                             /** @constant */
                             kind: "tool_only_wait";
@@ -3092,7 +3095,7 @@ export interface components {
                     /** Format: uint64 */
                     duration_ms: number;
                     /** @enum {string} */
-                    kind: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    kind: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                     last_assistant_message?: string | null;
                     no_brief_reason?: ({
                         /** @constant */
@@ -3101,6 +3104,9 @@ export interface components {
                     } | {
                         /** @constant */
                         kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "interrupted";
                     } | {
                         /** @constant */
                         kind: "tool_only_wait";
@@ -3893,7 +3899,7 @@ export interface components {
                     /** @constant */
                     kind: "failed";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 } | {
                     /** @constant */
                     kind: "interrupted";
@@ -3930,7 +3936,7 @@ export interface components {
                     /** @constant */
                     kind: "terminal";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
                     message_id: string;
@@ -3959,6 +3965,9 @@ export interface components {
                     } | {
                         /** @constant */
                         kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "interrupted";
                     } | {
                         /** @constant */
                         kind: "tool_only_wait";
@@ -4100,7 +4109,7 @@ export interface components {
                     /** @constant */
                     kind: "failed";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 } | {
                     /** @constant */
                     kind: "interrupted";
@@ -4137,7 +4146,7 @@ export interface components {
                     /** @constant */
                     kind: "terminal";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
                     message_id: string;
@@ -4166,6 +4175,9 @@ export interface components {
                     } | {
                         /** @constant */
                         kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "interrupted";
                     } | {
                         /** @constant */
                         kind: "tool_only_wait";
@@ -4289,7 +4301,7 @@ export interface components {
                     /** @constant */
                     kind: "failed";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 } | {
                     /** @constant */
                     kind: "interrupted";
@@ -4326,7 +4338,7 @@ export interface components {
                     /** @constant */
                     kind: "terminal";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
                     message_id: string;
@@ -4355,6 +4367,9 @@ export interface components {
                     } | {
                         /** @constant */
                         kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "interrupted";
                     } | {
                         /** @constant */
                         kind: "tool_only_wait";
@@ -4404,7 +4419,7 @@ export interface components {
                     /** @constant */
                     kind: "failed";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 } | {
                     /** @constant */
                     kind: "interrupted";
@@ -4441,7 +4456,7 @@ export interface components {
                     /** @constant */
                     kind: "terminal";
                     /** @enum {string} */
-                    outcome: "completed" | "aborted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
+                    outcome: "completed" | "aborted" | "interrupted" | "baseline_over_budget" | "deferred_to_fallback" | "provider_failed_needs_recovery";
                 };
                 inputs: {
                     message_id: string;
@@ -4470,6 +4485,9 @@ export interface components {
                     } | {
                         /** @constant */
                         kind: "aborted";
+                    } | {
+                        /** @constant */
+                        kind: "interrupted";
                     } | {
                         /** @constant */
                         kind: "tool_only_wait";
