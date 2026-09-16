@@ -1410,6 +1410,186 @@ async fn work_item_wait_for_silent_skips_precommit_message_bookkeeping() {
     run_wait_for_final_report_test(false, Some(true), true).await;
 }
 
+struct PickThenSilentOperatorWaitProvider {
+    calls: Mutex<usize>,
+    target_work_item_id: Arc<std::sync::Mutex<Option<String>>>,
+}
+
+#[async_trait]
+impl AgentProvider for PickThenSilentOperatorWaitProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        assert!(
+            *calls <= 2,
+            "silent operator wait should settle the turn quickly"
+        );
+        if *calls == 1 {
+            let work_item_id = self
+                .target_work_item_id
+                .lock()
+                .expect("target work item lock")
+                .clone()
+                .expect("target work item id must be set before the turn");
+            return Ok(ProviderTurnResponse {
+                blocks: vec![
+                    ModelBlock::Text {
+                        text: "Focusing the WorkItem before waiting.".into(),
+                    },
+                    ModelBlock::ToolUse {
+                        id: "pick-before-silent-wait".into(),
+                        name: "PickWorkItem".into(),
+                        input: serde_json::json!({
+                            "work_item_id": work_item_id,
+                            "reason": "focus the item before waiting for operator input",
+                        }),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    },
+                    ModelBlock::ToolUse {
+                        id: "silent-operator-wait".into(),
+                        name: "WaitFor".into(),
+                        input: serde_json::json!({
+                            "reason": "await the operator decision on the focused item",
+                            "wake": "operator_input",
+                            "delivery": "silent",
+                        }),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    },
+                ],
+                stop_reason: Some("tool_use".into()),
+                input_tokens: 10,
+                output_tokens: 10,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            });
+        }
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "Waiting for the operator decision.".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn work_item_silent_operator_wait_releases_current_focus_at_settlement() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(PickThenSilentOperatorWaitProvider {
+        calls: Mutex::new(0),
+        target_work_item_id: Arc::new(std::sync::Mutex::new(None)),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("silent operator wait focus".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    *provider
+        .target_work_item_id
+        .lock()
+        .expect("target work item lock") = Some(work.id.clone());
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "focus the item and wait silently for operator input".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message.clone()).await.unwrap();
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if !runtime
+                .storage()
+                .active_wait_conditions_for_agent("default")
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!("runtime exited before silent operator wait settlement");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        settled.is_ok(),
+        "timed out waiting for silent wait settlement"
+    );
+    runtime_task.abort();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert!(
+        state.current_work_item_id.is_none(),
+        "served agent state must release current focus after the silent operator wait; got {:?}",
+        state.current_work_item_id
+    );
+    assert!(
+        state.current_turn_work_item_id.is_none(),
+        "served agent state must release the turn work item binding after the wait"
+    );
+    let latest = runtime
+        .inner
+        .runtime_db
+        .agent_states()
+        .latest("default")
+        .unwrap()
+        .expect("durable agent state row");
+    assert!(
+        latest.current_work_item_id.is_none(),
+        "durable agent state must record the focus release; got {:?}",
+        latest.current_work_item_id
+    );
+    let projection = runtime.storage().work_queue_prompt_projection().unwrap();
+    assert!(
+        projection.current.is_none(),
+        "prompt projection must not keep the waiting item current"
+    );
+    let waiting = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap();
+    assert_eq!(waiting.len(), 1);
+    assert_eq!(waiting[0].work_item_id.as_deref(), Some(work.id.as_str()));
+    let events = runtime.storage().read_recent_events(50).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "work_item_focus_released"
+            && event.data["work_item_id"].as_str() == Some(work.id.as_str())
+    }));
+}
+
 #[tokio::test]
 async fn wait_for_final_report_abandonment_leaves_no_partial_wait_or_result_brief() {
     let dir = tempdir().unwrap();

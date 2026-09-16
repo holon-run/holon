@@ -3280,6 +3280,46 @@ def run_workitem_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         f"WorkItem todos do not match the checked-in case: {item}",
     )
     require(
+        state["agent"]["agent"].get("current_turn_work_item_id") is None,
+        "waiting WorkItem should release its turn binding after WaitFor",
+    )
+
+    # The /state projection is served through a short-TTL HTTP cache, and the
+    # atomic wait settlement lands immediately after the turn terminal, so a
+    # snapshot taken in the same instant can predate the settlement. Poll
+    # until the operator wait is observable and current focus is released
+    # before asserting the settled contract.
+    deadline = time.monotonic() + 30.0
+    while True:
+        agent_view = state["agent"]["agent"]
+        waits_settled = any(
+            wait.get("work_item_id") == work_item_id
+            for wait in state.get("waits", [])
+        )
+        if (
+            agent_view.get("current_work_item_id") is None
+            and agent_view.get("current_turn_work_item_id") is None
+            and waits_settled
+        ):
+            break
+        if time.monotonic() >= deadline:
+            write_json(
+                harness.evidence / "workitem-wait-settle-timeout-state.json",
+                state,
+            )
+            require(
+                agent_view.get("current_work_item_id") is None,
+                "waiting WorkItem should release current focus after WaitFor",
+            )
+            require(
+                waits_settled,
+                "WorkItem operator wait did not become observable in agent state",
+            )
+            require(False, "workitem wait settle poll exited unexpectedly")
+        time.sleep(0.5)
+        state = harness.request("GET", harness.agent_path("state"))
+    write_json(harness.evidence / "workitem-wait-settled-state.json", state)
+    require(
         state["agent"]["agent"].get("current_work_item_id") is None,
         "waiting WorkItem should release current focus after WaitFor",
     )
