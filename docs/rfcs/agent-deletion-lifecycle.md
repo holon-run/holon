@@ -30,6 +30,12 @@ columns for queries. Legacy `archived` identity payloads decode as `Deleted`;
 the historical SQLite `archived_at` column remains a compatibility projection
 for the Rust `deleted_at` field.
 
+Database upgrade also canonicalizes every legacy `archived` identity to
+`deleted` and retires its identity reservation in the same transaction,
+including tombstones without a completed deletion job. Verification remains
+alias-aware during compatibility reads, so historical spelling cannot disable
+observer-sync capabilities before the idempotent reconcile completes.
+
 The deletion transaction verifies the current identity revision and then:
 
 1. rejects the configured default agent and identities that are neither public

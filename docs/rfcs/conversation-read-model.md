@@ -220,9 +220,11 @@ means the source remains readable for diagnostics but prevents
 
 Phase 1 replaced these blockers with durable source revisions, canonical turn
 ownership/assignment linkage, atomic source-event coverage, and a recomputed
-`conversation_read_verified` proof. Phase 2 still evaluates that persisted
-proof at request time: route registration and OpenAPI publication alone never
-advertise or serve `agents.conversation-read.v1`.
+`conversation_read_verified` diagnostic. The capability now identifies binary
+protocol support: once schema migration succeeds, the runtime advertises and
+serves `agents.conversation-read.v1` even when historical diagnostic checks
+report projection drift. Migration repairs proven assignment drift, while
+individual reads retain typed failures instead of disabling the whole node.
 
 ## 4. Summary snapshot and history pagination
 
@@ -594,9 +596,9 @@ GUI or forcing a shared external Session model.
 ## 9. Compatibility, rollout, and security
 
 - Preserve `/briefs`, `/events`, `/events/stream`, and existing diagnostic reads.
-- Advertise `agents.conversation-read.v1` only after its durable verification
-  succeeds. Capability absence means the surface is unavailable; route
-  registration or partial source coverage is insufficient.
+- Advertise `agents.conversation-read.v1` whenever the running binary supports
+  the migrated contract. `conversation_read_verified` remains diagnostic and
+  must not act as a node-wide feature flag.
 - Ordinary conversation startup must not also initialize old raw-history
   catch-up/transcript hydration through roster or unread recovery side paths.
 - Keep debug/trace separate. Reuse verbose visibility rules, not arbitrary raw

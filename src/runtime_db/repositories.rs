@@ -5240,13 +5240,52 @@ pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -
         let _ = settle_turn_result_tx(tx, &stored.agent_id, &stored.turn_id, updated_at)?;
     }
     for message_id in &stored.input_message_ids {
-        let assignment_turn_id = stored
+        let existing_assignment = assigned_turn_id_tx(tx, &stored.agent_id, message_id)?;
+        let assignment_turn_id = if let Some(existing_turn_id) = existing_assignment.as_deref() {
+            existing_turn_id
+        } else if let Some(replay) = stored
             .replay
             .as_ref()
             .filter(|replay| replay.source_message_id == *message_id)
-            .map_or(stored.turn_id.as_str(), |replay| {
+        {
+            let source_owns_input = tx.query_row(
+                "SELECT EXISTS(
+                    SELECT 1
+                    FROM turn_records AS source
+                    WHERE source.agent_id = ?1
+                      AND source.turn_id = ?2
+                      AND EXISTS (
+                        SELECT 1
+                        FROM json_each(source.payload_json, '$.input_message_ids') AS input
+                        WHERE input.type = 'text' AND input.value = ?3
+                      )
+                 )",
+                params![stored.agent_id, replay.source_turn_id, message_id],
+                |row| row.get::<_, i64>(0),
+            )? != 0;
+            if source_owns_input {
                 replay.source_turn_id.as_str()
-            });
+            } else {
+                stored.turn_id.as_str()
+            }
+        } else {
+            stored.turn_id.as_str()
+        };
+        let assignment_target_exists = tx.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM turn_records
+                WHERE agent_id = ?1 AND turn_id = ?2
+             )",
+            params![stored.agent_id, assignment_turn_id],
+            |row| row.get::<_, i64>(0),
+        )? != 0;
+        anyhow::ensure!(
+            assignment_target_exists,
+            "conversation input assignment target is not persisted: agent_id={}, message_id={}, turn_id={}",
+            stored.agent_id,
+            message_id,
+            assignment_turn_id
+        );
         let _ = assign_input_to_turn_tx(
             tx,
             &stored.agent_id,

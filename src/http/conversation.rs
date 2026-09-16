@@ -217,9 +217,6 @@ pub async fn stream(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
-    if !conversation_capability_available(&state) {
-        return capability_unavailable().into_response();
-    }
     let header_cursor = match headers.get("last-event-id") {
         Some(value) => match value.to_str() {
             Ok(value) if !value.is_empty() => Some(value.to_string()),
@@ -596,9 +593,6 @@ pub async fn summary(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
-    if !conversation_capability_available(&state) {
-        return capability_unavailable().into_response();
-    }
     let limits = state.conversation_read_limits.clone();
     let limit = query.limit.unwrap_or(CONVERSATION_SUMMARY_DEFAULT_LIMIT);
     let before = query.before;
@@ -657,9 +651,6 @@ pub async fn activities(
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
-    }
-    if !conversation_capability_available(&state) {
-        return capability_unavailable().into_response();
     }
     let limits = state.conversation_read_limits.clone();
     let limit = query.limit.unwrap_or(CONVERSATION_ACTIVITY_DEFAULT_LIMIT);
@@ -843,25 +834,6 @@ fn activity_response(
         next_before_cursor: snapshot.next_before_cursor,
         has_more: page.has_more,
     })
-}
-
-fn conversation_capability_available(state: &AppState) -> bool {
-    advertised_observer_sync_capabilities(&load_observer_sync_verification(state))
-        .contains(&observer_sync::CONVERSATION_READ_CAPABILITY)
-}
-
-fn capability_unavailable() -> (StatusCode, Json<Value>) {
-    crate::diagnostics::record_conversation_capability_unavailable();
-    http_error(
-        StatusCode::SERVICE_UNAVAILABLE,
-        HttpErrorEnvelope::new(
-            "the agents.conversation-read.v1 capability is not verified for this database",
-        )
-        .code("capability_unavailable")
-        .hint(
-            "see the handshake capabilities; route registration alone never serves this contract",
-        ),
-    )
 }
 
 fn agent_not_found() -> (StatusCode, Json<Value>) {
@@ -1544,7 +1516,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conversation_routes_authorize_and_gate_capability() {
+    async fn conversation_routes_authorize_without_diagnostic_gate() {
         let (_home, host) = test_host().await;
         let mut state = AppState::for_tcp(host.clone());
         state.require_control_token = true;
@@ -1573,8 +1545,7 @@ mod tests {
             .unwrap();
         let (status, body) =
             get_json(AppState::for_tcp(host), "/api/agents/web/conversation").await;
-        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body["code"], "capability_unavailable");
+        assert_eq!(status, StatusCode::OK, "{body}");
     }
 
     #[tokio::test]
