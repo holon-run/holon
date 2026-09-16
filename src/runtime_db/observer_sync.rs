@@ -1379,6 +1379,12 @@ impl crate::runtime_db::RuntimeDb {
                          after the database converged"
                     );
                 }
+                if healed.runtime_identity_stable && !foundations.runtime_identity_stable {
+                    tracing::info!(
+                        "observer-sync runtime-identity-stable verification self-healed \
+                         after the database converged"
+                    );
+                }
                 Ok(healed)
             }
             Err(error) => {
