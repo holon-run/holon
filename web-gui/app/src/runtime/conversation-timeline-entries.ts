@@ -4,13 +4,23 @@ export type ConversationTimelineEntry =
   | { kind: "input"; id: string; input: TurnInputSummary }
   | { kind: "activity"; id: string; activity: ConversationActivity };
 
+export function operatorActivityIsRepresented(
+  activity: ConversationActivity,
+  inputs: readonly TurnInputSummary[],
+): boolean {
+  return activity.kind === "operator" && inputs.some((input) =>
+    input.activity_key?.event_seq === activity.key.event_seq
+    && input.activity_key.activity_id === activity.key.activity_id
+  );
+}
+
 /** Input keys and activity keys share the server's durable sequence, not timestamps. */
 export function conversationTimelineEntries(
   inputs: readonly TurnInputSummary[], activities: readonly ConversationActivity[],
 ): ConversationTimelineEntry[] {
   const entries: ConversationTimelineEntry[] = [
     ...inputs.map((input): ConversationTimelineEntry => ({ kind: "input", id: input.message_id, input })),
-    ...activities.filter((activity) => activity.kind !== "operator")
+    ...activities.filter((activity) => !operatorActivityIsRepresented(activity, inputs))
       .map((activity): ConversationTimelineEntry => ({ kind: "activity", id: activity.id, activity })),
   ];
   const key = (entry: ConversationTimelineEntry) => entry.kind === "input" ? entry.input.activity_key : entry.activity.key;

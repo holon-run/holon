@@ -1,4 +1,7 @@
-import { conversationTimelineEntries } from "../../runtime/conversation-timeline-entries";
+import {
+  conversationTimelineEntries,
+  operatorActivityIsRepresented,
+} from "../../runtime/conversation-timeline-entries";
 import { inputInspectorActivity, inputPresentation } from "../../runtime/conversation-input";
 import { TurnElapsedTime } from "./TurnElapsedTime";
 import {
@@ -442,13 +445,16 @@ function ConversationDetailPanel({
   const { t } = useTranslation();
   const detail = turn.detail;
   const [showEarlier, setShowEarlier] = useState(false);
-  const inputRow = (input: TurnInputSummary) => (
-    <li className="conversation-interjection" key={input.message_id}>
-      {(input.presentation_class ?? "operator") === "operator"
-        ? <ConversationInputLine input={input} />
-        : <ConversationEventInput input={input} source={input.presentation_class!} onInspectActivity={actions.onInspectActivity} />}
-    </li>
-  );
+  const inputRow = (input: TurnInputSummary) => {
+    const source = input.presentation_class ?? "operator";
+    return (
+      <li className="conversation-interjection" key={input.message_id}>
+        {source === "operator"
+          ? <ConversationInputLine input={input} />
+          : <ConversationEventInput input={input} source={source} onInspectActivity={actions.onInspectActivity} />}
+      </li>
+    );
+  };
   if (detail === null) {
     return <div className="conversation-detail">
       {expanded ? detailState.kind === "error" ? (
@@ -467,6 +473,7 @@ function ConversationDetailPanel({
       return brief ? [brief.text] : [];
     }),
     turn.execution.kind === "terminal",
+    inputs,
   );
   const onlyResult = activities.length === 0 && detail.activities.some((activity) =>
     activity.kind === "assistant" && summarizeActivity(activity).display.trim().length > 0)
@@ -522,8 +529,9 @@ export function executionProcessActivities(
   activities: readonly ConversationActivity[],
   readableBriefs: readonly string[],
   terminal: boolean,
+  inputs: readonly TurnInputSummary[] = [],
 ): readonly ConversationActivity[] {
-  const process = activities.filter((activity) => activity.kind !== "operator"
+  const process = activities.filter((activity) => !operatorActivityIsRepresented(activity, inputs)
     && (activity.kind !== "assistant" || summarizeActivity(activity).display.trim().length > 0));
   if (!terminal || readableBriefs.length === 0) return process;
   // Keep Markdown/code whitespace intact; only normalize line endings and outer space.
