@@ -7,8 +7,11 @@ import type {
 
 import {
   acquireConversationScope,
+  CONVERSATION_SCOPE_KEEP_ALIVE,
   activeConversationScopeCount,
   conversationScopeKey,
+  disposeAllConversationScopes,
+  idleConversationScopeCount,
   peekConversationScope,
   releaseConversationScope,
   useConversationScopeStore,
@@ -130,13 +133,11 @@ async function waitFor(predicate: () => boolean, timeoutMs = 2_000) {
 const sleep = async () => {};
 
 afterEach(() => {
-  for (const key of Object.keys(useConversationScopeStore.getState().scopes)) {
-    releaseConversationScope(key);
-  }
+  disposeAllConversationScopes();
 });
 
 describe("conversation scope store", () => {
-  it("shares one controller per scope key and disposes on last release", async () => {
+  it("shares one controller per scope key and keeps it alive after last release", async () => {
     const { client, calls } = fakeClient();
     const key = conversationScopeKey("local", "web");
     const first = acquireConversationScope({
@@ -160,11 +161,23 @@ describe("conversation scope store", () => {
     expect(peekConversationScope(key)).not.toBeNull();
 
     releaseConversationScope(key);
+    // Last release keeps the scope idle (stream attached) instead of disposing.
     expect(peekConversationScope(key)).not.toBeNull();
     releaseConversationScope(key);
-    expect(peekConversationScope(key)).toBeNull();
-    expect(activeConversationScopeCount()).toBe(0);
-    expect(useConversationScopeStore.getState().scopes[key]).toBeUndefined();
+    expect(peekConversationScope(key)).not.toBeNull();
+    expect(idleConversationScopeCount()).toBe(1);
+
+    const third = acquireConversationScope({
+      key,
+      agentId: "web",
+      baseUrl: "http://fake.local/api",
+      clientFactory: () => client,
+      controllerOptions: { sleep, random: () => 0.5 },
+    });
+    expect(third.controller).toBe(first.controller);
+    expect(calls.capability).toBe(1);
+    expect(calls.summary).toBe(1);
+    expect(idleConversationScopeCount()).toBe(0);
   });
 
   it("publishes view snapshots into the mirror store", async () => {
@@ -207,6 +220,81 @@ describe("conversation scope store", () => {
     expect(activeConversationScopeCount()).toBe(2);
     releaseConversationScope(keyA);
     releaseConversationScope(keyB);
+    expect(idleConversationScopeCount()).toBe(2);
+  });
+
+  it("evicts idle scopes in LRU order beyond the keep-alive budget", async () => {
+    const scopes = ["a", "b", "c", "d"].map((agent) => {
+      const fake = fakeClient();
+      return {
+        agent,
+        fake,
+        key: conversationScopeKey("local", agent),
+        handle: acquireConversationScope({
+          key: conversationScopeKey("local", agent),
+          agentId: agent,
+          baseUrl: "http://fake.local/api",
+          clientFactory: () => fake.client,
+          controllerOptions: { sleep, random: () => 0.5 },
+        }),
+      };
+    });
+    await waitFor(() => scopes.every(({ handle }) => handle.controller.status.kind === "ready"));
+    for (const { key } of scopes) {
+      releaseConversationScope(key);
+    }
+    expect(idleConversationScopeCount()).toBe(CONVERSATION_SCOPE_KEEP_ALIVE);
+    // "a" was released first and is the LRU victim.
+    expect(peekConversationScope(scopes[0].key)).toBeNull();
+    expect(useConversationScopeStore.getState().scopes[scopes[0].key]).toBeUndefined();
+    for (const scope of scopes.slice(1)) {
+      expect(peekConversationScope(scope.key)).not.toBeNull();
+    }
+
+    // Reacquiring a kept-alive scope reuses the controller without refetching.
+    const reused = acquireConversationScope({
+      key: scopes[1].key,
+      agentId: scopes[1].agent,
+      baseUrl: "http://fake.local/api",
+      clientFactory: () => scopes[1].fake.client,
+      controllerOptions: { sleep, random: () => 0.5 },
+    });
+    expect(reused.controller).toBe(scopes[1].handle.controller);
+    expect(scopes[1].fake.calls.summary).toBe(1);
+    expect(idleConversationScopeCount()).toBe(2);
+  });
+
+  it("restarts a kept-alive controller that died while idle", async () => {
+    const { client, calls } = fakeClient();
+    let capabilityAttempts = 0;
+    (client as { requireCapability: () => Promise<unknown> }).requireCapability =
+      async () => {
+        capabilityAttempts += 1;
+        if (capabilityAttempts === 1) {
+          throw new (class CapabilityError extends Error {})();
+        }
+        return { ok: true };
+      };
+    const key = conversationScopeKey("local", "web");
+    const first = acquireConversationScope({
+      key,
+      agentId: "web",
+      baseUrl: "http://fake.local/api",
+      clientFactory: () => client,
+      controllerOptions: { sleep, random: () => 0.5 },
+    });
+    await waitFor(() => first.controller.status.kind === "terminal_error");
+    releaseConversationScope(key);
+    const second = acquireConversationScope({
+      key,
+      agentId: "web",
+      baseUrl: "http://fake.local/api",
+      clientFactory: () => client,
+      controllerOptions: { sleep, random: () => 0.5 },
+    });
+    expect(second.controller).toBe(first.controller);
+    await waitFor(() => second.controller.status.kind === "ready");
+    expect(capabilityAttempts).toBeGreaterThanOrEqual(2);
   });
 });
 

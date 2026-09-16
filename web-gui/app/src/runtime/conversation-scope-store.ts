@@ -81,6 +81,16 @@ interface RegistryEntry {
 
 const registry = new Map<ConversationScopeKey, RegistryEntry>();
 
+/**
+ * How many released (idle) scopes keep their controller and stream alive for
+ * instant switching back. Bounded so daemon-side concurrent SSE connections
+ * stay predictable.
+ */
+export const CONVERSATION_SCOPE_KEEP_ALIVE = 3;
+
+// Least-recently-released idle scope first; active scopes are absent.
+const idleOrder: ConversationScopeKey[] = [];
+
 export type ConversationClientFactory = (
   connection: ConversationConnectionOptions,
 ) => ConversationClientLike;
@@ -109,15 +119,21 @@ export interface AcquireConversationScopeOptions
 /**
  * Acquire (or attach to) the conversation controller for one
  * connection+agent scope. The controller starts immediately; callers release
- * it when their React surface unmounts, which disposes the controller once
- * the last holder is gone.
+ * it when their React surface unmounts. Recently released scopes stay alive
+ * (stream attached) up to `CONVERSATION_SCOPE_KEEP_ALIVE`; older idle scopes
+ * are disposed in LRU order.
  */
 export function acquireConversationScope(
   options: AcquireConversationScopeOptions,
 ): ConversationScopeHandle {
   const existing = registry.get(options.key);
   if (existing !== undefined) {
+    const wasIdle = existing.refCount === 0;
     existing.refCount += 1;
+    if (wasIdle) {
+      removeFromIdleOrder(options.key);
+      restartIdleScopeIfNeeded(existing.controller);
+    }
     return { key: options.key, controller: existing.controller };
   }
   const factory = options.clientFactory ?? defaultClientFactory;
@@ -137,14 +153,59 @@ export function acquireConversationScope(
   });
   publishScopeSnapshot(options.key, controller);
   controller.start();
+  evictIdleScopes();
   return { key: options.key, controller };
 }
 
+/** Drop one holder; the last release makes the scope idle but kept alive. */
 export function releaseConversationScope(key: ConversationScopeKey): void {
   const entry = registry.get(key);
   if (entry === undefined) return;
   entry.refCount -= 1;
   if (entry.refCount > 0) return;
+  entry.refCount = 0;
+  idleOrder.push(key);
+  evictIdleScopes();
+}
+
+export function peekConversationScope(
+  key: ConversationScopeKey,
+): ConversationController | null {
+  return registry.get(key)?.controller ?? null;
+}
+
+/** Registered scope count, including idle keep-alive scopes. */
+export function activeConversationScopeCount(): number {
+  return registry.size;
+}
+
+/** Idle (released but kept alive) scope count. */
+export function idleConversationScopeCount(): number {
+  return idleOrder.length;
+}
+
+/** Dispose every registered scope, including idle keep-alive entries. */
+export function disposeAllConversationScopes(): void {
+  for (const key of [...registry.keys()]) {
+    const entry = registry.get(key);
+    if (entry !== undefined) {
+      disposeScope(key, entry);
+    }
+  }
+  idleOrder.length = 0;
+}
+
+function evictIdleScopes(): void {
+  while (idleOrder.length > CONVERSATION_SCOPE_KEEP_ALIVE) {
+    const key = idleOrder.shift();
+    if (key === undefined) break;
+    const entry = registry.get(key);
+    if (entry === undefined || entry.refCount !== 0) continue;
+    disposeScope(key, entry);
+  }
+}
+
+function disposeScope(key: ConversationScopeKey, entry: RegistryEntry): void {
   registry.delete(key);
   entry.unsubscribe();
   entry.controller.dispose();
@@ -156,14 +217,28 @@ export function releaseConversationScope(key: ConversationScopeKey): void {
   });
 }
 
-export function peekConversationScope(
-  key: ConversationScopeKey,
-): ConversationController | null {
-  return registry.get(key)?.controller ?? null;
+function removeFromIdleOrder(key: ConversationScopeKey): void {
+  const index = idleOrder.indexOf(key);
+  if (index !== -1) {
+    idleOrder.splice(index, 1);
+  }
 }
 
-export function activeConversationScopeCount(): number {
-  return registry.size;
+// A kept-alive controller may have ended in a terminal state while idle;
+// remounting the surface should restart it like a freshly created scope.
+function restartIdleScopeIfNeeded(controller: ConversationController): void {
+  const kind = controller.status.kind;
+  if (
+    kind === "terminal_error" ||
+    kind === "recoverable_error" ||
+    kind === "unsupported"
+  ) {
+    try {
+      controller.retry();
+    } catch {
+      // Disposed concurrently; the acquire path will not observe it.
+    }
+  }
 }
 
 function publishScopeSnapshot(
