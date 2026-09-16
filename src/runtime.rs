@@ -55,7 +55,10 @@ pub use tasks::{
     PickedWorkItem, WorkItemContinuationSummary, WorkItemFocusTransition,
     WorkItemFocusTransitionWarning,
 };
-pub(crate) use waiting::{WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind};
+pub(crate) use waiting::{
+    PrepareWaitForOutcome, PreparedWaitForSettlement, WaitForRegistrationOutcome, WaitForScope,
+    WaitForWakeKind,
+};
 pub(crate) use worktree::format_worktree_task_summary;
 
 #[cfg(test)]
@@ -4549,6 +4552,12 @@ impl RuntimeHandle {
         }
         let prepared_completion = terminal_transition
             .and_then(|transition| transition.prepared_work_item_completion.as_ref());
+        let prepared_wait =
+            terminal_transition.and_then(|transition| transition.prepared_wait_for.as_ref());
+        anyhow::ensure!(
+            prepared_completion.is_none() || prepared_wait.is_none(),
+            "terminal settlement cannot complete a WorkItem and register WaitFor together"
+        );
         let task_result_settlement = if terminal_transition
             .is_some_and(|transition| !transition.terminal.kind.is_failure())
         {
@@ -4584,6 +4593,8 @@ impl RuntimeHandle {
                     .expect("prepared completion requires a terminal Turn"),
                 prepared,
             )?
+        } else if let Some(prepared) = prepared_wait {
+            prepared.execution_protocol.clone()
         } else {
             execution_protocol_settlement_transition_from_facts(
                 &self.inner.storage,
@@ -4657,6 +4668,11 @@ impl RuntimeHandle {
                         .into_iter()
                         .map(|prepared| prepared.brief.clone()),
                 )
+                .chain(
+                    prepared_wait
+                        .into_iter()
+                        .filter_map(|prepared| prepared.brief.clone()),
+                )
                 .collect(),
         };
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
@@ -4665,6 +4681,13 @@ impl RuntimeHandle {
                 let guard = self.inner.agent.lock().await;
                 let mut state = if let Some(prepared) = prepared_completion {
                     rebase_prepared_completion_agent_state(prepared, &guard.last_persisted_state)?
+                } else if let Some(prepared) = prepared_wait {
+                    prepared
+                        .command
+                        .agent_state
+                        .as_ref()
+                        .map(|mutation| mutation.record.as_ref().clone())
+                        .unwrap_or_else(|| guard.state.clone())
                 } else {
                     committed_agent_state
                         .clone()
@@ -4697,6 +4720,11 @@ impl RuntimeHandle {
             if let Some(prepared) = prepared_completion {
                 command.audit_events.extend(prepared.audit_events.clone());
             }
+            if let Some(prepared) = prepared_wait {
+                command
+                    .audit_events
+                    .extend(prepared.command.audit_events.clone());
+            }
             command.fault = self.take_transition_fault();
             let commit = if let Some(prepared) = prepared_completion {
                 let tool_execution = prepared.tool_execution.clone().ok_or_else(|| {
@@ -4722,6 +4750,29 @@ impl RuntimeHandle {
                     &[],
                     task_result_settlement.as_ref(),
                 )
+            } else if let Some(prepared) = prepared_wait {
+                let terminal_tool_executions = prepared
+                    .tool_execution
+                    .as_ref()
+                    .into_iter()
+                    .chain(
+                        terminal_transition
+                            .into_iter()
+                            .flat_map(|transition| &transition.terminal_tool_executions),
+                    )
+                    .cloned()
+                    .collect::<Vec<_>>();
+                self.inner
+                    .runtime_db
+                    .transitions()
+                    .commit_queue_terminal_with_wait(
+                        &command,
+                        &execution_protocol,
+                        &prepared.command,
+                        prepared.expected_task.as_ref(),
+                        &terminal_tool_executions,
+                        task_result_settlement.as_ref(),
+                    )
             } else if terminal_transition
                 .is_some_and(|transition| !transition.terminal_tool_executions.is_empty())
             {
@@ -5188,6 +5239,7 @@ impl RuntimeHandle {
                         terminal,
                         turn_record,
                         prepared_work_item_completion: None,
+                        prepared_wait_for: None,
                         terminal_tool_executions: Vec::new(),
                     };
                     let committed_state = {

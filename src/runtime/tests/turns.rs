@@ -33,6 +33,7 @@ fn terminal_settlement_transition(
         terminal,
         turn_record,
         prepared_work_item_completion: None,
+        prepared_wait_for: None,
         terminal_tool_executions: Vec::new(),
     }
 }
@@ -138,6 +139,162 @@ fn terminal_settlement_rejects_missing_or_ambiguous_settlement_with_diagnostic()
     assert_eq!(
         diagnostics[2].data["failure"],
         "terminal_missing_brief_settlement"
+    );
+}
+
+#[tokio::test]
+async fn atomic_wait_rolls_back_wait_tool_turn_and_queue_on_transition_failure() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "prepare an atomic silent wait".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let (mut result, mut tool_execution) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "atomic-wait".into(),
+                name: "WaitFor".into(),
+                input: serde_json::json!({
+                    "wake": "external",
+                    "delivery": "silent",
+                    "resource": "github:holon-run/holon#atomic-wait",
+                    "reason": "verify atomic rollback"
+                }),
+            },
+        )
+        .await
+        .unwrap();
+    let state = runtime.agent_state().await.unwrap();
+    tool_execution.turn_index = state.turn_index;
+    tool_execution.turn_id = state.current_turn_id.clone();
+    let mut prepared = result
+        .prepared_wait_for
+        .take()
+        .expect("silent WaitFor should prepare canonical settlement");
+    prepared.tool_execution = Some(tool_execution.clone());
+    let terminal = TurnTerminalRecord {
+        turn_id: state.current_turn_id.clone().unwrap(),
+        turn_index: state.turn_index,
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        last_assistant_message: None,
+        no_brief_reason: Some(TurnNoBriefReason::ToolOnlyWait),
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    };
+    let mut turn_record = runtime.build_turn_record(&terminal).await.unwrap();
+    turn_record
+        .waiting_condition_ids
+        .push(prepared.registration.condition.id.clone());
+    turn_record
+        .tool_execution_ids
+        .push(tool_execution.id.clone());
+    turn_record.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(&terminal));
+    let transition = turn::TurnTerminalTransition {
+        terminal,
+        turn_record,
+        prepared_work_item_completion: None,
+        prepared_wait_for: Some(prepared),
+        terminal_tool_executions: Vec::new(),
+    };
+
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterCanonicalWrites,
+    );
+    let error = runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: message.agent_id.clone(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&transition),
+        )
+        .await
+        .expect_err("injected transition fault should fail atomic WaitFor settlement");
+    assert_injected_transition_fault(&error);
+
+    assert!(runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap()
+        .is_empty());
+    assert!(runtime
+        .storage()
+        .read_recent_tool_executions(10)
+        .unwrap()
+        .iter()
+        .all(|record| record.id != tool_execution.id));
+    let persisted_turn = runtime
+        .storage()
+        .read_recent_turns(10)
+        .unwrap()
+        .iter()
+        .find(|record| record.turn_id == transition.terminal.turn_id)
+        .cloned()
+        .expect("turn start record should remain after rollback");
+    assert!(persisted_turn.terminal.is_none());
+    assert!(persisted_turn.waiting_condition_ids.is_empty());
+    assert!(!persisted_turn
+        .tool_execution_ids
+        .contains(&tool_execution.id));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Dequeued
     );
 }
 
@@ -720,23 +877,52 @@ async fn wait_for_only_tool_round_completes_without_extra_provider_turn() {
     )
     .unwrap();
 
-    let outcome = runtime
-        .run_agent_loop(
-            "default",
-            AuthorityClass::OperatorInstruction,
-            test_effective_prompt(),
-            LoopControlOptions {
-                max_tool_rounds: None,
-            },
-        )
-        .await
-        .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "wait for PR checks".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if !runtime
+                .storage()
+                .active_wait_conditions_for_agent("default")
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before WaitFor settlement: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for canonical WaitFor settlement");
+    runtime_task.abort();
 
     assert_eq!(*provider.calls.lock().await, 1);
-    assert_eq!(outcome.terminal_kind, TurnTerminalKind::Completed);
-    assert!(outcome.final_text.is_empty());
-    assert!(outcome.should_sleep);
-    assert_eq!(outcome.sleep_duration_ms, None);
 
     let waiting = runtime
         .storage()
@@ -761,6 +947,214 @@ async fn wait_for_only_tool_round_completes_without_extra_provider_turn() {
             .and_then(|terminal| terminal.no_brief_reason.as_ref()),
         Some(&TurnNoBriefReason::ToolOnlyWait)
     );
+}
+
+async fn run_wait_for_final_report_test(corrective_tool_round: bool) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(WaitForFinalReportProvider {
+        calls: Mutex::new(0),
+        corrective_tool_round,
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        ContextConfig {
+            prompt_budget_estimated_tokens: 32768,
+            turn_projection_budget_ratio: 1.0,
+            compaction_keep_recent_estimated_tokens: 2048,
+            ..context_config()
+        },
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "wait with a final report".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message.clone()).await.unwrap();
+    let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if !runtime
+                .storage()
+                .active_wait_conditions_for_agent("default")
+                .unwrap()
+                .is_empty()
+            {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before final WaitFor settlement: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if settled.is_err() {
+        panic!(
+            "timed out waiting for final WaitFor settlement; calls={}; state={:#?}; events={:#?}",
+            provider.call_count().await,
+            runtime.agent_state().await.unwrap(),
+            runtime.storage().read_recent_events(50).unwrap()
+        );
+    }
+    runtime_task.abort();
+
+    assert_eq!(
+        provider.call_count().await,
+        if corrective_tool_round { 3 } else { 2 }
+    );
+    let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+    let brief = briefs
+        .iter()
+        .find(|brief| {
+            brief.kind == BriefKind::Result
+                && brief.text == "Waiting for final verification; I will resume when it changes."
+        })
+        .expect("final WaitFor should atomically publish its result brief");
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    let wait_tool = tools
+        .iter()
+        .find(|tool| tool.tool_name == "WaitFor")
+        .expect("final WaitFor should atomically persist successful tool evidence");
+    assert_eq!(wait_tool.status, crate::types::ToolExecutionStatus::Success);
+    assert!(
+        tools.iter().all(|tool| tool.tool_name != "GetAgent"),
+        "the corrective report round must not execute extra tools"
+    );
+    let turn = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("final WaitFor terminal turn");
+    assert!(turn.produced_brief_ids.contains(&brief.id));
+    assert!(turn.tool_execution_ids.contains(&wait_tool.id));
+    assert_eq!(turn.waiting_condition_ids.len(), 1);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .expect("queue entry")
+            .status,
+        QueueEntryStatus::Processed
+    );
+}
+
+#[tokio::test]
+async fn wait_for_final_report_commits_brief_wait_tool_and_turn_atomically() {
+    run_wait_for_final_report_test(false).await;
+}
+
+#[tokio::test]
+async fn wait_for_final_report_corrects_extra_tool_once_without_executing_it() {
+    run_wait_for_final_report_test(true).await;
+}
+
+#[tokio::test]
+async fn wait_for_final_report_abandonment_leaves_no_partial_wait_or_result_brief() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(AbandonWaitForFinalReportProvider {
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        ContextConfig {
+            prompt_budget_estimated_tokens: 32768,
+            turn_projection_budget_ratio: 1.0,
+            compaction_keep_recent_estimated_tokens: 2048,
+            ..context_config()
+        },
+    )
+    .unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "attempt a final wait report".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message).await.unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let state = runtime.agent_state().await.unwrap();
+            if *provider.calls.lock().await >= 3 && state.current_run_id.is_none() {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before abandoned WaitFor recovery: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed out waiting for abandoned WaitFor recovery");
+    runtime_task.abort();
+
+    assert!(runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap()
+        .is_empty());
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0].tool_name, "WaitFor");
+    assert_eq!(
+        tools[0].status,
+        crate::types::ToolExecutionStatus::Interrupted
+    );
+    let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+    assert!(briefs.iter().any(|brief| brief.kind == BriefKind::Failure));
+    assert!(briefs.iter().all(|brief| brief.kind != BriefKind::Result));
 }
 
 #[tokio::test]

@@ -131,6 +131,7 @@ pub(crate) fn terminal_transition(
         terminal,
         turn_record,
         prepared_work_item_completion: None,
+        prepared_wait_for: None,
         terminal_tool_executions: Vec::new(),
     }
 }
@@ -565,6 +566,21 @@ impl WaitForOnlyToolProvider {
     pub(crate) async fn call_count(&self) -> usize {
         *self.calls.lock().await
     }
+}
+
+pub(crate) struct WaitForFinalReportProvider {
+    pub(crate) calls: Mutex<usize>,
+    pub(crate) corrective_tool_round: bool,
+}
+
+impl WaitForFinalReportProvider {
+    pub(crate) async fn call_count(&self) -> usize {
+        *self.calls.lock().await
+    }
+}
+
+pub(crate) struct AbandonWaitForFinalReportProvider {
+    pub(crate) calls: Mutex<usize>,
 }
 
 pub(crate) struct DisallowedToolThenTextProvider {
@@ -1018,6 +1034,83 @@ impl AgentProvider for WaitForOnlyToolProvider {
             stop_reason: None,
             input_tokens: 10,
             output_tokens: 5,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for WaitForFinalReportProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = match *calls {
+            1 => vec![ModelBlock::ToolUse {
+                id: "wait-for-final".into(),
+                name: "WaitFor".into(),
+                input: serde_json::json!({
+                    "reason": "waiting for final verification",
+                    "wake": "external",
+                    "delivery": "final",
+                    "resource": "github:holon-run/holon#wait-final"
+                }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }],
+            2 if self.corrective_tool_round => vec![ModelBlock::ToolUse {
+                id: "forbidden-follow-up-tool".into(),
+                name: "GetAgent".into(),
+                input: serde_json::json!({}),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }],
+            2 | 3 => vec![ModelBlock::Text {
+                text: "Waiting for final verification; I will resume when it changes.".into(),
+            }],
+            _ => anyhow::bail!("unexpected WaitFor final report provider call"),
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for AbandonWaitForFinalReportProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = if *calls == 1 {
+            vec![ModelBlock::ToolUse {
+                id: "wait-for-abandoned-final".into(),
+                name: "WaitFor".into(),
+                input: serde_json::json!({
+                    "reason": "waiting for abandoned final report",
+                    "wake": "external",
+                    "delivery": "final",
+                    "resource": "github:holon-run/holon#wait-abandoned"
+                }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }]
+        } else {
+            Vec::new()
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 1,
             cache_usage: None,
             provider_message_id: None,
             provider_request_id: None,

@@ -7093,6 +7093,24 @@ async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick()
     assert!(state.current_turn_work_item_id.is_none());
 }
 
+async fn commit_prepared_wait_for(runtime: &RuntimeHandle, result: &crate::tool::ToolResult) {
+    let prepared = result
+        .prepared_wait_for
+        .as_ref()
+        .expect("WaitFor should prepare canonical settlement");
+    let commit = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_wait_with_execution_protocol_and_task_expectation(
+            &prepared.command,
+            &prepared.execution_protocol,
+            prepared.expected_task.as_ref(),
+        )
+        .unwrap();
+    runtime.apply_transition_commit(commit).await;
+}
+
 #[tokio::test]
 async fn wait_for_tool_result_keeps_blocked_focus_current() {
     let dir = tempdir().unwrap();
@@ -7134,6 +7152,7 @@ async fn wait_for_tool_result_keeps_blocked_focus_current() {
         .await
         .unwrap();
 
+    commit_prepared_wait_for(&runtime, &result).await;
     let payload = result.envelope.result.unwrap();
     assert_eq!(payload["work_item"]["readiness"].as_str(), Some("blocked"));
     assert_eq!(payload["work_item"]["is_current"].as_bool(), Some(true));
@@ -7210,6 +7229,7 @@ async fn wait_for_falls_back_to_current_focus_for_lifecycle_execution() {
         .await
         .unwrap();
 
+    commit_prepared_wait_for(&runtime, &result).await;
     let payload = result.envelope.result.unwrap();
     assert_eq!(payload["scope"].as_str(), Some("work_item"));
     assert_eq!(payload["owner"]["kind"].as_str(), Some("work_item"));
@@ -7278,6 +7298,7 @@ async fn wait_for_uses_lifecycle_owner_without_any_work_item_binding_or_focus() 
         .await
         .unwrap();
 
+    commit_prepared_wait_for(&runtime, &result).await;
     let payload = result.envelope.result.unwrap();
     assert_eq!(payload["scope"].as_str(), Some("agent"));
     assert_eq!(payload["owner"]["kind"].as_str(), Some("agent_lifecycle"));
@@ -7337,6 +7358,7 @@ async fn wait_for_tool_uses_bound_turn_work_item_without_durable_focus() {
         .await
         .unwrap();
 
+    commit_prepared_wait_for(&runtime, &result).await;
     let payload = result.envelope.result.unwrap();
     assert_eq!(payload["scope"].as_str(), Some("work_item"));
     assert_eq!(payload["work_item_id"].as_str(), Some(work.id.as_str()));

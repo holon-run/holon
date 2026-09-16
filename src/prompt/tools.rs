@@ -697,6 +697,9 @@ mod tests {
         assert!(section.content.contains("`wake=external`"));
         assert!(section.content.contains("`wake=operator_input`"));
         assert!(section.content.contains("`recheck_after_ms`"));
+        assert!(section.content.contains("`delivery=final`"));
+        assert!(section.content.contains("`delivery=silent`"));
+        assert!(section.content.contains("commits the selected delivery"));
         assert!(section
             .content
             .contains("explicit owned open `work_item_id`"));

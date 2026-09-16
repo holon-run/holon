@@ -267,7 +267,8 @@ Completed WorkItems do not participate in scheduling.
 ```text
 WaitFor {
   reason: String
-  wake: operator_input | task_result | external
+  wake: operator_input | task_result | external | timer | system
+  delivery: final | silent
   work_item_id: Option<String>
   resource: Option<String>
   recheck_after_ms: Option<u64>
@@ -277,9 +278,14 @@ WaitFor {
 Rules:
 
 - `reason` is required and must be non-empty.
-- `reason` is scheduling metadata, not operator-facing assistant text. A
-  tool-only `WaitFor` turn does not promote it into a result brief; waiting
-  state remains authoritative in the wait condition and WorkItem projection.
+- `delivery` is required. `final` defers registration until the model produces
+  one non-empty operator-facing assistant final; the follow-up accepts text
+  only, with at most one corrective retry for empty text or an extra tool call.
+  `silent` performs no follow-up model round and records typed no-brief
+  settlement.
+- `reason` is scheduling metadata, not operator-facing assistant text.
+  `delivery=silent` never promotes it into a result brief; waiting state remains
+  authoritative in the wait condition and WorkItem projection.
 - `wake=task_result` requires `resource=<task_id>`.
 - `wake=external` may include `resource=<stable external object>`, such as a
   URL or `github:holon-run/holon#1435`; omitting `resource` means any external
@@ -292,6 +298,15 @@ Rules:
 - otherwise the current activation's authoritative WorkItem binding wins,
   followed by current turn binding and durable focus;
 - if none exists, the wait is owned by `AgentLifecycle(agent_id)`.
+
+The tool request prepares rather than commits the wait. The canonical queue
+terminal transaction revalidates task state, execution binding, WorkItem
+revision, timer/wake claims, and delivery state, then commits the result brief
+or typed no-brief reason, wait records, WorkItem changes, successful tool
+evidence, execution protocol, Turn terminal, and queue terminal together. If a
+wake, task completion, interjection, cancellation, or provider failure
+invalidates that preparation, the runtime must not publish an obsolete
+"still waiting" brief or leave a partially registered wait.
 
 WorkItem-scoped `WaitFor` replaces active waits on that WorkItem, writes
 `blocked_by=reason` for display, writes `recheck_at` only when

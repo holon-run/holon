@@ -85,6 +85,8 @@ pub struct ToolResult {
     pub(crate) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
     #[serde(skip)]
+    pub(crate) prepared_wait_for: Option<Box<crate::runtime::PreparedWaitForSettlement>>,
+    #[serde(skip)]
     pub(crate) loop_directive: Option<ToolLoopDirective>,
 }
 
@@ -127,6 +129,7 @@ impl ToolResult {
             terminal_transition: false,
             sleep_duration_ms: None,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             loop_directive: None,
         }
     }
@@ -150,6 +153,7 @@ impl ToolResult {
             terminal_transition: false,
             sleep_duration_ms,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             loop_directive: None,
         }
     }
@@ -173,6 +177,7 @@ impl ToolResult {
             terminal_transition: false,
             sleep_duration_ms: None,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             loop_directive: Some(directive),
         }
     }
@@ -191,6 +196,7 @@ impl ToolResult {
             terminal_transition: false,
             sleep_duration_ms: None,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             loop_directive: None,
         }
     }

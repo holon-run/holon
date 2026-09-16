@@ -181,6 +181,7 @@ impl RuntimeHandle {
             allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             terminal_tool_executions: Vec::new(),
         }))
     }
@@ -247,6 +248,7 @@ impl RuntimeHandle {
                 turn_record: self.build_turn_record(&record).await?,
                 terminal: record.clone(),
                 prepared_work_item_completion: None,
+                prepared_wait_for: None,
                 terminal_tool_executions,
             };
             self.persist_terminal_transition(&transition).await?;
@@ -300,6 +302,7 @@ impl RuntimeHandle {
             allow_sleep_runnable_work_override: false,
             terminal_kind: TurnTerminalKind::Aborted,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             terminal_tool_executions: vec![pending.tool_execution.clone()],
         })
     }
@@ -503,6 +506,7 @@ impl RuntimeHandle {
             allow_sleep_runnable_work_override: false,
             terminal_kind,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             terminal_tool_executions: Vec::new(),
         }))
     }
@@ -999,6 +1003,7 @@ impl RuntimeHandle {
             terminal: outcome.terminal.clone(),
             turn_record,
             prepared_work_item_completion: outcome.prepared_work_item_completion.clone(),
+            prepared_wait_for: outcome.prepared_wait_for.clone(),
             terminal_tool_executions: outcome.terminal_tool_executions.clone(),
         })
         .await?;
@@ -1604,6 +1609,7 @@ impl TurnExecution<'_> {
         let mut sleep_duration_ms = None;
         let mut completed_work_item_this_turn = false;
         let mut prepared_work_item_completion = None;
+        let mut prepared_wait_for = None;
         let mut pending_completion_report: Option<PendingCompletionReport> = None;
         let mut pending_wait_report: Option<PendingWaitReport> = None;
         let mut round = 0usize;
@@ -1781,6 +1787,7 @@ impl TurnExecution<'_> {
                         allow_sleep_runnable_work_override: false,
                         terminal_kind: TurnTerminalKind::Aborted,
                         prepared_work_item_completion: None,
+                        prepared_wait_for: None,
                         terminal_tool_executions: Vec::new(),
                     });
                 }
@@ -2064,6 +2071,7 @@ impl TurnExecution<'_> {
                                 allow_sleep_runnable_work_override: false,
                                 terminal_kind: TurnTerminalKind::BaselineOverBudget,
                                 prepared_work_item_completion: None,
+                                prepared_wait_for: None,
                                 terminal_tool_executions: Vec::new(),
                             });
                         }
@@ -2620,9 +2628,13 @@ impl TurnExecution<'_> {
                 }
 
                 let args = crate::tool::tools::wait_for::parse_wait_for_args(&pending.input)?;
-                let result =
-                    crate::tool::tools::wait_for::settle(runtime, agent_id, &authority_class, args)
-                        .await?;
+                let mut result = crate::tool::tools::wait_for::prepare_settlement(
+                    runtime,
+                    agent_id,
+                    &authority_class,
+                    args,
+                )
+                .await?;
                 let mut success_record = pending.tool_execution;
                 let completed_at = Utc::now();
                 success_record.completed_at = Some(completed_at);
@@ -2640,7 +2652,20 @@ impl TurnExecution<'_> {
                 });
                 success_record.summary =
                     crate::tool::summary::tool_result_summary(&result.envelope);
-                runtime.persist_tool_execution_evidence(&success_record)?;
+                if let Some(mut prepared) = result.prepared_wait_for.take() {
+                    prepared.tool_execution = Some(success_record.clone());
+                    prepared.command.audit_events.push(AuditEvent::legacy(
+                        "wait_report_request_completed",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "report_assistant_round_id": assistant_round_id,
+                            "source": "followup_final_text",
+                        }),
+                    ));
+                    prepared_wait_for = Some(prepared);
+                } else {
+                    runtime.persist_tool_execution_evidence(&success_record)?;
+                }
                 if !result.should_sleep {
                     completed_rounds.push(TurnRoundRecord {
                         round,
@@ -2660,6 +2685,7 @@ impl TurnExecution<'_> {
                 }
                 let state = runtime.agent_state().await?;
                 let final_text = combined_text;
+                let atomic_wait_settlement = prepared_wait_for.is_some();
                 let terminal = TurnTerminalRecord {
                     turn_id: state
                         .current_turn_id
@@ -2686,7 +2712,12 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: true,
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: None,
-                    terminal_tool_executions: vec![success_record],
+                    prepared_wait_for: prepared_wait_for.take(),
+                    terminal_tool_executions: if atomic_wait_settlement {
+                        Vec::new()
+                    } else {
+                        vec![success_record]
+                    },
                 });
             }
 
@@ -2945,6 +2976,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: true,
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -3109,6 +3141,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: false,
                     terminal_kind: TurnTerminalKind::Aborted,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -3190,6 +3223,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }
@@ -3561,7 +3595,8 @@ impl TurnExecution<'_> {
                                 reason: None,
                             }),
                         );
-                        let stops_tool_batch = result.prepared_work_item_completion.is_some();
+                        let stops_tool_batch = result.prepared_work_item_completion.is_some()
+                            || result.prepared_wait_for.is_some();
                         let persist_started_at = chrono::Utc::now();
                         let persist_result: Result<()> = async {
                             if let Some(mut prepared) = result.prepared_work_item_completion.take()
@@ -3577,6 +3612,10 @@ impl TurnExecution<'_> {
                                 } else {
                                     prepared_work_item_completion = Some(prepared);
                                 }
+                            } else if let Some(mut prepared) = result.prepared_wait_for.take() {
+                                prepared.tool_execution = Some(record.clone());
+                                prepared.command.audit_events.push(tool_executed_event);
+                                prepared_wait_for = Some(prepared);
                             } else {
                                 runtime.persist_tool_execution_evidence(&record)?;
                                 runtime.inner.storage.append_event(&tool_executed_event)?;
@@ -3926,6 +3965,7 @@ impl TurnExecution<'_> {
                     allow_sleep_runnable_work_override: completed_work_item_this_turn,
                     terminal_kind: TurnTerminalKind::Completed,
                     prepared_work_item_completion: prepared_work_item_completion.take(),
+                    prepared_wait_for: prepared_wait_for.take(),
                     terminal_tool_executions: Vec::new(),
                 });
             }

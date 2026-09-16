@@ -47,6 +47,7 @@ pub(crate) struct AgentLoopOutcome {
     pub(super) terminal_kind: TurnTerminalKind,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
+    pub(super) prepared_wait_for: Option<Box<crate::runtime::PreparedWaitForSettlement>>,
     pub(super) terminal_tool_executions: Vec<crate::types::ToolExecutionRecord>,
 }
 
@@ -56,6 +57,7 @@ pub(crate) struct TurnTerminalTransition {
     pub(super) turn_record: TurnRecord,
     pub(super) prepared_work_item_completion:
         Option<Box<crate::runtime::PreparedWorkItemCompletion>>,
+    pub(super) prepared_wait_for: Option<Box<crate::runtime::PreparedWaitForSettlement>>,
     pub(super) terminal_tool_executions: Vec<crate::types::ToolExecutionRecord>,
 }
 
@@ -290,6 +292,7 @@ impl RuntimeHandle {
             turn_record: self.build_turn_record(&terminal).await?,
             terminal,
             prepared_work_item_completion: None,
+            prepared_wait_for: None,
             terminal_tool_executions: Vec::new(),
         })
     }
@@ -459,6 +462,10 @@ impl RuntimeHandle {
             transition.prepared_work_item_completion.is_none(),
             "prepared WorkItem completion requires the canonical queue terminal settlement"
         );
+        anyhow::ensure!(
+            transition.prepared_wait_for.is_none(),
+            "prepared WaitFor settlement requires the canonical queue terminal settlement"
+        );
         self.commit_terminal_transition(transition, Vec::new())
             .await
             .map(|_| ())
@@ -509,6 +516,7 @@ impl RuntimeHandle {
                 turn_record: self.build_turn_record(&record).await?,
                 terminal: record.clone(),
                 prepared_work_item_completion: None,
+                prepared_wait_for: None,
                 terminal_tool_executions: Vec::new(),
             };
             self.commit_terminal_transition(

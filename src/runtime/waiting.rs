@@ -94,6 +94,21 @@ pub(crate) enum WaitForRegistrationOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct PreparedWaitForSettlement {
+    pub(crate) registration: WaitForRegistration,
+    pub(crate) command: crate::runtime_db::transitions::WaitTransitionCommand,
+    pub(crate) execution_protocol: crate::runtime_db::transitions::ExecutionProtocolTransition,
+    pub(crate) expected_task: Option<crate::runtime_db::transitions::TaskExpectation>,
+    pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
+    pub(crate) brief: Option<crate::types::BriefRecord>,
+}
+
+pub(crate) enum PrepareWaitForOutcome {
+    Prepared(Box<PreparedWaitForSettlement>),
+    Immediate(WaitForRegistrationOutcome),
+}
+
+#[derive(Debug, Clone)]
 pub(super) struct WorkItemBlockerClearance {
     pub(super) work_item: WorkItemRecord,
     pub(super) expected_revision: Option<u64>,
@@ -282,6 +297,62 @@ impl RuntimeHandle {
         reason: String,
         recheck_after_ms: Option<u64>,
     ) -> Result<WaitForRegistrationOutcome> {
+        for attempt in 0..3 {
+            match self
+                .prepare_wait_for_outcome(
+                    agent_id,
+                    work_item_id.clone(),
+                    wake,
+                    resource.clone(),
+                    reason.clone(),
+                    recheck_after_ms,
+                )
+                .await?
+            {
+                PrepareWaitForOutcome::Immediate(outcome) => return Ok(outcome),
+                PrepareWaitForOutcome::Prepared(prepared) => {
+                    match self
+                        .inner
+                        .runtime_db
+                        .transitions()
+                        .commit_wait_with_execution_protocol_and_task_expectation(
+                            &prepared.command,
+                            &prepared.execution_protocol,
+                            prepared.expected_task.as_ref(),
+                        ) {
+                        Ok(commit) => {
+                            self.apply_transition_commit(commit).await;
+                            return Ok(WaitForRegistrationOutcome::Registered {
+                                registration: prepared.registration.clone(),
+                            });
+                        }
+                        Err(error)
+                            if attempt + 1 < 3
+                                && error
+                                    .downcast_ref::<
+                                        crate::runtime_db::RuntimeStateTransitionConflict,
+                                    >()
+                                    .is_some_and(|conflict| conflict.retryable()) =>
+                        {
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+        unreachable!("wait registration retry budget is non-empty")
+    }
+
+    pub(crate) async fn prepare_wait_for_outcome(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<String>,
+        wake: WaitForWakeKind,
+        resource: Option<String>,
+        reason: String,
+        recheck_after_ms: Option<u64>,
+    ) -> Result<PrepareWaitForOutcome> {
         let runtime_agent_id = self.agent_id().await?;
         if agent_id != runtime_agent_id {
             return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
@@ -304,7 +375,9 @@ impl RuntimeHandle {
                 })?;
             self.validate_wait_for_task_owner(agent_id, work_item_id.as_deref(), &task)?;
             if task_state_reducer::is_terminal_task_status(&task.status) {
-                return self.settle_terminal_task_result(task, reason).await;
+                return Ok(PrepareWaitForOutcome::Immediate(
+                    self.settle_terminal_task_result(task, reason).await?,
+                ));
             }
             expected_task = Some(task_expectation(&task));
         }
@@ -557,83 +630,27 @@ impl RuntimeHandle {
             notify_scheduler: true,
             fault: self.take_transition_fault(),
         };
-        let commit = 'retry: {
-            for attempt in 0..3 {
-                match self
-                    .inner
-                    .runtime_db
-                    .transitions()
-                    .commit_wait_with_execution_protocol_and_task_expectation(
-                        &command,
-                        &execution_protocol,
-                        expected_task.as_ref(),
-                    ) {
-                    Ok(commit) => break 'retry commit,
-                    Err(error)
-                        if expected_task.is_some()
-                            && error
-                                .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
-                                .is_some_and(|conflict| {
-                                    conflict.retryable() && conflict.domain() == "task_wait"
-                                }) =>
-                    {
-                        let task_id = expected_task
-                            .as_ref()
-                            .expect("task expectation exists")
-                            .id
-                            .clone();
-                        let Some(task) = self.inner.runtime_db.tasks().latest(&task_id)? else {
-                            return Err(error);
-                        };
-                        self.validate_wait_for_task_owner(
-                            agent_id,
-                            work_item_id.as_deref(),
-                            &task,
-                        )?;
-                        if task_state_reducer::is_terminal_task_status(&task.status) {
-                            return self.settle_terminal_task_result(task, reason.clone()).await;
-                        }
-                        if attempt + 1 == 3 {
-                            return Err(error);
-                        }
-                        expected_task = Some(task_expectation(&task));
-                    }
-                    Err(error)
-                        if pending_timer_wake.is_some()
-                            && error
-                                .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
-                                .is_some_and(|conflict| conflict.domain() == "timer_wait") =>
-                    {
-                        let timer_id = pending_timer_wake
-                            .as_ref()
-                            .expect("pending timer wake exists")
-                            .timer_id
-                            .as_str();
-                        return Err(anyhow!(
-                            "wait_for timer wake was already consumed: {timer_id}"
-                        ));
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
-            unreachable!("wait registration retry budget is non-empty")
-        };
-        self.apply_transition_commit(commit).await;
-
-        Ok(WaitForRegistrationOutcome::Registered {
-            registration: WaitForRegistration {
-                scope: if condition.work_item_id.is_some() {
-                    WaitForScope::WorkItem
-                } else {
-                    WaitForScope::Agent
+        Ok(PrepareWaitForOutcome::Prepared(Box::new(
+            PreparedWaitForSettlement {
+                registration: WaitForRegistration {
+                    scope: if condition.work_item_id.is_some() {
+                        WaitForScope::WorkItem
+                    } else {
+                        WaitForScope::Agent
+                    },
+                    condition,
+                    recheck_after_ms,
+                    recheck_at,
+                    work_item,
+                    cancelled_wait_condition_ids,
                 },
-                condition,
-                recheck_after_ms,
-                recheck_at,
-                work_item,
-                cancelled_wait_condition_ids,
+                command,
+                execution_protocol,
+                expected_task,
+                tool_execution: None,
+                brief: None,
             },
-        })
+        )))
     }
 
     fn validate_wait_for_task_owner(
