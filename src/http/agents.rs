@@ -226,7 +226,11 @@ pub(crate) fn load_observer_sync_verification(
     state: &AppState,
 ) -> ObserverSyncCapabilityVerification {
     let mut verification = ObserverSyncCapabilityVerification::default();
-    match state.host.runtime_db().observer_sync_foundations() {
+    match state
+        .host
+        .runtime_db()
+        .observer_sync_foundations_with_self_heal()
+    {
         Ok(foundations) => {
             verification.runtime_identity_stable = foundations.runtime_identity_stable;
             verification.agent_identity_reserved = foundations.agent_identity_reserved;

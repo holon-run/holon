@@ -940,14 +940,49 @@ impl AgentDeletionRepository<'_> {
                 .context("decoding deletion job for finalization")?;
             let payload = tx
                 .query_row(
-                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+                    "SELECT payload_json,
+                            COALESCE(json_extract(payload_json, '$.status'), '')
+                     FROM agent_identities WHERE agent_id = ?1",
                     [&completed_job.agent_id],
-                    |row| row.get::<_, String>(0),
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
                 )
                 .optional()?
                 .ok_or_else(|| anyhow!("agent {} not found", completed_job.agent_id))?;
+            let (payload, stored_status) = payload;
             let mut identity = decode_agent_identity_payload(&payload)?;
             if completed_job.status == AgentDeletionStatus::Completed {
+                // Idempotent re-entry: the job already reached its terminal
+                // state, but the registry entry must still converge to the
+                // same terminal state. Legacy rows can carry the pre-rename
+                // `archived` status text (decoded as `Deleted` above), and a
+                // crash window can leave `Deleting`; either shape keeps the
+                // completed-deletion invariant violated forever, so drive the
+                // entry to the canonical tombstone here. A sanctioned
+                // reincarnation (active identity with a reincarnation
+                // reservation source) is exempt: tombstoning it here would
+                // destroy the re-created agent its completed predecessor
+                // sanctioned.
+                let reservation_source: Option<String> = tx
+                    .query_row(
+                        "SELECT source FROM agent_identity_reservations WHERE agent_id = ?1",
+                        [&completed_job.agent_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let sanctioned_reincarnation = identity.status == AgentRegistryStatus::Active
+                    && reservation_source.as_deref() == Some("reincarnation");
+                if sanctioned_reincarnation {
+                    // The completed predecessor job is already terminal and
+                    // the living incarnation owns the registry, reservation,
+                    // and supervision state: converge nothing.
+                    return Ok((identity, completed_job));
+                }
+                let now = std::cmp::max(
+                    Utc::now(),
+                    std::cmp::max(identity.updated_at, completed_job.updated_at)
+                        + chrono::Duration::nanoseconds(1),
+                );
+                ensure_deleted_tombstone_tx(tx, &mut identity, &stored_status, now)?;
                 transition_supervision_state_tx(
                     tx,
                     &completed_job.agent_id,
@@ -970,13 +1005,7 @@ impl AgentDeletionRepository<'_> {
                 std::cmp::max(identity.updated_at, completed_job.updated_at)
                     + chrono::Duration::nanoseconds(1),
             );
-            if identity.status != AgentRegistryStatus::Deleted {
-                identity.status = AgentRegistryStatus::Deleted;
-                identity.deleted_at = Some(now);
-                identity.updated_at = now;
-                identity.revision = identity.revision.saturating_add(1);
-                upsert_agent_identity_tx(tx, &identity)?;
-            }
+            ensure_deleted_tombstone_tx(tx, &mut identity, &stored_status, now)?;
             transition_supervision_state_tx(
                 tx,
                 &completed_job.agent_id,
@@ -5743,6 +5772,35 @@ pub(crate) fn decode_execution_root_entry_payload(payload: &str) -> Result<Execu
 
 pub(crate) fn decode_agent_identity_payload(payload: &str) -> Result<AgentIdentityRecord> {
     serde_json::from_str(payload).context("decoding agent identity payload from runtime db")
+}
+
+/// Drives an identity to the canonical deleted tombstone during deletion
+/// finalization; returns `true` when a registry write was performed. The
+/// stored payload text is canonicalized even when the decoded status is
+/// already `Deleted`: legacy rows can carry the pre-rename `archived` text,
+/// which the observer-sync reservation invariants compare literally, so a
+/// tombstone that is never rewritten keeps those invariants violated
+/// forever.
+fn ensure_deleted_tombstone_tx(
+    tx: &Transaction<'_>,
+    identity: &mut AgentIdentityRecord,
+    stored_status: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    if identity.status == AgentRegistryStatus::Deleted
+        && stored_status == enum_string(&AgentRegistryStatus::Deleted)?
+        && identity.deleted_at.is_some()
+    {
+        return Ok(false);
+    }
+    identity.status = AgentRegistryStatus::Deleted;
+    if identity.deleted_at.is_none() {
+        identity.deleted_at = Some(now);
+    }
+    identity.updated_at = now;
+    identity.revision = identity.revision.saturating_add(1);
+    upsert_agent_identity_tx(tx, identity)?;
+    Ok(true)
 }
 
 pub(crate) fn decode_work_item_payload(payload: &str) -> Result<WorkItemRecord> {
