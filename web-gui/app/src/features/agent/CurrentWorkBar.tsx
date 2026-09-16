@@ -40,7 +40,7 @@ export function deriveCurrentWorkStatus(agent: AgentSummary) {
   else if (tasks.length > 0 || agent.activeTaskCount > 0) state = "background";
   const waitingTask = state === "waitingTask" && activeWait?.task_ids.length === 1
     ? tasks.find((task) => task.id === activeWait.task_ids[0]) : undefined;
-  const waitingSince = !running && !stopped && activeWait ? activeWait.created_at : undefined;
+  const waitingSince = !running && !stopped && state !== "needsInput" && activeWait ? activeWait.created_at : undefined;
   return { work, tasks, taskCount: Math.max(tasks.length, agent.activeTaskCount || 0), waits, state, waitingTask, waitingSince };
 }
 
