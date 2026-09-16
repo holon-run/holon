@@ -36,6 +36,7 @@ pub(crate) mod memory_search;
 pub(crate) mod pick_work_item;
 pub(crate) mod remove_worktree;
 pub(crate) mod semantic_projection;
+pub(crate) mod send_agent_message;
 pub(crate) mod sleep;
 pub(crate) mod switch_workspace;
 pub(crate) mod task_input;
@@ -75,6 +76,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         get_agent::definition()?,
         enqueue::definition()?,
         create_agent::definition()?,
+        send_agent_message::definition()?,
         invoke_agent::definition()?,
         task_list::definition()?,
         task_list::legacy_definition()?,
@@ -188,6 +190,12 @@ fn execute_builtin_tool_inner<'a>(
             runtime,
             agent_id,
             authority_class,
+            &call.input,
+        )),
+        send_agent_message::NAME => Box::pin(send_agent_message::execute(
+            runtime,
+            authority_class,
+            &call.id,
             &call.input,
         )),
         invoke_agent::NAME => Box::pin(invoke_agent::execute(
@@ -555,6 +563,7 @@ mod tests {
             "MemorySearch" => "src/tool/tool_descriptions/memory_search.md",
             "PickWorkItem" => "src/tool/tool_descriptions/pick_work_item.md",
             "RemoveWorktree" => "src/tool/tool_descriptions/remove_worktree.md",
+            "SendAgentMessage" => "src/tool/tool_descriptions/send_agent_message.md",
             "Sleep" => "src/tool/tool_descriptions/sleep.md",
             "CreateAgent" => "src/tool/tool_descriptions/create_agent.md",
             "InvokeAgent" => "src/tool/tool_descriptions/invoke_agent.md",

@@ -486,6 +486,7 @@ async fn filtered_tool_specs_keep_agent_tools_visible_without_host_bridge() {
 
     assert!(tools.iter().any(|tool| tool.name == "CreateAgent"));
     assert!(tools.iter().any(|tool| tool.name == "InvokeAgent"));
+    assert!(tools.iter().any(|tool| tool.name == "SendAgentMessage"));
     assert!(!tools.iter().any(|tool| tool.name == "SpawnAgent"));
 }
 
@@ -498,6 +499,7 @@ async fn filtered_tool_specs_hide_agent_creation_family_for_private_child() {
 
     assert!(!tools.iter().any(|tool| tool.name == "CreateAgent"));
     assert!(!tools.iter().any(|tool| tool.name == "InvokeAgent"));
+    assert!(tools.iter().any(|tool| tool.name == "SendAgentMessage"));
     assert!(!tools.iter().any(|tool| tool.name == "SpawnAgent"));
 }
 
@@ -536,6 +538,7 @@ async fn filtered_tool_specs_keep_agent_creation_family_for_public_named_agent()
 
     assert!(tools.iter().any(|tool| tool.name == "CreateAgent"));
     assert!(tools.iter().any(|tool| tool.name == "InvokeAgent"));
+    assert!(tools.iter().any(|tool| tool.name == "SendAgentMessage"));
     assert!(!tools.iter().any(|tool| tool.name == "SpawnAgent"));
     assert!(tools.iter().any(|tool| tool.name == "SwitchWorkspace"));
     assert!(tools.iter().any(|tool| tool.name == "AttachWorkspace"));
@@ -614,6 +617,88 @@ async fn invoke_agent_hides_unknown_and_unauthorized_targets() {
         descriptors[0].operator_message,
         descriptors[1].operator_message
     );
+}
+
+#[tokio::test]
+async fn send_agent_message_persists_delivery_and_hides_unavailable_targets() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let target = host
+        .create_named_agent("message-target", None)
+        .await
+        .unwrap();
+
+    let result = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "send-message-success".into(),
+            name: "SendAgentMessage".into(),
+            input: serde_json::json!({
+                "agent_id": target.agent_id,
+                "message": "durable peer message"
+            }),
+        },
+    )
+    .await
+    .expect("authorized peer message should be accepted");
+    assert!(!result.is_error());
+
+    let target_runtime = host.get_public_agent("message-target").await.unwrap();
+    let messages = target_runtime.storage().read_recent_messages(100).unwrap();
+    let delivered = messages
+        .iter()
+        .find(|message| {
+            matches!(
+                &message.body,
+                crate::types::MessageBody::Text { text } if text == "durable peer message"
+            )
+        })
+        .expect("accepted message should be persisted in the target inbox");
+    let delivery_id = delivered
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.pointer("/agent_message_delivery/delivery_id"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap();
+    let delivery = host
+        .runtime_db()
+        .agent_message_deliveries()
+        .latest(delivery_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        delivery.outcome,
+        crate::types::AgentMessageDeliveryOutcome::Accepted
+    );
+    assert_eq!(delivery.target_agent_id, "message-target");
+    assert_eq!(
+        delivery.admission_evidence.derived_grant,
+        Some(crate::types::AgentMessageDerivedGrant::PersistentIndependentPeerMessage)
+    );
+
+    let error = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "send-message-missing".into(),
+            name: "SendAgentMessage".into(),
+            input: serde_json::json!({
+                "agent_id": "missing-target",
+                "message": "must not reveal target state"
+            }),
+        },
+    )
+    .await
+    .expect_err("unknown targets must reject");
+    let descriptor = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(descriptor.code, "not_found");
+    assert_eq!(
+        descriptor.operator_message,
+        "agent target was not found or is not available to this caller"
+    );
+    assert!(!descriptor.source_chain.join(" ").contains("missing-target"));
 }
 
 #[tokio::test]

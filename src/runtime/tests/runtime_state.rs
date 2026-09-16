@@ -5332,6 +5332,113 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
 }
 
 #[tokio::test]
+async fn terminal_task_wait_handoffs_conversation_to_work_item_continue() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let mut message = trusted_operator_prompt(None, "wait for an already completed task");
+    message.turn_id = Some("turn-terminal-task-handoff".into());
+    let message = runtime.enqueue(message).await.unwrap();
+    assert!(matches!(
+        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Message(_)
+    ));
+    runtime
+        .begin_interactive_turn(Some(&message), None, None)
+        .await
+        .unwrap();
+    let work_item = runtime
+        .create_work_item("terminal task handoff".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
+
+    let mut result = task_result_message("task-terminal-handoff").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result.task_id = Some("task-terminal-handoff".into());
+    result.work_item_id = Some(work_item.id.clone());
+    result.turn_id = Some("turn-terminal-handoff-result".into());
+    let terminal_task = TaskRecord {
+        id: "task-terminal-handoff".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(result.id.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("terminal task handoff completed".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-terminal-handoff",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-terminal-task-handoff",
+        })),
+        recovery: None,
+    };
+    runtime
+        .commit_terminal_task_result(&terminal_task, "task_completed", &result)
+        .await
+        .unwrap();
+
+    let registration = runtime
+        .register_wait_for_outcome(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal_task.id.clone()),
+            "waiting for terminal task handoff".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        registration,
+        WaitForRegistrationOutcome::TaskResultQueued { ref task_id, .. }
+            if task_id == &terminal_task.id
+    ));
+
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    let attempt = &execution.attempts[&activation_id];
+    assert_eq!(
+        attempt.state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
+    );
+    assert!(matches!(
+        &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::Conversation(
+            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemContinue {
+                work_item_id,
+            }
+        ) if work_item_id == &work_item.id
+    ));
+}
+
+#[tokio::test]
 async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_restart_safe() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

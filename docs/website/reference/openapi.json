@@ -2699,6 +2699,7 @@
                 },
                 "kind": {
                   "enum": [
+                    "agent_message_wait",
                     "actor_invocation",
                     "command_task",
                     "child_agent_task",
@@ -12247,6 +12248,7 @@
           },
           "kind": {
             "enum": [
+              "agent_message_wait",
               "actor_invocation",
               "command_task",
               "child_agent_task",
