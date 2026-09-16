@@ -381,7 +381,11 @@ impl RuntimeHandle {
         }
 
         terminal_transition = match terminal_transition {
-            Some(transition) if transition.prepared_work_item_completion.is_some() => {
+            Some(transition)
+                if transition.prepared_work_item_completion.is_some()
+                    || transition.prepared_wait_for.is_some() =>
+            {
+                // Prepared settlements own all terminal writes in the queue transaction.
                 return Ok(transition);
             }
             transition => transition,

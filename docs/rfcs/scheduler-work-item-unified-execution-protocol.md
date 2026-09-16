@@ -306,6 +306,10 @@ from the current task while retaining the wait identity and final report.
 Agent-state settlement applies only the wait's changes to the current baseline,
 preserving concurrent queue admission and message counters. Explicit `silent`
 delivery never promotes same-round or earlier progress text to a result brief.
+Prepared waits, like prepared completions, bypass generic post-message bookkeeping
+before the queue transaction. WorkItem reference refreshes, agent-state projections,
+and continuation writes must not invalidate the prepared settlement's baseline or
+publish terminal effects outside that transaction.
 
 A WorkItem-bound provider turn that ends without a WorkItem outcome closes the
 attempt as `ProtocolViolation` and normally returns the WorkItem to

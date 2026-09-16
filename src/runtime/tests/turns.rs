@@ -1188,6 +1188,7 @@ async fn wait_for_only_tool_round_completes_without_extra_provider_turn() {
 async fn run_wait_for_final_report_test(
     corrective_tool_round: bool,
     silent_progress: Option<bool>,
+    work_item_owned: bool,
 ) {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1211,7 +1212,17 @@ async fn run_wait_for_final_report_test(
         },
     )
     .unwrap();
-    let message = MessageEnvelope::new(
+    let work_item = if work_item_owned {
+        Some(
+            runtime
+                .create_work_item("owned wait".into(), None, None, Vec::new())
+                .await
+                .unwrap(),
+        )
+    } else {
+        None
+    };
+    let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
@@ -1221,13 +1232,16 @@ async fn run_wait_for_final_report_test(
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
-            text: "wait with a final report".into(),
+            // A new reference makes generic message bookkeeping update the WorkItem.
+            text: "wait for https://github.com/holon-run/holon/pull/3016".into(),
         },
     )
     .with_admission(
         MessageDeliverySurface::HttpControlPrompt,
         AdmissionContext::ControlAuthenticated,
     );
+    message.work_item_id = work_item.as_ref().map(|record| record.id.clone());
+    assert!(!crate::work_item_refs::message_work_refs(&message).is_empty());
     let mut runtime_task = tokio::spawn(runtime.clone().run());
     runtime.enqueue(message.clone()).await.unwrap();
     let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -1262,6 +1276,43 @@ async fn run_wait_for_final_report_test(
         );
     }
     runtime_task.abort();
+
+    if let Some(original) = work_item {
+        let updated = runtime
+            .storage()
+            .latest_work_item(&original.id)
+            .unwrap()
+            .unwrap();
+        let waiting = runtime
+            .storage()
+            .active_wait_conditions_for_agent("default")
+            .unwrap();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(
+            waiting[0].work_item_id.as_deref(),
+            Some(original.id.as_str())
+        );
+        assert_eq!(updated.revision, original.revision + 1);
+        assert!(updated.blocked_by.is_some());
+        let events = runtime.storage().read_recent_events(100).unwrap();
+        assert!(
+            events
+                .iter()
+                .all(|event| event.kind != "work_item_refs_updated"),
+            "prepared wait must not run generic WorkItem writes before its atomic commit"
+        );
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&message.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Processed
+        );
+    }
 
     assert_eq!(
         provider.call_count().await,
@@ -1332,22 +1383,32 @@ async fn run_wait_for_final_report_test(
 
 #[tokio::test]
 async fn wait_for_final_report_commits_brief_wait_tool_and_turn_atomically() {
-    run_wait_for_final_report_test(false, None).await;
+    run_wait_for_final_report_test(false, None, false).await;
 }
 
 #[tokio::test]
 async fn wait_for_final_report_corrects_extra_tool_once_without_executing_it() {
-    run_wait_for_final_report_test(true, None).await;
+    run_wait_for_final_report_test(true, None, false).await;
 }
 
 #[tokio::test]
 async fn wait_for_silent_does_not_publish_same_round_text() {
-    run_wait_for_final_report_test(false, Some(false)).await;
+    run_wait_for_final_report_test(false, Some(false), false).await;
 }
 
 #[tokio::test]
 async fn wait_for_silent_does_not_publish_prior_round_text() {
-    run_wait_for_final_report_test(false, Some(true)).await;
+    run_wait_for_final_report_test(false, Some(true), false).await;
+}
+
+#[tokio::test]
+async fn work_item_wait_for_final_skips_precommit_message_bookkeeping() {
+    run_wait_for_final_report_test(false, None, true).await;
+}
+
+#[tokio::test]
+async fn work_item_wait_for_silent_skips_precommit_message_bookkeeping() {
+    run_wait_for_final_report_test(false, Some(true), true).await;
 }
 
 #[tokio::test]
