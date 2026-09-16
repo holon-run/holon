@@ -5,7 +5,7 @@ import {
   useRuntimeStore,
 } from "../runtime/runtime-store";
 import {
-  conversationScopeKey,
+  resolveConversationScopeKey,
   peekConversationScope,
 } from "../runtime/conversation-scope-store";
 import { currentRemoteKey } from "../runtime/session-cache";
@@ -118,7 +118,11 @@ function snapshot(): HolonE2eSnapshot {
   const state = useRuntimeStore.getState();
   const conversationScope = state.selectedAgentId
     ? peekConversationScope(
-        conversationScopeKey(currentRemoteKey(getRuntimeConnectionConfig()), state.selectedAgentId),
+        resolveConversationScopeKey(
+          currentRemoteKey(getRuntimeConnectionConfig()),
+          state.selectedAgentId,
+          state.currentUser,
+        ),
       )
     : null;
   return {

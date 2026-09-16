@@ -1,10 +1,14 @@
+import {
+  decodeConversationSummaryResponse,
+} from "@holon/conversation-sdk";
+
 import type {
   ConversationSnapshotCache,
   ConversationSnapshotCacheEntry,
-  ConversationSummaryResponse,
 } from "@holon/conversation-sdk";
 
 import {
+  cacheClearConversationScope,
   SNAPSHOT_CACHE_SCHEMA_VERSION,
   cacheGetConversationSnapshot,
   cachePutConversationSnapshot,
@@ -20,8 +24,10 @@ export function createConversationSnapshotCache(
   remoteKey: string,
   agentId: string,
 ): ConversationSnapshotCache {
+  let revoked = false;
   return {
     async load() {
+      if (revoked) return null;
       const entry = await cacheGetConversationSnapshot(remoteKey, agentId);
       if (
         entry === undefined ||
@@ -29,12 +35,14 @@ export function createConversationSnapshotCache(
       ) {
         return null;
       }
-      if (!isSummarySnapshotLike(entry.summary)) {
+      try {
+        return { etag: entry.etag, summary: decodeConversationSummaryResponse(entry.summary) };
+      } catch {
         return null;
       }
-      return { etag: entry.etag, summary: entry.summary };
     },
     async store(input: ConversationSnapshotCacheEntry) {
+      if (revoked) return;
       await cachePutConversationSnapshot({
         remoteKey,
         agentId,
@@ -44,33 +52,9 @@ export function createConversationSnapshotCache(
         cachedAt: Date.now(),
       });
     },
+    async clear() {
+      revoked = true;
+      await cacheClearConversationScope(remoteKey, agentId);
+    },
   };
-}
-
-// Structural guard for snapshots restored from untyped storage. The stored
-// payload was produced by the SDK decoder before persisting; this check
-// only rejects corrupted or foreign records.
-function isSummarySnapshotLike(
-  value: unknown,
-): value is ConversationSummaryResponse {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Record<string, unknown>;
-  return (
-    typeof record.schema_version === "number" &&
-    typeof record.query_version === "number" &&
-    typeof record.runtime_id === "string" &&
-    typeof record.event_log_epoch === "string" &&
-    typeof record.visibility_scope_id === "string" &&
-    typeof record.snapshot_through_seq === "number" &&
-    typeof record.event_head_seq === "number" &&
-    typeof record.oldest_retained_seq === "number" &&
-    typeof record.snapshot_cursor === "string" &&
-    record.snapshot_cursor.length > 0 &&
-    Array.isArray(record.turns) &&
-    Array.isArray(record.active_turns) &&
-    Array.isArray(record.pending_inputs) &&
-    typeof record.has_more === "boolean" &&
-    (record.next_before_cursor === null ||
-      typeof record.next_before_cursor === "string")
-  );
 }

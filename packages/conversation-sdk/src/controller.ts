@@ -71,6 +71,7 @@ export interface ConversationClientLike {
 export type ConversationStatus =
   | { readonly kind: "idle" }
   | { readonly kind: "loading" }
+  | { readonly kind: "paused" }
   | { readonly kind: "ready" }
   | {
       readonly kind: "reconnecting";
@@ -173,6 +174,7 @@ export interface ConversationBriefCache {
   get(briefId: string): Promise<BriefRecord | null | undefined>;
   /** Persist a successfully fetched brief. */
   put(briefId: string, brief: BriefRecord): Promise<void>;
+  clear?(): Promise<void>;
 }
 
 /**
@@ -183,6 +185,7 @@ export interface ConversationBriefCache {
 export interface ConversationSnapshotCache {
   load(): Promise<ConversationSnapshotCacheEntry | null | undefined>;
   store(entry: ConversationSnapshotCacheEntry): Promise<void>;
+  clear?(): Promise<void>;
 }
 
 export interface ConversationControllerOptions {
@@ -313,6 +316,11 @@ export class ConversationController {
   // is never streamed from without a server-confirmed 304.
   #pendingRevalidate: { readonly etag: string | null } | undefined;
   #hydrateAttempted = false;
+  #snapshotBase: ConversationSummaryResponse | undefined;
+  #snapshotTimer: ReturnType<typeof setTimeout> | undefined;
+  #snapshotWrites: Promise<void> = Promise.resolve();
+  #cacheGeneration = 0;
+  #capabilityReady = false;
 
   constructor(options: ConversationControllerOptions) {
     if (options.agentId.length === 0) {
@@ -407,17 +415,32 @@ export class ConversationController {
     if (this.#starting) {
       this.#runToken += 1;
       this.#runAbort?.abort(abortError("superseded by manual retry"));
+      if (!this.#capabilityReady) this.#handshakePromise = null;
       this.#runAbort = new AbortController();
       this.#starting = false;
     }
     this.start();
   }
 
+  /** Retain data and checkpoint while releasing the stream. */
+  pause(): void {
+    if (this.#disposed) return;
+    this.#flushSnapshot();
+    this.#runToken += 1;
+    this.#runAbort?.abort(abortError("conversation paused"));
+    if (!this.#capabilityReady) this.#handshakePromise = null;
+    this.#runAbort = null;
+    this.#starting = false;
+    this.#setStatus({ kind: "paused" });
+  }
+
   /** Cancel every request, stream, timer, and subscription notification. */
-  dispose(): void {
+  dispose(persist = true): void {
     if (this.#disposed) {
       return;
     }
+    if (persist) this.#flushSnapshot();
+    else { this.#cancelSnapshotTimer(); this.#cacheGeneration += 1; }
     this.#disposed = true;
     this.#runToken += 1;
     this.#runAbort?.abort(abortError("controller disposed"));
@@ -434,6 +457,7 @@ export class ConversationController {
         error: new ConversationProtocolError("controller is disposed"),
       };
     }
+    const generation = this.#cacheGeneration;
     const view = this.view();
     if (view.scope === null || view.reset_reason !== null) {
       return {
@@ -468,7 +492,7 @@ export class ConversationController {
         );
       }
       const page = result.summary;
-      if (this.#disposed) {
+      if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "idle" };
       }
       this.#state.applyOlderPage(this.#identity, before, page);
@@ -480,6 +504,7 @@ export class ConversationController {
       this.#emitView("older_page");
       return next;
     } catch (error) {
+      if (this.#disposed || generation !== this.#cacheGeneration) return { kind: "idle" };
       return this.#absorbHistoryError(error);
     }
   }
@@ -510,6 +535,7 @@ export class ConversationController {
         error: new ConversationProtocolError("controller is disposed"),
       };
     }
+    const generation = this.#cacheGeneration;
     const existing = this.#briefStates.get(briefId);
     if (existing !== undefined) {
       return existing;
@@ -521,11 +547,11 @@ export class ConversationController {
     if (this.#briefCache !== undefined) {
       let cached: BriefRecord | null | undefined;
       try {
-        cached = await this.#briefCache.get(briefId);
+        cached = await readCache(() => this.#briefCache!.get(briefId));
       } catch {
         // Persistent cache read failure falls through to the network.
       }
-      if (this.#disposed) {
+      if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "loading" };
       }
       if (
@@ -548,7 +574,7 @@ export class ConversationController {
         briefId,
         this.#requestSignal(),
       );
-      if (this.#disposed) {
+      if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "loading" };
       }
       const ready: ConversationBriefLoadState = { kind: "ready", brief };
@@ -562,9 +588,10 @@ export class ConversationController {
       }
       return ready;
     } catch (error) {
-      if (this.#disposed) {
+      if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "loading" };
       }
+      this.#discardUnauthorizedCache(error);
       const klass = classifyConversationError(error);
       this.#onEvent?.({
         type: "request_error",
@@ -583,6 +610,7 @@ export class ConversationController {
   }
 
   #absorbHistoryError(error: unknown): ConversationHistoryLoadState {
+    this.#discardUnauthorizedCache(error);
     if (this.#disposed) {
       return { kind: "idle" };
     }
@@ -625,6 +653,7 @@ export class ConversationController {
         error: new ConversationProtocolError("controller is disposed"),
       };
     }
+    const generation = this.#cacheGeneration;
     const view = this.view();
     if (view.scope === null || view.reset_reason !== null) {
       return {
@@ -647,7 +676,7 @@ export class ConversationController {
         ...(before === undefined ? {} : { before }),
         signal: this.#requestSignal(),
       });
-      if (this.#disposed) {
+      if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "idle" };
       }
       this.#state.applyDetailPage(this.#identity, turnId, before, page);
@@ -655,7 +684,7 @@ export class ConversationController {
       this.#emitView("detail_page");
       return { kind: "idle" };
     } catch (error) {
-      if (this.#disposed) {
+      if (this.#disposed || generation !== this.#cacheGeneration) {
         return { kind: "idle" };
       }
       if (
@@ -666,6 +695,7 @@ export class ConversationController {
         this.#emitChange();
         return { kind: "idle" };
       }
+      this.#discardUnauthorizedCache(error);
       const klass = classifyConversationError(error);
       this.#onEvent?.({ type: "request_error", kind: "detail", error });
       const next: ConversationDetailLoadState = {
@@ -716,6 +746,7 @@ export class ConversationController {
         openedAt = this.#now();
         this.#setStatus({ kind: "ready" });
         await this.#pumpStream(runToken);
+        if (!this.#alive(runToken)) return;
         // Clean stream end (server closed) or applied reset: loop and
         // re-attach from the retained checkpoint or a fresh snapshot.
         const uptime = openedAt === 0 ? 0 : this.#now() - openedAt;
@@ -740,6 +771,7 @@ export class ConversationController {
         if (isAbortError(error)) {
           return;
         }
+        this.#discardUnauthorizedCache(error, true);
         const klass = classifyConversationError(error);
         if (klass !== "retryable") {
           this.#starting = false;
@@ -783,10 +815,13 @@ export class ConversationController {
         this.#runSignal(),
       );
     }
+    const handshake = this.#handshakePromise;
     try {
-      await this.#handshakePromise;
+      await handshake;
+      if (this.#handshakePromise === handshake) this.#capabilityReady = true;
     } catch (error) {
-      this.#handshakePromise = null;
+      // An aborted previous run must not erase its successor's handshake.
+      if (this.#handshakePromise === handshake) this.#handshakePromise = null;
       throw error;
     }
   }
@@ -805,7 +840,7 @@ export class ConversationController {
     }
     let entry: ConversationSnapshotCacheEntry | null | undefined;
     try {
-      entry = await this.#snapshotCache.load();
+      entry = await readCache(() => this.#snapshotCache!.load());
     } catch {
       return; // Cache read failure falls through to a network bootstrap.
     }
@@ -826,6 +861,7 @@ export class ConversationController {
     } catch {
       return; // Incompatible snapshot falls back to a network bootstrap.
     }
+    this.#snapshotBase = snapshot;
     this.#historyState = this.#historyStateFor(snapshot);
     this.#pendingRevalidate = { etag: entry.etag };
     this.#emitView("bootstrap");
@@ -847,6 +883,8 @@ export class ConversationController {
       this.#pendingRevalidate = undefined;
       return;
     }
+    this.#cancelSnapshotTimer();
+    this.#snapshotBase = result.summary;
     this.#state.bootstrap(this.#identity, result.summary);
     this.#historyState = this.#historyStateFor(result.summary);
     this.#emitView("bootstrap");
@@ -868,6 +906,7 @@ export class ConversationController {
       );
     }
     const snapshot = result.summary;
+    this.#snapshotBase = snapshot;
     this.#state.bootstrap(this.#identity, snapshot);
     this.#historyState = this.#historyStateFor(snapshot);
     this.#emitView("bootstrap");
@@ -882,8 +921,11 @@ export class ConversationController {
       return;
     }
     // Best-effort persistence; cache failures never fail the controller.
-    void Promise.resolve(this.#snapshotCache.store({ etag, summary: snapshot }))
-      .catch(() => {});
+    const cache = this.#snapshotCache;
+    const generation = this.#cacheGeneration;
+    this.#snapshotWrites = this.#snapshotWrites.then(async () => {
+      if (generation === this.#cacheGeneration) await cache.store({ etag, summary: snapshot });
+    }).catch(() => {});
   }
 
   async #pumpStream(runToken: number): Promise<void> {
@@ -901,6 +943,8 @@ export class ConversationController {
         return;
       }
       if (item.type === "reset_required") {
+        this.#cancelSnapshotTimer();
+        this.#snapshotBase = undefined;
         this.#state.reset(item.reset.reason);
         this.#emitView("reset");
         return;
@@ -908,11 +952,16 @@ export class ConversationController {
       try {
         if (this.#state.applyBatch(this.#identity, item.batch)) {
           this.#emitView("batch");
+          if (item.batch.mutations.some((mutation) => mutation.type === "turn_summary_upsert" && mutation.turn.execution.kind === "terminal")) {
+            this.#flushSnapshot();
+          }
         }
       } catch (error) {
         if (error instanceof ConversationStaleResponseError) {
           // Divergence between checkpoint and server framing: self-heal by
           // clearing state so the supervise loop re-snapshots serially.
+          this.#cancelSnapshotTimer();
+          this.#snapshotBase = undefined;
           this.#state.reset("stream_recovery_failed");
           this.#emitView("reset");
           return;
@@ -920,6 +969,54 @@ export class ConversationController {
         throw error;
       }
     }
+  }
+
+  #cancelSnapshotTimer(): void {
+    if (this.#snapshotTimer !== undefined) clearTimeout(this.#snapshotTimer);
+    this.#snapshotTimer = undefined;
+  }
+
+  #flushSnapshot(): void {
+    if (this.#snapshotTimer === undefined) return;
+    this.#cancelSnapshotTimer();
+    const view = this.#state.view();
+    if (!this.#snapshotBase || !view.scope || !view.checkpoint || view.through_seq === null || view.reset_reason) return;
+    this.#persistSnapshot({
+      ...this.#snapshotBase,
+      snapshot_cursor: view.checkpoint,
+      snapshot_through_seq: view.through_seq,
+      event_head_seq: view.through_seq,
+      turns: view.turns,
+      active_turns: view.turns.filter((turn) => turn.execution.kind === "active"),
+      pending_inputs: view.pending_inputs,
+      next_before_cursor: view.next_before_cursor,
+      has_more: view.has_more,
+    }, null); // A locally updated view must never reuse the server body's ETag.
+  }
+
+  #discardUnauthorizedCache(error: unknown, includeNotFound = false): void {
+    if (!(error instanceof ConversationHttpError) || !([401, 403].includes(error.status) || (includeNotFound && error.status === 404))) return;
+    this.#cancelSnapshotTimer();
+    this.#runToken += 1;
+    this.#runAbort?.abort(abortError("conversation access revoked"));
+    this.#starting = false;
+    this.#handshakePromise = null;
+    this.#capabilityReady = false;
+    this.#cacheGeneration += 1;
+    this.#snapshotBase = undefined;
+    this.#pendingRevalidate = undefined;
+    this.#state.reset("stream_recovery_failed");
+    this.#briefStates.clear();
+    this.#briefOrder.length = 0;
+    this.#detailStates.clear();
+    this.#requestAbort.abort(abortError("conversation access revoked"));
+    this.#requestAbort = new AbortController();
+    this.#snapshotWrites = this.#snapshotWrites.then(async () => {
+      await this.#snapshotCache?.clear?.();
+    }).catch(() => {});
+    void this.#briefCache?.clear?.().catch(() => {});
+    this.#emitView("reset");
+    this.#setStatus({ kind: "recoverable_error", error });
   }
 
   #backoffDelay(attempt: number): number {
@@ -980,6 +1077,10 @@ export class ConversationController {
       | "detail_page"
       | "reset",
   ): void {
+    if (["batch", "older_page", "detail_page"].includes(reason) && this.#pendingRevalidate === undefined
+      && this.#snapshotCache && this.#snapshotTimer === undefined) {
+      this.#snapshotTimer = setTimeout(() => this.#flushSnapshot(), 750);
+    }
     this.#onEvent?.({ type: "view", reason });
     this.#emitChange();
   }
@@ -991,5 +1092,17 @@ export class ConversationController {
     for (const listener of this.#listeners) {
       listener();
     }
+  }
+}
+
+/** Cache availability must never gate network recovery indefinitely. */
+async function readCache<T>(read: () => Promise<T>): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([read(), new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), 600);
+    })]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
   }
 }

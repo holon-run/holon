@@ -32,7 +32,7 @@ import {
   setRuntimeTraceEnabled,
 } from "./runtime-trace";
 import {
-  conversationScopeKey,
+  resolveConversationScopeKey,
   useConversationScopeStore,
 } from "./conversation-scope-store";
 import type { AgentSessionState } from "./runtime-store";
@@ -43,7 +43,7 @@ import type { AgentSummary } from "./types";
 function seedReadyConversationScope(agentId: string): void {
   useConversationScopeStore.setState({
     scopes: {
-      [conversationScopeKey("local", agentId)]: {
+      [resolveConversationScopeKey("local", agentId, useRuntimeStore.getState().currentUser)]: {
         status: { kind: "ready" },
         view: {} as ConversationStateView,
         version: 1,
@@ -1024,6 +1024,7 @@ describe("roster activity unread state", () => {
     vi.unstubAllGlobals();
     setRuntimeTraceEnabled(false, { clear: true });
     useRuntimeStore.setState({
+      currentUser: undefined,
       route: "dashboard",
       selectedAgentId: "",
       sessionsByAgentId: {},
@@ -1031,7 +1032,8 @@ describe("roster activity unread state", () => {
     });
   });
 
-  it("retries a pending read marker after ledger readiness becomes available", async () => {
+  it.each([undefined, { authMethod: "oidc", userId: "reader" }])("retries a pending read marker for identity %j after ledger readiness becomes available", async (currentUser) => {
+    useRuntimeStore.setState({ currentUser });
     vi.stubGlobal("document", { visibilityState: "visible" });
     let ready = false;
     vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness")

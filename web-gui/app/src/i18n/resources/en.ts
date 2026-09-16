@@ -440,7 +440,9 @@ const en = {
     turnResultUnavailable: "Result unavailable (outside retention or missing linkage).",
     hideExecutionProcess: "Hide execution process",
     turnElapsed: "Took {{duration}}",
+    conversationSyncing: "Showing saved history. Checking the latest state…",
     turnTimingStatus: {
+      syncing: "Syncing",
       running: "Working",
       completed: "Completed",
       waitingResult: "Waiting for result",

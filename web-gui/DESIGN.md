@@ -542,3 +542,33 @@ remain the source of interaction behavior.
 Detail status badges include a text label. Each detail object owns its disclosure
 and scroll state: a new object uses its own defaults, and revisiting one restores the
 reader's state without transferring it to another object.
+
+## Conversation cache lifecycle
+
+- Retain up to three idle conversation controllers for fast agent switching,
+  but pause their SSE streams. Hidden documents pause conversation streams too.
+  Resume from the retained checkpoint; server reset responses trigger a new
+  snapshot. The existing global roster stream keeps its own lifecycle.
+- Persist conversation summaries and briefs in IndexedDB under the current
+  origin and verified login identity. Unknown identity uses memory only.
+  Authentication changes discard controllers and persisted content and notify
+  sibling tabs to re-check their session. Access-denied revalidation clears
+  the affected conversation immediately.
+- Render restored content while revalidating, but show active turns as
+  **Syncing**, without a running timer, until the controller is ready. Cached
+  activity is not evidence that execution is still running.
+- Persist streamed updates with a 750 ms throttle and flush terminal changes
+  immediately. A locally updated snapshot cannot retain its old HTTP ETag.
+  Snapshot reads use the same structural decoder as network responses.
+- Database upgrades blocked by old tabs and storage operations exceeding
+  500 ms fall back to network. Database connections close on version changes.
+  Briefs and snapshots expire after 30 days and share a best-effort limit of
+  500 entries / 20 MiB estimated serialized size, retaining newest writes.
+- Current-work status polls every 5 seconds during active execution and every
+  30 seconds when idle or waiting; visibility and stream changes still refresh
+  it immediately. Automatic model loading reads the server catalog; explicit
+  refresh asks the server to rebuild it.
+
+HTTP 304 responses save payload transfer. The current server still computes the
+summary before comparing its ETag; avoiding that work needs a separate server
+revision contract covering every input to the summary.

@@ -361,6 +361,11 @@ describe("conversation presentation boundaries", () => {
     expect(html).toContain("Working");
     expect(html).toContain("这是结果内容 markdown");
   });
+  it("does not present an unvalidated cached active turn as working", () => {
+    const html = renderTimeline([turnSummary("cached", 1)], { status: { kind: "loading" } } as never);
+    expect(html).toContain("Syncing");
+    expect(html).not.toContain("Working");
+  });
   it("puts queued input after history and exposes system provenance without a user bubble", () => {
     const html = renderTimeline([turnSummary("background", 1, {
       presentation_class: "system", inputs: [{ message_id: "system", preview: "recheck" }],

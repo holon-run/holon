@@ -1,3 +1,4 @@
+import { clearConversationCaches } from "../../runtime/conversation-cache-lifecycle";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { KeyRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -37,6 +38,7 @@ export function LoginPage() {
         if (body.mode === "oidc") {
           // OIDC runtimes authenticate via the session cookie; a stored
           // static token would be sent as a stale Bearer header and mask it.
+          await clearConversationCaches();
           clearStoredRuntimeConnectionToken();
         }
         setOidc(body.mode === "oidc");
@@ -62,6 +64,7 @@ export function LoginPage() {
         body: JSON.stringify({ credential: token }),
       });
       if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
+      await clearConversationCaches();
       clearStoredRuntimeConnectionToken();
       window.location.replace(returnTo || "/");
     } catch (cause) {

@@ -24,6 +24,19 @@ export interface ConversationConnectionOptions {
 
 export type ConversationScopeKey = string;
 
+export function conversationCacheKey(remoteKey: string, user: { authMethod: string; userId: string } | undefined): string | undefined {
+  return user ? `${remoteKey}#${JSON.stringify([user.authMethod, user.userId])}` : undefined;
+}
+
+/** One identity-aware key for page ownership, read-marker gates and diagnostics. */
+export function resolveConversationScopeKey(
+  remoteKey: string,
+  agentId: string,
+  user: { authMethod: string; userId: string } | undefined,
+): ConversationScopeKey {
+  return conversationScopeKey(conversationCacheKey(remoteKey, user) ?? `${remoteKey}#memory`, agentId);
+}
+
 export interface ConversationScopeHandle {
   readonly key: ConversationScopeKey;
   readonly controller: ConversationController;
@@ -85,9 +98,8 @@ interface RegistryEntry {
 const registry = new Map<ConversationScopeKey, RegistryEntry>();
 
 /**
- * How many released (idle) scopes keep their controller and stream alive for
- * instant switching back. Bounded so daemon-side concurrent SSE connections
- * stay predictable.
+ * How many released (idle) scopes keep their controller data alive for
+ * instant switching back. Streams are paused; the bound limits memory usage.
  */
 export const CONVERSATION_SCOPE_KEEP_ALIVE = 3;
 
@@ -112,6 +124,8 @@ export interface AcquireConversationScopeOptions
   readonly key: ConversationScopeKey;
   readonly agentId: string;
   readonly remoteId?: string;
+  /** Verified identity-scoped storage key; absent means memory-only. */
+  readonly cacheKey?: string;
   readonly controllerOptions?: Omit<
     ConversationControllerOptions,
     "client" | "agentId" | "remoteId"
@@ -123,7 +137,7 @@ export interface AcquireConversationScopeOptions
  * Acquire (or attach to) the conversation controller for one
  * connection+agent scope. The controller starts immediately; callers release
  * it when their React surface unmounts. Recently released scopes stay alive
- * (stream attached) up to `CONVERSATION_SCOPE_KEEP_ALIVE`; older idle scopes
+ * (stream paused) up to `CONVERSATION_SCOPE_KEEP_ALIVE`; older idle scopes
  * are disposed in LRU order.
  */
 export function acquireConversationScope(
@@ -135,7 +149,7 @@ export function acquireConversationScope(
     existing.refCount += 1;
     if (wasIdle) {
       removeFromIdleOrder(options.key);
-      restartIdleScopeIfNeeded(existing.controller);
+      if (isPageVisible()) existing.controller.start();
     }
     return { key: options.key, controller: existing.controller };
   }
@@ -146,18 +160,18 @@ export function acquireConversationScope(
     // supplied its own (tests inject in-memory fakes). Storage-less
     // environments silently degrade to memory-only caching inside the
     // adapters.
-    ...(options.controllerOptions?.briefCache === undefined
+    ...(options.cacheKey !== undefined && options.controllerOptions?.briefCache === undefined
       ? {
           briefCache: createConversationBriefCache(
-            options.remoteId ?? "",
+            options.cacheKey,
             options.agentId,
           ),
         }
       : {}),
-    ...(options.controllerOptions?.snapshotCache === undefined
+    ...(options.cacheKey !== undefined && options.controllerOptions?.snapshotCache === undefined
       ? {
           snapshotCache: createConversationSnapshotCache(
-            options.remoteId ?? "",
+            options.cacheKey,
             options.agentId,
           ),
         }
@@ -175,7 +189,7 @@ export function acquireConversationScope(
     refCount: 1,
   });
   publishScopeSnapshot(options.key, controller);
-  controller.start();
+  if (isPageVisible()) controller.start();
   evictIdleScopes();
   return { key: options.key, controller };
 }
@@ -184,9 +198,11 @@ export function acquireConversationScope(
 export function releaseConversationScope(key: ConversationScopeKey): void {
   const entry = registry.get(key);
   if (entry === undefined) return;
+  if (entry.refCount === 0) return;
   entry.refCount -= 1;
   if (entry.refCount > 0) return;
   entry.refCount = 0;
+  entry.controller.pause();
   idleOrder.push(key);
   evictIdleScopes();
 }
@@ -208,11 +224,11 @@ export function idleConversationScopeCount(): number {
 }
 
 /** Dispose every registered scope, including idle keep-alive entries. */
-export function disposeAllConversationScopes(): void {
+export function disposeAllConversationScopes(persist = true): void {
   for (const key of [...registry.keys()]) {
     const entry = registry.get(key);
     if (entry !== undefined) {
-      disposeScope(key, entry);
+      disposeScope(key, entry, persist);
     }
   }
   idleOrder.length = 0;
@@ -228,10 +244,10 @@ function evictIdleScopes(): void {
   }
 }
 
-function disposeScope(key: ConversationScopeKey, entry: RegistryEntry): void {
+function disposeScope(key: ConversationScopeKey, entry: RegistryEntry, persist = true): void {
   registry.delete(key);
   entry.unsubscribe();
-  entry.controller.dispose();
+  entry.controller.dispose(persist);
   useConversationScopeStore.setState((state) => {
     if (!(key in state.scopes)) return state;
     const scopes = { ...state.scopes };
@@ -247,21 +263,17 @@ function removeFromIdleOrder(key: ConversationScopeKey): void {
   }
 }
 
-// A kept-alive controller may have ended in a terminal state while idle;
-// remounting the surface should restart it like a freshly created scope.
-function restartIdleScopeIfNeeded(controller: ConversationController): void {
-  const kind = controller.status.kind;
-  if (
-    kind === "terminal_error" ||
-    kind === "recoverable_error" ||
-    kind === "unsupported"
-  ) {
-    try {
-      controller.retry();
-    } catch {
-      // Disposed concurrently; the acquire path will not observe it.
+function isPageVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState !== "hidden";
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("visibilitychange", () => {
+    for (const entry of registry.values()) {
+      if (!isPageVisible()) entry.controller.pause();
+      else if (entry.refCount > 0) entry.controller.start();
     }
-  }
+  });
 }
 
 function publishScopeSnapshot(

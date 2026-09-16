@@ -57,7 +57,7 @@ describe("conversation snapshot cache", () => {
       schemaVersion: SNAPSHOT_CACHE_SCHEMA_VERSION - 1,
       etag: null,
       summary: summarySnapshot(),
-      cachedAt: 1,
+      cachedAt: Date.now(),
     });
     const cache = createConversationSnapshotCache("remote-a", "web");
     expect(await cache.load()).toBeNull();
@@ -69,15 +69,15 @@ describe("conversation snapshot cache", () => {
       agentId: "web",
       schemaVersion: SNAPSHOT_CACHE_SCHEMA_VERSION,
       etag: "etag-x",
-      summary: { snapshot_through_seq: "not-a-number" },
-      cachedAt: 1,
+      summary: { ...summarySnapshot(), turns: [{ turn_id: "broken" }] },
+      cachedAt: Date.now(),
     });
     const cache = createConversationSnapshotCache("remote-a", "web");
     expect(await cache.load()).toBeNull();
   });
 
   it("clears cached snapshots per remote, including via cacheClearRemote", async () => {
-    const cache = createConversationSnapshotCache("remote-a", "web");
+    const cache = createConversationSnapshotCache("remote-a#user", "web");
     await cache.store({ etag: "etag-10", summary: summarySnapshot(10) });
     const otherRemote = createConversationSnapshotCache("remote-b", "web");
     await otherRemote.store({ etag: "etag-11", summary: summarySnapshot(11) });

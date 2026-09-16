@@ -10,7 +10,8 @@ import type {
 import { resolveRuntimeApiBase } from "./client";
 import {
   acquireConversationScope,
-  conversationScopeKey,
+  conversationCacheKey,
+  resolveConversationScopeKey,
   conversationScopeSnapshot,
   peekConversationScope,
   releaseConversationScope,
@@ -47,6 +48,8 @@ export interface UseConversationSessionResult {
 export function useConversationSession(
   agentId: string | undefined,
 ): UseConversationSessionResult {
+  const currentUser = useRuntimeStore((state) => state.currentUser);
+  const currentUserLoaded = useRuntimeStore((state) => state.currentUserLoaded);
   const connection = useRuntimeStore((state) => state.bootstrap.connection);
   const remoteKey = currentRemoteKey({
     mode: connection.mode,
@@ -56,9 +59,11 @@ export function useConversationSession(
     mode: connection.mode,
     baseUrl: connection.baseUrl,
   });
+  // Never read another login's persisted content while identity is unknown.
+  const cacheKey = conversationCacheKey(remoteKey, currentUser);
   const scopeKey =
-    agentId !== undefined && agentId.length > 0 && apiBase !== undefined
-      ? conversationScopeKey(remoteKey, agentId)
+    currentUserLoaded && !connection.authRequired && agentId !== undefined && agentId.length > 0 && apiBase !== undefined
+      ? resolveConversationScopeKey(remoteKey, agentId, currentUser)
       : null;
 
   useEffect(() => {
@@ -68,13 +73,14 @@ export function useConversationSession(
       key: scopeKey,
       agentId,
       remoteId: remoteKey,
+      cacheKey,
       baseUrl: apiBase ?? "",
       ...(config.token === undefined ? {} : { token: config.token }),
     });
     return () => {
       releaseConversationScope(scopeKey);
     };
-  }, [scopeKey, agentId, remoteKey, apiBase]);
+  }, [scopeKey, agentId, remoteKey, apiBase, cacheKey]);
 
   // Subscribe to scope snapshots so brief/detail/history request states and
   // view revisions re-render even while the controller object is stable.

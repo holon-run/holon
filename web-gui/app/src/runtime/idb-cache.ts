@@ -9,7 +9,7 @@
 import type { BriefRecord } from "@holon/conversation-sdk";
 
 const DB_NAME = "holon-webgui-cache";
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 export const CACHE_SCHEMA_VERSION = 5;
 export const BRIEF_CACHE_SCHEMA_VERSION = 1;
 export const SNAPSHOT_CACHE_SCHEMA_VERSION = 1;
@@ -18,6 +18,12 @@ const META_STORE = "meta";
 const MODEL_CATALOG_STORE = "modelCatalog";
 const BRIEFS_STORE = "briefs";
 const SNAPSHOTS_STORE = "snapshots";
+const CACHE_TIMEOUT_MS = 500;
+export const CONVERSATION_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+export const CONVERSATION_CACHE_MAX_BYTES = 20 * 1024 * 1024;
+export const CONVERSATION_CACHE_MAX_ENTRIES = 500;
+let pruneTimer: ReturnType<typeof setTimeout> | undefined;
+let clearGeneration = 0;
 
 export interface CachedSyncCoverage {
   eventLogEpoch?: string;
@@ -86,6 +92,7 @@ export interface CachedConversationSnapshot {
 }
 
 let dbPromise: Promise<IDBDatabase | null> | null = null;
+let database: IDBDatabase | null = null;
 
 function openDB(): Promise<IDBDatabase | null> {
   if (dbPromise) return dbPromise;
@@ -95,15 +102,29 @@ function openDB(): Promise<IDBDatabase | null> {
       resolve(null);
       return;
     }
+    let settled = false;
+    const finish = (db: IDBDatabase | null) => {
+      if (settled) { db?.close(); return; }
+      settled = true;
+      database = db;
+      clearTimeout(timer);
+      resolve(db);
+    };
+    const timer = setTimeout(() => finish(null), CACHE_TIMEOUT_MS);
     let request: IDBOpenDBRequest;
     try {
       request = indexedDB.open(DB_NAME, DB_VERSION);
     } catch {
-      resolve(null);
+      finish(null);
       return;
     }
+    request.onblocked = () => finish(null);
     request.onupgradeneeded = () => {
       const db = request.result;
+      // Retire snapshots/briefs written before authenticated cache namespaces.
+      for (const name of [BRIEFS_STORE, SNAPSHOTS_STORE]) {
+        if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name);
+      }
       if (!db.objectStoreNames.contains(SESSIONS_STORE)) {
         const store = db.createObjectStore(SESSIONS_STORE, { keyPath: ["remoteKey", "agentId"] });
         store.createIndex("byRemoteKey", "remoteKey", { unique: false });
@@ -121,8 +142,12 @@ function openDB(): Promise<IDBDatabase | null> {
         db.createObjectStore(SNAPSHOTS_STORE, { keyPath: ["remoteKey", "agentId"] });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => resolve(null);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => { db.close(); database = null; dbPromise = null; };
+      finish(db);
+    };
+    request.onerror = () => finish(null);
   });
 
   return dbPromise;
@@ -136,9 +161,21 @@ function runRequest<T>(
 ): Promise<T | undefined> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, mode);
-    const request = fn(tx.objectStore(storeName));
-    request.onsuccess = () => resolve(request.result as T);
-    request.onerror = () => reject(request.error);
+    const timer = setTimeout(() => {
+      try { tx.abort(); } catch { /* already finished */ }
+      resolve(undefined);
+    }, CACHE_TIMEOUT_MS);
+    let result: T | undefined;
+    tx.oncomplete = () => { clearTimeout(timer); resolve(result); };
+    tx.onabort = tx.onerror = () => { clearTimeout(timer); reject(tx.error); };
+    try {
+      const request = fn(tx.objectStore(storeName));
+      request.onsuccess = () => { if (request.readyState === "done") result = request.result as T; };
+    } catch (error) {
+      clearTimeout(timer);
+      try { tx.abort(); } catch { /* already finished */ }
+      reject(error);
+    }
   });
 }
 
@@ -253,10 +290,12 @@ export async function cacheGetModelCatalog(remoteKey: string): Promise<CachedMod
 export async function cachePutConversationBrief(
   entry: CachedConversationBrief,
 ): Promise<void> {
+  const generation = clearGeneration;
   const db = await openDB();
-  if (!db) return;
+  if (!db || generation !== clearGeneration) return;
   try {
     await runRequest(db, BRIEFS_STORE, "readwrite", (store) => store.put(entry));
+    scheduleConversationPrune();
   } catch {
     // Silent fallback — cache is best-effort.
   }
@@ -270,9 +309,8 @@ export async function cacheGetConversationBrief(
   const db = await openDB();
   if (!db) return undefined;
   try {
-    return await runRequest<CachedConversationBrief>(db, BRIEFS_STORE, "readonly", (store) =>
-      store.get([remoteKey, agentId, briefId]),
-    );
+    const entry = await runRequest<CachedConversationBrief>(db, BRIEFS_STORE, "readonly", (store) => store.get([remoteKey, agentId, briefId]));
+    return entry && Date.now() - entry.cachedAt <= CONVERSATION_CACHE_MAX_AGE_MS ? entry : undefined;
   } catch {
     return undefined;
   }
@@ -281,10 +319,12 @@ export async function cacheGetConversationBrief(
 export async function cachePutConversationSnapshot(
   entry: CachedConversationSnapshot,
 ): Promise<void> {
+  const generation = clearGeneration;
   const db = await openDB();
-  if (!db) return;
+  if (!db || generation !== clearGeneration) return;
   try {
     await runRequest(db, SNAPSHOTS_STORE, "readwrite", (store) => store.put(entry));
+    scheduleConversationPrune();
   } catch {
     // Silent fallback — cache is best-effort.
   }
@@ -297,113 +337,110 @@ export async function cacheGetConversationSnapshot(
   const db = await openDB();
   if (!db) return undefined;
   try {
-    return await runRequest<CachedConversationSnapshot>(
+    const entry = await runRequest<CachedConversationSnapshot>(
       db,
       SNAPSHOTS_STORE,
       "readonly",
       (store) => store.get([remoteKey, agentId]),
     );
+    return entry && Date.now() - entry.cachedAt <= CONVERSATION_CACHE_MAX_AGE_MS ? entry : undefined;
   } catch {
     return undefined;
   }
 }
 
-/** Delete every cached brief for one remote (connection switch, sign-out). */
-export async function cacheClearRemoteBriefs(remoteKey: string): Promise<void> {
+function belongsToRemote(key: string, remote: string): boolean {
+  return key === remote || key.startsWith(`${remote}#`);
+}
+
+async function deleteMatching(storeNames: string[], matches: (entry: { remoteKey: string; agentId?: string }) => boolean): Promise<void> {
+  clearGeneration += 1;
   const db = await openDB();
   if (!db) return;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const store = db.transaction(BRIEFS_STORE, "readwrite").objectStore(BRIEFS_STORE);
-      const request = store.openCursor();
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
-          const entry = cursor.value as CachedConversationBrief;
-          if (entry.remoteKey === remoteKey) {
-            cursor.delete();
-          }
+  await Promise.all(storeNames.map(async (name) => {
+    try {
+      await runRequest(db, name, "readwrite", (store) => {
+        const request = store.openCursor();
+        request.addEventListener("success", () => {
+          const cursor = request.result;
+          if (!cursor) return;
+          if (matches(cursor.value)) cursor.delete();
           cursor.continue();
-        } else {
-          resolve();
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch {
-    // Silent fallback.
-  }
+        });
+        return request;
+      });
+    } catch { /* best-effort cache cleanup */ }
+  }));
+}
+
+export async function cacheClearConversationScope(remoteKey: string, agentId: string): Promise<void> {
+  await deleteMatching([BRIEFS_STORE, SNAPSHOTS_STORE], (entry) => entry.remoteKey === remoteKey && entry.agentId === agentId);
+}
+
+export async function cacheClearRemoteBriefs(remoteKey: string): Promise<void> {
+  await deleteMatching([BRIEFS_STORE], (entry) => belongsToRemote(entry.remoteKey, remoteKey));
 }
 
 /** Delete every cached conversation snapshot for one remote (connection switch, sign-out). */
 export async function cacheClearRemoteSnapshots(remoteKey: string): Promise<void> {
-  const db = await openDB();
-  if (!db) return;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const store = db.transaction(SNAPSHOTS_STORE, "readwrite").objectStore(SNAPSHOTS_STORE);
-      const request = store.openCursor();
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
-          const entry = cursor.value as CachedConversationSnapshot;
-          if (entry.remoteKey === remoteKey) {
-            cursor.delete();
-          }
-          cursor.continue();
-        } else {
-          resolve();
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch {
-    // Silent fallback.
-  }
+  await deleteMatching([SNAPSHOTS_STORE], (entry) => belongsToRemote(entry.remoteKey, remoteKey));
 }
 
 export async function cacheClearRemote(remoteKey: string): Promise<void> {
+  await deleteMatching([SESSIONS_STORE, MODEL_CATALOG_STORE, BRIEFS_STORE, SNAPSHOTS_STORE],
+    (entry) => belongsToRemote(entry.remoteKey, remoteKey));
+}
+
+/** Logout clears this origin's cache, including legacy namespaces. */
+export async function cacheClearAll(): Promise<void> {
+  await deleteMatching([SESSIONS_STORE, MODEL_CATALOG_STORE, BRIEFS_STORE, SNAPSHOTS_STORE], () => true);
+}
+
+function scheduleConversationPrune(): void {
+  if (pruneTimer !== undefined) return;
+  pruneTimer = setTimeout(() => {
+    pruneTimer = undefined;
+    void pruneConversationCaches();
+  }, 1000);
+}
+
+/** Bounded by age, total serialized bytes and entry count across both stores. */
+export async function pruneConversationCaches(): Promise<void> {
   const db = await openDB();
   if (!db) return;
   try {
-    await cacheClearRemoteBriefs(remoteKey);
-    await cacheClearRemoteSnapshots(remoteKey);
-    await Promise.all([
-      new Promise<void>((resolve, reject) => {
-        const store = db.transaction(SESSIONS_STORE, "readwrite").objectStore(SESSIONS_STORE);
-        const request = store.index("byRemoteKey").openCursor(IDBKeyRange.only(remoteKey));
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction([BRIEFS_STORE, SNAPSHOTS_STORE], "readwrite");
+      const timeout = setTimeout(() => {
+        try { tx.abort(); } catch { /* already finished */ }
+        resolve();
+      }, CACHE_TIMEOUT_MS);
+      tx.oncomplete = tx.onabort = tx.onerror = () => { clearTimeout(timeout); resolve(); };
+      const entries: Array<{ store: string; key: IDBValidKey; cachedAt: number; bytes: number }> = [];
+      let remaining = 2;
+      for (const name of [BRIEFS_STORE, SNAPSHOTS_STORE]) {
+        const request = tx.objectStore(name).openCursor();
         request.onsuccess = () => {
           const cursor = request.result;
           if (cursor) {
-            cursor.delete();
+            const value = cursor.value;
+            entries.push({ store: name, key: cursor.primaryKey, cachedAt: value.cachedAt ?? 0, bytes: JSON.stringify(value).length * 2 });
             cursor.continue();
-          } else {
-            resolve();
-          }
-        };
-        request.onerror = () => reject(request.error);
-      }),
-      new Promise<void>((resolve, reject) => {
-        const store = db.transaction(MODEL_CATALOG_STORE, "readwrite").objectStore(MODEL_CATALOG_STORE);
-        const request = store.openCursor();
-        request.onsuccess = () => {
-          const cursor = request.result;
-          if (cursor) {
-            const catalog = cursor.value as CachedModelCatalog;
-            if (catalog.remoteKey === remoteKey || catalog.remoteKey.startsWith(`${remoteKey}#`)) {
-              cursor.delete();
+          } else if (--remaining === 0) {
+            entries.sort((a, b) => b.cachedAt - a.cachedAt);
+            let bytes = 0;
+            let count = 0;
+            for (const entry of entries) {
+              if (Date.now() - entry.cachedAt > CONVERSATION_CACHE_MAX_AGE_MS
+                || count >= CONVERSATION_CACHE_MAX_ENTRIES || bytes + entry.bytes > CONVERSATION_CACHE_MAX_BYTES) {
+                tx.objectStore(entry.store).delete(entry.key);
+              } else { count++; bytes += entry.bytes; }
             }
-            cursor.continue();
-          } else {
-            resolve();
           }
         };
-        request.onerror = () => reject(request.error);
-      }),
-    ]);
-  } catch {
-    // Silent fallback.
-  }
+      }
+    });
+  } catch { /* storage unavailable */ }
 }
 
 /**
@@ -457,5 +494,9 @@ export async function ensureCacheSchemaVersion(): Promise<boolean> {
 
 /** Reset the DB promise (test utility). */
 export function _resetDbPromise(): void {
+  database?.close();
+  database = null;
+  if (pruneTimer !== undefined) clearTimeout(pruneTimer);
+  pruneTimer = undefined;
   dbPromise = null;
 }

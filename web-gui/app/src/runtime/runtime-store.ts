@@ -1,3 +1,4 @@
+import { clearConversationCaches } from "./conversation-cache-lifecycle";
 import type { CurrentUser } from "./client";
 import { create } from "zustand";
 
@@ -53,7 +54,7 @@ import {
 } from "./idb-cache";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import { currentRemoteKey } from "./session-cache";
-import { conversationScopeKey, conversationScopeSnapshot } from "./conversation-scope-store";
+import { resolveConversationScopeKey, conversationScopeSnapshot } from "./conversation-scope-store";
 import {
   createRuntimeTrace,
   installRuntimeTraceDebugApi,
@@ -324,6 +325,7 @@ export interface RuntimeStoreState {
   bootstrapLoading: boolean;
   /** Identity behind the current session, used to attribute pending operator prompts. */
   currentUser?: CurrentUser;
+  currentUserLoaded: boolean;
   bootstrapError?: string;
   globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting";
   discovery: RosterDiscoveryState;
@@ -417,7 +419,7 @@ export interface RuntimeStoreState {
   setRuntimeConnection: (config: RuntimeConnectionConfig) => Promise<void>;
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   reconcileAfterResume: () => Promise<void>;
-  refreshModelCatalog: () => Promise<void>;
+  refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   refreshSkillCatalog: () => Promise<void>;
@@ -1150,9 +1152,10 @@ async function refreshLedgerUnreadInView(agentId: string): Promise<void> {
 export function ledgerReadMarkerDecision(agentId: string) {
   const state = useRuntimeStore.getState();
   const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
-  const scopeKey = conversationScopeKey(
+  const scopeKey = resolveConversationScopeKey(
     currentRemoteKey(runtimeConnectionConfig),
     agentId,
+    state.currentUser,
   );
   const scope = conversationScopeSnapshot(scopeKey);
   return evaluateLedgerReadMarkerGate(
@@ -1324,6 +1327,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   bootstrap: pendingBootstrap(runtimeConnectionConfig),
   bootstrapLoading: true,
   currentUser: undefined,
+  currentUserLoaded: false,
   globalStreamStatus: "idle",
   discovery: {
     mode: "pending",
@@ -1691,6 +1695,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   toggleNavCollapsed: () => set((state) => ({ navCollapsed: !state.navCollapsed })),
 
   setRuntimeConnection: async (config) => {
+    await clearConversationCaches();
     nextClientGeneration();
     const generation = clientGeneration;
     cancelClientGenerationWork();
@@ -1710,6 +1715,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     reconnectTimers.clear();
     staleTimers.clear();
     set({
+      currentUser: undefined,
+      currentUserLoaded: false,
       bootstrap: pendingBootstrap(normalizedConfig),
       bootstrapLoading: true,
       bootstrapError: undefined,
@@ -1792,7 +1799,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         // pending prompts can be attributed without blocking the bootstrap.
         void runtimeClient.getCurrentUser().then((currentUser) => {
           if (!isCurrentClientGeneration(generation)) return;
-          set({ currentUser: currentUser ?? undefined });
+          set({ currentUser: currentUser ?? undefined, currentUserLoaded: true });
         });
         set((state) => {
           if (bootstrap.connection.source === "fixture" && state.bootstrap.connection.source === "http") {
@@ -1929,11 +1936,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     return request;
   },
 
-  refreshModelCatalog: async () => {
+  refreshModelCatalog: async (options) => {
     const request = captureClientRequest();
     set({ modelCatalogLoading: true, modelCatalogError: undefined });
     try {
-      const modelCatalog = freshModelCatalog(await request.client.refreshModels());
+      const modelCatalog = freshModelCatalog(await (options?.refresh === false
+        ? request.client.getModels()
+        : request.client.refreshModels()));
       if (!isCurrentClientRequest(request)) return;
       set({ modelCatalog, modelCatalogLoading: false, modelCatalogError: modelCatalog.error });
       persistModelCatalog(runtimeConnectionConfig, modelCatalog);

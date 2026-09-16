@@ -4,6 +4,7 @@ import type {
 } from "@holon/conversation-sdk";
 
 import {
+  cacheClearConversationScope,
   BRIEF_CACHE_SCHEMA_VERSION,
   cacheGetConversationBrief,
   cachePutConversationBrief,
@@ -11,16 +12,17 @@ import {
 
 /**
  * IndexedDB-backed brief cache for one remote+agent scope. Briefs are
- * immutable final artifacts, so entries are written once and never
- * invalidated; the schema version guard plus shape/id validation protects
- * against corrupted or foreign entries.
+ * immutable final artifacts, reused until expiry or access revocation.
+ * Schema and shape/id validation reject corrupted or foreign entries.
  */
 export function createConversationBriefCache(
   remoteKey: string,
   agentId: string,
 ): ConversationBriefCache {
+  let revoked = false;
   return {
     async get(briefId) {
+      if (revoked) return null;
       const entry = await cacheGetConversationBrief(
         remoteKey,
         agentId,
@@ -41,6 +43,7 @@ export function createConversationBriefCache(
         : null;
     },
     async put(briefId, brief) {
+      if (revoked) return;
       await cachePutConversationBrief({
         remoteKey,
         agentId,
@@ -49,6 +52,10 @@ export function createConversationBriefCache(
         brief,
         cachedAt: Date.now(),
       });
+    },
+    async clear() {
+      revoked = true;
+      await cacheClearConversationScope(remoteKey, agentId);
     },
   };
 }
