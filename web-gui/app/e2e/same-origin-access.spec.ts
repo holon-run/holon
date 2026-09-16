@@ -1,5 +1,29 @@
 import { expect, test } from "@playwright/test";
 
+for (const scenario of [
+  { name: "anonymous local access", authMethod: "local_control", tokenRequired: false, signOut: false },
+  { name: "local token session", authMethod: "local_control", tokenRequired: true, signOut: true },
+  { name: "organization session without a control token", authMethod: "oidc", tokenRequired: false, signOut: true },
+]) {
+  test(`connection menu handles ${scenario.name}`, async ({ page }) => {
+    await page.route("**/api/handshake", async (route) => {
+      const response = await route.fetch();
+      const handshake = await response.json();
+      handshake.auth = { mode: scenario.tokenRequired ? "bearer" : "local", required: scenario.tokenRequired };
+      await route.fulfill({ json: handshake });
+    });
+    await page.route("**/api/auth/session/me", (route) => route.fulfill({
+      json: { user_id: "control", auth_method: scenario.authMethod },
+    }));
+    await page.goto("/");
+    await page.locator(".connection-status").click();
+    const panel = page.getByRole("dialog", { name: "Connection", exact: true });
+    await expect(panel.getByText("Connected", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Sign out" })).toHaveCount(scenario.signOut ? 1 : 0);
+    await expect(panel.getByRole("button", { name: "Retry connection" })).toBeVisible();
+  });
+}
+
 test("startup ignores saved remotes and exposes only the current server", async ({ page, baseURL }) => {
   await page.addInitScript(() => {
     const remote = { mode: "remote", baseUrl: "https://retired.example", token: "old-remote-secret" };

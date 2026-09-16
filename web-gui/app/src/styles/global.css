@@ -287,14 +287,14 @@ button {
 
 .app-shell {
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: var(--nav-w) minmax(0, 1fr);
   height: 100vh;
   min-height: 0;
   overflow: hidden;
 }
 
 .app-shell[data-panel="open"] {
-  grid-template-columns: 224px minmax(0, 1fr) var(--panel-w, 420px);
+  grid-template-columns: var(--nav-w) minmax(0, 1fr) var(--panel-w, 420px);
 }
 
 .app-shell[data-nav-collapsed="true"] {
@@ -563,6 +563,15 @@ button {
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.agent-row-title strong {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .agent-row small,

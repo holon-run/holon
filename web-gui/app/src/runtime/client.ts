@@ -1839,7 +1839,7 @@ async function fetchRuntimeBootstrap(
   hasToken: boolean,
 ): Promise<RuntimeBootstrap> {
   const handshake = await getJson<{
-    auth?: { mode?: string };
+    auth?: { mode?: string; required?: boolean };
     capabilities?: string[];
   }>(fetchImpl, baseUrl, "/handshake", { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS });
   assertObserverSyncCapabilities(handshake.capabilities ?? []);
@@ -1854,6 +1854,7 @@ async function fetchRuntimeBootstrap(
     source: "http",
     baseUrl,
     hasToken,
+    controlTokenRequired: handshake.auth?.required,
     summary: `${connectionBaseLabel(baseUrl)} · ${connectionMode}${hasToken ? " · Token" : ""}`,
   };
 

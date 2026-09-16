@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { panelLayout } from "./panel-layout";
+import { NAV_WIDTH, panelLayout } from "./panel-layout";
 
 describe("adaptive inspector layout", () => {
   it("preserves conversation space before allocating a wide inspector", () => {
     for (const viewport of [390, 768, 1024, 1280, 1440, 1600]) {
       for (const requested of [320, 380, 900, 2000]) {
         const layout = panelLayout(viewport, true, false, false, requested);
-        if (!layout.full) expect(viewport - (layout.navCollapsed ? 72 : 224) - layout.width).toBeGreaterThanOrEqual(640);
+        if (!layout.full) expect(viewport - (layout.navCollapsed ? 72 : NAV_WIDTH) - layout.width).toBeGreaterThanOrEqual(640);
       }
     }
   });

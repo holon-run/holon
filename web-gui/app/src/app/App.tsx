@@ -32,6 +32,7 @@ import { StatusBadge } from "../components/ui/StatusChip";
 import { DashboardPage } from "../features/dashboard/DashboardPage";
 import { RightSidePanel } from "../features/right-panel/RightSidePanel";
 import { usePanelLayout } from "../features/right-panel/usePanelLayout";
+import { NAV_WIDTH } from "../features/right-panel/panel-layout";
 import { SearchPage } from "../features/search/SearchPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 import { SkillDetailPage, SkillsPage } from "../features/skills/SkillsPage";
@@ -66,9 +67,8 @@ const globalRoutes: Array<{ key: RouteKey; labelKey: string; icon: LucideIcon }>
 
 const APP_WINDOW_TITLE = "Holon";
 
-// Sidebar agent rows cap at two lines: the second line is either the current
-// work-item objective (width-truncated) or, when idle, the agent id for named
-// agents. 40 units ~= 40 latin or 20 CJK glyphs at the 11px meta font.
+// Keep the optional work objective compact below the agent name.
+// 40 units ~= 40 latin or 20 CJK glyphs at the 11px meta font.
 const AGENT_ROW_SUMMARY_MAX_WIDTH = 40;
 
 export function App() {
@@ -501,7 +501,7 @@ export function App() {
       data-panel-mode={rightPanelMode}
       data-nav-collapsed={navCollapsed}
       data-panel-full={panelLayout.full}
-      style={{ "--panel-w": `${panelLayout.width}px` } as CSSProperties}
+      style={{ "--panel-w": `${panelLayout.width}px`, "--nav-w": `${NAV_WIDTH}px` } as CSSProperties}
     >
       <aside className="sidebar" aria-label="Holon navigation">
         <div className="sidebar-brand">
@@ -1017,6 +1017,10 @@ function ConnectionStatus({ connection, loading, onRetry }: {
   onRetry: () => Promise<void>;
 }) {
   const { t } = useTranslation();
+  const currentUser = useRuntimeStore((state) => state.currentUser);
+  // OIDC sessions may exist even when the control token is not required.
+  const unauthenticatedLocal = currentUser?.authMethod === "local_control"
+    && connection.controlTokenRequired === false && !connection.hasToken;
   const [open, setOpen] = useState(false);
   const [retryError, setRetryError] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -1074,7 +1078,7 @@ function ConnectionStatus({ connection, loading, onRetry }: {
             setRetryError(false);
             void onRetry().catch(() => setRetryError(true));
           }}><RefreshCw size={14} />{t("connection.retry")}</Button>
-          <SessionLogout />
+          {!unauthenticatedLocal ? <SessionLogout /> : null}
         </div>
       ) : null}
     </div>
