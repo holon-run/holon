@@ -24,7 +24,7 @@ agents for parallel work, delegation, and specialized subtasks.
 ### Agent Identity & Display Names
 
 - **Permanent Agent ID**: The canonical identifier (e.g. `reviewer`, `builder`) is permanent and cannot be changed.
-- **Display Name**: Self-owned public agents can have a human-readable display name, updated via CLI (`holon agent rename <id> --name <name>`) or HTTP API (`PATCH /api/agents/:id/rename`). The default agent cannot be renamed.
+- **Display Name**: Self-owned public agents can have a human-readable display name, updated via CLI (`holon agent rename <id> --name <name>`) or HTTP API (`PATCH /api/control/agents/:id/name`). The default agent cannot be renamed.
 - **Incarnation**: A durable sequence tracking lifecycle resets and runtime reload generations for an agent.
 
 ### Workspace Modes

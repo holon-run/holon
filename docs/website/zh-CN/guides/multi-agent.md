@@ -24,7 +24,7 @@ Holon 支持创建可寻址的 Agent，并调用私有的受监督子 Agent，�
 ### Agent 标识与显示名称
 
 - **永久 Agent ID**：规范标识符（如 `reviewer`、`builder`）是持久且不可更改的。
-- **显示名称（Display Name）**：自属的公开 Agent 可拥有人类可读的显示名称，可通过 CLI（`holon agent rename <id> --name <name>`）或 HTTP API（`PATCH /api/agents/:id/rename`）修改。默认 Agent 不可重命名。
+- **显示名称（Display Name）**：自属的公开 Agent 可拥有人类可读的显示名称，可通过 CLI（`holon agent rename <id> --name <name>`）或 HTTP API（`PATCH /api/control/agents/:id/name`）修改。默认 Agent 不可重命名。
 - **Incarnation（化身代际）**：跟踪 Agent 生命周期重置与运行时重载代际的持久序列号。
 
 ### Workspace 模式
