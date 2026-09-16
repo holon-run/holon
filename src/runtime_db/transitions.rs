@@ -121,6 +121,7 @@ pub(crate) enum QueueOperation {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
     pub agent_state: Option<AgentStateMutation>,
+    pub queued_messages: Vec<MessageEnvelope>,
     pub work_items: Vec<WorkItemRecord>,
     pub tasks: Vec<TaskRecord>,
     pub audit_events: Vec<AuditEvent>,
@@ -167,11 +168,46 @@ pub(crate) struct WaitTransitionCommand {
     pub expected_wait_conditions: Vec<WaitConditionExpectation>,
     pub wait_conditions: Vec<WaitConditionRecord>,
     pub timer_wake: Option<TimerWakeClaim>,
+    pub task_result_admission: Option<WaitTaskResultAdmission>,
     pub agent_state: Option<AgentStateMutation>,
     pub audit_events: Vec<AuditEvent>,
     pub index_changes: Vec<RuntimeIndexChange>,
     pub notify_scheduler: bool,
     pub fault: Option<TransitionFaultPoint>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct WaitTaskResultAdmission {
+    pub message: MessageEnvelope,
+    pub expected: Option<QueueEntryRecord>,
+    pub record: QueueEntryRecord,
+}
+
+fn admit_wait_task_result_tx(
+    tx: &Transaction<'_>,
+    admission: Option<&WaitTaskResultAdmission>,
+) -> Result<bool> {
+    let Some(admission) = admission else {
+        return Ok(false);
+    };
+    let existing = tx
+        .query_row(
+            "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
+            [&admission.record.message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
+        .transpose()?;
+    if existing != admission.expected {
+        return Err(RuntimeStateTransitionConflict::concurrent_mutation(
+            "task_result_admission",
+            &admission.record.message_id,
+        )
+        .into());
+    }
+    validate_queue_mutation_tx(tx, &QueueMutation::Upsert(admission.record.clone()))?;
+    upsert_queue_entry_tx(tx, &admission.record)
 }
 
 #[derive(Debug, Clone)]
@@ -1146,7 +1182,8 @@ impl RuntimeTransitionRepository<'_> {
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
-            let mut applied = false;
+            let mut applied =
+                admit_wait_task_result_tx(tx, command.task_result_admission.as_ref())?;
             let mut work_items = Vec::new();
             for work_item in &command.work_items {
                 let work_item_applied = apply_work_item_mutation_tx(tx, work_item)?;
@@ -1182,6 +1219,11 @@ impl RuntimeTransitionRepository<'_> {
                         .then(|| command.agent_state.clone())
                         .flatten(),
                     work_items,
+                    queued_messages: command
+                        .task_result_admission
+                        .iter()
+                        .map(|admission| admission.message.clone())
+                        .collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
                 },
@@ -1325,26 +1367,6 @@ impl RuntimeTransitionRepository<'_> {
             &[],
             &[],
             timer_wake_claim,
-            None,
-        )
-    }
-
-    pub fn commit_queue_with_execution_protocol_task_expectation_and_wait_conditions(
-        &self,
-        command: &QueueTransitionCommand,
-        execution_protocol: &ExecutionProtocolTransition,
-        task_expectation: &TaskExpectation,
-        wait_conditions: &[crate::types::WaitConditionRecord],
-    ) -> Result<TransitionCommit> {
-        self.commit_queue_transaction(
-            command,
-            execution_protocol,
-            None,
-            Some(task_expectation),
-            None,
-            &[],
-            wait_conditions,
-            None,
             None,
         )
     }
@@ -1708,7 +1730,10 @@ impl RuntimeTransitionRepository<'_> {
                 .unwrap_or(false);
             let mut wait_registration_work_items = Vec::new();
             let wait_registration_applied = if let Some(wait_registration) = wait_registration {
-                let mut applied = false;
+                let mut applied = admit_wait_task_result_tx(
+                    tx,
+                    wait_registration.task_result_admission.as_ref(),
+                )?;
                 for work_item in &wait_registration.work_items {
                     if apply_work_item_mutation_tx(tx, work_item)? {
                         wait_registration_work_items.push(work_item.record().clone());
@@ -1871,6 +1896,11 @@ impl RuntimeTransitionRepository<'_> {
                         .into_iter()
                         .chain(wait_work_items)
                         .chain(completion_work_items)
+                        .collect(),
+                    queued_messages: wait_registration
+                        .and_then(|wait| wait.task_result_admission.as_ref())
+                        .map(|admission| admission.message.clone())
+                        .into_iter()
                         .collect(),
                     notify_scheduler: command.notify_scheduler,
                     ..PostCommitEffects::default()
@@ -3921,6 +3951,7 @@ mod tests {
 
         db.transitions()
             .commit_wait(&WaitTransitionCommand {
+                task_result_admission: None,
                 agent_id: "agent-a".into(),
                 work_items: vec![WorkItemMutation::Update {
                     record: blocked,
@@ -4488,6 +4519,7 @@ mod tests {
             db.transitions()
                 .commit_wait_with_execution_protocol(
                     &WaitTransitionCommand {
+                        task_result_admission: None,
                         agent_id: "agent-a".into(),
                         work_items: Vec::new(),
                         expected_wait_conditions: Vec::new(),
@@ -4515,6 +4547,7 @@ mod tests {
 
             db.transitions().commit_wait_with_execution_protocol(
                 &WaitTransitionCommand {
+                    task_result_admission: None,
                     agent_id: "agent-a".into(),
                     work_items: Vec::new(),
                     expected_wait_conditions: Vec::new(),

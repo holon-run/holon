@@ -374,6 +374,7 @@ class Scenario:
             args: dict[str, Any] = {
                 "wake": wake,
                 "reason": f"deterministic {marker_key} wait",
+                "delivery": "silent",
             }
             if wake == "external":
                 args["resource"] = self.markers.get(
@@ -452,6 +453,7 @@ class Scenario:
                     "wake": "task_result",
                     "resource": self.task_ids[-1],
                     "reason": "deterministic task completion",
+                    "delivery": "silent",
                 },
             )
         if self.phase in {4, 6}:
@@ -468,6 +470,7 @@ class Scenario:
                         "callback", "docker-e2e:deterministic"
                     ),
                     "reason": "deterministic external completion",
+                    "delivery": "silent",
                 },
             )
         if self.phase == 7:
@@ -542,6 +545,7 @@ class Scenario:
                         "callback", "docker-e2e:deterministic"
                     ),
                     "reason": "deterministic concurrent wait",
+                    "delivery": "silent",
                 },
             )
         if len(self.work_ids) < 2:
@@ -646,6 +650,7 @@ class Scenario:
                 {
                     "wake": "operator_input",
                     "reason": "deterministic compaction wait",
+                    "delivery": "silent",
                 },
             )
         if self.phase == 6:
@@ -699,6 +704,7 @@ class Scenario:
             args: dict[str, Any] = {
                 "wake": wake,
                 "reason": f"deterministic {prefix} wait",
+                "delivery": "silent",
             }
             if wake == "external":
                 args["resource"] = self.markers.get(
@@ -964,6 +970,7 @@ class Scenario:
                         "callback", "docker-e2e:deterministic"
                     ),
                     "reason": "deterministic checkpoint wait",
+                    "delivery": "silent",
                 },
             )
         if self.phase == 5:

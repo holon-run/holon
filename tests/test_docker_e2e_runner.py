@@ -1130,6 +1130,11 @@ class DockerE2ERunnerTests(unittest.TestCase):
                     }
                 status, value = scenario.consume(phase_request)
                 self.assertEqual(status, 200, name)
+                for item in value["output"]:
+                    if item["type"] == "function_call" and item["name"] == "WaitFor":
+                        self.assertEqual(
+                            json.loads(item["arguments"])["delivery"], "silent", name
+                        )
                 actual.extend(
                     item["name"]
                     for item in value["output"]

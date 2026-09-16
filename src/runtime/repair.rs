@@ -125,6 +125,7 @@ impl RuntimeHandle {
                 if !request.dry_run {
                     let commit = self.inner.runtime_db.transitions().commit_wait(
                         &crate::runtime_db::transitions::WaitTransitionCommand {
+                            task_result_admission: None,
                             agent_id: agent_id.clone(),
                             work_items: Vec::new(),
                             expected_wait_conditions: vec![

@@ -343,7 +343,7 @@ pub async fn tool_only_wait_for_persists_turn_without_result_brief() -> Result<(
     Ok(())
 }
 
-pub async fn wait_for_with_assistant_text_persists_result_brief() -> Result<()> {
+pub async fn silent_wait_for_with_assistant_text_does_not_publish_brief() -> Result<()> {
     const DELIVERY: &str = "Checks are still running; I will wait for an update.";
 
     let provider = Arc::new(WaitForDispatchProvider::new(Some(DELIVERY)));
@@ -379,17 +379,24 @@ pub async fn wait_for_with_assistant_text_persists_result_brief() -> Result<()> 
                 && brief.related_message_id.as_deref() == Some(message.id.as_str())
         })
         .collect::<Vec<_>>();
-    assert_eq!(result_briefs.len(), 1);
-    assert_eq!(result_briefs[0].text, DELIVERY);
-    assert!(result_briefs[0].finalizes_assistant_round_id.is_some());
+    assert!(result_briefs.is_empty());
 
     let turns = runtime.storage().read_recent_turns(10)?;
     let turn = turns
         .iter()
         .find(|turn| turn.input_message_ids.contains(&message.id))
         .expect("text plus WaitFor turn should be persisted");
-    assert_eq!(turn.produced_brief_ids, vec![result_briefs[0].id.clone()]);
+    assert!(turn.produced_brief_ids.is_empty());
     assert_eq!(turn.waiting_condition_ids, vec![waits[0].id.clone()]);
+    assert_eq!(
+        turn.terminal.as_ref().map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Completed)
+    );
+    let events = runtime.recent_events(100).await?;
+    assert!(events.iter().all(|event| {
+        event.kind != "brief_created"
+            || event.data["related_message_id"].as_str() != Some(message.id.as_str())
+    }));
 
     Ok(())
 }

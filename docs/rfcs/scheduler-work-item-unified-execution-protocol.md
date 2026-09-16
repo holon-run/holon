@@ -290,14 +290,22 @@ transaction:
 
 - if the task is non-terminal, create a new Active wait and settle to Waiting;
 - if the task is terminal with an unconsumed result obligation, do not create a
-  wait; settle to Continue/Runnable and ensure the exact result message is
-  queued idempotently;
+  sleeping Active wait; settle to Continue/Runnable and atomically retain a
+  Triggered wait correlated to the exact result message, queued idempotently;
 - if the terminal result obligation was already consumed, return a typed
   stale/already-consumed result without sleeping;
 - if the task is unknown or belongs to another owner, reject validation without
   mutating wait or execution state.
 
 Task-result-before-wait is therefore a normal transition, not recovery.
+Preparation of this fast path is read-only, just like ordinary wait preparation:
+the triggered wait, exact result admission, terminal tool evidence, Turn/queue
+settlement, and optional final brief commit together. If task authority changes
+between preparation and commit, bounded OCC retry rebuilds the wait transition
+from the current task while retaining the wait identity and final report.
+Agent-state settlement applies only the wait's changes to the current baseline,
+preserving concurrent queue admission and message counters. Explicit `silent`
+delivery never promotes same-round or earlier progress text to a result brief.
 
 A WorkItem-bound provider turn that ends without a WorkItem outcome closes the
 attempt as `ProtocolViolation` and normally returns the WorkItem to

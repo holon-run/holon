@@ -571,6 +571,7 @@ impl WaitForOnlyToolProvider {
 pub(crate) struct WaitForFinalReportProvider {
     pub(crate) calls: Mutex<usize>,
     pub(crate) corrective_tool_round: bool,
+    pub(crate) silent_progress: Option<bool>,
 }
 
 impl WaitForFinalReportProvider {
@@ -1047,30 +1048,63 @@ impl AgentProvider for WaitForFinalReportProvider {
     async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
-        let blocks = match *calls {
-            1 => vec![ModelBlock::ToolUse {
-                id: "wait-for-final".into(),
-                name: "WaitFor".into(),
-                input: serde_json::json!({
-                    "reason": "waiting for final verification",
-                    "wake": "external",
-                    "delivery": "final",
-                    "resource": "github:holon-run/holon#wait-final"
-                }),
+        let blocks = if let Some(prior_round) = self.silent_progress {
+            let progress_round = prior_round && *calls == 1;
+            assert!(*calls <= if prior_round { 2 } else { 1 });
+            let mut blocks = Vec::new();
+            if !prior_round || progress_round {
+                blocks.push(ModelBlock::Text {
+                    text: "This is progress, not a final report.".into(),
+                });
+            }
+            blocks.push(ModelBlock::ToolUse {
+                id: format!("silent-wait-{}", *calls),
+                name: if progress_round {
+                    "GetAgent"
+                } else {
+                    "WaitFor"
+                }
+                .into(),
+                input: if progress_round {
+                    serde_json::json!({})
+                } else {
+                    serde_json::json!({
+                        "reason": "wait without publishing progress as a brief",
+                        "wake": "external",
+                        "delivery": "silent",
+                        "resource": "github:holon-run/holon#wait-silent"
+                    })
+                },
                 kind: crate::provider::ModelToolCallKind::Function,
                 provider_data: None,
-            }],
-            2 if self.corrective_tool_round => vec![ModelBlock::ToolUse {
-                id: "forbidden-follow-up-tool".into(),
-                name: "GetAgent".into(),
-                input: serde_json::json!({}),
-                kind: crate::provider::ModelToolCallKind::Function,
-                provider_data: None,
-            }],
-            2 | 3 => vec![ModelBlock::Text {
-                text: "Waiting for final verification; I will resume when it changes.".into(),
-            }],
-            _ => anyhow::bail!("unexpected WaitFor final report provider call"),
+            });
+            blocks
+        } else {
+            match *calls {
+                1 => vec![ModelBlock::ToolUse {
+                    id: "wait-for-final".into(),
+                    name: "WaitFor".into(),
+                    input: serde_json::json!({
+                        "reason": "waiting for final verification",
+                        "wake": "external",
+                        "delivery": "final",
+                        "resource": "github:holon-run/holon#wait-final"
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                }],
+                2 if self.corrective_tool_round => vec![ModelBlock::ToolUse {
+                    id: "forbidden-follow-up-tool".into(),
+                    name: "GetAgent".into(),
+                    input: serde_json::json!({}),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                }],
+                2 | 3 => vec![ModelBlock::Text {
+                    text: "Waiting for final verification; I will resume when it changes.".into(),
+                }],
+                _ => anyhow::bail!("unexpected WaitFor final report provider call"),
+            }
         };
         Ok(ProviderTurnResponse {
             blocks,

@@ -231,7 +231,9 @@ impl RuntimeHandle {
             // Turn terminal, queue claim, and execution outcome are committed
             // together by the outer canonical terminal settlement.
         } else if let Some(prepared) = outcome.prepared_wait_for.as_mut() {
-            if !outcome.final_text.trim().is_empty() {
+            if prepared.delivery == crate::tool::tools::wait_for::WaitForDeliveryArg::Final
+                && !outcome.final_text.trim().is_empty()
+            {
                 let mut brief =
                     brief::make_result(&message.agent_id, message, outcome.final_text.clone());
                 if !outcome.final_citations.is_empty() {
@@ -244,6 +246,9 @@ impl RuntimeHandle {
                 );
                 prepared.brief = Some(brief);
                 outcome.terminal.no_brief_reason = None;
+            } else if prepared.delivery == crate::tool::tools::wait_for::WaitForDeliveryArg::Silent
+            {
+                outcome.terminal.no_brief_reason = Some(TurnNoBriefReason::ToolOnlyWait);
             }
         } else if outcome.terminal_kind.is_failure() {
             let mut brief =

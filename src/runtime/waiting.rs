@@ -14,6 +14,27 @@ struct ReplacedWaitConditions {
     resolved_after_trigger_ids: Vec<String>,
 }
 
+impl PreparedWaitForSettlement {
+    pub(crate) fn outcome(&self) -> WaitForRegistrationOutcome {
+        if let Some(admission) = self.command.task_result_admission.as_ref() {
+            WaitForRegistrationOutcome::TaskResultQueued {
+                task_id: self
+                    .expected_task
+                    .as_ref()
+                    .expect("task admission expectation")
+                    .id
+                    .clone(),
+                result_message_id: admission.message.id.clone(),
+                wait_condition_id: self.registration.condition.id.clone(),
+            }
+        } else {
+            WaitForRegistrationOutcome::Registered {
+                registration: self.registration.clone(),
+            }
+        }
+    }
+}
+
 fn replace_wait_conditions(
     existing: Vec<WaitConditionRecord>,
     now: DateTime<Utc>,
@@ -95,6 +116,8 @@ pub(crate) enum WaitForRegistrationOutcome {
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedWaitForSettlement {
+    pub(crate) delivery: crate::tool::tools::wait_for::WaitForDeliveryArg,
+    pub(crate) wake: WaitForWakeKind,
     pub(crate) registration: WaitForRegistration,
     pub(crate) command: crate::runtime_db::transitions::WaitTransitionCommand,
     pub(crate) execution_protocol: crate::runtime_db::transitions::ExecutionProtocolTransition,
@@ -322,9 +345,7 @@ impl RuntimeHandle {
                         ) {
                         Ok(commit) => {
                             self.apply_transition_commit(commit).await;
-                            return Ok(WaitForRegistrationOutcome::Registered {
-                                registration: prepared.registration.clone(),
-                            });
+                            return Ok(prepared.outcome());
                         }
                         Err(error)
                             if attempt + 1 < 3
@@ -353,6 +374,28 @@ impl RuntimeHandle {
         reason: String,
         recheck_after_ms: Option<u64>,
     ) -> Result<PrepareWaitForOutcome> {
+        self.prepare_wait_for_outcome_with_id(
+            agent_id,
+            work_item_id,
+            wake,
+            resource,
+            reason,
+            recheck_after_ms,
+            None,
+        )
+        .await
+    }
+
+    pub(super) async fn prepare_wait_for_outcome_with_id(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<String>,
+        wake: WaitForWakeKind,
+        resource: Option<String>,
+        reason: String,
+        recheck_after_ms: Option<u64>,
+        condition_id: Option<String>,
+    ) -> Result<PrepareWaitForOutcome> {
         let runtime_agent_id = self.agent_id().await?;
         if agent_id != runtime_agent_id {
             return Err(anyhow!("wait_for agent mismatch: {}", agent_id));
@@ -375,9 +418,9 @@ impl RuntimeHandle {
                 })?;
             self.validate_wait_for_task_owner(agent_id, work_item_id.as_deref(), &task)?;
             if task_state_reducer::is_terminal_task_status(&task.status) {
-                return Ok(PrepareWaitForOutcome::Immediate(
-                    self.settle_terminal_task_result(task, reason).await?,
-                ));
+                return self
+                    .prepare_terminal_task_result(task, reason, condition_id)
+                    .await;
             }
             expected_task = Some(task_expectation(&task));
         }
@@ -552,7 +595,7 @@ impl RuntimeHandle {
         }
 
         let mut condition = WaitConditionRecord {
-            id: crate::ids::wait_condition_id(),
+            id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
             agent_id: agent_id.to_string(),
             work_item_id: work_item_id.clone(),
             status: WaitConditionStatus::Active,
@@ -608,6 +651,7 @@ impl RuntimeHandle {
         let execution_protocol =
             self.execution_wait_settlement_transition(&condition, work_item.as_ref(), now)?;
         let command = crate::runtime_db::transitions::WaitTransitionCommand {
+            task_result_admission: None,
             agent_id: agent_id.to_string(),
             work_items,
             expected_wait_conditions: Vec::new(),
@@ -632,6 +676,8 @@ impl RuntimeHandle {
         };
         Ok(PrepareWaitForOutcome::Prepared(Box::new(
             PreparedWaitForSettlement {
+                delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Silent,
+                wake,
                 registration: WaitForRegistration {
                     scope: if condition.work_item_id.is_some() {
                         WaitForScope::WorkItem
@@ -681,11 +727,12 @@ impl RuntimeHandle {
         Ok(())
     }
 
-    async fn settle_terminal_task_result(
+    async fn prepare_terminal_task_result(
         &self,
         task: TaskRecord,
         reason: String,
-    ) -> Result<WaitForRegistrationOutcome> {
+        condition_id: Option<String>,
+    ) -> Result<PrepareWaitForOutcome> {
         let result_message_id = task.parent_message_id.clone().ok_or_else(|| {
             RuntimeError::validation(
                 "task_result_evidence_missing",
@@ -728,18 +775,21 @@ impl RuntimeHandle {
                     | QueueEntryStatus::Quarantined
             )
         }) {
-            return Ok(WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
-                task_id: task.id,
-                result_message_id,
-            });
+            return Ok(PrepareWaitForOutcome::Immediate(
+                WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
+                    task_id: task.id,
+                    result_message_id,
+                },
+            ));
         }
-        if let Some(existing) = self
+        let existing_condition = self
             .inner
             .storage
             .latest_wait_conditions_for_agent(&task.agent_id)?
             .into_iter()
             .find(|record| {
-                record.work_item_id == task.work_item_id
+                condition_id.as_ref().is_none_or(|id| id == &record.id)
+                    && record.work_item_id == task.work_item_id
                     && matches!(
                         record.status,
                         WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
@@ -752,14 +802,7 @@ impl RuntimeHandle {
                             WakeSource::TaskResult { task_id } if task_id == &task.id
                         )
                     })
-            })
-        {
-            return Ok(WaitForRegistrationOutcome::TaskResultQueued {
-                task_id: task.id,
-                result_message_id,
-                wait_condition_id: existing.id,
             });
-        }
 
         let now = self.now();
         // The fast path must leave the same durable wait semantics as a
@@ -769,8 +812,8 @@ impl RuntimeHandle {
         // admission. Without this record the terminal result can be resolved
         // as liveness_only and the agent never re-enters the model.
         let current_turn_id = self.agent_state().await?.current_turn_id.clone();
-        let condition = WaitConditionRecord {
-            id: crate::ids::wait_condition_id(),
+        let condition = existing_condition.unwrap_or_else(|| WaitConditionRecord {
+            id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
             agent_id: task.agent_id.clone(),
             work_item_id: task.work_item_id.clone(),
             status: WaitConditionStatus::Triggered,
@@ -798,12 +841,13 @@ impl RuntimeHandle {
             turn_id: current_turn_id,
             trigger_message_id: Some(result_message_id.clone()),
             triggered_at: Some(now),
-        };
+        });
         let replaced = replace_wait_conditions(
             self.inner
                 .storage
                 .raw_unresolved_wait_conditions_for_agent(&task.agent_id)?
                 .into_iter()
+                .filter(|record| record.id != condition.id)
                 .filter(|record| match task.work_item_id.as_deref() {
                     Some(work_item_id) => record.work_item_id.as_deref() == Some(work_item_id),
                     None => record.work_item_id.is_none(),
@@ -879,72 +923,74 @@ impl RuntimeHandle {
         let expected_task = task_expectation(&task);
         let execution_protocol =
             self.execution_continue_settlement_transition(&task, &result_message, now)?;
-        let commit = {
-            let mut guard = self.inner.agent.lock().await;
-            let already_in_memory = guard
-                .queue
-                .peek_next_matching(|message| message.id == result_message_id)
-                .is_some();
-            let expected_state = guard.last_persisted_state.clone();
-            let mut committed_state = guard.state.clone();
-            committed_state.pending = guard
-                .queue
-                .len()
-                .saturating_add(usize::from(!already_in_memory));
-            committed_state.last_wake_reason = Some("TaskResult".into());
-            committed_state.total_message_count = self.inner.storage.count_messages()?;
-            scheduler::apply_message_wake_projection(&mut committed_state);
-            let queue_entry = QueueEntryRecord {
-                message_id: result_message_id.clone(),
-                agent_id: task.agent_id.clone(),
-                priority: result_message.priority.clone(),
-                status: QueueEntryStatus::Queued,
-                created_at: existing_entry
-                    .as_ref()
-                    .map_or(result_message.created_at, |entry| entry.created_at),
-                updated_at: now,
-            };
-            let commit = self
-                .inner
-                .runtime_db
-                .transitions()
-                .commit_queue_with_execution_protocol_task_expectation_and_wait_conditions(
-                    &crate::runtime_db::transitions::QueueTransitionCommand {
-                        agent_id: task.agent_id.clone(),
-                        operation: crate::runtime_db::transitions::QueueOperation::Admit,
-                        mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
-                            queue_entry,
-                        ),
-                        scheduler_claim_work_item: None,
-                        agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(expected_state)),
-                            record: Box::new(committed_state.clone()),
-                        }),
-                        message_evidence: vec![result_message.clone()],
-                        transcript_entries: Vec::new(),
-                        turn_record: None,
-                        audit_events,
-                        notify_scheduler: true,
-                        fault: self.take_transition_fault(),
-                        brief_evidence: Vec::new(),
-                    },
-                    &execution_protocol,
-                    &expected_task,
-                    &wait_conditions,
-                )?;
-            if !already_in_memory {
-                guard.queue.push(result_message);
-            }
-            guard.state = committed_state.clone();
-            guard.last_persisted_state = committed_state;
-            commit
+        let guard = self.inner.agent.lock().await;
+        let already_in_memory = guard
+            .queue
+            .peek_next_matching(|message| message.id == result_message_id)
+            .is_some();
+        let expected_state = guard.last_persisted_state.clone();
+        let mut committed_state = guard.state.clone();
+        committed_state.pending = guard
+            .queue
+            .len()
+            .saturating_add(usize::from(!already_in_memory));
+        committed_state.last_wake_reason = Some("TaskResult".into());
+        committed_state.total_message_count = self.inner.storage.count_messages()?;
+        scheduler::apply_message_wake_projection(&mut committed_state);
+        let queue_entry = QueueEntryRecord {
+            message_id: result_message_id,
+            agent_id: task.agent_id.clone(),
+            priority: result_message.priority.clone(),
+            status: QueueEntryStatus::Queued,
+            created_at: existing_entry
+                .as_ref()
+                .map_or(result_message.created_at, |entry| entry.created_at),
+            updated_at: now,
         };
-        self.apply_transition_commit(commit).await;
-        Ok(WaitForRegistrationOutcome::TaskResultQueued {
-            task_id: task.id,
-            result_message_id,
-            wait_condition_id: condition.id,
-        })
+        Ok(PrepareWaitForOutcome::Prepared(Box::new(
+            PreparedWaitForSettlement {
+                delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Silent,
+                wake: WaitForWakeKind::TaskResult,
+                registration: WaitForRegistration {
+                    scope: if task.work_item_id.is_some() {
+                        WaitForScope::WorkItem
+                    } else {
+                        WaitForScope::Agent
+                    },
+                    condition,
+                    recheck_after_ms: None,
+                    recheck_at: None,
+                    work_item: None,
+                    cancelled_wait_condition_ids,
+                },
+                command: crate::runtime_db::transitions::WaitTransitionCommand {
+                    agent_id: task.agent_id,
+                    work_items: Vec::new(),
+                    expected_wait_conditions: Vec::new(),
+                    wait_conditions,
+                    timer_wake: None,
+                    task_result_admission: Some(
+                        crate::runtime_db::transitions::WaitTaskResultAdmission {
+                            message: result_message,
+                            expected: existing_entry,
+                            record: queue_entry,
+                        },
+                    ),
+                    agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                        expected: Some(Box::new(expected_state)),
+                        record: Box::new(committed_state),
+                    }),
+                    audit_events,
+                    index_changes: Vec::new(),
+                    notify_scheduler: true,
+                    fault: self.take_transition_fault(),
+                },
+                execution_protocol,
+                expected_task: Some(expected_task),
+                tool_execution: None,
+                brief: None,
+            },
+        )))
     }
 
     fn execution_continue_settlement_transition(
@@ -2051,6 +2097,7 @@ impl RuntimeHandle {
 
         let commit = self.inner.runtime_db.transitions().commit_wait(
             &crate::runtime_db::transitions::WaitTransitionCommand {
+                task_result_admission: None,
                 agent_id: agent_id.to_string(),
                 work_items,
                 expected_wait_conditions: Vec::new(),

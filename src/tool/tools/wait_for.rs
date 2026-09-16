@@ -158,7 +158,13 @@ async fn settle_impl(
             )
             .await?
         {
-            crate::runtime::PrepareWaitForOutcome::Prepared(prepared) => {
+            crate::runtime::PrepareWaitForOutcome::Prepared(mut prepared) => {
+                prepared.delivery = args.delivery;
+                if prepared.command.task_result_admission.is_some() {
+                    let mut result = immediate_result(prepared.outcome())?;
+                    result.prepared_wait_for = Some(prepared);
+                    return Ok(result);
+                }
                 (prepared.registration.clone(), Some(prepared))
             }
             crate::runtime::PrepareWaitForOutcome::Immediate(outcome) => {
