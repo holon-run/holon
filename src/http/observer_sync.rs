@@ -97,15 +97,7 @@ pub(crate) fn advertised_observer_sync_capabilities(
     if verification.brief_atomic_linkage_verified {
         capabilities.push(ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY);
     }
-    if verification.runtime_identity_stable
-        && verification.agent_identity_reserved
-        && verification.projection_snapshot_verified
-        && verification.event_projection_effect_complete
-        && verification.brief_atomic_linkage_verified
-        && verification.conversation_read_verified
-    {
-        capabilities.push(CONVERSATION_READ_CAPABILITY);
-    }
+    capabilities.push(CONVERSATION_READ_CAPABILITY);
     capabilities
 }
 
@@ -633,9 +625,9 @@ mod tests {
     }
 
     #[test]
-    fn evaluator_disables_all_capabilities_without_verification() {
+    fn evaluator_always_advertises_supported_conversation_protocol() {
         let advertised = advertised_observer_sync_capabilities(&Default::default());
-        assert!(advertised.is_empty());
+        assert_eq!(advertised, vec![CONVERSATION_READ_CAPABILITY]);
     }
 
     #[test]
@@ -653,7 +645,7 @@ mod tests {
         assert!(!advertised.contains(&PROJECTION_SNAPSHOT_CAPABILITY));
         assert!(advertised.contains(&PROJECTION_EFFECT_CAPABILITY));
         assert!(advertised.contains(&ATOMIC_BRIEF_CREATED_EVENT_CAPABILITY));
-        assert!(!advertised.contains(&CONVERSATION_READ_CAPABILITY));
+        assert!(advertised.contains(&CONVERSATION_READ_CAPABILITY));
     }
 
     #[test]
@@ -666,7 +658,7 @@ mod tests {
         };
         assert_eq!(
             advertised_observer_sync_capabilities(&verification),
-            vec![ROSTER_SNAPSHOT_CAPABILITY]
+            vec![ROSTER_SNAPSHOT_CAPABILITY, CONVERSATION_READ_CAPABILITY]
         );
 
         let verification = ObserverSyncCapabilityVerification {
@@ -677,12 +669,12 @@ mod tests {
         };
         assert_eq!(
             advertised_observer_sync_capabilities(&verification),
-            vec![PROJECTION_SNAPSHOT_CAPABILITY]
+            vec![PROJECTION_SNAPSHOT_CAPABILITY, CONVERSATION_READ_CAPABILITY]
         );
     }
 
     #[test]
-    fn evaluator_requires_every_conversation_source_verification() {
+    fn evaluator_keeps_conversation_diagnostic_out_of_capability_gate() {
         let mut verification = ObserverSyncCapabilityVerification {
             runtime_identity_stable: true,
             agent_identity_reserved: true,
@@ -692,7 +684,7 @@ mod tests {
             brief_atomic_linkage_verified: true,
             ..Default::default()
         };
-        assert!(!advertised_observer_sync_capabilities(&verification)
+        assert!(advertised_observer_sync_capabilities(&verification)
             .contains(&CONVERSATION_READ_CAPABILITY));
 
         verification.conversation_read_verified = true;
