@@ -3119,7 +3119,7 @@ export interface components {
                 created_at: string;
                 id: string;
                 /** @enum {string} */
-                kind: "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
+                kind: "agent_message_wait" | "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
                 parent_message_id?: string | null;
                 /** @enum {string} */
                 status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
@@ -5837,7 +5837,7 @@ export interface components {
             created_at: string;
             id: string;
             /** @enum {string} */
-            kind: "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
+            kind: "agent_message_wait" | "actor_invocation" | "command_task" | "child_agent_task" | "sleep_job" | "subagent_task" | "worktree_subagent_task";
             parent_message_id?: string | null;
             /** @enum {string} */
             status: "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled" | "interrupted";
