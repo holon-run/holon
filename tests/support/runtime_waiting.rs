@@ -162,6 +162,7 @@ impl AgentProvider for WaitForDispatchProvider {
             input: json!({
                 "reason": "waiting for PR checks",
                 "wake": "external",
+                "delivery": "silent",
                 "resource": "github:holon-run/holon#2237"
             }),
             kind: holon::provider::ModelToolCallKind::Function,
@@ -257,6 +258,7 @@ impl AgentProvider for QueuedTaskResultWaitProvider {
                 input: json!({
                     "reason": "consume the completed background command result",
                     "wake": "task_result",
+                    "delivery": "silent",
                     "resource": self
                         .task_id
                         .lock()
