@@ -222,7 +222,7 @@
             "WaitFor"
           ],
           "forbidden_tools": ["ApplyPatch"],
-          "prompt": "Live Docker acceptance case {case_id}. Create exactly one WorkItem with objective {objective}. Seed its plan with the literal marker {plan_marker}, set plan_status needs_input, and use exactly these todos: phase-one completed, phase-two in_progress, phase-three pending. Pick the new WorkItem so it is current. Then call WaitFor with wake operator_input and a concrete reason that includes {plan_marker}. Do not modify project files and do not complete the WorkItem in this turn."
+          "prompt": "Live Docker acceptance case {case_id}. Create exactly one WorkItem with objective {objective}. Seed its plan with the literal marker {plan_marker}, set plan_status needs_input, and use exactly these todos: phase-one completed, phase-two in_progress, phase-three pending. Pick the new WorkItem so it is current. Then call WaitFor with wake operator_input, delivery silent, and a concrete reason that includes {plan_marker}. Do not modify project files and do not complete the WorkItem in this turn."
         },
         {
           "id": "complete",
