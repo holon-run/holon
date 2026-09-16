@@ -1008,6 +1008,7 @@ impl AgentProvider for WaitForOnlyToolProvider {
                 input: serde_json::json!({
                     "reason": "waiting for PR checks",
                     "wake": "external",
+                    "delivery": "silent",
                     "resource": "github:holon-run/holon#1939",
                     "recheck_after_ms": 1800000
                 }),

@@ -8,7 +8,7 @@ use crate::{
     runtime::{RuntimeHandle, WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind},
     tool::{
         helpers::{invalid_tool_input, parse_tool_args, validate_non_empty},
-        spec::typed_spec,
+        spec::{typed_spec, AwaitWaitReportDirective, ToolExecutionContext, ToolLoopDirective},
         ToolResult,
     },
     types::{AuthorityClass, ToolCapabilityFamily, WaitConditionSummary},
@@ -31,11 +31,19 @@ pub(crate) enum WaitForWakeArg {
     System,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WaitForDeliveryArg {
+    Final,
+    Silent,
+}
+
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct WaitForArgs {
     pub(crate) reason: String,
     pub(crate) wake: WaitForWakeArg,
+    pub(crate) delivery: WaitForDeliveryArg,
     #[serde(default)]
     pub(crate) work_item_id: Option<String>,
     #[serde(default)]
@@ -82,10 +90,34 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     agent_id: &str,
-    _authority_class: &AuthorityClass,
+    authority_class: &AuthorityClass,
     input: &Value,
+    context: &ToolExecutionContext,
 ) -> Result<ToolResult> {
     let args = parse_wait_for_args(input)?;
+    if args.delivery == WaitForDeliveryArg::Final && context.completion_report_candidate.is_none() {
+        return Ok(ToolResult::deferred(
+            NAME,
+            json!({
+                "disposition": "awaiting_final_report",
+                "wait_registered": false,
+                "expected_output": "final_text_only",
+            }),
+            Some("Awaiting the final operator-facing report before committing the wait.".into()),
+            ToolLoopDirective::AwaitWaitReport(AwaitWaitReportDirective {
+                input: input.clone(),
+            }),
+        ));
+    }
+    settle(runtime, agent_id, authority_class, args).await
+}
+
+pub(crate) async fn settle(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    _authority_class: &AuthorityClass,
+    args: WaitForArgs,
+) -> Result<ToolResult> {
     let reason = validate_non_empty(args.reason, NAME, "reason")?;
     let resource = optional_resource(args.resource);
     validate_resource_for_wake(args.wake, resource.as_deref())?;
@@ -193,7 +225,7 @@ pub(crate) async fn execute(
     ))
 }
 
-fn parse_wait_for_args(input: &Value) -> Result<WaitForArgs> {
+pub(crate) fn parse_wait_for_args(input: &Value) -> Result<WaitForArgs> {
     parse_tool_args(NAME, input)
 }
 
@@ -311,6 +343,7 @@ mod tests {
         let args = parse_wait_for_args(&json!({
             "reason": "wait",
             "wake": "external",
+            "delivery": "silent",
             "recheck_after_ms": 300000,
         }))
         .unwrap();

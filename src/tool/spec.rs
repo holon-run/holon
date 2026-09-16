@@ -62,8 +62,14 @@ pub(crate) struct AwaitCompletionReportDirective {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct AwaitWaitReportDirective {
+    pub(crate) input: Value,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum ToolLoopDirective {
     AwaitCompletionReport(AwaitCompletionReportDirective),
+    AwaitWaitReport(AwaitWaitReportDirective),
 }
 
 /// Result from executing a tool.

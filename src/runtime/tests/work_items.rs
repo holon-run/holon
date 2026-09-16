@@ -7125,6 +7125,7 @@ async fn wait_for_tool_result_keeps_blocked_focus_current() {
                 name: "WaitFor".into(),
                 input: serde_json::json!({
                     "wake": "external",
+                    "delivery": "silent",
                     "resource": "github:holon-run/holon#1446",
                     "reason": "blocked through tool result"
                 }),
@@ -7200,6 +7201,7 @@ async fn wait_for_falls_back_to_current_focus_for_lifecycle_execution() {
                 name: "WaitFor".into(),
                 input: serde_json::json!({
                     "wake": "external",
+                    "delivery": "silent",
                     "resource": "github:holon-run/holon#2449",
                     "reason": "lifecycle-owned wait"
                 }),
@@ -7267,6 +7269,7 @@ async fn wait_for_uses_lifecycle_owner_without_any_work_item_binding_or_focus() 
                 name: "WaitFor".into(),
                 input: serde_json::json!({
                     "wake": "external",
+                    "delivery": "silent",
                     "resource": "github:holon-run/holon#2449",
                     "reason": "lifecycle-owned wait"
                 }),
@@ -7325,6 +7328,7 @@ async fn wait_for_tool_uses_bound_turn_work_item_without_durable_focus() {
                 name: "WaitFor".into(),
                 input: serde_json::json!({
                     "wake": "external",
+                    "delivery": "silent",
                     "resource": "github:holon-run/holon#bound-turn",
                     "reason": "wait from explicitly bound turn"
                 }),

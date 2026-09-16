@@ -169,6 +169,7 @@ fn execute_builtin_tool_inner<'a>(
             agent_id,
             authority_class,
             &call.input,
+            context,
         )),
         timer::CREATE_NAME => Box::pin(timer::create(runtime, &call.input)),
         timer::LIST_NAME => Box::pin(timer::list(runtime, &call.input)),
