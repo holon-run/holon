@@ -3421,9 +3421,13 @@ fn copy_template_dir(src: &Path, dst: &Path) -> Result<()> {
 mod tests {
     use std::{
         io::{Read, Write},
-        net::TcpListener,
-        sync::{Arc, Mutex},
+        net::{Shutdown, TcpListener, TcpStream},
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc, Mutex,
+        },
         thread,
+        time::Duration,
     };
 
     use tempfile::tempdir;
@@ -4717,6 +4721,7 @@ uses = "owner/repo/skills/demo@main"
     /// Build a mock GitHub API server that serves configured responses.
     struct MockGithubServer {
         addr: std::net::SocketAddr,
+        shutdown: Arc<AtomicBool>,
         requests: Arc<Mutex<Vec<MockGithubRequest>>>,
         _handle: thread::JoinHandle<()>,
     }
@@ -4728,19 +4733,30 @@ uses = "owner/repo/skills/demo@main"
     }
 
     impl MockGithubServer {
-        /// Start a server that responds to paths matching the given closures.
-        /// Each request consumes one entry; extra requests block.
+        /// Start a server that answers any number of requests; unknown paths get
+        /// 404. Responses advertise `Connection: close` and the socket is closed
+        /// after each response so HTTP clients open a fresh connection per request
+        /// instead of racing pooled keep-alive reuse against this server's close.
         fn start(responses: Vec<(&'static str, u16, String)>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap();
             let requests = Arc::new(Mutex::new(Vec::new()));
+            let shutdown = Arc::new(AtomicBool::new(false));
             let requests_clone = requests.clone();
+            let shutdown_clone = shutdown.clone();
             let handle = thread::spawn(move || {
-                for stream in listener.incoming().take(responses.len()) {
-                    let mut stream = stream.unwrap();
-                    let mut buffer = [0_u8; 4096];
-                    let _ = stream.read(&mut buffer);
-                    let request = String::from_utf8_lossy(&buffer);
+                for stream in listener.incoming() {
+                    if shutdown_clone.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    let mut stream = match stream {
+                        Ok(stream) => stream,
+                        Err(_) => break,
+                    };
+                    let request = match read_http_request_head(&mut stream) {
+                        Some(request) => request,
+                        None => continue,
+                    };
                     let request_line = request.lines().next().unwrap_or("");
                     let req_path = request_line.split_whitespace().nth(1).unwrap_or("");
                     let authorization = request
@@ -4771,14 +4787,17 @@ uses = "owner/repo/skills/demo@main"
                     };
                     let _ = write!(
                         stream,
-                        "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        "HTTP/1.1 {status_text}\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n{}",
                         body.len(),
                         body
                     );
+                    let _ = stream.flush();
+                    let _ = stream.shutdown(Shutdown::Both);
                 }
             });
             Self {
                 addr,
+                shutdown,
                 requests,
                 _handle: handle,
             }
@@ -4787,6 +4806,39 @@ uses = "owner/repo/skills/demo@main"
         fn requests(&self) -> Vec<MockGithubRequest> {
             self.requests.lock().unwrap().clone()
         }
+    }
+
+    impl Drop for MockGithubServer {
+        fn drop(&mut self) {
+            if !self.shutdown.swap(true, Ordering::SeqCst) {
+                // Wake the accept loop so the server thread exits instead of leaking.
+                let _ = TcpStream::connect(self.addr);
+            }
+        }
+    }
+
+    /// Read a full HTTP request head (through the blank line) so a split TCP
+    /// segment cannot truncate the request line or headers.
+    fn read_http_request_head(stream: &mut TcpStream) -> Option<String> {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .ok()?;
+        let mut bytes = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut chunk).ok()?;
+            if read == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..read]);
+            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+            if bytes.len() > 64 * 1024 {
+                return None;
+            }
+        }
+        Some(String::from_utf8_lossy(&bytes).into_owned())
     }
 
     fn github_file_response(content: &str) -> String {
@@ -5508,9 +5560,19 @@ name = "Worker"
             credential_profile: None,
         };
 
-        sync_agent_template_remote_source(&db, home.path(), "official", &config)
+        let status = sync_agent_template_remote_source(&db, home.path(), "official", &config)
             .await
             .unwrap();
+
+        // Per-template install failures are reported through `status`, not an
+        // `Err` return; assert the sync completed so a failing install surfaces
+        // its real error instead of a downstream missing-file panic.
+        assert_eq!(
+            status.status,
+            AgentTemplateRemoteSourceSyncStatus::Synced,
+            "sync did not complete: {:?}",
+            status.error
+        );
 
         assert_eq!(
             fs::read_to_string(existing.join(TEMPLATE_AGENTS_FILENAME)).unwrap(),
