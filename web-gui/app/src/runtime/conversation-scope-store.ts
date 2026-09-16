@@ -28,6 +28,15 @@ export function conversationCacheKey(remoteKey: string, user: { authMethod: stri
   return user ? `${remoteKey}#${JSON.stringify([user.authMethod, user.userId])}` : undefined;
 }
 
+/** One identity-aware key for page ownership, read-marker gates and diagnostics. */
+export function resolveConversationScopeKey(
+  remoteKey: string,
+  agentId: string,
+  user: { authMethod: string; userId: string } | undefined,
+): ConversationScopeKey {
+  return conversationScopeKey(conversationCacheKey(remoteKey, user) ?? `${remoteKey}#memory`, agentId);
+}
+
 export interface ConversationScopeHandle {
   readonly key: ConversationScopeKey;
   readonly controller: ConversationController;

@@ -11,7 +11,7 @@ import { resolveRuntimeApiBase } from "./client";
 import {
   acquireConversationScope,
   conversationCacheKey,
-  conversationScopeKey,
+  resolveConversationScopeKey,
   conversationScopeSnapshot,
   peekConversationScope,
   releaseConversationScope,
@@ -63,7 +63,7 @@ export function useConversationSession(
   const cacheKey = conversationCacheKey(remoteKey, currentUser);
   const scopeKey =
     currentUserLoaded && !connection.authRequired && agentId !== undefined && agentId.length > 0 && apiBase !== undefined
-      ? conversationScopeKey(cacheKey ?? `${remoteKey}#memory`, agentId)
+      ? resolveConversationScopeKey(remoteKey, agentId, currentUser)
       : null;
 
   useEffect(() => {

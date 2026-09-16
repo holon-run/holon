@@ -383,29 +383,7 @@ export async function cacheClearRemoteBriefs(remoteKey: string): Promise<void> {
 
 /** Delete every cached conversation snapshot for one remote (connection switch, sign-out). */
 export async function cacheClearRemoteSnapshots(remoteKey: string): Promise<void> {
-  const db = await openDB();
-  if (!db) return;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const store = db.transaction(SNAPSHOTS_STORE, "readwrite").objectStore(SNAPSHOTS_STORE);
-      const request = store.openCursor();
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (cursor) {
-          const entry = cursor.value as CachedConversationSnapshot;
-          if (entry.remoteKey === remoteKey) {
-            cursor.delete();
-          }
-          cursor.continue();
-        } else {
-          resolve();
-        }
-      };
-      request.onerror = () => reject(request.error);
-    });
-  } catch {
-    // Silent fallback.
-  }
+  await deleteMatching([SNAPSHOTS_STORE], (entry) => belongsToRemote(entry.remoteKey, remoteKey));
 }
 
 export async function cacheClearRemote(remoteKey: string): Promise<void> {

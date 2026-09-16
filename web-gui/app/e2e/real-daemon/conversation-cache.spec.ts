@@ -87,8 +87,26 @@ test("conversation caches cut refetches across agent switches, reloads, and reva
 
   const turnsBeforeReload = await page.locator("[data-turn-id]").count();
   expect(turnsBeforeReload).toBeGreaterThan(0);
-  // The stream now persists updates itself; no priming reload is needed.
-  await page.waitForTimeout(1000);
+  // Observe persistence itself instead of guessing when the throttle has fired.
+  const turnIds = await page.locator("[data-turn-id]").evaluateAll((elements) =>
+    elements.map((element) => element.getAttribute("data-turn-id")!));
+  await expect.poll(() => page.evaluate(async (expectedIds) => {
+    return await new Promise<boolean>((resolve, reject) => {
+      const request = indexedDB.open("holon-webgui-cache");
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction("snapshots", "readonly");
+        const entries = tx.objectStore("snapshots").getAll();
+        tx.oncomplete = () => {
+          db.close();
+          resolve(entries.result.some((entry) => entry.agentId === "default"
+            && expectedIds.every((id) => entry.summary.turns.some((turn: { turn_id: string }) => turn.turn_id === id))));
+        };
+        tx.onabort = () => { db.close(); reject(tx.error); };
+      };
+    });
+  }, turnIds)).toBe(true);
 
   // P2 — persisted snapshot: a reload renders the cached turns even while
   // the summary endpoint is unreachable, then revalidates once unblocked.

@@ -77,7 +77,7 @@ describe("conversation snapshot cache", () => {
   });
 
   it("clears cached snapshots per remote, including via cacheClearRemote", async () => {
-    const cache = createConversationSnapshotCache("remote-a", "web");
+    const cache = createConversationSnapshotCache("remote-a#user", "web");
     await cache.store({ etag: "etag-10", summary: summarySnapshot(10) });
     const otherRemote = createConversationSnapshotCache("remote-b", "web");
     await otherRemote.store({ etag: "etag-11", summary: summarySnapshot(11) });

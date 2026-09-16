@@ -54,7 +54,7 @@ import {
 } from "./idb-cache";
 import { ResumeReconciliationCoordinator } from "./resume-reconciliation";
 import { currentRemoteKey } from "./session-cache";
-import { conversationScopeKey, conversationScopeSnapshot } from "./conversation-scope-store";
+import { resolveConversationScopeKey, conversationScopeSnapshot } from "./conversation-scope-store";
 import {
   createRuntimeTrace,
   installRuntimeTraceDebugApi,
@@ -1152,9 +1152,10 @@ async function refreshLedgerUnreadInView(agentId: string): Promise<void> {
 export function ledgerReadMarkerDecision(agentId: string) {
   const state = useRuntimeStore.getState();
   const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
-  const scopeKey = conversationScopeKey(
+  const scopeKey = resolveConversationScopeKey(
     currentRemoteKey(runtimeConnectionConfig),
     agentId,
+    state.currentUser,
   );
   const scope = conversationScopeSnapshot(scopeKey);
   return evaluateLedgerReadMarkerGate(
