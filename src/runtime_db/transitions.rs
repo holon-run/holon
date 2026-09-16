@@ -10,7 +10,7 @@ pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_stat
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension, Transaction};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     runtime_db::{
@@ -37,9 +37,9 @@ use crate::{
     types::{
         AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
         AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
-        TaskRecord, ToolExecutionRecord, TranscriptEntry, TurnRecord, WaitConditionRecord,
-        WorkItemContinuationFrame, WorkItemContinuationState, WorkItemRecord,
-        WorkItemSchedulingState, WorkItemState,
+        TaskRecord, ToolExecutionRecord, TranscriptEntry, TurnNoBriefReason, TurnRecord,
+        TurnTerminalKind, TurnTerminalSummary, WaitConditionRecord, WorkItemContinuationFrame,
+        WorkItemContinuationState, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
     },
 };
 
@@ -319,23 +319,154 @@ pub(crate) struct RuntimeTransitionRepository<'a> {
     db: &'a RuntimeDb,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct StartupRuntimeRecoveryReport {
+    pub recovered_queue_agent_ids: Vec<String>,
+    pub queue_entries_changed: usize,
+    pub interrupted_turns: usize,
+    pub superseded_turns: usize,
+    pub orphaned_claim_turns: usize,
+    pub daemon_restart_turns: usize,
+}
+
+#[derive(Debug, Default)]
+struct OrphanedQueueRecovery {
+    recovered_agents: Vec<String>,
+    changed: usize,
+    interrupted_messages: BTreeSet<(String, String)>,
+}
+
 impl RuntimeDb {
     pub(crate) fn transitions(&self) -> RuntimeTransitionRepository<'_> {
         RuntimeTransitionRepository { db: self }
     }
 
-    pub(crate) fn recover_orphaned_dequeued_claims_at_startup(&self) -> Result<Vec<String>> {
-        self.reconcile_orphaned_dequeued_claims(None)
-            .map(|(agents, _)| agents)
+    pub(crate) fn recover_interrupted_runtime_state_at_startup(
+        &self,
+    ) -> Result<StartupRuntimeRecoveryReport> {
+        self.recover_interrupted_runtime_state_at_startup_with_fault(None)
     }
 
-    pub(crate) fn reconcile_orphaned_dequeued_claims(
+    fn recover_interrupted_runtime_state_at_startup_with_fault(
         &self,
-        agent_id: Option<&str>,
-    ) -> Result<(Vec<String>, usize)> {
+        fault: Option<TransitionFaultPoint>,
+    ) -> Result<StartupRuntimeRecoveryReport> {
         self.transaction(|tx| {
-            let sql = if agent_id.is_some() {
-                "SELECT q.payload_json
+            let recovered_at = Utc::now();
+            let queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
+            inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+            let replacement_sources = {
+                let mut statement = tx.prepare(
+                    "SELECT agent_id, payload_json
+                     FROM turn_records
+                     ORDER BY agent_id, turn_index, turn_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                let mut sources = BTreeSet::new();
+                for (agent_id, payload) in rows {
+                    let record = serde_json::from_str::<TurnRecord>(&payload)?;
+                    if let Some(replay) = record.replay {
+                        sources.insert((agent_id, replay.source_turn_id));
+                    }
+                }
+                sources
+            };
+            let active_turns = {
+                let mut statement = tx.prepare(
+                    "SELECT payload_json
+                     FROM turn_records
+                     WHERE terminal_kind IS NULL
+                     ORDER BY agent_id, turn_index, turn_id",
+                )?;
+                let records = statement
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .map(|row| Ok(serde_json::from_str::<TurnRecord>(&row?)?))
+                    .collect::<Result<Vec<_>>>()?;
+                records
+            };
+
+            let mut report = StartupRuntimeRecoveryReport {
+                recovered_queue_agent_ids: queue_recovery.recovered_agents,
+                queue_entries_changed: queue_recovery.changed,
+                ..StartupRuntimeRecoveryReport::default()
+            };
+            for mut turn in active_turns {
+                let trigger_message_id = turn
+                    .trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.clone());
+                let (reason, reason_class) = if replacement_sources
+                    .contains(&(turn.agent_id.clone(), turn.turn_id.clone()))
+                {
+                    report.superseded_turns += 1;
+                    (
+                        "startup_recovery/superseded_by_replay",
+                        "superseded_by_replay",
+                    )
+                } else if trigger_message_id.as_deref().is_some_and(|message_id| {
+                    queue_recovery
+                        .interrupted_messages
+                        .contains(&(turn.agent_id.clone(), message_id.to_string()))
+                }) {
+                    report.orphaned_claim_turns += 1;
+                    (
+                        "startup_recovery/orphaned_queue_claim",
+                        "orphaned_queue_claim",
+                    )
+                } else {
+                    report.daemon_restart_turns += 1;
+                    ("startup_recovery/daemon_restart", "daemon_restart")
+                };
+                let duration_ms = recovered_at
+                    .signed_duration_since(turn.created_at)
+                    .num_milliseconds()
+                    .max(0) as u64;
+                turn.terminal = Some(TurnTerminalSummary {
+                    kind: TurnTerminalKind::Interrupted,
+                    reason: Some(reason.to_string()),
+                    no_brief_reason: Some(TurnNoBriefReason::Interrupted),
+                    completed_at: recovered_at,
+                    duration_ms,
+                });
+                upsert_turn_record_tx(tx, &turn)?;
+                let event = AuditEvent {
+                    id: format!("audit:startup-interrupted-turn:{}", turn.turn_id),
+                    event_seq: 0,
+                    event_log_epoch: String::new(),
+                    created_at: recovered_at,
+                    kind: "startup_interrupted_turn_recovered".into(),
+                    contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                    payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
+                    payload_schema_version: 1,
+                    data: serde_json::json!({
+                        "agent_id": &turn.agent_id,
+                        "turn_id": &turn.turn_id,
+                        "turn_index": turn.turn_index,
+                        "reason": reason,
+                        "reason_class": reason_class,
+                        "trigger_message_id": &trigger_message_id,
+                    }),
+                };
+                append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
+                report.interrupted_turns += 1;
+            }
+            Ok(report)
+        })
+    }
+}
+
+fn reconcile_orphaned_dequeued_claims_tx(
+    tx: &Transaction<'_>,
+    agent_id: Option<&str>,
+    recovered_at: chrono::DateTime<Utc>,
+) -> Result<OrphanedQueueRecovery> {
+    let sql = if agent_id.is_some() {
+        "SELECT q.payload_json
                  FROM queue_entries q
                  JOIN agent_identities i
                    ON i.agent_id = q.agent_id
@@ -349,8 +480,8 @@ impl RuntimeDb {
                        AND a.attempt_id = 'activation:message:' || q.message_id
                    )
                  ORDER BY q.agent_id, q.updated_at, q.message_id"
-            } else {
-                "SELECT q.payload_json
+    } else {
+        "SELECT q.payload_json
                  FROM queue_entries q
                  JOIN agent_identities i
                    ON i.agent_id = q.agent_id
@@ -363,54 +494,52 @@ impl RuntimeDb {
                        AND a.attempt_id = 'activation:message:' || q.message_id
                    )
                  ORDER BY q.agent_id, q.updated_at, q.message_id"
-            };
-            let mut statement = tx.prepare(sql)?;
-            let candidates = if let Some(agent_id) = agent_id {
-                statement
-                    .query_map([agent_id], |row| row.get::<_, String>(0))?
-                    .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
-                    .collect::<Result<Vec<_>>>()?
-            } else {
-                statement
-                    .query_map([], |row| row.get::<_, String>(0))?
-                    .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
-                    .collect::<Result<Vec<_>>>()?
-            };
-            drop(statement);
+    };
+    let mut statement = tx.prepare(sql)?;
+    let candidates = if let Some(agent_id) = agent_id {
+        statement
+            .query_map([agent_id], |row| row.get::<_, String>(0))?
+            .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+            .collect::<Result<Vec<_>>>()?
+    } else {
+        statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+            .collect::<Result<Vec<_>>>()?
+    };
+    drop(statement);
 
-            let recovered_at = Utc::now();
-            let mut recovered_agents = Vec::new();
-            let mut changed = 0;
-            for expected in candidates {
-                let mut recovered = expected.clone();
-                let terminal_kind = tx
-                    .query_row(
-                        "SELECT terminal_kind
+    let mut recovery = OrphanedQueueRecovery::default();
+    for expected in candidates {
+        let mut recovered = expected.clone();
+        let terminal_kind = tx
+            .query_row(
+                "SELECT terminal_kind
                          FROM turn_records
                          WHERE agent_id = ?1
                            AND trigger_message_id = ?2
                            AND terminal_kind IS NOT NULL
                          ORDER BY completed_at DESC
                          LIMIT 1",
-                        rusqlite::params![expected.agent_id, expected.message_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                let terminal_brief_kind = tx
-                    .query_row(
-                        "SELECT kind
+                rusqlite::params![expected.agent_id, expected.message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let terminal_brief_kind = tx
+            .query_row(
+                "SELECT kind
                          FROM briefs
                          WHERE agent_id = ?1
                            AND message_id = ?2
                            AND kind IN ('result', 'failure')
                          ORDER BY created_at DESC
                          LIMIT 1",
-                        rusqlite::params![expected.agent_id, expected.message_id],
-                        |row| row.get::<_, String>(0),
-                    )
-                    .optional()?;
-                let delivered = tx.query_row(
-                    "SELECT EXISTS(
+                rusqlite::params![expected.agent_id, expected.message_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let delivered = tx.query_row(
+            "SELECT EXISTS(
                          SELECT 1
                          FROM delivery_summaries d
                          JOIN turn_records t
@@ -419,66 +548,65 @@ impl RuntimeDb {
                          WHERE d.agent_id = ?1
                            AND t.trigger_message_id = ?2
                      )",
-                    rusqlite::params![expected.agent_id, expected.message_id],
-                    |row| row.get::<_, bool>(0),
-                )?;
-                let (next_status, reason) = if terminal_kind.as_deref() == Some("completed")
-                    || terminal_brief_kind.as_deref() == Some("result")
-                    || delivered
-                {
-                    (
-                        QueueEntryStatus::Processed,
-                        "terminal_or_result_completion_evidence",
-                    )
-                } else if terminal_kind.is_some()
-                    || terminal_brief_kind.as_deref() == Some("failure")
-                {
-                    (
-                        QueueEntryStatus::Aborted,
-                        "terminal_failure_completion_evidence",
-                    )
-                } else {
-                    (
-                        QueueEntryStatus::Interrupted,
-                        "no_execution_attempt_or_completion_evidence",
-                    )
-                };
-                recovered.status = next_status.clone();
-                recovered.updated_at = recovered_at;
-                if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
-                    continue;
-                }
-                changed += 1;
-                let event = AuditEvent {
-                    id: format!("audit:orphaned-queue-claim:{}", expected.message_id),
-                    event_seq: 0,
-                    event_log_epoch: String::new(),
-                    created_at: recovered_at,
-                    kind: "orphaned_queue_claim_recovered".into(),
-                    contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                    payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
-                    payload_schema_version: 1,
-                    data: serde_json::json!({
-                        "message_id": expected.message_id,
-                        "agent_id": expected.agent_id,
-                        "reason": reason,
-                        "previous_status": "dequeued",
-                        "next_status": next_status,
-                        "terminal_kind": terminal_kind,
-                        "terminal_brief_kind": terminal_brief_kind,
-                        "delivery_evidence": delivered,
-                    }),
-                };
-                append_audit_event_tx(tx, Some(&recovered.agent_id), &event)?;
-                if recovered.status == QueueEntryStatus::Interrupted {
-                    recovered_agents.push(recovered.agent_id);
-                }
-            }
-            recovered_agents.sort();
-            recovered_agents.dedup();
-            Ok((recovered_agents, changed))
-        })
+            rusqlite::params![expected.agent_id, expected.message_id],
+            |row| row.get::<_, bool>(0),
+        )?;
+        let (next_status, reason) = if terminal_kind.as_deref() == Some("completed")
+            || terminal_brief_kind.as_deref() == Some("result")
+            || delivered
+        {
+            (
+                QueueEntryStatus::Processed,
+                "terminal_or_result_completion_evidence",
+            )
+        } else if terminal_kind.is_some() || terminal_brief_kind.as_deref() == Some("failure") {
+            (
+                QueueEntryStatus::Aborted,
+                "terminal_failure_completion_evidence",
+            )
+        } else {
+            (
+                QueueEntryStatus::Interrupted,
+                "no_execution_attempt_or_completion_evidence",
+            )
+        };
+        recovered.status = next_status.clone();
+        recovered.updated_at = recovered_at;
+        if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
+            continue;
+        }
+        recovery.changed += 1;
+        let event = AuditEvent {
+            id: format!("audit:orphaned-queue-claim:{}", expected.message_id),
+            event_seq: 0,
+            event_log_epoch: String::new(),
+            created_at: recovered_at,
+            kind: "orphaned_queue_claim_recovered".into(),
+            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
+            payload_schema_version: 1,
+            data: serde_json::json!({
+                "message_id": expected.message_id,
+                "agent_id": expected.agent_id,
+                "reason": reason,
+                "previous_status": "dequeued",
+                "next_status": next_status,
+                "terminal_kind": terminal_kind,
+                "terminal_brief_kind": terminal_brief_kind,
+                "delivery_evidence": delivered,
+            }),
+        };
+        append_audit_event_tx(tx, Some(&recovered.agent_id), &event)?;
+        if recovered.status == QueueEntryStatus::Interrupted {
+            recovery
+                .interrupted_messages
+                .insert((recovered.agent_id.clone(), recovered.message_id.clone()));
+            recovery.recovered_agents.push(recovered.agent_id);
+        }
     }
+    recovery.recovered_agents.sort();
+    recovery.recovered_agents.dedup();
+    Ok(recovery)
 }
 
 impl RuntimeTransitionRepository<'_> {
@@ -2802,6 +2930,42 @@ mod tests {
         Ok((dir, db))
     }
 
+    fn active_turn(
+        agent_id: &str,
+        turn_id: &str,
+        turn_index: u64,
+        message_id: Option<&str>,
+        created_at: chrono::DateTime<Utc>,
+    ) -> TurnRecord {
+        let mut turn = TurnRecord::new(agent_id, turn_id, turn_index);
+        turn.created_at = created_at;
+        turn.trigger = message_id.map(|message_id| crate::types::TurnTriggerSummary {
+            message_id: Some(message_id.to_string()),
+            kind: crate::types::MessageKind::OperatorPrompt,
+            origin: crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            authority_class: AuthorityClass::OperatorInstruction,
+            priority: Priority::Normal,
+            trigger_kind: None,
+            task_id: None,
+        });
+        turn
+    }
+
+    fn active_agent(agent_id: &str) -> AgentIdentityRecord {
+        AgentIdentityRecord::new(
+            agent_id,
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        )
+    }
+
     fn index_change(kind: &str, id: &str) -> RuntimeIndexChange {
         RuntimeIndexChange {
             agent_id: "agent-a".into(),
@@ -4626,6 +4790,252 @@ mod tests {
                 WorkItemExecutionState::Waiting { .. }
             ));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_atomically_interrupts_orphaned_claim_turn_and_is_idempotent() -> Result<()>
+    {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-orphaned-claim";
+        let message_id = "message-startup-orphaned-claim";
+        let turn_id = "turn-startup-orphaned-claim";
+        let created_at = Utc::now() - chrono::Duration::seconds(5);
+        db.agent_identities().upsert(&active_agent(agent_id))?;
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: message_id.into(),
+            agent_id: agent_id.into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at,
+            updated_at: created_at,
+        })?;
+        db.turn_records().upsert(&active_turn(
+            agent_id,
+            turn_id,
+            1,
+            Some(message_id),
+            created_at,
+        ))?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.recovered_queue_agent_ids, vec![agent_id]);
+        assert_eq!(report.queue_entries_changed, 1);
+        assert_eq!(report.interrupted_turns, 1);
+        assert_eq!(report.superseded_turns, 0);
+        assert_eq!(report.orphaned_claim_turns, 1);
+        assert_eq!(report.daemon_restart_turns, 0);
+
+        let queue = db.queue_entries().latest_all()?.pop().unwrap();
+        assert_eq!(queue.status, QueueEntryStatus::Interrupted);
+        let turn = db.turn_records().by_id(Some(agent_id), turn_id)?.unwrap();
+        let terminal = turn.terminal.as_ref().unwrap();
+        assert_eq!(terminal.kind, TurnTerminalKind::Interrupted);
+        assert_eq!(
+            terminal.reason.as_deref(),
+            Some("startup_recovery/orphaned_queue_claim")
+        );
+        assert_eq!(
+            terminal.no_brief_reason,
+            Some(TurnNoBriefReason::Interrupted)
+        );
+        let connection = db.connection()?;
+        let revision = connection.query_row(
+            "SELECT summary_revision, detail_revision, result_settled
+             FROM conversation_turn_revisions
+             WHERE agent_id = ?1 AND turn_id = ?2",
+            params![agent_id, turn_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
+        )?;
+        assert!(revision.0 >= 2);
+        assert!(revision.1 >= 1);
+        assert!(revision.2);
+        assert_eq!(
+            db.audit_events()
+                .recent(Some(agent_id), 20)?
+                .into_iter()
+                .filter(|event| event.kind == "startup_interrupted_turn_recovered")
+                .count(),
+            1
+        );
+
+        let second = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(second, StartupRuntimeRecoveryReport::default());
+        let second_revision = connection.query_row(
+            "SELECT summary_revision, detail_revision, result_settled
+             FROM conversation_turn_revisions
+             WHERE agent_id = ?1 AND turn_id = ?2",
+            params![agent_id, turn_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, bool>(2)?,
+                ))
+            },
+        )?;
+        assert_eq!(second_revision, revision);
+        assert_eq!(
+            db.audit_events()
+                .recent(Some(agent_id), 20)?
+                .into_iter()
+                .filter(|event| event.kind == "startup_interrupted_turn_recovered")
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_rolls_back_queue_changes_on_failure() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-rollback";
+        let message_id = "message-startup-rollback";
+        let created_at = Utc::now() - chrono::Duration::seconds(2);
+        db.agent_identities().upsert(&active_agent(agent_id))?;
+        let queue = QueueEntryRecord {
+            message_id: message_id.into(),
+            agent_id: agent_id.into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at,
+            updated_at: created_at,
+        };
+        db.queue_entries().upsert(&queue)?;
+        let turn = active_turn(
+            agent_id,
+            "turn-startup-rollback",
+            1,
+            Some(message_id),
+            created_at,
+        );
+        db.turn_records().upsert(&turn)?;
+
+        db.recover_interrupted_runtime_state_at_startup_with_fault(Some(
+            TransitionFaultPoint::AfterCanonicalWrites,
+        ))
+        .unwrap_err();
+
+        assert_eq!(db.queue_entries().latest_all()?, vec![queue]);
+        assert_eq!(
+            db.turn_records().by_id(Some(agent_id), &turn.turn_id)?,
+            Some(turn)
+        );
+        assert!(db.audit_events().recent(Some(agent_id), 20)?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_prioritizes_replay_source_and_preserves_terminal_turns() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-replay-source";
+        let created_at = Utc::now() - chrono::Duration::seconds(5);
+        let source = active_turn(
+            agent_id,
+            "turn-startup-source",
+            1,
+            Some("message-startup-source"),
+            created_at,
+        );
+        let mut replacement = active_turn(
+            agent_id,
+            "turn-startup-replacement",
+            2,
+            Some("message-startup-source"),
+            created_at + chrono::Duration::seconds(1),
+        );
+        replacement.replay = Some(crate::types::TurnReplayProvenance {
+            source_message_id: "message-startup-source".into(),
+            source_turn_id: source.turn_id.clone(),
+            reason: "interrupted_queue_claim_reentry".into(),
+            prior_terminal: None,
+        });
+        replacement.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            no_brief_reason: None,
+            completed_at: created_at + chrono::Duration::seconds(2),
+            duration_ms: 1_000,
+        });
+        let mut aborted = active_turn(
+            agent_id,
+            "turn-startup-aborted",
+            3,
+            None,
+            created_at + chrono::Duration::seconds(2),
+        );
+        aborted.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Aborted,
+            reason: Some("operator_abort".into()),
+            no_brief_reason: Some(TurnNoBriefReason::Aborted),
+            completed_at: created_at + chrono::Duration::seconds(3),
+            duration_ms: 1_000,
+        });
+        db.turn_records().upsert(&source)?;
+        db.turn_records().upsert(&replacement)?;
+        db.turn_records().upsert(&aborted)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 1);
+        assert_eq!(report.superseded_turns, 1);
+        assert_eq!(report.orphaned_claim_turns, 0);
+        assert_eq!(report.daemon_restart_turns, 0);
+        let recovered_source = db
+            .turn_records()
+            .by_id(Some(agent_id), &source.turn_id)?
+            .unwrap();
+        assert_eq!(
+            recovered_source
+                .terminal
+                .as_ref()
+                .and_then(|terminal| terminal.reason.as_deref()),
+            Some("startup_recovery/superseded_by_replay")
+        );
+        assert_eq!(
+            db.turn_records()
+                .by_id(Some(agent_id), &replacement.turn_id)?,
+            Some(replacement)
+        );
+        assert_eq!(
+            db.turn_records().by_id(Some(agent_id), &aborted.turn_id)?,
+            Some(aborted)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_interrupts_unassociated_active_turns() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-daemon-restart";
+        let turn = active_turn(
+            agent_id,
+            "turn-startup-daemon-restart",
+            1,
+            None,
+            Utc::now() - chrono::Duration::seconds(2),
+        );
+        db.turn_records().upsert(&turn)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 1);
+        assert_eq!(report.daemon_restart_turns, 1);
+        let recovered = db
+            .turn_records()
+            .by_id(Some(agent_id), &turn.turn_id)?
+            .unwrap();
+        assert_eq!(
+            recovered
+                .terminal
+                .as_ref()
+                .and_then(|terminal| terminal.reason.as_deref()),
+            Some("startup_recovery/daemon_restart")
+        );
         Ok(())
     }
 }

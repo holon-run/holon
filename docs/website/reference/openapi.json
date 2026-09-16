@@ -2077,6 +2077,7 @@
                         "enum": [
                           "completed",
                           "aborted",
+                          "interrupted",
                           "baseline_over_budget",
                           "deferred_to_fallback",
                           "provider_failed_needs_recovery"
@@ -2113,6 +2114,18 @@
                                 "properties": {
                                   "kind": {
                                     "const": "aborted",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "properties": {
+                                  "kind": {
+                                    "const": "interrupted",
                                     "type": "string"
                                   }
                                 },
@@ -2584,6 +2597,7 @@
                     "enum": [
                       "completed",
                       "aborted",
+                      "interrupted",
                       "baseline_over_budget",
                       "deferred_to_fallback",
                       "provider_failed_needs_recovery"
@@ -2620,6 +2634,18 @@
                             "properties": {
                               "kind": {
                                 "const": "aborted",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "properties": {
+                              "kind": {
+                                "const": "interrupted",
                                 "type": "string"
                               }
                             },
@@ -5614,6 +5640,7 @@
                             "enum": [
                               "completed",
                               "aborted",
+                              "interrupted",
                               "baseline_over_budget",
                               "deferred_to_fallback",
                               "provider_failed_needs_recovery"
@@ -5775,6 +5802,7 @@
                         "enum": [
                           "completed",
                           "aborted",
+                          "interrupted",
                           "baseline_over_budget",
                           "deferred_to_fallback",
                           "provider_failed_needs_recovery"
@@ -5892,6 +5920,18 @@
                             "properties": {
                               "kind": {
                                 "const": "aborted",
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "kind"
+                            ],
+                            "type": "object"
+                          },
+                          {
+                            "properties": {
+                              "kind": {
+                                "const": "interrupted",
                                 "type": "string"
                               }
                             },
@@ -6455,6 +6495,7 @@
                                 "enum": [
                                   "completed",
                                   "aborted",
+                                  "interrupted",
                                   "baseline_over_budget",
                                   "deferred_to_fallback",
                                   "provider_failed_needs_recovery"
@@ -6616,6 +6657,7 @@
                             "enum": [
                               "completed",
                               "aborted",
+                              "interrupted",
                               "baseline_over_budget",
                               "deferred_to_fallback",
                               "provider_failed_needs_recovery"
@@ -6733,6 +6775,18 @@
                                 "properties": {
                                   "kind": {
                                     "const": "aborted",
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "kind"
+                                ],
+                                "type": "object"
+                              },
+                              {
+                                "properties": {
+                                  "kind": {
+                                    "const": "interrupted",
                                     "type": "string"
                                   }
                                 },
@@ -7219,6 +7273,7 @@
                               "enum": [
                                 "completed",
                                 "aborted",
+                                "interrupted",
                                 "baseline_over_budget",
                                 "deferred_to_fallback",
                                 "provider_failed_needs_recovery"
@@ -7380,6 +7435,7 @@
                           "enum": [
                             "completed",
                             "aborted",
+                            "interrupted",
                             "baseline_over_budget",
                             "deferred_to_fallback",
                             "provider_failed_needs_recovery"
@@ -7497,6 +7553,18 @@
                               "properties": {
                                 "kind": {
                                   "const": "aborted",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "interrupted",
                                   "type": "string"
                                 }
                               },
@@ -7695,6 +7763,7 @@
                               "enum": [
                                 "completed",
                                 "aborted",
+                                "interrupted",
                                 "baseline_over_budget",
                                 "deferred_to_fallback",
                                 "provider_failed_needs_recovery"
@@ -7856,6 +7925,7 @@
                           "enum": [
                             "completed",
                             "aborted",
+                            "interrupted",
                             "baseline_over_budget",
                             "deferred_to_fallback",
                             "provider_failed_needs_recovery"
@@ -7973,6 +8043,18 @@
                               "properties": {
                                 "kind": {
                                   "const": "aborted",
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "kind"
+                              ],
+                              "type": "object"
+                            },
+                            {
+                              "properties": {
+                                "kind": {
+                                  "const": "interrupted",
                                   "type": "string"
                                 }
                               },

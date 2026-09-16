@@ -265,6 +265,7 @@ describe("turn execution state", () => {
   it.each([
     ["completed", null, "completed"],
     ["aborted", null, "interrupted"],
+    ["interrupted", null, "interrupted"],
     ["deferred_to_fallback", null, "recovering"],
     ["provider_failed_needs_recovery", null, "failed"],
     ["baseline_over_budget", null, "failed"],

@@ -2222,6 +2222,7 @@ pub struct RuntimeFailureSummary {
 pub enum TurnTerminalKind {
     Completed,
     Aborted,
+    Interrupted,
     BaselineOverBudget,
     DeferredToFallback,
     ProviderFailedNeedsRecovery,
@@ -2307,6 +2308,7 @@ impl TurnTerminalSummary {
 pub enum TurnNoBriefReason {
     ReducerOnly { reason: String },
     Aborted,
+    Interrupted,
     ToolOnlyWait,
 }
 

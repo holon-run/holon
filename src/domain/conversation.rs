@@ -131,6 +131,7 @@ pub enum ExecutionState {
 pub enum TerminalOutcome {
     Completed,
     Aborted,
+    Interrupted,
     BaselineOverBudget,
     DeferredToFallback,
     ProviderFailedNeedsRecovery,
@@ -141,6 +142,7 @@ impl From<TurnTerminalKind> for TerminalOutcome {
         match value {
             TurnTerminalKind::Completed => Self::Completed,
             TurnTerminalKind::Aborted => Self::Aborted,
+            TurnTerminalKind::Interrupted => Self::Interrupted,
             TurnTerminalKind::BaselineOverBudget => Self::BaselineOverBudget,
             TurnTerminalKind::DeferredToFallback => Self::DeferredToFallback,
             TurnTerminalKind::ProviderFailedNeedsRecovery => Self::ProviderFailedNeedsRecovery,
@@ -167,6 +169,7 @@ pub enum ResultState {
 pub enum NoBriefReason {
     ReducerOnly { reason: String },
     Aborted,
+    Interrupted,
     ToolOnlyWait,
 }
 
@@ -177,6 +180,7 @@ impl From<&TurnNoBriefReason> for NoBriefReason {
                 reason: reason.clone(),
             },
             TurnNoBriefReason::Aborted => Self::Aborted,
+            TurnNoBriefReason::Interrupted => Self::Interrupted,
             TurnNoBriefReason::ToolOnlyWait => Self::ToolOnlyWait,
         }
     }

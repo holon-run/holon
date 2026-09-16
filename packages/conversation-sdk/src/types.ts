@@ -39,6 +39,7 @@ export interface PendingInput {
 export type TerminalOutcome =
   | "completed"
   | "aborted"
+  | "interrupted"
   | "baseline_over_budget"
   | "deferred_to_fallback"
   | "provider_failed_needs_recovery";
@@ -56,6 +57,7 @@ export type NoBriefReason =
       readonly reason: string;
     }
   | { readonly kind: "aborted" }
+  | { readonly kind: "interrupted" }
   | { readonly kind: "tool_only_wait" };
 
 export type ResultUnavailableReason =

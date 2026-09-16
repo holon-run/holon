@@ -89,6 +89,7 @@ pub(super) fn derive_closure_decision(facts: &ClosureFacts) -> ClosureDecision {
         if kind.is_failure() {
             let marker = match kind {
                 TurnTerminalKind::Aborted => "turn_terminal_aborted",
+                TurnTerminalKind::Interrupted => "turn_terminal_interrupted",
                 TurnTerminalKind::BaselineOverBudget => "turn_terminal_baseline_over_budget",
                 TurnTerminalKind::DeferredToFallback => "turn_terminal_deferred_to_fallback",
                 TurnTerminalKind::ProviderFailedNeedsRecovery => {

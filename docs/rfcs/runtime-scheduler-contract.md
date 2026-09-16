@@ -962,6 +962,26 @@ facts, the evidence used for classification, and any proposed typed commands.
 It does not provide a handwritten SQL repair path and does not overwrite or
 delete the source facts used to explain recovery.
 
+The same bootstrap boundary also owns turn recovery. A started `TurnRecord`
+cannot continue executing in a replacement daemon process. Before any runtime
+activation or externally reachable server starts, bootstrap recovery must
+atomically:
+
+- reconcile orphaned `Dequeued` claims under the existing compare-and-set
+  rules;
+- terminalize every persisted turn that still lacks a terminal record as
+  `interrupted`, with the matching typed no-brief reason;
+- distinguish replay-superseded sources, orphaned-claim sources, and other
+  daemon-restart orphans through stable audit reason classes;
+- preserve already terminal turns and replacement-turn provenance unchanged.
+
+Queue recovery and turn terminalization commit or roll back together. The
+operation is idempotent: only non-terminal turns are eligible, and successful
+recovery does not create another message replay beyond the existing
+message-level recovery contract. Conversation history, prompt construction,
+and active-turn admission must therefore observe no old-process turn as
+active once startup recovery completes.
+
 ### Task-To-WorkItem Association Becomes First-Class
 
 Task records should gain a first-class optional work-item association.

@@ -168,7 +168,11 @@ export function turnResultPresentation(
 /** Execution state is independent of Brief arrival and loading. */
 export function turnExecutionPresentation(turn: ConversationTurnGroup) {
   if (turn.execution.kind === "active") return "running";
-  if (turn.execution.outcome === "aborted" || turn.attention?.kind === "interrupted") return "interrupted";
+  if (
+    turn.execution.outcome === "aborted"
+    || turn.execution.outcome === "interrupted"
+    || turn.attention?.kind === "interrupted"
+  ) return "interrupted";
   if (turn.execution.outcome === "deferred_to_fallback") return "recovering";
   if (turn.attention?.kind === "failed" || turn.execution.outcome !== "completed") return "failed";
   if (turn.attention?.kind === "waiting") return "waiting";
