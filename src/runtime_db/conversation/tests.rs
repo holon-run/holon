@@ -879,7 +879,7 @@ DELETE FROM schema_migrations WHERE version = 66;
     drop(db);
 
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-    assert_eq!(db.current_schema_version()?, 67);
+    assert_eq!(db.current_schema_version()?, 68);
     let assignment_count: i64 = db.connection()?.query_row(
         "SELECT COUNT(*)
          FROM conversation_input_assignments
@@ -930,7 +930,7 @@ fn migration_skips_conflicting_replay_input_sources() -> Result<()> {
     drop(db);
 
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-    assert_eq!(db.current_schema_version()?, 67);
+    assert_eq!(db.current_schema_version()?, 68);
     let assignment = db.connection()?.query_row(
         "SELECT turn_id, revision
          FROM conversation_input_assignments
@@ -1098,7 +1098,7 @@ DELETE FROM schema_migrations WHERE version = 66;
     drop(db);
 
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
-    assert_eq!(db.current_schema_version()?, 67);
+    assert_eq!(db.current_schema_version()?, 68);
     let cleaned_replay_count: i64 = db.connection()?.query_row(
         "SELECT COUNT(*)
          FROM turn_records

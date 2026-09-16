@@ -41,6 +41,8 @@ pub(crate) const CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME: &str =
     "conversation_input_assignment_repair";
 pub(crate) const OBSERVER_SYNC_LEGACY_RECONCILE_VERSION: i64 = 67;
 pub(crate) const OBSERVER_SYNC_LEGACY_RECONCILE_NAME: &str = "observer_sync_legacy_reconcile";
+pub(crate) const TURN_REPLAY_SOURCE_INDEX_VERSION: i64 = 68;
+pub(crate) const TURN_REPLAY_SOURCE_INDEX_NAME: &str = "turn_replay_source_index";
 pub(crate) const CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL: &str = r#"
 SELECT
   json_extract(
@@ -3590,6 +3592,22 @@ CREATE INDEX IF NOT EXISTS idx_task_result_settlements_activation
         version: OBSERVER_SYNC_LEGACY_RECONCILE_VERSION,
         name: OBSERVER_SYNC_LEGACY_RECONCILE_NAME,
         sql: "",
+    },
+    Migration {
+        version: TURN_REPLAY_SOURCE_INDEX_VERSION,
+        name: TURN_REPLAY_SOURCE_INDEX_NAME,
+        sql: r#"
+ALTER TABLE turn_records ADD COLUMN replay_source_turn_id TEXT;
+
+UPDATE turn_records
+SET replay_source_turn_id = json_extract(payload_json, '$.replay.source_turn_id')
+WHERE json_valid(payload_json)
+  AND json_type(payload_json, '$.replay.source_turn_id') = 'text';
+
+CREATE INDEX idx_turn_records_replay_source
+  ON turn_records(agent_id, replay_source_turn_id)
+  WHERE replay_source_turn_id IS NOT NULL;
+"#,
     },
 ];
 

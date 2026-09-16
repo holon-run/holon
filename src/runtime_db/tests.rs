@@ -12,6 +12,7 @@ use crate::runtime_db::migrations::{
     max_known_migration_version, schema_fingerprint, table_exists,
     CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
     MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
+    TURN_REPLAY_SOURCE_INDEX_VERSION,
 };
 #[cfg(test)]
 use crate::runtime_db::storage_domain::upsert_storage_domain;
@@ -158,6 +159,56 @@ mod tests {
             apply_migration(connection, migration)?;
         }
         assert_eq!(current_schema_version(connection)?, target_version);
+        Ok(())
+    }
+
+    #[test]
+    fn replay_source_index_migration_backfills_historical_turns() -> Result<()> {
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        migrate_through(&mut connection, TURN_REPLAY_SOURCE_INDEX_VERSION - 1)?;
+        connection.execute(
+            "INSERT INTO turn_records (
+                turn_id, turn_index, agent_id, created_at, payload_json
+             ) VALUES (
+                'turn-replay', 2, 'agent-a', '2026-09-16T00:00:00Z',
+                json_object(
+                    'turn_id', 'turn-replay',
+                    'turn_index', 2,
+                    'agent_id', 'agent-a',
+                    'replay', json_object(
+                        'source_message_id', 'message-source',
+                        'source_turn_id', 'turn-source',
+                        'reason', 'test'
+                    ),
+                    'created_at', '2026-09-16T00:00:00Z'
+                )
+             )",
+            [],
+        )?;
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == TURN_REPLAY_SOURCE_INDEX_VERSION)
+            .expect("replay source migration");
+        apply_migration(&mut connection, migration)?;
+
+        let replay_source = connection.query_row(
+            "SELECT replay_source_turn_id
+             FROM turn_records
+             WHERE turn_id = 'turn-replay'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?;
+        assert_eq!(replay_source, "turn-source");
+        assert!(connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name = 'idx_turn_records_replay_source'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?);
         Ok(())
     }
 
