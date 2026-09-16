@@ -67,7 +67,7 @@ The framework-agnostic `ConversationController` (added with the Web GUI
 cutover) owns the page lifecycle around the client and protocol state:
 serialized snapshot bootstrap, bounded-backoff stream reconnection with
 serialized reset re-snapshotting, single-flight history/detail/brief requests,
-typed status (`loading` / `ready` / `reconnecting` / `unsupported` /
+typed status (`loading` / `paused` / `ready` / `reconnecting` / `unsupported` /
 `recoverable_error` / `terminal_error`), and dispose semantics for scope
 switches. `web-gui` wraps it through a reference-counted scope store
 (`web-gui/app/src/runtime/conversation-scope-store.ts`) and the
@@ -75,3 +75,17 @@ switches. `web-gui` wraps it through a reference-counted scope store
 normal GUI pages. The legacy raw-event timeline, session catch-up, and
 transcript hydration paths were removed from the GUI — see the cutover note in
 `docs/rfcs/conversation-read-model.md` §9.1.
+
+`pause()` releases the live stream while retaining the in-memory checkpoint;
+`start()` resumes it without another summary unless the server asks for a reset.
+`dispose()` flushes pending snapshot writes; use `dispose(false)` when discarding
+credentials to cancel queued writes instead.
+
+Optional brief and snapshot caches support `clear()` for access revocation.
+Cache reads have a 600 ms budget before network fallback. Snapshot changes
+are persisted every 750 ms while dirty, with immediate flush on terminal turns,
+pause, and disposal. Locally changed snapshots discard their old ETag and
+must revalidate before streaming. A 401/403 (or a missing conversation) clears
+both visible state and persistent cache; a missing individual brief does not
+discard the conversation. Hosts must namespace persistent adapters by verified
+login identity and clear them on authentication changes.

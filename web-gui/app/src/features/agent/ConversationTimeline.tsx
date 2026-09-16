@@ -72,6 +72,11 @@ export const ConversationTimeline = memo(function ConversationTimeline({
   const backgroundInputs = model.pendingInputs.filter((input) => input.presentation_class !== "operator");
   return (
     <div className="conversation-timeline" aria-label={t("agent.conversationAria")}>
+      {(status.kind === "loading" || status.kind === "paused") && model.view ? (
+        <div className="conversation-status-banner" role="status">
+          <RefreshCw size={14} /><span>{t("agentPage.conversationSyncing")}</span>
+        </div>
+      ) : null}
       {status.kind === "reconnecting" ? (
         <div className="conversation-status-banner is-reconnecting" role="status">
           <Unplug size={14} />
@@ -97,7 +102,7 @@ export const ConversationTimeline = memo(function ConversationTimeline({
       {model.turns.map((turn, index) => (
         <Fragment key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}>
           {index === model.turns.length - 1 ? <PendingEvents inputs={backgroundInputs} /> : null}
-          <ConversationTurnCard turn={turn} {...actions} />
+          <ConversationTurnCard turn={turn} syncing={status.kind !== "ready"} {...actions} />
         </Fragment>
       ))}
       {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} /> : null}
@@ -178,8 +183,9 @@ function PendingInputChip({ input }: { input: PendingInput }) {
 
 const ConversationTurnCard = memo(function ConversationTurnCard({
   turn,
+  syncing,
   ...actions
-}: { turn: ConversationTurnGroup } & ConversationTimelineActions) {
+}: { turn: ConversationTurnGroup; syncing: boolean } & ConversationTimelineActions) {
   const { t } = useTranslation();
   const detailId = useId();
   const detailRef = useRef<HTMLDivElement>(null);
@@ -187,11 +193,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   const [readingDetail, setReadingDetail] = useState(false);
   const wasActive = useRef(turn.execution.kind === "active");
   const presentation = turnResultPresentation(turn);
-  const execution = turnExecutionPresentation(turn);
+  const execution = syncing && turn.execution.kind === "active" ? "syncing" : turnExecutionPresentation(turn);
   const detailState = actions.detailLoadState(turn.turnId);
   const briefReady = turn.briefIds.every((id) => actions.briefRecord(id) !== null);
   const hasReadableBrief = turn.briefIds.length > 0 && briefReady;
-  const showExecutionNotice = execution !== "running" && execution !== "completed"
+  const showExecutionNotice = execution !== "syncing" && execution !== "running" && execution !== "completed"
     && !(execution === "waitingResult" && hasReadableBrief);
   const awaitingResult = (execution === "waitingResult" && !hasReadableBrief)
     || (turn.briefIds.length > 0 && !briefReady);
@@ -257,7 +263,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           <ChevronRight size={14} className="conversation-disclosure-chevron" />
           {execution === "running" ? <LoaderCircle size={14} className="is-spinning" /> : null}
           <span>{t(`agentPage.turnTimingStatus.${timingStatus}`)}</span>
-          {timingStatus !== "waiting" && timingStatus !== "waitingResult" ? <TurnElapsedTime turn={turn} /> : null}
+          {timingStatus !== "syncing" && timingStatus !== "waiting" && timingStatus !== "waitingResult" ? <TurnElapsedTime turn={turn} /> : null}
         </button>
         <div id={detailId} ref={detailRef} className={`conversation-detail-collapse ${expanded ? "is-expanded" : ""}`}
           aria-hidden={!expanded} inert={!expanded}>

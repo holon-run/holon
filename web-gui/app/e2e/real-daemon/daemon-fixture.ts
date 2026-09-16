@@ -168,6 +168,7 @@ async function createDaemon(
         HOLON_MODEL: "openai/gpt-5.4",
         OPENAI_API_KEY: "e2e-provider-key",
         HOLON_OPENAI_BASE_URL: stubProvider.baseUrl,
+        HOLON_DISABLE_PROVIDER_FALLBACK: "true",
         HOLON_CONTROL_AUTH_MODE: "required",
         HOLON_CALLBACK_BASE_URL: baseUrl,
         ...(options.env ?? {}),

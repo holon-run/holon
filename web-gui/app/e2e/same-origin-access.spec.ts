@@ -136,3 +136,52 @@ test("organization sign-in keeps a same-origin callback and clears a stale token
   await expect(page).toHaveURL(/\/api\/auth\/oidc\/start\?return_to=%2Fagents%2Fbootstrap-agent%2Fconversation$/);
   expect(await page.evaluate(() => sessionStorage.getItem("holon.webGui.activeRuntimeConnection.v1"))).not.toContain("stale-token");
 });
+
+test("sign-out clears conversation caches and rechecks sibling tabs", async ({ page, context }) => {
+  let authenticated = true;
+  await context.route("**/api/auth/session/me", (route) => route.fulfill({ json: { user_id: "control", auth_method: "oidc" } }));
+  await context.route("**/api/handshake", (route) => authenticated ? route.continue()
+    : route.fulfill({ status: 401, json: { code: "auth_required" } }));
+  await context.route("**/api/auth/method", (route) => route.fulfill({ json: { mode: "static" } }));
+  await context.route("**/api/auth/session/logout", (route) => {
+    authenticated = false;
+    return route.fulfill({ json: {} });
+  });
+  await page.goto("/");
+  await expect(page.locator(".sidebar")).toBeVisible();
+  const sibling = await context.newPage();
+  await sibling.goto("/");
+  await expect(sibling.locator(".sidebar")).toBeVisible();
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.open("holon-webgui-cache");
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction(["briefs", "snapshots"], "readwrite");
+        tx.objectStore("briefs").put({ remoteKey: "local#user", agentId: "agent", briefId: "brief", text: "private cached brief" });
+        tx.objectStore("snapshots").put({ remoteKey: "local#user", agentId: "agent", text: "private cached snapshot" });
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onabort = () => { db.close(); reject(tx.error); };
+      };
+      request.onerror = () => reject(request.error);
+    });
+  });
+  await page.locator(".connection-status").click();
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Sign in to Holon" })).toBeVisible();
+  await expect(sibling.getByRole("heading", { name: "Sign in to Holon" })).toBeVisible();
+  const count = await page.evaluate(async () => await new Promise<number>((resolve, reject) => {
+    const request = indexedDB.open("holon-webgui-cache");
+    request.onsuccess = () => {
+      const db = request.result;
+      const tx = db.transaction(["briefs", "snapshots"], "readonly");
+      const briefs = tx.objectStore("briefs").count();
+      const snapshots = tx.objectStore("snapshots").count();
+      tx.oncomplete = () => { db.close(); resolve(briefs.result + snapshots.result); };
+      tx.onabort = () => { db.close(); reject(tx.error); };
+    };
+    request.onerror = () => reject(request.error);
+  }));
+  expect(count).toBe(0);
+  await sibling.close();
+});

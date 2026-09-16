@@ -13,6 +13,8 @@ export function useAgentWorkStatus(agentId: string, changeKey: string) {
     let disposed = false;
     let inFlight = false;
     let requested = false;
+    let pollDelay = 5000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const refresh = async () => {
       if (disposed || document.visibilityState === "hidden") return;
       if (inFlight) { requested = true; return; }
@@ -20,21 +22,25 @@ export function useAgentWorkStatus(agentId: string, changeKey: string) {
       try {
         const agent = await client.getAgentState(agentId);
         if (!disposed) setSnapshot({ agent, stale: false });
+        // Idle/waiting state changes still wake via conversation and visibility events.
+        pollDelay = agent.currentRunId || agent.activeTaskCount > 0 ? 5000 : 30000;
       } catch {
         if (!disposed) setSnapshot((previous) => ({ ...previous, stale: true }));
       } finally {
         inFlight = false;
+        if (timer !== undefined) clearTimeout(timer);
         if (requested && !disposed) { requested = false; void refresh(); }
+        else if (!disposed) timer = setTimeout(() => { void refresh(); }, pollDelay);
       }
     };
     refreshRef.current = () => { void refresh(); };
     void refresh();
-    const timer = window.setInterval(() => { void refresh(); }, 5000);
+
     document.addEventListener("visibilitychange", refreshRef.current);
     const listener = refreshRef.current;
     return () => {
       disposed = true;
-      window.clearInterval(timer);
+      if (timer !== undefined) clearTimeout(timer);
       document.removeEventListener("visibilitychange", listener);
     };
   }, [agentId, config.mode, config.baseUrl, config.token]);

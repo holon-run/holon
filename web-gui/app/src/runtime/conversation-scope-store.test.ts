@@ -95,7 +95,7 @@ function summarySnapshot(throughSeq = 10) {
 
 function fakeClient() {
   const hub = new StreamQueue();
-  const calls = { capability: 0, summary: 0, stream: 0 };
+  const calls = { capability: 0, summary: 0, stream: 0, open: 0 };
   const client: ConversationClientLike = {
     baseUrl: "http://fake.local/api",
     async requireCapability() {
@@ -112,10 +112,11 @@ function fakeClient() {
     async brief() {
       throw new Error("not used");
     },
-    async *stream(): AsyncGenerator<ConversationStreamItem> {
+    async *stream(_agent, options): AsyncGenerator<ConversationStreamItem> {
       calls.stream += 1;
-      const signal = new AbortController().signal;
-      yield* hub.iterate(signal) as AsyncGenerator<ConversationStreamItem>;
+      calls.open += 1;
+      try { yield* hub.iterate(options?.signal ?? new AbortController().signal) as AsyncGenerator<ConversationStreamItem>; }
+      finally { calls.open -= 1; }
     },
   };
   return { client, hub, calls };
@@ -137,7 +138,7 @@ afterEach(() => {
 });
 
 describe("conversation scope store", () => {
-  it("shares one controller per scope key and keeps it alive after last release", async () => {
+  it("shares one controller per scope key and retains its data after last release", async () => {
     const { client, calls } = fakeClient();
     const key = conversationScopeKey("local", "web");
     const first = acquireConversationScope({
@@ -161,11 +162,12 @@ describe("conversation scope store", () => {
     expect(peekConversationScope(key)).not.toBeNull();
 
     releaseConversationScope(key);
-    // Last release keeps the scope idle (stream attached) instead of disposing.
+    // Last release retains the data but closes the idle stream.
     expect(peekConversationScope(key)).not.toBeNull();
     releaseConversationScope(key);
     expect(peekConversationScope(key)).not.toBeNull();
     expect(idleConversationScopeCount()).toBe(1);
+    await waitFor(() => calls.open === 0);
 
     const third = acquireConversationScope({
       key,
@@ -178,6 +180,8 @@ describe("conversation scope store", () => {
     expect(calls.capability).toBe(1);
     expect(calls.summary).toBe(1);
     expect(idleConversationScopeCount()).toBe(0);
+    await waitFor(() => calls.stream === 2);
+    expect(calls.open).toBe(1);
   });
 
   it("publishes view snapshots into the mirror store", async () => {

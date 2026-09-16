@@ -1,3 +1,4 @@
+import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
@@ -348,7 +349,7 @@ export function App() {
       (modelCatalog.source !== "cache" && modelCatalog.cachedAt !== undefined) ||
       Boolean(modelCatalog.error)
     ) return;
-    void refreshModelCatalog();
+    void refreshModelCatalog({ refresh: false });
   }, [
     modelCatalog.cachedAt,
     modelCatalog.error,
@@ -1100,6 +1101,7 @@ function SessionLogout() {
         headers: { Accept: "application/json" },
       });
       if (!response.ok) throw new Error("Logout failed");
+      await clearConversationCaches();
       clearStoredRuntimeConnectionToken();
       const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
       window.location.replace(`/login?return_to=${encodeURIComponent(returnTo || "/")}`);

@@ -818,3 +818,116 @@ test("brief cache read or write failures fall back to the network", async () => 
   assert.equal(client.calls.brief.length, 1);
   controller.dispose();
 });
+
+test("pause releases the stream and resumes from the retained checkpoint without another summary", async () => {
+  const hub = new StreamQueue();
+  const client = fakeClient({ hub });
+  const controller = new ConversationController({ client, agentId: identity.agent_id });
+  controller.start();
+  await waitFor(() => client.calls.openStreams === 1);
+  controller.pause();
+  await waitFor(() => client.calls.openStreams === 0);
+  assert.equal(controller.view().checkpoint, "checkpoint-10");
+  assert.equal(controller.status.kind, "paused");
+  controller.start();
+  await waitFor(() => client.calls.stream.length === 2);
+  assert.equal(client.calls.summary.length, 1);
+  assert.equal(client.calls.stream[1].after, "checkpoint-10");
+  controller.dispose();
+});
+
+test("streamed terminal state is persisted with its checkpoint and without the old ETag", async () => {
+  const hub = new StreamQueue();
+  const client = fakeClient({ hub });
+  let stored;
+  const controller = new ConversationController({ client, agentId: identity.agent_id,
+    snapshotCache: { async load() { return null; }, async store(entry) { stored = entry; } },
+  });
+  controller.start();
+  await waitFor(() => client.calls.openStreams === 1 && stored);
+  const terminal = turn("turn-10", 10, 2, { execution: { kind: "terminal", outcome: "completed" }, result: { kind: "none", reason: { kind: "tool_only_wait" } }, settled: true });
+  hub.push({ type: "batch", batch: batch({ from: 10, through: 11, mutations: [{ type: "turn_summary_upsert", event_log_epoch: "epoch-a", visibility_scope_id: "scope-a", turn: terminal }] }) });
+  await waitFor(() => controller.view().through_seq === 11);
+  controller.pause();
+  await waitFor(() => stored.summary.snapshot_through_seq === 11);
+  assert.equal(stored.summary.turns[0].execution.kind, "terminal");
+  assert.equal(stored.summary.active_turns.length, 0);
+  assert.equal(stored.summary.snapshot_cursor, "checkpoint-11");
+  assert.equal(stored.etag, null);
+  controller.dispose();
+});
+
+test("forbidden revalidation clears cached content and persistent stores", async () => {
+  const { ConversationHttpError } = await import("../dist/index.js");
+  const client = fakeClient({ summary() { throw new ConversationHttpError(403, { ok: false, error: "forbidden" }); } });
+  let cleared = 0;
+  const controller = new ConversationController({ client, agentId: identity.agent_id,
+    snapshotCache: { async load() { return { summary: summary(), etag: "old" }; }, async store() {}, async clear() { cleared++; } },
+    briefCache: { async get() {}, async put() {}, async clear() { cleared++; } },
+  });
+  controller.start();
+  await waitFor(() => controller.status.kind === "recoverable_error" && cleared === 2);
+  assert.deepEqual(controller.view().turns, []);
+  assert.equal(controller.view().checkpoint, null);
+  assert.equal(client.calls.openStreams, 0);
+  controller.dispose();
+});
+
+test("a hung cache read cannot prevent a network bootstrap", async () => {
+  const client = fakeClient({ hub: new StreamQueue() });
+  const controller = new ConversationController({ client, agentId: identity.agent_id,
+    snapshotCache: { load() { return new Promise(() => {}); }, async store() {} },
+  });
+  controller.start();
+  await waitFor(() => controller.status.kind === "ready");
+  assert.equal(client.calls.summary.length, 1);
+  controller.dispose();
+});
+
+test("access revocation discards late brief responses, but a missing brief preserves the turn", async () => {
+  const { ConversationHttpError } = await import("../dist/index.js");
+  let resolveLate;
+  let persisted = 0;
+  const client = fakeClient({ hub: new StreamQueue(), brief(id) {
+    if (id === "late") return new Promise((resolve) => { resolveLate = resolve; });
+    throw new ConversationHttpError(id === "missing" ? 404 : 403, { ok: false, error: "unavailable" });
+  } });
+  const controller = new ConversationController({ client, agentId: identity.agent_id,
+    briefCache: { async get() {}, async put() { persisted++; }, async clear() {} },
+  });
+  controller.start();
+  await waitFor(() => controller.status.kind === "ready");
+  await controller.loadBrief("missing");
+  assert.equal(controller.view().turns.length, 1);
+  const late = controller.loadBrief("late");
+  await waitFor(() => resolveLate);
+  await controller.loadBrief("forbidden");
+  resolveLate(briefRecord("late"));
+  await late;
+  assert.deepEqual(controller.view().turns, []);
+  assert.equal(controller.briefState("late"), null);
+  assert.equal(persisted, 0);
+  controller.dispose();
+});
+
+test("immediate pause/resume replaces an aborted handshake without stranding the new run", async () => {
+  const client = fakeClient({ hub: new StreamQueue() });
+  let attempts = 0;
+  client.requireCapability = async (signal) => {
+    attempts++;
+    if (attempts === 1) await new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    return { ok: true };
+  };
+  const controller = new ConversationController({ client, agentId: identity.agent_id });
+  controller.start();
+  controller.pause();
+  controller.start();
+  await waitFor(() => client.calls.openStreams === 1);
+  assert.equal(controller.status.kind, "ready");
+  assert.equal(attempts, 2);
+  controller.pause();
+  controller.start();
+  await waitFor(() => client.calls.stream.length === 2);
+  assert.equal(attempts, 2);
+  controller.dispose();
+});

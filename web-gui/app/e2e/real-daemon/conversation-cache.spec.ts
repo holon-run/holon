@@ -87,14 +87,8 @@ test("conversation caches cut refetches across agent switches, reloads, and reva
 
   const turnsBeforeReload = await page.locator("[data-turn-id]").count();
   expect(turnsBeforeReload).toBeGreaterThan(0);
-  // Reload once unblocked: streamed turns postdate the persisted bootstrap
-  // snapshot, so this refresh revalidates with a fresh summary (200) and
-  // persists it — the cache then reflects the live turn window.
-  await page.reload();
-  await expect.poll(() => conversationStatus(page)).toBe("ready");
-  await expect
-    .poll(() => page.locator("[data-turn-id]").count())
-    .toBe(turnsBeforeReload);
+  // The stream now persists updates itself; no priming reload is needed.
+  await page.waitForTimeout(1000);
 
   // P2 — persisted snapshot: a reload renders the cached turns even while
   // the summary endpoint is unreachable, then revalidates once unblocked.
@@ -120,6 +114,7 @@ test("conversation caches cut refetches across agent switches, reloads, and reva
   // 304, so the full snapshot payload is never transferred again.
   await page.waitForTimeout(500);
   const responsesBefore = probe.responses.length;
+  const requestsBefore = probe.requests.length;
   await page.reload();
   await expect.poll(() => conversationStatus(page)).toBe("ready");
   await expect
@@ -128,11 +123,37 @@ test("conversation caches cut refetches across agent switches, reloads, and reva
   const revalidation = probe.responses[responsesBefore];
   expect(revalidation?.agentId).toBe("default");
   expect(revalidation?.status).toBe(304);
-  const revalidationRequest = probe.requests[responsesBefore];
+  const revalidationRequest = probe.requests[requestsBefore];
   expect(revalidationRequest?.agentId).toBe("default");
   expect(revalidationRequest?.ifNoneMatch).toBeTruthy();
   // The cached turns are still rendered after the 304 round trip.
   await expect
     .poll(() => page.locator("[data-turn-id]").count())
     .toBe(turnsBeforeReload);
+});
+
+test("idle scopes do not starve HTTP requests in another tab", async ({ daemonFactory, page }) => {
+  const daemon = await daemonFactory({ webDist: "dist-e2e" });
+  for (const id of ["cache-a", "cache-b", "cache-c"]) {
+    await daemon.api(`/control/agents/${id}/create`, {
+      method: "POST",
+      body: JSON.stringify({ authority_class: "operator_instruction", template: null }),
+    });
+  }
+  await installLocalToken(page, daemon.token);
+  await page.goto(`${daemon.baseUrl}/agents/default/conversation`);
+  for (const id of ["default", "cache-a", "cache-b", "cache-c"]) {
+    await page.locator(`.agent-row[title*="${id}"]`).first().click();
+    await expect.poll(() => conversationStatus(page)).toBe("ready");
+  }
+  const second = await page.context().newPage();
+  await installLocalToken(second, daemon.token);
+  await second.goto(`${daemon.baseUrl}/agents/default/conversation`, { waitUntil: "domcontentloaded" });
+  await expect.poll(() => conversationStatus(second), { timeout: 10000 }).toBe("ready");
+  const status = await second.evaluate(async () => {
+    const response = await fetch("/api/auth/method", { signal: AbortSignal.timeout(3000) });
+    return response.status;
+  });
+  expect(status).toBe(200);
+  await second.close();
 });
