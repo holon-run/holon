@@ -4,7 +4,7 @@ export const runtimeFixture: RuntimeBootstrap = {
   attentionCount: 1,
   connection: {
     mode: "local",
-    summary: "fixture bootstrap · set VITE_HOLON_API_BASE to use live data",
+    summary: "fixture bootstrap",
     source: "fixture",
   },
   metrics: [

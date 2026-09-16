@@ -89,7 +89,6 @@ import type {
   RuntimeBootstrap,
   RuntimeConnectionConfig,
   TaskSummary,
-  RuntimeConnectionProfile,
   RuntimeConfigState,
   TaskStatusSnapshot,
   CodexDeviceLoginState,
@@ -514,7 +513,6 @@ function resetRightPanelLoading(view: RightPanelView | undefined): RightPanelVie
 
 const LEGACY_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.runtimeConnection.v1";
 const ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY = "holon.webGui.activeRuntimeConnection.v1";
-const RUNTIME_CONNECTION_PROFILES_STORAGE_KEY = "holon.webGui.runtimeConnectionProfiles.v1";
 let runtimeConnectionConfig = readStoredRuntimeConnectionConfig();
 let runtimeClient = createRuntimeClient(runtimeClientOptions(runtimeConnectionConfig));
 const activeEventStreams = new Map<string, AgentEventStreamSubscription>();
@@ -728,55 +726,31 @@ function runtimeClientOptions(config: RuntimeConnectionConfig) {
     : { mode: "local" as const, token: config.token };
 }
 
+// The GUI always talks to the server that serves this page. Old remote
+// selections and their credentials must never be applied to the current site.
+function sameOriginConnection(config: RuntimeConnectionConfig | undefined): RuntimeConnectionConfig {
+  return config?.mode === "local"
+    ? { mode: "local", token: typeof config.token === "string" ? config.token.trim() || undefined : undefined }
+    : { mode: "local" };
+}
+
 export function readStoredRuntimeConnectionConfig(): RuntimeConnectionConfig {
   if (typeof window === "undefined") return { mode: "local" };
-  const activeConfig = coerceRuntimeConnectionConfig(readStoredJson(window.sessionStorage, ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY));
-  if (activeConfig) return remoteConfigAllowed(activeConfig) ? withStoredRemoteProfileToken(activeConfig) : { mode: "local" };
-
-  const legacyConfig = coerceRuntimeConnectionConfig(readStoredJson(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY));
-  if (legacyConfig?.mode === "remote") {
-    if (!canUseRemoteRuntimeConnections()) return { mode: "local" };
-    writeStoredRuntimeConnectionConfig(legacyConfig);
-    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
-    return withStoredRemoteProfileToken(legacyConfig);
-  }
-
-  if (legacyConfig?.mode === "local") {
-    writeActiveRuntimeConnectionConfig(legacyConfig);
-    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
-  }
-
-  return { mode: "local" };
+  const active = readStoredJson(window.sessionStorage, ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY) as RuntimeConnectionConfig | undefined;
+  const legacy = readStoredJson(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY) as RuntimeConnectionConfig | undefined;
+  const config = sameOriginConnection(active ?? legacy);
+  writeStoredRuntimeConnectionConfig(config);
+  return config;
 }
 
 export function writeStoredRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
+  if (typeof window === "undefined") return;
+  removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
   try {
-    removeStoredItem(window.localStorage, LEGACY_RUNTIME_CONNECTION_STORAGE_KEY);
-    const allowedConfig = remoteConfigAllowed(config) ? config : { mode: "local" as const };
-    writeActiveRuntimeConnectionConfig(allowedConfig);
-    if (allowedConfig.mode === "remote") writeStoredRemoteProfile(allowedConfig);
+    window.sessionStorage.setItem(ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(sameOriginConnection(config)));
   } catch {
     // Ignore storage failures; the in-memory connection still applies.
   }
-}
-
-function coerceRuntimeConnectionConfig(value: unknown): RuntimeConnectionConfig | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const parsed = value as Partial<RuntimeConnectionConfig>;
-  if (parsed.mode === "local") {
-    return {
-      mode: "local",
-      token: typeof parsed.token === "string" && parsed.token.trim() ? parsed.token.trim() : undefined,
-    };
-  }
-  if (parsed.mode !== "remote") return undefined;
-  const baseUrl = normalizeConnectionBaseUrl(parsed.baseUrl);
-  if (!baseUrl) return undefined;
-  return {
-    mode: "remote",
-    baseUrl,
-    token: typeof parsed.token === "string" && parsed.token.trim() ? parsed.token.trim() : undefined,
-  };
 }
 
 function readStoredJson(storage: Storage, key: string): unknown {
@@ -796,123 +770,9 @@ function removeStoredItem(storage: Storage, key: string): void {
   }
 }
 
-function writeActiveRuntimeConnectionConfig(config: RuntimeConnectionConfig): void {
-  if (typeof window === "undefined") return;
-  const activeConfig = coerceRuntimeConnectionConfig(config) ?? { mode: "local" };
-  try {
-    window.sessionStorage.setItem(ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY, JSON.stringify(activeConfig));
-  } catch {
-    // Ignore storage failures; the in-memory connection still applies.
-  }
-}
-
-function readStoredRemoteProfiles(): Record<string, RuntimeConnectionConfig> {
-  if (typeof window === "undefined") return {};
-  const parsed = readStoredJson(window.localStorage, RUNTIME_CONNECTION_PROFILES_STORAGE_KEY);
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-  const profiles: Record<string, RuntimeConnectionConfig> = {};
-  for (const [key, value] of Object.entries(parsed)) {
-    const profile = coerceRuntimeConnectionConfig(value);
-    const profileBaseUrl = profile?.baseUrl;
-    if (profile?.mode === "remote" && profileBaseUrl && key === remoteProfileKey(profileBaseUrl)) {
-      profiles[key] = profile;
-    }
-  }
-  return profiles;
-}
-
-function writeStoredRemoteProfile(config: RuntimeConnectionConfig): void {
-  if (typeof window === "undefined" || config.mode !== "remote") return;
-  const profile = coerceRuntimeConnectionConfig(config);
-  if (profile?.mode !== "remote") return;
-  const profileBaseUrl = profile.baseUrl;
-  if (!profileBaseUrl) return;
-  const profiles = readStoredRemoteProfiles();
-  const key = remoteProfileKey(profileBaseUrl);
-  const existingProfile = profiles[key];
-  profiles[key] = {
-    ...profile,
-    token: profile.token ?? (existingProfile?.mode === "remote" ? existingProfile.token : undefined),
-  };
-  try {
-    window.localStorage.setItem(RUNTIME_CONNECTION_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
-  } catch {
-    // Ignore storage failures; the in-memory connection still applies.
-  }
-}
-
-/**
- * Drop any stored static control token for the active connection and its
- * remote profile. OIDC runtimes authenticate through the session cookie; a
- * stale static token kept from an earlier local-mode deployment would still
- * be sent as a Bearer header and mask the fresh cookie, looping the login
- * flow between the callback and the login page.
- */
+/** Drop stale bearer credentials when browser session authentication takes over. */
 export function clearStoredRuntimeConnectionToken(): void {
-  if (typeof window === "undefined") return;
-  const activeConfig = coerceRuntimeConnectionConfig(
-    readStoredJson(window.sessionStorage, ACTIVE_RUNTIME_CONNECTION_STORAGE_KEY),
-  );
-  if (activeConfig?.token) {
-    writeActiveRuntimeConnectionConfig({ ...activeConfig, token: undefined });
-  }
-  if (activeConfig?.mode !== "remote" || !activeConfig.baseUrl) return;
-  const profiles = readStoredRemoteProfiles();
-  const key = remoteProfileKey(activeConfig.baseUrl);
-  const profile = profiles[key];
-  if (!profile?.token) return;
-  profiles[key] = { ...profile, token: undefined };
-  try {
-    window.localStorage.setItem(RUNTIME_CONNECTION_PROFILES_STORAGE_KEY, JSON.stringify(profiles));
-  } catch {
-    // Ignore storage failures; the in-memory connection still applies.
-  }
-}
-
-export function readStoredRemoteConnectionProfiles(): RuntimeConnectionProfile[] {
-  if (!canUseRemoteRuntimeConnections()) return [];
-  return Object.values(readStoredRemoteProfiles())
-    .filter((profile): profile is RuntimeConnectionConfig & { mode: "remote"; baseUrl: string } => profile.mode === "remote" && Boolean(profile.baseUrl))
-    .map((profile) => ({
-      baseUrl: profile.baseUrl,
-      hasToken: Boolean(profile.token),
-    }))
-    .sort((left, right) => left.baseUrl.localeCompare(right.baseUrl));
-}
-
-function normalizeConnectionBaseUrl(value: string | undefined): string {
-  return value?.trim().replace(/\/+$/, "") ?? "";
-}
-
-function remoteProfileKey(baseUrl: string): string {
-  return normalizeConnectionBaseUrl(baseUrl);
-}
-
-function withStoredRemoteProfileToken(config: RuntimeConnectionConfig): RuntimeConnectionConfig {
-  if (config.mode !== "remote" || config.token) return config;
-  const baseUrl = config.baseUrl;
-  if (!baseUrl) return config;
-  const profile = readStoredRemoteProfiles()[remoteProfileKey(baseUrl)];
-  if (profile?.mode !== "remote" || !profile.token) return config;
-  return { ...config, token: profile.token };
-}
-
-function remoteConfigAllowed(config: RuntimeConnectionConfig): boolean {
-  return config.mode !== "remote" || canUseRemoteRuntimeConnections();
-}
-
-export function canUseRemoteRuntimeConnections(): boolean {
-  if (typeof window === "undefined") return false;
-  return isLoopbackWebHostname(window.location?.hostname);
-}
-
-export function isLoopbackWebHostname(hostname: string | undefined): boolean {
-  if (!hostname) return false;
-  const normalized = hostname.trim().toLowerCase().replace(/^\[(.*)\]$/, "$1");
-  if (!normalized) return false;
-  if (normalized === "localhost" || normalized.endsWith(".localhost")) return true;
-  if (normalized === "::1") return true;
-  return /^127(?:\.\d{1,3}){3}$/.test(normalized);
+  writeStoredRuntimeConnectionConfig({ mode: "local" });
 }
 
 const emptyBootstrap: RuntimeBootstrap = {
@@ -920,7 +780,7 @@ const emptyBootstrap: RuntimeBootstrap = {
   connection: {
     mode: "local",
     source: "fixture",
-    summary: "Connecting to local runtime…",
+    summary: "Connecting to this Holon server…",
   },
   metrics: [],
   agents: [],
@@ -934,7 +794,7 @@ function pendingBootstrap(config: RuntimeConnectionConfig): RuntimeBootstrap {
       source: "fixture",
       baseUrl: config.mode === "remote" ? config.baseUrl : undefined,
       hasToken: Boolean(config.token?.trim()),
-      summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to local runtime…",
+      summary: config.mode === "remote" ? "Connecting to remote runtime…" : "Connecting to this Holon server…",
     },
   };
 }
@@ -1834,24 +1694,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     nextClientGeneration();
     const generation = clientGeneration;
     cancelClientGenerationWork();
-    const normalizedBaseUrl = config.mode === "remote" ? normalizeConnectionBaseUrl(config.baseUrl) : "";
-    const retainedToken =
-      config.mode === "remote" &&
-      config.token === undefined &&
-      runtimeConnectionConfig.mode === "remote" &&
-      normalizeConnectionBaseUrl(runtimeConnectionConfig.baseUrl) === normalizedBaseUrl
-        ? runtimeConnectionConfig.token
-        : undefined;
-    const normalizedConfig: RuntimeConnectionConfig =
-      config.mode === "remote"
-        ? canUseRemoteRuntimeConnections()
-          ? withStoredRemoteProfileToken({
-              mode: "remote",
-              baseUrl: normalizedBaseUrl,
-              token: config.token?.trim() || retainedToken,
-            })
-          : { mode: "local", token: config.token?.trim() || undefined }
-        : { mode: "local", token: config.token?.trim() || undefined };
+    const normalizedConfig = sameOriginConnection(config);
     runtimeConnectionConfig = normalizedConfig;
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
     writeStoredRuntimeConnectionConfig(normalizedConfig);

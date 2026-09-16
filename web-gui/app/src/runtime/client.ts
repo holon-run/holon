@@ -72,7 +72,7 @@ interface OperatorPromptResponseDto {
   message_id?: string;
 }
 
-const DEFAULT_DEV_API_BASE = "/api";
+const SAME_ORIGIN_API_BASE = "/api";
 const DEFAULT_REQUEST_TIMEOUT_MS = 8000;
 const OPTIONAL_DETAIL_TIMEOUT_MS = 4000;
 const CONFIG_UPDATE_TIMEOUT_MS = 30_000;
@@ -782,24 +782,17 @@ function projectFileMeta(response: WorkspaceFileMetaDto): WorkspaceFileMeta {
   };
 }
 
-/**
- * Resolve the normalized API base for auxiliary clients (conversation SDK,
- * stream consumers) using the same rules as the main runtime client:
- * explicit config baseUrl, then VITE_HOLON_API_BASE, then the local dev
- * default. Returns undefined when nothing resolves.
- */
+/** Shared base for the main client, conversation streams, and file links. */
 export function resolveRuntimeApiBase(
   config: Pick<RuntimeClientOptions, "mode" | "baseUrl">,
 ): string | undefined {
   const connectionMode = config.mode ?? (config.baseUrl ? "remote" : "local");
-  const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
-  return normalizeBaseUrl(config.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
+  return connectionMode === "local" ? SAME_ORIGIN_API_BASE : normalizeBaseUrl(config.baseUrl);
 }
 
 export function createRuntimeClient(options: RuntimeClientOptions = {}) {
   const connectionMode = options.mode ?? (options.baseUrl ? "remote" : "local");
-  const defaultBaseUrl = connectionMode === "local" ? DEFAULT_DEV_API_BASE : undefined;
-  const baseUrl = normalizeBaseUrl(options.baseUrl ?? import.meta.env.VITE_HOLON_API_BASE ?? defaultBaseUrl);
+  const baseUrl = resolveRuntimeApiBase(options);
   const rawFetchImpl = options.fetchImpl ?? fetch;
   const fetchImpl = ((input: RequestInfo | URL, init?: RequestInit) =>
     rawFetchImpl(input, { ...init, credentials: "include" })) as typeof fetch;

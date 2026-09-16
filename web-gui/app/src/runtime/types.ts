@@ -20,11 +20,6 @@ export interface RuntimeConnectionConfig {
   token?: string;
 }
 
-export interface RuntimeConnectionProfile {
-  baseUrl: string;
-  hasToken: boolean;
-}
-
 export type SkillScope = "user" | "user_global" | "agent" | "workspace";
 
 export interface SkillCatalogEntry {
