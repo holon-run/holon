@@ -963,6 +963,80 @@ class DockerE2ERunnerTests(unittest.TestCase):
         self.assertTrue(scenario.interrupted_schema47_seen)
         self.assertTrue(scenario.status()["complete"])
 
+    def test_interrupted_schema47_stub_stalls_only_on_live_current_input(self) -> None:
+        scenario = stub.Scenario("runtime-upgrade-interrupted-schema47")
+        # #3025 keeps interrupted-turn operator input in serialized history,
+        # so candidate recovery prompts replay old-phase markers through the
+        # full payload while the live current_input carries only the fresh
+        # candidate marker. Those requests must be answered, not stalled.
+        replayed = {
+            "input": [
+                {
+                    "content": [
+                        {
+                            "text": (
+                                "## current_input\nCurrent input:\n"
+                                "old turn UPGRADE-SCHEMA47-LIFECYCLE-deadbeef "
+                                "UPGRADE-SCHEMA47-WORKITEM-deadbeef"
+                            )
+                        }
+                    ]
+                },
+                {
+                    "content": [
+                        {
+                            "text": (
+                                "## current_input\nCurrent input:\n"
+                                "candidate turn UPGRADE-SCHEMA47-CANDIDATE-ab12cd"
+                            )
+                        }
+                    ]
+                },
+            ],
+        }
+        replayed_result: list[tuple[int, dict]] = []
+        replayed_worker = threading.Thread(
+            target=lambda: replayed_result.append(scenario.consume(replayed)),
+            daemon=True,
+        )
+        replayed_worker.start()
+        replayed_worker.join(timeout=2.0)
+        self.assertFalse(replayed_worker.is_alive())
+        self.assertEqual(replayed_result[0][0], 200)
+        self.assertIn(
+            "UPGRADE-SCHEMA47-CANDIDATE-ab12cd", json.dumps(replayed_result[0][1])
+        )
+        self.assertEqual(
+            scenario.interrupted_schema47_kinds,
+            {"agent_lifecycle", "work_item"},
+        )
+        self.assertTrue(scenario.status()["complete"])
+
+        # Old-phase turns whose live current_input still carries the marker
+        # must keep stalling so the runner can SIGKILL the runtime mid-turn.
+        live = {
+            "input": [
+                {
+                    "content": [
+                        {
+                            "text": (
+                                "## current_input\nCurrent input:\n"
+                                "open turn UPGRADE-SCHEMA47-WORKITEM-live"
+                            )
+                        }
+                    ]
+                },
+            ],
+        }
+        live_worker = threading.Thread(
+            target=scenario.consume,
+            args=(live,),
+            daemon=True,
+        )
+        live_worker.start()
+        live_worker.join(timeout=1.0)
+        self.assertTrue(live_worker.is_alive())
+
     def test_openai_stub_required_scenarios_reach_exact_completion(self) -> None:
         expected_calls = {
             "scheduler-task-wait": [

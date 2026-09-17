@@ -158,15 +158,24 @@ class Scenario:
     def consume(self, request: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         if self.name == "runtime-upgrade-interrupted-schema47":
             raw = self.observe(request)
+            # #3025 keeps interrupted-turn operator input in the serialized
+            # history, so candidate recovery prompts replay the old-phase
+            # markers in the full payload. Collect the interrupted kinds from
+            # the raw payload (the status endpoint attests both blockers),
+            # but stall only while the live current_input still carries the
+            # marker; candidate turns must not be blocked by replayed history.
+            current = self.current_input(request)
             if "UPGRADE-SCHEMA47-LIFECYCLE-" in raw:
                 with self.lock:
                     self.interrupted_schema47_kinds.add("agent_lifecycle")
                     self.interrupted_schema47_seen = True
-                threading.Event().wait(300)
             if "UPGRADE-SCHEMA47-WORKITEM-" in raw:
                 with self.lock:
                     self.interrupted_schema47_kinds.add("work_item")
                     self.interrupted_schema47_seen = True
+            if "UPGRADE-SCHEMA47-LIFECYCLE-" in current:
+                threading.Event().wait(300)
+            if "UPGRADE-SCHEMA47-WORKITEM-" in current:
                 threading.Event().wait(300)
             markers = re.findall(r"UPGRADE-SCHEMA47-CANDIDATE-[0-9a-f]+", raw)
             return 200, response(

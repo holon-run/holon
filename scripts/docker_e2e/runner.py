@@ -1874,6 +1874,11 @@ class CaseHarness:
         database against this value: releases without new migrations keep
         the revision unchanged, while a candidate that failed to run its
         migrations on the upgraded database would report a stale revision.
+
+        The scratch container runs without credentials but still needs a
+        default model configured before the binary opens the runtime
+        database, so seed ``HOLON_MODEL`` from the harness configuration.
+        ``retention --dry-run`` performs no model calls.
         """
         volume = f"{self.volume}-candidate-fresh"
         snapshot_dir = self.evidence / f"{label}-runtime-state"
@@ -1886,6 +1891,8 @@ class CaseHarness:
             self.docker(
                 "run",
                 "--rm",
+                "--env",
+                f"HOLON_MODEL={self.model}",
                 "--volume",
                 f"{volume}:/var/lib/holon",
                 image,
@@ -3072,14 +3079,19 @@ def run_runtime_upgrade_interrupted_schema47_case(
     )
     harness.stop()
     migrated = harness.offline_runtime_db_snapshot("upgrade-schema47-migrated")
-    candidate_schema_revision = migrated.get("schema_revision")
+    candidate_schema_revision = harness.fresh_schema_revision(
+        candidate_image,
+        "upgrade-schema47-candidate-fresh",
+    )
     require(
         migrated["integrity_check"] == "ok"
-        and isinstance(candidate_schema_revision, int)
+        and isinstance(migrated.get("schema_revision"), int)
+        and migrated["schema_revision"] == candidate_schema_revision
         and candidate_schema_revision >= 47
-        and candidate_schema_revision > previous_schema_revision,
-        "candidate did not migrate beyond the previous release at schema 47 or "
-        f"newer: previous={previous_schema_revision}, candidate={migrated}",
+        and candidate_schema_revision >= previous_schema_revision,
+        "candidate did not migrate the upgraded database to its own schema "
+        f"revision {candidate_schema_revision} at schema 47 or newer: "
+        f"previous={previous_schema_revision}, candidate={migrated}",
     )
     retired_tables = {
         "scheduler_agent_slots",
