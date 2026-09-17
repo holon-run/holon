@@ -389,7 +389,7 @@ impl RuntimeHandle {
     pub(super) async fn prepare_wait_for_outcome_with_id(
         &self,
         agent_id: &str,
-        work_item_id: Option<String>,
+        mut work_item_id: Option<String>,
         wake: WaitForWakeKind,
         resource: Option<String>,
         reason: String,
@@ -416,7 +416,8 @@ impl RuntimeHandle {
                     )
                     .with_safe_context("task_id", &task_id)
                 })?;
-            self.validate_wait_for_task_owner(agent_id, work_item_id.as_deref(), &task)?;
+            work_item_id =
+                self.resolve_wait_for_task_owner(agent_id, work_item_id.as_deref(), &task)?;
             if task_state_reducer::is_terminal_task_status(&task.status) {
                 return self
                     .prepare_terminal_task_result(task, reason, condition_id)
@@ -699,12 +700,12 @@ impl RuntimeHandle {
         )))
     }
 
-    fn validate_wait_for_task_owner(
+    fn resolve_wait_for_task_owner(
         &self,
         agent_id: &str,
         work_item_id: Option<&str>,
         task: &TaskRecord,
-    ) -> Result<()> {
+    ) -> Result<Option<String>> {
         if task.agent_id != agent_id {
             return Err(RuntimeError::validation(
                 "task_agent_mismatch",
@@ -713,7 +714,7 @@ impl RuntimeHandle {
             .with_safe_context("task_id", &task.id)
             .into());
         }
-        if task.work_item_id.as_deref() != work_item_id {
+        if work_item_id.is_some() && task.work_item_id.as_deref() != work_item_id {
             return Err(RuntimeError::validation(
                 "task_work_item_mismatch",
                 format!(
@@ -724,7 +725,7 @@ impl RuntimeHandle {
             .with_safe_context("task_id", &task.id)
             .into());
         }
-        Ok(())
+        Ok(task.work_item_id.clone())
     }
 
     async fn prepare_terminal_task_result(

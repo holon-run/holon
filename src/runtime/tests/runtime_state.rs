@@ -5443,7 +5443,7 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_continue() {
     let registration = runtime
         .register_wait_for_outcome(
             "default",
-            Some(work_item.id.clone()),
+            None,
             WaitForWakeKind::TaskResult,
             Some(terminal_task.id.clone()),
             "waiting for terminal task handoff".into(),
@@ -5563,7 +5563,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     let work_wait = runtime
         .register_wait_for(
             "default",
-            Some(work_item.id.clone()),
+            None,
             WaitForWakeKind::TaskResult,
             Some("task-lifecycle-handoff".into()),
             "waiting for lifecycle handoff task".into(),

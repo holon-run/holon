@@ -689,6 +689,47 @@ async fn late_task_result_missing_message_evidence_is_validation_only() {
     harness.assert_unchanged(&before);
 }
 
+#[tokio::test]
+async fn explicit_task_result_work_item_mismatch_is_rejected() {
+    let harness = LifecycleHarness::new();
+    let task_owner = harness
+        .runtime()
+        .create_work_item("task owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let other_work_item = harness
+        .runtime()
+        .create_work_item("other owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let task = running_task("task-owner-mismatch", &task_owner.id, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition(&task, "task_created")
+        .await
+        .unwrap();
+    let before = harness.snapshot();
+
+    let error = harness
+        .runtime()
+        .register_wait_for_outcome(
+            "default",
+            Some(other_work_item.id),
+            WaitForWakeKind::TaskResult,
+            Some(task.id),
+            "must not migrate task owner".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        crate::runtime_error::describe_runtime_error(&error).code,
+        "task_work_item_mismatch"
+    );
+    harness.assert_unchanged(&before);
+}
+
 #[tokio::test(start_paused = true)]
 async fn duplicate_historical_waits_do_not_reject_current_trigger_message() {
     let harness = LifecycleHarness::new();
