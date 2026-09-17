@@ -292,6 +292,18 @@ async function handleControl(req, res, url) {
     json(res, { disconnected: true });
     return true;
   }
+  if (url.pathname === "/__e2e__/reset-conversation" && req.method === "POST") {
+    const session = sessionFor(req, url);
+    const body = await requestBody(req);
+    const reset = { type: "reset_required", reason: body.reason, hint: "fixture reset",
+      oldest_retained_seq: 1, event_head_seq: 1000 };
+    for (const stream of session.conversationStreams) {
+      if (stream.conversationAgentId !== body.agentId) continue;
+      stream.write(`event: reset_required\ndata: ${JSON.stringify(reset)}\n\n`);
+    }
+    json(res, { reset: true });
+    return true;
+  }
   if (url.pathname === "/__e2e__/conversation" && req.method === "POST") {
     const session = sessionFor(req, url);
     const body = await requestBody(req);

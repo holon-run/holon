@@ -97,7 +97,7 @@ export function useConversationSession(
   const controller = scopeKey !== null ? peekConversationScope(scopeKey) : null;
   const snapshot = mirror ?? conversationScopeSnapshot(scopeKey ?? "");
   const version = snapshot.version;
-  const conversationReady = snapshot.status.kind === "ready" && snapshot.view !== null;
+  const conversationReady = snapshot.status.kind === "ready" && snapshot.view?.scope != null && snapshot.view.reset_reason === null;
 
   // A scope that becomes ready can unblock a pending read marker that was
   // gated on conversation readiness (e.g. truncated generation acknowledged
@@ -109,7 +109,7 @@ export function useConversationSession(
   }, [conversationReady, agentId]);
 
   const model = useMemo(() => {
-    const view = snapshot.view;
+    const view = snapshot.displayView;
     const briefs = new Map<string, BriefRecord>();
     const briefLoadStates = new Map<string, ConversationBriefLoadState>();
     const detailLoadStates = new Map<string, ConversationDetailLoadState>();
@@ -148,13 +148,13 @@ export function useConversationSession(
   }, [snapshot, controller, version]);
 
   const loadOlderHistory = useCallback(() => {
-    if (controller === null) return;
+    if (controller === null || controller.view().reset_reason !== null) return;
     void controller.loadOlderHistory();
   }, [controller]);
 
   const loadDetail = useCallback(
     (turnId: string) => {
-      if (controller === null) return;
+      if (controller === null || controller.view().reset_reason !== null) return;
       void controller.loadDetail(turnId);
     },
     [controller],
@@ -162,7 +162,7 @@ export function useConversationSession(
 
   const loadOlderActivities = useCallback(
     (turnId: string) => {
-      if (controller === null) return;
+      if (controller === null || controller.view().reset_reason !== null) return;
       void controller.loadOlderActivities(turnId);
     },
     [controller],
@@ -170,7 +170,7 @@ export function useConversationSession(
 
   const loadBrief = useCallback(
     (briefId: string) => {
-      if (controller === null) return;
+      if (controller === null || controller.view().reset_reason !== null) return;
       void controller.loadBrief(briefId);
     },
     [controller],

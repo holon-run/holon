@@ -45,7 +45,8 @@ function seedReadyConversationScope(agentId: string): void {
     scopes: {
       [resolveConversationScopeKey("local", agentId, useRuntimeStore.getState().currentUser)]: {
         status: { kind: "ready" },
-        view: {} as ConversationStateView,
+        view: { scope: {}, reset_reason: null } as ConversationStateView,
+        displayView: null,
         version: 1,
       },
     },

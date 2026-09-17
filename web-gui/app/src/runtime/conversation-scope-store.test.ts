@@ -7,6 +7,7 @@ import type {
 
 import {
   acquireConversationScope,
+  recoveryDisplayView,
   CONVERSATION_SCOPE_KEEP_ALIVE,
   activeConversationScopeCount,
   conversationScopeKey,
@@ -306,3 +307,47 @@ function firstMirrorTurn(key: string): string | null {
   const turn = useConversationScopeStore.getState().scopes[key]?.view?.turns[0];
   return turn?.turn_id ?? null;
 }
+
+
+describe("conversation recovery presentation", () => {
+  it("retains the previous display while the protocol reboots, then replaces it atomically", async () => {
+    const { client, hub, calls } = fakeClient();
+    const handle = acquireConversationScope({ key: "recovery", agentId: "web", baseUrl: client.baseUrl,
+      clientFactory: () => client, controllerOptions: { sleep, random: () => 0.5 } });
+    await waitFor(() => calls.stream === 1);
+    const previous = useConversationScopeStore.getState().scopes.recovery.displayView;
+    let release!: () => void;
+    client.summary = async () => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      return { summary: summarySnapshot(20), etag: null } as never;
+    };
+    hub.push({ type: "reset_required", reset: { type: "reset_required", reason: "retention_expired",
+      oldest_retained_seq: 5, event_head_seq: 20, hint: "expired" } });
+    await waitFor(() => release !== undefined);
+    const recovering = useConversationScopeStore.getState().scopes.recovery;
+    expect(recovering.view?.turns).toHaveLength(0);
+    expect(recovering.displayView?.turns).toEqual(previous?.turns);
+    expect(recovering.displayView?.checkpoint).toBeNull();
+    expect(handle.controller.view().scope).toBeNull();
+    release();
+    await waitFor(() => calls.stream === 2);
+    const recovered = useConversationScopeStore.getState().scopes.recovery;
+    expect(recovered.displayView).toBe(recovered.view);
+    expect(recovered.displayView?.turns[0].turn_id).toBe("turn-20");
+  });
+
+  it("drops retained content for identity resets and access errors", async () => {
+    const { client, calls } = fakeClient();
+    acquireConversationScope({ key: "boundaries", agentId: "web", baseUrl: client.baseUrl,
+      clientFactory: () => client, controllerOptions: { sleep } });
+    await waitFor(() => calls.stream === 1);
+    const previous = useConversationScopeStore.getState().scopes.boundaries.view!;
+    const empty = { ...previous, scope: null, turns: [], details: [], checkpoint: null };
+    for (const reason of ["event_log_epoch_mismatch", "agent_not_found", "cursor_rejected", "schema_version_mismatch", "query_version_mismatch"] as const) {
+      const next = { ...empty, reset_reason: reason };
+      expect(recoveryDisplayView(previous, next, { kind: "loading" })).toBe(next);
+    }
+    const reset = { ...empty, reset_reason: "stream_recovery_failed" as const };
+    expect(recoveryDisplayView(previous, reset, { kind: "recoverable_error", error: new Error("access revoked") })).toBe(reset);
+  });
+});

@@ -45,6 +45,8 @@ export interface ConversationScopeHandle {
 interface ConversationScopeMirror {
   readonly status: ConversationStatus;
   readonly view: ConversationStateView | null;
+  /** Presentation only; never used as a checkpoint or a read-marker gate. */
+  readonly displayView: ConversationStateView | null;
   readonly version: number;
 }
 
@@ -55,6 +57,7 @@ interface ConversationStoreState {
 export const EMPTY_CONVERSATION_MIRROR: ConversationScopeMirror = {
   status: { kind: "idle" },
   view: null,
+  displayView: null,
   version: 0,
 };
 
@@ -282,14 +285,33 @@ function publishScopeSnapshot(
 ): void {
   const previous =
     useConversationScopeStore.getState().scopes[key] ?? EMPTY_CONVERSATION_MIRROR;
+  const view = controller.view();
+  const displayView = recoveryDisplayView(previous.displayView, view, controller.status);
   useConversationScopeStore.setState((state) => ({
     scopes: {
       ...state.scopes,
       [key]: {
         status: controller.status,
-        view: controller.view(),
+        view,
+        displayView,
         version: previous.version + 1,
       },
     },
   }));
+}
+
+/** Retain only transport-recovery frames, never a rejected identity or access. */
+export function recoveryDisplayView(
+  previous: ConversationStateView | null,
+  next: ConversationStateView,
+  status: ConversationStatus,
+): ConversationStateView {
+  const recoverable = next.reset_reason != null && [
+    "retention_expired", "replay_limit_exceeded", "slow_consumer", "stream_recovery_failed",
+  ].includes(next.reset_reason);
+  if (previous?.scope && !next.scope && recoverable
+    && ["ready", "loading", "reconnecting", "paused"].includes(status.kind)) {
+    return { ...previous, checkpoint: null, has_more: false, next_before_cursor: null, reset_reason: next.reset_reason };
+  }
+  return next;
 }
