@@ -207,6 +207,7 @@ interface AgentListEntryDto {
   model?: {
     source?: "runtime_default" | "agent_override";
     effective_model?: string;
+    runtime_default_model?: string;
     active_model?: string | null;
     override_reasoning_effort?: string | null;
   };
@@ -331,6 +332,7 @@ interface ModelAvailabilityDto {
 }
 
 interface AgentModelStateDto {
+  runtime_default_model?: string;
   source?: "runtime_default" | "agent_override";
   effective_model?: string;
   active_model?: string | null;
@@ -2335,6 +2337,8 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     attention: attentionLabel(pending, waitingCount),
     model,
     modelSource,
+    modelSelection: state?.agent?.model?.effective_model ?? entry.model?.effective_model,
+    runtimeDefaultModel: state?.agent?.model?.runtime_default_model ?? entry.model?.runtime_default_model,
     modelReasoningEffort: modelReasoningEffort ?? undefined,
     footer: `${lifecycle} · ${posture}`,
     subtitle: `${status} · ${workspace}`,

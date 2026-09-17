@@ -1,0 +1,61 @@
+/* Keep the model's calling source visible; technical routes live in details. */
+.model-browser { min-width: 0; display: grid; gap: 8px; }
+.model-browser-search, .provider-directory-toolbar { display: flex; align-items: center; gap: 8px; }
+.model-browser-search { position: sticky; top: -10px; z-index: 1; background: var(--surface); padding: 6px 0; }
+.model-browser-search input, .provider-directory-toolbar input { min-width: 0; flex: 1; }
+.model-browser-search select { max-width: 42%; min-width: 95px; }
+.model-browser :is(input, select), .provider-directory-toolbar input { border: 1px solid var(--line); background: var(--surface); color: var(--text); border-radius: 7px; padding: 8px 10px; font: inherit; font-size: 13px; }
+.model-browser-results { max-height: 340px; overflow: auto; overscroll-behavior: contain; }
+.model-browser-results section { margin: 0; padding: 0; }
+.model-browser-results h3 { font-size: 11px; font-weight: 600; color: var(--muted); margin: 12px 8px 5px; }
+.model-browser-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px; align-items: center; border-radius: 7px; padding: 2px 4px; }
+.model-browser-row:hover, .model-browser-row.is-selected { background: var(--surface-soft); }
+.model-browser-choice, .model-browser-icon, .model-browser-more, .provider-directory-row, .provider-directory-filters button, .model-select-trigger { font: inherit; color: var(--text); background: transparent; cursor: pointer; border: 0; }
+.model-browser-choice { min-width: 0; text-align: left; padding: 8px 6px; display: grid; gap: 3px; }
+.model-browser-choice strong { font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.model-browser-choice span, .model-browser-choice small { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.model-browser-choice:disabled { cursor: not-allowed; opacity: .65; }
+.model-browser-icon { display: grid; place-items: center; width: 30px; height: 32px; border-radius: 5px; color: var(--muted); }
+.model-browser-icon[aria-pressed="true"] { color: var(--accent); }
+.model-browser-more { display: inline-flex; align-items: center; gap: 7px; padding: 8px; font-size: 12px; color: var(--muted); text-decoration: none; }
+.model-browser-more:hover { color: var(--text); }
+.model-browser-details { grid-column: 1 / -1; padding: 4px 6px 10px; display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.model-browser-details input { width: 100%; box-sizing: border-box; font-family: var(--font-mono, monospace); font-size: 11px; }
+.model-browser-missing { display: grid; gap: 6px; padding: 10px; overflow-wrap: anywhere; font-size: 12px; color: var(--muted); }
+.model-select { display: grid; gap: 7px; min-width: 0; }
+.model-select-label { font-size: 12px; color: var(--muted); }
+.model-select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; text-align: left; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; font-size: 13px; }
+.model-select-trigger span:first-child { overflow-wrap: anywhere; min-width: 0; }
+.model-select-panel { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--surface); }
+.model-manual { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.model-manual label { display: grid; gap: 6px; padding-top: 10px; }
+.model-services-card { margin-top: 2px; }
+.provider-directory { display: grid; gap: 0; }
+.provider-directory-toolbar { padding-bottom: 12px; }
+.provider-directory-filters { display: flex; border: 1px solid var(--line); border-radius: 7px; padding: 2px; flex-shrink: 0; }
+.provider-directory-filters button { padding: 6px 10px; font-size: 12px; border-radius: 5px; }
+.provider-directory-filters button[aria-pressed="true"] { background: var(--surface-soft); color: var(--text); }
+.provider-directory-row { display: grid; grid-template-columns: minmax(0, 1fr) auto 16px; gap: 16px; align-items: center; text-align: left; padding: 13px 8px; border-bottom: 1px solid var(--line); }
+.provider-directory-row:hover { background: var(--surface-soft); }
+.provider-directory-row > span { display: grid; gap: 4px; min-width: 0; }
+.provider-directory-row strong { font-size: 13px; font-weight: 550; overflow-wrap: anywhere; }
+.provider-directory-row small { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.provider-directory-status { text-align: right; font-size: 12px; color: var(--muted); }
+.provider-back { justify-self: start; }
+.model-services-card .settings-provider-editor { padding: 0; border: 0; }
+.model-browser :is(button, input, select):focus-visible, .model-select :is(button, input, summary):focus-visible, .provider-directory :is(button, input):focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (max-width: 600px) {
+  .provider-directory-toolbar { align-items: stretch; flex-direction: column; }
+  .provider-directory-filters { align-self: start; }
+  .provider-directory-row { gap: 8px; grid-template-columns: minmax(0, 1fr) 16px; }
+  .provider-directory-status { grid-column: 1; grid-row: 2; text-align: left; }
+  .provider-directory-row > svg { grid-column: 2; grid-row: 1 / 3; }
+  .model-browser-search { flex-wrap: wrap; }
+  .model-browser-search input { width: 100%; flex-basis: 100%; }
+  .model-browser-search select { max-width: 100%; }
+}
+
+.settings-model-defaults { grid-template-columns: minmax(0, 1fr); }
+
+.model-next-selection { margin: 4px 4px 8px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.settings-model-defaults .settings-advanced { padding: 0; background: transparent; border: 0; }

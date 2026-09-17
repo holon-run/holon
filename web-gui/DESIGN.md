@@ -193,8 +193,11 @@ The composer should stay focused on the operator input being sent,
 attachments, the next-turn model selector, and send action. Do not show default
 authority labels such as `operator trusted` in the normal composer. Display
 level belongs in the page top bar, not in the composer. Selecting the model
-should open a model/agent-settings side panel that explains the effective
-model, source, reasoning effort, and fallbacks.
+opens a searchable popover with favorites, recent picks,
+calling sources and route details. Provider is an optional filter rather than
+a required first step. Reasoning effort stays separate. The selection applies
+to the agent; during execution the configured next-run choice is shown separately
+from the runtime-reported active model. The Context side panel stays independent.
 
 The current WorkItem summary should have enough horizontal space to show the
 objective. It must also have an explicit empty state because an agent can be
@@ -609,3 +612,19 @@ Pending-to-admitted transitions use the same canonical message identity for
 reconciliation and reading anchors. Source provenance is per input, with the
 turn's source retained as a fallback for older servers. A truncated input list
 is explicitly labeled rather than silently omitting messages.
+
+## Model service management
+
+The Models settings section shows global defaults followed by a searchable
+service directory. Connected services include stored configurations, detected
+credentials and routes used by global defaults. Unconfigured builtins remain in
+All; only one provider editor is open at a time. Friendly names and explicit
+plan labels are presentation metadata and never rewrite route IDs.
+
+Default, fallback and image selectors share the conversation model list, with
+capability filtering where appropriate. Favorites and recent successful choices
+are bounded browser preferences keyed by current origin, not runtime enablement
+or routing policy. Missing selected routes remain inspectable. Configuration
+status must not imply a successful network probe.
+
+See [phase 1 plan](plans/2026-09-17-model-settings-picker.md) for scope and checks.

@@ -12,6 +12,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { ModelList } from "../../components/models/ModelList";
+import { modelSourceLabel } from "../../lib/model-presentation";
+import { rememberModel } from "../../lib/model-preferences";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
@@ -167,7 +170,6 @@ export function AgentPage({
   const [composerDragActive, setComposerDragActive] = useState(false);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [changingModel, setChangingModel] = useState<string | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<string | null>(null);
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("auto");
   const [reasoningPopoverOpen, setReasoningPopoverOpen] = useState(false);
   const [modelMenuStyle, setModelMenuStyle] = useState<CSSProperties | null>(null);
@@ -177,6 +179,7 @@ export function AgentPage({
   const restoringAnchorRef = useRef(false);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const modelMenuRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const dragCounterRef = useRef(0);
@@ -204,9 +207,9 @@ export function AgentPage({
       if (rect.width === 0 && rect.height === 0) return;
       const margin = 12;
       const next = {
-        right: Math.max(window.innerWidth - rect.right, 0),
+        right: Math.max(margin, Math.min(window.innerWidth - rect.right, window.innerWidth - 280 - margin)),
         bottom: window.innerHeight - rect.top + 8,
-        width: Math.max(280, Math.min(720, rect.right - margin, window.innerWidth - margin * 2)),
+        width: Math.max(280, Math.min(480, window.innerWidth - margin * 2)),
         maxHeight: Math.max(180, Math.min(480, rect.top - 16)),
       };
       const key = `${next.right}|${next.bottom}|${next.width}|${next.maxHeight}`;
@@ -216,6 +219,15 @@ export function AgentPage({
     };
     position();
     return () => cancelAnimationFrame(frame);
+  }, [modelPickerOpen]);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    const outside = (event: PointerEvent) => {
+      if (!modelMenuRef.current?.contains(event.target as Node) && !modelPickerRef.current?.contains(event.target as Node)) setModelPickerOpen(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
   }, [modelPickerOpen]);
 
   const activeAgent = detail?.agent ?? agent;
@@ -228,23 +240,17 @@ export function AgentPage({
   });
   const canStopCurrentRun = composerAction === "stop-run" && Boolean(activeAgent.currentRunId) && !abortingRun;
   const canSendPrompt = composerHasDraft && !sendingPrompt;
-  const groupedModelOptions = useMemo(() => groupModelOptionsByProvider(modelCatalog.options), [modelCatalog.options]);
   const activeModelOption = useMemo(() => modelCatalog.options.find((option) => option.routeRef === activeAgent.model), [activeAgent.model, modelCatalog.options]);
+  const selectedModelOption = modelCatalog.options.find((option) => option.routeRef === (activeAgent.modelSelection ?? activeAgent.model));
+  const selectionLabel = selectedModelOption ? `${selectedModelOption.displayName} · ${modelSourceLabel(selectedModelOption)}` : activeAgent.modelSelection ?? activeAgent.model;
   const activeModelSupportsReasoning = activeModelOption?.supportsReasoningEffort ?? Boolean(activeAgent.modelReasoningEffort);
   const activeReasoningBadge = activeModelSupportsReasoning ? (activeAgent.modelReasoningEffort ?? "auto") : undefined;
   const activeModelTitle = modelButtonTitle(activeAgent.model, activeReasoningBadge, activeAgent.modelSource === "agent_override");
-  const activeProviderGroup = activeModelOption
-    ? (activeModelOption.endpoint === "default"
-        ? activeModelOption.providerFamily
-        : `${activeModelOption.providerFamily} / ${activeModelOption.endpoint}`)
-    : undefined;
-  const currentProvider = selectedProvider ?? activeProviderGroup ?? groupedModelOptions[0]?.provider ?? "runtime";
-  const currentProviderModels = groupedModelOptions.find((group) => group.provider === currentProvider)?.models ?? [];
+
 
   useEffect(() => {
     setModelPickerOpen(false);
     setReasoningPopoverOpen(false);
-    setSelectedProvider(null);
     setSelectedReasoningEffort(activeAgent.modelReasoningEffort ?? "auto");
   }, [activeAgent.id, activeAgent.modelReasoningEffort]);
 
@@ -542,6 +548,7 @@ export function AgentPage({
     setChangingModel(option.routeRef);
     try {
       await onSetModel(option.routeRef, option.supportsReasoningEffort && reasoningEffort !== "auto" ? reasoningEffort : undefined);
+      rememberModel(option.routeRef);
       setModelPickerOpen(false);
     } catch {
       // Store exposes the user-facing error.
@@ -768,11 +775,11 @@ export function AgentPage({
                   ) : null}
                   {modelPickerOpen && modelMenuStyle ? (
                     createPortal(
-                      <div className="model-menu" role="dialog" aria-label={t("agent.switchModelAria")} style={modelMenuStyle}>
+                      <div className="model-menu" ref={modelMenuRef} onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setModelPickerOpen(false); modelPickerRef.current?.querySelector<HTMLButtonElement>(".model-button")?.focus(); } }} role="dialog" aria-label={t("agent.switchModelAria")} style={modelMenuStyle}>
                       <div className="model-menu-header">
                         <div>
                           <strong>{t("agent.switchModel")}</strong>
-                          <span>{t("agent.switchModelHint")}</span>
+                          <span>{t("modelUi.scopeHint")}</span>
                         </div>
                         <Button type="button" size="sm" variant="ghost" disabled={modelCatalogLoading} onClick={() => void onRefreshModels()}>
                           {modelCatalogLoading ? t("common.loading") : t("common.refresh")}
@@ -788,6 +795,7 @@ export function AgentPage({
                           {modelCatalogError}
                         </div>
                       ) : null}
+                      {activeAgent.currentRunId ? <p className="model-next-selection" role="status" title={activeAgent.modelSelection}>{t("modelUi.nextRunSelection", { model: selectionLabel })}</p> : null}
                       <button
                         className={`model-option ${activeAgent.modelSource !== "agent_override" ? "is-active" : ""}`}
                         type="button"
@@ -796,62 +804,13 @@ export function AgentPage({
                       >
                         <span>
                           <strong>{t("agent.runtimeDefault")}</strong>
-                          <small>{t("agent.clearOverride")}</small>
+                          <small>{activeAgent.runtimeDefaultModel ?? t("agent.clearOverride")}</small>
                         </span>
                         {changingModel === "runtime-default" ? <em>{t("common.saving")}</em> : null}
                       </button>
-                      <div className="model-picker-grid">
-                        <div className="model-picker-section model-picker-providers" aria-label={t("agent.providersAria")}>
-                          <span>
-                            <b>{t("agent.step1")}</b>
-                            Provider
-                          </span>
-                          <div className="model-provider-list">
-                            {groupedModelOptions.map((group) => (
-                              <button
-                                className={`model-provider-option ${group.provider === currentProvider ? "is-active" : ""}`}
-                                key={group.provider}
-                                type="button"
-                                onClick={() => setSelectedProvider(group.provider)}
-                              >
-                                <strong>{group.provider}</strong>
-                                <small>
-                                  {group.availableCount}/{group.models.length} {t("agent.available")}
-                                </small>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="model-picker-section model-picker-models" aria-label={t("agent.providerModelsAria", { provider: currentProvider })}>
-                          <span>
-                            <b>{t("agent.step2")}</b>
-                            {currentProvider} models
-                          </span>
-                          <div className="model-options" role="listbox" aria-label={t("agent.providerModelsAria", { provider: currentProvider })}>
-                            {currentProviderModels.map((option) => (
-                              <button
-                                className={`model-option ${option.routeRef === activeAgent.model ? "is-active" : ""}`}
-                                key={option.routeRef}
-                                type="button"
-                                disabled={!option.available || changingModel !== null}
-                                title={option.unavailableReason ?? option.availabilityWarning ?? option.model}
-                                onClick={() => void handleSelectModel(option)}
-                              >
-                                <span>
-                                  <strong>{option.displayName}</strong>
-                                  <small>{option.model}</small>
-                                </span>
-                                <span className="model-option-meta">
-                                  {option.supportsReasoningEffort ? <small>{t("agent.reasoningMeta")}</small> : null}
-                                  {option.availabilityWarning ? <small>{t("agent.availabilityWarningMeta")}</small> : null}
-                                  {!option.available ? <small>{t("agent.unavailableMeta")}</small> : null}
-                                  {changingModel === option.routeRef ? <em>{t("common.saving")}</em> : null}
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
+                      <ModelList options={modelCatalog.options} value={activeAgent.modelSelection ?? activeAgent.model} autoFocus disabled={changingModel !== null}
+                        onSelect={(option) => void handleSelectModel(option)} />
+                      <a className="model-browser-more" href="/settings">{t("modelUi.manageServices")}</a>
                       {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
                         <EmptyState
                           className="model-picker-empty"
@@ -910,24 +869,6 @@ function modelButtonTitle(model: string, reasoningEffort: string | undefined, is
   return details.join(" · ");
 }
 
-function groupModelOptionsByProvider(options: RuntimeModelOption[]): Array<{ provider: string; availableCount: number; models: RuntimeModelOption[] }> {
-  const groups = new Map<string, RuntimeModelOption[]>();
-  for (const option of options) {
-    const provider = option.endpoint === "default"
-      ? option.providerFamily
-      : `${option.providerFamily} / ${option.endpoint}`;
-    const models = groups.get(provider) ?? [];
-    models.push(option);
-    groups.set(provider, models);
-  }
-  return Array.from(groups.entries())
-    .map(([provider, models]) => ({
-      provider,
-      availableCount: models.filter((model) => model.available).length,
-      models: models.sort((left, right) => Number(right.available) - Number(left.available) || left.displayName.localeCompare(right.displayName)),
-    }))
-    .sort((left, right) => Number(right.availableCount > 0) - Number(left.availableCount > 0) || left.provider.localeCompare(right.provider));
-}
 
 function titleCase(value: string): string {
   return value.charAt(0).toUpperCase() + value.slice(1);

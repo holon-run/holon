@@ -348,6 +348,9 @@ export interface AgentSummary {
   workspace: string;
   attention: string;
   model: string;
+  /** Configured route for future runs, distinct from the reported active route. */
+  modelSelection?: string;
+  runtimeDefaultModel?: string;
   modelSource?: "runtime_default" | "agent_override";
   modelReasoningEffort?: string;
   footer: string;

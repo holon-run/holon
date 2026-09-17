@@ -426,6 +426,17 @@ describe("createRuntimeClient", () => {
     ]);
   });
 
+  it("keeps the configured next-run route separate from the reported active model", async () => {
+    const state = agentStateFixture("agent-one");
+    state.agent.model = { ...state.agent.model, source: "agent_override", active_model: "openai@default/current", effective_model: "dashscope@coding/next" };
+    state.session.current_run_id = "running";
+    const client = createRuntimeClient({ mode: "remote", baseUrl: "http://example.test:7878", fetchImpl: (async () => Response.json(state)) as typeof fetch });
+    await expect(client.getAgentState("agent-one")).resolves.toMatchObject({
+      model: "openai@default/current", modelSelection: "dashscope@coding/next",
+      runtimeDefaultModel: "openai-codex@default/gpt-5.6", modelSource: "agent_override", currentRunId: "running",
+    });
+  });
+
   it("loads agent state without fetching the full roster", async () => {
     const seen: string[] = [];
     const client = createRuntimeClient({

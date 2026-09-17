@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { ArrowRight } from "lucide-react";
+import { ArrowLeft, ArrowRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
+import { ModelSelect } from "../../components/models/ModelSelect";
+import { ModelList } from "../../components/models/ModelList";
+import { providerPresentation, providerIsConnected, modelSourceLabel } from "../../lib/model-presentation";
+import { rememberModel } from "../../lib/model-preferences";
 import { PageHeading } from "../../components/ui/PageHeading";
 import { Button } from "../../components/ui/Button";
 import { useI18nSettings } from "../../i18n";
@@ -250,6 +254,13 @@ export function SettingsPage({
   const [searchProviderDrafts, setSearchProviderDrafts] = useState<Record<string, SearchProviderDraft>>({});
   const [newSearchProviderId, setNewSearchProviderId] = useState("");
   const [newSearchProviderKind, setNewSearchProviderKind] = useState("brave");
+  const [providerSearch, setProviderSearch] = useState("");
+  const [providerFilter, setProviderFilter] = useState<"connected" | "all">("connected");
+  const [editingProvider, setEditingProvider] = useState<string | null>(null);
+  const providerDirectoryRef = useRef<HTMLDivElement>(null);
+  const providerBackRef = useRef<HTMLButtonElement>(null);
+  const lastProviderRef = useRef<string | null>(null);
+  const [addingFallback, setAddingFallback] = useState(false);
   const [providerDrafts, setProviderDrafts] = useState<Record<string, ProviderDraft>>({});
   const [saveMessage, setSaveMessage] = useState<string | undefined>();
   const [searchSaveMessage, setSearchSaveMessage] = useState<string | undefined>();
@@ -278,6 +289,23 @@ export function SettingsPage({
     () => sortProvidersForSettings(surface?.providers ?? []),
     [surface?.providers],
   );
+  const usedProviders = useMemo(() => {
+    const selected = new Set([surface?.modelDefault, surface?.visionDefault, surface?.imageGenerationDefault, ...(surface?.modelFallbacks ?? [])]);
+    return new Set(modelCatalog.options.filter((model) => selected.has(model.routeRef)).map((model) => model.routeProvider));
+  }, [surface, modelCatalog.options]);
+  const visibleProviders = sortedProviders.filter((provider) =>
+    (providerFilter === "all" || providerIsConnected(provider, usedProviders))
+    && providerSearch.toLowerCase().trim().split(/\s+/).every((word) => providerPresentation(provider.id).search.includes(word)))
+    .sort((a, b) => providerPresentation(a.id).label.localeCompare(providerPresentation(b.id).label));
+  useEffect(() => {
+    if (editingProvider) providerBackRef.current?.focus();
+    else if (lastProviderRef.current) {
+      const row = Array.from(providerDirectoryRef.current?.querySelectorAll<HTMLButtonElement>("button[data-provider]") ?? [])
+        .find((button) => button.dataset.provider === lastProviderRef.current);
+      row?.focus();
+    }
+  }, [editingProvider]);
+
   const sortedSearchProviders = useMemo(
     () => sortSearchProvidersForSettings(surface?.webSearchProviders ?? []),
     [surface?.webSearchProviders],
@@ -422,6 +450,7 @@ export function SettingsPage({
     const result = await onUpdateRuntimeConfig(updates);
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    if (!rejected.length) [modelDefault, ...modelFallbacks].filter(Boolean).forEach(rememberModel);
     setSaveMessage(
       rejected.length
         ? `${rejected.length} setting${rejected.length === 1 ? "" : "s"} rejected.`
@@ -539,6 +568,7 @@ export function SettingsPage({
     const result = await onUpdateRuntimeConfig(buildVisionConfigUpdates(visionDefault));
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    if (!rejected.length) [visionDefault].filter(Boolean).forEach(rememberModel);
     setVisionSaveMessage(
       rejected.length
         ? `${rejected.length} vision setting${rejected.length === 1 ? "" : "s"} rejected.`
@@ -553,6 +583,7 @@ export function SettingsPage({
     const result = await onUpdateRuntimeConfig(buildImageGenerationConfigUpdates(imageGenDefault));
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    if (!rejected.length && imageGenDefault) rememberModel(imageGenDefault);
     setImageGenSaveMessage(
       rejected.length
         ? `${rejected.length} image generation setting${rejected.length === 1 ? "" : "s"} rejected.`
@@ -669,7 +700,7 @@ export function SettingsPage({
             <div>
               <span>{t("settings.modelProviders")}</span>
               <strong>
-                {configuredProviderCount}/{surface?.providers.length ?? 0} ready
+                {t("modelUi.configuredCount", { count: configuredProviderCount })}
               </strong>
               <small>{t("settings.credentialHotReload")}</small>
             </div>
@@ -809,7 +840,7 @@ export function SettingsPage({
           </div>
         ) : null}
 
-        <div className="settings-grid">
+        <div className={`settings-grid ${activeTab === "models" ? "settings-model-defaults" : ""}`}>
           {/* ── Model defaults ── */}
           <Card className="settings-card settings-primary-card" hidden={activeTab !== "models"}>
             <div className="settings-card-head">
@@ -835,21 +866,16 @@ export function SettingsPage({
                   void saveRuntimeConfig();
                 }}
               >
-                <label>
-                  <span>{t("settings.defaultModel")}</span>
-                  <input list="available-models" value={modelDefault} onChange={(event) => setModelDefault(event.target.value)} />
-                  <datalist id="available-models">
-                    {availableModels.map((model) => (
-                      <option key={model.routeRef} value={model.routeRef}>
-                        {model.displayName}
-                      </option>
-                    ))}
-                  </datalist>
-                </label>
+                <ModelSelect label={t("settings.defaultModel")} options={modelCatalog.options} value={modelDefault} onChange={setModelDefault} />
+                <p className="settings-hint">{t("modelUi.defaultScope")}</p>
                 <details className="settings-advanced">
                   <summary>{t("settings.tabAdvanced")}</summary>
                   <div className="settings-form-field">
                     <label htmlFor="settings-fallback-model-input">{t("settings.fallbackModels")}</label>
+                    <button type="button" className="model-browser-more" aria-expanded={addingFallback} onClick={() => setAddingFallback(!addingFallback)}>{t("modelUi.addFallback")}</button>
+                    {addingFallback ? <ModelList options={modelCatalog.options.filter((model) => !modelFallbacks.includes(model.routeRef))}
+                      onSelect={(model) => { setModelFallbacks((current) => [...current, model.routeRef]); setAddingFallback(false); }} /> : null}
+
                    <div className="settings-chip-input">
                      {modelFallbacks.map((model, index) => (
                        <span
@@ -874,7 +900,8 @@ export function SettingsPage({
                          }}
                        >
                          <span className="settings-chip-grip" aria-hidden="true">⠿</span>
-                         {model}
+                         {modelCatalog.options.find((option) => option.routeRef === model)?.displayName ?? model}
+                         <small>{modelCatalog.options.find((option) => option.routeRef === model) ? modelSourceLabel(modelCatalog.options.find((option) => option.routeRef === model)!) : ""}</small>
                          <button
                            type="button"
                            className="settings-chip-remove"
@@ -960,20 +987,7 @@ export function SettingsPage({
                 ) : null}
               </form>
             )}
-            <dl className="settings-list compact">
-              <div>
-                <dt>{t("settings.configFile")}</dt>
-                <dd>{runtimeConfig.configFilePath ?? t("settings.notReported")}</dd>
-              </div>
-              <div>
-                <dt>{t("settings.providerFallback")}</dt>
-                <dd>{surface?.disableProviderFallback ? t("settings.disabled") : t("settings.enabled")}</dd>
-              </div>
-              <div>
-                <dt>{t("settings.providersConfigured")}</dt>
-                <dd>{configuredProviderCount}</dd>
-              </div>
-            </dl>
+
           </Card>
 
           {/* ── Vision defaults ── */}
@@ -997,17 +1011,7 @@ export function SettingsPage({
                   void saveVisionConfig();
                 }}
               >
-                <label>
-                  <span>{t("settings.visionDefaultModel")}</span>
-                  <input list="vision-models" value={visionDefault} onChange={(event) => setVisionDefault(event.target.value)} placeholder="provider@endpoint/model or empty for auto" />
-                  <datalist id="vision-models">
-                    {visionModels.map((model) => (
-                      <option key={model.routeRef} value={model.routeRef}>
-                        {model.displayName}
-                      </option>
-                    ))}
-                  </datalist>
-                </label>
+                <ModelSelect label={t("settings.visionDefaultModel")} options={modelCatalog.options.filter((model) => model.supportsImageInput)} value={visionDefault} onChange={setVisionDefault} allowEmpty />
                 <p className="settings-hint">
                   {t("settings.visionAutoDiscoverHint")}
                 </p>
@@ -1047,17 +1051,7 @@ export function SettingsPage({
                   void saveImageGenConfig();
                 }}
               >
-                <label>
-                  <span>{t("settings.imageGenDefaultModel")}</span>
-                  <input list="image-gen-models" value={imageGenDefault} onChange={(event) => setImageGenDefault(event.target.value)} placeholder="provider@endpoint/model or empty for auto" />
-                  <datalist id="image-gen-models">
-                    {imageGenModels.map((model) => (
-                      <option key={model.routeRef} value={model.routeRef}>
-                        {model.displayName}
-                      </option>
-                    ))}
-                  </datalist>
-                </label>
+                <ModelSelect label={t("settings.imageGenDefaultModel")} options={modelCatalog.options.filter((model) => model.supportsImageGeneration)} value={imageGenDefault} onChange={setImageGenDefault} allowEmpty />
                 <p className="settings-hint">
                   {t("settings.imageGenAutoDiscoverHint")}
                 </p>
@@ -1426,11 +1420,12 @@ export function SettingsPage({
         </Card>
 
         {/* ── Model providers ── */}
-        <Card className="settings-card" hidden={activeTab !== "models"}>
+        <Card className="settings-card model-services-card" hidden={activeTab !== "models"}>
           <div className="settings-card-head">
             <div>
               <h2>{t("settings.modelProviders")}</h2>
             </div>
+            <Button type="button" variant="secondary" onClick={() => { setEditingProvider(null); setProviderFilter("all"); setProviderSearch(""); }}>{t("modelUi.connectService")}</Button>
           </div>
           {!surface ? (
             <div className="settings-callout">
@@ -1439,10 +1434,29 @@ export function SettingsPage({
             </div>
           ) : (
             <div className="settings-provider-list">
-              <p className="settings-muted">
-               {t("settings.providerDesc")}
-              </p>
-              {sortedProviders.map((provider) => {
+              {editingProvider === null ? <div ref={providerDirectoryRef} className="provider-directory">
+                <div className="provider-directory-toolbar">
+                  <input aria-label={t("modelUi.searchProviders")} placeholder={t("modelUi.searchProviders")} value={providerSearch} onChange={(event) => setProviderSearch(event.target.value)} />
+                  <div className="provider-directory-filters" role="group" aria-label={t("modelUi.services")}>
+                    {(["connected", "all"] as const).map((filter) => <button key={filter} type="button" aria-pressed={providerFilter === filter} onClick={() => setProviderFilter(filter)}>{t(`modelUi.${filter}`)}</button>)}
+                  </div>
+                </div>
+                {visibleProviders.map((provider) => {
+                  const name = providerPresentation(provider.id);
+                  const count = modelCatalog.options.filter((model) => model.routeProvider === provider.id && model.available).length;
+                  return <button key={provider.id} type="button" className="provider-directory-row" data-provider={provider.id}
+                    onClick={() => { lastProviderRef.current = provider.id; setEditingProvider(provider.id); }}>
+                    <span><strong>{name.name}</strong><small>{name.plan || provider.id}</small></span>
+                    <span className="provider-directory-status">
+                      <span>{t(provider.credentialKind === "none" ? "modelUi.noAuth" : provider.credentialConfigured ? "modelUi.credentialsPresent" : "modelUi.credentialsMissing")}</span>
+                      <small>{t("modelUi.modelCount", { count })}</small>
+                    </span><ArrowRight size={16} />
+                  </button>;
+                })}
+                {!visibleProviders.length ? <div className="settings-callout"><span>{t("modelUi.noProviders")}</span><button type="button" className="model-browser-more" onClick={() => { setProviderFilter("all"); setProviderSearch(""); }}>{t("modelUi.allServices")}</button></div> : null}
+                <p className="settings-hint">{t("modelUi.credentialHint")}</p>
+              </div> : <button ref={providerBackRef} type="button" className="model-browser-more provider-back" onClick={() => setEditingProvider(null)}><ArrowLeft size={15} />{t("modelUi.backServices")}</button>}
+              {sortedProviders.filter((provider) => provider.id === editingProvider).map((provider) => {
                 const draft = providerDrafts[provider.id];
                 if (!draft) return null;
                 const effectiveProfile = draft.credentialProfile?.trim() || `${provider.id}:default`;
@@ -1459,9 +1473,9 @@ export function SettingsPage({
                   >
                     <header>
                       <div>
-                        <strong>{provider.id}</strong>
+                        <strong>{providerPresentation(provider.id).label}</strong>
                         <small>
-                          {provider.transport}
+                          {provider.id}
                         </small>
                       </div>
                       <StatusChip className={`settings-status ${credentialReady ? "available" : "unavailable"}`} tone={credentialReady ? "success" : "error"} iconOnly title={draft.credentialKind === "none" ? t("settings.credNotRequired") : credentialReady ? t("settings.credReady") : t("settings.credMissing")} />
@@ -1639,6 +1653,12 @@ export function SettingsPage({
                        {t("settings.removeConfig")}
                       </Button>
                     </div>
+                    <details className="settings-advanced provider-models">
+                      <summary>{t("modelUi.providerModels")}</summary>
+                      <p className="settings-hint">{t("modelUi.providerModelsHint")}</p>
+                      <ModelList options={modelCatalog.options.filter((model) => model.routeProvider === provider.id)} value={modelCatalog.options.some((model) => model.routeProvider === provider.id && model.routeRef === modelDefault) ? modelDefault : undefined}
+                        onSelect={(model) => { setModelDefault(model.routeRef); setProviderSaveMessage(t("modelUi.defaultDraftUpdated")); }} />
+                    </details>
                   </form>
                 );
               })}
