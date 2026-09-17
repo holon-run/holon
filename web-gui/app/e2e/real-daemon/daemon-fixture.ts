@@ -15,6 +15,8 @@ const STOP_TIMEOUT_MS = 10_000;
 
 interface DaemonController {
   readonly agentId: string;
+  /** Isolated fixture home, for deterministic on-disk file/registry setup. */
+  readonly home: string;
   readonly baseUrl: string;
   readonly token: string;
   api(pathname: string, init?: RequestInit): Promise<Response>;
@@ -226,6 +228,7 @@ async function createDaemon(
 
   const controller: DaemonController = {
     agentId: DEFAULT_AGENT_ID,
+    home,
     baseUrl,
     token: controlToken,
     api,

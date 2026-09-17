@@ -66,7 +66,14 @@ export function LoginPage() {
       if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
       await clearConversationCaches();
       clearStoredRuntimeConnectionToken();
-      window.location.replace(returnTo || "/");
+      const destination = new URL(returnTo || "/", window.location.origin);
+      if (destination.pathname === window.location.pathname && destination.search === window.location.search) {
+        // A same-document URL with a fragment does not reload after cookie exchange.
+        window.history.replaceState(null, "", destination.href);
+        window.location.reload();
+      } else {
+        window.location.replace(destination.href);
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t("auth.loginFailed"));
     } finally {

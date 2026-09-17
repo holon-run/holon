@@ -31,6 +31,13 @@ test.beforeEach(async ({ page, context }, info) => {
     state.workspace.workspaces = [{ workspace_id: "files-test", workspace_alias: "Test files", workspace_anchor: "/test", execution_root_id: "root-test", is_active: true }];
     await route.fulfill({ json: state });
   });
+  await page.route("**/api/file-references/resolve", async (route) => {
+    const { references } = route.request().postDataJSON();
+    await route.fulfill({ json: { results: references.map((ref: any) => ({ status: "resolved", location: {
+      workspace_id: "files-test", execution_root_id: "root-test", path: ref.relative_path,
+      absolute_path: `/test-worktree/${ref.relative_path}`, kind: "file", root_kind: "git_worktree_root",
+    } })) } });
+  });
   await page.route("**/api/workspaces/files-test/files**", async (route) => {
     const path = new URL(route.request().url()).pathname.split("/files/")[1] ?? "";
     await route.fulfill({ json: path ? {
@@ -198,6 +205,7 @@ test("work item details prioritize results and keep technical fields and plan na
   } } });
   await page.reload();
   const panel = page.locator(".side-panel");
+  await expect(page.locator(".app-shell")).toBeVisible();
   if (!await panel.isVisible()) await page.getByRole("button", { name: "Context side panel", exact: true }).click();
   await panel.locator(".work-item-button").filter({ hasText: work.objective }).click();
   const detail = panel.locator(".work-item-detail");

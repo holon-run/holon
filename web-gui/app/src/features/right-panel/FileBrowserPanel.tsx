@@ -16,45 +16,23 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { createHighlighter, type Highlighter } from "shiki";
-import Markdown from "react-markdown";
-import type { Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 import type { WorkspaceDirectoryListing, WorkspaceFileEntry, WorkspaceFileLocation } from "../../runtime/types";
-import { useRuntimeStore } from "../../runtime/runtime-store";
+import { getRuntimeConnectionConfig, useRuntimeStore } from "../../runtime/runtime-store";
 import { useTranslation } from "react-i18next";
-import { parseWorkspaceImageRef, resolveWorkspaceRelativePath, WorkspaceFileLink, WorkspaceImage } from "../../components/MarkdownContent";
-import { triggerHrefDownload } from "./download";
+import { MarkdownContent, WorkspaceImage } from "../../components/MarkdownContent";
+import { filePreviewUrl, type FileTarget } from "../../components/file-references/references";
+import { useFileIdentity } from "../../components/file-references/use-references";
+import { triggerBlobDownload, triggerHrefDownload } from "./download";
 import { buildPlainCodeHtml, normalizeShikiLineBreaks } from "./source-view";
-
-/** How a rendered markdown link should be opened. */
-export type MarkdownLinkTarget =
-  | ({ kind: "workspace-uri" } & WorkspaceFileLocation)
-  | { kind: "workspace-relative"; path: string }
-  | { kind: "anchor" }
-  | { kind: "external" };
-
-/**
- * Classify a markdown link href for the file browser preview: page-internal
- * anchors stay anchors, `workspace://` URIs reuse the workspace link flow,
- * workspace-relative paths resolve against the directory of the rendered
- * file, and everything else (http(s), mailto, data, invalid workspace URIs)
- * stays an external link.
- */
-export function markdownLinkTarget(href: string | undefined, baseFilePath: string | undefined): MarkdownLinkTarget {
-  if (href?.startsWith("#")) return { kind: "anchor" };
-  const workspaceRef = href ? parseWorkspaceImageRef(href) : undefined;
-  if (workspaceRef) return { kind: "workspace-uri", ...workspaceRef };
-  const relativePath = resolveWorkspaceRelativePath(baseFilePath ?? "", href);
-  if (relativePath) return { kind: "workspace-relative", path: relativePath };
-  return { kind: "external" };
-}
 
 interface FileBrowserPanelProps {
   workspaceId: string;
   executionRootId?: string;
   initialFilePath?: string;
   initialPath?: string;
+  initialFragment?: string;
+  onOpenFile?: (target: FileTarget) => void;
   workspaceLabel?: string;
   onClose?: () => void;
   snapshot?: FileBrowserSnapshot;
@@ -62,6 +40,8 @@ interface FileBrowserPanelProps {
 }
 
 export interface FileBrowserSnapshot {
+  identity: string;
+  fragment?: string;
   currentPath: string;
   listing: WorkspaceDirectoryListing | null;
   selectedFile: SelectedFile | null;
@@ -76,7 +56,7 @@ export interface FileBrowserSnapshot {
   history: FileBrowserLocation[];
 }
 
-type FileBrowserLocation = Pick<FileBrowserSnapshot, "currentPath" | "listing" | "selectedFile" | "showRendered" | "viewMode" | "scroll" | "filterText">;
+type FileBrowserLocation = Pick<FileBrowserSnapshot, "currentPath" | "listing" | "selectedFile" | "showRendered" | "viewMode" | "scroll" | "filterText" | "fragment">;
 
 interface SelectedFile {
   path: string;
@@ -287,8 +267,15 @@ function useShikiHighlight(content: string | undefined, filePath: string | undef
   return state.html;
 }
 
-export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, initialFilePath, workspaceLabel, onClose, snapshot, onSnapshot }: FileBrowserPanelProps) {
+export function FileBrowserPanel(props: FileBrowserPanelProps) {
+  const identity = useFileIdentity();
+  return <FileBrowserPanelView key={identity} {...props} identity={identity}
+    snapshot={props.snapshot?.identity === identity ? props.snapshot : undefined} />;
+}
+
+function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, workspaceLabel, onClose, snapshot, onSnapshot }: FileBrowserPanelProps & { identity: string }) {
   const { t } = useTranslation();
+  const [fragment, setFragment] = useState(snapshot?.fragment ?? initialFragment);
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
   const fetchWorkspacePath = useRuntimeStore((s) => s.fetchWorkspacePath);
@@ -316,11 +303,11 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const scroll = useRef(snapshot?.scroll ?? {});
   const history = useRef<FileBrowserLocation[]>(snapshot?.history ?? []);
   const requestGeneration = useRef(0);
-  useEffect(() => () => { requestGeneration.current++; }, []);
+  useEffect(() => () => { requestGeneration.current++; }, [identity]);
   const latestSnapshot = useRef<FileBrowserSnapshot | null>(null);
   useLayoutEffect(() => {
-    latestSnapshot.current = { currentPath, listing, selectedFile, showHidden, showRendered, viewMode, filterText, sortKey, sortAsc, directoryVisible, scroll: scroll.current, history: history.current };
-    if (!loading && !selectedFile?.loading) onSnapshot?.(latestSnapshot.current);
+    latestSnapshot.current = { identity, fragment, currentPath, listing, selectedFile, showHidden, showRendered, viewMode, filterText, sortKey, sortAsc, directoryVisible, scroll: scroll.current, history: history.current };
+    if (!loading && !selectedFile?.loading && (!initialFilePath || autoOpenedRef.current)) onSnapshot?.(latestSnapshot.current);
   });
   useLayoutEffect(() => {
     const node = browserRef.current;
@@ -339,8 +326,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const rememberLocation = () => {
     const current = latestSnapshot.current;
     if (!current?.selectedFile || current.selectedFile.loading) return;
-    const { currentPath, listing, selectedFile, showRendered, viewMode, filterText } = current;
-    history.current = [...history.current.slice(-3), { currentPath, listing, selectedFile, showRendered, viewMode, filterText, scroll: { ...scroll.current } }];
+    const { currentPath, listing, selectedFile, showRendered, viewMode, filterText, fragment } = current;
+    history.current = [...history.current.slice(-3), { currentPath, listing, selectedFile, showRendered, viewMode, filterText, fragment, scroll: { ...scroll.current } }];
   };
   const goBack = () => {
     const previous = history.current.pop();
@@ -349,6 +336,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     previousFile.current = previous.selectedFile?.path;
     scroll.current = previous.scroll;
     setCurrentPath(previous.currentPath);
+    setFragment(previous.fragment);
     setListing(previous.listing);
     setSelectedFile(previous.selectedFile);
     setShowRendered(previous.showRendered);
@@ -455,10 +443,14 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     if (!listing || !initialFilePath || autoOpenedRef.current) return;
     const fileName = initialFilePath.split("/").pop();
     const entry = listing.entries.find((e) => e.name === fileName);
-    if (!entry) return;
+    if (!entry) {
+      autoOpenedRef.current = true;
+      void openWorkspacePath(initialFilePath);
+      return;
+    }
     autoOpenedRef.current = true;
     setViewMode("preview");
-    void openEntry(entry);
+    void openEntry(entry, true);
   }, [listing, initialFilePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const breadcrumbParts = currentPath.split("/").filter(Boolean);
@@ -468,7 +460,8 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     void loadDir(target);
   };
 
-  const openEntry = async (entry: WorkspaceFileEntry) => {
+  const openEntry = async (entry: WorkspaceFileEntry, preserveFragment = false) => {
+    if (!preserveFragment) setFragment(undefined);
     if (entry.name === "..") {
       void loadDir(parentPath);
       return;
@@ -593,20 +586,28 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
   }, [workspaceId, executionRootId, fetchWorkspacePath, readWorkspaceFile, browseWorkspaceDir]);
 
-  const downloadSelectedFile = () => {
+  const effectiveRootId = listing?.executionRootId ?? executionRootId;
+  const downloadSelectedFile = async () => {
     if (!selectedFile?.path) return;
-    // Browser-native navigation: the raw byte endpoint responds with
-    // `Content-Disposition: attachment`, so the file streams straight to disk
-    // instead of buffering the whole body in JavaScript memory.
-    triggerHrefDownload(
-      workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId }, { download: true }),
-    );
+    // Cookie-authenticated downloads can stream directly; Bearer sessions need fetch.
+    if (!getRuntimeConnectionConfig().token) {
+      triggerHrefDownload(workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }, { download: true }));
+      return;
+    }
+    const request = requestGeneration.current;
+    try {
+      const blob = await useRuntimeStore.getState().fetchWorkspaceFileBlob({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }, { download: true });
+      if (request !== requestGeneration.current) return;
+      triggerBlobDownload(blob, selectedFile.path.split("/").pop() || "download");
+    } catch (cause) {
+      if (request === requestGeneration.current) setError(cause instanceof Error ? cause.message : "Download failed");
+    }
   };
 
   const openSelectedFileInNewTab = () => {
-    if (!selectedFile?.path) return;
+    if (!selectedFile?.path || !effectiveRootId) return;
     window.open(
-      workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId }),
+      filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }, fragment),
       "_blank",
       "noopener,noreferrer",
     );
@@ -626,9 +627,9 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
   };
 
-  const selectedWebUrl = selectedFile?.path
+  const selectedWebUrl = selectedFile?.path && effectiveRootId
     ? new URL(
-        workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId }),
+        filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }, fragment),
         window.location.origin,
       ).href
     : undefined;
@@ -639,63 +640,15 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const parentPath = currentPath.split("/").filter(Boolean).slice(0, -1).join("/");
   const atRoot = !currentPath;
 
-  const markdownComponents: Components = {
-    a: ({ href, children }) => {
-      const target = markdownLinkTarget(href, selectedFile?.path);
-      if (href && target.kind === "workspace-uri") {
-        return <WorkspaceFileLink href={href}>{children}</WorkspaceFileLink>;
-      }
-      if (target.kind === "anchor") {
-        return <a href={href}>{children}</a>;
-      }
-      if (target.kind === "workspace-relative") {
-        return (
-          <a
-            href={workspaceFileUrl({ workspaceId, path: target.path, executionRootId })}
-            onClick={(e) => {
-              // Plain left clicks open the file inside the browser; modified
-              // and middle clicks keep browser semantics via the direct-link
-              // href, which is servable standalone.
-              if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-              e.preventDefault();
-              void openWorkspacePath(target.path);
-            }}
-            rel="noreferrer"
-            target="_blank"
-          >
-            {children}
-          </a>
-        );
-      }
-      return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
-    },
-    img: ({ src, alt, ...props }) => {
-      const workspaceRef = parseWorkspaceImageRef(src);
-      if (workspaceRef) {
-        return (
-          <WorkspaceImage
-            {...props}
-            workspaceId={workspaceRef.workspaceId}
-            path={workspaceRef.path}
-            alt={alt ?? workspaceRef.path}
-          />
-        );
-      }
-
-      const relativePath = resolveWorkspaceRelativePath(selectedFile?.path ?? "", src);
-      if (!relativePath) {
-        return <img {...props} src={src} alt={alt ?? ""} />;
-      }
-      return (
-        <WorkspaceImage
-          {...props}
-          workspaceId={workspaceId}
-          path={relativePath}
-          executionRootId={executionRootId}
-          alt={alt ?? relativePath}
-        />
-      );
-    },
+  const openMarkdownFile = (target: FileTarget) => {
+    if (onOpenFile) { onOpenFile(target); return; }
+    if (target.workspaceId === workspaceId && target.executionRootId === effectiveRootId) {
+      setFragment(target.fragment);
+      void openWorkspacePath(target.path);
+    } else {
+      const store = useRuntimeStore.getState();
+      store.openResolvedFile(store.selectedAgentId, target);
+    }
   };
 
   const entries = listing?.entries ?? [];
@@ -938,6 +891,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               <button
                 type="button"
                 className="file-browser-link-btn"
+                disabled={!selectedWebUrl}
                 onClick={openSelectedFileInNewTab}
               >
                 {t("fileBrowser.openInNewTab")}
@@ -964,6 +918,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               <button
                 type="button"
                 className="file-browser-link-btn"
+                disabled={!selectedWebUrl}
                 onClick={() => void copySelectedFileValue("web", selectedWebUrl)}
               >
                 {copiedValue === "web" ? t("fileBrowser.linkCopied") : t("fileBrowser.copyWebLink")}
@@ -1048,7 +1003,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
                     ? t("fileBrowser.fileTruncated", { size: formatSize(selectedFile.totalSize) })
                     : t("fileBrowser.fileTruncatedNoSize")}
                   {" "}
-                  <button type="button" className="file-browser-truncated-action" onClick={openSelectedFileInNewTab}>
+                  <button type="button" className="file-browser-truncated-action" disabled={!selectedWebUrl} onClick={openSelectedFileInNewTab}>
                     {t("fileBrowser.openInNewTab")}
                   </button>
                   <button type="button" className="file-browser-truncated-action" onClick={downloadSelectedFile}>
@@ -1058,9 +1013,11 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               ) : null}
               {isMarkdownFile && showRendered ? (
                 <div className="file-browser-markdown markdown-content" ref={contentScrollRef} data-file-scroll={`rendered:${selectedFile.path}`}>
-                  <Markdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {selectedFile.content}
-                  </Markdown>
+                  <MarkdownContent text={selectedFile.content} fragment={fragment} onFragmentChange={setFragment} onOpenFile={openMarkdownFile}
+                    baseFile={effectiveRootId && selectedFile.absolutePath ? {
+                      workspaceId, executionRootId: effectiveRootId, path: selectedFile.path,
+                      absolutePath: selectedFile.absolutePath, rootKind: selectedFile.rootKind ?? listing?.rootKind ?? "", kind: "file",
+                    } : undefined} />
                 </div>
               ) : (
                 <div

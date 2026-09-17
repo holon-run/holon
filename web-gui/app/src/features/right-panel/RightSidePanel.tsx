@@ -362,10 +362,10 @@ export function RightSidePanel({
             <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel key={viewKey} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
+          <FileBrowserPanel key={viewKey} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} initialFragment={activeView.fragment} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
             snapshot={fileSnapshots.current.get(viewKey)} onSnapshot={(snapshot) => {
               if (snapshot.selectedFile?.loading || !snapshot.listing) return;
-              rememberPanelFileLocation({ ...activeView, initialPath: snapshot.currentPath, initialFilePath: snapshot.selectedFile?.path });
+              rememberPanelFileLocation({ ...activeView, initialPath: snapshot.currentPath, initialFilePath: snapshot.selectedFile?.path, fragment: snapshot.fragment });
               if (fileTitle?.viewKey !== viewKey || fileTitle.path !== snapshot.selectedFile?.path) setFileTitle({ viewKey, path: snapshot.selectedFile?.path });
               fileSnapshots.current.delete(viewKey);
               fileSnapshots.current.set(viewKey, snapshot);
