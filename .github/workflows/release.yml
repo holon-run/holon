@@ -328,7 +328,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release simplifies model service settings and selection in the Web GUI, hardens WaitFor final-brief publication and task-result wait ownership resolution, retains operator interjections in conversation turns, keeps the conversation layout stable during sync, and restores agent IDs in sidebar subtitles, alongside test-reliability fixes for the OpenAPI snapshot contract, the agent template mock server, and the release upgrade E2E schema assertion.
+          This release simplifies model service settings and selection in the Web GUI, hardens WaitFor final-brief publication and task-result wait ownership resolution, retains operator interjections in conversation turns, keeps the conversation layout stable during sync, and restores agent IDs in sidebar subtitles, alongside test-reliability fixes for the OpenAPI snapshot contract, the agent template mock server, and the release upgrade E2E harness (schema assertions, fresh-revision probe, and interrupted-upgrade stub behavior).
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
@@ -343,6 +343,7 @@ jobs:
           - Treat a trailing newline as non-drift in the OpenAPI snapshot test and write the POSIX-friendly trailing newline on refresh ([#3029](https://github.com/holon-run/holon/pull/3029)).
           - Close mock server sockets per request in agent_template tests, eliminating intermittent keep-alive failures and surfacing real install errors ([#3024](https://github.com/holon-run/holon/pull/3024)).
           - Verify the release-upgrade E2E schema assertion against the candidate's own head revision, so releases without schema migrations pass while downgrades and missed migrations still fail ([3f217b7a](https://github.com/holon-run/holon/commit/3f217b7a)).
+          - Limit the interrupted-upgrade E2E stub stall to the live current input so replayed history markers no longer wedge scheduler recovery, and give the fresh-revision probe an explicit model default so credential-free probes work in CI ([d2a3f14c](https://github.com/holon-run/holon/commit/d2a3f14c)).
 
           ## Install
 
