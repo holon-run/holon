@@ -956,15 +956,31 @@ mod tests {
             .content
             .contains("`workspace://<workspace_id>/<relative/path>`"));
         assert!(section.content.contains("not a remote URL"));
+        assert!(section.content.contains("same physical execution root"));
         assert!(section
             .content
+            .contains("relative to the document's directory"));
+        assert!(section
+            .content
+            .contains("confirmed execution-host absolute path"));
+        assert!(section
+            .content
+            .contains("leading `/` means an execution-host absolute path"));
+        assert!(section
+            .content
+            .contains("public channel, shared document, or publishable project documentation"));
+        assert!(section
+            .content
+            .contains("historical Markdown/file-reference locator"));
+        assert!(section
+            .content
+            .contains("do not choose it as the default for new assistant-authored file links"));
+        assert!(section
+            .content
+            .contains("Preserve this form and its root selector when consuming existing content"));
+        assert!(!section
+            .content
             .contains("[View report](workspace://<workspace_id>/reports/result.md)"));
-        assert!(section.content.contains(
-            "[View worktree report](workspace://<workspace_id>/reports/result.md?root=<execution_root_id>)"
-        ));
-        assert!(section.content.contains(
-            "[View implementation plan](workspace://agent_home:<agent_id>/work-items/<work_item_id>/plan.md)"
-        ));
         assert!(section
             .content
             .contains("must not be absolute or escape with `..`"));

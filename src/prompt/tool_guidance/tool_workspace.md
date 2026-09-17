@@ -1,22 +1,27 @@
 Workspace is explicit runtime state, not just a shell directory. The active workspace is the default long-lived project context: it defines the instruction root, default cwd/execution root, scoped AGENTS.md or CLAUDE.md guidance, workspace-scoped memory/policy context, and the base for relative ApplyPatch paths. It is not a global prohibition against explicit filesystem targets outside the workspace. Every agent always has exactly one active workspace. `agent_home` is the built-in fallback workspace for durable agent-local state; it is not a substitute for project work.
 
-`workspace://<workspace_id>/<relative/path>` is Holon's Markdown/file-reference URI for files inside an attached workspace, including agent-home workspace ids such as `agent_home:<agent_id>`. Treat it as a local workspace reference, not a remote URL. The path is percent-decoded relative to the named workspace root and must not be absolute or escape with `..`. Use this form for durable Markdown references to local media when the runtime, provider lowering, or Web GUI needs to resolve the file with workspace authority/auth instead of relying on unauthenticated HTML file URLs.
+Choose assistant-authored file references according to the output surface:
 
-Use descriptive Markdown links for deliverable files, for example
-`[View report](workspace://<workspace_id>/reports/result.md)`,
-`[View worktree report](workspace://<workspace_id>/reports/result.md?root=<execution_root_id>)`,
-or `[View implementation plan](workspace://agent_home:<agent_id>/work-items/<work_item_id>/plan.md)`.
-Replace placeholders only with confirmed metadata; do not invent an access URI.
+- In project Markdown, when the document and target are in the same physical execution root, use a path relative to the document's directory, not the process `cwd`. A `..` segment is valid only while the resolved target remains in that root.
+- In a local record that refers across workspace or worktree roots, use the confirmed execution-host absolute path.
+- In a Holon brief or assistant Markdown message, use a descriptive Markdown link or image whose target is the confirmed execution-host absolute path. Preserve the actual worktree location; `file://` is not required.
+- In a public channel, shared document, or publishable project documentation, prefer a portable relative path or a confirmed published URL. Do not disclose a machine-specific absolute path by default or publish an artifact merely to create a link.
 
-When the agent operates in a git worktree (not the canonical workspace root),
-file references may include an optional `?root=<execution_root_id>` query
-parameter: `workspace://<workspace_id>/<path>?root=<execution_root_id>`.
+For new references, a leading `/` means an execution-host absolute path, never a path relative to the active workspace. An entire path may instead be written as inline code when the location should be communicated as text; this does not promise that every client makes it clickable. Use correctly escaped Markdown targets, and keep literal filename characters such as spaces, parentheses, `#`, `%`, and Unicode distinct from an actual fragment.
+
+Use only confirmed location metadata. Do not invent, normalize, or substitute a path, and do not fall back from a missing or removed worktree file to a canonical file with the same relative name. A filesystem path identifies a location; it is not a published URL, browser-local path, access credential, permanent content identity, or content snapshot. If no suitable entry point is confirmed, state the delivery location and access limitation in prose.
+
+`workspace://<workspace_id>/<relative/path>` remains Holon's historical Markdown/file-reference locator for files inside an attached workspace, including agent-home workspace ids such as `agent_home:<agent_id>`. Treat it as a local workspace reference, not a remote URL. The path is percent-decoded relative to the named workspace root and must not be absolute or escape with `..`. Preserve this form and its root selector when consuming existing content or tool-returned locator data, but do not choose it as the default for new assistant-authored file links and do not make the model assemble workspace or execution-root IDs.
+
+Historical workspace references for a git worktree may include an optional
+`?root=<execution_root_id>` query parameter:
+`workspace://<workspace_id>/<path>?root=<execution_root_id>`.
 This parameter is an opaque server-issued token that identifies the specific
 worktree execution root. When absent, the URI resolves to the canonical
 workspace anchor (backward compatible). When present, the resolver looks up
 the root in the runtime's execution root registry — the value is never parsed
-for path information. A future tool that writes to a worktree root should
-include `?root=` by calling `build_execution_root_id` and appending it.
+for path information. Preserve it exactly when consuming or reproducing an
+existing locator.
 
 Use `GetWorkspaceState` before acting when workspace identity, retained
 worktrees, or occupancy is uncertain. Use `AttachWorkspace` only to add a new
