@@ -122,6 +122,9 @@ const en = {
     minutesAgo: "{{minutes}}m ago",
   },
   app: {
+    copyAgentId: "Copy agent ID: {{id}}",
+    agentIdCopied: "Agent ID copied",
+    agentIdCopyFailed: "Could not copy agent ID. Try again.",
     newAgent: "New Agent",
     refreshingAgent: "Refreshing agent detail",
     refreshAgent: "Refresh agent detail",

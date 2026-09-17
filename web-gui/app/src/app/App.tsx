@@ -11,6 +11,8 @@ import {
   CircleCheck,
   CircleX,
   Clock,
+  Copy,
+  Check,
   LayoutDashboard,
   LayoutTemplate,
   ListTree,
@@ -595,47 +597,50 @@ export function App() {
             visibleAgents.filter((agent) => navCollapsed || `${agent.name ?? ""} ${agent.id}`.toLowerCase().includes(agentFilter.toLowerCase())).map((agent) => {
               const status = deriveAgentDisplayStatus(agent, t);
               const workSummary = agent.currentWork?.objective;
+              const secondaryText = workSummary || (agent.name && agent.name !== agent.id ? agent.id : undefined);
               const unreadView = unreadBadgeView(
                 rosterActivityByAgentId[agent.id]?.unreadCount,
                 ledgerUnreadByAgentId[agent.id],
               );
 
               return (
-                <button
-                  className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
-                  key={agent.id}
-                  title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}${workSummary ? ` · ${workSummary}` : ""}`}
-                  type="button"
-                  onClick={() => navigateAgent(agent.id)}
-                >
-                  <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
-                  <span className="agent-row-main">
-                    <span className="agent-row-title">
-                      <strong>{agent.name ?? agent.id}</strong>
-                      {unreadView?.mode === "stale_sync_error" ? (
-                        <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
-                          !
+                <div className="agent-list-entry" key={agent.id}>
+                  <button
+                    className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
+                    title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}${workSummary ? ` · ${workSummary}` : ""}`}
+                    type="button"
+                    onClick={() => navigateAgent(agent.id)}
+                  >
+                    <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
+                    <span className="agent-row-main">
+                      <span className="agent-row-title">
+                        <strong>{agent.name ?? agent.id}</strong>
+                        {unreadView?.mode === "stale_sync_error" ? (
+                          <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
+                            !
+                          </span>
+                        ) : unreadView && unreadView.count > 0 ? (
+                          <span
+                            className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
+                            aria-label={unreadTitle(unreadView, t)}
+                            title={unreadTitle(unreadView, t)}
+                          >
+                            {formatUnreadCount(unreadView.count)}{unreadView.mode === "truncated" ? "+" : ""}
+                          </span>
+                        ) : null}
+                        <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
+                          <StatusDotIcon tone={status.tone} />
                         </span>
-                      ) : unreadView && unreadView.count > 0 ? (
-                        <span
-                          className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
-                          aria-label={unreadTitle(unreadView, t)}
-                          title={unreadTitle(unreadView, t)}
-                        >
-                          {formatUnreadCount(unreadView.count)}{unreadView.mode === "truncated" ? "+" : ""}
+                      </span>
+                      {secondaryText ? (
+                        <span className="agent-row-meta" title={secondaryText}>
+                          <span>{workSummary ? truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH) : secondaryText}</span>
                         </span>
                       ) : null}
-                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
-                        <StatusDotIcon tone={status.tone} />
-                      </span>
                     </span>
-                    {workSummary ? (
-                      <span className="agent-row-meta">
-                        <span>{truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH)}</span>
-                      </span>
-                    ) : null}
-                  </span>
-                </button>
+                  </button>
+                  <AgentIdCopyButton agentId={agent.id} />
+                </div>
               );
             })
           )}
@@ -1084,6 +1089,29 @@ function ConnectionStatus({ connection, loading, onRetry }: {
       ) : null}
     </div>
   );
+}
+
+function AgentIdCopyButton({ agentId }: { agentId: string }) {
+  const { t } = useTranslation();
+  const [state, setState] = useState<"idle" | "copied" | "error">("idle");
+  useEffect(() => {
+    if (state === "idle") return;
+    const timer = window.setTimeout(() => setState("idle"), 2000);
+    return () => window.clearTimeout(timer);
+  }, [state]);
+  const label = t(state === "copied" ? "app.agentIdCopied" : state === "error" ? "app.agentIdCopyFailed" : "app.copyAgentId", { id: agentId });
+  return <button type="button" className="agent-id-copy" aria-label={label} title={label}
+    onClick={async () => {
+      try {
+        await navigator.clipboard.writeText(agentId);
+        setState("copied");
+      } catch {
+        setState("error");
+      }
+    }}>
+    {state === "copied" ? <Check size={13} /> : <Copy size={13} />}
+    <span className="sr-only" role="status">{state !== "idle" ? label : ""}</span>
+  </button>;
 }
 
 function SessionLogout() {

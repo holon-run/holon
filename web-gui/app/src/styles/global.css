@@ -7277,3 +7277,22 @@ code {
 .conversation-sync-status .conversation-status-banner { height: 32px; margin: 0; padding: 0; }
 .conversation-sync-status .conversation-status-banner > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-sync-status svg, .conversation-sync-status button { flex-shrink: 0; }
+
+.agent-list-entry { position: relative; min-width: 0; }
+.agent-list-entry .agent-row { padding-right: 32px; }
+.agent-list-entry .agent-row-meta span { flex: 1 1 auto; }
+.agent-id-copy {
+  position: absolute; right: 5px; top: 50%; transform: translateY(-50%);
+  display: grid; place-items: center; width: 24px; height: 24px;
+  border: 0; border-radius: 5px; background: transparent; color: var(--muted);
+  opacity: 0; cursor: pointer;
+}
+.agent-list-entry:hover .agent-id-copy, .agent-list-entry:focus-within .agent-id-copy { opacity: 1; }
+.agent-id-copy:hover { background: var(--surface-hover); color: var(--text); }
+.app-shell[data-nav-collapsed="true"] .agent-list-entry .agent-row { padding-inline: 0; }
+.app-shell[data-nav-collapsed="true"] .agent-id-copy { display: none; }
+@media (hover: none) { .agent-id-copy { opacity: 1; } }
+@media (max-width: 760px) {
+  .agent-id-copy { display: none; }
+  .agent-list-entry .agent-row { padding-inline: 8px; }
+}

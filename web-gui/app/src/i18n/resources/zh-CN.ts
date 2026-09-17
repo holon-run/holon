@@ -124,6 +124,9 @@ const zh: Record<string, any> = {
     minutesAgo: "{{minutes}}分钟前",
   },
   app: {
+    copyAgentId: "复制 Agent ID：{{id}}",
+    agentIdCopied: "Agent ID 已复制",
+    agentIdCopyFailed: "复制 Agent ID 失败，请重试。",
     newAgent: "新建智能体",
     refreshingAgent: "正在刷新智能体详情",
     refreshAgent: "刷新智能体详情",
