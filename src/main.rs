@@ -1854,6 +1854,8 @@ mod tests {
                         RuntimeDbDebugCommands::WaitFinalBriefPublication {
                             apply,
                             no_backup,
+                            plan,
+                            resume,
                             agent,
                             diagnostic_sample_limit,
                             json,
@@ -1865,6 +1867,8 @@ mod tests {
         };
         assert!(!apply);
         assert!(!no_backup);
+        assert!(plan.is_none());
+        assert!(!resume);
         assert_eq!(agent.as_deref(), Some("agent-a"));
         assert_eq!(diagnostic_sample_limit, 20);
         assert!(json);
@@ -1886,6 +1890,8 @@ mod tests {
             "runtime-db",
             "wait-final-brief-publication",
             "--apply",
+            "--plan",
+            "repair.sqlite",
             "--no-backup",
             "--diagnostic-sample-limit",
             "7",
@@ -1897,6 +1903,8 @@ mod tests {
                         RuntimeDbDebugCommands::WaitFinalBriefPublication {
                             apply,
                             no_backup,
+                            plan,
+                            resume,
                             agent,
                             diagnostic_sample_limit,
                             json,
@@ -1908,8 +1916,68 @@ mod tests {
         };
         assert!(apply);
         assert!(no_backup);
+        assert_eq!(plan.as_deref(), Some(std::path::Path::new("repair.sqlite")));
+        assert!(!resume);
         assert!(agent.is_none());
         assert_eq!(diagnostic_sample_limit, 7);
+        assert!(!json);
+        assert!(Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "wait-final-brief-publication",
+            "--apply",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "wait-final-brief-publication",
+            "--apply",
+            "--plan",
+            "repair.sqlite",
+            "--agent",
+            "agent-a",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn debug_runtime_db_wait_final_brief_publication_parses_resume() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "wait-final-brief-publication",
+            "--plan",
+            "repair.sqlite",
+            "--resume",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::WaitFinalBriefPublication {
+                            apply,
+                            no_backup,
+                            plan,
+                            resume,
+                            agent,
+                            diagnostic_sample_limit,
+                            json,
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected WaitFor final Brief publication repair command");
+        };
+        assert!(!apply);
+        assert!(!no_backup);
+        assert_eq!(plan.as_deref(), Some(std::path::Path::new("repair.sqlite")));
+        assert!(resume);
+        assert!(agent.is_none());
+        assert_eq!(diagnostic_sample_limit, 20);
         assert!(!json);
     }
 
@@ -3801,43 +3869,69 @@ fn handle_runtime_db_debug_command(
         holon::cli::RuntimeDbDebugCommands::WaitFinalBriefPublication {
             apply,
             no_backup,
+            plan,
+            resume,
             agent,
             diagnostic_sample_limit,
             json,
         } => {
-            let _maintenance_lock = apply
-                .then(|| {
-                    RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
-                        "WaitFor final Brief publication repair requires holon serve to be stopped",
-                    )
-                })
-                .transpose()?;
             let db = RuntimeDb::open_and_migrate(
                 config.runtime_db_path(),
                 config.runtime_db_lock_path(),
             )?;
-            let backup_path = if apply && !no_backup {
-                Some(db.create_wait_final_brief_publication_repair_backup()?)
+            let mut progress =
+                |progress: &holon::runtime_db::WaitFinalBriefPublicationRepairProgress| {
+                    eprintln!("WaitFor final Brief publication repair: {progress}");
+                };
+            let report = if apply {
+                let plan = plan
+                    .as_deref()
+                    .context("--apply requires a completed repair plan")?;
+                db.preflight_wait_final_brief_publication_repair_plan(plan)?;
+                let _maintenance_lock =
+                    RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
+                        "WaitFor final Brief publication repair requires holon serve to be stopped",
+                    )?;
+                let backup_path = if no_backup {
+                    None
+                } else {
+                    Some(db.create_wait_final_brief_publication_repair_backup()?)
+                };
+                db.apply_wait_final_brief_publication_repair_plan(
+                    plan,
+                    diagnostic_sample_limit,
+                    backup_path,
+                    &mut progress,
+                )?
             } else {
-                None
+                db.prepare_wait_final_brief_publication_repair(
+                    plan.as_deref(),
+                    resume,
+                    agent.as_deref(),
+                    diagnostic_sample_limit,
+                    &mut progress,
+                )?
             };
-            let report = db.repair_wait_final_brief_publications(
-                apply,
-                agent.as_deref(),
-                diagnostic_sample_limit,
-                backup_path,
-            )?;
             if json {
                 print_json(&serde_json::to_value(report)?)
             } else {
                 println!(
                     "WaitFor final Brief publication repair: mode={} scanned={} repairable={} repaired={} skipped={}",
-                    if report.apply { "apply" } else { "dry-run" },
+                    if report.apply {
+                        "apply"
+                    } else if report.plan_path.is_some() {
+                        "prepare"
+                    } else {
+                        "dry-run"
+                    },
                     report.scanned_briefs,
                     report.repairable_briefs,
                     report.repaired_briefs,
                     report.skipped_briefs
                 );
+                if let Some(plan_path) = &report.plan_path {
+                    println!("  plan: {}", plan_path.display());
+                }
                 if let Some(backup_path) = &report.backup_path {
                     println!("  backup: {}", backup_path.display());
                 }

@@ -42,7 +42,9 @@ pub use crate::runtime_db::audit::{
 };
 pub use crate::runtime_db::authentication::AuthenticationRepository;
 pub use crate::runtime_db::brief_publication_repair::{
-    WaitFinalBriefPublicationRepairDiagnostic, WaitFinalBriefPublicationRepairReport,
+    WaitFinalBriefPublicationRepairDiagnostic, WaitFinalBriefPublicationRepairPhase,
+    WaitFinalBriefPublicationRepairPlanStatus, WaitFinalBriefPublicationRepairProgress,
+    WaitFinalBriefPublicationRepairReport,
 };
 pub use crate::runtime_db::evidence::{
     EvidenceKind, EvidencePayloadRow, EvidenceQuery, EvidenceRow,

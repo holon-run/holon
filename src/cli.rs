@@ -810,14 +810,18 @@ pub enum RuntimeDbDebugCommands {
         json: bool,
     },
     #[command(
-        about = "Report or repair WaitFor final Briefs missing canonical publication linkage"
+        about = "Prepare or apply a resumable repair for WaitFor final Brief publication linkage"
     )]
     WaitFinalBriefPublication {
-        #[arg(long)]
+        #[arg(long, requires = "plan", conflicts_with = "resume")]
         apply: bool,
         #[arg(long, requires = "apply")]
         no_backup: bool,
-        #[arg(long)]
+        #[arg(long, value_name = "PATH")]
+        plan: Option<PathBuf>,
+        #[arg(long, requires = "plan", conflicts_with = "apply")]
+        resume: bool,
+        #[arg(long, conflicts_with_all = ["apply", "resume"])]
         agent: Option<String>,
         #[arg(long, default_value_t = 20, value_parser = parse_positive_usize)]
         diagnostic_sample_limit: usize,
