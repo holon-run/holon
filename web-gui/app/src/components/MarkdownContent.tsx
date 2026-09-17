@@ -4,7 +4,7 @@ import { SKIP, visit } from "unist-util-visit";
 import { memo, useEffect, useState, type ImgHTMLAttributes, type ReactNode } from "react";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
-import type { RuntimeCitation } from "../runtime/types";
+import type { RuntimeCitation, WorkspaceFileLocation } from "../runtime/types";
 import { isHttpNotFoundError } from "../runtime/client";
 
 const WORKSPACE_URL_RE = /workspace:\/\/[^\s<>"')\]]+/g;
@@ -17,11 +17,7 @@ interface MarkdownContentProps {
   compact?: boolean;
 }
 
-export interface WorkspaceImageRef {
-  workspaceId: string;
-  path: string;
-  executionRootId?: string;
-}
+export type WorkspaceImageRef = WorkspaceFileLocation;
 
 export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageRef | undefined {
   if (!src?.startsWith("workspace://")) return undefined;
@@ -41,7 +37,14 @@ export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageR
   if (queryStart >= 0) {
     for (const pair of remainder.slice(queryStart + 1).split("&")) {
       const eq = pair.indexOf("=");
-      if (eq <= 0 || pair.slice(0, eq) !== "root") continue;
+      if (
+        eq <= 0 ||
+        pair.slice(0, eq) !== "root" ||
+        !pair.slice(eq + 1) ||
+        executionRootId !== undefined
+      ) {
+        return undefined;
+      }
       try {
         executionRootId = decodeURIComponent(pair.slice(eq + 1));
       } catch {
@@ -123,7 +126,7 @@ export function WorkspaceImage({
     setObjectUrl(undefined);
     setError(undefined);
 
-    void fetchWorkspaceFileBlob(workspaceId, path, executionRootId)
+    void fetchWorkspaceFileBlob({ workspaceId, path, executionRootId })
       .then((blob) => {
         const nextUrl = URL.createObjectURL(blob);
         if (cancelled) {
@@ -192,7 +195,12 @@ export function WorkspaceFileLink({ href, children }: WorkspaceFileLinkProps) {
       href={href}
       onClick={(e) => {
         e.preventDefault();
-        showFileBrowser(selectedAgentId, workspaceRef.workspaceId, undefined, undefined, workspaceRef.path);
+        const slash = workspaceRef.path.lastIndexOf("/");
+        showFileBrowser(selectedAgentId, {
+          ...workspaceRef,
+          path: slash >= 0 ? workspaceRef.path.slice(0, slash) : "",
+          initialFilePath: workspaceRef.path,
+        });
       }}
       rel="noreferrer"
     >

@@ -39,6 +39,9 @@ workspace://<workspace_id>/<relative_path>?root=<execution_root_id>
   (backward compatible with all existing `workspace://` links).
 - When present, the value is percent-encoded and treated as an **opaque
   lookup key** — the resolver never parses embedded path information.
+- `root` is the only accepted query parameter and may appear once. Unknown,
+  repeated, empty, or malformed parameters make the URI invalid. A `#fragment`
+  is kept outside filesystem path and root resolution.
 - Canonical-root links omit `?root=` and stay backward-compatible.
 
 ### Execution Root Registry
@@ -84,13 +87,23 @@ file-resolution surfaces.
 ### HTTP File API
 
 `resolve_workspace_root` now looks up the registry instead of scanning agent
-state. Accepts both `?root=` and `?execution_root_id=` query parameters.
+state. Accepts both `?root=` and `?execution_root_id=` query parameters. If
+both are present their values must match. Canonical IDs are validated exactly
+against the requested workspace; an ID with only a `canonical_root:` prefix is
+not accepted.
+
+The file-reference locator also uses registry tombstones when matching an
+absolute path. It first selects the unique most-specific path-component match
+and only then checks removal state, so a removed nested root cannot fall back
+to a wider active root.
 
 ### Provider Turn Resolver
 
 `resolve_markdown_image_src` parses `?root=` from `workspace://` URIs and
 resolves via `ExecutionSnapshot.execution_roots`, which is populated from
-the registry for the agent's attached workspaces.
+the registry for the agent's attached workspaces. The provider resolver checks
+both the root ID and workspace ID and never substitutes the operator-visible
+global registry for the execution snapshot.
 
 ## Security Model
 
@@ -101,6 +114,8 @@ the registry for the agent's attached workspaces.
 - Only roots registered through the trusted worktree lifecycle are
   resolvable.
 - Removed worktree roots return 410 Gone, not the path.
+- A root token owned by another workspace is rejected rather than resolved by
+  token alone.
 
 ## Backward Compatibility
 

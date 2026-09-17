@@ -4,6 +4,7 @@ date: 2026-06-25
 status: draft
 issue:
   - 1796
+  - 3032
 ---
 
 # RFC: Workspace File Browsing API
@@ -72,10 +73,11 @@ selecting which root to browse:
 GET /workspaces/{workspace_id}/files/{path}?execution_root_id=<id>
 ```
 
-When omitted, the workspace's canonical anchor path is used. Passing
-`execution_root_id` currently returns a 400 error; resolving isolated execution
-roots to filesystem paths requires wiring up lookup from agent-scoped
-`ActiveWorkspaceEntry` data and is planned as follow-up work.
+When omitted, the workspace's canonical anchor path is used. Both
+`execution_root_id` and the historical `root` alias are accepted. If both are
+present they must be equal. The selector is an opaque registry key; it is
+never parsed as a filesystem path. Unknown roots return 404, removed roots
+return 410, and roots owned by another workspace return 403.
 
 ### 5. No dotfile hiding
 
@@ -120,6 +122,10 @@ of the workspace is addressed as `/workspaces/{workspace_id}/files` or
   "type": "directory",
   "path": "src/http",
   "workspace_id": "ws-abc123",
+  "execution_root_id": "canonical_root:ws-abc123",
+  "absolute_path": "/srv/holon/workspaces/ws-abc123/src/http",
+  "kind": "directory",
+  "root_kind": "canonical_root",
   "entries": [
     { "name": "mod.rs", "type": "file", "size": 1092, "mime_type": "text/x-rust" },
     { "name": "control.rs", "type": "file", "size": 5000, "mime_type": "text/x-rust" },
@@ -137,6 +143,10 @@ Each entry includes `name`, `type` (`file` | `directory` | `symlink`),
   "type": "file",
   "path": "src/http/mod.rs",
   "workspace_id": "ws-abc123",
+  "execution_root_id": "git_worktree_root:opaque-token",
+  "absolute_path": "/srv/holon/worktrees/issue-3032/src/http/mod.rs",
+  "kind": "file",
+  "root_kind": "git_worktree_root",
   "content": "...file content...",
   "size": 1092,
   "mime_type": "text/x-rust",
@@ -153,6 +163,10 @@ When `truncated` is `true`, the response also includes `total_size`.
   "type": "file",
   "path": "logo.png",
   "workspace_id": "ws-abc123",
+  "execution_root_id": "canonical_root:ws-abc123",
+  "absolute_path": "/srv/holon/workspaces/ws-abc123/logo.png",
+  "kind": "file",
+  "root_kind": "canonical_root",
   "size": 40960,
   "mime_type": "image/png",
   "truncated": false
@@ -191,8 +205,41 @@ the existing `normalize_path` function from `src/system/workspace.rs`. The
 normalized path must start with the execution root prefix. Any path that
 escapes the execution root returns `403 Forbidden`.
 
-This protects against path traversal attacks (`../../../etc/passwd`) without
-requiring a separate validation layer.
+Existing paths are also canonicalized so a symlink cannot escape the selected
+root. A failed explicit root lookup never falls back to the canonical root.
+Canonical selectors must exactly equal `canonical_root:<workspace_id>`; a
+matching prefix is insufficient.
+
+## File Reference Resolution
+
+The browsing API remains the only file-content read surface. A separate thin
+endpoint translates references into complete locations:
+
+```
+POST /file-references/resolve
+```
+
+The request contains up to 64 tagged references:
+
+- `absolute_path`: a Unix host path, used literally rather than URI-decoded;
+- `workspace_uri`: a historical `workspace://` URI, decoded once, with an
+  optional opaque `?root=` selector;
+- `relative_path` plus `base_file`: resolved from the base file's containing
+  directory inside the same execution root. Legal `..` segments may move
+  within that root but never select another root.
+
+Each result is independently either `resolved` with a `FileLocation` or
+`unresolved` with a stable reason (`invalid_reference`, `not_found`,
+`root_removed`, `forbidden`, or `ambiguous_root`). The endpoint locates only:
+it does not return file contents, directory listings, bearer URLs, or
+capabilities. Callers use the returned `workspace_id`, `execution_root_id`,
+and root-relative `path` with the existing GET endpoint.
+
+Absolute-path matching considers all registered roots, including removed
+tombstones, and selects the unique most-specific path-component match. This
+prevents a removed nested root from being silently reinterpreted through a
+wider canonical root. `FileLocation` is a location, not a permanent content
+identity; path reuse after cleanup is outside this contract.
 
 ## MIME Type Inference
 

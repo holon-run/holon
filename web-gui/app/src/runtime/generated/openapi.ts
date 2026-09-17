@@ -1833,6 +1833,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/file-references/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve file references
+         * @description Resolve absolute paths, historical workspace URIs, or relative paths with an explicit base file into registered workspace and execution-root locations.
+         */
+        post: operations["resolveFileReferences"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/handshake": {
         parameters: {
             query?: never;
@@ -5444,6 +5464,54 @@ export interface components {
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         RenameAgentRequest: {
             [key: string]: unknown;
+        };
+        /** ResolveFileReferencesRequest */
+        ResolveFileReferencesRequest: {
+            references: ({
+                absolute_path: string;
+                /** @constant */
+                type: "absolute_path";
+            } | {
+                /** @constant */
+                type: "workspace_uri";
+                workspace_uri: string;
+            } | {
+                base_file: {
+                    absolute_path: string;
+                    execution_root_id: string;
+                    /** @enum {string} */
+                    kind: "file" | "directory";
+                    path: string;
+                    /** @enum {string} */
+                    root_kind: "canonical_root" | "git_worktree_root";
+                    workspace_id: string;
+                };
+                relative_path: string;
+                /** @constant */
+                type: "relative_path";
+            })[];
+        };
+        /** ResolveFileReferencesResponse */
+        ResolveFileReferencesResponse: {
+            results: ({
+                location: {
+                    absolute_path: string;
+                    execution_root_id: string;
+                    /** @enum {string} */
+                    kind: "file" | "directory";
+                    path: string;
+                    /** @enum {string} */
+                    root_kind: "canonical_root" | "git_worktree_root";
+                    workspace_id: string;
+                };
+                /** @constant */
+                status: "resolved";
+            } | {
+                message: string;
+                reason: string;
+                /** @constant */
+                status: "unresolved";
+            })[];
         };
         /** RuntimeConfigReadResponse */
         RuntimeConfigReadResponse: {
@@ -10755,6 +10823,48 @@ export interface operations {
             };
             /** @description Client error before stream establishment. */
             "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resolveFileReferences: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveFileReferencesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolveFileReferencesResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
                 headers: {
                     [name: string]: unknown;
                 };

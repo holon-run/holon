@@ -43,8 +43,11 @@ import type {
   WorkItemSummary,
   WorkspaceSummary,
   DisplayLevel,
+  FileReference,
+  ResolveFileReferencesResponse,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
+  WorkspaceFileLocation,
   WorkspaceFileMeta,
   WorkspaceFileEntry,
   WorkspacePathInfo,
@@ -680,6 +683,10 @@ interface WorkspaceDirectoryListingDto {
   type: string;
   path: string;
   workspace_id: string;
+  execution_root_id: string;
+  absolute_path: string;
+  kind: "directory";
+  root_kind: string;
   entries: WorkspaceDirectoryEntryDto[];
 }
 
@@ -687,6 +694,10 @@ interface WorkspaceFileContentDto {
   type: string;
   path: string;
   workspace_id: string;
+  execution_root_id: string;
+  absolute_path: string;
+  kind: "file";
+  root_kind: string;
   size: number;
   mime_type: string;
   truncated: boolean;
@@ -704,12 +715,33 @@ interface WorkspaceFileMetaDto {
   type: string;
   path: string;
   workspace_id: string;
+  execution_root_id: string;
+  absolute_path: string;
+  kind: "file";
+  root_kind: string;
   size: number;
   mime_type: string;
   truncated: boolean;
   modified?: number;
   line_count?: number;
   total_size?: number;
+}
+
+interface ResolveFileReferencesResponseDto {
+  results: Array<
+    | {
+        status: "resolved";
+        location: {
+          workspace_id: string;
+          execution_root_id: string;
+          path: string;
+          absolute_path: string;
+          kind: "file" | "directory";
+          root_kind: string;
+        };
+      }
+    | { status: "unresolved"; reason: string; message: string }
+  >;
 }
 
 interface ToolExecutionArtifactContentDto {
@@ -738,11 +770,10 @@ export interface WorkspaceFileUrlOptions {
  */
 export function buildWorkspaceFileUrl(
   baseUrl: string | undefined,
-  workspaceId: string,
-  path: string,
-  executionRootId?: string,
+  location: WorkspaceFileLocation,
   options?: WorkspaceFileUrlOptions,
 ): string {
+  const { workspaceId, path, executionRootId } = location;
   const encodedPath = path.split("/").map(encodeURIComponent).join("/");
   const params = new URLSearchParams();
   if (options?.download) params.set("download", "true");
@@ -766,6 +797,10 @@ function projectDirectoryListing(response: WorkspaceDirectoryListingDto): Worksp
     type: "directory",
     path: response.path,
     workspaceId: response.workspace_id,
+    executionRootId: response.execution_root_id,
+    absolutePath: response.absolute_path,
+    kind: response.kind,
+    rootKind: response.root_kind,
     entries: (response.entries ?? []).map(projectDirectoryEntry),
   };
 }
@@ -775,6 +810,10 @@ function projectFileMeta(response: WorkspaceFileMetaDto): WorkspaceFileMeta {
     type: "file",
     path: response.path,
     workspaceId: response.workspace_id,
+    executionRootId: response.execution_root_id,
+    absolutePath: response.absolute_path,
+    kind: response.kind,
+    rootKind: response.root_kind,
     size: response.size,
     mimeType: response.mime_type,
     truncated: response.truncated,
@@ -1422,7 +1461,8 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         return null;
       }
     },
-    async browseWorkspaceDir(workspaceId: string, path?: string, executionRootId?: string): Promise<WorkspaceDirectoryListing> {
+    async browseWorkspaceDir(location: WorkspaceFileLocation): Promise<WorkspaceDirectoryListing> {
+      const { workspaceId, path, executionRootId } = location;
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1434,7 +1474,8 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const response = await getJson<WorkspaceDirectoryListingDto>(fetchImpl, baseUrl, `${urlPath}${query}`, { headers: requestHeaders, timeoutMs: USER_ACTION_TIMEOUT_MS });
       return projectDirectoryListing(response);
     },
-    async readWorkspaceFile(workspaceId: string, path: string, executionRootId?: string): Promise<WorkspaceFileContent> {
+    async readWorkspaceFile(location: WorkspaceFileLocation): Promise<WorkspaceFileContent> {
+      const { workspaceId, path, executionRootId } = location;
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1450,6 +1491,10 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         type: "file",
         path: response.path,
         workspaceId: response.workspace_id,
+        executionRootId: response.execution_root_id,
+        absolutePath: response.absolute_path,
+        kind: response.kind,
+        rootKind: response.root_kind,
         size: response.size,
         mimeType: response.mime_type,
         truncated: response.truncated,
@@ -1459,12 +1504,63 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         content: response.content,
       };
     },
+    async resolveFileReferences(references: FileReference[]): Promise<ResolveFileReferencesResponse> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await postJson<ResolveFileReferencesResponseDto>(
+        fetchImpl,
+        baseUrl,
+        "/file-references/resolve",
+        {
+          references: references.map((reference) => {
+            if (reference.type === "absolute_path") {
+              return { type: reference.type, absolute_path: reference.absolutePath };
+            }
+            if (reference.type === "workspace_uri") {
+              return { type: reference.type, workspace_uri: reference.workspaceUri };
+            }
+            return {
+              type: reference.type,
+              relative_path: reference.relativePath,
+              base_file: {
+                workspace_id: reference.baseFile.workspaceId,
+                execution_root_id: reference.baseFile.executionRootId,
+                path: reference.baseFile.path,
+                absolute_path: reference.baseFile.absolutePath,
+                kind: reference.baseFile.kind,
+                root_kind: reference.baseFile.rootKind,
+              },
+            };
+          }),
+        },
+        requestHeaders,
+      );
+      return {
+        results: response.results.map((result) =>
+          result.status === "unresolved"
+            ? result
+            : {
+                status: "resolved",
+                location: {
+                  workspaceId: result.location.workspace_id,
+                  executionRootId: result.location.execution_root_id,
+                  path: result.location.path,
+                  absolutePath: result.location.absolute_path,
+                  kind: result.location.kind,
+                  rootKind: result.location.root_kind,
+                },
+              },
+        ),
+      };
+    },
     /**
      * Stat an arbitrary workspace path without reading file content.
      * Files answer with metadata (`?meta=true`); directories answer with
      * their listing regardless of the meta flag.
      */
-    async fetchWorkspacePath(workspaceId: string, path: string, executionRootId?: string): Promise<WorkspacePathInfo> {
+    async fetchWorkspacePath(location: WorkspaceFileLocation): Promise<WorkspacePathInfo> {
+      const { workspaceId, path, executionRootId } = location;
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1502,11 +1598,10 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       };
     },
     async fetchWorkspaceFileBlob(
-      workspaceId: string,
-      path: string,
-      executionRootId?: string,
+      location: WorkspaceFileLocation,
       options?: { download?: boolean; timeoutMs?: number },
     ): Promise<Blob> {
+      const { workspaceId, path, executionRootId } = location;
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");
       }
@@ -1522,13 +1617,8 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { headers: requestHeaders, timeoutMs: options?.timeoutMs },
       );
     },
-    workspaceFileUrl(
-      workspaceId: string,
-      path: string,
-      executionRootId?: string,
-      urlOptions?: WorkspaceFileUrlOptions,
-    ): string {
-      return buildWorkspaceFileUrl(baseUrl, workspaceId, path, executionRootId, urlOptions);
+    workspaceFileUrl(location: WorkspaceFileLocation, urlOptions?: WorkspaceFileUrlOptions): string {
+      return buildWorkspaceFileUrl(baseUrl, location, urlOptions);
     },
   };
 }

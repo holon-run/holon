@@ -763,17 +763,47 @@ export interface WorkspaceFileEntry {
   mimeType?: string;
 }
 
-export interface WorkspaceDirectoryListing {
-  type: "directory";
-  path: string;
+export interface WorkspaceFileLocation {
   workspaceId: string;
+  path: string;
+  executionRootId?: string;
+}
+
+export interface WorkspaceFileIdentity extends WorkspaceFileLocation {
+  executionRootId: string;
+  absolutePath: string;
+  kind: "file" | "directory";
+  rootKind: string;
+}
+
+export interface WorkspaceBrowserLocation extends WorkspaceFileLocation {
+  initialFilePath?: string;
+}
+
+export type FileReference =
+  | { type: "absolute_path"; absolutePath: string }
+  | { type: "workspace_uri"; workspaceUri: string }
+  | { type: "relative_path"; relativePath: string; baseFile: ResolvedFileLocation };
+
+export interface ResolvedFileLocation extends WorkspaceFileIdentity {}
+
+export type ResolveFileReferenceResult =
+  | { status: "resolved"; location: ResolvedFileLocation }
+  | { status: "unresolved"; reason: string; message: string };
+
+export interface ResolveFileReferencesResponse {
+  results: ResolveFileReferenceResult[];
+}
+
+export interface WorkspaceDirectoryListing extends WorkspaceFileIdentity {
+  type: "directory";
+  kind: "directory";
   entries: WorkspaceFileEntry[];
 }
 
-export interface WorkspaceFileContent {
+export interface WorkspaceFileContent extends WorkspaceFileIdentity {
   type: "file";
-  path: string;
-  workspaceId: string;
+  kind: "file";
   size: number;
   mimeType: string;
   truncated: boolean;
@@ -784,10 +814,9 @@ export interface WorkspaceFileContent {
 }
 
 /** Metadata-only view of a workspace file (`?meta=true` responses). */
-export interface WorkspaceFileMeta {
+export interface WorkspaceFileMeta extends WorkspaceFileIdentity {
   type: "file";
-  path: string;
-  workspaceId: string;
+  kind: "file";
   size: number;
   mimeType: string;
   truncated: boolean;

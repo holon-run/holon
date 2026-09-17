@@ -14,9 +14,10 @@ use crate::{
         CompleteWorkItemRequest, ConversationActivityResponse, ConversationReadQuery,
         ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
         CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest, ModelConfigMigrationRequest,
-        PickWorkItemRequest, PickWorkItemResponse, RuntimeConfigReadResponse,
-        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SearchRequest, SearchResponse,
-        UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
+        PickWorkItemRequest, PickWorkItemResponse, ResolveFileReferencesRequest,
+        ResolveFileReferencesResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
+        RuntimeConfigUpdateResponse, SearchRequest, SearchResponse, UpdateWorkItemRequest,
+        CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -117,6 +118,7 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/skills/catalog/{skill_id}", "skillDetail", "skills", "Skill detail", "Return catalog metadata and SKILL.md content for a Global Skill Library skill.", None, AuthKind::RemoteAccess),
     route("get", "/workspaces/{workspace_id}/files", "workspaceFilesRoot", "workspaces", "Browse workspace root", "List directory entries at the workspace root. Query parameters: execution_root_id.", None, AuthKind::RemoteAccess),
     route("get", "/workspaces/{workspace_id}/files/{path}", "workspaceFiles", "workspaces", "Browse workspace files", "List a directory or read a file by path. Supports content negotiation: Accept: application/json returns structured metadata + content, other Accept values return raw body. Query parameters: execution_root_id, download, meta.", None, AuthKind::RemoteAccess),
+    route_with_response("post", "/file-references/resolve", "resolveFileReferences", "workspaces", "Resolve file references", "Resolve absolute paths, historical workspace URIs, or relative paths with an explicit base file into registered workspace and execution-root locations.", Some("ResolveFileReferencesRequest"), "ResolveFileReferencesResponse", AuthKind::RemoteAccess),
     route_with_response("post", "/jobs", "createJob", "jobs", "Create job", "Create an asynchronous job. Currently supports kind=skill.install for Global Skill Library installation.", Some("CreateJobRequest"), "JobResponse", AuthKind::Control),
     route_with_response("get", "/jobs/{job_id}", "jobStatus", "jobs", "Job status", "Return a generic asynchronous job snapshot by id.", None, "JobResponse", AuthKind::RemoteAccess),
     route("post", "/skills/catalog/add", "addSkillToCatalog", "skills", "Add skill to library", "Add or import a skill into the local Skill Library.", Some("AddSkillRequest"), AuthKind::Control),
@@ -923,6 +925,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "MemoryGetResult".into(),
         component_schema::<MemoryGetResult>(),
+    );
+    schemas.insert(
+        "ResolveFileReferencesRequest".into(),
+        component_schema::<ResolveFileReferencesRequest>(),
+    );
+    schemas.insert(
+        "ResolveFileReferencesResponse".into(),
+        component_schema::<ResolveFileReferencesResponse>(),
     );
     schemas.insert(
         "AddSkillRequest".into(),

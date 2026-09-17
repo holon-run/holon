@@ -687,7 +687,7 @@ function UseWorkspaceRenderer({
   onBrowseFiles,
 }: {
   record: RuntimeToolExecutionRecord;
-  onBrowseFiles?: (workspaceId: string, executionRootId?: string) => void;
+  onBrowseFiles?: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
 }) {
   const { t } = useTranslation();
   const output = unwrapToolOutput(record.output ?? record.result);
@@ -707,7 +707,7 @@ function UseWorkspaceRenderer({
   const browse = canBrowse
     ? (e: MouseEvent) => {
         e.preventDefault();
-        onBrowseFiles!(workspaceId, executionRootId || undefined);
+        onBrowseFiles!({ workspaceId, path: workspaceAnchor || "", executionRootId: executionRootId || undefined });
       }
     : undefined;
 
@@ -1188,7 +1188,7 @@ export function ToolExecutionContent({
   onBrowseFiles,
 }: {
   record: RuntimeToolExecutionRecord;
-  onBrowseFiles?: (workspaceId: string, executionRootId?: string) => void;
+  onBrowseFiles?: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
 }) {
   const { t } = useTranslation();
   const error = extractToolError(record);

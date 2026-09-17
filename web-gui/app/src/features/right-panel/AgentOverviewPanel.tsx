@@ -26,7 +26,7 @@ interface AgentOverviewPanelProps {
   onDisableAgentSkill: (name: string) => void;
   onOpenSkill: (skillId: string) => void;
   onOpenSkillManager: () => void;
-  onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
+  onBrowseFiles: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
   onControlAgent?: (action: AgentControlAction) => Promise<void>;
   onDeleteAgent?: (cascadePrivateChildren: boolean) => Promise<void>;
   onRenameAgent?: (name: string) => Promise<void>;
@@ -389,7 +389,7 @@ export function AgentOverviewPanel({
             {workspace ? (
               <div className="workspace-active-section">
                 <div className="inspector-list-head">
-                  <button type="button" className="workspace-name-link" onClick={() => { if (workspace.id) onBrowseFiles(workspace.id, workspace.executionRootId); }}>{activeTitle}</button>
+                  <button type="button" className="workspace-name-link" onClick={() => { if (workspace.id) onBrowseFiles({ workspaceId: workspace.id, path: "", executionRootId: workspace.executionRootId }); }}>{activeTitle}</button>
                 </div>
                 <details className="workspace-path-details"><summary>{t("rightPanel.path")}</summary>
                 <dl className="inspector-facts">
@@ -402,7 +402,7 @@ export function AgentOverviewPanel({
                           className="workspace-path-link"
                           onClick={(e) => {
                             e.preventDefault();
-                            if (workspace.id) onBrowseFiles(workspace.id, workspace.executionRootId ?? undefined);
+                            if (workspace.id) onBrowseFiles({ workspaceId: workspace.id, path: "", executionRootId: workspace.executionRootId ?? undefined });
                           }}
                         >
                           {activePath}
@@ -419,7 +419,7 @@ export function AgentOverviewPanel({
                           className="workspace-path-link"
                           onClick={(e) => {
                             e.preventDefault();
-                            if (workspace.id) onBrowseFiles(workspace.id, undefined);
+                            if (workspace.id) onBrowseFiles({ workspaceId: workspace.id, path: "" });
                           }}
                         >
                           {originPath}
@@ -483,14 +483,14 @@ export function AgentOverviewPanel({
                   .map((ws) => (
                     <div key={ws.executionRootId ?? ws.workspaceId} className="workspace-list-item">
                       <div className="workspace-list-item-info">
-                        <button type="button" className="workspace-name-link" onClick={() => onBrowseFiles(ws.workspaceId, ws.executionRootId)}>{ws.name}</button>
+                        <button type="button" className="workspace-name-link" onClick={() => onBrowseFiles({ workspaceId: ws.workspaceId, path: "", executionRootId: ws.executionRootId })}>{ws.name}</button>
                         <details className="workspace-path-details"><summary>{t("rightPanel.path")}</summary>
                         <a
                           href="#"
                           className="workspace-path-link workspace-list-item-anchor"
                           onClick={(e) => {
                             e.preventDefault();
-                            onBrowseFiles(ws.workspaceId, ws.executionRootId);
+                            onBrowseFiles({ workspaceId: ws.workspaceId, path: "", executionRootId: ws.executionRootId });
                           }}
                         >
                           {ws.anchor}
@@ -732,7 +732,7 @@ function WorkItemCard({
   );
 }
 
-export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState; onOpenPlanFile?: (workspaceId: string, filePath: string) => void }) {
+export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: { workItem: WorkItemSummary; detailState?: WorkItemDetailState; onOpenPlanFile?: (location: import("../../runtime/types").WorkspaceFileLocation) => void }) {
   const { t } = useTranslation();
   const loading = detailState?.loading && !detailState.workItem;
   const plan = workItem.planArtifact;
@@ -761,7 +761,7 @@ export function WorkItemDetailPanel({ workItem, detailState, onOpenPlanFile }: {
           <h3>{t("rightPanel.plan")}</h3>
           {plan.path ? (
             onOpenPlanFile && plan.workspaceId && plan.relativePath ? (
-              <a href="#" className="workspace-path-link" onClick={(e) => { e.preventDefault(); onOpenPlanFile(plan.workspaceId!, plan.relativePath!); }}>
+              <a href="#" className="workspace-path-link" onClick={(e) => { e.preventDefault(); onOpenPlanFile({ workspaceId: plan.workspaceId!, path: plan.relativePath! }); }}>
                 <code>{plan.path}</code>
               </a>
             ) : (
@@ -829,7 +829,7 @@ export function ToolExecutionDetailPanel({
   relatedStateObjectRef?: import("../../runtime/types").TimelineStateObjectRef;
   onOpenWorkItem?: (workItem: WorkItemSummary) => void;
   onOpenTask?: (task: TaskSummary) => void;
-  onBrowseFiles?: (workspaceId: string, executionRootId?: string) => void;
+  onBrowseFiles?: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
 }) {
   const { t } = useTranslation();
   const loading = detailState?.loading && !detailState?.toolExecution;

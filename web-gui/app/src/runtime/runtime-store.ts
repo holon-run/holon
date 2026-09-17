@@ -110,10 +110,15 @@ import type {
   SkillDetailState,
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
+  FileReference,
+  ResolvedFileLocation,
+  ResolveFileReferencesResponse,
   WorkItemSummary,
   SearchResponse,
+  WorkspaceBrowserLocation,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
+  WorkspaceFileLocation,
   WorkspacePathInfo,
   ToolExecutionArtifactContent,
 } from "./types";
@@ -395,27 +400,19 @@ export interface RuntimeStoreState {
   showTaskDetail: (agentId: string, task: TaskSummary) => void;
   showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
-  showFileBrowser: (agentId: string, workspaceId: string, initialPath?: string, executionRootId?: string, initialFilePath?: string) => void;
-  browseWorkspaceDir: (workspaceId: string, path?: string, executionRootId?: string) => Promise<WorkspaceDirectoryListing>;
-  readWorkspaceFile: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspaceFileContent>;
-  fetchWorkspacePath: (workspaceId: string, path: string, executionRootId?: string) => Promise<WorkspacePathInfo>;
+  showFileBrowser: (agentId: string, location: WorkspaceBrowserLocation) => void;
+  openResolvedFile: (agentId: string, location: ResolvedFileLocation) => void;
+  resolveFileReferences: (references: FileReference[]) => Promise<ResolveFileReferencesResponse>;
+  browseWorkspaceDir: (location: WorkspaceFileLocation) => Promise<WorkspaceDirectoryListing>;
+  readWorkspaceFile: (location: WorkspaceFileLocation) => Promise<WorkspaceFileContent>;
+  fetchWorkspacePath: (location: WorkspaceFileLocation) => Promise<WorkspacePathInfo>;
   readToolExecutionArtifact: (
     agentId: string,
     toolExecutionId: string,
     artifactIndex: number,
   ) => Promise<ToolExecutionArtifactContent>;
-  fetchWorkspaceFileBlob: (
-    workspaceId: string,
-    path: string,
-    executionRootId?: string,
-    options?: { download?: boolean; timeoutMs?: number },
-  ) => Promise<Blob>;
-  workspaceFileUrl: (
-    workspaceId: string,
-    path: string,
-    executionRootId?: string,
-    options?: { download?: boolean },
-  ) => string;
+  fetchWorkspaceFileBlob: (location: WorkspaceFileLocation, options?: { download?: boolean; timeoutMs?: number }) => Promise<Blob>;
+  workspaceFileUrl: (location: WorkspaceFileLocation, options?: { download?: boolean }) => string;
   navigateBack: () => void;
   restoreRightPanelView: (view: RightPanelView) => void;
   toggleRightPanel: () => void;
@@ -1621,24 +1618,41 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       rightPanelView: { kind: "tool_execution_detail", agentId, toolExecutionId, toolName, relatedStateObjectRef },
       };
     }),
-  showFileBrowser: (agentId, workspaceId, initialPath, executionRootId, initialFilePath) =>
+  showFileBrowser: (agentId, location) =>
     set((state) => {
       const stack = state.rightPanelView ? [...state.rightPanelViewStack, state.rightPanelView] : state.rightPanelViewStack;
       return {
       rightPanelViewStack: stack,
       rightPanelOpen: true,
-      rightPanelView: { kind: "file_browser", agentId, workspaceId, initialPath, executionRootId, initialFilePath },
+      rightPanelView: {
+        kind: "file_browser",
+        agentId,
+        workspaceId: location.workspaceId,
+        initialPath: location.path,
+        executionRootId: location.executionRootId,
+        initialFilePath: location.initialFilePath,
+      },
       };
     }),
-  browseWorkspaceDir: (workspaceId, path, executionRootId) => runtimeClient.browseWorkspaceDir(workspaceId, path, executionRootId),
-  readWorkspaceFile: (workspaceId, path, executionRootId) => runtimeClient.readWorkspaceFile(workspaceId, path, executionRootId),
-  fetchWorkspacePath: (workspaceId, path, executionRootId) => runtimeClient.fetchWorkspacePath(workspaceId, path, executionRootId),
+  openResolvedFile: (agentId, location) =>
+    get().showFileBrowser(agentId, {
+      workspaceId: location.workspaceId,
+      executionRootId: location.executionRootId,
+      path: location.kind === "directory"
+        ? location.path
+        : location.path.includes("/")
+          ? location.path.slice(0, location.path.lastIndexOf("/"))
+          : "",
+      initialFilePath: location.kind === "file" ? location.path : undefined,
+    }),
+  resolveFileReferences: (references) => runtimeClient.resolveFileReferences(references),
+  browseWorkspaceDir: (location) => runtimeClient.browseWorkspaceDir(location),
+  readWorkspaceFile: (location) => runtimeClient.readWorkspaceFile(location),
+  fetchWorkspacePath: (location) => runtimeClient.fetchWorkspacePath(location),
   readToolExecutionArtifact: (agentId, toolExecutionId, artifactIndex) =>
     runtimeClient.readToolExecutionArtifact(agentId, toolExecutionId, artifactIndex),
-  fetchWorkspaceFileBlob: (workspaceId, path, executionRootId, options) =>
-    runtimeClient.fetchWorkspaceFileBlob(workspaceId, path, executionRootId, options),
-  workspaceFileUrl: (workspaceId, path, executionRootId, options) =>
-    runtimeClient.workspaceFileUrl(workspaceId, path, executionRootId, options),
+  fetchWorkspaceFileBlob: (location, options) => runtimeClient.fetchWorkspaceFileBlob(location, options),
+  workspaceFileUrl: (location, options) => runtimeClient.workspaceFileUrl(location, options),
   inspectActivity: (agentId, activity) => {
     // Use relatedStateObjectRef as fallback for task/work_item navigation,
     // since their child activities (status_updated, result_received, etc.)

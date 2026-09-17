@@ -132,6 +132,7 @@ pub(crate) use state::{
     public_admission_context, EnqueueIngress,
 };
 pub(crate) use web::{accepts_html, web_asset_response};
+pub(crate) use workspace_files::{ResolveFileReferencesRequest, ResolveFileReferencesResponse};
 
 pub use agents::*;
 pub use control::*;
@@ -726,6 +727,12 @@ pub fn router(state: AppState) -> Router {
         .route("/worktree-summary", get(state::worktree_summary_default));
 
     let api_routes = api_routes
+        .route(
+            "/file-references/resolve",
+            post(workspace_files::resolve_file_references).layer(DefaultBodyLimit::max(
+                workspace_files::FILE_REFERENCE_BODY_LIMIT_BYTES,
+            )),
+        )
         .route(
             "/workspaces/{workspace_id}/files",
             get(workspace_files::workspace_files_root),

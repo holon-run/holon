@@ -14,6 +14,9 @@ use tokio_util::io::ReaderStream;
 const READ_LIMIT_BYTES: usize = 1024 * 1024; // 1 MB
 /// Maximum bytes to sniff for content-based MIME detection.
 const SNIFF_LIMIT_BYTES: usize = 8000;
+const MAX_RESOLVE_REFERENCES: usize = 64;
+const MAX_REFERENCE_LENGTH: usize = 16 * 1024;
+pub(crate) const FILE_REFERENCE_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct FileQueryParams {
@@ -25,6 +28,21 @@ pub(crate) struct FileQueryParams {
     download: Option<bool>,
     #[serde(default)]
     meta: Option<bool>,
+}
+
+impl FileQueryParams {
+    fn execution_root_id(&self) -> Result<Option<&str>, (StatusCode, Json<Value>)> {
+        match (self.execution_root_id.as_deref(), self.root.as_deref()) {
+            (Some(left), Some(right)) if left != right => Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "error": "root and execution_root_id selectors conflict",
+                })),
+            )),
+            (Some(value), _) | (_, Some(value)) => Ok(Some(value)),
+            (None, None) => Ok(None),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -43,8 +61,8 @@ struct DirectoryEntry {
 struct DirectoryListing {
     #[serde(rename = "type")]
     entry_type: &'static str,
-    path: String,
-    workspace_id: String,
+    #[serde(flatten)]
+    location: crate::system::FileLocation,
     entries: Vec<DirectoryEntry>,
 }
 
@@ -52,8 +70,8 @@ struct DirectoryListing {
 struct FileMetadata {
     #[serde(rename = "type")]
     entry_type: &'static str,
-    path: String,
-    workspace_id: String,
+    #[serde(flatten)]
+    location: crate::system::FileLocation,
     size: u64,
     mime_type: String,
     truncated: bool,
@@ -73,12 +91,67 @@ struct FileContent {
     content: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub(crate) struct ResolveFileReferencesRequest {
+    #[schemars(with = "Vec<FileReferenceRequest>")]
+    references: Vec<FileReferenceInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum FileReferenceInput {
+    Known(FileReferenceRequest),
+    Unsupported(Value),
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum FileReferenceRequest {
+    AbsolutePath {
+        absolute_path: String,
+    },
+    WorkspaceUri {
+        workspace_uri: String,
+    },
+    RelativePath {
+        relative_path: String,
+        base_file: FileLocationInput,
+    },
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct FileLocationInput {
+    workspace_id: String,
+    execution_root_id: String,
+    path: String,
+    absolute_path: String,
+    kind: crate::system::FileLocationKind,
+    root_kind: crate::system::WorkspaceProjectionKind,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub(crate) struct ResolveFileReferencesResponse {
+    results: Vec<ResolveFileReferenceResult>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum ResolveFileReferenceResult {
+    Resolved {
+        location: crate::system::FileLocation,
+    },
+    Unresolved {
+        reason: &'static str,
+        message: String,
+    },
+}
+
 /// Resolve a workspace by id and determine the execution root to browse.
-async fn resolve_workspace_root(
+fn resolve_workspace_root(
     state: &AppState,
     workspace_id: &str,
     root_id: Option<&str>,
-) -> Result<PathBuf, (StatusCode, Json<Value>)> {
+) -> Result<crate::system::FileRoot, (StatusCode, Json<Value>)> {
     let entries = state.host.workspace_entries().map_err(error_response)?;
     let workspace = entries
         .iter()
@@ -90,10 +163,29 @@ async fn resolve_workspace_root(
     // server-issued token.
     let root = match root_id {
         // No root_id: use the workspace anchor from the registry.
-        None => workspace.workspace_anchor.clone(),
+        None => crate::system::FileRoot {
+            workspace_id: workspace_id.to_string(),
+            execution_root_id: crate::system::canonical_execution_root_id(workspace_id),
+            filesystem_path: workspace.workspace_anchor.clone(),
+            kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
+            removed: false,
+        },
         // canonical_root:{workspace_id} also resolves to the anchor. The
         // path comes from the server-side registry, not the client string.
-        Some(id) if id.starts_with("canonical_root:") => workspace.workspace_anchor.clone(),
+        Some(id) if id == crate::system::canonical_execution_root_id(workspace_id) => {
+            crate::system::FileRoot {
+                workspace_id: workspace_id.to_string(),
+                execution_root_id: id.to_string(),
+                filesystem_path: workspace.workspace_anchor.clone(),
+                kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
+                removed: false,
+            }
+        }
+        Some(id) if id.starts_with("canonical_root:") => {
+            return Err(forbidden(format!(
+                "execution_root_id does not belong to workspace '{workspace_id}'"
+            )));
+        }
         // For git_worktree_root and any other format, look up the root_id
         // in the execution root registry (runtime_db). The embedded path
         // in the ID is never trusted or parsed.
@@ -115,7 +207,13 @@ async fn resolve_workspace_root(
                             "execution_root_id does not belong to workspace '{workspace_id}'"
                         )));
                     }
-                    entry.filesystem_path
+                    crate::system::FileRoot {
+                        workspace_id: entry.workspace_id,
+                        execution_root_id: entry.execution_root_id,
+                        filesystem_path: entry.filesystem_path,
+                        kind: entry.root_kind,
+                        removed: false,
+                    }
                 }
                 None => {
                     return Err(not_found(format!(
@@ -126,10 +224,10 @@ async fn resolve_workspace_root(
         }
     };
 
-    if !root.exists() {
+    if !root.filesystem_path.exists() {
         return Err(not_found(format!(
             "workspace root does not exist on disk: {}",
-            root.display()
+            root.filesystem_path.display()
         )));
     }
 
@@ -141,27 +239,216 @@ fn resolve_and_validate_path(
     root: &FsPath,
     relative: &str,
 ) -> Result<PathBuf, (StatusCode, Json<Value>)> {
-    let candidate = root.join(relative);
-    let normalized =
-        crate::system::workspace::normalize_path(&candidate).map_err(error_response)?;
-    let normalized_root = crate::system::workspace::normalize_path(root).map_err(error_response)?;
-    if !normalized.starts_with(&normalized_root) {
-        return Err(forbidden("path escapes workspace root"));
-    }
+    crate::system::resolve_path_within_root(root, relative)
+        .map_err(|_| forbidden("path escapes workspace root"))
+}
 
-    // Canonicalize to resolve symlinks, then re-check containment.
-    // This prevents symlink-based escapes that pass the lexical check above
-    // but resolve outside the workspace root on disk.
-    if let (Ok(canonical), Ok(canonical_root)) = (
-        std::fs::canonicalize(&normalized),
-        std::fs::canonicalize(&normalized_root),
-    ) {
-        if !canonical.starts_with(&canonical_root) {
-            return Err(forbidden("path escapes workspace root (symlink)"));
+fn registered_file_roots(
+    state: &AppState,
+) -> Result<Vec<crate::system::FileRoot>, (StatusCode, Json<Value>)> {
+    let workspaces = state.host.workspace_entries().map_err(error_response)?;
+    let mut roots = workspaces
+        .into_iter()
+        .map(|workspace| crate::system::FileRoot {
+            execution_root_id: crate::system::canonical_execution_root_id(&workspace.workspace_id),
+            workspace_id: workspace.workspace_id,
+            filesystem_path: workspace.workspace_anchor,
+            kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
+            removed: false,
+        })
+        .collect::<Vec<_>>();
+    let registered = state
+        .host
+        .runtime_db()
+        .execution_root_entries()
+        .latest_all()
+        .map_err(error_response)?;
+    for entry in registered {
+        if roots
+            .iter()
+            .any(|root| root.execution_root_id == entry.execution_root_id)
+        {
+            continue;
+        }
+        roots.push(crate::system::FileRoot {
+            workspace_id: entry.workspace_id,
+            execution_root_id: entry.execution_root_id,
+            filesystem_path: entry.filesystem_path,
+            kind: entry.root_kind,
+            removed: entry.removed_at.is_some(),
+        });
+    }
+    Ok(roots)
+}
+
+fn resolve_reference(
+    state: &AppState,
+    roots: &[crate::system::FileRoot],
+    reference: FileReferenceInput,
+) -> Result<crate::system::FileLocation, (StatusCode, Json<Value>)> {
+    let reference = match reference {
+        FileReferenceInput::Known(reference) => reference,
+        FileReferenceInput::Unsupported(value) => {
+            let status = match value.get("type").and_then(Value::as_str) {
+                Some("absolute_path" | "workspace_uri" | "relative_path") | None => {
+                    StatusCode::BAD_REQUEST
+                }
+                Some(_) => StatusCode::UNPROCESSABLE_ENTITY,
+            };
+            return Err((
+                status,
+                Json(json!({
+                    "error": if status == StatusCode::UNPROCESSABLE_ENTITY {
+                        "file reference type is not supported"
+                    } else {
+                        "file reference is malformed"
+                    },
+                })),
+            ));
+        }
+    };
+    match reference {
+        FileReferenceRequest::AbsolutePath { absolute_path } => {
+            ensure_reference_length(&absolute_path)?;
+            crate::system::locate_absolute_path(roots, FsPath::new(&absolute_path))
+                .map_err(file_location_error_response)
+        }
+        FileReferenceRequest::WorkspaceUri { workspace_uri } => {
+            ensure_reference_length(&workspace_uri)?;
+            let parsed = crate::system::parse_workspace_uri(&workspace_uri)
+                .map_err(file_location_error_response)?;
+            let root = resolve_workspace_root(
+                state,
+                &parsed.workspace_id,
+                parsed.execution_root_id.as_deref(),
+            )?;
+            crate::system::location_for_relative_path(&root, &parsed.path)
+                .map_err(file_location_error_response)
+        }
+        FileReferenceRequest::RelativePath {
+            relative_path,
+            base_file,
+        } => {
+            ensure_reference_length(&relative_path)?;
+            ensure_reference_length(&base_file.path)?;
+            let root = resolve_workspace_root(
+                state,
+                &base_file.workspace_id,
+                Some(&base_file.execution_root_id),
+            )?;
+            let base = crate::system::location_for_relative_path(&root, &base_file.path)
+                .map_err(file_location_error_response)?;
+            if base.kind != crate::system::FileLocationKind::File {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "relative_path base_file must identify a file",
+                    })),
+                ));
+            }
+            if base.absolute_path != base_file.absolute_path
+                || base.kind != base_file.kind
+                || base.root_kind != base_file.root_kind
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({
+                        "error": "relative_path base_file identity does not match the registered file",
+                    })),
+                ));
+            }
+            let base_path = FsPath::new(&base.path);
+            let parent = base_path.parent().unwrap_or_else(|| FsPath::new(""));
+            let relative = parent.join(relative_path);
+            crate::system::location_for_relative_path(&root, &relative.to_string_lossy())
+                .map_err(file_location_error_response)
         }
     }
+}
 
-    Ok(normalized)
+fn ensure_reference_length(value: &str) -> Result<(), (StatusCode, Json<Value>)> {
+    if value.len() > MAX_REFERENCE_LENGTH {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": "file reference exceeds maximum length",
+            })),
+        ));
+    }
+    Ok(())
+}
+
+fn file_location_error_response(
+    error: crate::system::FileLocationError,
+) -> (StatusCode, Json<Value>) {
+    match error {
+        crate::system::FileLocationError::PathNotFound => not_found(error.to_string()),
+        crate::system::FileLocationError::RootRemoved => (
+            StatusCode::GONE,
+            Json(json!({ "error": error.to_string() })),
+        ),
+        crate::system::FileLocationError::PathEscapesRoot => forbidden(error.to_string()),
+        crate::system::FileLocationError::RootNotFound
+        | crate::system::FileLocationError::InvalidWorkspaceUri
+        | crate::system::FileLocationError::InvalidEncoding => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": error.to_string() })),
+        ),
+        crate::system::FileLocationError::AmbiguousRoot => (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": error.to_string() })),
+        ),
+    }
+}
+
+fn result_error(error: (StatusCode, Json<Value>)) -> ResolveFileReferenceResult {
+    let reason = match error.0 {
+        StatusCode::BAD_REQUEST => "invalid_reference",
+        StatusCode::UNPROCESSABLE_ENTITY => "unsupported_reference",
+        StatusCode::FORBIDDEN => "forbidden",
+        StatusCode::NOT_FOUND => "not_found",
+        StatusCode::GONE => "root_removed",
+        StatusCode::CONFLICT => "ambiguous_root",
+        _ => "resolve_failed",
+    };
+    let message = error
+        .1
+         .0
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("file reference could not be resolved")
+        .to_string();
+    ResolveFileReferenceResult::Unresolved { reason, message }
+}
+
+pub(crate) async fn resolve_file_references(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<ResolveFileReferencesRequest>,
+) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    if request.references.len() > MAX_RESOLVE_REFERENCES {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({
+                "error": format!(
+                    "at most {MAX_RESOLVE_REFERENCES} file references may be resolved at once"
+                ),
+            })),
+        ));
+    }
+    let roots = registered_file_roots(&state)?;
+    let results = request
+        .references
+        .into_iter()
+        .map(
+            |reference| match resolve_reference(&state, &roots, reference) {
+                Ok(location) => ResolveFileReferenceResult::Resolved { location },
+                Err(error) => result_error(error),
+            },
+        )
+        .collect();
+    Ok(Json(json!(ResolveFileReferencesResponse { results })))
 }
 
 /// Infer MIME type from file extension.
@@ -596,15 +883,13 @@ async fn workspace_files_inner(
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
-    let root = resolve_workspace_root(
-        &state,
-        &workspace_id,
-        params.root.or(params.execution_root_id).as_deref(),
-    )
-    .await?;
-    let full_path = resolve_and_validate_path(&root, &path)?;
+    let root_id = params.execution_root_id()?;
+    let root = resolve_workspace_root(&state, &workspace_id, root_id)?;
+    let full_path = resolve_and_validate_path(&root.filesystem_path, &path)?;
 
     let relative = path.trim_start_matches('/');
+    let location = crate::system::location_for_relative_path(&root, relative)
+        .map_err(file_location_error_response)?;
 
     // Directory listing
     if full_path.is_dir() {
@@ -660,8 +945,7 @@ async fn workspace_files_inner(
         });
         let listing = DirectoryListing {
             entry_type: "directory",
-            path: relative.to_string(),
-            workspace_id,
+            location,
             entries,
         };
         return Ok(Json(json!(listing)).into_response());
@@ -685,8 +969,7 @@ async fn workspace_files_inner(
     if want_meta {
         let meta = FileMetadata {
             entry_type: "file",
-            path: relative.to_string(),
-            workspace_id,
+            location,
             size: file_size,
             mime_type: mime_type.clone(),
             truncated: false,
@@ -758,8 +1041,7 @@ async fn workspace_files_inner(
     let file_content = FileContent {
         metadata: FileMetadata {
             entry_type: "file",
-            path: relative.to_string(),
-            workspace_id,
+            location,
             size: content.len() as u64,
             mime_type: mime_type.clone(),
             truncated,

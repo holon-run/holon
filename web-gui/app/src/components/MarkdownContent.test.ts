@@ -46,6 +46,8 @@ describe("parseWorkspaceImageRef", () => {
       workspaceId: "ws_1",
       path: "docs/a.png",
     });
+    expect(parseWorkspaceImageRef("workspace://ws_1/docs/a.png?root=one&extra=two")).toBeUndefined();
+    expect(parseWorkspaceImageRef("workspace://ws_1/docs/a.png?root=one&root=two")).toBeUndefined();
   });
 });
 

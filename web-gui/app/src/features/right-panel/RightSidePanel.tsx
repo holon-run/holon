@@ -50,8 +50,8 @@ interface RightSidePanelProps {
   onLoadOlderTimelineEvents: () => void;
   onNavigateBack: () => void;
   onSelectView: (view: RightPanelView) => void;
-  onBrowseFiles: (workspaceId: string, executionRootId?: string) => void;
-  onOpenPlanFile?: (workspaceId: string, filePath: string) => void;
+  onBrowseFiles: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
+  onOpenPlanFile?: (location: import("../../runtime/types").WorkspaceFileLocation) => void;
   onControlAgent?: (action: AgentControlAction) => Promise<void>;
   onDeleteAgent?: (cascadePrivateChildren: boolean) => Promise<void>;
   onRenameAgent?: (name: string) => Promise<void>;
@@ -204,8 +204,8 @@ export function RightSidePanel({
   const workspaces = agent.attachedWorkspaces?.length ? agent.attachedWorkspaces : workspace?.id ? [{ workspaceId: workspace.id, name: workspace.name ?? workspace.id, executionRootId: workspace.executionRootId ?? undefined }] : [];
   const openFiles = () => {
     if (lastFile.current) onSelectView(lastFile.current);
-    else if (workspace?.id) onBrowseFiles(workspace.id, workspace.executionRootId);
-    else if (workspaces[0]) onBrowseFiles(workspaces[0].workspaceId, workspaces[0].executionRootId);
+    else if (workspace?.id) onBrowseFiles({ workspaceId: workspace.id, path: "", executionRootId: workspace.executionRootId });
+    else if (workspaces[0]) onBrowseFiles({ workspaceId: workspaces[0].workspaceId, path: "", executionRootId: workspaces[0].executionRootId });
   };
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
   const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace && runtimeTraceEnabled;
@@ -319,7 +319,7 @@ export function RightSidePanel({
         <button type="button" aria-current={activeView.kind !== "file_browser" && activeView.kind !== "agent_overview" ? "page" : undefined} disabled={!lastDetail.current && (activeView.kind === "file_browser" || activeView.kind === "agent_overview")} onClick={() => { if (lastDetail.current) onSelectView(lastDetail.current); }}>{t("rightPanel.detailTab")}</button>
       </nav>
       {activeView.kind === "file_browser" && workspaces.length > 1 ? <select className="panel-workspace-select" aria-label={t("rightPanel.workspaces")} value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
-        onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles(selected.workspaceId, selected.executionRootId); }}>
+        onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles({ workspaceId: selected.workspaceId, path: "", executionRootId: selected.executionRootId }); }}>
         {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
       </select> : null}
       <div className="panel-body" ref={bodyRef} key={viewKey}>

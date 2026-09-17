@@ -942,11 +942,16 @@ export function App() {
           }}
           onNavigateBack={navigateBack}
           onSelectView={restoreRightPanelView}
-          onBrowseFiles={(workspaceId: string, executionRootId?: string) => {
-            showFileBrowser(selectedAgent.id, workspaceId, undefined, executionRootId);
+          onBrowseFiles={(location) => {
+            showFileBrowser(selectedAgent.id, location);
           }}
-          onOpenPlanFile={(workspaceId: string, filePath: string) => {
-            showFileBrowser(selectedAgent.id, workspaceId, undefined, undefined, filePath);
+          onOpenPlanFile={(location) => {
+            const slash = location.path.lastIndexOf("/");
+            showFileBrowser(selectedAgent.id, {
+              ...location,
+              path: slash >= 0 ? location.path.slice(0, slash) : "",
+              initialFilePath: location.path,
+            });
           }}
           onClose={() => setRightPanelOpen(false)}
         />

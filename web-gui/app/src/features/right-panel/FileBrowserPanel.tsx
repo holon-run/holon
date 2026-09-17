@@ -20,7 +20,7 @@ import Markdown from "react-markdown";
 import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
-import type { WorkspaceDirectoryListing, WorkspaceFileEntry } from "../../runtime/types";
+import type { WorkspaceDirectoryListing, WorkspaceFileEntry, WorkspaceFileLocation } from "../../runtime/types";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import { useTranslation } from "react-i18next";
 import { parseWorkspaceImageRef, resolveWorkspaceRelativePath, WorkspaceFileLink, WorkspaceImage } from "../../components/MarkdownContent";
@@ -29,7 +29,7 @@ import { buildPlainCodeHtml, normalizeShikiLineBreaks } from "./source-view";
 
 /** How a rendered markdown link should be opened. */
 export type MarkdownLinkTarget =
-  | { kind: "workspace-uri"; workspaceId: string; path: string }
+  | ({ kind: "workspace-uri" } & WorkspaceFileLocation)
   | { kind: "workspace-relative"; path: string }
   | { kind: "anchor" }
   | { kind: "external" };
@@ -44,7 +44,7 @@ export type MarkdownLinkTarget =
 export function markdownLinkTarget(href: string | undefined, baseFilePath: string | undefined): MarkdownLinkTarget {
   if (href?.startsWith("#")) return { kind: "anchor" };
   const workspaceRef = href ? parseWorkspaceImageRef(href) : undefined;
-  if (workspaceRef) return { kind: "workspace-uri", workspaceId: workspaceRef.workspaceId, path: workspaceRef.path };
+  if (workspaceRef) return { kind: "workspace-uri", ...workspaceRef };
   const relativePath = resolveWorkspaceRelativePath(baseFilePath ?? "", href);
   if (relativePath) return { kind: "workspace-relative", path: relativePath };
   return { kind: "external" };
@@ -80,6 +80,8 @@ type FileBrowserLocation = Pick<FileBrowserSnapshot, "currentPath" | "listing" |
 
 interface SelectedFile {
   path: string;
+  absolutePath?: string;
+  rootKind?: string;
   content?: string;
   mimeType?: string;
   truncated?: boolean;
@@ -89,6 +91,23 @@ interface SelectedFile {
   size?: number;
   loading: boolean;
   error?: string;
+}
+
+export function markdownFileReference(
+  workspaceId: string,
+  path: string,
+  executionRootId?: string,
+): string {
+  const encodeComponent = (value: string) =>
+    encodeURIComponent(value).replace(
+      /[!'()*]/g,
+      (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+    );
+  const encodedPath = path.split("/").map(encodeComponent).join("/");
+  const root = executionRootId ? `?root=${encodeComponent(executionRootId)}` : "";
+  const uri = `workspace://${workspaceId}/${encodedPath}${root}`;
+  const label = path.split("/").pop() || path;
+  return `[${label}](${uri})`;
 }
 
 function fileIcon(entry: WorkspaceFileEntry): LucideIcon {
@@ -283,7 +302,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
   const [error, setError] = useState<string>();
   const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(snapshot?.selectedFile ?? null);
   const [showHidden, setShowHidden] = useState(snapshot?.showHidden ?? false);
-  const [linkCopied, setLinkCopied] = useState(false);
+  const [copiedValue, setCopiedValue] = useState<"absolute" | "markdown" | "web" | null>(null);
   const autoOpenedRef = useRef(Boolean(snapshot?.selectedFile));
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const [showRendered, setShowRendered] = useState(snapshot?.showRendered ?? true);
@@ -372,7 +391,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       setViewMode("files");
       setFilterText("");
       try {
-        const result = await browseWorkspaceDir(workspaceId, path || undefined, executionRootId);
+        const result = await browseWorkspaceDir({ workspaceId, path, executionRootId });
         if (request !== requestGeneration.current) return;
         setListing(result);
         setCurrentPath(path);
@@ -402,10 +421,12 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     }
     setSelectedFile({ path: filePath, loading: true });
     try {
-      const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      const content = await readWorkspaceFile({ workspaceId, path: filePath, executionRootId });
       if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: filePath,
+        absolutePath: content.absolutePath,
+        rootKind: content.rootKind,
         content: content.content,
         mimeType: content.mimeType,
         truncated: content.truncated,
@@ -468,6 +489,10 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       // files render from entry metadata without reading content.
       setSelectedFile({
         path: filePath,
+        absolutePath: listing
+          ? `${listing.absolutePath.replace(/\/$/, "")}/${entry.name}`
+          : undefined,
+        rootKind: listing?.rootKind,
         loading: false,
         mimeType: entry.mimeType,
         size: entry.size,
@@ -478,10 +503,12 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
 
     setSelectedFile({ path: filePath, loading: true });
     try {
-      const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      const content = await readWorkspaceFile({ workspaceId, path: filePath, executionRootId });
       if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: filePath,
+        absolutePath: content.absolutePath,
+        rootKind: content.rootKind,
         content: content.content,
         mimeType: content.mimeType,
         truncated: content.truncated,
@@ -514,7 +541,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     setSelectedFile({ path: filePath, loading: true });
     setError(undefined);
     try {
-      const info = await fetchWorkspacePath(workspaceId, filePath, executionRootId);
+      const info = await fetchWorkspacePath({ workspaceId, path: filePath, executionRootId });
       if (request !== requestGeneration.current) return;
       if (info.type === "directory") {
         setListing(info);
@@ -525,13 +552,15 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         return;
       }
       const parent = filePath.split("/").slice(0, -1).join("/");
-      const directory = await browseWorkspaceDir(workspaceId, parent || undefined, executionRootId);
+      const directory = await browseWorkspaceDir({ workspaceId, path: parent, executionRootId });
       if (request !== requestGeneration.current) return;
       setListing(directory);
       setCurrentPath(parent);
       if (!isTextFile(info.mimeType, filePath)) {
         setSelectedFile({
           path: info.path,
+          absolutePath: info.absolutePath,
+          rootKind: info.rootKind,
           loading: false,
           mimeType: info.mimeType,
           size: info.totalSize ?? info.size,
@@ -539,10 +568,12 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
         });
         return;
       }
-      const content = await readWorkspaceFile(workspaceId, filePath, executionRootId);
+      const content = await readWorkspaceFile({ workspaceId, path: filePath, executionRootId });
       if (request !== requestGeneration.current) return;
       setSelectedFile({
         path: content.path,
+        absolutePath: content.absolutePath,
+        rootKind: content.rootKind,
         content: content.content,
         mimeType: content.mimeType,
         truncated: content.truncated,
@@ -568,31 +599,42 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     // `Content-Disposition: attachment`, so the file streams straight to disk
     // instead of buffering the whole body in JavaScript memory.
     triggerHrefDownload(
-      workspaceFileUrl(workspaceId, selectedFile.path, executionRootId, { download: true }),
+      workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId }, { download: true }),
     );
   };
 
   const openSelectedFileInNewTab = () => {
     if (!selectedFile?.path) return;
     window.open(
-      workspaceFileUrl(workspaceId, selectedFile.path, executionRootId),
+      workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId }),
       "_blank",
       "noopener,noreferrer",
     );
   };
 
-  const copySelectedFileLink = async () => {
-    if (!selectedFile?.path) return;
-    const relative = workspaceFileUrl(workspaceId, selectedFile.path, executionRootId);
-    const absolute = new URL(relative, window.location.origin).href;
+  const copySelectedFileValue = async (
+    kind: "absolute" | "markdown" | "web",
+    value: string | undefined,
+  ) => {
+    if (!value) return;
     try {
-      await navigator.clipboard.writeText(absolute);
-      setLinkCopied(true);
-      window.setTimeout(() => setLinkCopied(false), 2000);
+      await navigator.clipboard.writeText(value);
+      setCopiedValue(kind);
+      window.setTimeout(() => setCopiedValue(null), 2000);
     } catch {
       // Clipboard access can be denied; leave the button label unchanged.
     }
   };
+
+  const selectedWebUrl = selectedFile?.path
+    ? new URL(
+        workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId }),
+        window.location.origin,
+      ).href
+    : undefined;
+  const selectedMarkdownReference = selectedFile?.path
+    ? markdownFileReference(workspaceId, selectedFile.path, executionRootId)
+    : undefined;
 
   const parentPath = currentPath.split("/").filter(Boolean).slice(0, -1).join("/");
   const atRoot = !currentPath;
@@ -609,7 +651,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
       if (target.kind === "workspace-relative") {
         return (
           <a
-            href={workspaceFileUrl(workspaceId, target.path, executionRootId)}
+            href={workspaceFileUrl({ workspaceId, path: target.path, executionRootId })}
             onClick={(e) => {
               // Plain left clicks open the file inside the browser; modified
               // and middle clicks keep browser semantics via the direct-link
@@ -676,7 +718,7 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
     : sortedEntries;
 
   const selectedFileUrl = selectedFile
-    ? workspaceFileUrl(workspaceId, selectedFile.path, executionRootId)
+    ? workspaceFileUrl({ workspaceId, path: selectedFile.path, executionRootId })
     : undefined;
   const selectedFileTotalBytes =
     selectedFile?.totalSize ?? selectedFile?.size;
@@ -698,9 +740,15 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
           <ArrowLeft size={14} />
           {t("rightPanel.backToSource")}
         </button>
-        {workspaceLabel ? (
-          <span className="file-browser-ws-label">{workspaceLabel}</span>
-        ) : null}
+        <span className="file-browser-ws-label">{workspaceLabel ?? workspaceId}</span>
+        <span
+          className="file-browser-ws-label"
+          title={listing?.executionRootId ?? executionRootId ?? "canonical"}
+        >
+          {listing?.rootKind ?? (executionRootId ? "execution_root" : "canonical_root")}
+          {" · "}
+          {listing?.executionRootId ?? executionRootId ?? "canonical"}
+        </span>
         <nav className="file-browser-breadcrumb" aria-label={t("fileBrowser.pathBreadcrumb")}>
           <button
             type="button"
@@ -897,9 +945,28 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
               <button
                 type="button"
                 className="file-browser-link-btn"
-                onClick={() => void copySelectedFileLink()}
+                disabled={!selectedFile.absolutePath}
+                onClick={() => void copySelectedFileValue("absolute", selectedFile.absolutePath)}
               >
-                {linkCopied ? t("fileBrowser.linkCopied") : t("fileBrowser.copyLink")}
+                {copiedValue === "absolute"
+                  ? t("fileBrowser.pathCopied")
+                  : t("fileBrowser.copyAbsolutePath")}
+              </button>
+              <button
+                type="button"
+                className="file-browser-link-btn"
+                onClick={() => void copySelectedFileValue("markdown", selectedMarkdownReference)}
+              >
+                {copiedValue === "markdown"
+                  ? t("fileBrowser.markdownCopied")
+                  : t("fileBrowser.copyMarkdownReference")}
+              </button>
+              <button
+                type="button"
+                className="file-browser-link-btn"
+                onClick={() => void copySelectedFileValue("web", selectedWebUrl)}
+              >
+                {copiedValue === "web" ? t("fileBrowser.linkCopied") : t("fileBrowser.copyWebLink")}
               </button>
               <button
                 type="button"
@@ -912,6 +979,14 @@ export function FileBrowserPanel({ workspaceId, executionRootId, initialPath, in
             </div>
           </div>
           <div className="file-browser-meta-bar">
+            {selectedFile.absolutePath ? (
+              <span className="file-browser-meta-item" title={selectedFile.absolutePath}>
+                {selectedFile.absolutePath}
+              </span>
+            ) : null}
+            {selectedFile.rootKind ? (
+              <span className="file-browser-meta-item">{selectedFile.rootKind}</span>
+            ) : null}
             {selectedFile.mimeType ? <span className="file-browser-meta-item">{selectedFile.mimeType}</span> : null}
             {selectedFileTotalBytes != null ? (
               <span className="file-browser-meta-item">{formatSize(selectedFileTotalBytes)}</span>

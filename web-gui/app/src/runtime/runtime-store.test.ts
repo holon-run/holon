@@ -60,6 +60,66 @@ const OBSERVER_SYNC_CAPABILITIES = [
   "briefs.atomic-created-event.v1",
 ];
 
+describe("resolved file locations", () => {
+  it("opens a resolved file in its execution-root-scoped browser", () => {
+    const previous = useRuntimeStore.getState();
+    try {
+      useRuntimeStore.setState({
+        rightPanelOpen: false,
+        rightPanelView: undefined,
+        rightPanelViewStack: [],
+      });
+      useRuntimeStore.getState().openResolvedFile("agent-a", {
+        workspaceId: "ws-a",
+        executionRootId: "root-a",
+        path: "docs/readme.md",
+        absolutePath: "/workspace/docs/readme.md",
+        kind: "file",
+        rootKind: "git_worktree_root",
+      });
+      expect(useRuntimeStore.getState().rightPanelView).toEqual({
+        kind: "file_browser",
+        agentId: "agent-a",
+        workspaceId: "ws-a",
+        executionRootId: "root-a",
+        initialPath: "docs",
+        initialFilePath: "docs/readme.md",
+      });
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it("opens a resolved directory without treating it as an initial file", () => {
+    const previous = useRuntimeStore.getState();
+    try {
+      useRuntimeStore.setState({
+        rightPanelOpen: false,
+        rightPanelView: undefined,
+        rightPanelViewStack: [],
+      });
+      useRuntimeStore.getState().openResolvedFile("agent-a", {
+        workspaceId: "ws-a",
+        executionRootId: "root-a",
+        path: "docs/generated",
+        absolutePath: "/workspace/docs/generated",
+        kind: "directory",
+        rootKind: "git_worktree_root",
+      });
+      expect(useRuntimeStore.getState().rightPanelView).toEqual({
+        kind: "file_browser",
+        agentId: "agent-a",
+        workspaceId: "ws-a",
+        executionRootId: "root-a",
+        initialPath: "docs/generated",
+        initialFilePath: undefined,
+      });
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+});
+
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
 

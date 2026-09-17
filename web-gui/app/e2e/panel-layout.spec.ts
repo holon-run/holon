@@ -34,10 +34,14 @@ test.beforeEach(async ({ page, context }, info) => {
   await page.route("**/api/workspaces/files-test/files**", async (route) => {
     const path = new URL(route.request().url()).pathname.split("/files/")[1] ?? "";
     await route.fulfill({ json: path ? {
-      type: "file", workspace_id: "files-test", path, mime_type: "text/markdown", size: 20000,
+      type: "file", workspace_id: "files-test", execution_root_id: "root-test",
+      absolute_path: `/test-worktree/${path}`, root_kind: "git_worktree_root", kind: "file",
+      path, mime_type: "text/markdown", size: 20000,
       content: "# File reading test\n\n[Open notes](notes.md)\n\n" + Array.from({ length: 150 }, (_, i) => `Paragraph ${i}: readable content for scroll restoration.\n\n`).join(""),
     } : {
-      type: "directory", workspace_id: "files-test", path: "", entries: [
+      type: "directory", workspace_id: "files-test", execution_root_id: "root-test",
+      absolute_path: "/test-worktree", root_kind: "git_worktree_root", kind: "directory",
+      path: "", entries: [
         { name: "README.md", type: "file", size: 20000, mime_type: "text/markdown" },
         { name: "notes.md", type: "file", size: 20000, mime_type: "text/markdown" },
       ],
@@ -53,6 +57,11 @@ test("late runtime discovery adopts the open file without remounting its browser
   await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
   await panel.getByRole("button", { name: "README.md", exact: false }).click();
   await expect(panel.locator(".file-browser-markdown")).toBeVisible();
+  await expect(panel.locator(".file-browser-ws-label")).toContainText([
+    "Test files",
+    "git_worktree_root · root-test",
+  ]);
+  await expect(panel.locator(".file-browser-meta-bar")).toContainText("/test-worktree/README.md");
   const discovery = page.waitForResponse("**/api/agents/snapshot");
   discoveryGates.get(info.testId)!();
   await discovery;
