@@ -400,7 +400,7 @@ jobs:
               != migrated_snapshot.get("schema_revision")
               or recovery["candidate_schema_revision"] < 47
               or recovery["candidate_schema_revision"]
-              <= recovery["previous_schema_revision"]
+              < recovery["previous_schema_revision"]
               or len(recovery["affected_agents"]) < 2
               or recovery.get("old_snapshot_sha256") != old_snapshot_sha256
               or recovery.get("migrated_snapshot_sha256")
