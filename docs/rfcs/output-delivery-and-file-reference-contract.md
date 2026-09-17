@@ -1,7 +1,7 @@
 ---
 title: RFC: Output Delivery and File Reference Contract
 date: 2026-09-17
-status: draft
+status: accepted
 issue:
   - 3030
   - 3031
@@ -31,25 +31,26 @@ The correct file reference depends on where the reference is written:
   published URL and does not expose machine-specific paths by default.
 
 Historical `workspace://` references remain supported by consumers, but they
-are not the intended default for newly generated output after the rollout gate
-in this RFC is satisfied.
+are not the intended default for newly generated output after the prompt phase
+lands.
 
 ## Status And Rollout
 
-The delivery and location rules in this RFC are accepted for implementation,
-but the default prompt switch is intentionally staged:
+The delivery and location rules in this RFC are accepted. Their rollout is
+staged across three independently reviewable changes:
 
 1. **Contract phase:** document the rules and require self-contained delivery.
-2. **Consumer phase:** verify resolver, Explorer, provider, and Web GUI behavior
-   for the new location forms.
-3. **Prompt phase:** change built-in file-reference guidance only after the
-   consumer acceptance matrix passes.
+2. **Consumer phase:** deliver resolver, Explorer, provider, and Web GUI
+   behavior for the new location forms.
+3. **Prompt phase:** change built-in file-reference guidance.
 
 Issue #3032 delivered the shared resolver, batch resolution API, complete
 Explorer location identity, and provider image reuse. Issue #3033 owns the
-remaining general Markdown-consumer behavior. Until that consumer work passes
-the acceptance matrix, built-in guidance may continue to emit the historical
-form; this RFC must not be read as permission to switch the default early.
+remaining general Markdown-consumer behavior. Because no release is planned
+between the prompt and Web GUI changes, the prompt phase may proceed in
+parallel with #3033. The complete consumer acceptance matrix remains a release
+gate; the repository must not publish a version that advertises the new
+default while the general Markdown consumer is incomplete.
 
 ## Delivery Contract
 
@@ -131,7 +132,7 @@ the location as text. Inline code does not promise that every client will make
 the path clickable.
 
 The exact encoding and fragment behavior must be covered by the consumer tests
-owned by #3032 and #3033 before the prompt phase is enabled.
+owned by #3032 and #3033 before a release advertises the new default.
 
 ## Relationship To Existing Workspace References
 
@@ -156,21 +157,21 @@ The reporting contract owns the final-message requirements and the rule that a
 file entry point cannot replace a self-contained result. Workspace tool
 guidance owns the concrete default reference form and lifecycle details.
 
-During the contract phase, reporting guidance should:
+Reporting guidance:
 
 - require self-contained results;
 - require confirmed location metadata;
 - direct the model to surface-specific guidance rather than a universal path
   form;
-- retain the current concrete workspace-reference guidance until the consumer
-  gate passes.
+- remain independent of the concrete path syntax.
 
-After the consumer gate passes, workspace guidance can adopt the location
-matrix while retaining historical `workspace://` compatibility instructions.
+Workspace guidance adopts the location matrix while retaining historical
+`workspace://` compatibility instructions. The prompt change may merge in
+parallel with #3033, subject to the release gate below.
 
-## Consumer Acceptance Gate
+## Release Acceptance Gate
 
-The default prompt switch requires executable evidence for:
+Publishing the new default requires executable evidence for:
 
 - a same-root project Markdown link resolved relative to the document;
 - a cross-root local link that preserves the physical worktree identity;
