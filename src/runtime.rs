@@ -4486,6 +4486,62 @@ impl RuntimeHandle {
         ))
     }
 
+    fn validate_wait_for_terminal_publication(
+        &self,
+        transition: &turn::TurnTerminalTransition,
+        prepared: &PreparedWaitForSettlement,
+        audit_events: &[AuditEvent],
+    ) -> Result<()> {
+        use crate::tool::tools::wait_for::WaitForDeliveryArg;
+
+        match prepared.delivery {
+            WaitForDeliveryArg::Silent => {
+                anyhow::ensure!(
+                    prepared.brief.is_none()
+                        && transition.turn_record.produced_brief_ids.is_empty()
+                        && transition.terminal.no_brief_reason
+                            == Some(TurnNoBriefReason::ToolOnlyWait),
+                    "silent WaitFor terminal settlement cannot publish a Brief"
+                );
+            }
+            WaitForDeliveryArg::Final => {
+                let brief = prepared.brief.as_ref().ok_or_else(|| {
+                    anyhow!("final WaitFor settlement is missing its result Brief")
+                })?;
+                anyhow::ensure!(
+                    transition.turn_record.produced_brief_ids == [brief.id.clone()],
+                    "final WaitFor settlement must publish exactly its prepared Brief"
+                );
+                anyhow::ensure!(
+                    brief.turn_id.as_deref() == Some(transition.terminal.turn_id.as_str())
+                        && brief.turn_id.as_deref()
+                            == Some(transition.turn_record.turn_id.as_str()),
+                    "final WaitFor Brief must belong to the terminal Turn"
+                );
+                anyhow::ensure!(
+                    brief.finalizes_assistant_round_id.is_some(),
+                    "final WaitFor Brief must finalize its source assistant round"
+                );
+                let matching_created_events = audit_events
+                    .iter()
+                    .filter(|event| {
+                        event.kind == "brief_created"
+                            && event
+                                .data
+                                .get("brief_id")
+                                .and_then(serde_json::Value::as_str)
+                                == Some(brief.id.as_str())
+                    })
+                    .count();
+                anyhow::ensure!(
+                    matching_created_events == 1,
+                    "final WaitFor settlement must contain exactly one matching brief_created event"
+                );
+            }
+        }
+        Ok(())
+    }
+
     async fn commit_terminal_transition(
         &self,
         terminal_transition: &turn::TurnTerminalTransition,
@@ -4757,6 +4813,16 @@ impl RuntimeHandle {
                 command
                     .audit_events
                     .extend(prepared.command.audit_events.clone());
+                if let Some(brief) = prepared.brief.as_ref() {
+                    command.audit_events.push(brief_created_event_for(brief)?);
+                }
+                if let Some(transition) = terminal_transition {
+                    self.validate_wait_for_terminal_publication(
+                        transition,
+                        prepared,
+                        &command.audit_events,
+                    )?;
+                }
             }
             command.fault = self.take_transition_fault();
             let commit = if let Some(prepared) = prepared_completion {

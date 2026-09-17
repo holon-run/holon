@@ -306,11 +306,10 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
     // Roll back final report/outbox evidence together with task-result admission.
     if task_ready {
         prepared.delivery = crate::tool::tools::wait_for::WaitForDeliveryArg::Final;
-        prepared.brief = Some(brief::make_result(
-            "default",
-            &message,
-            "Waiting for task delivery.",
-        ));
+        let mut brief = brief::make_result("default", &message, "Waiting for task delivery.");
+        brief.turn_id = state.current_turn_id.clone();
+        brief.finalizes_assistant_round_id = Some("assistant-round-atomic-wait".into());
+        prepared.brief = Some(brief);
     }
     let terminal = TurnTerminalRecord {
         turn_id: state.current_turn_id.clone().unwrap(),
@@ -1221,6 +1220,7 @@ async fn run_wait_for_final_report_test(
     } else {
         None
     };
+    let expected_work_item_id = work_item.as_ref().map(|record| record.id.clone());
     let mut message = MessageEnvelope::new(
         "default",
         MessageKind::OperatorPrompt,
@@ -1348,6 +1348,50 @@ async fn run_wait_for_final_report_test(
                 && brief.text == "Waiting for final verification; I will resume when it changes."
         })
         .expect("final WaitFor should atomically publish its result brief");
+    let turn = runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .pop()
+        .expect("final WaitFor terminal turn");
+    assert_eq!(brief.turn_id.as_deref(), Some(turn.turn_id.as_str()));
+    assert_eq!(brief.work_item_id, expected_work_item_id);
+    assert!(brief.finalizes_assistant_round_id.is_some());
+    let brief_created_events = runtime
+        .storage()
+        .read_recent_events(100)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.kind == "brief_created"
+                && event
+                    .data
+                    .get("brief_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(brief.id.as_str())
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(brief_created_events.len(), 1);
+    assert_eq!(
+        brief.created_event_seq,
+        Some(brief_created_events[0].event_seq)
+    );
+    let conversation = runtime
+        .inner
+        .runtime_db
+        .conversation()
+        .summary_page("default", 10, None, None)
+        .unwrap();
+    let conversation_turn = conversation
+        .turns
+        .iter()
+        .find(|candidate| candidate.turn_id == turn.turn_id)
+        .expect("conversation should expose final WaitFor turn");
+    assert!(conversation_turn.brief_ids.contains(&brief.id));
+    assert_eq!(
+        conversation_turn.result,
+        crate::domain::conversation::ResultState::Available
+    );
     let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
     let wait_tool = tools
         .iter()
@@ -1358,12 +1402,6 @@ async fn run_wait_for_final_report_test(
         tools.iter().all(|tool| tool.tool_name != "GetAgent"),
         "the corrective report round must not execute extra tools"
     );
-    let turn = runtime
-        .storage()
-        .read_recent_turns(1)
-        .unwrap()
-        .pop()
-        .expect("final WaitFor terminal turn");
     assert!(turn.produced_brief_ids.contains(&brief.id));
     assert!(turn.tool_execution_ids.contains(&wait_tool.id));
     assert_eq!(turn.waiting_condition_ids.len(), 1);

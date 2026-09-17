@@ -1837,6 +1837,83 @@ mod tests {
     }
 
     #[test]
+    fn debug_runtime_db_wait_final_brief_publication_defaults_to_report_mode() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "wait-final-brief-publication",
+            "--agent",
+            "agent-a",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::WaitFinalBriefPublication {
+                            apply,
+                            no_backup,
+                            agent,
+                            diagnostic_sample_limit,
+                            json,
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected WaitFor final Brief publication repair command");
+        };
+        assert!(!apply);
+        assert!(!no_backup);
+        assert_eq!(agent.as_deref(), Some("agent-a"));
+        assert_eq!(diagnostic_sample_limit, 20);
+        assert!(json);
+        assert!(Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "wait-final-brief-publication",
+            "--no-backup",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn debug_runtime_db_wait_final_brief_publication_parses_apply_options() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "wait-final-brief-publication",
+            "--apply",
+            "--no-backup",
+            "--diagnostic-sample-limit",
+            "7",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::WaitFinalBriefPublication {
+                            apply,
+                            no_backup,
+                            agent,
+                            diagnostic_sample_limit,
+                            json,
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected WaitFor final Brief publication repair command");
+        };
+        assert!(apply);
+        assert!(no_backup);
+        assert!(agent.is_none());
+        assert_eq!(diagnostic_sample_limit, 7);
+        assert!(!json);
+    }
+
+    #[test]
     fn debug_scheduler_recovery_command_parses_read_only_options() {
         let cli = Cli::parse_from([
             "holon",
@@ -3717,6 +3794,62 @@ fn handle_runtime_db_debug_command(
                 }
                 if let Some(reason) = &report.reason {
                     println!("  reason: {reason}");
+                }
+                Ok(())
+            }
+        }
+        holon::cli::RuntimeDbDebugCommands::WaitFinalBriefPublication {
+            apply,
+            no_backup,
+            agent,
+            diagnostic_sample_limit,
+            json,
+        } => {
+            let _maintenance_lock = apply
+                .then(|| {
+                    RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
+                        "WaitFor final Brief publication repair requires holon serve to be stopped",
+                    )
+                })
+                .transpose()?;
+            let db = RuntimeDb::open_and_migrate(
+                config.runtime_db_path(),
+                config.runtime_db_lock_path(),
+            )?;
+            let backup_path = if apply && !no_backup {
+                Some(db.create_wait_final_brief_publication_repair_backup()?)
+            } else {
+                None
+            };
+            let report = db.repair_wait_final_brief_publications(
+                apply,
+                agent.as_deref(),
+                diagnostic_sample_limit,
+                backup_path,
+            )?;
+            if json {
+                print_json(&serde_json::to_value(report)?)
+            } else {
+                println!(
+                    "WaitFor final Brief publication repair: mode={} scanned={} repairable={} repaired={} skipped={}",
+                    if report.apply { "apply" } else { "dry-run" },
+                    report.scanned_briefs,
+                    report.repairable_briefs,
+                    report.repaired_briefs,
+                    report.skipped_briefs
+                );
+                if let Some(backup_path) = &report.backup_path {
+                    println!("  backup: {}", backup_path.display());
+                }
+                for diagnostic in &report.diagnostics {
+                    println!(
+                        "  {} brief={} agent={} turn={} reason={}",
+                        diagnostic.status,
+                        diagnostic.brief_id,
+                        diagnostic.agent_id,
+                        diagnostic.turn_id.as_deref().unwrap_or("<none>"),
+                        diagnostic.reason
+                    );
                 }
                 Ok(())
             }
