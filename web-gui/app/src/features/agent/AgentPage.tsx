@@ -19,7 +19,7 @@ import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { CurrentWorkBar } from "./CurrentWorkBar";
-import { ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
+import { ConversationSyncStatus, ConversationTimeline, type ConversationTimelineActions } from "./ConversationTimeline";
 import type { ConversationSessionModel } from "../../runtime/conversation-view-model";
 import { useTranslation } from "react-i18next";
 import type {
@@ -588,6 +588,7 @@ export function AgentPage({
     <section className="page agent-page" aria-label={t("agent.conversationAria")}>
       <div className="agent-workbench">
         <section className="conversation-pane">
+          {conversation ? <ConversationSyncStatus model={conversation.model} onRetry={conversation.onRetry} /> : <div className="conversation-sync-status" />}
           <div className="message-list" ref={messageListRef} onScroll={handleMessageListScroll} onClickCapture={handleDisclosureClick}>
             <div className="message-list-content" ref={messageContentRef}>
               {conversation !== undefined ? (

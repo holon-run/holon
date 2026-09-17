@@ -1176,7 +1176,7 @@ export function ledgerReadMarkerDecision(agentId: string) {
       selectedAgentId: state.selectedAgentId,
       documentVisible:
         typeof document !== "undefined" && document.visibilityState === "visible",
-      conversationReady: scope.status.kind === "ready" && scope.view !== null,
+      conversationReady: scope.status.kind === "ready" && scope.view?.scope != null && scope.view.reset_reason === null,
       conversationVisible: !covered,
       discoveryFresh: state.discovery.freshness === "fresh",
       readiness,

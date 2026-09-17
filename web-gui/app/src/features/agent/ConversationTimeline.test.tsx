@@ -219,13 +219,13 @@ describe("ConversationTimeline", () => {
     expect(html).not.toContain("waiting for the result");
   });
 
-  it("renders pending input chips and reconnecting banner", () => {
+  it("keeps pending input chips visible while reconnecting", () => {
     const html = renderTimeline([], {
       status: { kind: "reconnecting", attempt: 2, delayMs: 1000 },
       pendingInputs: [{ message_id: "m-2", revision: 1, state: "queued", preview: "" }],
     } as never);
     expect(html).toContain("Queued, waiting to run");
-    expect(html).toContain("reconnecting");
+    expect(html).not.toContain("conversation-status-banner");
   });
 
   it("echoes pending input preview text on the chip", () => {
@@ -373,6 +373,12 @@ describe("conversation presentation boundaries", () => {
     const html = renderTimeline([turnSummary("cached", 1)], { status: { kind: "loading" } } as never);
     expect(html).toContain("Syncing");
     expect(html).not.toContain("Working");
+  });
+  it.each(["loading", "paused", "reconnecting"])("keeps active execution expanded during %s without an inline banner", (kind) => {
+    const html = renderTimeline([turnSummary("active", 1)], { status: { kind, attempt: 1, delayMs: 500 } } as never);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain("Syncing");
+    expect(html).not.toContain("conversation-status-banner");
   });
   it("puts queued input after history and exposes system provenance without a user bubble", () => {
     const html = renderTimeline([turnSummary("background", 1, {

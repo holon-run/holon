@@ -497,7 +497,7 @@ const zh: Record<string, any> = {
     turnResultUnavailable: "结果不可用（超出保留期或缺少关联）。",
     hideExecutionProcess: "收起执行过程",
     turnElapsed: "耗时 {{duration}}",
-    conversationSyncing: "正在展示已保存的历史，正在核对最新状态…",
+    conversationSyncing: "正在核对会话的最新状态…",
     turnTimingStatus: {
       syncing: "正在同步",
       running: "正在执行",

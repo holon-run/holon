@@ -77,37 +77,10 @@ export const ConversationTimeline = memo(function ConversationTimeline({
   const backgroundInputs = model.pendingInputs.filter((input) => input.presentation_class !== "operator");
   return (
     <div className="conversation-timeline" aria-label={t("agent.conversationAria")}>
-      {(status.kind === "loading" || status.kind === "paused") && model.view ? (
-        <div className="conversation-status-banner" role="status">
-          <RefreshCw size={14} /><span>{t("agentPage.conversationSyncing")}</span>
-        </div>
-      ) : null}
-      {status.kind === "reconnecting" ? (
-        <div className="conversation-status-banner is-reconnecting" role="status">
-          <Unplug size={14} />
-          <span>{t("agentPage.conversationReconnecting", { attempt: status.attempt })}</span>
-        </div>
-      ) : null}
-      {status.kind === "unsupported" ? (
-        <div className="conversation-status-banner is-error" role="alert">
-          <CircleAlert size={14} />
-          <span>{t("agentPage.conversationUnsupported")}</span>
-        </div>
-      ) : null}
-      {status.kind === "recoverable_error" || status.kind === "terminal_error" ? (
-        <div className="conversation-status-banner is-error" role="alert">
-          <CircleAlert size={14} />
-          <span>{t("agentPage.conversationError")}</span>
-          <button type="button" onClick={actions.onRetry}>
-            <RefreshCw size={13} />
-            {t("agentPage.retry")}
-          </button>
-        </div>
-      ) : null}
       {model.turns.map((turn, index) => (
         <Fragment key={`${model.view?.scope?.remote_id}:${model.view?.scope?.agent_id}:${model.view?.scope?.event_log_epoch}:${turn.turnId}`}>
           {index === model.turns.length - 1 ? <PendingEvents inputs={backgroundInputs} onInspectActivity={actions.onInspectActivity} /> : null}
-          <ConversationTurnCard turn={turn} syncing={status.kind !== "ready"} {...actions} />
+          <ConversationTurnCard turn={turn} syncing={status.kind !== "ready" || model.view?.reset_reason != null} {...actions} />
         </Fragment>
       ))}
       {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} onInspectActivity={actions.onInspectActivity} /> : null}
@@ -138,6 +111,43 @@ export const ConversationTimeline = memo(function ConversationTimeline({
     </div>
   );
 });
+
+/** Connection notices occupy a permanent row outside the scrolling transcript. */
+export function ConversationSyncStatus({ model, onRetry }: Pick<ConversationTimelineProps, "model" | "onRetry">) {
+  const { t } = useTranslation();
+  const status = model.status;
+  return (
+    <div className="conversation-sync-status">
+      {(status.kind === "loading" || status.kind === "paused") && model.view ? (
+        <div className="conversation-status-banner" role="status">
+          <RefreshCw size={14} /><span>{t("agentPage.conversationSyncing")}</span>
+        </div>
+      ) : null}
+      {status.kind === "reconnecting" ? (
+        <div className="conversation-status-banner is-reconnecting" role="status">
+          <Unplug size={14} />
+          <span>{t("agentPage.conversationReconnecting", { attempt: status.attempt })}</span>
+        </div>
+      ) : null}
+      {status.kind === "unsupported" ? (
+        <div className="conversation-status-banner is-error" role="alert">
+          <CircleAlert size={14} />
+          <span>{t("agentPage.conversationUnsupported")}</span>
+        </div>
+      ) : null}
+      {status.kind === "recoverable_error" || status.kind === "terminal_error" ? (
+        <div className="conversation-status-banner is-error" role="alert">
+          <CircleAlert size={14} />
+          <span>{t("agentPage.conversationError")}</span>
+          <button type="button" onClick={onRetry}>
+            <RefreshCw size={13} />
+            {t("agentPage.retry")}
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function PendingEvents({ inputs, onInspectActivity }: { inputs: readonly PendingInput[]; onInspectActivity?: ConversationTimelineActions["onInspectActivity"] }) {
   const { t } = useTranslation();
@@ -209,17 +219,19 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   const [readingDetail, setReadingDetail] = useState(false);
   const wasActive = useRef(turn.execution.kind === "active");
   const presentation = turnResultPresentation(turn);
-  const execution = syncing && turn.execution.kind === "active" ? "syncing" : turnExecutionPresentation(turn);
+  const execution = turnExecutionPresentation(turn);
   const detailState = actions.detailLoadState(turn.turnId);
   const briefReady = turn.briefIds.every((id) => actions.briefRecord(id) !== null);
   const hasReadableBrief = turn.briefIds.length > 0 && briefReady;
-  const showExecutionNotice = execution !== "syncing" && execution !== "running" && execution !== "completed"
+  const showExecutionNotice = execution !== "running" && execution !== "completed"
     && !(execution === "waitingResult" && hasReadableBrief);
   const awaitingResult = (execution === "waitingResult" && !hasReadableBrief)
     || (turn.briefIds.length > 0 && !briefReady);
-  const timingStatus = execution === "waitingResult" && hasReadableBrief ? "completed"
+  const timingStatus = syncing && turn.execution.kind === "active" ? "syncing"
+    : execution === "waitingResult" && hasReadableBrief ? "completed"
     : execution !== "running" && turn.briefIds.length > 0 && !briefReady && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
       ? "loadingResult" : execution;
+  // Transport freshness must not collapse a still-active execution.
   const autoExpanded = execution === "running" || (wasActive.current && awaitingResult);
   const expanded = manualExpanded ?? (autoExpanded || readingDetail);
   const [mounted, setMounted] = useState(expanded);
@@ -238,11 +250,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     return () => window.clearTimeout(timer);
   }, [expanded]);
   useEffect(() => {
-    if (expanded && (turn.detail === null || turn.detail.invalidated)
+    if (!syncing && expanded && (turn.detail === null || turn.detail.invalidated)
       && detailState.kind !== "loading" && detailState.kind !== "error") {
       actions.onLoadDetail(turn.turnId);
     }
-  }, [expanded, turn.detail, detailState.kind, turn.turnId, actions.onLoadDetail]);
+  }, [syncing, expanded, turn.detail, detailState.kind, turn.turnId, actions.onLoadDetail]);
   useEffect(() => {
     const updateReading = () => {
       const node = detailRef.current;
@@ -282,7 +294,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           title={t(expanded ? "agentPage.hideExecutionProcess" : "agentPage.executionProcess")}
           onClick={() => setManualExpanded(!expanded)}>
           <ChevronRight size={14} className="conversation-disclosure-chevron" />
-          {execution === "running" ? <LoaderCircle size={14} className="is-spinning" /> : null}
+          {execution === "running" && !syncing ? <LoaderCircle size={14} className="is-spinning" /> : null}
           <span>{t(`agentPage.turnTimingStatus.${timingStatus}`)}</span>
           {timingStatus !== "syncing" && timingStatus !== "waiting" && timingStatus !== "waitingResult" ? <TurnElapsedTime turn={turn} /> : null}
         </button>
