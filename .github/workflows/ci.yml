@@ -107,6 +107,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'src/**'
               - 'tests/**'
+              - 'scripts/ci_test_shards.py'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
@@ -361,7 +362,7 @@ jobs:
         run: make test-resource-lint
 
       - name: Test CI timing tooling
-        run: python3 -m unittest tests.test_ci_timing
+        run: python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards
 
       - name: Clippy
         run: make lint
@@ -377,11 +378,37 @@ jobs:
       - name: Check generated snapshots
         run: make snapshots-check
 
-      - name: Test
+  rust-test:
+    name: Rust Test (${{ matrix.shard }})
+    needs: changes
+    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [lib, control, cli, misc]
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore test shard build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: v1-rust
+          key: ci-rust
+          env-vars: RUSTFLAGS
+          cache-bin: false
+          save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Run test shard
         run: |
           set -o pipefail
           mkdir -p target/ci-timing
-          make test 2>&1 | tee target/ci-timing/rust-test.log
+          make test-shard SHARD=${{ matrix.shard }} 2>&1 | tee target/ci-timing/rust-test.log
 
       - name: Summarize Rust test targets
         if: always()
@@ -396,7 +423,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ci-rust-test-timing-${{ github.run_attempt }}
+          name: ci-rust-test-timing-${{ matrix.shard }}-${{ github.run_attempt }}
           path: target/ci-timing/rust-test-targets.json
           if-no-files-found: warn
 
@@ -690,6 +717,7 @@ jobs:
       - macos-app
       - docker
       - rust
+      - rust-test
       - rust-concurrent
       - coverage
       - e2e-scheduler
@@ -706,7 +734,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          name: ci-rust-test-timing-${{ github.run_attempt }}
+          pattern: ci-rust-test-timing-*
           path: target/ci-timing
 
       - name: Collect workflow timing
@@ -733,7 +761,7 @@ jobs:
           python3 scripts/ci_timing.py summarize \
             --current-jobs target/ci-timing/current-jobs.json \
             --history-dir target/ci-timing/history \
-            --rust-test-targets target/ci-timing/rust-test-targets.json \
+            --rust-test-targets target/ci-timing/*/rust-test-targets.json \
             --output target/ci-timing/summary.json \
             --summary "${GITHUB_STEP_SUMMARY}" \
             --cache-status not-configured

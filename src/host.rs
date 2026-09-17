@@ -7406,6 +7406,7 @@ mod tests {
         )
         .unwrap();
 
+        let _env_lock = crate::test_env::lock_env();
         let _home_guard = HomeGuard(std::env::var("HOME").ok());
         std::env::set_var("HOME", os_home.path());
         let config = AppConfig::load_with_home(Some(config_home.path().to_path_buf())).unwrap();

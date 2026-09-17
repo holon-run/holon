@@ -119,6 +119,43 @@ def parse_test_log(text: str) -> dict[str, Any]:
     }
 
 
+def merge_test_target_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    """Merge per-shard parse-test-log reports into one report.
+
+    CI shards are disjoint, but duplicate target names (for example from a
+    rerun) are summed so totals stay consistent with the reported targets.
+    """
+    seconds_by_target: dict[str, float] = {}
+    for report in reports:
+        for target in report.get("targets", []):
+            name = target["name"]
+            seconds_by_target[name] = (
+                seconds_by_target.get(name, 0.0) + target["seconds"]
+            )
+    targets = [
+        {"name": name, "seconds": seconds}
+        for name, seconds in seconds_by_target.items()
+    ]
+    targets.sort(key=lambda target: (-target["seconds"], target["name"]))
+    slow_targets = [
+        target
+        for target in targets
+        if target["seconds"] > DEFAULT_BUDGETS_SECONDS["test_target"]
+    ]
+    merged = dict(reports[0])
+    merged.update(
+        {
+            "target_count": len(targets),
+            "total_reported_seconds": round(
+                sum(target["seconds"] for target in targets), 3
+            ),
+            "targets": targets,
+            "slow_targets": slow_targets,
+        }
+    )
+    return merged
+
+
 def job_summary(jobs: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     summaries = []
     for job in jobs:
@@ -346,8 +383,14 @@ def command_summarize(args: argparse.Namespace) -> None:
     current = workflow_metrics(load_jobs(args.current_jobs))
     history_paths = sorted(args.history_dir.glob("*.json"))
     test_targets = None
-    if args.rust_test_targets and args.rust_test_targets.exists():
-        test_targets = json.loads(args.rust_test_targets.read_text())
+    target_paths = [
+        path for path in (args.rust_test_targets or []) if path.exists()
+    ]
+    if target_paths:
+        reports = [json.loads(path.read_text()) for path in target_paths]
+        test_targets = (
+            reports[0] if len(reports) == 1 else merge_test_target_reports(reports)
+        )
     report = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -377,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
     summarize = subparsers.add_parser("summarize")
     summarize.add_argument("--current-jobs", type=Path, required=True)
     summarize.add_argument("--history-dir", type=Path, required=True)
-    summarize.add_argument("--rust-test-targets", type=Path)
+    summarize.add_argument("--rust-test-targets", type=Path, nargs="+")
     summarize.add_argument("--output", type=Path, required=True)
     summarize.add_argument("--summary", type=Path)
     summarize.add_argument("--cache-status", default="not-configured")

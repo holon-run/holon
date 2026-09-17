@@ -1,4 +1,4 @@
-.PHONY: help web web-ci conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check snapshots-check snapshots-refresh build all test test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
@@ -87,8 +87,11 @@ build: ## Build all Rust targets (cargo build --all-targets)
 
 all: web build ## Build everything: web GUI then Rust
 
-test: ## Run library, binary, and integration tests serially
-	cargo test --lib --bins --tests -- --test-threads=1
+test: ## Run library, binary, and integration tests serially (concurrent-proven binaries excluded; see test-concurrent)
+	python3 scripts/ci_test_shards.py run serial
+
+test-shard: ## Run one CI test shard (SHARD=lib|control|cli|misc); lib uses 2 test threads
+	python3 scripts/ci_test_shards.py run $(SHARD)
 
 test-resource-lint: ## Audit permanent test temp directories against the reasoned allowlist
 	python3 scripts/check-test-temp-resources.py
