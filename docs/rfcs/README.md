@@ -78,6 +78,7 @@ implementation and tests.
 - [Agent Workspace Switching](./workspace-entry-and-projection.md)
 - [Agent Workspace Tool Surface](./agent-workspace-tool-surface.md)
 - [Execution Root Registry](./workspace-execution-root-registry.md)
+- [Output Delivery and File Reference Contract](./output-delivery-and-file-reference-contract.md)
 - [Skill Discovery and Activation](./skill-discovery-and-activation.md)
 
 ## Eventing And Client Surface
