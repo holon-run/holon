@@ -52,6 +52,38 @@ parallel with #3033. The complete consumer acceptance matrix remains a release
 gate; the repository must not publish a version that advertises the new
 default while the general Markdown consumer is incomplete.
 
+## Web GUI consumer
+
+Briefs, assistant activity and Explorer Markdown use the same renderer and
+`POST /api/file-references/resolve` consumer. Root-relative document references
+require the source document's complete locator. A leading `/` always denotes
+an execution-host absolute path. Whole inline-code absolute paths are literal;
+Markdown URL paths are decoded once. Historical workspace URIs stay unchanged
+for the resolver, including their explicit `root` query.
+
+Plain clicks open Explorer. Modified clicks and Explorer's Web-link actions use
+`/files?workspace=…&root=…&path=…#fragment`, an agent-independent GUI route behind
+the existing login flow. Query parameters are URL-encoded, contain no credential,
+and never grant access. File reads authorize again, even after a cached resolve.
+Cookie-authenticated downloads stream from the file API; Bearer downloads use an
+authenticated fetch. Markdown images always use authenticated blob URLs, released
+on location/identity changes and unmount.
+
+Headings use Unicode lowercase slugs: punctuation is removed, whitespace becomes
+`-`, and duplicate slugs get incrementing numeric suffixes. DOM IDs are scoped to
+the rendered document. Fragments are not file paths: local anchors scroll only
+that document, and cross-file fragments apply after Markdown loads. A missing
+heading leaves the file open with a notice.
+
+Resolution batches contain at most 64 distinct references. A connection- and
+identity-scoped memory cache retains at most 512 successful resolutions for 30
+seconds; active streaming blocks retain their already resolved references while
+resolving additions. Failed requests can be retried. Content and identity changes
+discard late replies. Missing document context, unsupported local queries and
+protocols, missing files, and removed roots never become website-root navigation
+or implicit canonical fallback. Windows paths, `file://`, and line-number syntax
+remain outside this consumer's first version.
+
 ## Delivery Contract
 
 ### Final output is self-contained

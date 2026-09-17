@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test("pause and reconnect preserve process expansion and transcript geometry without re-fetching the summary", async ({ page, context, request }, info) => {
   const agentId = "bootstrap-agent";
-  const session = `sync-stability-${info.testId}`;
+  const session = `sync-stability-${info.testId}-${info.retry}-${info.repeatEachIndex}`;
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const current = { turn_id: "live", key: { turn_id: "live", turn_index: 1 }, revision: 1,
@@ -41,6 +41,7 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   expect(await geometry()).toEqual(before);
 
   await request.post(control("/__e2e__/configure"), { data: { failConversationByAgentId: [agentId] } });
+  const unavailableStream = page.waitForResponse((response) => response.url().includes("/conversation/stream") && response.status() === 503);
   await request.post(control("/__e2e__/disconnect-streams"));
   await expect(page.locator(".conversation-sync-status .is-reconnecting")).toBeVisible();
   await page.waitForTimeout(300);
@@ -48,6 +49,8 @@ test("pause and reconnect preserve process expansion and transcript geometry wit
   await expect(content).toBeVisible();
   expect(await geometry()).toEqual(before);
   await page.screenshot({ path: "/tmp/holon-sync-reconnecting.png" });
+  // Exercise a real failed reconnect, even when the local browser runs quickly.
+  await unavailableStream;
   await request.post(control("/__e2e__/configure"), { data: { failConversationByAgentId: [] } });
   await expect(process).toContainText("Working", { timeout: 10000 });
   expect(await geometry()).toEqual(before);

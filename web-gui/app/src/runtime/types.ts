@@ -2,7 +2,7 @@ import type { SessionEventEnvelope } from "./session-events";
 
 export type DisplayLevel = "info" | "verbose" | "debug";
 
-export type RouteKey = "dashboard" | "agent" | "search" | "skills" | "skillDetail" | "templates" | "templateDetail" | "settings";
+export type RouteKey = "files" | "dashboard" | "agent" | "search" | "skills" | "skillDetail" | "templates" | "templateDetail" | "settings";
 
 export interface RuntimeConnection {
   mode: "local" | "remote";
@@ -777,6 +777,7 @@ export interface WorkspaceFileIdentity extends WorkspaceFileLocation {
 }
 
 export interface WorkspaceBrowserLocation extends WorkspaceFileLocation {
+  fragment?: string;
   initialFilePath?: string;
 }
 
@@ -786,6 +787,7 @@ export type FileReference =
   | { type: "relative_path"; relativePath: string; baseFile: ResolvedFileLocation };
 
 export interface ResolvedFileLocation extends WorkspaceFileIdentity {}
+export interface FileOpenTarget extends ResolvedFileLocation { fragment?: string }
 
 export type ResolveFileReferenceResult =
   | { status: "resolved"; location: ResolvedFileLocation }
@@ -868,6 +870,7 @@ export type RightPanelView =
       workspaceId: string;
       executionRootId?: string;
       initialFilePath?: string;
+      fragment?: string;
       initialPath?: string;
     };
 

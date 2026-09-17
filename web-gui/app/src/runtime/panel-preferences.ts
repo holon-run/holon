@@ -10,7 +10,7 @@ function restorableView(value: unknown): RestorablePanelView | undefined {
   if (typeof view.agentId !== "string") return undefined;
   if (view.kind === "file_browser" && typeof view.workspaceId === "string") {
     return { kind: "file_browser", agentId: view.agentId, workspaceId: view.workspaceId,
-      ...Object.fromEntries(["executionRootId", "initialPath", "initialFilePath"].filter((key) => typeof view[key] === "string").map((key) => [key, view[key]])),
+      ...Object.fromEntries(["executionRootId", "initialPath", "initialFilePath", "fragment"].filter((key) => typeof view[key] === "string").map((key) => [key, view[key]])),
     };
   }
   return { kind: "agent_overview", agentId: view.agentId };
@@ -32,6 +32,6 @@ export function rememberPanelView(view: RightPanelView | undefined): void {
 export function rememberPanelFileLocation(view: Extract<RightPanelView, { kind: "file_browser" }>): void {
   const current = readPanelPreferences();
   if (current.view?.kind !== "file_browser" || current.view.agentId !== view.agentId || current.view.workspaceId !== view.workspaceId) return;
-  if (current.view.initialFilePath === view.initialFilePath && current.view.initialPath === view.initialPath) return;
+  if (current.view.initialFilePath === view.initialFilePath && current.view.initialPath === view.initialPath && current.view.executionRootId === view.executionRootId && current.view.fragment === view.fragment) return;
   writePanelPreferences({ ...current, view });
 }

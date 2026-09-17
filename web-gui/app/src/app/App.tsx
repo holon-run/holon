@@ -28,6 +28,7 @@ import type { ComponentType } from "react";
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
+import { FilePreviewPage } from "../features/right-panel/FilePreviewPage";
 import { LoginPage } from "../features/auth/LoginPage";
 import { Button } from "../components/ui/Button";
 import { EmptyState } from "../components/ui/EmptyState";
@@ -496,6 +497,8 @@ export function App() {
   if (bootstrap.connection.authRequired) {
     return <LoginPage />;
   }
+
+  if (route === "files") return <FilePreviewPage />;
 
   return (
     <div
