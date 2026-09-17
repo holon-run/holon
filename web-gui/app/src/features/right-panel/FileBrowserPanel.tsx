@@ -607,7 +607,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
   const openSelectedFileInNewTab = () => {
     if (!selectedFile?.path || !effectiveRootId) return;
     window.open(
-      filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }),
+      filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }, fragment),
       "_blank",
       "noopener,noreferrer",
     );
@@ -629,7 +629,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
 
   const selectedWebUrl = selectedFile?.path && effectiveRootId
     ? new URL(
-        filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }),
+        filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }, fragment),
         window.location.origin,
       ).href
     : undefined;
@@ -1013,7 +1013,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
               ) : null}
               {isMarkdownFile && showRendered ? (
                 <div className="file-browser-markdown markdown-content" ref={contentScrollRef} data-file-scroll={`rendered:${selectedFile.path}`}>
-                  <MarkdownContent text={selectedFile.content} fragment={fragment} onOpenFile={openMarkdownFile}
+                  <MarkdownContent text={selectedFile.content} fragment={fragment} onFragmentChange={setFragment} onOpenFile={openMarkdownFile}
                     baseFile={effectiveRootId && selectedFile.absolutePath ? {
                       workspaceId, executionRootId: effectiveRootId, path: selectedFile.path,
                       absolutePath: selectedFile.absolutePath, rootKind: selectedFile.rootKind ?? listing?.rootKind ?? "", kind: "file",

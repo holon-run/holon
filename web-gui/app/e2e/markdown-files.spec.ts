@@ -6,9 +6,10 @@ test.use({ channel: "chromium" });
 const root = "git_worktree_root:ws:/tmp/feature";
 const locator = (path: string, executionRoot = root) => ({ workspace_id: "ws", execution_root_id: executionRoot, absolute_path: `/tmp/feature/${path}`, path, kind: path === "docs" ? "directory" : "file", root_kind: "git_worktree_root" });
 const targetName = "空 格(1)%20#?.md";
-const text = `[Absolute](/tmp/feature/${encodeURIComponent(targetName)}#target)\n\n[Historical](workspace://ws/${encodeURIComponent(targetName)}?root=${root})\n\n[Relative](./${encodeURIComponent(targetName)}#target)\n\n[Directory](/tmp/feature/docs)\n\n[Missing](/tmp/missing.md)\n\n[External](https://example.com)\n\n![Chart](/tmp/feature/image.png)\n\n[Local](#local-section)\n\n## Local section`;
+const text = `[Absolute](/tmp/feature/${encodeURIComponent(targetName)}#target)\n\n[Historical](workspace://ws/${encodeURIComponent(targetName)}?root=${root})\n\n[Relative](./${encodeURIComponent(targetName)}#target)\n\n[Directory](/tmp/feature/docs)\n\n[Missing](/tmp/missing.md)\n\n[External](https://example.com "API docs")\n\n![Chart](/tmp/feature/image.png "Chart details")\n\n![External chart](https://example.com/diagram.png "External diagram")\n\n[Local](#local-section)\n\n## Local section`;
 async function mockFiles(context: BrowserContext) {
   const batches: any[][] = [];
+  await context.route("https://example.com/diagram.png", (route) => route.fulfill({ status: 204 }));
   await context.route("**/api/file-references/resolve", async (route) => {
     const refs = route.request().postDataJSON().references;
     batches.push(refs);
@@ -38,11 +39,28 @@ test("Explorer shares resolver rules; native new-tab links, fragments, images an
   await page.goto(preview("base.md"));
   const content = page.locator(".file-browser-markdown");
   await expect(content.getByRole("link", { name: "Absolute", exact: true })).toHaveAttribute("href", preview(targetName) + "#target");
-  await expect(content.getByRole("img", { name: "Chart" })).toHaveAttribute("src", /^blob:/);
+  await expect(content.getByRole("img", { name: "Chart", exact: true })).toHaveAttribute("src", /^blob:/);
   await expect(content.getByText("File not found", { exact: false })).toBeVisible();
   expect(batches.flat().find((ref) => ref.type === "relative_path").base_file.execution_root_id).toBe(root);
   await content.getByRole("link", { name: "Local", exact: true }).click();
   await expect(content.getByRole("heading", { name: "Local section" })).toBeInViewport();
+  await expect(page).toHaveURL(/#local-section$/);
+  await page.reload();
+  await expect(content.getByRole("heading", { name: "Local section" })).toBeInViewport();
+  await expect(content.getByRole("link", { name: "External", exact: true })).toHaveAttribute("title", "API docs");
+  await expect(content.getByRole("img", { name: "Chart", exact: true })).toHaveAttribute("title", "Chart details");
+  await expect(content.getByRole("img", { name: "External chart", exact: true })).toHaveAttribute("title", "External diagram");
+  await page.evaluate(() => {
+    Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async (value: string) => { (window as any).__copiedFileLink = value; } });
+  });
+  await page.getByRole("button", { name: "Copy web link", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as any).__copiedFileLink)).toBe(page.url());
+  const headingTabEvent = context.waitForEvent("page");
+  await page.getByRole("button", { name: "Open in new tab", exact: true }).click();
+  const headingTab = await headingTabEvent;
+  await expect(headingTab).toHaveURL(/#local-section$/);
+  await expect(headingTab.getByRole("heading", { name: "Local section" })).toBeInViewport();
+  await headingTab.close();
   const popupEvent = context.waitForEvent("page");
   await content.getByRole("link", { name: "Absolute", exact: true }).click({ modifiers: ["ControlOrMeta"] });
   const popup = await popupEvent;

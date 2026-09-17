@@ -228,6 +228,12 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
     snapshotThroughSeqByAgentId: { [agentId]: 8 },
     failConversationByAgentId: [agentId],
   });
+  // Discard the retained conversation checkpoint before resetting the global
+  // ledger. A transport reconnect alone can still expose the cached view.
+  const unavailableSummary = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === `/api/agents/${agentId}/conversation` && response.status() === 503);
+  await request.post(controlPath(session, "/__e2e__/reset-conversation"), { data: { agentId, reason: "retention_expired" } });
+  await unavailableSummary;
   await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
 
   // Hold the read-marker gate closed while the retention reset lands: the
@@ -244,7 +250,7 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
       historyTruncatedBeforeSeq: 7,
     });
   await expect(
-    page.getByRole("region", { name: "Agent conversation" }).getByRole("status"),
+    page.getByRole("region", { name: "Agent conversation" }).getByRole("status").filter({ hasText: "Some earlier history" }),
   ).toContainText("Some earlier history");
   await page.getByRole("button", { name: "Acknowledge earlier history" }).click();
   await expect.poll(() => ledger(page, agentId)).toMatchObject({

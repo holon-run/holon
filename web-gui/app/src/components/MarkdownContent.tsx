@@ -1,6 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { memo, useEffect, useState, useMemo, useRef, useId, type ImgHTMLAttributes, type ReactNode } from "react";
+import { memo, useEffect, useState, useMemo, useRef, useId, type AnchorHTMLAttributes, type ImgHTMLAttributes, type ReactNode } from "react";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
 import type { RuntimeCitation, WorkspaceFileLocation, ResolvedFileLocation } from "../runtime/types";
@@ -14,6 +14,7 @@ interface MarkdownContentProps {
   compact?: boolean;
   baseFile?: ResolvedFileLocation;
   fragment?: string;
+  onFragmentChange?: (fragment: string) => void;
   onOpenFile?: (target: FileTarget) => void;
 }
 
@@ -171,7 +172,7 @@ export function safeCitation(citation: RuntimeCitation): RuntimeCitation | undef
   }
 }
 
-function MarkdownContentView({ text, citations, compact = false, baseFile, fragment, onOpenFile }: MarkdownContentProps) {
+function MarkdownContentView({ text, citations, compact = false, baseFile, fragment, onFragmentChange, onOpenFile }: MarkdownContentProps) {
   const baseKey = JSON.stringify(baseFile);
   const base = useMemo(() => baseFile, [baseKey]);
   const visibleText = useMemo(() => stripOpenAiCitationSentinels(text), [text]);
@@ -193,18 +194,18 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
     const store = useRuntimeStore.getState();
     store.openResolvedFile(store.selectedAgentId, target);
   });
-  const renderReference = (key: string, children: ReactNode, image = false, alt?: string) => {
+  const renderReference = (key: string, children: ReactNode, image = false, alt?: string, linkProps?: AnchorHTMLAttributes<HTMLAnchorElement>, imageProps?: ImgHTMLAttributes<HTMLImageElement>) => {
     const entry = references.get(key)?.value;
     if (!entry) return children;
-    if (entry.kind === "anchor") return <a href={`#${prefix}${entry.fragment}`} onClick={(event) => { event.preventDefault(); scrollToFragment(entry.fragment); }}>{children}</a>;
+    if (entry.kind === "anchor") return <a {...linkProps} href={`#${prefix}${entry.fragment}`} onClick={(event) => { event.preventDefault(); scrollToFragment(entry.fragment); onFragmentChange?.(entry.fragment); }}>{children}</a>;
     if (entry.kind === "external") return children;
     const result = results.get(key);
     const error = entry.kind === "error" ? entry.message : result?.status === "unresolved" ? result.message : undefined;
     if (error) return <span className="file-reference-error" title={error}>{children} <small>({error})</small>{entry.kind === "file" ? <> <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); retry(); }}>Retry</button></> : null}</span>;
     if (entry.kind !== "file" || result?.status !== "resolved") return <span className="file-reference-pending" title="Resolving file…">{children}</span>;
     const target = { ...result.location, fragment: entry.fragment };
-    if (image) return <WorkspaceImage workspaceId={target.workspaceId} executionRootId={target.executionRootId} path={target.path} alt={alt} />;
-    return <a href={filePreviewUrl(target, target.fragment)} onClick={(event) => {
+    if (image) return <WorkspaceImage {...imageProps} workspaceId={target.workspaceId} executionRootId={target.executionRootId} path={target.path} alt={alt} />;
+    return <a {...linkProps} href={filePreviewUrl(target, target.fragment)} onClick={(event) => {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       event.preventDefault(); openFile(target);
     }}>{children}</a>;
@@ -223,15 +224,15 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
       <ReactMarkdown
         remarkPlugins={[remarkGfm, [remarkFileReferences, { base, prefix }]]}
         components={{
-          a: ({ children, href, node }) => {
+          a: ({ children, href, node, ...props }) => {
             const key = node?.properties["data-file-reference"];
-            if (typeof key === "string") return renderReference(key, children);
-            return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
+            if (typeof key === "string") return renderReference(key, children, false, undefined, props);
+            return <a {...props} href={href} rel="noreferrer" target="_blank">{children}</a>;
           },
-          img: ({ src, alt, node }) => {
+          img: ({ src, alt, node, ...props }) => {
             const key = node?.properties["data-file-reference"];
-            if (typeof key === "string") return renderReference(key, alt || "Image", true, alt);
-            return src ? <img src={src} alt={alt ?? ""} /> : <span>{alt || "Image"} — Unsupported image URL</span>;
+            if (typeof key === "string") return renderReference(key, alt || "Image", true, alt, undefined, props);
+            return src ? <img {...props} src={src} alt={alt ?? ""} /> : <span>{alt || "Image"} — Unsupported image URL</span>;
           },
         }}
       >
