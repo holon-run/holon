@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::Serialize;
 
 use crate::{
@@ -11,7 +11,7 @@ use crate::{
     },
     types::{
         brief_created_event_for, stable_brief_created_event_id, AuditEvent, BriefRecord,
-        TurnRecord, TurnTerminalKind,
+        TurnRecord, TurnTerminalKind, WaitConditionRecord,
     },
 };
 
@@ -118,8 +118,7 @@ fn inspect_repairs(
                         agent_id: candidate.brief.agent_id.clone(),
                         turn_id: Some(candidate.turn.turn_id.clone()),
                         status: "repairable",
-                        reason: "unique completed waiting Turn proves canonical Brief ownership"
-                            .to_string(),
+                        reason: "unique completed waiting Turn and referenced WaitFor condition prove canonical Brief ownership".to_string(),
                     });
                 }
                 candidates.push(candidate);
@@ -161,13 +160,19 @@ fn load_candidate_rows(
                   CAST(produced.value AS TEXT) AS brief_id,
                   t.payload_json AS turn_payload_json
            FROM turn_records AS t,
-                json_each(t.payload_json, '$.produced_brief_ids') AS produced
+                json_each(
+                  CASE WHEN json_valid(t.payload_json) THEN t.payload_json ELSE '{}' END,
+                  '$.produced_brief_ids'
+                ) AS produced
          ) AS refs
            ON refs.agent_id = b.agent_id
           AND refs.brief_id = b.evidence_id
          WHERE b.kind = 'result'
            AND b.created_event_seq IS NULL
-           AND json_extract(b.payload_json, '$.finalizes_assistant_round_id') IS NOT NULL
+           AND json_extract(
+                 CASE WHEN json_valid(b.payload_json) THEN b.payload_json ELSE '{}' END,
+                 '$.finalizes_assistant_round_id'
+               ) IS NOT NULL
            AND (?1 IS NULL OR b.agent_id = ?1)
          ORDER BY b.agent_id, b.created_at, b.evidence_id",
     )?;
@@ -250,7 +255,7 @@ fn inspect_candidate(
             "TurnRecord does not canonically own the Brief".to_string(),
         ));
     }
-    if turn.waiting_condition_ids.is_empty()
+    if turn.waiting_condition_ids.len() != 1
         || turn.terminal.as_ref().is_none_or(|terminal| {
             terminal.kind != TurnTerminalKind::Completed || terminal.no_brief_reason.is_some()
         })
@@ -258,6 +263,52 @@ fn inspect_candidate(
         return Err(diagnostic(
             Some(turn.turn_id),
             "Turn is not a completed WaitFor final publication".to_string(),
+        ));
+    }
+    let wait_condition_id = &turn.waiting_condition_ids[0];
+    let wait_row = connection
+        .query_row(
+            "SELECT agent_id, work_item_id, payload_json
+             FROM wait_conditions
+             WHERE wait_condition_id = ?1",
+            [wait_condition_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            diagnostic(
+                Some(turn.turn_id.clone()),
+                format!("failed to load referenced WaitFor condition: {error}"),
+            )
+        })?
+        .ok_or_else(|| {
+            diagnostic(
+                Some(turn.turn_id.clone()),
+                "referenced WaitFor condition is missing".to_string(),
+            )
+        })?;
+    let wait: WaitConditionRecord = serde_json::from_str(&wait_row.2).map_err(|error| {
+        diagnostic(
+            Some(turn.turn_id.clone()),
+            format!("invalid referenced WaitFor condition payload: {error}"),
+        )
+    })?;
+    if wait.id != *wait_condition_id
+        || wait.agent_id != wait_row.0
+        || wait.work_item_id != wait_row.1
+        || wait.agent_id != brief.agent_id
+        || wait.source.as_deref() != Some("WaitFor")
+        || wait.turn_id.as_deref() != Some(turn.turn_id.as_str())
+    {
+        return Err(diagnostic(
+            Some(turn.turn_id),
+            "referenced wait condition does not uniquely prove WaitFor ownership".to_string(),
         ));
     }
     if brief
@@ -270,11 +321,16 @@ fn inspect_candidate(
             "Brief already names a different Turn".to_string(),
         ));
     }
+    if brief.work_item_id.is_some() && brief.work_item_id != wait.work_item_id {
+        return Err(diagnostic(
+            Some(turn.turn_id),
+            "Brief already names a different WorkItem than the referenced WaitFor condition"
+                .to_string(),
+        ));
+    }
 
     brief.turn_id = Some(turn.turn_id.clone());
-    if brief.work_item_id.is_none() {
-        brief.work_item_id = turn.current_work_item_id.clone();
-    }
+    brief.work_item_id = wait.work_item_id;
     if let Err(error) = ensure_created_event_compatible(connection, &brief) {
         return Err(diagnostic(Some(turn.turn_id), error.to_string()));
     }
@@ -354,7 +410,7 @@ mod tests {
     use super::*;
     use crate::{
         runtime_db::RuntimeDb,
-        types::{BriefKind, TurnTerminalSummary},
+        types::{BriefKind, TurnTerminalSummary, WaitConditionKind, WaitConditionStatus},
     };
 
     #[test]
@@ -365,6 +421,7 @@ mod tests {
             dir.path().join("runtime.sqlite.lock"),
         )?;
         let mut turn = TurnRecord::new("agent-a", "turn-a", 1);
+        turn.current_work_item_id = Some("work-current".into());
         turn.waiting_condition_ids.push("wait-a".into());
         turn.terminal = Some(TurnTerminalSummary {
             kind: TurnTerminalKind::Completed,
@@ -414,7 +471,39 @@ mod tests {
                     serde_json::to_string(&brief)?,
                 ],
             )?;
+            tx.execute(
+                "INSERT INTO turn_records (
+                    turn_id, turn_index, agent_id, created_at, payload_json
+                 ) VALUES ('turn-corrupt', 2, 'agent-b', ?1, 'not-json')",
+                [chrono::Utc::now().to_rfc3339()],
+            )?;
+            tx.execute(
+                "INSERT INTO briefs (
+                    evidence_id, agent_id, created_at, kind, preview, payload_json
+                 ) VALUES ('brief-corrupt', 'agent-b', ?1, 'result', 'corrupt', 'not-json')",
+                [chrono::Utc::now().to_rfc3339()],
+            )?;
             Ok(())
+        })?;
+        db.wait_conditions().upsert(&WaitConditionRecord {
+            id: "wait-a".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some("work-explicit".into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("WaitFor".into()),
+            subject_ref: Some("github:holon-run/holon#3034".into()),
+            waiting_for: "reviewer merge".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: Some("turn-a".into()),
+            trigger_message_id: None,
+            triggered_at: None,
         })?;
 
         let dry_run = db.repair_wait_final_brief_publications(false, None, 10, None)?;
@@ -428,6 +517,7 @@ mod tests {
             .brief_by_id("agent-a", "brief-a")?
             .expect("repaired Brief");
         assert_eq!(stored.turn_id.as_deref(), Some("turn-a"));
+        assert_eq!(stored.work_item_id.as_deref(), Some("work-explicit"));
         assert!(stored.created_event_seq.is_some());
         let conversation = db.conversation().summary_page("agent-a", 10, None, None)?;
         let repaired_turn = conversation
@@ -464,16 +554,42 @@ mod tests {
     }
 
     #[test]
-    fn skips_brief_without_unique_waiting_turn_evidence() -> Result<()> {
+    fn skips_brief_without_referenced_wait_condition() -> Result<()> {
         let dir = tempdir()?;
         let db = RuntimeDb::open_and_migrate(
             dir.path().join("runtime.sqlite"),
             dir.path().join("runtime.sqlite.lock"),
         )?;
+        let mut turn = TurnRecord::new("agent-a", "turn-orphan", 1);
+        turn.waiting_condition_ids.push("wait-missing".into());
+        turn.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            no_brief_reason: None,
+            completed_at: chrono::Utc::now(),
+            duration_ms: 1,
+        });
         let mut brief = BriefRecord::new("agent-a", BriefKind::Result, "orphan", None, None);
         brief.id = "brief-orphan".into();
         brief.finalizes_assistant_round_id = Some("assistant-round-a".into());
+        turn.produced_brief_ids.push(brief.id.clone());
         db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO turn_records (
+                    turn_id, turn_index, agent_id, terminal_kind, created_at, completed_at,
+                    payload_json
+                 ) VALUES (?1, ?2, ?3, 'completed', ?4, ?5, ?6)",
+                params![
+                    &turn.turn_id,
+                    turn.turn_index as i64,
+                    &turn.agent_id,
+                    turn.created_at.to_rfc3339(),
+                    turn.terminal
+                        .as_ref()
+                        .map(|terminal| terminal.completed_at.to_rfc3339()),
+                    serde_json::to_string(&turn)?,
+                ],
+            )?;
             tx.execute(
                 "INSERT INTO briefs (
                     evidence_id, agent_id, created_at, kind, preview, payload_json
@@ -495,6 +611,9 @@ mod tests {
         assert_eq!(report.repaired_briefs, 0);
         assert_eq!(report.skipped_briefs, 1);
         assert_eq!(report.diagnostics[0].status, "skipped");
+        assert!(report.diagnostics[0]
+            .reason
+            .contains("referenced WaitFor condition is missing"));
         assert!(db.audit_events().recent(Some("agent-a"), 10)?.is_empty());
         let stored = db
             .evidence()

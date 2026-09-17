@@ -270,7 +270,9 @@ impl RuntimeHandle {
                         .active_workspace_entry
                         .as_ref()
                         .map(|entry| entry.workspace_id.clone())
-                        .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
+                        .unwrap_or_else(|| {
+                            crate::types::agent_home_workspace_id(&message.agent_id)
+                        });
                     brief.work_item_id = prepared
                         .registration
                         .condition

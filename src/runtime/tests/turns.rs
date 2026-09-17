@@ -1210,6 +1210,13 @@ async fn run_wait_for_final_report_test(
         },
     )
     .unwrap();
+    runtime
+        .inner
+        .agent
+        .lock()
+        .await
+        .state
+        .active_workspace_entry = None;
     let work_item = if work_item_owned {
         Some(
             runtime
@@ -1355,6 +1362,7 @@ async fn run_wait_for_final_report_test(
         .pop()
         .expect("final WaitFor terminal turn");
     assert_eq!(brief.turn_id.as_deref(), Some(turn.turn_id.as_str()));
+    assert_eq!(brief.workspace_id, "agent_home:default");
     assert_eq!(brief.work_item_id, expected_work_item_id);
     assert!(brief.finalizes_assistant_round_id.is_some());
     let brief_created_events = runtime
