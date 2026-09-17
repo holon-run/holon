@@ -192,15 +192,28 @@ impl RuntimeDb {
              );",
         )?;
         let existing_format = plan_metadata(&plan, "format")?;
-        if let Some(format) = existing_format {
+        let effective_agent_id = if let Some(format) = existing_format {
             anyhow::ensure!(
                 format == "holon.wait-final-brief-publication-repair.v2",
                 "unsupported repair plan format {format}"
             );
-            validate_plan_identity(&plan, &source_path, source_schema, agent_id)?;
+            let stored_agent_id = plan_metadata(&plan, "agent_id")?.unwrap_or_default();
+            if let Some(agent_id) = agent_id {
+                anyhow::ensure!(
+                    stored_agent_id == agent_id,
+                    "repair plan agent scope does not match"
+                );
+            }
+            validate_plan_identity(
+                &plan,
+                &source_path,
+                source_schema,
+                (!stored_agent_id.is_empty()).then_some(stored_agent_id.as_str()),
+            )?;
             if plan_metadata(&plan, "state")?.as_deref() == Some("complete") {
                 return plan_status(plan_path, &plan);
             }
+            (!stored_agent_id.is_empty()).then_some(stored_agent_id)
         } else {
             let tx = plan.transaction()?;
             for (key, value) in [
@@ -251,12 +264,14 @@ impl RuntimeDb {
                 )?;
             }
             tx.commit()?;
-        }
+            agent_id.map(str::to_owned)
+        };
+        let agent_id = effective_agent_id.as_deref();
 
         loop {
             let state = plan_metadata(&plan, "state")?.context("repair plan state is missing")?;
             match state.as_str() {
-                "briefs" | "preparing" => {
+                "briefs" => {
                     let checkpoint = plan_metadata_i64(&plan, "brief_checkpoint")?;
                     let high_water = plan_metadata_i64(&plan, "brief_high_water")?;
                     let mut stmt = source.prepare(
@@ -1336,7 +1351,7 @@ mod tests {
             db.prepare_wait_final_brief_publication_repair(
                 Some(&plan_path),
                 false,
-                None,
+                Some("agent-a"),
                 10,
                 |_| {
                     batches += 1;
@@ -1357,7 +1372,7 @@ mod tests {
         );
         assert_eq!(
             plan_metadata(&partial, "brief_processed")?.as_deref(),
-            Some("2")
+            Some("1")
         );
         drop(partial);
 
@@ -1369,7 +1384,9 @@ mod tests {
             |_| {},
         )?;
         assert!(resumed.resumed);
+        assert_eq!(resumed.agent_id.as_deref(), Some("agent-a"));
         assert_eq!(resumed.repairable_briefs, 1);
+        assert_eq!(resumed.skipped_briefs, 0);
         let plan = Connection::open(&plan_path)?;
         for table in ["scan_briefs", "turn_refs", "event_refs", "inflight_turns"] {
             let columns = plan
