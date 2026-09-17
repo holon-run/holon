@@ -1864,6 +1864,76 @@ class CaseHarness:
         write_json(self.evidence / f"{label}-runtime-db.json", snapshot)
         return snapshot
 
+    def fresh_schema_revision(self, image: str, label: str) -> int:
+        """Report the schema revision ``image`` creates on a fresh volume.
+
+        ``debug runtime-db retention --dry-run`` initializes the runtime
+        database through the same ``open_and_migrate`` path as daemon boot,
+        so a scratch volume exposes the image's own head revision without
+        starting a second runtime. Upgrade assertions compare the migrated
+        database against this value: releases without new migrations keep
+        the revision unchanged, while a candidate that failed to run its
+        migrations on the upgraded database would report a stale revision.
+        """
+        volume = f"{self.volume}-candidate-fresh"
+        snapshot_dir = self.evidence / f"{label}-runtime-state"
+        if snapshot_dir.exists():
+            shutil.rmtree(snapshot_dir)
+        snapshot_dir.mkdir(parents=True)
+        self.docker("volume", "rm", volume, check=False)
+        self.docker("volume", "create", volume)
+        try:
+            self.docker(
+                "run",
+                "--rm",
+                "--volume",
+                f"{volume}:/var/lib/holon",
+                image,
+                "debug",
+                "runtime-db",
+                "retention",
+                "--dry-run",
+                "--json",
+            )
+            self.docker(
+                "run",
+                "--rm",
+                "--user",
+                "0:0",
+                "--volume",
+                f"{volume}:/var/lib/holon:ro",
+                "--volume",
+                f"{snapshot_dir}:/snapshot",
+                "--entrypoint",
+                "bash",
+                image,
+                "-lc",
+                "set -euo pipefail; cp /var/lib/holon/state/runtime.sqlite* /snapshot/",
+            )
+        finally:
+            self.docker("volume", "rm", volume, check=False)
+        database = snapshot_dir / "runtime.sqlite"
+        require(
+            database.is_file(),
+            f"candidate fresh database snapshot is missing: {label}",
+        )
+        connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
+        try:
+            revision = connection.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
+            ).fetchone()[0]
+        finally:
+            connection.close()
+        require(
+            isinstance(revision, int) and revision > 0,
+            f"candidate produced an invalid fresh schema revision: {revision}",
+        )
+        write_json(
+            self.evidence / f"{label}-fresh-schema-revision.json",
+            {"schema_revision": revision},
+        )
+        return revision
+
     def upgrade_db_snapshot(self, label: str, marker: str) -> dict[str, Any]:
         snapshot_dir = self.evidence / f"{label}-runtime-state"
         if snapshot_dir.exists():
@@ -2674,13 +2744,23 @@ def run_runtime_upgrade_previous_release_case(
 
     harness.restart_with_image(candidate_image)
     migrated = harness.upgrade_db_snapshot("upgrade-v030-migrated", old_marker)
+    candidate_schema_revision = harness.fresh_schema_revision(
+        candidate_image,
+        "upgrade-v030-candidate-fresh",
+    )
     require(
         migrated["integrity_check"] == "ok",
         f"migrated database is invalid: {migrated}",
     )
     require(
-        migrated["schema_revision"] > old_schema_revision,
-        f"candidate did not advance the schema: {migrated}",
+        migrated["schema_revision"] == candidate_schema_revision,
+        "candidate did not migrate the upgraded database to its own schema "
+        f"revision {candidate_schema_revision}: {migrated}",
+    )
+    require(
+        candidate_schema_revision >= old_schema_revision,
+        "candidate schema revision regressed below the previous release "
+        f"revision {old_schema_revision}: {candidate_schema_revision}",
     )
     require(
         len(migrated["baseline"]) == 1,
