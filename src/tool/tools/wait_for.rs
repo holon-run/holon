@@ -133,19 +133,16 @@ async fn settle_impl(
 
     let context = query_context(runtime).await?;
     let state = runtime.agent_state().await?;
-    let explicit_work_item_id = optional_resource(args.work_item_id);
-    let work_item_id = explicit_work_item_id.or_else(|| {
+    let work_item_id = resolve_wait_work_item_id(
+        args.wake,
+        optional_resource(args.work_item_id),
         state
             .current_execution_binding
             .as_ref()
-            .and_then(|binding| binding.work_item_id.clone())
-            .or_else(|| {
-                state
-                    .current_turn_work_item_id
-                    .clone()
-                    .or_else(|| context.current_work_item_id.clone())
-            })
-    });
+            .and_then(|binding| binding.work_item_id.clone()),
+        state.current_turn_work_item_id.clone(),
+        context.current_work_item_id.clone(),
+    );
     let (registration, prepared_wait_for) = if prepare_only {
         match runtime
             .prepare_wait_for_outcome(
@@ -189,6 +186,7 @@ async fn settle_impl(
     };
     let updated_context = query_context(runtime).await?;
     let pending_condition = registration.condition.clone();
+    let work_item_id = registration.condition.work_item_id.clone();
     let work_item = match registration.work_item {
         Some(record) => Some(
             view_for_record(
@@ -299,6 +297,23 @@ fn optional_resource(resource: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn resolve_wait_work_item_id(
+    wake: WaitForWakeArg,
+    explicit_work_item_id: Option<String>,
+    execution_work_item_id: Option<String>,
+    turn_work_item_id: Option<String>,
+    current_work_item_id: Option<String>,
+) -> Option<String> {
+    if wake == WaitForWakeArg::TaskResult {
+        explicit_work_item_id
+    } else {
+        explicit_work_item_id
+            .or(execution_work_item_id)
+            .or(turn_work_item_id)
+            .or(current_work_item_id)
+    }
+}
+
 fn validate_resource_for_wake(wake: WaitForWakeArg, resource: Option<&str>) -> Result<()> {
     match wake {
         WaitForWakeArg::TaskResult | WaitForWakeArg::Timer if resource.is_none() => {
@@ -399,6 +414,54 @@ mod tests {
         assert_eq!(
             optional_resource(Some("  github:repo#1  ".into())),
             Some("github:repo#1".into())
+        );
+    }
+
+    #[test]
+    fn task_result_wait_does_not_inherit_context_work_item() {
+        assert_eq!(
+            resolve_wait_work_item_id(
+                WaitForWakeArg::TaskResult,
+                None,
+                Some("execution-work".into()),
+                Some("turn-work".into()),
+                Some("current-work".into()),
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_wait_work_item_id(
+                WaitForWakeArg::TaskResult,
+                Some("explicit-work".into()),
+                Some("execution-work".into()),
+                Some("turn-work".into()),
+                Some("current-work".into()),
+            ),
+            Some("explicit-work".into())
+        );
+    }
+
+    #[test]
+    fn non_task_wait_keeps_context_work_item_fallback_order() {
+        assert_eq!(
+            resolve_wait_work_item_id(
+                WaitForWakeArg::External,
+                None,
+                Some("execution-work".into()),
+                Some("turn-work".into()),
+                Some("current-work".into()),
+            ),
+            Some("execution-work".into())
+        );
+        assert_eq!(
+            resolve_wait_work_item_id(
+                WaitForWakeArg::External,
+                None,
+                None,
+                Some("turn-work".into()),
+                Some("current-work".into()),
+            ),
+            Some("turn-work".into())
         );
     }
 

@@ -127,7 +127,8 @@ The intended relationship is:
 This means waiting should help preserve continuity without turning the work
 item itself into a scheduler primitive.
 
-For the current `WaitFor` contract, ownership resolves in this order:
+For non-task waits, the current `WaitFor` contract resolves ownership in this
+order:
 
 1. an explicitly selected open WorkItem owned by the agent
 2. the WorkItem bound to the current execution
@@ -135,10 +136,11 @@ For the current `WaitFor` contract, ownership resolves in this order:
 4. the current WorkItem focus
 5. the agent lifecycle
 
-A task-result wait must still match the task's captured agent and WorkItem
-owner. Creating or picking a WorkItem after a task starts does not rebind that
-task, and an explicit WorkItem is not an ownership override. Conversely, a
-background task created without any WorkItem binding can be awaited at
+A task-result wait instead uses the task's captured owner when `work_item_id` is
+omitted. An explicit WorkItem is an owner assertion and must match the task; it
+is not an ownership override. Creating or picking a WorkItem after a task starts
+does not rebind that task, and current focus cannot shadow its owner. Conversely,
+a background task created without any WorkItem binding can be awaited at
 agent-lifecycle scope without first creating bookkeeping work.
 
 ## Timer-Backed Waiting
