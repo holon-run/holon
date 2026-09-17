@@ -1,0 +1,4 @@
+# Local font installs; explicitly track licensed distribution fonts later.
+*.ttf
+*.ttc
+*.otf
