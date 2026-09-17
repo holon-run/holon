@@ -7059,7 +7059,8 @@ code {
 .conversation-brief + .conversation-brief { margin-top: 24px; }
 .conversation-brief > .markdown-content { font-size: 15px; line-height: 1.7; }
 .conversation-brief-actions { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; }
-.conversation-brief-actions button { border: 0; background: transparent; color: inherit; padding: 6px; border-radius: 6px; cursor: pointer; }
+.conversation-brief-actions button { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; border: 0; background: transparent; color: inherit; padding: 6px; border-radius: 6px; cursor: pointer; }
+.conversation-brief-actions button svg { flex-shrink: 0; }
 .conversation-brief-actions button:hover { background: var(--surface-hover); }
 .conversation-brief-attachments { font-size: 12px; color: var(--muted); }
 .conversation-brief.is-loading,
