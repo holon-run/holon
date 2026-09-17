@@ -328,20 +328,19 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release adds explicit WaitFor delivery modes to the agent tool contract, completes the Conversation Read Model rollout with layered client-side caching, and hardens startup recovery, scheduler admission, and durable messaging waits across the runtime and Web GUI.
+          This release simplifies model service settings and selection in the Web GUI, hardens WaitFor final-brief publication and task-result wait ownership resolution, retains operator interjections in conversation turns, and keeps the conversation layout stable during sync, alongside test-reliability fixes for the OpenAPI snapshot contract and the agent template mock server.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
           ## Changes
 
-          - Add explicit WaitFor delivery modes with final and silent options, updating the scheduler wait-state and unified execution protocol RFCs, tool guidance, and the model tool schema inventory ([#3016](https://github.com/holon-run/holon/pull/3016)).
-          - Complete the Conversation Read Model rollout with phase 5 streaming, migrate Web GUI conversations onto the read model, and add layered client-side conversation caching with scope LRU, brief caches, SWR snapshots, ETag revalidation, and hardened cache lifecycle and stream retention ([#2985](https://github.com/holon-run/holon/pull/2985), [#2999](https://github.com/holon-run/holon/pull/2999), [#3013](https://github.com/holon-run/holon/pull/3013), [#3015](https://github.com/holon-run/holon/pull/3015), [#3017](https://github.com/holon-run/holon/pull/3017)).
-          - Polish turn-based conversation presentation with durable turn timing, unified work item and tool detail views, surfaced current work and background waits, transcript-covered conversation summaries, streamed active turns, preserved panel state, refined typography, unread sync, and event details, and simplified web access around the current origin ([#3023](https://github.com/holon-run/holon/pull/3023)).
-          - Harden startup and lifecycle recovery by reconciling interrupted turns and broken continuation chains at startup, tolerating invalid v66 replay provenance, repairing private child deletion cleanup, and converging identity terminal state on idempotent deletion finalize ([#3022](https://github.com/holon-run/holon/pull/3022), [#3018](https://github.com/holon-run/holon/pull/3018), [#2997](https://github.com/holon-run/holon/pull/2997), [#2996](https://github.com/holon-run/holon/pull/2996), [#3000](https://github.com/holon-run/holon/pull/3000), [#3011](https://github.com/holon-run/holon/pull/3011)).
-          - Enforce canonical-only scheduler admission, add durable agent messaging waits, and simplify waiting states by hiding reducer-only task receipts ([#3019](https://github.com/holon-run/holon/pull/3019), [#3010](https://github.com/holon-run/holon/pull/3010)).
-          - Bound repair and background work by capping v66 conversation assignment repair, command task output persistence, global-sync catch-up with head-seeded baselines and persisted cursors, legacy observer sync repair, and agent skill-catalog retries with backoff ([#2993](https://github.com/holon-run/holon/pull/2993), [#2994](https://github.com/holon-run/holon/pull/2994), [#2989](https://github.com/holon-run/holon/pull/2989), [#3012](https://github.com/holon-run/holon/pull/3012), [#2992](https://github.com/holon-run/holon/pull/2992)).
-          - Streamline CI by caching macOS builds with Docker image reuse and gating the conversation SDK protocol test on its own path filter ([#2998](https://github.com/holon-run/holon/pull/2998), [#3021](https://github.com/holon-run/holon/pull/3021)).
-          - Refresh website documentation for releases v0.36.0-v0.40.0 and unify the bilingual homepage narrative ([#3014](https://github.com/holon-run/holon/pull/3014), [#2987](https://github.com/holon-run/holon/pull/2987)).
+          - Simplify model service settings and selection in the Web GUI with a dedicated model list and picker, per-agent model preferences, clearer model presentation, and bilingual copy ([#3035](https://github.com/holon-run/holon/pull/3035)).
+          - Publish WaitFor final briefs canonically through the execution protocol and harden wait brief publication repair ([#3034](https://github.com/holon-run/holon/pull/3034)).
+          - Resolve task-result waits from the task's captured owner so waits cannot migrate or bypass ownership when work item focus changes ([#3036](https://github.com/holon-run/holon/pull/3036)).
+          - Retain operator interjections in conversation turns and preserve truncated operator activities so urgent operator input stays visible in the transcript ([#3025](https://github.com/holon-run/holon/pull/3025)).
+          - Keep the conversation timeline layout stable during background sync in the Web GUI, avoiding layout shift while conversation scope state streams in ([#3038](https://github.com/holon-run/holon/pull/3038)).
+          - Treat a trailing newline as non-drift in the OpenAPI snapshot test and write the POSIX-friendly trailing newline on refresh ([#3029](https://github.com/holon-run/holon/pull/3029)).
+          - Close mock server sockets per request in agent_template tests, eliminating intermittent keep-alive failures and surfacing real install errors ([#3024](https://github.com/holon-run/holon/pull/3024)).
 
           ## Install
 
