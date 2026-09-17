@@ -728,9 +728,12 @@ fn statusbar_view_model_shows_workspace_label_execution_root_and_model() {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
     app.status_line.clear();
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let home = {
+        let _env_lock = crate::test_env::lock_env();
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+    };
     let workspace_anchor = home.join("opensource/src/github.com/holon-run/holon");
     let mut snapshot = sample_snapshot("default", "evt-0");
     snapshot.agent.agent.active_workspace_entry = Some(crate::types::ActiveWorkspaceEntry {
@@ -845,9 +848,12 @@ fn statusbar_view_model_uses_workspace_label_for_worktree_execution_root() {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
     app.status_line.clear();
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
+    let home = {
+        let _env_lock = crate::test_env::lock_env();
+        std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"))
+    };
     let workspace_anchor = home.join("opensource/src/github.com/holon-run/holon");
     let execution_root =
         home.join("opensource/worktrees/github.com/holon-run/holon/issue-960-working-switch");

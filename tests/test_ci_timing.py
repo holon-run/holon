@@ -6,6 +6,7 @@ from pathlib import Path
 from scripts.ci_timing import (
     budget_report,
     historical_summary,
+    merge_test_target_reports,
     parse_test_log,
     render_summary,
     workflow_metrics,
@@ -209,6 +210,37 @@ test result: ok. 4 passed; 0 failed; finished in 0.25s
         self.assertIn(
             "`test_target_seconds` exceeded `90s` (1 target)", summary
         )
+
+    def test_merge_test_target_reports_combines_shards(self):
+        def shard_report(entries):
+            return parse_test_log(
+                "\n".join(
+                    f"     Running {name} (target/debug/deps/x)\n"
+                    f"test result: ok. 1 passed; 0 failed; finished in {seconds:.2f}s"
+                    for name, seconds in entries
+                )
+            )
+
+        merged = merge_test_target_reports(
+            [
+                shard_report([("unittests src/lib.rs", 977.42)]),
+                shard_report(
+                    [("tests/http_control.rs", 89.02), ("tests/http_client.rs", 26.63)]
+                ),
+                shard_report([("tests/http_control.rs", 91.0)]),
+            ]
+        )
+
+        self.assertEqual(merged["target_count"], 3)
+        self.assertEqual(merged["total_reported_seconds"], 1184.07)
+        self.assertEqual(merged["targets"][0]["name"], "unittests src/lib.rs")
+        control = next(
+            target
+            for target in merged["targets"]
+            if target["name"] == "tests/http_control.rs"
+        )
+        self.assertAlmostEqual(control["seconds"], 180.02, places=3)
+        self.assertEqual(len(merged["slow_targets"]), 2)
 
 
 if __name__ == "__main__":
