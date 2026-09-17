@@ -1610,7 +1610,10 @@ export function SettingsPage({
                         ) : null}
                         {codexDeviceLogin.status === "completed" ? (
                           <div className="settings-device-login-panel">
-                            <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.loginSuccessful")} />
+                            <div className="settings-device-login-header" role="status">
+                              <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.loginSuccessful")} />
+                              <span>{t("settings.loginSuccessful")}</span>
+                            </div>
                             <Button type="button" variant="outline" onClick={onClearCodexDeviceLogin}>{t("common.dismiss")}</Button>
                           </div>
                         ) : null}
