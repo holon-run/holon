@@ -7,6 +7,7 @@ import {
   isLargePreview,
   isPdfFile,
   isVideoFile,
+  markdownFileReference,
   markdownLinkTarget,
   type FileSortKey,
 } from "./FileBrowserPanel";
@@ -94,6 +95,12 @@ describe("markdownLinkTarget", () => {
       workspaceId: "ws_1",
       path: "docs/a.md",
     });
+    expect(markdownLinkTarget("workspace://ws_1/docs/a.md?root=root%3Awt", "docs/readme.md")).toEqual({
+      kind: "workspace-uri",
+      workspaceId: "ws_1",
+      path: "docs/a.md",
+      executionRootId: "root:wt",
+    });
   });
 
   it("resolves relative links against the directory of the rendered file", () => {
@@ -116,5 +123,13 @@ describe("markdownLinkTarget", () => {
     expect(markdownLinkTarget("mailto:a@b.c", "docs/readme.md")).toEqual({ kind: "external" });
     expect(markdownLinkTarget("../../../escape.md", "docs/readme.md")).toEqual({ kind: "external" });
     expect(markdownLinkTarget(undefined, "docs/readme.md")).toEqual({ kind: "external" });
+  });
+});
+
+describe("markdownFileReference", () => {
+  it("preserves workspace and execution-root identity with encoded path segments", () => {
+    expect(markdownFileReference("ws_1", "out dir/chart(1).png", "root:wt/path")).toBe(
+      "[chart(1).png](workspace://ws_1/out%20dir/chart%281%29.png?root=root%3Awt%2Fpath)",
+    );
   });
 });

@@ -1,4 +1,5 @@
 pub mod file;
+pub mod file_location;
 pub mod host_local_policy;
 pub mod local;
 pub mod process;
@@ -6,6 +7,11 @@ pub mod types;
 pub mod workspace;
 
 pub use file::FileHost;
+pub use file_location::{
+    canonical_execution_root_id, decode_percent_encoded_path, locate_absolute_path,
+    location_for_relative_path, parse_workspace_uri, path_is_within_root, resolve_path_within_root,
+    FileLocation, FileLocationError, FileLocationKind, FileRoot, WorkspaceUriReference,
+};
 pub use host_local_policy::{
     ensure_background_task_allowed, ensure_process_execution_allowed,
     ensure_workspace_projection_allowed, execution_confinement_summary_line,

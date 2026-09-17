@@ -10998,6 +10998,198 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "ResolveFileReferencesRequest": {
+        "properties": {
+          "references": {
+            "items": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "absolute_path": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "absolute_path",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "absolute_path"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "type": {
+                      "const": "workspace_uri",
+                      "type": "string"
+                    },
+                    "workspace_uri": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "workspace_uri"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "base_file": {
+                      "properties": {
+                        "absolute_path": {
+                          "type": "string"
+                        },
+                        "execution_root_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "file",
+                            "directory"
+                          ],
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "root_kind": {
+                          "enum": [
+                            "canonical_root",
+                            "git_worktree_root"
+                          ],
+                          "type": "string"
+                        },
+                        "workspace_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "workspace_id",
+                        "execution_root_id",
+                        "path",
+                        "absolute_path",
+                        "kind",
+                        "root_kind"
+                      ],
+                      "type": "object"
+                    },
+                    "relative_path": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "const": "relative_path",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "relative_path",
+                    "base_file"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "references"
+        ],
+        "title": "ResolveFileReferencesRequest",
+        "type": "object"
+      },
+      "ResolveFileReferencesResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "oneOf": [
+                {
+                  "properties": {
+                    "location": {
+                      "properties": {
+                        "absolute_path": {
+                          "type": "string"
+                        },
+                        "execution_root_id": {
+                          "type": "string"
+                        },
+                        "kind": {
+                          "enum": [
+                            "file",
+                            "directory"
+                          ],
+                          "type": "string"
+                        },
+                        "path": {
+                          "type": "string"
+                        },
+                        "root_kind": {
+                          "enum": [
+                            "canonical_root",
+                            "git_worktree_root"
+                          ],
+                          "type": "string"
+                        },
+                        "workspace_id": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "workspace_id",
+                        "execution_root_id",
+                        "path",
+                        "absolute_path",
+                        "kind",
+                        "root_kind"
+                      ],
+                      "type": "object"
+                    },
+                    "status": {
+                      "const": "resolved",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "location"
+                  ],
+                  "type": "object"
+                },
+                {
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "const": "unresolved",
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "reason",
+                    "message"
+                  ],
+                  "type": "object"
+                }
+              ]
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "results"
+        ],
+        "title": "ResolveFileReferencesResponse",
+        "type": "object"
+      },
       "RuntimeConfigReadResponse": {
         "properties": {
           "config_file_path": {
@@ -22004,6 +22196,64 @@
         "summary": "Global event stream",
         "tags": [
           "events"
+        ]
+      }
+    },
+    "/api/file-references/resolve": {
+      "post": {
+        "description": "Resolve absolute paths, historical workspace URIs, or relative paths with an explicit base file into registered workspace and execution-root locations.",
+        "operationId": "resolveFileReferences",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveFileReferencesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolveFileReferencesResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Resolve file references",
+        "tags": [
+          "workspaces"
         ]
       }
     },

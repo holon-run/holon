@@ -648,9 +648,7 @@ describe("createRuntimeClient", () => {
     });
 
     const blob = await client.fetchWorkspaceFileBlob(
-      "ws/one",
-      "outputs/chart 1.png",
-      "root:ws",
+      { workspaceId: "ws/one", path: "outputs/chart 1.png", executionRootId: "root:ws" },
       { download: true },
     );
 
@@ -667,16 +665,16 @@ describe("createRuntimeClient", () => {
   it("builds direct-access URLs for workspace files", () => {
     const client = createRuntimeClient({ mode: "remote", baseUrl: "http://example.test:7878" });
 
-    expect(client.workspaceFileUrl("ws/one", "outputs/chart 1.png", "root:ws")).toBe(
+    expect(client.workspaceFileUrl({ workspaceId: "ws/one", path: "outputs/chart 1.png", executionRootId: "root:ws" })).toBe(
       "http://example.test:7878/api/workspaces/ws%2Fone/files/outputs/chart%201.png?execution_root_id=root%3Aws",
     );
     expect(
-      client.workspaceFileUrl("ws/one", "docs/readme.md", undefined, { download: true }),
+      client.workspaceFileUrl({ workspaceId: "ws/one", path: "docs/readme.md" }, { download: true }),
     ).toBe("http://example.test:7878/api/workspaces/ws%2Fone/files/docs/readme.md?download=true");
 
     // Without a configured base URL the builder returns a relative path that
     // callers resolve against the app origin.
-    expect(buildWorkspaceFileUrl(undefined, "ws/one", "a/b.txt")).toBe(
+    expect(buildWorkspaceFileUrl(undefined, { workspaceId: "ws/one", path: "a/b.txt" })).toBe(
       "/workspaces/ws%2Fone/files/a/b.txt",
     );
   });
@@ -689,6 +687,10 @@ describe("createRuntimeClient", () => {
         type: "file",
         path: "docs/readme.md",
         workspace_id: "ws/one",
+        execution_root_id: "root:ws",
+        absolute_path: "/tmp/root/docs/readme.md",
+        kind: "file",
+        root_kind: "git_worktree_root",
         size: 128,
         mime_type: "text/markdown",
         truncated: false,
@@ -703,10 +705,14 @@ describe("createRuntimeClient", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    await expect(client.fetchWorkspacePath("ws/one", "docs/readme.md", "root:ws")).resolves.toEqual({
+    await expect(client.fetchWorkspacePath({ workspaceId: "ws/one", path: "docs/readme.md", executionRootId: "root:ws" })).resolves.toEqual({
       type: "file",
       path: "docs/readme.md",
       workspaceId: "ws/one",
+      executionRootId: "root:ws",
+      absolutePath: "/tmp/root/docs/readme.md",
+      kind: "file",
+      rootKind: "git_worktree_root",
       size: 128,
       mimeType: "text/markdown",
       truncated: false,
@@ -724,6 +730,10 @@ describe("createRuntimeClient", () => {
         type: "directory",
         path: "docs",
         workspace_id: "ws/one",
+        execution_root_id: "canonical_root:ws/one",
+        absolute_path: "/tmp/root/docs",
+        kind: "directory",
+        root_kind: "canonical_root",
         entries: [
           { name: "readme.md", type: "file", size: 10, modified: 1757000000, mime_type: "text/markdown" },
           { name: "nested", type: "directory", size: 0 },
@@ -736,10 +746,14 @@ describe("createRuntimeClient", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    await expect(client.fetchWorkspacePath("ws/one", "docs")).resolves.toEqual({
+    await expect(client.fetchWorkspacePath({ workspaceId: "ws/one", path: "docs" })).resolves.toEqual({
       type: "directory",
       path: "docs",
       workspaceId: "ws/one",
+      executionRootId: "canonical_root:ws/one",
+      absolutePath: "/tmp/root/docs",
+      kind: "directory",
+      rootKind: "canonical_root",
       entries: [
         { name: "readme.md", type: "file", size: 10, modified: 1757000000, mimeType: "text/markdown" },
         { name: "nested", type: "directory", size: 0 },
@@ -753,6 +767,10 @@ describe("createRuntimeClient", () => {
         type: "file",
         path: "docs/readme.md",
         workspace_id: "ws/one",
+        execution_root_id: "canonical_root:ws/one",
+        absolute_path: "/tmp/root/docs/readme.md",
+        kind: "file",
+        root_kind: "canonical_root",
         size: 8,
         mime_type: "text/markdown",
         truncated: true,
@@ -768,10 +786,14 @@ describe("createRuntimeClient", () => {
       fetchImpl: fetchImpl as typeof fetch,
     });
 
-    await expect(client.readWorkspaceFile("ws/one", "docs/readme.md")).resolves.toEqual({
+    await expect(client.readWorkspaceFile({ workspaceId: "ws/one", path: "docs/readme.md" })).resolves.toEqual({
       type: "file",
       path: "docs/readme.md",
       workspaceId: "ws/one",
+      executionRootId: "canonical_root:ws/one",
+      absolutePath: "/tmp/root/docs/readme.md",
+      kind: "file",
+      rootKind: "canonical_root",
       size: 8,
       mimeType: "text/markdown",
       truncated: true,
@@ -780,6 +802,92 @@ describe("createRuntimeClient", () => {
       totalSize: 2000,
       content: "# Hello\n",
     });
+  });
+
+  it("resolves absolute file references into object locations", async () => {
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toEqual({
+        references: [
+          { type: "absolute_path", absolute_path: "/tmp/readme.md" },
+          {
+            type: "relative_path",
+            relative_path: "../image.png",
+            base_file: {
+              workspace_id: "ws/one",
+              execution_root_id: "root/one",
+              path: "docs/readme.md",
+              absolute_path: "/tmp/readme.md",
+              kind: "file",
+              root_kind: "git_worktree_root",
+            },
+          },
+        ],
+      });
+      return Response.json({
+        results: [
+          {
+            status: "resolved",
+            location: {
+              workspace_id: "ws/one",
+              execution_root_id: "root/one",
+              path: "docs/readme.md",
+              absolute_path: "/tmp/readme.md",
+              kind: "file",
+              root_kind: "git_worktree_root",
+            },
+          },
+          {
+            status: "unresolved",
+            reason: "not_found",
+            message: "path does not exist",
+          },
+        ],
+      });
+    });
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    await expect(client.resolveFileReferences([
+      { type: "absolute_path", absolutePath: "/tmp/readme.md" },
+      {
+        type: "relative_path",
+        relativePath: "../image.png",
+        baseFile: {
+          workspaceId: "ws/one",
+          executionRootId: "root/one",
+          path: "docs/readme.md",
+          absolutePath: "/tmp/readme.md",
+          kind: "file",
+          rootKind: "git_worktree_root",
+        },
+      },
+    ])).resolves.toEqual({
+      results: [
+        {
+          status: "resolved",
+          location: {
+            workspaceId: "ws/one",
+            executionRootId: "root/one",
+            path: "docs/readme.md",
+            absolutePath: "/tmp/readme.md",
+            kind: "file",
+            rootKind: "git_worktree_root",
+          },
+        },
+        {
+          status: "unresolved",
+          reason: "not_found",
+          message: "path does not exist",
+        },
+      ],
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "http://example.test:7878/api/file-references/resolve",
+      expect.objectContaining({ method: "POST", credentials: "include" }),
+    );
   });
 
   it("reads tool execution artifacts through the scoped artifact endpoint", async () => {
@@ -835,7 +943,7 @@ describe("createRuntimeClient", () => {
         fetchImpl: fetchImpl as typeof fetch,
       });
 
-      const blobRequest = client.fetchWorkspaceFileBlob("workspace", "large.bin", undefined, {
+      const blobRequest = client.fetchWorkspaceFileBlob({ workspaceId: "workspace", path: "large.bin" }, {
         download: true,
         timeoutMs: 60_000,
       });

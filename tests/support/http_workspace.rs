@@ -184,6 +184,14 @@ pub async fn workspace_files_lists_directory() -> Result<()> {
 
     let body: serde_json::Value = response.json().await?;
     assert_eq!(body["type"], "directory");
+    assert_eq!(body["workspace_id"], workspace_id);
+    assert_eq!(
+        body["execution_root_id"],
+        "canonical_root:agent_home:default"
+    );
+    assert_eq!(body["kind"], "directory");
+    assert_eq!(body["root_kind"], "canonical_root");
+    assert!(body["absolute_path"].is_string());
     let entries = body["entries"].as_array().expect("entries array");
     assert!(!entries.is_empty(), "root listing should not be empty");
     for entry in entries {
@@ -228,6 +236,14 @@ pub async fn workspace_files_reads_text_file() -> Result<()> {
 
     let body: serde_json::Value = response.json().await?;
     assert_eq!(body["type"], "file");
+    assert_eq!(body["workspace_id"], workspace_id);
+    assert_eq!(
+        body["execution_root_id"],
+        "canonical_root:agent_home:default"
+    );
+    assert_eq!(body["kind"], "file");
+    assert_eq!(body["root_kind"], "canonical_root");
+    assert!(body["absolute_path"].is_string());
     assert!(body["content"].is_string(), "content field present");
     assert!(body["mime_type"].is_string(), "mime_type field present");
     assert_eq!(body["truncated"], false);
