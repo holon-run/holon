@@ -1078,6 +1078,23 @@
           "false"
         ],
         "required": false
+      },
+      {
+        "long": "plan",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "resume",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
       }
     ],
     "aliases": []
