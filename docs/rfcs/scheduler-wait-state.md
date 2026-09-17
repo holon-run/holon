@@ -308,6 +308,19 @@ wake, task completion, interjection, cancellation, or provider failure
 invalidates that preparation, the runtime must not publish an obsolete
 "still waiting" brief or leave a partially registered wait.
 
+For `delivery=final`, that same transaction binds the result brief to the
+canonical Turn and source assistant round, commits exactly one deterministic
+`brief_created` event, and stores the event sequence on the brief. Conversation
+read models must therefore observe the terminal Turn and its available result
+together. `delivery=silent` commits neither a brief nor a `brief_created` event.
+
+Historical final-wait briefs that predate this invariant are repaired only by
+the explicit, default-read-only
+`holon debug runtime-db wait-final-brief-publication` maintenance command. The
+command requires `--apply` before writing, creates a verified backup unless
+`--no-backup` is explicitly supplied, and repairs only briefs whose canonical
+Turn ownership is uniquely proven by durable Turn evidence.
+
 WorkItem-scoped `WaitFor` replaces active waits on that WorkItem, writes
 `blocked_by=reason` for display, writes `recheck_at` only when
 `recheck_after_ms` is present, clears `recheck_at` otherwise, clears

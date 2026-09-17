@@ -14,6 +14,7 @@ pub mod agent_message_delivery;
 pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
+pub mod brief_publication_repair;
 pub mod connection;
 pub mod conversation;
 pub mod evidence;
@@ -40,6 +41,9 @@ pub use crate::runtime_db::audit::{
     ViolationSplit,
 };
 pub use crate::runtime_db::authentication::AuthenticationRepository;
+pub use crate::runtime_db::brief_publication_repair::{
+    WaitFinalBriefPublicationRepairDiagnostic, WaitFinalBriefPublicationRepairReport,
+};
 pub use crate::runtime_db::evidence::{
     EvidenceKind, EvidencePayloadRow, EvidenceQuery, EvidenceRow,
 };

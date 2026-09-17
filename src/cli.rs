@@ -809,6 +809,21 @@ pub enum RuntimeDbDebugCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Report or repair WaitFor final Briefs missing canonical publication linkage"
+    )]
+    WaitFinalBriefPublication {
+        #[arg(long)]
+        apply: bool,
+        #[arg(long, requires = "apply")]
+        no_backup: bool,
+        #[arg(long)]
+        agent: Option<String>,
+        #[arg(long, default_value_t = 20, value_parser = parse_positive_usize)]
+        diagnostic_sample_limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

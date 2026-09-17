@@ -262,6 +262,24 @@ impl RuntimeHandle {
                     brief.citations = Some(outcome.final_citations.clone());
                 }
                 brief.turn_index = Some(outcome.turn_index);
+                brief.turn_id = Some(outcome.terminal.turn_id.clone());
+                {
+                    let guard = self.inner.agent.lock().await;
+                    brief.workspace_id = guard
+                        .state
+                        .active_workspace_entry
+                        .as_ref()
+                        .map(|entry| entry.workspace_id.clone())
+                        .unwrap_or_else(|| {
+                            crate::types::agent_home_workspace_id(&message.agent_id)
+                        });
+                    brief.work_item_id = prepared
+                        .registration
+                        .condition
+                        .work_item_id
+                        .clone()
+                        .or_else(|| guard.state.current_turn_work_item_id.clone());
+                }
                 bind_brief_to_assistant_round(
                     &mut brief,
                     outcome.final_text_source_assistant_round_id.as_deref(),
