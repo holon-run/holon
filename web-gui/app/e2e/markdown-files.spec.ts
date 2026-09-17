@@ -1,5 +1,8 @@
 import { expect, test, type BrowserContext } from "@playwright/test";
 
+// Native background-tab navigation needs the full browser, not headless shell.
+test.use({ channel: "chromium" });
+
 const root = "git_worktree_root:ws:/tmp/feature";
 const locator = (path: string, executionRoot = root) => ({ workspace_id: "ws", execution_root_id: executionRoot, absolute_path: `/tmp/feature/${path}`, path, kind: path === "docs" ? "directory" : "file", root_kind: "git_worktree_root" });
 const targetName = "空 格(1)%20#?.md";
@@ -29,7 +32,8 @@ async function mockFiles(context: BrowserContext) {
 }
 const preview = (path: string) => `/files?${new URLSearchParams({ workspace: "ws", root, path })}`;
 
-test("Explorer shares resolver rules; native new-tab links, fragments, images and refresh preserve the root", async ({ page, context }) => {
+test("Explorer shares resolver rules; native new-tab links, fragments, images and refresh preserve the root", async ({ page, context }, info) => {
+  await context.addCookies([{ name: "holon_e2e_session", value: `file-preview-${info.testId}-${info.retry}-${info.repeatEachIndex}`, domain: "127.0.0.1", path: "/" }]);
   const batches = await mockFiles(context);
   await page.goto(preview("base.md"));
   const content = page.locator(".file-browser-markdown");
@@ -68,7 +72,7 @@ test("Explorer shares resolver rules; native new-tab links, fragments, images an
 
 test("brief and live assistant keep the same absolute references; relative references never guess an agent base", async ({ page, context, request }, info) => {
   const batches = await mockFiles(context);
-  const session = `file-refs-${info.testId}`;
+  const session = `file-refs-${info.testId}-${info.retry}-${info.repeatEachIndex}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await request.post(control("/__e2e__/configure"), { data: { visibleAgentIds: ["bootstrap-agent", "other-agent"], briefsById: { brief: {
@@ -95,7 +99,7 @@ test("brief and live assistant keep the same absolute references; relative refer
 
 test("stream additions resolve only new references and late old-content replies cannot replace them", async ({ page, context, request }, info) => {
   const batches = await mockFiles(context);
-  const session = `stream-files-${info.testId}`;
+  const session = `stream-files-${info.testId}-${info.retry}-${info.repeatEachIndex}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   let revision = 0;

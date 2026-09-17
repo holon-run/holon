@@ -41,12 +41,6 @@ export class ReferenceCache {
         missing.push(item);
       }
     }
-    for (let start = 0; start < missing.length; start += 64) {
-      const batch = missing.slice(start, start + 64);
-      void resolver(batch.map((item) => item.reference)).then(({ results }) => {
-        batch.forEach((item, index) => complete(item.key, results[index] ?? failure("Incomplete resolver response")));
-      }).catch((error: unknown) => batch.forEach((item) => complete(item.key, failure(error instanceof Error ? error.message : "File resolution failed"))));
-    }
     const complete = (key: string, result: ResolveFileReferenceResult) => {
       if (epoch === this.epoch) {
         this.pending.delete(key);
@@ -57,6 +51,12 @@ export class ReferenceCache {
       }
       finish.get(key)?.(result);
     };
+    for (let start = 0; start < missing.length; start += 64) {
+      const batch = missing.slice(start, start + 64);
+      void resolver(batch.map((item) => item.reference)).then(({ results }) => {
+        batch.forEach((item, index) => complete(item.key, results[index] ?? failure("Incomplete resolver response")));
+      }).catch((error: unknown) => batch.forEach((item) => complete(item.key, failure(error instanceof Error ? error.message : "File resolution failed"))));
+    }
     const entries = await Promise.all([...promises].map(async ([key, promise]) => [key, await promise] as const));
     return epoch === this.epoch ? new Map(entries) : new Map();
   }

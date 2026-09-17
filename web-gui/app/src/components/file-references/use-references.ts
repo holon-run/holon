@@ -13,19 +13,19 @@ function sourceIdentity(): string {
 let previousIdentity = sourceIdentity();
 let identityGeneration = 0;
 let activeScope = JSON.stringify([previousIdentity, identityGeneration]);
-function identity(): string {
+function refreshIdentity(): void {
   const next = sourceIdentity();
   if (next !== previousIdentity) {
     previousIdentity = next;
     activeScope = JSON.stringify([next, ++identityGeneration]);
     cache.setScope(activeScope);
   }
-  return activeScope;
 }
 cache.setScope(activeScope);
-useRuntimeStore.subscribe(identity);
+useRuntimeStore.subscribe(refreshIdentity);
+const identitySnapshot = () => activeScope;
 export function useFileIdentity(): string {
-  return useSyncExternalStore(useRuntimeStore.subscribe, identity, identity);
+  return useSyncExternalStore(useRuntimeStore.subscribe, identitySnapshot, identitySnapshot);
 }
 
 export function useReferences(references: Map<string, MarkdownReference>) {

@@ -605,7 +605,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
   };
 
   const openSelectedFileInNewTab = () => {
-    if (!selectedFile?.path) return;
+    if (!selectedFile?.path || !effectiveRootId) return;
     window.open(
       filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }),
       "_blank",
@@ -627,7 +627,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     }
   };
 
-  const selectedWebUrl = selectedFile?.path
+  const selectedWebUrl = selectedFile?.path && effectiveRootId
     ? new URL(
         filePreviewUrl({ workspaceId, path: selectedFile.path, executionRootId: effectiveRootId }),
         window.location.origin,
@@ -891,6 +891,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
               <button
                 type="button"
                 className="file-browser-link-btn"
+                disabled={!selectedWebUrl}
                 onClick={openSelectedFileInNewTab}
               >
                 {t("fileBrowser.openInNewTab")}
@@ -917,6 +918,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
               <button
                 type="button"
                 className="file-browser-link-btn"
+                disabled={!selectedWebUrl}
                 onClick={() => void copySelectedFileValue("web", selectedWebUrl)}
               >
                 {copiedValue === "web" ? t("fileBrowser.linkCopied") : t("fileBrowser.copyWebLink")}
@@ -1001,7 +1003,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
                     ? t("fileBrowser.fileTruncated", { size: formatSize(selectedFile.totalSize) })
                     : t("fileBrowser.fileTruncatedNoSize")}
                   {" "}
-                  <button type="button" className="file-browser-truncated-action" onClick={openSelectedFileInNewTab}>
+                  <button type="button" className="file-browser-truncated-action" disabled={!selectedWebUrl} onClick={openSelectedFileInNewTab}>
                     {t("fileBrowser.openInNewTab")}
                   </button>
                   <button type="button" className="file-browser-truncated-action" onClick={downloadSelectedFile}>

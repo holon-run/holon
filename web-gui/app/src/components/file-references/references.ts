@@ -45,8 +45,9 @@ export function isInlineReference(value: string, hasBase: boolean): boolean {
     || (hasBase && /^(\.\.?\/)/.test(value));
 }
 
-export function filePreviewUrl(location: WorkspaceFileLocation, fragment?: string): string {
-  const query = new URLSearchParams({ workspace: location.workspaceId, root: location.executionRootId ?? "", path: location.path });
+export function filePreviewUrl(location: WorkspaceFileLocation & { executionRootId: string }, fragment?: string): string {
+  if (!location.workspaceId || !location.executionRootId) throw new Error("File preview requires a workspace and execution root");
+  const query = new URLSearchParams({ workspace: location.workspaceId, root: location.executionRootId, path: location.path });
   return `/files?${query}${fragment ? `#${encodeURIComponent(fragment)}` : ""}`;
 }
 

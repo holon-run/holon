@@ -40,6 +40,10 @@ describe("shared Markdown references", () => {
     const slug = createHeadingSlugger();
     expect(["Hello, World!", "Hello World", "hello-world-1", "中文 标题"].map(slug)).toEqual(["hello-world", "hello-world-1", "hello-world-1-1", "中文-标题"]);
   });
+  it("rejects incomplete GUI locators instead of emitting an unusable link", () => {
+    expect(() => filePreviewUrl({ ...base, executionRootId: "" })).toThrow("execution root");
+    expect(() => filePreviewUrl({ ...base, workspaceId: "" })).toThrow("workspace");
+  });
   it("round-trips GUI links without losing root, encoded filename characters or fragment", () => {
     const file = { ...base, path: "空 格/(a)%20#?.md" };
     const url = new URL(filePreviewUrl(file, "中文"), "https://holon.test");

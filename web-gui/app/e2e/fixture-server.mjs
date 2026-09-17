@@ -535,7 +535,7 @@ async function handleApi(req, res, url) {
   if (conversationMatch) {
     const agentId = decodeURIComponent(conversationMatch[1]);
     if (session.failConversationByAgentId.has(agentId)) {
-      json(res, { error: "conversation unavailable" }, 503);
+      json(res, { ok: false, error: "conversation unavailable" }, 503);
       return true;
     }
     const data = session.conversationData.get(agentId);
@@ -603,7 +603,7 @@ async function handleApi(req, res, url) {
   if (/^\/api\/agents\/[^/]+\/conversation\/stream$/.test(url.pathname)) {
     const streamAgent = decodeURIComponent(url.pathname.split("/")[3] ?? "");
     if (session.failConversationByAgentId.has(streamAgent)) {
-      json(res, { error: "conversation stream unavailable" }, 503);
+      json(res, { ok: false, error: "conversation stream unavailable" }, 503);
       return true;
     }
     // The control endpoint publishes atomic conversation batches to this stream.
