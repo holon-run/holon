@@ -283,6 +283,26 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         };
     }
 
+    if error
+        .chain()
+        .any(|source| is_wait_owner_uniqueness_violation(source))
+    {
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Storage,
+            code: "wait_condition_owner_conflict".into(),
+            retryable: true,
+            operator_message:
+                "wait condition registration conflicted with an unresolved wait for the same owner"
+                    .into(),
+            recovery_hint: Some(
+                "bounded restart; the next wait registration converges the stale unresolved row"
+                    .into(),
+            ),
+            safe_context: BTreeMap::new(),
+            source_chain,
+        };
+    }
+
     if let Some(io_error) = error
         .chain()
         .find_map(|source| source.downcast_ref::<std::io::Error>())
@@ -555,6 +575,25 @@ fn truncate_chars(value: &str, limit: usize) -> String {
     truncated
 }
 
+/// Wait-owner uniqueness violations (migration 44 partial unique indexes) are
+/// transient convergence races, not permanent state damage: the next wait
+/// registration cancels the stale unresolved row. Classify them as retryable so
+/// the host rebuilds the runtime loop instead of leaving the agent stopped.
+fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)) -> bool {
+    if let Some(db_error) = source.downcast_ref::<rusqlite::Error>() {
+        return matches!(
+            db_error,
+            rusqlite::Error::SqliteFailure(inner, Some(message))
+                if inner.code == rusqlite::ErrorCode::ConstraintViolation
+                    && message
+                        .starts_with("UNIQUE constraint failed: wait_conditions.agent_id")
+        );
+    }
+    source
+        .to_string()
+        .starts_with("UNIQUE constraint failed: wait_conditions.agent_id")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +615,34 @@ mod tests {
             .source_chain
             .iter()
             .any(|message| message == "failed to read task status"));
+    }
+
+    #[test]
+    fn wait_owner_uniqueness_violation_is_retryable() {
+        let error = AnyhowError::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+            Some(
+                "UNIQUE constraint failed: wait_conditions.agent_id, wait_conditions.work_item_id"
+                    .into(),
+            ),
+        ))
+        .context("runtime db transaction rolled back");
+
+        let descriptor = describe_runtime_error(&error);
+
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Storage);
+        assert_eq!(descriptor.code, "wait_condition_owner_conflict");
+        assert!(descriptor.retryable);
+    }
+
+    #[test]
+    fn wait_owner_uniqueness_violation_matches_rendered_message_fallback() {
+        let error = AnyhowError::msg("UNIQUE constraint failed: wait_conditions.agent_id");
+
+        let descriptor = describe_runtime_error(&error);
+
+        assert_eq!(descriptor.code, "wait_condition_owner_conflict");
+        assert!(descriptor.retryable);
     }
 
     #[test]

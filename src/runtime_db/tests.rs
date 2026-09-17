@@ -4288,7 +4288,111 @@ CREATE TABLE working_memory_deltas (
         duplicate.id = "wait-owner-duplicate".into();
         duplicate.created_at = now + chrono::Duration::seconds(2);
         duplicate.updated_at = duplicate.created_at;
-        assert!(db.wait_conditions().upsert(&duplicate).is_err());
+        db.wait_conditions().upsert(&duplicate)?;
+        let waits = db.wait_conditions().latest_all()?;
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == newer.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Cancelled)
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == duplicate.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Active)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wait_owner_registration_converges_stale_unresolved_rows() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let stale = WaitConditionRecord {
+            id: "wait-owner-stale".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some("work-owner".into()),
+            status: WaitConditionStatus::Triggered,
+            kind: WaitConditionKind::Task,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "stale task wait".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: Some(now),
+        };
+        db.wait_conditions().upsert(&stale)?;
+
+        let mut replacement = stale.clone();
+        replacement.id = "wait-owner-replacement".into();
+        replacement.status = WaitConditionStatus::Active;
+        replacement.waiting_for = "replacement task wait".into();
+        replacement.created_at = now + chrono::Duration::seconds(1);
+        replacement.updated_at = replacement.created_at;
+        replacement.triggered_at = None;
+        db.wait_conditions().upsert(&replacement)?;
+
+        let waits = db.wait_conditions().latest_all()?;
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == stale.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Cancelled)
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .filter(|wait| matches!(
+                    wait.status,
+                    WaitConditionStatus::Active | WaitConditionStatus::Triggered
+                ))
+                .map(|wait| wait.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wait-owner-replacement"]
+        );
+
+        // Agent-level waits (NULL work_item_id) converge on the same owner key.
+        let mut agent_level = stale.clone();
+        agent_level.id = "wait-owner-agent-stale".into();
+        agent_level.work_item_id = None;
+        agent_level.kind = WaitConditionKind::Operator;
+        agent_level.triggered_at = None;
+        agent_level.created_at = now + chrono::Duration::seconds(2);
+        agent_level.updated_at = agent_level.created_at;
+        db.wait_conditions().upsert(&agent_level)?;
+        let mut agent_replacement = agent_level.clone();
+        agent_replacement.id = "wait-owner-agent-new".into();
+        agent_replacement.created_at = now + chrono::Duration::seconds(3);
+        agent_replacement.updated_at = agent_replacement.created_at;
+        db.wait_conditions().upsert(&agent_replacement)?;
+        let waits = db.wait_conditions().latest_all()?;
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == agent_level.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Cancelled)
+        );
+
+        // A delayed older registration must not cancel the newer live wait;
+        // it surfaces as a conflict for the caller to resolve.
+        let mut delayed = replacement.clone();
+        delayed.id = "wait-owner-delayed".into();
+        delayed.created_at = now;
+        delayed.updated_at = now;
+        assert!(db.wait_conditions().upsert(&delayed).is_err());
         Ok(())
     }
 
