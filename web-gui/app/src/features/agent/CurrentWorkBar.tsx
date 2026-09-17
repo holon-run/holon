@@ -89,8 +89,9 @@ export function CurrentWorkBar({ agent, conversation, onOpenWorkItem, onOpenTask
     return () => window.clearTimeout(timer);
   }, [completed?.id]);
   const work = view.work ?? completed;
-  const hasActivity = view.taskCount > 0 || view.waits.length > 0;
-  if (!work && !hasActivity && !snapshot.stale) return null;
+  // Agent-level waits alone do not represent ongoing work.
+  const hasActivity = view.taskCount > 0;
+  if (!work && !hasActivity) return null;
   const state = completed && !view.work && !hasActivity ? "completed" : view.state;
   const statusText = snapshot.stale ? t("currentWork.stale") : view.waitingTask
     ? t("currentWork.waitingFor", { task: view.waitingTask.summary }) : t(`currentWork.${state}`);
