@@ -1,20 +1,20 @@
-import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
+import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { SKIP, visit } from "unist-util-visit";
-import { memo, useEffect, useState, type ImgHTMLAttributes, type ReactNode } from "react";
+import { memo, useEffect, useState, useMemo, useRef, useId, type ImgHTMLAttributes, type ReactNode } from "react";
 
 import { useRuntimeStore } from "../runtime/runtime-store";
-import type { RuntimeCitation, WorkspaceFileLocation } from "../runtime/types";
-import { isHttpNotFoundError } from "../runtime/client";
-
-const WORKSPACE_URL_RE = /workspace:\/\/[^\s<>"')\]]+/g;
-// Inline code spans only become links when the whole span is exactly one URL.
-const CODE_SPAN_URL_RE = /^(?:https?:\/\/|mailto:)\S+$/i;
+import type { RuntimeCitation, WorkspaceFileLocation, ResolvedFileLocation } from "../runtime/types";
+import { collectMarkdownReferences, remarkFileReferences } from "./file-references/markdown";
+import { useFileIdentity, useReferences } from "./file-references/use-references";
+import { filePreviewUrl, type FileTarget } from "./file-references/references";
 
 interface MarkdownContentProps {
   text: string;
   citations?: RuntimeCitation[];
   compact?: boolean;
+  baseFile?: ResolvedFileLocation;
+  fragment?: string;
+  onOpenFile?: (target: FileTarget) => void;
 }
 
 export type WorkspaceImageRef = WorkspaceFileLocation;
@@ -70,39 +70,6 @@ export function parseWorkspaceImageRef(src: string | undefined): WorkspaceImageR
   }
 }
 
-export function markdownUrlTransform(url: string, key: string): string {
-  if ((key === "src" || key === "href") && parseWorkspaceImageRef(url)) return url;
-  // Keep workspace:// URLs as-is (even invalid ones) so the renderer
-  // component can decide whether to render as link or plain text.
-  if ((key === "src" || key === "href") && url.startsWith("workspace://")) return url;
-  return defaultUrlTransform(url);
-}
-
-export function resolveWorkspaceRelativePath(baseFilePath: string, src: string | undefined): string | undefined {
-  if (!src || /^[a-z][a-z\d+.-]*:/i.test(src) || src.startsWith("//")) return undefined;
-  const pathOnly = src.split(/[?#]/, 1)[0];
-  if (!pathOnly) return undefined;
-
-  const parts = pathOnly.startsWith("/") ? [] : baseFilePath.split("/").filter(Boolean).slice(0, -1);
-  try {
-    for (const rawPart of pathOnly.split("/")) {
-      if (!rawPart || rawPart === ".") continue;
-      const part = decodeURIComponent(rawPart);
-      if (part === ".") continue;
-      if (part === "..") {
-        if (parts.length === 0) return undefined;
-        parts.pop();
-        continue;
-      }
-      parts.push(part);
-    }
-  } catch {
-    return undefined;
-  }
-
-  return parts.length > 0 ? parts.join("/") : undefined;
-}
-
 interface WorkspaceImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, "src"> {
   workspaceId: string;
   path: string;
@@ -117,14 +84,19 @@ export function WorkspaceImage({
   ...props
 }: WorkspaceImageProps) {
   const fetchWorkspaceFileBlob = useRuntimeStore((s) => s.fetchWorkspaceFileBlob);
-  const [objectUrl, setObjectUrl] = useState<string>();
-  const [error, setError] = useState<string>();
+  const scope = useFileIdentity();
+  const identity = JSON.stringify([scope, workspaceId, executionRootId, path]);
+  const [loaded, setLoaded] = useState<{ identity: string; url: string }>();
+  const objectUrl = loaded?.identity === identity ? loaded.url : undefined;
+  const [attempt, setAttempt] = useState(0);
+  const [failure, setFailure] = useState<{ identity: string; message: string }>();
+  const error = failure?.identity === identity ? failure.message : undefined;
 
   useEffect(() => {
     let cancelled = false;
     let createdUrl: string | undefined;
-    setObjectUrl(undefined);
-    setError(undefined);
+    setLoaded(undefined);
+    setFailure(undefined);
 
     void fetchWorkspaceFileBlob({ workspaceId, path, executionRootId })
       .then((blob) => {
@@ -134,34 +106,27 @@ export function WorkspaceImage({
           return;
         }
         createdUrl = nextUrl;
-        setObjectUrl(nextUrl);
+        setLoaded({ identity, url: nextUrl });
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setFailure({ identity, message: err instanceof Error ? err.message : String(err) });
       });
 
     return () => {
       cancelled = true;
       if (createdUrl) URL.revokeObjectURL(createdUrl);
     };
-  }, [fetchWorkspaceFileBlob, workspaceId, path, executionRootId]);
+  }, [fetchWorkspaceFileBlob, workspaceId, path, executionRootId, identity, attempt]);
 
   if (error) {
-    if (isHttpNotFoundError(error)) {
-      return (
-        <span className="workspace-image-error" title={error}>
-          {alt ?? path} image file not found (moved, cleaned up, or root removed)
-        </span>
-      );
-    }
     return (
       <span className="workspace-image-error" title={error}>
-        {alt ?? path} image unavailable
+        {alt ?? path}: {error} <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); setAttempt((value) => value + 1); }}>Retry</button>
       </span>
     );
   }
   if (!objectUrl) {
-    return <span className="workspace-image-loading">Loading image…</span>;
+    return <span className="workspace-image-loading">{alt ?? path} — Loading image…</span>;
   }
   return (
     <span className="workspace-image-frame">
@@ -169,98 +134,10 @@ export function WorkspaceImage({
         {...props}
         src={objectUrl}
         alt={alt ?? path}
+        onError={() => setFailure({ identity, message: "Image could not be decoded" })}
       />
     </span>
   );
-}
-
-interface WorkspaceFileLinkProps {
-  href: string;
-  children?: ReactNode;
-}
-
-export function WorkspaceFileLink({ href, children }: WorkspaceFileLinkProps) {
-  const showFileBrowser = useRuntimeStore((s) => s.showFileBrowser);
-  const selectedAgentId = useRuntimeStore((s) => s.selectedAgentId);
-  const workspaceRef = parseWorkspaceImageRef(href);
-  if (!workspaceRef) {
-    return (
-      <a href={href} rel="noreferrer" target="_blank">
-        {children}
-      </a>
-    );
-  }
-  return (
-    <a
-      href={href}
-      onClick={(e) => {
-        e.preventDefault();
-        const slash = workspaceRef.path.lastIndexOf("/");
-        showFileBrowser(selectedAgentId, {
-          ...workspaceRef,
-          path: slash >= 0 ? workspaceRef.path.slice(0, slash) : "",
-          initialFilePath: workspaceRef.path,
-        });
-      }}
-      rel="noreferrer"
-    >
-      {children}
-    </a>
-  );
-}
-
-/**
- * GFM autolink only covers http(s)/www. URLs. This plugin extends
- * autolinking to bare `workspace://` URLs so that they render as
- * clickable links in markdown text.
- */
-export function remarkWorkspaceAutolink() {
-  return (tree: import("unist").Node) => {
-    visit(tree, "text", (node: any, index: number | null, parent: any) => {
-      if (index === null || !parent || parent.type === "link") return;
-      const value: string = node.value;
-      if (!value.includes("workspace://")) return;
-
-      const segments: any[] = [];
-      let last = 0;
-      WORKSPACE_URL_RE.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = WORKSPACE_URL_RE.exec(value)) !== null) {
-        // Strip trailing punctuation that is unlikely to be part of the URL
-        const url = m[0].replace(/[.,;!?:]+$/, "");
-        // Only autolink valid workspace:// URLs
-        if (!parseWorkspaceImageRef(url)) continue;
-        if (m.index > last) segments.push({ type: "text", value: value.slice(last, m.index) });
-        segments.push({ type: "link", url, children: [{ type: "text", value: url }] });
-        const trailing = m[0].slice(url.length);
-        if (trailing) segments.push({ type: "text", value: trailing });
-        last = m.index + m[0].length;
-      }
-      if (segments.length === 0) return;
-      if (last < value.length) segments.push({ type: "text", value: value.slice(last) });
-
-      parent.children.splice(index, 1, ...segments);
-      return [SKIP, index + segments.length] as [typeof SKIP, number];
-    });
-  };
-}
-
-/**
- * Markdown renders inline code spans (`` `…` ``) as plain text, so agents
- * that wrap URLs in backticks lose clickable links. This plugin converts
- * inline code spans whose entire content is exactly one allowlisted URL
- * (http/https/mailto, or a valid `workspace://` ref) into links that keep
- * their code styling. Code spans mixed with other text stay untouched.
- */
-export function remarkCodeSpanAutolink() {
-  return (tree: import("unist").Node) => {
-    visit(tree, "inlineCode", (node: any, index: number | null, parent: any) => {
-      if (index === null || !parent || parent.type === "link") return;
-      const url: string = node.value;
-      if (!parseWorkspaceImageRef(url) && !CODE_SPAN_URL_RE.test(url)) return;
-      parent.children[index] = { type: "link", url, children: [node] };
-    });
-  };
 }
 
 export function stripOpenAiCitationSentinels(text: string): string {
@@ -294,7 +171,44 @@ export function safeCitation(citation: RuntimeCitation): RuntimeCitation | undef
   }
 }
 
-function MarkdownContentView({ text, citations, compact = false }: MarkdownContentProps) {
+function MarkdownContentView({ text, citations, compact = false, baseFile, fragment, onOpenFile }: MarkdownContentProps) {
+  const baseKey = JSON.stringify(baseFile);
+  const base = useMemo(() => baseFile, [baseKey]);
+  const visibleText = useMemo(() => stripOpenAiCitationSentinels(text), [text]);
+  const references = useMemo(() => collectMarkdownReferences(visibleText, base), [visibleText, base]);
+  const { results, retry } = useReferences(references);
+  const prefix = `${useId()}-`;
+  const container = useRef<HTMLDivElement>(null);
+  const [fragmentError, setFragmentError] = useState<string>();
+  const scrollToFragment = (name: string) => {
+    const heading = [...(container.current?.querySelectorAll<HTMLElement>("[data-heading-slug]") ?? [])].find((node) => node.dataset.headingSlug === name);
+    if (heading) { heading.scrollIntoView({ block: "start" }); setFragmentError(undefined); }
+    else setFragmentError(`Section “${name}” was not found in this document`);
+  };
+  useEffect(() => {
+    setFragmentError(undefined);
+    if (fragment) scrollToFragment(fragment);
+  }, [fragment, visibleText, baseKey]);
+  const openFile = onOpenFile ?? ((target: FileTarget) => {
+    const store = useRuntimeStore.getState();
+    store.openResolvedFile(store.selectedAgentId, target);
+  });
+  const renderReference = (key: string, children: ReactNode, image = false, alt?: string) => {
+    const entry = references.get(key)?.value;
+    if (!entry) return children;
+    if (entry.kind === "anchor") return <a href={`#${prefix}${entry.fragment}`} onClick={(event) => { event.preventDefault(); scrollToFragment(entry.fragment); }}>{children}</a>;
+    if (entry.kind === "external") return children;
+    const result = results.get(key);
+    const error = entry.kind === "error" ? entry.message : result?.status === "unresolved" ? result.message : undefined;
+    if (error) return <span className="file-reference-error" title={error}>{children} <small>({error})</small>{entry.kind === "file" ? <> <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); retry(); }}>Retry</button></> : null}</span>;
+    if (entry.kind !== "file" || result?.status !== "resolved") return <span className="file-reference-pending" title="Resolving file…">{children}</span>;
+    const target = { ...result.location, fragment: entry.fragment };
+    if (image) return <WorkspaceImage workspaceId={target.workspaceId} executionRootId={target.executionRootId} path={target.path} alt={alt} />;
+    return <a href={filePreviewUrl(target, target.fragment)} onClick={(event) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+      event.preventDefault(); openFile(target);
+    }}>{children}</a>;
+  };
   const safeCitations = Array.from(
     new Map(
       (citations ?? [])
@@ -304,43 +218,24 @@ function MarkdownContentView({ text, citations, compact = false }: MarkdownConte
     ).values(),
   );
   return (
-    <div className={`markdown-content${compact ? " compact" : ""}`}>
+    <div ref={container} className={`markdown-content${compact ? " compact" : ""}`}>
+      {fragmentError ? <p role="status" className="inspector-muted">{fragmentError}</p> : null}
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkWorkspaceAutolink, remarkCodeSpanAutolink]}
-        urlTransform={markdownUrlTransform}
+        remarkPlugins={[remarkGfm, [remarkFileReferences, { base, prefix }]]}
         components={{
-          a: ({ children, href, ...props }) => {
-            if (href && parseWorkspaceImageRef(href)) {
-              return <WorkspaceFileLink href={href}>{children}</WorkspaceFileLink>;
-            }
-            // Invalid workspace:// URLs should not render as clickable links
-            if (href?.startsWith("workspace://")) {
-              return <>{children}</>;
-            }
-            return (
-              <a {...props} href={href} rel="noreferrer" target="_blank">
-                {children}
-              </a>
-            );
+          a: ({ children, href, node }) => {
+            const key = node?.properties["data-file-reference"];
+            if (typeof key === "string") return renderReference(key, children);
+            return <a href={href} rel="noreferrer" target="_blank">{children}</a>;
           },
-          img: ({ src, alt, ...props }) => {
-            const workspaceRef = parseWorkspaceImageRef(src);
-            if (!workspaceRef) {
-              return <img {...props} src={src} alt={alt ?? ""} />;
-            }
-            return (
-              <WorkspaceImage
-                {...props}
-                workspaceId={workspaceRef.workspaceId}
-                path={workspaceRef.path}
-                alt={alt ?? workspaceRef.path}
-                title={src}
-              />
-            );
+          img: ({ src, alt, node }) => {
+            const key = node?.properties["data-file-reference"];
+            if (typeof key === "string") return renderReference(key, alt || "Image", true, alt);
+            return src ? <img src={src} alt={alt ?? ""} /> : <span>{alt || "Image"} — Unsupported image URL</span>;
           },
         }}
       >
-        {stripOpenAiCitationSentinels(text)}
+        {visibleText}
       </ReactMarkdown>
       {safeCitations.length > 0 ? (
         <section className="markdown-sources" aria-label="Sources">

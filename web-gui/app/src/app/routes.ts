@@ -19,6 +19,7 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
   const path = location.pathname.replace(/\/+$/, "") || "/";
 
   if (path === "/") return { route: "dashboard" };
+  if (path === "/files") return { route: "files" };
   if (path === "/search") return { route: "search" };
   if (path === "/skills") return { route: "skills" };
   const agentSkillMatch = path.match(/^\/agents\/([^/]+)\/skills\/([^/]+)$/);
@@ -60,6 +61,7 @@ export function routeFromLocation(location: Pick<Location, "pathname" | "search"
 
 export function pathForRoute(route: RouteKey, agentId?: string, templateId?: string, query?: Record<string, string | number | undefined>, skillAgentId?: string): string {
   const queryString = query ? new URLSearchParams(Object.entries(query).flatMap(([key, value]) => (value == null ? [] : [[key, String(value)]]))).toString() : "";
+  if (route === "files") return `/files${queryString ? `?${queryString}` : ""}`;
   if (route === "search") return "/search";
   if (route === "skills") return "/skills";
   if (route === "skillDetail" && agentId) {

@@ -111,11 +111,11 @@ import type {
   RuntimeTranscriptEntry,
   RuntimeToolExecutionRecord,
   FileReference,
-  ResolvedFileLocation,
   ResolveFileReferencesResponse,
   WorkItemSummary,
   SearchResponse,
   WorkspaceBrowserLocation,
+  FileOpenTarget,
   WorkspaceDirectoryListing,
   WorkspaceFileContent,
   WorkspaceFileLocation,
@@ -401,7 +401,7 @@ export interface RuntimeStoreState {
   showToolExecutionDetail: (agentId: string, toolExecutionId: string, toolName?: string, relatedStateObjectRef?: TimelineStateObjectRef) => void;
   inspectActivity: (agentId: string, activity: AgentTimelineActivity) => void;
   showFileBrowser: (agentId: string, location: WorkspaceBrowserLocation) => void;
-  openResolvedFile: (agentId: string, location: ResolvedFileLocation) => void;
+  openResolvedFile: (agentId: string, location: FileOpenTarget) => void;
   resolveFileReferences: (references: FileReference[]) => Promise<ResolveFileReferencesResponse>;
   browseWorkspaceDir: (location: WorkspaceFileLocation) => Promise<WorkspaceDirectoryListing>;
   readWorkspaceFile: (location: WorkspaceFileLocation) => Promise<WorkspaceFileContent>;
@@ -1631,6 +1631,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         initialPath: location.path,
         executionRootId: location.executionRootId,
         initialFilePath: location.initialFilePath,
+        fragment: location.fragment,
       },
       };
     }),
@@ -1644,6 +1645,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           ? location.path.slice(0, location.path.lastIndexOf("/"))
           : "",
       initialFilePath: location.kind === "file" ? location.path : undefined,
+      fragment: location.fragment,
     }),
   resolveFileReferences: (references) => runtimeClient.resolveFileReferences(references),
   browseWorkspaceDir: (location) => runtimeClient.browseWorkspaceDir(location),
