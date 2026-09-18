@@ -1833,7 +1833,9 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
                 COALESCE(messages.preview, ''),
                 json_extract(messages.payload_json, '$.kind'),
                 json_extract(messages.payload_json, '$.trigger_kind'),
-                queue.created_at
+                queue.created_at,
+                CASE WHEN json_extract(messages.payload_json, '$.origin.kind') = 'operator'
+                     THEN json_extract(messages.payload_json, '$.origin.actor_display_name') END
          FROM queue_entries AS queue
          LEFT JOIN conversation_input_assignments AS assignments
            ON assignments.message_id = queue.message_id
@@ -1878,6 +1880,7 @@ fn pending_input_rows(connection: &Connection, agent_id: &str) -> Result<Vec<Pen
                             .unwrap_or(PresentationClass::Operational)
                     },
                     created_at: row.get(6)?,
+                    actor_display_name: row.get(7)?,
                 })
             },
         )?
@@ -2034,7 +2037,9 @@ fn turn_input_previews(
         "SELECT assignments.message_id, COALESCE(messages.preview, ''),
                 json_extract(messages.payload_json, '$.kind'),
                 json_extract(messages.payload_json, '$.trigger_kind'),
-                sources.activity_seq, COALESCE(queue.status = 'interjected', 0)
+                sources.activity_seq, COALESCE(queue.status = 'interjected', 0),
+                CASE WHEN json_extract(messages.payload_json, '$.origin.kind') = 'operator'
+                     THEN json_extract(messages.payload_json, '$.origin.actor_display_name') END
          FROM conversation_input_assignments AS assignments
          LEFT JOIN messages
            ON messages.evidence_id = assignments.message_id
@@ -2074,6 +2079,7 @@ fn turn_input_previews(
                         .as_ref()
                         .map(|kind| message_presentation_class(kind, trigger)),
                     interjected: row.get(5)?,
+                    actor_display_name: row.get(6)?,
                 })
             },
         )?

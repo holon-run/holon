@@ -391,7 +391,7 @@ fn summary_includes_assigned_input_previews() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator-test".into()),
-            actor_display_name: None,
+            actor_display_name: Some("Alice".into()),
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -417,6 +417,10 @@ fn summary_includes_assigned_input_previews() -> Result<()> {
         .find(|turn| turn.turn_id == "turn-input-preview")
         .expect("turn summary");
     assert_eq!(summary.inputs.len(), 1);
+    assert_eq!(
+        summary.inputs[0].actor_display_name.as_deref(),
+        Some("Alice")
+    );
     assert_eq!(summary.inputs[0].message_id, "message-input-preview");
     assert!(
         summary.inputs[0].preview.contains("summarize the release"),
@@ -1292,7 +1296,7 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("operator-test".into()),
-            actor_display_name: None,
+            actor_display_name: Some("Alice".into()),
         },
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
@@ -1314,6 +1318,10 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     db.queue_entries().upsert(&queued)?;
     let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
     assert_eq!(page.pending_inputs.len(), 1);
+    assert_eq!(
+        page.pending_inputs[0].actor_display_name.as_deref(),
+        Some("Alice")
+    );
     assert_eq!(page.pending_inputs[0].revision, 2);
     assert_eq!(page.pending_inputs[0].state, PendingInputState::Queued);
     assert!(
@@ -1331,6 +1339,10 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     };
     db.queue_entries().upsert(&assigning)?;
     let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(
+        page.pending_inputs[0].actor_display_name.as_deref(),
+        Some("Alice")
+    );
     assert_eq!(page.pending_inputs[0].revision, 3);
     assert_eq!(page.pending_inputs[0].state, PendingInputState::Assigning);
     assert!(page.pending_inputs[0]
@@ -1343,6 +1355,10 @@ fn pending_input_tracks_queue_assignment_without_disappearing() -> Result<()> {
     let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
     assert!(page.pending_inputs.is_empty());
     assert_eq!(page.active_turns[0].turn_id, "turn-assigned");
+    assert_eq!(
+        page.active_turns[0].inputs[0].actor_display_name.as_deref(),
+        Some("Alice")
+    );
     Ok(())
 }
 
@@ -2309,7 +2325,7 @@ fn interjection_membership_stream_and_order_survive_restart() -> Result<()> {
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: None,
-                actor_display_name: None,
+                actor_display_name: Some("Alice".into()),
             },
             AuthorityClass::OperatorInstruction,
             Priority::Interject,
@@ -2381,6 +2397,7 @@ fn interjection_membership_stream_and_order_survive_restart() -> Result<()> {
         assert_eq!(input.message_id, format!("steer-{index}"));
         assert_eq!(input.presentation_class, Some(PresentationClass::Operator));
         assert!(input.interjected);
+        assert_eq!(input.actor_display_name.as_deref(), Some("Alice"));
         assert!(batch.changes.iter().any(|change| matches!(change,
             ConversationChange::OperatorRemove { message_id, .. } if message_id == &input.message_id)));
     }
@@ -2408,5 +2425,63 @@ fn interjection_membership_stream_and_order_survive_restart() -> Result<()> {
         "detail pagination never pages away summary inputs"
     );
     assert_eq!(activity_item(&page.activities[0]).key, keys[7]);
+    Ok(())
+}
+
+#[test]
+fn conversation_inputs_do_not_infer_sender_from_body_or_local_control() -> Result<()> {
+    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
+    for (index, origin) in [
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        MessageOrigin::System {
+            subsystem: "test".into(),
+        },
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut message = MessageEnvelope::new(
+            AGENT_ID,
+            MessageKind::OperatorPrompt,
+            origin,
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: r#"{"actor_display_name":"Not the sender"}"#.into(),
+            },
+        );
+        message.id = format!("unnamed-{index}");
+        db.evidence().append_message(&message)?;
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: AGENT_ID.into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Queued,
+            created_at: timestamp(index as i64),
+            updated_at: timestamp(index as i64),
+        })?;
+    }
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(page.pending_inputs.len(), 2);
+    for input in &page.pending_inputs {
+        assert!(input.actor_display_name.is_none());
+        assert!(serde_json::to_value(input)?
+            .get("actor_display_name")
+            .is_none());
+    }
+    let mut assigned = turn("unnamed-inputs", 1);
+    assigned.input_message_ids = vec!["unnamed-0".into(), "unnamed-1".into()];
+    db.turn_records().upsert(&assigned)?;
+    let page = db.conversation().summary_page(AGENT_ID, 10, None, None)?;
+    assert_eq!(page.active_turns[0].inputs.len(), 2);
+    for input in &page.active_turns[0].inputs {
+        assert!(input.actor_display_name.is_none());
+        assert!(serde_json::to_value(input)?
+            .get("actor_display_name")
+            .is_none());
+    }
     Ok(())
 }

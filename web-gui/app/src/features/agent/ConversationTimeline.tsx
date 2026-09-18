@@ -199,6 +199,7 @@ function PendingInputChip({ input }: { input: PendingInput }) {
   const { t } = useTranslation();
   return (
     <div className="conversation-pending-chip" data-conversation-anchor={`input:${input.message_id}`}>
+      <InputSender input={input} />
       {input.preview ? <MarkdownContent text={parseInputPreview(input.preview)} /> : null}
       <span className="conversation-input-status" role="status">
         <Clock size={12} />
@@ -330,9 +331,15 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   );
 });
 
+function InputSender({ input }: { input: TurnInputSummary }) {
+  const name = input.actor_display_name?.trim();
+  return name ? <div className="conversation-input-sender"><User size={12} aria-hidden="true" /><span>{name}</span></div> : null;
+}
+
 function ConversationInputLine({ input }: { input: TurnInputSummary }) {
   return (
     <div className="conversation-input-line" data-conversation-anchor={`input:${input.message_id}`}>
+      <InputSender input={input} />
       <MarkdownContent text={parseInputPreview(input.preview)} />
     </div>
   );

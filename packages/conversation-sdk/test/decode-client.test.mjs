@@ -337,3 +337,20 @@ test("decodes interjection provenance and ordering without requiring it from old
   input.activity_key.event_seq = Number.MAX_SAFE_INTEGER + 1;
   assert.throws(() => decodeConversationSummaryResponse(response), ConversationDecodeError);
 });
+
+test("preserves send-time names on pending and assigned inputs, tolerating older servers", () => {
+  const inputs = [
+    { message_id: "alice", preview: "First", actor_display_name: "Alice" },
+    { message_id: "bob", preview: "Follow-up", actor_display_name: "Bob", interjected: true },
+    { message_id: "local", preview: "Local" },
+    { message_id: "legacy", preview: "Old", actor_display_name: null },
+  ];
+  const decoded = decodeConversationSummaryResponse(summary({
+    turns: [turn("senders", 1, 1, { inputs })],
+    pending_inputs: inputs.map((input) => ({ ...input, state: "queued", revision: 1 })),
+  }));
+  for (const decodedInputs of [decoded.turns[0].inputs, decoded.pending_inputs]) {
+    assert.deepEqual(decodedInputs.map((input) => input.actor_display_name), ["Alice", "Bob", undefined, undefined]);
+  }
+  assert.equal(decoded.turns[0].inputs[1].interjected, true);
+});

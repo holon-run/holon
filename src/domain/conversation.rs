@@ -20,6 +20,9 @@ pub const CONVERSATION_QUERY_VERSION: u32 = 1;
 pub struct TurnInputSummary {
     pub message_id: String,
     pub preview: String,
+    /// Operator display name snapshotted in the canonical message origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_display_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presentation_class: Option<PresentationClass>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -116,6 +119,9 @@ pub struct PendingInput {
     pub revision: u64,
     pub state: PendingInputState,
     pub preview: String,
+    /// Operator display name snapshotted in the canonical message origin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_display_name: Option<String>,
     pub presentation_class: PresentationClass,
     pub created_at: String,
 }

@@ -31,6 +31,8 @@ export interface PendingInput {
   readonly revision: number;
   readonly state: PendingInputState;
   readonly preview: string;
+  /** Send-time operator attribution; absent for local control and older daemons. */
+  readonly actor_display_name?: string;
   /** Absent on older daemons; do not infer operator provenance from preview text. */
   readonly presentation_class?: PresentationClass;
   readonly created_at?: string | null;
@@ -116,6 +118,8 @@ export type PresentationClass =
 export interface TurnInputSummary {
   readonly message_id: string;
   readonly preview: string;
+  /** Send-time operator attribution; absent for local control and older daemons. */
+  readonly actor_display_name?: string;
   readonly presentation_class?: PresentationClass;
   /** Shares the immutable ordering key of this input's operator activity. */
   readonly activity_key?: ActivityKey;

@@ -448,3 +448,33 @@ test("operator interjections survive admission, folding, refresh and interrupted
   await live.locator(".conversation-detail-toggle").click();
   await page.screenshot({ path: "/tmp/holon-interjections-expanded.png", fullPage: true });
 });
+
+test("message senders survive history, pending input, live interjection and reload", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "senders");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const initial = { message_id: "alice", preview: "Review the plan", presentation_class: "operator" as const, actor_display_name: "Alice" };
+  let current = turn("senders", 1, { inputs: [initial, { message_id: "local", preview: "Local control message" }] });
+  const pending = { message_id: "queued", preview: "Next task", presentation_class: "operator", actor_display_name: "Carol", revision: 1, state: "queued" };
+  const update = () => request.post(control("/__e2e__/conversation"), { data: { agentId, turns: [current], pending_inputs: [pending] } });
+  expect((await update()).ok()).toBe(true);
+  await page.goto(`/agents/${agentId}/conversation`);
+  const sender = (id: string) => page.locator(`[data-conversation-anchor="input:${id}"] .conversation-input-sender`);
+  await expect(sender("alice")).toHaveText("Alice");
+  await expect(sender("queued")).toHaveText("Carol");
+  await expect(sender("local")).toHaveCount(0);
+  current = { ...current, revision: 2, inputs: [...current.inputs, {
+    message_id: "bob", preview: "Also check the tests", presentation_class: "operator", actor_display_name: "Bob", interjected: true,
+    activity_key: { event_seq: 5, activity_id: "operator:bob" },
+  }] };
+  expect((await update()).ok()).toBe(true);
+  await expect(sender("bob")).toHaveText("Bob");
+  await page.locator(".conversation-detail-toggle").click();
+  await expect(sender("bob")).toBeVisible();
+  await page.reload();
+  await expect(sender("alice")).toHaveText("Alice");
+  await expect(sender("bob")).toHaveText("Bob");
+  await expect(sender("queued")).toHaveText("Carol");
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+});

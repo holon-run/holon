@@ -129,6 +129,14 @@ operator input from background events, and must not infer provenance from body
 text. Older servers may omit these additive fields; display unknown sources
 neutrally and retain message-id ordering when timestamps are unavailable.
 
+Pending and assigned inputs also carry optional `actor_display_name`, read only
+from the canonical operator message origin. This is the display-name snapshot
+captured when the authenticated user sent the message, not the current viewer's
+identity or message-body text. Clients show it on operator inputs, including
+interjections, without loading activity detail. Local/shared-token control and
+older records omit it. The additive field uses the existing input/turn revision
+and stream paths and does not change authority or authentication semantics.
+
 ### 3.2 Execution, result availability, and attention are separate
 
 A summary must distinguish:
