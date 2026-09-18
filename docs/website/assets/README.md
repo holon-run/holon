@@ -47,13 +47,11 @@ labels, relationships and layout rules. Run it without arguments to refresh all
 four SVG/2x PNG pairs; `--language zh` or `--language en` limits the export.
 It requires CairoSVG and Noto Sans CJK SC.
 
-- `runtime-architecture-{zh,en}`: 1200×350 horizontal layout shared by the homepage
-  and article bodies.
-- `runtime-architecture-{zh,en}-narrow`: 480×550 vertical layout used only by the
-  homepage picture element at viewport widths up to 1100px. Display at no more
+- `runtime-architecture-{zh,en}`: 1200×350 horizontal layout used in article bodies.
+- `runtime-architecture-{zh,en}-narrow`: 480×550 vertical layout retained for reuse. Display at no more
   than 480px wide.
 
-Keep HTML image dimensions and the homepage picture/CSS breakpoint synchronized.
+Keep HTML image dimensions synchronized with the selected layout.
 The host boundary contains the runtime and execution resources, not interfaces;
 it describes execution location, not a security sandbox.
 Mobile uses a dashed outline and connector. Thin internal rules separate the
@@ -61,6 +59,17 @@ Holon heading and its three parallel responsibilities, without a workflow arrow.
 The heading avoids runtime terminology; its subtitle describes ongoing work,
 saved state and event wakeups. Technical terminology in article prose is unchanged.
 
-The product article uses only `holon-tour-review-work.webp`, with a fixture-data
-caption. Keep `holon-tour-agents.webp` and the versioned demo fixture available
-for reuse; neither screenshot represents a live runtime work record.
+## Web workbench screenshots
+
+The homepages and `what-is-holon` articles use the matching-language
+`lite-paper/web-gui-review-{zh-CN,en}.png` (3000×1880). Captions describe the
+reviewer waiting for CI and identify the content as demo data. Each image links
+to its full-size version.
+
+The source screenshots and capture metadata are in `docs/lite-paper/assets/`;
+the reproducible capture scripts and fixtures are in
+`docs/lite-paper/tools/gui-tour/`. Website copies should match those sources.
+These are actual GUI captures with synthetic data, not live runtime work records.
+
+Keep the older `holon-tour-review-work.webp`, `holon-tour-agents.webp`, and their
+versioned demo fixture available for reuse; the product articles no longer use them.

@@ -310,6 +310,37 @@ main:has(.home-page) .catalog-page {
   font-size: 0.84rem;
 }
 
+.home-litepaper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem 0.85rem;
+  margin-top: 0.85rem;
+  font-size: 0.88rem;
+}
+
+.home-litepaper__label {
+  color: var(--home-muted);
+}
+
+.home-litepaper a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2.75rem;
+  color: var(--home-blue-dark);
+  font-weight: 650;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.home-litepaper a:focus-visible {
+  outline: 2px solid var(--home-blue);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+
 /* Keep both heroes compact without compressing their follow-up diagrams. */
 .home-page--zh .home-hero,
 .home-page--en .home-hero {
@@ -1256,3 +1287,40 @@ main:has(.blog-page) .catalog-page {
     padding-block: 1.75rem;
   }
 }
+
+/* Homepages: event inputs and the shared workbench preview. */
+.home-page .home-trigger-sources {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+  margin-top: 0.8rem;
+}
+.home-page .home-trigger-sources > div {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.6rem 0.25rem;
+  border: 1px solid var(--home-line);
+  border-radius: 8px;
+  background: #f7faff;
+  text-align: center;
+}
+.home-page .home-trigger-sources strong { font-size: 0.72rem; }
+.home-page .home-trigger-sources span { font-size: 0.6rem; color: var(--home-muted); }
+.home-page .home-workbench-preview { margin: 0; }
+.home-page .home-workbench-preview a { display: block; border-radius: 14px; }
+.home-page .home-workbench-preview a:focus-visible { outline: 3px solid var(--home-blue); outline-offset: 4px; }
+.home-page .home-workbench-preview img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--home-line);
+  border-radius: 14px;
+}
+.home-page .home-workbench-preview figcaption {
+  margin-top: 0.85rem;
+  color: var(--home-muted);
+  font-size: 0.78rem;
+  line-height: 1.7;
+}
+
+.home-page h2 { text-wrap: balance; }
