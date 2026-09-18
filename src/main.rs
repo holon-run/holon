@@ -4086,6 +4086,10 @@ fn handle_runtime_db_debug_command(
                     RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
                         "Turn settlement reconciliation apply requires holon serve to be stopped",
                     )?;
+                let _migration_lock = RuntimeDbLock::try_lock(config.runtime_db_lock_path())
+                    .context(
+                    "Turn settlement reconciliation apply cannot run during a database migration",
+                )?;
                 RuntimeDb::preflight_turn_settlement_repair_plan_read_only(
                     &config.runtime_db_path(),
                     plan,

@@ -14,8 +14,8 @@ use crate::{
         self, ExecutionAttempt, ExecutionAttemptState, InterruptExecution,
     },
     runtime_db::{
+        connection::ensure_runtime_db_sidecars_are_consistent,
         evidence::{append_audit_event_tx, upsert_agent_state_tx},
-        migrations::current_schema_version,
         repositories::{upsert_queue_entry_tx, upsert_turn_record_tx},
         transitions::{execution_protocol_repository::load_state_unchecked_tx, persist_state_tx},
         RuntimeDb, RUNTIME_DB_BUSY_TIMEOUT,
@@ -280,6 +280,7 @@ fn prepare_turn_settlement_repair_with_connection(
     diagnostic_sample_limit: usize,
     mut progress: impl FnMut(&TurnSettlementRepairProgress),
 ) -> Result<TurnSettlementRepairReport> {
+    let schema_version = read_current_schema_version(connection)?;
     let effective_agent_id = resolve_agent_filter(connection, agent_id, turn_id)?;
     let mut report = TurnSettlementRepairReport {
         apply: false,
@@ -345,7 +346,7 @@ fn prepare_turn_settlement_repair_with_connection(
             &TurnSettlementRepairPlan {
                 format: PLAN_FORMAT.into(),
                 source_path: canonical_path(source_path),
-                schema_version: current_schema_version(connection)?,
+                schema_version,
                 created_at: Utc::now().to_rfc3339(),
                 agent_id: effective_agent_id,
                 turn_id: turn_id.map(str::to_owned),
@@ -369,6 +370,7 @@ fn open_existing_read_only(path: &Path) -> Result<Connection> {
             path.display()
         );
     }
+    ensure_runtime_db_sidecars_are_consistent(path)?;
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .with_context(|| format!("opening runtime db read-only {}", path.display()))?;
     connection.busy_timeout(RUNTIME_DB_BUSY_TIMEOUT)?;
@@ -376,7 +378,18 @@ fn open_existing_read_only(path: &Path) -> Result<Connection> {
         "PRAGMA foreign_keys = ON;
          PRAGMA query_only = ON;",
     )?;
+    ensure_runtime_db_sidecars_are_consistent(path)?;
     Ok(connection)
+}
+
+fn read_current_schema_version(connection: &Connection) -> Result<i64> {
+    connection
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .context("reading runtime database schema version")
 }
 
 fn resolve_agent_filter(
@@ -970,7 +983,7 @@ fn validate_plan(
     if plan.source_path != canonical_path(source_path) {
         bail!("turn settlement repair plan belongs to a different runtime database");
     }
-    if plan.schema_version != current_schema_version(connection)? {
+    if plan.schema_version != read_current_schema_version(connection)? {
         bail!("turn settlement repair plan schema version is stale");
     }
     Ok(())
@@ -1411,8 +1424,18 @@ mod tests {
         let lock_path = dir.path().join("legacy.lock");
         Connection::open(&db_path)?.execute_batch("CREATE TABLE sentinel (id INTEGER);")?;
 
-        RuntimeDb::prepare_turn_settlement_repair_read_only(&db_path, None, None, None, 20, |_| {})
-            .expect_err("audit must reject an incompatible database");
+        let error = RuntimeDb::prepare_turn_settlement_repair_read_only(
+            &db_path,
+            None,
+            None,
+            None,
+            20,
+            |_| {},
+        )
+        .expect_err("audit must reject an incompatible database");
+        let error = format!("{error:#}");
+        assert!(error.contains("no such table: schema_migrations"));
+        assert!(!error.contains("attempt to write a readonly database"));
         let connection = Connection::open(&db_path)?;
         let migration_table_count: i64 = connection.query_row(
             "SELECT COUNT(*) FROM sqlite_master
