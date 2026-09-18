@@ -1,5 +1,5 @@
 use super::*;
-use crate::types::{ExecutionAdmissionProvenance, WorkItemState};
+use crate::types::ExecutionAdmissionProvenance;
 
 pub(super) struct MessageDispatchPlan {
     pub(super) prior_closure: ClosureDecision,
@@ -85,54 +85,34 @@ impl RuntimeHandle {
                 trigger.exact_wait_recheck =
                     exact_agent_scope_wait_recheck(&self.inner.storage, message)?.is_some();
             }
-            // An explicit agent-scope WaitFor that targeted this exact task
-            // authorizes terminal task result reentry even when the prior
-            // closure waiting_reason was polluted by unrelated waits.
+            // Only an exact durable task wait is correlated as the expected
+            // wait. Captured ownership independently authorizes the terminal
+            // result to request canonical admission.
             if trigger.kind == crate::types::ContinuationTriggerKind::TaskResult
                 && trigger.task_result_outcome.is_some()
-                && trigger.task_work_item_id.is_none()
             {
                 if let Some(task_id) = message.task_id.as_deref() {
-                    trigger.exact_task_wait =
-                        exact_agent_scope_task_result_wait(&self.inner.storage, message, task_id)?
-                            .is_some();
+                    trigger.exact_task_wait = match trigger.task_work_item_id.as_deref() {
+                        Some(work_item_id) => exact_triggered_or_resolved_task_result_wait(
+                            &self.inner.storage,
+                            message,
+                            task_id,
+                            work_item_id,
+                        )?
+                        .is_some(),
+                        None => exact_agent_scope_task_result_wait(
+                            &self.inner.storage,
+                            message,
+                            task_id,
+                        )?
+                        .is_some(),
+                    };
                 }
             }
         }
-        let matching_wait_work_item_id = if continuation_trigger.is_some() {
-            let matching_waits = self
-                .inner
-                .storage
-                .active_wait_conditions_for_agent(&message.agent_id)?
-                .into_iter()
-                .filter(|condition| scheduler::message_matches_wait_condition(message, condition))
-                .collect::<Vec<_>>();
-            (matching_waits.len() == 1)
-                .then(|| matching_waits[0].work_item_id.clone())
-                .flatten()
-        } else {
-            None
-        };
-        let message_work_item_id = match message.work_item_id.as_deref() {
-            Some(work_item_id)
-                if self
-                    .inner
-                    .storage
-                    .latest_work_item(work_item_id)?
-                    .is_some_and(|work_item| work_item.state != WorkItemState::Open) =>
-            {
-                None
-            }
-            work_item_id => work_item_id,
-        };
-        let continuation_work_item_id = matching_wait_work_item_id
-            .as_deref()
-            .or(message_work_item_id)
-            .or(scheduler_state.current_turn_work_item_id.as_deref())
-            .or(scheduler_state.current_work_item_id.as_deref());
-        let continuation_resolution = continuation_trigger.as_ref().map(|trigger| {
-            resolve_continuation(&prior_closure, trigger, continuation_work_item_id)
-        });
+        let continuation_resolution = continuation_trigger
+            .as_ref()
+            .map(|trigger| resolve_continuation(&prior_closure, trigger));
         let model_turn_allowed = !matches!(scheduler_state.status, AgentStatus::Stopped);
         Ok(MessageDispatchPlan {
             prior_closure,

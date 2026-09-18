@@ -20,6 +20,7 @@ mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_executor;
 mod subagent;
+mod task_result_recovery;
 mod task_state_reducer;
 mod task_supervisor;
 mod tasks;
@@ -77,7 +78,7 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use arc_swap::ArcSwap;
 use bootstrap::ConfigSnapshot;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -1652,6 +1653,18 @@ pub struct SchedulerRecoveryReport {
     pub candidates: Vec<SchedulerRecoveryCandidate>,
     pub task_result_claim_recoveries: Vec<SchedulerTaskResultClaimRecoveryCandidate>,
     pub continuation_reconciliations: Vec<SchedulerContinuationReconciliationCandidate>,
+    pub pending_task_results: Vec<SchedulerPendingTaskResult>,
+    pub pending_task_results_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SchedulerPendingTaskResult {
+    pub task_id: String,
+    pub message_id: String,
+    pub owner: crate::types::TurnOwner,
+    pub state: String,
+    pub deferred_reason: Option<String>,
+    pub next_recheck_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2061,12 +2074,40 @@ pub fn scheduler_recovery_report(
     }
     candidates.sort_by(|left, right| left.message_id.cmp(&right.message_id));
 
+    let mut pending_task_results = runtime_db
+        .task_result_settlements()
+        .unsettled_for_agent(agent_id, 129)?;
+    let pending_task_results_truncated = pending_task_results.len() > 128;
+    pending_task_results.truncate(128);
+    let pending_task_results = pending_task_results
+        .into_iter()
+        .map(|record| SchedulerPendingTaskResult {
+            task_id: record.task_id,
+            message_id: record.message_id,
+            owner: record.work_item_id.map_or_else(
+                || crate::types::TurnOwner::AgentLifecycle {
+                    agent_id: record.agent_id,
+                },
+                |work_item_id| crate::types::TurnOwner::WorkItem { work_item_id },
+            ),
+            state: match record.state {
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending => "persisted_pending",
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted => "caller_admitted",
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled => "settled",
+            }
+            .into(),
+            deferred_reason: record.deferred_reason,
+            next_recheck_at: record.next_recheck_at,
+        })
+        .collect();
     Ok(SchedulerRecoveryReport {
         agent_id: agent_id.to_string(),
         execution_partition_initialized: execution_state.is_some(),
         candidates,
         task_result_claim_recoveries,
         continuation_reconciliations,
+        pending_task_results,
+        pending_task_results_truncated,
     })
 }
 
@@ -5132,6 +5173,9 @@ impl RuntimeHandle {
         bootstrap?;
 
         loop {
+            if self.emit_due_task_result_recovery().await? {
+                continue;
+            }
             if self.emit_due_agent_wait_recheck().await? {
                 continue;
             }
@@ -5207,6 +5251,15 @@ impl RuntimeHandle {
                         self.next_blocked_work_item_recheck_at().await?,
                         self.next_agent_wait_recheck_at().await?,
                     ) {
+                        (Some(left), Some(right)) => Some(left.min(right)),
+                        (left, right) => left.or(right),
+                    };
+                    let result_recheck_at = self
+                        .inner
+                        .runtime_db
+                        .task_result_settlements()
+                        .next_recheck_at(&self.inner.default_agent_id)?;
+                    let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),
                     };

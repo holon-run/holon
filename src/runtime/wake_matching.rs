@@ -22,16 +22,20 @@ pub(super) fn resolve_resume_authorization(
     trigger_kind: ContinuationTriggerKind,
     contentful: bool,
     task_result_outcome: Option<TaskResultOutcome>,
-    same_work_item: bool,
+    exact_task_wait: bool,
 ) -> ResumeDecision {
     let terminal_task_result =
         trigger_kind == ContinuationTriggerKind::TaskResult && task_result_outcome.is_some();
-    let expected = waiting_reason_matches(prior_waiting_reason, trigger_kind);
+    let expected = if trigger_kind == ContinuationTriggerKind::TaskResult {
+        exact_task_wait
+    } else {
+        waiting_reason_matches(prior_waiting_reason, trigger_kind)
+    };
 
     if prior_outcome == ClosureOutcome::Waiting {
         if expected {
             let model_reentry = match trigger_kind {
-                ContinuationTriggerKind::TaskResult => terminal_task_result && same_work_item,
+                ContinuationTriggerKind::TaskResult => terminal_task_result,
                 ContinuationTriggerKind::ExternalEvent | ContinuationTriggerKind::SystemTick => {
                     contentful
                 }
@@ -56,7 +60,7 @@ pub(super) fn resolve_resume_authorization(
             };
         }
 
-        if terminal_task_result && same_work_item {
+        if terminal_task_result {
             return ResumeDecision {
                 authorization: ResumeAuthorization::RuntimeEventReentry,
                 model_reentry: true,
@@ -71,7 +75,7 @@ pub(super) fn resolve_resume_authorization(
         };
     }
 
-    let runtime_event_reentry = terminal_task_result && same_work_item;
+    let runtime_event_reentry = terminal_task_result;
     let local_continuation = matches!(
         trigger_kind,
         ContinuationTriggerKind::OperatorInput
@@ -131,7 +135,7 @@ mod tests {
         kind: ContinuationTriggerKind,
         contentful: bool,
         task_result_outcome: Option<TaskResultOutcome>,
-        same_work_item: bool,
+        exact_task_wait: bool,
     ) -> ResumeDecision {
         resolve_resume_authorization(
             outcome,
@@ -139,7 +143,7 @@ mod tests {
             kind,
             contentful,
             task_result_outcome,
-            same_work_item,
+            exact_task_wait,
         )
     }
 
@@ -167,7 +171,7 @@ mod tests {
                 true,
             )
             .authorization,
-            ResumeAuthorization::RuntimeEventReentry
+            ResumeAuthorization::ExpectedWait
         );
         assert_eq!(
             decision(
@@ -196,8 +200,8 @@ mod tests {
     }
 
     #[test]
-    fn does_not_authorize_unbound_or_non_terminal_task_results() {
-        let unbound = decision(
+    fn separates_terminal_reentry_from_exact_wait_correlation() {
+        let unmatched_terminal = decision(
             ClosureOutcome::Waiting,
             Some(WaitingReason::AwaitingTimer),
             ContinuationTriggerKind::TaskResult,
@@ -205,8 +209,12 @@ mod tests {
             Some(TaskResultOutcome::Succeeded),
             false,
         );
-        assert_eq!(unbound.authorization, ResumeAuthorization::LivenessOnly);
-        assert!(!unbound.model_reentry);
+        assert_eq!(
+            unmatched_terminal.authorization,
+            ResumeAuthorization::RuntimeEventReentry
+        );
+        assert!(unmatched_terminal.model_reentry);
+        assert!(!unmatched_terminal.matched_waiting_reason);
 
         let active = decision(
             ClosureOutcome::Waiting,

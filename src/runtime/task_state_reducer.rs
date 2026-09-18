@@ -550,17 +550,16 @@ impl RuntimeHandle {
             }
         }
         if let Some(settlement) = settlement.as_ref() {
-            let owner = self
-                .inner
-                .runtime_db
-                .work_items()
-                .latest(&settlement.work_item_id)?;
-            let unavailable = match owner {
-                Some(owner) if owner.state != WorkItemState::Open => {
-                    Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerClosed)
+            let unavailable = if let Some(work_item_id) = settlement.work_item_id.as_deref() {
+                match self.inner.runtime_db.work_items().latest(work_item_id)? {
+                    Some(owner) if owner.state != WorkItemState::Open => {
+                        Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerClosed)
+                    }
+                    None => Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerMissing),
+                    Some(_) => None,
                 }
-                None => Some(crate::runtime_db::TaskResultSettlementDisposition::OwnerMissing),
-                Some(_) => None,
+            } else {
+                None
             };
             if let Some(disposition) = unavailable {
                 self.inner

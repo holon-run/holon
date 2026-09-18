@@ -1249,8 +1249,12 @@ fn render_pending_task_results(
             sanitize_inline(&record.task_status)
         ));
         lines.push(format!(
-            "  work_item_id: {}",
-            sanitize_inline(&record.work_item_id)
+            "  owner: {}",
+            record
+                .work_item_id
+                .as_deref()
+                .map(|work_item_id| format!("work_item:{work_item_id}"))
+                .unwrap_or_else(|| "agent_lifecycle".to_string())
         ));
         if let Some(message) = storage.read_message_by_id(&record.message_id)? {
             lines.push(format!(
@@ -7166,7 +7170,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let runtime_db = storage.runtime_db().unwrap().expect("runtime db");
-        let task = active_task(
+        let mut task = active_task(
             "task-pending",
             "default",
             TaskStatus::Completed,
@@ -7190,9 +7194,11 @@ mod tests {
         );
         result.id = "message-pending-result".into();
         result.work_item_id = task.work_item_id.clone();
+        task.parent_message_id = Some(result.id.clone());
         result
             .source_refs
             .insert("output_ref".into(), "task_output:pending".into());
+        storage.append_task(&task).unwrap();
         storage.append_message(&result).unwrap();
         runtime_db
             .task_result_settlements()
@@ -7203,7 +7209,7 @@ mod tests {
             .task_result_settlements()
             .admit_unsettled(
                 "default",
-                "work-current",
+                Some("work-current"),
                 "activation-pending",
                 chrono::Utc::now(),
             )

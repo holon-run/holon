@@ -47,6 +47,15 @@ provenance and trust metadata.
 Not every trigger should satisfy every waiting state. The continuation model
 should respect the reason the runtime was waiting in the first place.
 
+Task-result handling is independent of satisfying a wait. A validated terminal
+result belongs to the task's captured agent-lifecycle or WorkItem owner, not
+the current focus. Its continuation classification requests canonical
+admission; it neither grants execution nor clears an unrelated wait. If
+admission defers, a durable settlement obligation retains the result and its
+recovery path. Only exact durable wait evidence permits `ResumeExpectedWait`;
+a closure's `awaiting_task_result` label alone is insufficient. See
+[wake authority](wake-authority.md#task-result-handling-obligations-3004).
+
 ## Trigger Classes
 
 ### Liveness-Only
