@@ -201,7 +201,7 @@ canonical protocol retain all state-transition control.
 ### Public diagnostic event stream
 
 The scheduler emits a typed `SchedulerDiagnosticAuditEvent` for every
-decision that passes through `append_scheduler_decision`. This event carries:
+decision recorded by `append_scheduler_decision`. This event carries:
 
 | Field | Content |
 |-------|---------|
@@ -219,6 +219,16 @@ the legacy `scheduler_decision` audit event. Both are persisted in the same
 transaction as the scheduler decision. The typed event is the public
 observability surface; the legacy audit event remains for backward
 compatibility.
+
+Repeated decisions are deduplicated by a stable signature (decision, reason,
+boundary, message/work-item/task identity, and the `model_reentry` /
+`liveness_only` posture flags) over the recent event window. Volatile
+evidence (per-tick idempotency keys, active counts) does not re-record an
+unchanged scheduler state, so idle boundary alternation
+(`run_loop_idle` / `idle_tick`) is recorded once. Suppression is broken by
+any `model_reentry` decision recorded after the last matching occurrence: a
+genuine work → idle revert is re-recorded, keeping the latest recorded
+decision aligned with the current posture.
 
 ### Scheduling advisories
 

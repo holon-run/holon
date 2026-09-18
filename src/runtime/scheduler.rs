@@ -1100,19 +1100,34 @@ pub(crate) fn append_scheduler_decision(
     let events = scheduler_decision_events(agent_id, decision)?;
     let legacy_event = &events[1];
     let signature = scheduler_decision_signature(&legacy_event.data);
-    let duplicate = storage
-        .read_recent_events(32)?
-        .into_iter()
-        .rev()
-        .any(|latest| {
-            latest.kind == legacy_event.kind
-                && scheduler_decision_signature(&latest.data) == signature
-        });
-    if duplicate {
+    // Suppress only when the most recent same-signature occurrence in the
+    // window has no model-reentry decision after it: idle boundary alternation
+    // still dedupes, while a genuine work -> idle revert is recorded so the
+    // latest recorded decision keeps mirroring the current posture.
+    let mut duplicate = false;
+    let mut model_reentry_since_last_match = false;
+    for event in storage.read_recent_events(32)? {
+        if event.kind != legacy_event.kind {
+            continue;
+        }
+        if scheduler_decision_signature(&event.data) == signature {
+            duplicate = true;
+            model_reentry_since_last_match = false;
+        } else if scheduler_decision_model_reentry(&event.data) {
+            model_reentry_since_last_match = true;
+        }
+    }
+    if duplicate && !model_reentry_since_last_match {
         return Ok(false);
     }
     storage.append_events(&events)?;
     Ok(true)
+}
+
+fn scheduler_decision_model_reentry(data: &serde_json::Value) -> bool {
+    data.get("model_reentry")
+        .and_then(serde_json::Value::as_bool)
+        == Some(true)
 }
 
 type SchedulerDecisionSignature<'a> = (
@@ -1122,6 +1137,8 @@ type SchedulerDecisionSignature<'a> = (
     Option<&'a str>,
     Option<&'a str>,
     Option<&'a str>,
+    bool,
+    bool,
 );
 
 /// Stable identity of a scheduler decision for duplicate suppression.
@@ -1130,7 +1147,9 @@ type SchedulerDecisionSignature<'a> = (
 /// same wait decision, so comparing only the latest same-kind event never
 /// matches: each decision must be compared against its own most recent
 /// occurrence. Volatile evidence (per-tick idempotency keys, active counts) is
-/// excluded so an unchanged scheduler state is recorded once.
+/// excluded so an unchanged scheduler state is recorded once. The
+/// `model_reentry` / `liveness_only` posture flags are part of the identity so
+/// a flag flip can never be merged away.
 fn scheduler_decision_signature(data: &serde_json::Value) -> SchedulerDecisionSignature<'_> {
     fn field<'a>(data: &'a serde_json::Value, key: &str) -> Option<&'a str> {
         data.get(key).and_then(serde_json::Value::as_str)
@@ -1142,6 +1161,10 @@ fn scheduler_decision_signature(data: &serde_json::Value) -> SchedulerDecisionSi
         field(data, "message_id"),
         field(data, "work_item_id"),
         field(data, "task_id"),
+        scheduler_decision_model_reentry(data),
+        data.get("liveness_only")
+            .and_then(serde_json::Value::as_bool)
+            == Some(true),
     )
 }
 
