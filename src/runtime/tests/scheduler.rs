@@ -2185,6 +2185,102 @@ fn scheduler_decision_append_dedupes_identical_latest_event() {
     assert_eq!(events[1].data["boundary"].as_str(), Some("fixture"));
 }
 
+#[test]
+fn scheduler_decision_append_dedupes_across_interleaved_boundaries() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let idle_tick = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("active_timers=1");
+    let run_loop_idle = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForExternalChange,
+        "active_waiting_intents",
+    )
+    .boundary("run_loop_idle")
+    .liveness_only(true)
+    .evidence("active_waiting_intents=1");
+
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &idle_tick).unwrap());
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &run_loop_idle).unwrap());
+    assert!(
+        !scheduler::append_scheduler_decision(&storage, "default", &idle_tick).unwrap(),
+        "unchanged idle_tick decision after an interleaved boundary must be suppressed"
+    );
+
+    let events = storage.read_recent_events(10).unwrap();
+    assert_eq!(
+        events.len(),
+        4,
+        "each decision emits typed+legacy events once"
+    );
+}
+
+#[test]
+fn scheduler_decision_append_records_revert_after_model_reentry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let idle_wait = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("active_timers=1");
+    let work_trigger = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::EmitSystemTick,
+        "wake_hint",
+    )
+    .boundary("run_loop")
+    .model_reentry(true)
+    .evidence("pending_wake_hint");
+
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &idle_wait).unwrap());
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &work_trigger).unwrap());
+    assert!(
+        scheduler::append_scheduler_decision(&storage, "default", &idle_wait).unwrap(),
+        "work -> idle revert after a model-reentry decision must be recorded"
+    );
+
+    let events = storage.read_recent_events(10).unwrap();
+    assert_eq!(
+        events.len(),
+        6,
+        "each recorded decision emits typed+legacy events"
+    );
+    assert_eq!(events[5].data["decision"].as_str(), Some("WaitForTimer"));
+}
+
+#[test]
+fn scheduler_decision_append_dedup_ignores_volatile_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let first = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("active_timers=1");
+    let repeat = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("idempotency_key=continue_active:2026-09-18T15:30:00Z");
+
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &first).unwrap());
+    assert!(
+        !scheduler::append_scheduler_decision(&storage, "default", &repeat).unwrap(),
+        "evidence-only drift must not re-append the same decision"
+    );
+    assert_eq!(storage.read_recent_events(10).unwrap().len(), 2);
+}
+
 // --- public scheduler diagnostic event stream tests ---
 
 #[test]

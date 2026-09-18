@@ -18,7 +18,8 @@ admission), settlement recovery and delivery disposition (within
 `commit_queue_settlement`), and operator interjection at four typed
 boundaries (`AfterProviderRound`, `BeforeToolExecution`, `AfterToolResults`,
 `BeforeProviderContinuation`). A public `SchedulerDiagnosticAuditEvent`
-stream is emitted alongside the legacy audit for every decision.
+stream is emitted alongside the legacy audit for every recorded decision
+(recent-window dedup: `133-scheduler-decision-audit-dedup.md`).
 
 Model-reentry admission now derives one `canonical_activation_plan` for
 WorkItem autonomous continuation, exact task rejoin, exact wait resume, and
