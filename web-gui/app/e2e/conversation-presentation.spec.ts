@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { ConversationActivity, ConversationTurnSummary } from "@holon/conversation-sdk";
+import { sessionFor } from "./test-session";
 
 const agentId = "bootstrap-agent";
 const turn = (id: string, index: number, overrides: Partial<ConversationTurnSummary> = {}): ConversationTurnSummary => ({
@@ -14,7 +15,7 @@ const activity = (index: number, summary: string): ConversationActivity => ({
 });
 
 test("live process folds only after a readable result; manual expansion and failure remain visible", async ({ page, context, request }, info) => {
-  const session = `presentation-${info.testId}`;
+  const session = sessionFor(info, "presentation");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const historical = turn("history", 1, {
@@ -72,7 +73,7 @@ test("live process folds only after a readable result; manual expansion and fail
 });
 
 test("live growth follows the bottom but preserves history reading, including on a narrow screen", async ({ page, context, request }, info) => {
-  const session = `scroll-${info.testId}`;
+  const session = sessionFor(info, "scroll");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const history = Array.from({ length: 12 }, (_, i) => turn(`history-${i}`, i + 1, {
@@ -125,7 +126,7 @@ test("live growth follows the bottom but preserves history reading, including on
 });
 
 test("an invalidated active process refreshes before its brief and opens the existing tool renderer in one click", async ({ page, context, request }, info) => {
-  const session = `details-${info.testId}`;
+  const session = sessionFor(info, "details");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const current = turn("live-detail", 1);
@@ -171,7 +172,7 @@ test("an invalidated active process refreshes before its brief and opens the exi
 });
 
 test("tool summaries load only for visible expanded rows and failed loads remain inspectable", async ({ page, context, request }, info) => {
-  const session = `tool-preview-${info.testId}`;
+  const session = sessionFor(info, "tool-preview");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const tools: ConversationActivity[] = Array.from({ length: 10 }, (_, i) => ({
@@ -207,7 +208,7 @@ test("tool summaries load only for visible expanded rows and failed loads remain
 });
 
 test("turn clock survives refresh, hides while waiting for a brief, and opens a flush-aligned process", async ({ page, context, request }, info) => {
-  const session = `timing-${info.testId}`;
+  const session = sessionFor(info, "timing");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const start = Date.parse("2026-09-16T00:00:00Z");
@@ -266,7 +267,7 @@ test("turn clock survives refresh, hides while waiting for a brief, and opens a 
 });
 
 test("a delivered brief replaces only the duplicate final activity, including after reload", async ({ page, context, request }, info) => {
-  const session = `dedup-${info.testId}`;
+  const session = sessionFor(info, "dedup");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   let current = turn("dedup", 1);
@@ -320,7 +321,7 @@ test("a delivered brief replaces only the duplicate final activity, including af
 });
 
 test("queued task results are compact events above the latest turn while operator input stays below", async ({ page, context, request }, info) => {
-  const session = `pending-events-${info.testId}`;
+  const session = sessionFor(info, "pending-events");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const pending = [
@@ -359,7 +360,7 @@ test("queued task results are compact events above the latest turn while operato
 });
 
 test("wake and task JSON open full canonical messages in the inspector", async ({ page, context, request }, info) => {
-  const session = `event-inspector-${info.testId}`;
+  const session = sessionFor(info, "event-inspector");
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const preview = JSON.stringify({ type: "text", text: 'wake hint: {"activationId":"truncated...' });
   await request.post(`/__e2e__/conversation?session=${encodeURIComponent(session)}`, { data: { agentId,
@@ -394,7 +395,7 @@ test("wake and task JSON open full canonical messages in the inspector", async (
 });
 
 test("operator interjections survive admission, folding, refresh and interrupted turns in a system wake", async ({ page, context, request }, info) => {
-  const session = `interjections-${info.testId}`;
+  const session = sessionFor(info, "interjections");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
   const source = { message_id: "wake-input", preview: "Scheduled deployment check", presentation_class: "system" as const };
