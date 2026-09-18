@@ -564,6 +564,12 @@ impl AppStorage {
             .recent_briefs(&self.storage_agent_id()?, limit);
     }
 
+    pub fn read_briefs_for_turn(&self, turn_id: &str) -> Result<Vec<BriefRecord>> {
+        self.runtime_db
+            .evidence()
+            .briefs_for_turn(&self.storage_agent_id()?, turn_id)
+    }
+
     pub fn read_brief_by_id(&self, brief_id: &str) -> Result<Option<BriefRecord>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db
@@ -590,6 +596,17 @@ impl AppStorage {
         return runtime_db
             .messages()
             .by_id(self.current_agent_id()?.as_deref(), message_id);
+    }
+
+    pub fn read_messages_for_turn(
+        &self,
+        turn_id: &str,
+        source_message_id: Option<&str>,
+    ) -> Result<Vec<MessageEnvelope>> {
+        let agent_id = self.storage_agent_id()?;
+        self.runtime_db
+            .messages()
+            .for_turn(&agent_id, turn_id, source_message_id)
     }
 
     /// Reads messages at or after `offset`, then returns only the most recent
@@ -691,6 +708,12 @@ impl AppStorage {
             .recent_tool_executions(&self.storage_agent_id()?, limit);
     }
 
+    pub fn read_tool_executions_for_turn(&self, turn_id: &str) -> Result<Vec<ToolExecutionRecord>> {
+        self.runtime_db
+            .evidence()
+            .tool_executions_for_turn(&self.storage_agent_id()?, turn_id)
+    }
+
     pub fn read_tool_execution_by_id(&self, tool_id: &str) -> Result<Option<ToolExecutionRecord>> {
         let runtime_db = self.runtime_db.clone();
         return runtime_db
@@ -757,6 +780,12 @@ impl AppStorage {
                 .recent_for_agent(&agent_id, limit);
         }
         return runtime_db.wait_conditions().recent(limit);
+    }
+
+    pub fn read_wait_conditions_for_turn(&self, turn_id: &str) -> Result<Vec<WaitConditionRecord>> {
+        self.runtime_db
+            .wait_conditions()
+            .for_turn(&self.storage_agent_id()?, turn_id)
     }
 
     pub fn read_recent_queue_entries(&self, limit: usize) -> Result<Vec<QueueEntryRecord>> {

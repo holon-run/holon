@@ -2,10 +2,177 @@ use super::super::*;
 use super::support::*;
 
 use crate::tool::ApplyPatchSurface;
+use crate::types::{ToolExecutionStatus, WaitConditionKind};
 
 struct PickThenExecProvider {
     calls: Mutex<usize>,
     target_work_item_id: String,
+}
+
+#[tokio::test]
+async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let turn_id = "turn-exact-evidence";
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "collect exact turn evidence".into(),
+        },
+    );
+    message.turn_id = Some(turn_id.into());
+    runtime.storage().append_message(&message).unwrap();
+
+    let mut target_brief =
+        BriefRecord::new("default", BriefKind::Result, "target brief", None, None);
+    target_brief.id = "brief-exact-target".into();
+    target_brief.turn_id = Some(turn_id.into());
+    runtime.storage().append_brief(&target_brief).unwrap();
+
+    let target_tool = ToolExecutionRecord {
+        id: "tool-exact-target".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_index: 1,
+        turn_id: Some(turn_id.into()),
+        tool_name: "WaitFor".into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 1,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Success,
+        input: serde_json::json!({ "wake": "external" }),
+        output: serde_json::json!({ "waiting": true }),
+        summary: "wait registered".into(),
+        invocation_surface: None,
+    };
+    runtime
+        .storage()
+        .append_tool_execution(&target_tool)
+        .unwrap();
+
+    let now = Utc::now();
+    let target_wait = WaitConditionRecord {
+        id: "wait-exact-target".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        status: WaitConditionStatus::Active,
+        kind: WaitConditionKind::External,
+        source: Some("WaitFor".into()),
+        subject_ref: Some("github:holon-run/holon#3055".into()),
+        waiting_for: "exact evidence".into(),
+        wake_sources: Vec::new(),
+        continuation: None,
+        created_at: now,
+        updated_at: now,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: Some(turn_id.into()),
+        trigger_message_id: None,
+        triggered_at: None,
+    };
+    runtime
+        .storage()
+        .append_wait_condition(&target_wait)
+        .unwrap();
+
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            for index in 0..=4096 {
+                let noise_turn_id = format!("turn-noise-{index}");
+                let mut noise = BriefRecord::new(
+                    "default",
+                    BriefKind::Result,
+                    format!("noise {index}"),
+                    None,
+                    None,
+                );
+                noise.id = format!("brief-noise-{index}");
+                noise.turn_id = Some(noise_turn_id.clone());
+                crate::runtime_db::evidence::insert_brief_evidence_tx(tx, &noise)?;
+
+                let noise_tool = ToolExecutionRecord {
+                    id: format!("tool-noise-{index}"),
+                    agent_id: "default".into(),
+                    work_item_id: None,
+                    turn_index: index + 2,
+                    turn_id: Some(noise_turn_id.clone()),
+                    tool_name: "WaitFor".into(),
+                    created_at: noise.created_at,
+                    completed_at: Some(noise.created_at),
+                    duration_ms: 1,
+                    authority_class: AuthorityClass::RuntimeInstruction,
+                    status: ToolExecutionStatus::Success,
+                    input: serde_json::json!({ "wake": "external" }),
+                    output: serde_json::json!({ "waiting": true }),
+                    summary: "noise wait".into(),
+                    invocation_surface: None,
+                };
+                crate::runtime_db::evidence::insert_tool_evidence_tx(tx, &noise_tool)?;
+
+                let noise_wait = WaitConditionRecord {
+                    id: format!("wait-noise-{index}"),
+                    agent_id: "default".into(),
+                    work_item_id: None,
+                    status: WaitConditionStatus::Active,
+                    kind: WaitConditionKind::External,
+                    source: Some("WaitFor".into()),
+                    subject_ref: None,
+                    waiting_for: "noise".into(),
+                    wake_sources: Vec::new(),
+                    continuation: None,
+                    created_at: noise.created_at,
+                    updated_at: noise.created_at,
+                    expires_at: None,
+                    resolved_at: None,
+                    cancelled_at: None,
+                    turn_id: Some(noise_turn_id),
+                    trigger_message_id: None,
+                    triggered_at: None,
+                };
+                crate::runtime_db::repositories::upsert_wait_condition_tx(tx, &noise_wait)?;
+            }
+            Ok(())
+        })
+        .unwrap();
+
+    let terminal = TurnTerminalRecord {
+        turn_id: turn_id.into(),
+        turn_index: 1,
+        kind: TurnTerminalKind::Completed,
+        reason: None,
+        last_assistant_message: None,
+        no_brief_reason: None,
+        checkpoint: None,
+        completed_at: Utc::now(),
+        duration_ms: 1,
+    };
+    let record = runtime.build_turn_record(&terminal).await.unwrap();
+
+    assert_eq!(record.input_message_ids, vec![message.id]);
+    assert_eq!(record.produced_brief_ids, vec![target_brief.id]);
+    assert_eq!(record.tool_execution_ids, vec![target_tool.id]);
+    assert_eq!(record.waiting_condition_ids, vec![target_wait.id]);
 }
 
 #[tokio::test]

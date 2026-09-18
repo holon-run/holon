@@ -828,6 +828,25 @@ pub enum RuntimeDbDebugCommands {
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Audit or apply an offline, fingerprint-fenced repair for orphaned terminal Turn settlements"
+    )]
+    TurnSettlement {
+        #[arg(long, requires = "plan", conflicts_with_all = ["agent", "turn"])]
+        apply: bool,
+        #[arg(long, requires = "apply")]
+        no_backup: bool,
+        #[arg(long, value_name = "PATH")]
+        plan: Option<PathBuf>,
+        #[arg(long, conflicts_with = "apply")]
+        agent: Option<String>,
+        #[arg(long, conflicts_with = "apply")]
+        turn: Option<String>,
+        #[arg(long, default_value_t = 20, value_parser = parse_positive_usize)]
+        diagnostic_sample_limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

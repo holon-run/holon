@@ -118,7 +118,6 @@ const MIN_EXACT_TAIL_ROUNDS: usize = 2;
 pub(super) const CONTINUATION_BUDGET_SAFETY_MARGIN_TOKENS: usize = 256;
 const DEGRADED_ROUND_PROVENANCE_MARKER: &str = "[runtime: last turn content trimmed to fit prompt budget — truncated sections are marked inline]";
 const DEGRADED_ROUND_MINIMUM_CONTENT_CHARS: usize = 200;
-const TURN_RECORD_SCAN_LIMIT: usize = 4096;
 const OPERATOR_INTERJECTION_HEADER: &str =
     "[Operator message received while this turn was in progress]";
 const COMPACTION_BOUNDARY_FULL_PROGRESS_CHECKPOINT_PROMPT: &str = "\
@@ -348,20 +347,6 @@ impl RuntimeHandle {
             ));
         }
 
-        let messages = self.inner.storage.read_all_messages()?;
-        let briefs = self
-            .inner
-            .storage
-            .read_recent_briefs(TURN_RECORD_SCAN_LIMIT)?;
-        let tools = self
-            .inner
-            .storage
-            .read_recent_tool_executions(TURN_RECORD_SCAN_LIMIT)?;
-        let wait_conditions = self
-            .inner
-            .storage
-            .read_recent_wait_conditions(TURN_RECORD_SCAN_LIMIT)?;
-
         let source_message_id = {
             let guard = self.inner.agent.lock().await;
             guard
@@ -370,13 +355,13 @@ impl RuntimeHandle {
                 .as_ref()
                 .map(|binding| binding.source_message_id.clone())
         };
-        let input_messages = messages
-            .iter()
-            .filter(|message| {
-                turn_optional_id_matches(message.turn_id.as_deref(), turn_id)
-                    || source_message_id.as_deref() == Some(message.id.as_str())
-            })
-            .collect::<Vec<_>>();
+        let input_messages = self
+            .inner
+            .storage
+            .read_messages_for_turn(turn_id, source_message_id.as_deref())?;
+        let briefs = self.inner.storage.read_briefs_for_turn(turn_id)?;
+        let tools = self.inner.storage.read_tool_executions_for_turn(turn_id)?;
+        let wait_conditions = self.inner.storage.read_wait_conditions_for_turn(turn_id)?;
 
         let mut record = if let Some(existing) = self.inner.storage.read_turn_by_id(turn_id)? {
             // Admission identity remains fixed even when execution changes focus.

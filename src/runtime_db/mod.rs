@@ -26,6 +26,7 @@ pub mod retired_scheduler_cleanup;
 pub mod storage_domain;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
+pub mod turn_settlement_repair;
 pub mod types;
 pub mod write_queue;
 
@@ -67,6 +68,10 @@ pub use crate::runtime_db::retired_scheduler_cleanup::{
 pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
 pub(crate) use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementDisposition, TaskResultSettlementRecord,
+};
+pub use crate::runtime_db::turn_settlement_repair::{
+    TurnSettlementRepairDiagnostic, TurnSettlementRepairPhase, TurnSettlementRepairProgress,
+    TurnSettlementRepairReport,
 };
 pub use crate::runtime_db::types::{
     AgentBootstrapRepository, AgentCanonicalRelationRepository, AgentDeletionRepository,
