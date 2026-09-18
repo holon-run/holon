@@ -9352,6 +9352,113 @@ async fn runtime_failure_terminal_fault_retries_confirmed_rollback_and_commits_f
 
 #[tokio::test]
 async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_attempt() {
+    for (status, expected_attempt_state) in [
+        (
+            QueueEntryStatus::Processed,
+            crate::domain::execution_protocol::ExecutionAttemptState::Settled,
+        ),
+        (
+            QueueEntryStatus::Aborted,
+            crate::domain::execution_protocol::ExecutionAttemptState::Interrupted,
+        ),
+    ] {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let message = runtime
+            .enqueue(trusted_operator_prompt(
+                None,
+                &format!("simulate a partial {status:?} terminal settlement"),
+            ))
+            .await
+            .unwrap();
+        let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap();
+        let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+            panic!("operator prompt should be claimed");
+        };
+        runtime
+            .begin_interactive_turn(Some(&scheduled.message), None, None)
+            .await
+            .unwrap();
+        finish_claimed_test_run(&runtime).await;
+
+        let terminal = terminal_transition_from_started_turn(&runtime, &message);
+        let settled_record = QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: message.agent_id.clone(),
+            priority: message.priority,
+            status,
+            created_at: message.created_at,
+            updated_at: Utc::now(),
+        };
+        let execution_witness = terminal_execution_settlement_witness(
+            &runtime.inner.storage,
+            &runtime.inner.runtime_db,
+            &settled_record,
+            &terminal,
+        )
+        .unwrap()
+        .expect("claimed message should prepare an execution outcome");
+        assert_eq!(
+            execution_witness.expected_attempt_state,
+            Some(expected_attempt_state)
+        );
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+                agent_id: "default".into(),
+                operation: crate::runtime_db::transitions::QueueOperation::Settle,
+                mutation: crate::runtime_db::transitions::QueueMutation::Upsert(
+                    settled_record.clone(),
+                ),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: Some(terminal.turn_record.clone()),
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            })
+            .unwrap();
+
+        assert_eq!(
+            runtime
+                .terminal_settlement_readback(&settled_record, &terminal, Some(&execution_witness),)
+                .unwrap(),
+            TerminalSettlementReadback::Ambiguous
+        );
+        let execution = runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            execution.attempts[&execution_witness.attempt_id].state,
+            crate::domain::execution_protocol::ExecutionAttemptState::Open
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_settlement_materialization_failure_is_fenced_and_aborted() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -9364,10 +9471,20 @@ async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_
         context_config(),
     )
     .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "materialization failure must close the claim".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    runtime.pick_work_item(work_item.id.clone()).await.unwrap();
     let message = runtime
         .enqueue(trusted_operator_prompt(
             None,
-            "simulate a partial terminal settlement",
+            "complete with invalid prepared execution evidence",
         ))
         .await
         .unwrap();
@@ -9382,9 +9499,44 @@ async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_
         .begin_interactive_turn(Some(&scheduled.message), None, None)
         .await
         .unwrap();
+    let binding = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .expect("claimed message should bind an execution attempt");
+    let candidate = crate::tool::spec::CompletionReportCandidate {
+        text: "This completion must not be committed.".into(),
+        citations: Vec::new(),
+        source_turn_index: 1,
+        source_round: 1,
+        source_turn_id: message.turn_id.clone(),
+        source_message_id: Some(message.id.clone()),
+        source_assistant_round_id: "assistant-round-materialization-failure".into(),
+        source_tool_call_id: "complete-materialization-failure".into(),
+    };
+    let mut result = crate::tool::tools::complete_work_item::complete_with_report_candidate(
+        &runtime,
+        work_item.id.clone(),
+        WorkItemCompletionAuthority::AgentExecution {
+            binding,
+            effective_work_item_id: Some(work_item.id.clone()),
+        },
+        Some(&candidate),
+        Vec::new(),
+        "same_assistant_round_preceding_text",
+    )
+    .await
+    .unwrap();
+    let mut prepared = *result
+        .prepared_work_item_completion
+        .take()
+        .expect("bound completion should prepare an atomic terminal commit");
+    prepared.expected_execution_protocol_state = None;
     finish_claimed_test_run(&runtime).await;
 
-    let terminal = terminal_transition_from_started_turn(&runtime, &message);
+    let mut terminal = terminal_transition_from_started_turn(&runtime, &message);
+    terminal.prepared_work_item_completion = Some(Box::new(prepared));
     let processed = QueueEntryRecord {
         message_id: message.id.clone(),
         agent_id: message.agent_id.clone(),
@@ -9393,39 +9545,32 @@ async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_
         created_at: message.created_at,
         updated_at: Utc::now(),
     };
-    let expected_execution_outcome = terminal_execution_settlement_outcome(
-        &runtime.inner.storage,
-        &runtime.inner.runtime_db,
-        &processed,
-        &terminal,
-    )
-    .unwrap()
-    .expect("claimed message should prepare an execution outcome");
-    runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
-            agent_id: "default".into(),
-            operation: crate::runtime_db::transitions::QueueOperation::Settle,
-            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(processed.clone()),
-            scheduler_claim_work_item: None,
-            agent_state: None,
-            message_evidence: Vec::new(),
-            transcript_entries: Vec::new(),
-            turn_record: Some(terminal.turn_record.clone()),
-            audit_events: Vec::new(),
-            notify_scheduler: false,
-            fault: None,
-            brief_evidence: Vec::new(),
-        })
-        .unwrap();
+    assert_eq!(
+        runtime
+            .commit_queue_terminal_settlement_resilient(
+                processed,
+                Vec::new(),
+                &terminal,
+                None,
+                Vec::new(),
+                Vec::new(),
+                1,
+            )
+            .await
+            .unwrap(),
+        TerminalSettlementDisposition::AbortedFallback
+    );
 
     assert_eq!(
         runtime
-            .terminal_settlement_readback(&processed, &terminal, Some(&expected_execution_outcome),)
-            .unwrap(),
-        TerminalSettlementReadback::Ambiguous
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Aborted
     );
     let execution = runtime
         .inner
@@ -9434,10 +9579,20 @@ async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
         .unwrap();
-    assert_eq!(
-        execution.attempts[&expected_execution_outcome.attempt_id].state,
-        crate::domain::execution_protocol::ExecutionAttemptState::Open
-    );
+    assert!(execution
+        .attempts
+        .values()
+        .filter(|attempt| attempt.source_message_id.as_deref() == Some(message.id.as_str()))
+        .all(|attempt| {
+            attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Open
+        }));
+    let retained_work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained_work_item.state, WorkItemState::Open);
+    assert!(retained_work_item.result_brief_id.is_none());
 }
 
 #[tokio::test]
