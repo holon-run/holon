@@ -37,7 +37,7 @@ jobs:
           trigger: auto
           auto_review: ${{ vars.HOLON_AUTO_REVIEW || 'false' }}
           auto_review_on_push: ${{ vars.HOLON_AUTO_REVIEW_ON_PUSH || 'false' }}
-          model: dashscope-token-plan/qwen-3.7
+          model: dashscope-token-plan/qwen3.8-max
           github_token: ${{ secrets.HOLON_GITHUB_TOKEN }}
         env:
           DASHSCOPE_TOKEN_PLAN_API_KEY: ${{ secrets.DASHSCOPE_TOKEN_PLAN_API_KEY }}
