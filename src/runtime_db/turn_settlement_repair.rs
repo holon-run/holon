@@ -5,7 +5,7 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -15,9 +15,10 @@ use crate::{
     },
     runtime_db::{
         evidence::{append_audit_event_tx, upsert_agent_state_tx},
+        migrations::current_schema_version,
         repositories::{upsert_queue_entry_tx, upsert_turn_record_tx},
         transitions::{execution_protocol_repository::load_state_unchecked_tx, persist_state_tx},
-        RuntimeDb,
+        RuntimeDb, RUNTIME_DB_BUSY_TIMEOUT,
     },
     types::{
         AgentState, AgentStatus, AuditEvent, BriefKind, BriefRecord, MessageEnvelope,
@@ -145,98 +146,53 @@ impl RuntimeDb {
         agent_id: Option<&str>,
         turn_id: Option<&str>,
         diagnostic_sample_limit: usize,
-        mut progress: impl FnMut(&TurnSettlementRepairProgress),
+        progress: impl FnMut(&TurnSettlementRepairProgress),
     ) -> Result<TurnSettlementRepairReport> {
         let connection = self.connection()?;
-        let effective_agent_id = resolve_agent_filter(&connection, agent_id, turn_id)?;
-        let mut report = TurnSettlementRepairReport {
-            apply: false,
-            agent_id: effective_agent_id.clone(),
-            turn_id: turn_id.map(str::to_owned),
-            plan_path: plan_path.map(Path::to_path_buf),
-            scanned_turns: 0,
-            repairable_turns: 0,
-            repaired_turns: 0,
-            already_settled_turns: 0,
-            skipped_turns: 0,
-            backup_path: None,
-            diagnostics: Vec::new(),
-        };
-        let mut candidates = Vec::new();
-        let mut checkpoint = 0_i64;
+        prepare_turn_settlement_repair_with_connection(
+            &connection,
+            self.path(),
+            plan_path,
+            agent_id,
+            turn_id,
+            diagnostic_sample_limit,
+            progress,
+        )
+    }
 
-        loop {
-            let page = load_turn_page(
-                &connection,
-                effective_agent_id.as_deref(),
-                turn_id,
-                checkpoint,
-            )?;
-            if page.is_empty() {
-                break;
-            }
-            for (rowid, agent_id, turn_id) in page {
-                checkpoint = rowid;
-                report.scanned_turns += 1;
-                match inspect_candidate(&connection, &agent_id, &turn_id)? {
-                    CandidateInspection::Repairable { candidate, .. } => {
-                        report.repairable_turns += 1;
-                        push_diagnostic(
-                            &mut report.diagnostics,
-                            diagnostic_sample_limit,
-                            TurnSettlementRepairDiagnostic {
-                                agent_id,
-                                turn_id,
-                                status: "repairable".into(),
-                                reason: "unique orphaned terminal settlement evidence".into(),
-                            },
-                        );
-                        candidates.push(candidate);
-                    }
-                    CandidateInspection::Skipped(diagnostic) => {
-                        report.skipped_turns += 1;
-                        push_diagnostic(
-                            &mut report.diagnostics,
-                            diagnostic_sample_limit,
-                            diagnostic,
-                        );
-                    }
-                }
-            }
-            progress(&TurnSettlementRepairProgress {
-                phase: TurnSettlementRepairPhase::Scanning,
-                scanned_turns: report.scanned_turns,
-                repairable_turns: report.repairable_turns,
-                skipped_turns: report.skipped_turns,
-            });
-        }
+    pub fn prepare_turn_settlement_repair_read_only(
+        path: &Path,
+        plan_path: Option<&Path>,
+        agent_id: Option<&str>,
+        turn_id: Option<&str>,
+        diagnostic_sample_limit: usize,
+        progress: impl FnMut(&TurnSettlementRepairProgress),
+    ) -> Result<TurnSettlementRepairReport> {
+        let connection = open_existing_read_only(path)?;
+        prepare_turn_settlement_repair_with_connection(
+            &connection,
+            path,
+            plan_path,
+            agent_id,
+            turn_id,
+            diagnostic_sample_limit,
+            progress,
+        )
+    }
 
-        if let Some(plan_path) = plan_path {
-            write_plan(
-                plan_path,
-                &TurnSettlementRepairPlan {
-                    format: PLAN_FORMAT.into(),
-                    source_path: canonical_path(self.path()),
-                    schema_version: self.current_schema_version()?,
-                    created_at: Utc::now().to_rfc3339(),
-                    agent_id: effective_agent_id,
-                    turn_id: turn_id.map(str::to_owned),
-                    candidates,
-                },
-            )?;
-        }
-        progress(&TurnSettlementRepairProgress {
-            phase: TurnSettlementRepairPhase::Complete,
-            scanned_turns: report.scanned_turns,
-            repairable_turns: report.repairable_turns,
-            skipped_turns: report.skipped_turns,
-        });
-        Ok(report)
+    pub fn preflight_turn_settlement_repair_plan_read_only(
+        path: &Path,
+        plan_path: &Path,
+    ) -> Result<()> {
+        let connection = open_existing_read_only(path)?;
+        let plan = read_plan(plan_path)?;
+        validate_plan(&connection, path, &plan)
     }
 
     pub fn preflight_turn_settlement_repair_plan(&self, plan_path: &Path) -> Result<()> {
+        let connection = self.connection()?;
         let plan = read_plan(plan_path)?;
-        validate_plan(self, &plan)
+        validate_plan(&connection, self.path(), &plan)
     }
 
     pub fn apply_turn_settlement_repair_plan(
@@ -246,8 +202,9 @@ impl RuntimeDb {
         diagnostic_sample_limit: usize,
         mut progress: impl FnMut(&TurnSettlementRepairProgress),
     ) -> Result<TurnSettlementRepairReport> {
+        let connection = self.connection()?;
         let plan = read_plan(plan_path)?;
-        validate_plan(self, &plan)?;
+        validate_plan(&connection, self.path(), &plan)?;
         let candidate_count = plan.candidates.len();
         let (repaired_turns, already_settled_turns, diagnostics) = self.transaction(|tx| {
             let mut repaired = 0;
@@ -312,6 +269,114 @@ impl RuntimeDb {
             diagnostics,
         })
     }
+}
+
+fn prepare_turn_settlement_repair_with_connection(
+    connection: &Connection,
+    source_path: &Path,
+    plan_path: Option<&Path>,
+    agent_id: Option<&str>,
+    turn_id: Option<&str>,
+    diagnostic_sample_limit: usize,
+    mut progress: impl FnMut(&TurnSettlementRepairProgress),
+) -> Result<TurnSettlementRepairReport> {
+    let effective_agent_id = resolve_agent_filter(connection, agent_id, turn_id)?;
+    let mut report = TurnSettlementRepairReport {
+        apply: false,
+        agent_id: effective_agent_id.clone(),
+        turn_id: turn_id.map(str::to_owned),
+        plan_path: plan_path.map(Path::to_path_buf),
+        scanned_turns: 0,
+        repairable_turns: 0,
+        repaired_turns: 0,
+        already_settled_turns: 0,
+        skipped_turns: 0,
+        backup_path: None,
+        diagnostics: Vec::new(),
+    };
+    let mut candidates = Vec::new();
+    let mut checkpoint = 0_i64;
+
+    loop {
+        let page = load_turn_page(
+            connection,
+            effective_agent_id.as_deref(),
+            turn_id,
+            checkpoint,
+        )?;
+        if page.is_empty() {
+            break;
+        }
+        for (rowid, agent_id, turn_id) in page {
+            checkpoint = rowid;
+            report.scanned_turns += 1;
+            match inspect_candidate(connection, &agent_id, &turn_id)? {
+                CandidateInspection::Repairable { candidate, .. } => {
+                    report.repairable_turns += 1;
+                    push_diagnostic(
+                        &mut report.diagnostics,
+                        diagnostic_sample_limit,
+                        TurnSettlementRepairDiagnostic {
+                            agent_id,
+                            turn_id,
+                            status: "repairable".into(),
+                            reason: "unique orphaned terminal settlement evidence".into(),
+                        },
+                    );
+                    candidates.push(candidate);
+                }
+                CandidateInspection::Skipped(diagnostic) => {
+                    report.skipped_turns += 1;
+                    push_diagnostic(&mut report.diagnostics, diagnostic_sample_limit, diagnostic);
+                }
+            }
+        }
+        progress(&TurnSettlementRepairProgress {
+            phase: TurnSettlementRepairPhase::Scanning,
+            scanned_turns: report.scanned_turns,
+            repairable_turns: report.repairable_turns,
+            skipped_turns: report.skipped_turns,
+        });
+    }
+
+    if let Some(plan_path) = plan_path {
+        write_plan(
+            plan_path,
+            &TurnSettlementRepairPlan {
+                format: PLAN_FORMAT.into(),
+                source_path: canonical_path(source_path),
+                schema_version: current_schema_version(connection)?,
+                created_at: Utc::now().to_rfc3339(),
+                agent_id: effective_agent_id,
+                turn_id: turn_id.map(str::to_owned),
+                candidates,
+            },
+        )?;
+    }
+    progress(&TurnSettlementRepairProgress {
+        phase: TurnSettlementRepairPhase::Complete,
+        scanned_turns: report.scanned_turns,
+        repairable_turns: report.repairable_turns,
+        skipped_turns: report.skipped_turns,
+    });
+    Ok(report)
+}
+
+fn open_existing_read_only(path: &Path) -> Result<Connection> {
+    if !path.is_file() {
+        bail!(
+            "turn settlement reconciliation requires an existing runtime database: {}",
+            path.display()
+        );
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .with_context(|| format!("opening runtime db read-only {}", path.display()))?;
+    connection.busy_timeout(RUNTIME_DB_BUSY_TIMEOUT)?;
+    connection.execute_batch(
+        "PRAGMA foreign_keys = ON;
+         PRAGMA query_only = ON;",
+    )?;
+    Ok(connection)
 }
 
 fn resolve_agent_filter(
@@ -452,6 +517,23 @@ fn inspect_candidate(
                 snapshot.queue.status
             ),
         ));
+    }
+    if let Some(agent_state) = snapshot.agent_state.as_ref() {
+        let current_turn_conflicts = agent_state
+            .current_turn_id
+            .as_deref()
+            .is_some_and(|current_turn_id| current_turn_id != turn_id);
+        let execution_binding_conflicts = agent_state
+            .current_execution_binding
+            .as_ref()
+            .is_some_and(|binding| binding.turn_id != turn_id);
+        if current_turn_conflicts || execution_binding_conflicts {
+            return Ok(skipped_inspection(
+                agent_id,
+                turn_id,
+                "agent state belongs to a different turn; manual review is required",
+            ));
+        }
     }
     if snapshot.terminal_tool_ids.len() != 1 {
         return Ok(skipped_inspection(
@@ -743,7 +825,10 @@ fn apply_candidate(
         kind: TurnTerminalKind::Interrupted,
         reason: Some(REPAIR_REASON.into()),
         last_assistant_message: None,
-        no_brief_reason: Some(TurnNoBriefReason::Interrupted),
+        no_brief_reason: snapshot
+            .briefs
+            .is_empty()
+            .then_some(TurnNoBriefReason::Interrupted),
         checkpoint: None,
         completed_at: now,
         duration_ms: 0,
@@ -780,12 +865,7 @@ fn apply_candidate(
             .as_ref()
             .map(|binding| binding.turn_id.as_str());
         let binding_matches = binding_turn_id == Some(candidate.turn_id.as_str());
-        let has_conflicting_turn_identity = agent_state
-            .current_turn_id
-            .as_deref()
-            .is_some_and(|turn_id| turn_id != candidate.turn_id)
-            || binding_turn_id.is_some_and(|turn_id| turn_id != candidate.turn_id);
-        if !has_conflicting_turn_identity && (current_turn_matches || binding_matches) {
+        if current_turn_matches || binding_matches {
             agent_state.current_run_id = None;
             agent_state.current_turn_id = None;
             agent_state.current_turn_work_item_id = None;
@@ -879,14 +959,18 @@ fn read_plan(path: &Path) -> Result<TurnSettlementRepairPlan> {
     .with_context(|| format!("decoding repair plan {}", path.display()))
 }
 
-fn validate_plan(db: &RuntimeDb, plan: &TurnSettlementRepairPlan) -> Result<()> {
+fn validate_plan(
+    connection: &Connection,
+    source_path: &Path,
+    plan: &TurnSettlementRepairPlan,
+) -> Result<()> {
     if plan.format != PLAN_FORMAT {
         bail!("unsupported turn settlement repair plan format");
     }
-    if plan.source_path != canonical_path(db.path()) {
+    if plan.source_path != canonical_path(source_path) {
         bail!("turn settlement repair plan belongs to a different runtime database");
     }
-    if plan.schema_version != db.current_schema_version()? {
+    if plan.schema_version != current_schema_version(connection)? {
         bail!("turn settlement repair plan schema version is stale");
     }
     Ok(())
@@ -1126,13 +1210,9 @@ mod tests {
             .turn_records()
             .by_id(Some(&agent_id), &turn_id)?
             .expect("turn");
-        assert!(matches!(
-            turn.terminal,
-            Some(TurnTerminalSummary {
-                kind: TurnTerminalKind::Interrupted,
-                ..
-            })
-        ));
+        let terminal = turn.terminal.as_ref().expect("terminal");
+        assert_eq!(terminal.kind, TurnTerminalKind::Interrupted);
+        assert_eq!(terminal.no_brief_reason, None);
         assert_eq!(turn.produced_brief_ids, vec!["brief-result-a"]);
         assert_eq!(turn.completed_work_item_ids, vec!["work-completed-a"]);
         assert_eq!(
@@ -1325,9 +1405,41 @@ mod tests {
     }
 
     #[test]
-    fn turn_settlement_repair_preserves_newer_agent_execution_binding() -> Result<()> {
+    fn turn_settlement_repair_openers_do_not_create_or_migrate_database() -> Result<()> {
+        let dir = tempdir()?;
+        let db_path = dir.path().join("legacy.db");
+        let lock_path = dir.path().join("legacy.lock");
+        Connection::open(&db_path)?.execute_batch("CREATE TABLE sentinel (id INTEGER);")?;
+
+        RuntimeDb::prepare_turn_settlement_repair_read_only(&db_path, None, None, None, 20, |_| {})
+            .expect_err("audit must reject an incompatible database");
+        let connection = Connection::open(&db_path)?;
+        let migration_table_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(migration_table_count, 0);
+        drop(connection);
+
+        RuntimeDb::open_for_turn_settlement_repair(&db_path, &lock_path)
+            .expect_err("apply opener must reject an incompatible database");
+        let connection = Connection::open(&db_path)?;
+        let migration_table_count: i64 = connection.query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'table' AND name = 'schema_migrations'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(migration_table_count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn turn_settlement_repair_rejects_newer_agent_execution_binding() -> Result<()> {
         let (_dir, db, plan_path) = fixture()?;
-        let (agent_id, turn_id, _) = seed_orphaned_turn(&db)?;
+        let (agent_id, turn_id, attempt_id) = seed_orphaned_turn(&db)?;
         db.prepare_turn_settlement_repair(
             Some(&plan_path),
             Some(&agent_id),
@@ -1353,17 +1465,21 @@ mod tests {
         let error = db
             .apply_turn_settlement_repair_plan(&plan_path, None, 20, |_| {})
             .expect_err("agent state fingerprint change must reject stale plan");
-        assert!(error.to_string().contains("fingerprint changed"));
+        assert!(error.to_string().contains("source changed"));
 
         let replacement_plan = plan_path.with_file_name("replacement-plan.json");
-        db.prepare_turn_settlement_repair(
+        let report = db.prepare_turn_settlement_repair(
             Some(&replacement_plan),
             Some(&agent_id),
             Some(&turn_id),
             20,
             |_| {},
         )?;
-        db.apply_turn_settlement_repair_plan(&replacement_plan, None, 20, |_| {})?;
+        assert_eq!(report.repairable_turns, 0);
+        assert_eq!(report.skipped_turns, 1);
+        assert!(report.diagnostics[0]
+            .reason
+            .contains("different turn; manual review is required"));
 
         let agent_state = db.agent_states().latest(&agent_id)?.expect("agent state");
         assert_eq!(
@@ -1376,6 +1492,24 @@ mod tests {
         assert_eq!(
             agent_state.current_turn_id.as_deref(),
             Some(turn_id.as_str())
+        );
+        assert!(db
+            .turn_records()
+            .by_id(Some(&agent_id), &turn_id)?
+            .expect("turn")
+            .terminal
+            .is_none());
+        assert_eq!(
+            db.queue_entries()
+                .latest("message-a")?
+                .expect("queue entry")
+                .status,
+            QueueEntryStatus::Dequeued
+        );
+        let protocol = db.transaction(|tx| load_state_unchecked_tx(tx, &agent_id))?;
+        assert_eq!(
+            protocol.attempts[&attempt_id].state,
+            ExecutionAttemptState::Open
         );
         Ok(())
     }

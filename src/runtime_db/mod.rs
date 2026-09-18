@@ -532,6 +532,60 @@ impl RuntimeDb {
         Ok(db)
     }
 
+    /// Opens an existing, current-schema database for offline turn settlement
+    /// repair without applying migrations.
+    pub fn open_for_turn_settlement_repair(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "turn settlement repair requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let connection = open_connection(&path)?;
+        let has_migration_table: bool = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'schema_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_migration_table {
+            bail!(
+                "turn settlement repair requires schema_migrations in {}",
+                path.display()
+            );
+        }
+        let schema_version: i64 = connection.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        let expected_schema_version = max_known_migration_version();
+        if schema_version != expected_schema_version {
+            bail!(
+                "turn settlement repair requires runtime db schema {}, found {}",
+                expected_schema_version,
+                schema_version
+            );
+        }
+        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
+        let db = Self {
+            writer,
+            path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            lock_path: lock_path.into(),
+        };
+        db.writer.activate_sidecar_protection()?;
+        Ok(db)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

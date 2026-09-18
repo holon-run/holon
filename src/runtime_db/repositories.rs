@@ -3067,7 +3067,8 @@ impl MessageRepository<'_> {
                  FROM messages
                  WHERE agent_id = ?1
                    AND (turn_id = ?2 OR message_id = ?3)
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC,
+                 ORDER BY message_seq IS NULL DESC,
+                          message_seq ASC,
                           created_at ASC,
                           message_id ASC",
             )?;
@@ -3083,7 +3084,8 @@ impl MessageRepository<'_> {
                 "SELECT payload_json
                  FROM messages
                  WHERE agent_id = ?1 AND turn_id = ?2
-                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC,
+                 ORDER BY message_seq IS NULL DESC,
+                          message_seq ASC,
                           created_at ASC,
                           message_id ASC",
             )?;

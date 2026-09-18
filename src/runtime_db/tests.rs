@@ -3934,6 +3934,7 @@ CREATE TABLE working_memory_deltas (
         );
         sequenced_1.id = "msg-seq-1".into();
         sequenced_1.message_seq = Some(1);
+        sequenced_1.turn_id = Some("turn-a".into());
         sequenced_1.created_at = base;
 
         let mut sequenced_2 = sequenced_1.clone();
@@ -3946,10 +3947,16 @@ CREATE TABLE working_memory_deltas (
         legacy_without_sequence.message_seq = None;
         legacy_without_sequence.created_at = base + chrono::Duration::seconds(2);
 
+        let mut source_without_sequence = legacy_without_sequence.clone();
+        source_without_sequence.id = "msg-source".into();
+        source_without_sequence.turn_id = None;
+        source_without_sequence.created_at = base - chrono::Duration::seconds(1);
+
         db.messages().upsert_many(&[
             sequenced_1.clone(),
             sequenced_2.clone(),
             legacy_without_sequence.clone(),
+            source_without_sequence.clone(),
         ])?;
 
         let all_ids = db
@@ -3958,7 +3965,10 @@ CREATE TABLE working_memory_deltas (
             .into_iter()
             .map(|message| message.id)
             .collect::<Vec<_>>();
-        assert_eq!(all_ids, vec!["msg-legacy", "msg-seq-1", "msg-seq-2"]);
+        assert_eq!(
+            all_ids,
+            vec!["msg-source", "msg-legacy", "msg-seq-1", "msg-seq-2"]
+        );
 
         let recent_ids = db
             .messages()
@@ -3967,6 +3977,25 @@ CREATE TABLE working_memory_deltas (
             .map(|message| message.id)
             .collect::<Vec<_>>();
         assert_eq!(recent_ids, vec!["msg-seq-1", "msg-seq-2"]);
+
+        let turn_ids = db
+            .messages()
+            .for_turn("agent-a", "turn-a", None)?
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(turn_ids, vec!["msg-legacy", "msg-seq-1", "msg-seq-2"]);
+
+        let turn_with_source_ids = db
+            .messages()
+            .for_turn("agent-a", "turn-a", Some("msg-source"))?
+            .into_iter()
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            turn_with_source_ids,
+            vec!["msg-source", "msg-legacy", "msg-seq-1", "msg-seq-2"]
+        );
         Ok(())
     }
 
