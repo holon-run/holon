@@ -203,7 +203,10 @@ as final failure of the user's objective. An `interrupted` outcome records a
 turn that could not continue across a runtime-process boundary; it is terminal,
 settles result availability with the matching typed no-brief reason, and must
 not remain in the active execution projection. Raw reason strings and
-checkpoints are not public summary fields.
+checkpoints are not public summary fields. A failed terminal outcome may still
+retain Briefs published earlier in the same Turn, such as a detached completion
+report; `available` describes readable artifacts and does not imply terminal
+success.
 
 Proposed result states are `pending`, `available`, `none`, and `unavailable`:
 

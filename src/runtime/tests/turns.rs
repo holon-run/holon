@@ -8,6 +8,97 @@ struct PickThenExecProvider {
     target_work_item_id: String,
 }
 
+#[tokio::test]
+async fn wait_for_publication_scope_preserves_existing_briefs_and_rejects_extra_publication() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let prepared = runtime
+        .prepare_wait_for_outcome(
+            "default",
+            None,
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#3055".into()),
+            "verify Brief publication scope".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let PrepareWaitForOutcome::Prepared(mut prepared) = prepared else {
+        panic!("external wait should prepare a settlement");
+    };
+    prepared.brief_publication_scope = Some(WaitForBriefPublicationScope {
+        existing_brief_ids: vec!["brief-existing".into()],
+    });
+
+    let mut silent = terminal_settlement_transition(
+        TurnTerminalKind::Completed,
+        vec!["brief-existing".into()],
+        None,
+    );
+    silent.prepared_wait_for = Some(prepared.clone());
+    runtime
+        .validate_wait_for_terminal_publication(&silent, &prepared, &[])
+        .unwrap();
+
+    prepared.delivery = crate::tool::tools::wait_for::WaitForDeliveryArg::Final;
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "publish final report".into(),
+        },
+    );
+    let mut brief = brief::make_result("default", &message, "final report");
+    brief.turn_id = Some("turn-settlement".into());
+    brief.finalizes_assistant_round_id = Some("assistant-round-final".into());
+    prepared.brief = Some(brief.clone());
+    let brief_created = brief_created_event_for(&brief).unwrap();
+    let mut final_transition = terminal_settlement_transition(
+        TurnTerminalKind::Completed,
+        vec!["brief-existing".into(), brief.id.clone()],
+        None,
+    );
+    final_transition.prepared_wait_for = Some(prepared.clone());
+    runtime
+        .validate_wait_for_terminal_publication(
+            &final_transition,
+            &prepared,
+            std::slice::from_ref(&brief_created),
+        )
+        .unwrap();
+
+    final_transition
+        .turn_record
+        .produced_brief_ids
+        .push("brief-unexplained".into());
+    let error = runtime
+        .validate_wait_for_terminal_publication(
+            &final_transition,
+            &prepared,
+            std::slice::from_ref(&brief_created),
+        )
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("must publish exactly its prepared Brief"));
+}
+
 struct StablePrefixDiagnosticsProvider;
 
 fn terminal_settlement_transition(
@@ -302,6 +393,9 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
         .prepared_wait_for
         .take()
         .expect("silent WaitFor should prepare canonical settlement");
+    prepared.brief_publication_scope = Some(WaitForBriefPublicationScope {
+        existing_brief_ids: Vec::new(),
+    });
     prepared.tool_execution = Some(tool_execution.clone());
     // Roll back final report/outbox evidence together with task-result admission.
     if task_ready {

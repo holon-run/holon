@@ -60,6 +60,15 @@ pub(crate) struct TurnTerminalTransition {
     pub(super) terminal_tool_executions: Vec<crate::types::ToolExecutionRecord>,
 }
 
+impl TurnTerminalTransition {
+    pub(super) fn normalize_brief_settlement(&mut self) {
+        if !self.turn_record.produced_brief_ids.is_empty() {
+            self.terminal.no_brief_reason = None;
+        }
+        self.turn_record.terminal = Some(TurnTerminalSummary::from_terminal(&self.terminal));
+    }
+}
+
 pub(crate) struct LoopControlOptions {
     pub(super) max_tool_rounds: Option<usize>,
 }

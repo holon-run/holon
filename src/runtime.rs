@@ -57,8 +57,8 @@ pub use tasks::{
     WorkItemFocusTransitionWarning,
 };
 pub(crate) use waiting::{
-    PrepareWaitForOutcome, PreparedWaitForSettlement, WaitForRegistrationOutcome, WaitForScope,
-    WaitForWakeKind,
+    PrepareWaitForOutcome, PreparedWaitForSettlement, WaitForBriefPublicationScope,
+    WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind,
 };
 pub(crate) use worktree::format_worktree_task_summary;
 
@@ -1122,6 +1122,59 @@ fn execution_settlement_conflict(error: &anyhow::Error) -> bool {
             .downcast_ref::<crate::domain::execution_protocol::ExecutionSettlementConflict>()
             .is_some()
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSettlementReadback {
+    Committed,
+    NotCommitted,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TerminalSettlementDisposition {
+    Intended,
+    AbortedFallback,
+}
+
+fn terminal_execution_settlement_outcome(
+    storage: &AppStorage,
+    runtime_db: &RuntimeDb,
+    record: &QueueEntryRecord,
+    transition: &turn::TurnTerminalTransition,
+) -> Result<Option<crate::domain::execution_protocol::ExecutionOutcomeRecord>> {
+    let execution_protocol =
+        if let Some(prepared) = transition.prepared_work_item_completion.as_ref() {
+            execution_protocol_completion_transition_from_prepared(
+                record,
+                &transition.turn_record,
+                prepared,
+            )?
+        } else if let Some(prepared) = transition.prepared_wait_for.as_ref() {
+            prepared.execution_protocol.clone()
+        } else {
+            execution_protocol_settlement_transition_from_facts(
+                storage,
+                runtime_db,
+                record,
+                Some(&transition.turn_record),
+            )?
+        };
+    let settlements = execution_protocol
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(command) => {
+                Some(command.outcome.clone())
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        settlements.len() <= 1,
+        "terminal settlement prepared multiple execution outcomes"
+    );
+    Ok(settlements.into_iter().next())
 }
 
 fn execution_attempt_for_message<'a>(
@@ -4500,7 +4553,7 @@ impl RuntimeHandle {
             (TurnTerminalKind::Interrupted, Some(TurnNoBriefReason::Interrupted)) => true,
             _ => false,
         };
-        if has_brief ^ valid_no_brief {
+        if (has_brief && no_brief_reason.is_none()) || (!has_brief && valid_no_brief) {
             return Ok(());
         }
 
@@ -4537,11 +4590,21 @@ impl RuntimeHandle {
 
         match prepared.delivery {
             WaitForDeliveryArg::Silent => {
+                let scope = prepared.brief_publication_scope.as_ref().ok_or_else(|| {
+                    anyhow!("silent WaitFor settlement is missing its Brief publication scope")
+                })?;
                 anyhow::ensure!(
                     prepared.brief.is_none()
-                        && transition.turn_record.produced_brief_ids.is_empty()
+                        && transition.turn_record.produced_brief_ids == scope.existing_brief_ids
                         && transition.terminal.no_brief_reason
-                            == Some(TurnNoBriefReason::ToolOnlyWait),
+                            == if scope.existing_brief_ids.is_empty() {
+                                Some(TurnNoBriefReason::ToolOnlyWait)
+                            } else {
+                                None
+                            }
+                        && audit_events
+                            .iter()
+                            .all(|event| event.kind != "brief_created"),
                     "silent WaitFor terminal settlement cannot publish a Brief"
                 );
             }
@@ -4549,8 +4612,13 @@ impl RuntimeHandle {
                 let brief = prepared.brief.as_ref().ok_or_else(|| {
                     anyhow!("final WaitFor settlement is missing its result Brief")
                 })?;
+                let scope = prepared.brief_publication_scope.as_ref().ok_or_else(|| {
+                    anyhow!("final WaitFor settlement is missing its Brief publication scope")
+                })?;
+                let mut expected_brief_ids = scope.existing_brief_ids.clone();
+                expected_brief_ids.push(brief.id.clone());
                 anyhow::ensure!(
-                    transition.turn_record.produced_brief_ids == [brief.id.clone()],
+                    transition.turn_record.produced_brief_ids == expected_brief_ids,
                     "final WaitFor settlement must publish exactly its prepared Brief"
                 );
                 anyhow::ensure!(
@@ -4575,7 +4643,12 @@ impl RuntimeHandle {
                     })
                     .count();
                 anyhow::ensure!(
-                    matching_created_events == 1,
+                    matching_created_events == 1
+                        && audit_events
+                            .iter()
+                            .filter(|event| event.kind == "brief_created")
+                            .count()
+                            == 1,
                     "final WaitFor settlement must contain exactly one matching brief_created event"
                 );
             }
@@ -4588,6 +4661,9 @@ impl RuntimeHandle {
         terminal_transition: &turn::TurnTerminalTransition,
         audit_events: Vec<AuditEvent>,
     ) -> Result<bool> {
+        let mut normalized_transition = terminal_transition.clone();
+        normalized_transition.normalize_brief_settlement();
+        let terminal_transition = &normalized_transition;
         self.validate_terminal_brief_settlement(terminal_transition)?;
         for attempt in 0..ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
             let agent_state = {
@@ -4656,6 +4732,11 @@ impl RuntimeHandle {
         transcript_entries: Vec<TranscriptEntry>,
         brief_evidence: Vec<BriefRecord>,
     ) -> Result<bool> {
+        let normalized_terminal_transition = terminal_transition.cloned().map(|mut transition| {
+            transition.normalize_brief_settlement();
+            transition
+        });
+        let terminal_transition = normalized_terminal_transition.as_ref();
         if let Some(transition) = terminal_transition {
             self.validate_terminal_brief_settlement(transition)?;
         }
@@ -4969,6 +5050,8 @@ impl RuntimeHandle {
                         refreshed.delivery = previous.delivery;
                         refreshed.tool_execution = previous.tool_execution.clone();
                         refreshed.brief = previous.brief.clone();
+                        refreshed.brief_publication_scope =
+                            previous.brief_publication_scope.clone();
                         // Preparation owns wait audit events; retain only the tool/report evidence.
                         refreshed.command.audit_events.extend(
                             previous
@@ -5000,6 +5083,235 @@ impl RuntimeHandle {
             }
         }
         unreachable!("settlement OCC retry loop always returns or errors")
+    }
+
+    fn terminal_settlement_readback(
+        &self,
+        record: &QueueEntryRecord,
+        transition: &turn::TurnTerminalTransition,
+        expected_execution_outcome: Option<
+            &crate::domain::execution_protocol::ExecutionOutcomeRecord,
+        >,
+    ) -> Result<TerminalSettlementReadback> {
+        let durable_queue = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&record.message_id)?;
+        let durable_turn = self
+            .inner
+            .storage
+            .read_turn_by_id(&transition.terminal.turn_id)?;
+        let durable_execution = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&record.agent_id)?;
+        let execution_committed = expected_execution_outcome.is_none_or(|expected| {
+            durable_execution.as_ref().is_some_and(|state| {
+                state
+                    .attempts
+                    .get(&expected.attempt_id)
+                    .is_some_and(|attempt| {
+                        attempt.state
+                            == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+                            && attempt.terminal_outcome_id.as_deref()
+                                == Some(expected.outcome_id.as_str())
+                    })
+                    && state.outcomes.get(&expected.outcome_id) == Some(expected)
+            })
+        });
+        if durable_queue
+            .as_ref()
+            .is_some_and(|queue| queue.status == record.status)
+            && durable_turn
+                .as_ref()
+                .is_some_and(|turn| turn.terminal == transition.turn_record.terminal)
+            && execution_committed
+        {
+            return Ok(TerminalSettlementReadback::Committed);
+        }
+        let open_attempt_matches = durable_execution.as_ref().is_some_and(|state| {
+            let attempt = expected_execution_outcome
+                .and_then(|expected| state.attempts.get(&expected.attempt_id))
+                .or_else(|| execution_attempt_for_message(state, &record.message_id));
+            attempt.is_some_and(|attempt| {
+                attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                    && attempt.turn_id.as_deref() == Some(transition.terminal.turn_id.as_str())
+                    && attempt.terminal_outcome_id.is_none()
+                    && expected_execution_outcome
+                        .is_none_or(|expected| !state.outcomes.contains_key(&expected.outcome_id))
+            })
+        });
+        if durable_queue
+            .as_ref()
+            .is_some_and(|queue| queue.status == QueueEntryStatus::Dequeued)
+            && durable_turn
+                .as_ref()
+                .is_some_and(|turn| turn.terminal.is_none())
+            && open_attempt_matches
+        {
+            return Ok(TerminalSettlementReadback::NotCommitted);
+        }
+        Ok(TerminalSettlementReadback::Ambiguous)
+    }
+
+    async fn commit_queue_terminal_settlement_resilient(
+        &self,
+        record: QueueEntryRecord,
+        audit_events: Vec<AuditEvent>,
+        terminal_transition: &turn::TurnTerminalTransition,
+        committed_agent_state: Option<AgentState>,
+        transcript_entries: Vec<TranscriptEntry>,
+        brief_evidence: Vec<BriefRecord>,
+        duration_ms: u64,
+    ) -> Result<TerminalSettlementDisposition> {
+        let expected_execution_outcome = terminal_execution_settlement_outcome(
+            &self.inner.storage,
+            &self.inner.runtime_db,
+            &record,
+            terminal_transition,
+        )?;
+        let first_commit = self
+            .commit_queue_terminal_settlement_with_evidence(
+                record.clone(),
+                audit_events.clone(),
+                true,
+                Some(terminal_transition),
+                committed_agent_state.clone(),
+                transcript_entries.clone(),
+                brief_evidence.clone(),
+            )
+            .await;
+        let Err(error) = first_commit else {
+            return Ok(TerminalSettlementDisposition::Intended);
+        };
+        if execution_settlement_conflict(&error) {
+            return Err(error);
+        }
+        match self.terminal_settlement_readback(
+            &record,
+            terminal_transition,
+            expected_execution_outcome.as_ref(),
+        )? {
+            TerminalSettlementReadback::Committed => {
+                tracing::warn!(
+                    message_id = %record.message_id,
+                    turn_id = %terminal_transition.terminal.turn_id,
+                    error = %error,
+                    "terminal settlement reported an error after durable commit"
+                );
+                return Ok(TerminalSettlementDisposition::Intended);
+            }
+            TerminalSettlementReadback::Ambiguous => {
+                return Err(error.context(
+                    "terminal settlement outcome is ambiguous; fenced abort was not attempted",
+                ));
+            }
+            TerminalSettlementReadback::NotCommitted => {}
+        }
+
+        if terminal_transition.terminal.kind != TurnTerminalKind::Completed {
+            self.commit_queue_terminal_settlement_with_evidence(
+                record,
+                audit_events,
+                true,
+                Some(terminal_transition),
+                committed_agent_state,
+                transcript_entries,
+                brief_evidence,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to retry confirmed-uncommitted {:?} terminal settlement after: {error}",
+                    terminal_transition.terminal.kind
+                )
+            })?;
+            return Ok(TerminalSettlementDisposition::Intended);
+        }
+
+        let message_id = record.message_id.clone();
+        let failure_summary = Self::summarize_runtime_failure_error(&error);
+        let mut fallback_terminal = crate::types::TurnTerminalRecord {
+            turn_id: terminal_transition.terminal.turn_id.clone(),
+            turn_index: terminal_transition.terminal.turn_index,
+            kind: TurnTerminalKind::Aborted,
+            reason: Some("terminal_settlement_failed".into()),
+            last_assistant_message: terminal_transition.terminal.last_assistant_message.clone(),
+            no_brief_reason: Some(TurnNoBriefReason::Aborted),
+            checkpoint: terminal_transition.terminal.checkpoint.clone(),
+            completed_at: Utc::now(),
+            duration_ms,
+        };
+        let mut fallback_turn = self.build_turn_record(&fallback_terminal).await?;
+        if !fallback_turn.produced_brief_ids.is_empty() {
+            fallback_terminal.no_brief_reason = None;
+        }
+        fallback_turn.terminal = Some(crate::types::TurnTerminalSummary::from_terminal(
+            &fallback_terminal,
+        ));
+        let fallback_transition = turn::TurnTerminalTransition {
+            terminal: fallback_terminal,
+            turn_record: fallback_turn,
+            prepared_work_item_completion: None,
+            prepared_wait_for: None,
+            terminal_tool_executions: Vec::new(),
+        };
+        let fallback_state = {
+            let guard = self.inner.agent.lock().await;
+            let mut state = guard.state.clone();
+            if !matches!(state.status, AgentStatus::Stopped) {
+                scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
+            }
+            state.last_runtime_failure = Some(RuntimeFailureSummary {
+                occurred_at: Utc::now(),
+                summary: failure_summary.clone(),
+                phase: RuntimeFailurePhase::RuntimeTurn,
+                detail_hint: Some(
+                    "the intended terminal settlement was replaced by a fenced abort".into(),
+                ),
+                failure_artifact: None,
+            });
+            state
+        };
+        self.commit_queue_terminal_settlement_with_evidence(
+            QueueEntryRecord {
+                status: QueueEntryStatus::Aborted,
+                updated_at: Utc::now(),
+                ..record
+            },
+            vec![
+                AuditEvent::legacy(
+                    "turn_terminal_settlement_failed",
+                    serde_json::json!({
+                        "message_id": message_id,
+                        "turn_id": fallback_transition.terminal.turn_id,
+                        "failed_terminal_kind": terminal_transition.terminal.kind,
+                        "error": failure_summary,
+                        "recovery": "aborted_confirmed_uncommitted_settlement",
+                    }),
+                ),
+                AuditEvent::legacy(
+                    "queue_entry_settled",
+                    serde_json::json!({
+                        "message_id": message_id,
+                        "status": QueueEntryStatus::Aborted,
+                        "reason": "terminal_settlement_failed",
+                    }),
+                ),
+            ],
+            true,
+            Some(&fallback_transition),
+            Some(fallback_state),
+            Vec::new(),
+            Vec::new(),
+        )
+        .await
+        .with_context(|| {
+            format!("failed to abort confirmed-uncommitted terminal settlement after: {error}")
+        })?;
+        Ok(TerminalSettlementDisposition::AbortedFallback)
     }
 
     async fn maybe_supersede_queued_provider_recovery(
@@ -5454,7 +5766,7 @@ impl RuntimeHandle {
                         state
                     };
                     let settlement = self
-                        .commit_queue_terminal_settlement_with_evidence(
+                        .commit_queue_terminal_settlement_resilient(
                             QueueEntryRecord {
                                 message_id: message.id.clone(),
                                 agent_id: message.agent_id.clone(),
@@ -5464,8 +5776,7 @@ impl RuntimeHandle {
                                 updated_at: Utc::now(),
                             },
                             audit_events,
-                            true,
-                            Some(&terminal_transition),
+                            &terminal_transition,
                             Some(committed_state),
                             failure_artifacts
                                 .as_ref()
@@ -5475,6 +5786,8 @@ impl RuntimeHandle {
                                 .as_ref()
                                 .map(|artifacts| vec![artifacts.brief.clone()])
                                 .unwrap_or_default(),
+                            u64::try_from(processing_started.elapsed().as_millis())
+                                .unwrap_or(u64::MAX),
                         )
                         .await;
                     if let Err(error) = settlement {
@@ -5506,7 +5819,7 @@ impl RuntimeHandle {
                 };
                 self.append_state_changed_events(&processed_state)?;
                 let settlement = self
-                    .commit_queue_terminal_settlement(
+                    .commit_queue_terminal_settlement_resilient(
                         QueueEntryRecord {
                             message_id: message.id.clone(),
                             agent_id: message.agent_id.clone(),
@@ -5523,18 +5836,36 @@ impl RuntimeHandle {
                                 "status": QueueEntryStatus::Processed,
                             }),
                         )],
-                        true,
-                        Some(&terminal_transition),
+                        &terminal_transition,
+                        None,
+                        Vec::new(),
+                        Vec::new(),
+                        u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX),
                     )
                     .await;
-                if let Err(error) = settlement {
-                    if execution_settlement_conflict(&error) {
-                        crate::diagnostics::record_missing_terminal_turn_detected();
-                        if self.recover_scheduler_bootstrap_claims().await? > 0 {
-                            continue;
-                        }
+                match settlement {
+                    Ok(TerminalSettlementDisposition::Intended) => {}
+                    Ok(TerminalSettlementDisposition::AbortedFallback) => {
+                        let failed_state = {
+                            let mut guard = self.inner.agent.lock().await;
+                            guard.current_run_abort = None;
+                            guard.state.clone()
+                        };
+                        self.append_state_changed_events(&failed_state)?;
+                        self.maybe_commit_turn_end_work_item_transition().await?;
+                        self.record_closure_decision_event(Some(true)).await?;
+                        self.maybe_emit_pending_system_tick(None).await?;
+                        continue;
                     }
-                    return Err(error);
+                    Err(error) => {
+                        if execution_settlement_conflict(&error) {
+                            crate::diagnostics::record_missing_terminal_turn_detected();
+                            if self.recover_scheduler_bootstrap_claims().await? > 0 {
+                                continue;
+                            }
+                        }
+                        return Err(error);
+                    }
                 }
                 self.maybe_supersede_queued_provider_recovery(&message, Some(&terminal_transition))
                     .await?;
