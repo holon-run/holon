@@ -534,7 +534,13 @@ async fn wake_hint_when_awake_running_is_coalesced() {
     {
         let mut guard = runtime.inner.agent.lock().await;
         guard.state.status = AgentStatus::AwakeRunning;
-        runtime.storage().write_agent(&guard.state).unwrap();
+        guard.state.current_run_id = Some("run-live".into());
+        guard.current_run_abort = Some(CurrentRunAbortHandle {
+            run_id: "run-live".into(),
+            token: CancellationToken::new(),
+            reason: Arc::new(StdMutex::new("operator_aborted".into())),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
     let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
@@ -552,6 +558,95 @@ async fn wake_hint_when_awake_running_is_coalesced() {
         event.kind == "wake_hint_coalesced"
             && event.data["agent_id"] == "default"
             && event.data["correlation_id"] == "corr-sm"
+    }));
+}
+
+#[tokio::test]
+async fn wake_hint_recovers_stale_awake_running_projection_and_triggers() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-stale".into());
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let disposition = runtime.submit_wake_hint(wake_hint_smoke()).await.unwrap();
+    assert_eq!(disposition, WakeDisposition::Triggered);
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeIdle);
+    assert_eq!(state.current_run_id, None);
+    assert_eq!(state.pending_wake_hint, None);
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_stale_run_projection_recovered"
+            && event.data["boundary"] == "wake_hint_submission"
+            && event.data["previous_run_id"] == "run-stale"
+            && event.data["handle_disposition"] == "missing"
+    }));
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "wake_hint_triggered"));
+}
+
+#[tokio::test]
+async fn wake_hint_fails_closed_on_run_id_mismatch() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("wake done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some("run-projected".into());
+        guard.current_run_abort = Some(CurrentRunAbortHandle {
+            run_id: "run-owned".into(),
+            token: CancellationToken::new(),
+            reason: Arc::new(StdMutex::new("operator_aborted".into())),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let error = runtime
+        .submit_wake_hint(wake_hint_smoke())
+        .await
+        .expect_err("mismatched run ownership must fail closed");
+    assert!(error
+        .to_string()
+        .contains("scheduler run projection mismatch"));
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::AwakeRunning);
+    assert_eq!(state.current_run_id.as_deref(), Some("run-projected"));
+    assert!(state.pending_wake_hint.is_none());
+
+    let events = runtime.storage().read_recent_events(20).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "scheduler_run_projection_invariant_violation"
+            && event.data["boundary"] == "wake_hint_submission"
+            && event.data["projected_run_id"] == "run-projected"
+            && event.data["handle_run_id"] == "run-owned"
     }));
 }
 

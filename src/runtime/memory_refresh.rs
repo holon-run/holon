@@ -107,6 +107,11 @@ impl RuntimeHandle {
         &self,
         triggering_continuation: Option<&ContinuationResolution>,
     ) -> Result<bool> {
+        scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .reconcile_stale_run_projection(
+                scheduler_executor::StaleRunProjectionBoundary::PendingSystemTick,
+            )
+            .await?;
         let (scheduler_snapshot, queue_len, pending_wake_hint) = {
             let guard = self.inner.agent.lock().await;
             let eligible = matches!(
@@ -1208,6 +1213,20 @@ mod tests {
             .unwrap();
     }
 
+    fn set_agent_live_running(test_runtime: &TestRuntime, run_id: &str) {
+        let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
+        guard.state.status = AgentStatus::AwakeRunning;
+        guard.state.current_run_id = Some(run_id.into());
+        guard.current_run_abort = Some(CurrentRunAbortHandle {
+            run_id: run_id.into(),
+            token: CancellationToken::new(),
+            reason: Arc::new(StdMutex::new("operator_aborted".into())),
+        });
+        guard
+            .persist_state(&test_runtime.runtime.inner.storage)
+            .unwrap();
+    }
+
     fn add_queued_work_item(test_runtime: &TestRuntime, id: &str, target: &str) -> WorkItemRecord {
         let mut record = WorkItemRecord::new("default", target, WorkItemState::Open);
         record.id = id.to_string();
@@ -1466,7 +1485,7 @@ mod tests {
     #[test]
     fn running_agent_consumes_due_blocked_recheck_without_tick() {
         let test_runtime = test_runtime();
-        set_agent_status(&test_runtime, AgentStatus::AwakeRunning);
+        set_agent_live_running(&test_runtime, "run-live");
 
         let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
         block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
@@ -1487,6 +1506,56 @@ mod tests {
                 .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
             "due recheck should be consumed while the active turn can inspect work state"
         );
+    }
+
+    #[test]
+    fn stale_running_projection_emits_pending_wake_hint_in_same_call() {
+        let test_runtime = test_runtime();
+        {
+            let mut guard = test_runtime.runtime.inner.agent.blocking_lock();
+            guard.state.status = AgentStatus::AwakeRunning;
+            guard.state.current_run_id = Some("run-stale".into());
+            guard.state.pending_wake_hint = Some(PendingWakeHint {
+                reason: "stale wake".into(),
+                description: None,
+                scope: None,
+                external_trigger_id: None,
+                source: Some("test".into()),
+                resource: None,
+                body: None,
+                content_type: None,
+                correlation_id: None,
+                causation_id: None,
+                created_at: Utc::now(),
+            });
+            guard
+                .persist_state(&test_runtime.runtime.inner.storage)
+                .unwrap();
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(emitted);
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "wake_hint");
+        let state = rt.block_on(test_runtime.runtime.agent_state()).unwrap();
+        assert_eq!(state.status, AgentStatus::AwakeIdle);
+        assert_eq!(state.current_run_id, None);
+        assert_eq!(state.pending_wake_hint, None);
+        assert!(test_runtime
+            .runtime
+            .storage()
+            .read_recent_events(20)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.kind == "scheduler_stale_run_projection_recovered"
+                    && event.data["boundary"] == "pending_system_tick"
+            }));
     }
 
     #[test]
@@ -2529,7 +2598,7 @@ mod tests {
         let test_runtime = test_runtime();
 
         // ineligible status suppresses idle tick emission
-        set_agent_status(&test_runtime, AgentStatus::AwakeRunning);
+        set_agent_live_running(&test_runtime, "run-live");
 
         add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
 

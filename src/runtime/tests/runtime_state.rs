@@ -8694,10 +8694,12 @@ async fn authoritative_completion_cancels_active_child_wait_and_resumes_parent()
         execution.work_items[&child.id].state,
         crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
     ));
-    assert!(matches!(
-        execution.work_items[&parent.id].state,
+    let parent_state = &execution.work_items[&parent.id].state;
+    match parent_state {
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
-    ));
+        | crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. } => {}
+        other => panic!("parent should resume after child completion, got {other:?}"),
+    }
     assert_eq!(
         runtime
             .storage()

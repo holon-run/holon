@@ -173,6 +173,29 @@ pub(super) struct SchedulerDecisionExecutor<'a> {
     runtime: &'a RuntimeHandle,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StaleRunProjectionBoundary {
+    PendingSystemTick,
+    RunLoopPoll,
+    WakeHintSubmission,
+}
+
+impl StaleRunProjectionBoundary {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PendingSystemTick => "pending_system_tick",
+            Self::RunLoopPoll => "run_loop_poll",
+            Self::WakeHintSubmission => "wake_hint_submission",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum StaleRunProjectionReconciliation {
+    NoChange,
+    Recovered,
+}
+
 #[derive(Clone)]
 struct QueueCandidate {
     message: MessageEnvelope,
@@ -189,6 +212,107 @@ enum PrepareMessageOutcome {
 impl<'a> SchedulerDecisionExecutor<'a> {
     pub(super) fn new(runtime: &'a RuntimeHandle) -> Self {
         Self { runtime }
+    }
+
+    pub(super) async fn reconcile_stale_run_projection(
+        &self,
+        boundary: StaleRunProjectionBoundary,
+    ) -> Result<StaleRunProjectionReconciliation> {
+        let mut guard = self.runtime.inner.agent.lock().await;
+        if guard.state.status == AgentStatus::Stopped
+            || (guard.state.status != AgentStatus::AwakeRunning
+                && guard.state.current_run_id.is_none())
+        {
+            return Ok(StaleRunProjectionReconciliation::NoChange);
+        }
+
+        let projected_run_id = guard.state.current_run_id.clone();
+        let handle = guard.current_run_abort.as_ref().cloned();
+        match (projected_run_id.as_deref(), handle.as_ref()) {
+            (Some(projected_run_id), Some(handle)) if handle.run_id == projected_run_id => {
+                return Ok(StaleRunProjectionReconciliation::NoChange);
+            }
+            (Some(projected_run_id), Some(handle)) if handle.run_id != projected_run_id => {
+                let event = AuditEvent::legacy(
+                    "scheduler_run_projection_invariant_violation",
+                    serde_json::json!({
+                        "agent_id": guard.state.id,
+                        "boundary": boundary.as_str(),
+                        "status": guard.state.status,
+                        "projected_run_id": projected_run_id,
+                        "handle_run_id": handle.run_id,
+                        "handle_cancelled": handle.token.is_cancelled(),
+                    }),
+                );
+                self.runtime.inner.storage.append_event(&event)?;
+                bail!(
+                    "scheduler run projection mismatch for agent {} at {}: projected run {} but runtime owns {}",
+                    guard.state.id,
+                    boundary.as_str(),
+                    projected_run_id,
+                    handle.run_id
+                );
+            }
+            (None, Some(handle)) => {
+                let event = AuditEvent::legacy(
+                    "scheduler_run_projection_invariant_violation",
+                    serde_json::json!({
+                        "agent_id": guard.state.id,
+                        "boundary": boundary.as_str(),
+                        "status": guard.state.status,
+                        "projected_run_id": Value::Null,
+                        "handle_run_id": handle.run_id,
+                        "handle_cancelled": handle.token.is_cancelled(),
+                    }),
+                );
+                self.runtime.inner.storage.append_event(&event)?;
+                bail!(
+                    "scheduler run projection mismatch for agent {} at {}: runtime owns {} without a projected run id",
+                    guard.state.id,
+                    boundary.as_str(),
+                    handle.run_id
+                );
+            }
+            _ => {}
+        }
+
+        let previous_state = guard.state.clone();
+        let mut recovered_state = previous_state.clone();
+        scheduler::apply_idle_projection(&mut recovered_state, &self.runtime.inner.storage)?;
+        let event = AuditEvent::legacy(
+            "scheduler_stale_run_projection_recovered",
+            serde_json::json!({
+                "agent_id": recovered_state.id,
+                "boundary": boundary.as_str(),
+                "previous_status": previous_state.status,
+                "previous_run_id": previous_state.current_run_id,
+                "next_status": recovered_state.status,
+                "queue_len": guard.queue.len(),
+                "pending_wake_hint": recovered_state.pending_wake_hint.is_some(),
+                "handle_disposition": "missing",
+            }),
+        );
+        let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+            agent_id: recovered_state.id.clone(),
+            agent_state: crate::runtime_db::transitions::AgentStateMutation {
+                expected: Some(Box::new(guard.last_persisted_state.clone())),
+                record: Box::new(recovered_state.clone()),
+            },
+            audit_events: vec![event],
+            fault: self.runtime.take_transition_fault(),
+        };
+        let mut commit = self
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .commit_agent_posture(&command)?;
+        guard.state = recovered_state.clone();
+        guard.last_persisted_state = recovered_state;
+        commit.effects.agent_state = None;
+        drop(guard);
+        self.runtime.apply_transition_commit(commit).await;
+        Ok(StaleRunProjectionReconciliation::Recovered)
     }
 
     pub(super) async fn apply_control(
@@ -372,6 +496,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {
         let started_at = std::time::Instant::now();
+        self.reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
+            .await?;
         let mut replans = 0;
         loop {
             let candidate = {
@@ -2761,6 +2887,172 @@ mod tests {
             MessageDeliverySurface::HttpControlPrompt,
             AdmissionContext::ControlAuthenticated,
         )
+    }
+
+    #[tokio::test]
+    async fn poll_recovers_stale_running_projection_before_claiming_queued_input() {
+        use crate::runtime::tests::support::{context_config, CountingProvider};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let queued = runtime
+            .enqueue(operator_prompt("queued input"))
+            .await
+            .unwrap();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::AwakeRunning;
+            guard.state.current_run_id = Some("run-stale".into());
+            guard.persist_state(&runtime.inner.storage).unwrap();
+        }
+
+        let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+        else {
+            panic!("stale running projection should not suppress queued input");
+        };
+        assert_eq!(scheduled.message.id, queued.id);
+        assert_ne!(
+            scheduled.running_state.current_run_id.as_deref(),
+            Some("run-stale")
+        );
+        assert!(runtime
+            .storage()
+            .read_recent_events(20)
+            .unwrap()
+            .iter()
+            .any(|event| {
+                event.kind == "scheduler_stale_run_projection_recovered"
+                    && event.data["boundary"] == "run_loop_poll"
+            }));
+    }
+
+    #[tokio::test]
+    async fn cancelled_matching_run_handle_retains_abort_authority() {
+        use crate::runtime::tests::support::{context_config, CountingProvider};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            let token = CancellationToken::new();
+            token.cancel();
+            guard.state.status = AgentStatus::AwakeRunning;
+            guard.state.current_run_id = Some("run-cancelled".into());
+            guard.current_run_abort = Some(CurrentRunAbortHandle {
+                run_id: "run-cancelled".into(),
+                token,
+                reason: Arc::new(StdMutex::new("operator_aborted".into())),
+            });
+            guard.persist_state(&runtime.inner.storage).unwrap();
+        }
+
+        let outcome = SchedulerDecisionExecutor::new(&runtime)
+            .reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
+            .await
+            .unwrap();
+        assert_eq!(outcome, StaleRunProjectionReconciliation::NoChange);
+
+        let guard = runtime.inner.agent.lock().await;
+        assert_eq!(guard.state.status, AgentStatus::AwakeRunning);
+        assert_eq!(guard.state.current_run_id.as_deref(), Some("run-cancelled"));
+        assert!(guard.current_run_abort.is_some());
+        drop(guard);
+
+        let snapshot = runtime
+            .current_run_abort_token()
+            .await
+            .expect("cancelled run must retain its abort handle until execution exits");
+        assert_eq!(snapshot.run_id, "run-cancelled");
+        assert!(snapshot.token.is_cancelled());
+    }
+
+    #[tokio::test]
+    async fn stale_run_recovery_precommit_failure_keeps_projection_unchanged() {
+        use crate::runtime::tests::support::{context_config, CountingProvider};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::AwakeRunning;
+            guard.state.current_run_id = Some("run-stale".into());
+            guard.persist_state(&runtime.inner.storage).unwrap();
+        }
+        runtime.inject_next_transition_fault(TransitionFaultPoint::BeforeCommit);
+
+        let error = SchedulerDecisionExecutor::new(&runtime)
+            .reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
+            .await
+            .expect_err("pre-commit failure must abort recovery");
+        assert!(error
+            .to_string()
+            .contains("injected runtime transition fault at BeforeCommit"));
+
+        let guard = runtime.inner.agent.lock().await;
+        assert_eq!(guard.state.status, AgentStatus::AwakeRunning);
+        assert_eq!(guard.state.current_run_id.as_deref(), Some("run-stale"));
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap()
+                .unwrap(),
+            guard.state
+        );
+        drop(guard);
+        assert!(!runtime
+            .storage()
+            .read_recent_events(20)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "scheduler_stale_run_projection_recovered"));
     }
 
     #[test]

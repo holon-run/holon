@@ -138,6 +138,15 @@ persist `Stopped` for non-runnable lifecycle control.
 `Stopped` is the only lifecycle-control gate. Other statuses are scheduler
 posture derived from runtime facts.
 
+`AwakeRunning` and `current_run_id` are also projections rather than execution
+ownership by themselves. While a runtime process is active, a matching
+`CurrentRunAbortHandle` is the live-run authority. A cancelled handle remains
+the authority and cancellation evidence until the owning execution exits and
+clears it. Wake and run-loop boundaries may repair a provably stale running
+projection to `AwakeIdle` only when the handle is absent; they must fail closed
+if a non-empty handle names a different run, and they must never repair
+`Stopped`.
+
 ## Action Semantics
 
 ### Start
