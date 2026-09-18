@@ -3324,6 +3324,20 @@ fn print_scheduler_recovery_report(
                 .map(|entry| &entry.status),
         );
     }
+    for result in report.pending_task_results {
+        println!(
+            "- pending_task_result:{} task={} owner={:?} state={} deferred={:?} next_recheck={:?}",
+            result.message_id,
+            result.task_id,
+            result.owner,
+            result.state,
+            result.deferred_reason,
+            result.next_recheck_at,
+        );
+    }
+    if report.pending_task_results_truncated {
+        println!("- pending_task_results: truncated at 128 records");
+    }
     for candidate in report.continuation_reconciliations {
         println!(
             "- continuation:{} parent={} stale_target={:?} active_target={} eligible={} reason={}",

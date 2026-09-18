@@ -1162,6 +1162,35 @@ fn append_completed_rejoin_task(
         .unwrap();
 }
 
+fn append_completed_rejoin_task_for_message(
+    runtime: &RuntimeHandle,
+    task_id: &str,
+    work_item_id: &str,
+    parent_turn_id: &str,
+    parent_message_id: &str,
+) {
+    runtime
+        .storage()
+        .append_task(&TaskRecord {
+            id: task_id.into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: Some(parent_message_id.into()),
+            work_item_id: Some(work_item_id.into()),
+            summary: Some(format!("{task_id} completed")),
+            detail: Some(serde_json::json!({
+                "rejoin_obligation_id": task_id,
+                "rejoin_generation": 1,
+                "parent_turn_id": parent_turn_id,
+            })),
+            recovery: None,
+        })
+        .unwrap();
+}
+
 fn append_running_rejoin_task(runtime: &RuntimeHandle, task_id: &str, work_item_id: &str) {
     runtime
         .storage()
@@ -5985,19 +6014,6 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         .runtime_db
         .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
         .unwrap();
-    append_completed_rejoin_task(
-        &runtime,
-        "task-stale-rejoin",
-        &work_item.id,
-        "turn-stale-rejoin-parent",
-    );
-    append_completed_rejoin_task(
-        &runtime,
-        "task-current-rejoin",
-        &work_item.id,
-        "turn-current-rejoin-parent",
-    );
-
     let mut stale = task_result_message("task-stale-rejoin").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -6011,7 +6027,6 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         "work_item_id": work_item.id,
     }));
     stale.turn_id = Some("turn-stale-rejoin".into());
-    let stale = runtime.enqueue(stale).await.unwrap();
     let mut valid = task_result_message("task-current-rejoin").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -6025,6 +6040,21 @@ async fn sibling_task_result_is_preserved_without_consuming_current_wait() {
         "work_item_id": work_item.id,
     }));
     valid.turn_id = Some("turn-current-rejoin".into());
+    append_completed_rejoin_task_for_message(
+        &runtime,
+        "task-stale-rejoin",
+        &work_item.id,
+        "turn-stale-rejoin-parent",
+        &stale.id,
+    );
+    append_completed_rejoin_task_for_message(
+        &runtime,
+        "task-current-rejoin",
+        &work_item.id,
+        "turn-current-rejoin-parent",
+        &valid.id,
+    );
+    let stale = runtime.enqueue(stale).await.unwrap();
     let valid_message = valid;
 
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
@@ -6199,18 +6229,19 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
             .await
             .unwrap();
         runtime.pick_work_item(work_item.id.clone()).await.unwrap();
-        append_completed_rejoin_task(
-            runtime,
-            "task-interrupted-admission",
-            &work_item.id,
-            "turn-interrupted-admission-parent",
-        );
         let mut task_result = task_result_message("task-interrupted-admission").with_admission(
             MessageDeliverySurface::TaskRejoin,
             AdmissionContext::RuntimeOwned,
         );
         task_result.work_item_id = Some(work_item.id.clone());
         task_result.turn_id = Some("turn-interrupted-admission".into());
+        append_completed_rejoin_task_for_message(
+            runtime,
+            "task-interrupted-admission",
+            &work_item.id,
+            "turn-interrupted-admission-parent",
+            &task_result.id,
+        );
         let task = runtime
             .task_record("task-interrupted-admission")
             .await
@@ -7013,6 +7044,125 @@ async fn bootstrap_completion_releases_all_waiters() {
     })
     .await
     .expect("all bootstrap waiters should observe the durable result");
+}
+
+#[tokio::test]
+async fn agent_scope_terminal_result_persists_obligation_without_consuming_unrelated_wait() {
+    for status in [
+        TaskStatus::Completed,
+        TaskStatus::Failed,
+        TaskStatus::Cancelled,
+        TaskStatus::Interrupted,
+    ] {
+        for wake in [
+            WaitForWakeKind::External,
+            WaitForWakeKind::Timer,
+            WaitForWakeKind::OperatorInput,
+        ] {
+            let dir = tempdir().unwrap();
+            let workspace = tempdir().unwrap();
+            let runtime = RuntimeHandle::new(
+                "default",
+                dir.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(CountingProvider {
+                    calls: Mutex::new(0),
+                    reply: "result handled",
+                }),
+                "default".into(),
+                context_config(),
+            )
+            .unwrap();
+            let task = TaskRecord {
+                id: "task-agent-obligation".into(),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("agent-scope task".into()),
+                detail: Some(serde_json::json!({
+                    "terminal_reentry": true,
+                    "rejoin_obligation_id": "task-agent-obligation",
+                    "rejoin_generation": 1,
+                    "parent_turn_id": "turn-agent-parent",
+                })),
+                recovery: None,
+            };
+            runtime.storage().append_task(&task).unwrap();
+            let resource = match wake {
+                WaitForWakeKind::Timer => Some(
+                    runtime
+                        .schedule_timer(300_000, None, Some("unrelated timer".into()))
+                        .await
+                        .unwrap()
+                        .id,
+                ),
+                WaitForWakeKind::External | WaitForWakeKind::OperatorInput => {
+                    Some("unrelated-resource".into())
+                }
+                WaitForWakeKind::TaskResult | WaitForWakeKind::System => unreachable!(),
+            };
+            let wait = runtime
+                .register_wait_for(
+                    "default",
+                    None,
+                    wake,
+                    resource,
+                    "independent wait".into(),
+                    None,
+                )
+                .await
+                .unwrap();
+            let mut message = task_result_message(&task.id).with_admission(
+                MessageDeliverySurface::TaskRejoin,
+                AdmissionContext::RuntimeOwned,
+            );
+            message.task_id = Some(task.id.clone());
+            let terminal = TaskRecord {
+                status: status.clone(),
+                updated_at: Utc::now(),
+                parent_message_id: Some(message.id.clone()),
+                ..task.clone()
+            };
+            runtime
+                .commit_terminal_task_result(&terminal, "task_terminal_persisted", &message)
+                .await
+                .unwrap();
+
+            let stored_wait = runtime
+                .storage()
+                .latest_wait_conditions()
+                .unwrap()
+                .into_iter()
+                .find(|condition| condition.id == wait.condition.id)
+                .unwrap();
+            assert_eq!(stored_wait.status, WaitConditionStatus::Active);
+            assert!(stored_wait.trigger_message_id().is_none());
+            assert!(runtime
+                .task_record(&terminal.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .work_item_id
+                .is_none());
+            let obligation = runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .latest_for_message(&message.id)
+                .unwrap()
+                .expect("every fenced terminal result must persist its handling obligation");
+            assert_eq!(obligation.task_id, terminal.id);
+            assert_eq!(
+                obligation.state,
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+            );
+        }
+    }
 }
 
 #[tokio::test]

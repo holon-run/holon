@@ -145,6 +145,16 @@ recovery owned the lane, so the exact queued wake can consume it next. Provider
 recovery does not admit `Paused`, `NeedsRepair`, `Terminal`, or already
 `InFlight` WorkItems, and it does not clear blockers or waits.
 
+Task-result handling obligations do not weaken these admission gates. A valid
+terminal result is retained for its immutable agent-lifecycle or WorkItem
+owner even when no exact task wait exists or focus points elsewhere.
+Continuation classification is a request, not a claim: an ineligible owner
+leaves the settlement durably deferred with a bounded recovery entry point.
+Only a matching wait is consumed, and queue reduction is not model delivery.
+The settlement ledger, rather than a second execution or wake authority,
+records pending, admitted, and settled handling responsibility. Recovery must
+re-enter through canonical admission and preserve owner and generation fences.
+
 ### WaitCondition
 
 The runtime wait record is the sole wait authority. Every `WaitFor` creates a

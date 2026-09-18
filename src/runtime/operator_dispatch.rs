@@ -469,7 +469,7 @@ impl RuntimeHandle {
         let _ = sync_agent_message_count(&self.inner.storage, &mut agent)?;
         let prior_closure = self.current_closure_decision().await?;
         let continuation = ContinuationTrigger::from_message(&message, None)
-            .map(|trigger| resolve_continuation(&prior_closure, &trigger, None));
+            .map(|trigger| resolve_continuation(&prior_closure, &trigger));
         let identity = self.agent_identity_view().await?;
         let default_external_ingress = self
             .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
@@ -580,7 +580,6 @@ impl RuntimeHandle {
                     evidence: vec!["synthetic_subagent_prompt_preview".into()],
                 },
                 &trigger,
-                None,
             )
         });
         let context_config = self.current_context_config().await;

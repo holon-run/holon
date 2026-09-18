@@ -834,11 +834,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         self.runtime
             .apply_transition_commit(transition_commit)
             .await;
-        if let Some((activation_id, work_item_id)) = canonical_claim.as_ref().and_then(|plan| {
-            plan.work_item_id
-                .as_ref()
-                .map(|work_item_id| (plan.activation_id.as_str(), work_item_id.as_str()))
-        }) {
+        if let Some(plan) = canonical_claim.as_ref() {
+            let activation_id = plan.activation_id.as_str();
+            let work_item_id = plan.work_item_id.as_deref();
             // Admission intentionally follows the canonical claim commit. If the
             // process stops here, restart recovery closes the open attempt and a
             // later canonical activation reclaims its unsettled results.
@@ -1036,6 +1034,57 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
+    fn task_result_recovery_is_deliverable(&self, message: &MessageEnvelope) -> Result<bool> {
+        if !scheduler::runtime_owned_internal_followup(message)
+            || message.authority_class != AuthorityClass::RuntimeInstruction
+        {
+            return Ok(false);
+        }
+        let Some(result_message_id) = message.source_refs.get("task_result_message_id") else {
+            return Ok(false);
+        };
+        let Some(record) = self
+            .runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .latest_for_message(result_message_id)?
+        else {
+            return Ok(false);
+        };
+        if record.agent_id != message.agent_id
+            || record.work_item_id != message.work_item_id
+            || message.source_refs.get("task_result_identity") != Some(&record.result_identity)
+            || record.state
+                == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+        {
+            return Ok(false);
+        }
+        let task = self
+            .runtime
+            .inner
+            .storage
+            .latest_task_record(&record.task_id)?;
+        if !task.as_ref().is_some_and(|task| {
+            task.agent_id == record.agent_id
+                && task.effective_work_item_id() == record.work_item_id.as_deref()
+                && super::task_state_reducer::is_terminal_task_status(&task.status)
+                && task.rejoin_fence().is_ok_and(|fence| {
+                    fence.generation == record.rejoin_generation
+                        && fence.parent_turn_id == record.parent_turn_id
+                })
+        }) {
+            return Ok(false);
+        }
+        Ok(!self
+            .runtime
+            .inner
+            .storage
+            .active_wait_conditions_for_agent(&message.agent_id)?
+            .iter()
+            .any(|wait| wait.work_item_id == record.work_item_id))
+    }
+
     fn canonical_activation_plan(
         &self,
         projection: &scheduler::SchedulerProjection,
@@ -1043,6 +1092,13 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         dispatch_plan: &MessageDispatchPlan,
         model_reentry: bool,
     ) -> Result<CanonicalClaimOutcome> {
+        if matches!(
+            &message.origin,
+            MessageOrigin::System { subsystem } if subsystem == "task_result_recovery"
+        ) && !self.task_result_recovery_is_deliverable(message)?
+        {
+            return Ok(CanonicalClaimOutcome::ReduceOnly);
+        }
         let task = match &dispatch_plan.task {
             Ok(task) => task.as_ref(),
             Err(_) => return Ok(CanonicalClaimOutcome::ReduceOnly),

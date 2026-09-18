@@ -1,8 +1,8 @@
 use super::wake_matching::{resolve_resume_authorization, ResumeAuthorization};
 use crate::types::{
-    admission_trigger_kind_for_message_kind, ClosureDecision, ClosureOutcome, ContinuationClass,
+    admission_trigger_kind_for_message_kind, ClosureDecision, ContinuationClass,
     ContinuationResolution, ContinuationTriggerKind, MessageBody, MessageEnvelope, MessageKind,
-    TaskRecord, TaskResultOutcome, TaskStatus, WaitingReason,
+    TaskRecord, TaskResultOutcome, TaskStatus,
 };
 
 #[derive(Debug, Clone)]
@@ -110,22 +110,8 @@ impl ContinuationTrigger {
 pub(super) fn resolve_continuation(
     prior: &ClosureDecision,
     trigger: &ContinuationTrigger,
-    agent_work_item_id: Option<&str>,
 ) -> ContinuationResolution {
     let prior_waiting_reason = prior.waiting_reason;
-    let same_work_item = match (trigger.task_work_item_id.as_deref(), agent_work_item_id) {
-        (Some(_), None) | (None, Some(_)) => false,
-        (None, None) => {
-            trigger.kind == ContinuationTriggerKind::TaskResult
-                && trigger.task_result_outcome.is_some()
-                && (trigger.exact_task_wait
-                    || matches!(
-                        prior_waiting_reason,
-                        None | Some(WaitingReason::AwaitingTaskResult)
-                    ))
-        }
-        (Some(t), Some(a)) => t == a,
-    };
     let authorization = if trigger.exact_wait_recheck && trigger.contentful {
         super::wake_matching::ResumeDecision {
             authorization: ResumeAuthorization::ExpectedWait,
@@ -139,7 +125,7 @@ pub(super) fn resolve_continuation(
             trigger.kind,
             trigger.contentful,
             trigger.task_result_outcome,
-            same_work_item,
+            trigger.exact_task_wait,
         )
     };
     let mut evidence = Vec::new();
@@ -184,13 +170,7 @@ pub(super) fn resolve_continuation(
     }
     let class = match authorization.authorization {
         ResumeAuthorization::ExpectedWait => ContinuationClass::ResumeExpectedWait,
-        ResumeAuthorization::RuntimeEventReentry => {
-            if prior.outcome == ClosureOutcome::Waiting {
-                ContinuationClass::ResumeOverride
-            } else {
-                ContinuationClass::TaskResultReentry
-            }
-        }
+        ResumeAuthorization::RuntimeEventReentry => ContinuationClass::TaskResultReentry,
         ResumeAuthorization::Override => ContinuationClass::ResumeOverride,
         ResumeAuthorization::LocalContinuation => ContinuationClass::LocalContinuation,
         ResumeAuthorization::LivenessOnly => ContinuationClass::LivenessOnly,
@@ -256,7 +236,7 @@ fn system_tick_is_contentful(message: &MessageEnvelope) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use crate::types::{ClosureDecision, RuntimePosture};
+    use crate::types::{ClosureDecision, ClosureOutcome, RuntimePosture, WaitingReason};
 
     use crate::types::{AuthorityClass, MessageOrigin, Priority};
 
@@ -273,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn unbound_terminal_task_result_resumes_expected_wait() {
+    fn closure_task_label_without_exact_wait_requests_result_reentry() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingTaskResult),
             &ContinuationTrigger {
@@ -285,10 +265,10 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
-        assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
+        assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
         assert!(resolution.model_reentry);
+        assert!(!resolution.matched_waiting_reason);
     }
 
     #[test]
@@ -304,20 +284,19 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
 
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
-        assert!(resolution.matched_waiting_reason);
+        assert!(!resolution.matched_waiting_reason);
         assert!(resolution
             .evidence
             .iter()
-            .any(|entry| entry == "matches_waiting_reason"));
+            .any(|entry| entry == "does_not_satisfy_waiting_reason"));
     }
 
     #[test]
-    fn terminal_task_result_for_other_work_item_does_not_resume_expected_wait() {
+    fn terminal_task_result_for_captured_owner_does_not_satisfy_closure_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingTaskResult),
             &ContinuationTrigger {
@@ -329,12 +308,11 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            Some("active-work"),
         );
 
-        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_reentry);
-        assert!(resolution.matched_waiting_reason);
+        assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
+        assert!(resolution.model_reentry);
+        assert!(!resolution.matched_waiting_reason);
     }
 
     #[test]
@@ -350,7 +328,6 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
@@ -369,7 +346,6 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
 
         assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
@@ -390,7 +366,6 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
         assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
         assert!(resolution.model_reentry);
@@ -415,7 +390,6 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
@@ -446,7 +420,6 @@ mod tests {
                     exact_task_wait: false,
                     exact_wait_recheck: false,
                 },
-                None,
             );
             assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
             assert!(resolution.model_reentry);
@@ -472,14 +445,13 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
         assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
         assert!(resolution.model_reentry);
     }
 
     #[test]
-    fn unbound_terminal_task_result_does_not_override_mismatched_wait() {
+    fn terminal_task_result_reentry_does_not_satisfy_external_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingExternalChange),
             &ContinuationTrigger {
@@ -491,14 +463,14 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
-        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
+        assert!(resolution.model_reentry);
+        assert!(!resolution.matched_waiting_reason);
     }
 
     #[test]
-    fn unbound_terminal_task_result_does_not_override_operator_input_wait() {
+    fn terminal_task_result_reentry_does_not_satisfy_operator_wait() {
         let resolution = resolve_continuation(
             &waiting(WaitingReason::AwaitingOperatorInput),
             &ContinuationTrigger {
@@ -510,10 +482,10 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
-        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
-        assert!(!resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
+        assert!(resolution.model_reentry);
+        assert!(!resolution.matched_waiting_reason);
     }
 
     #[test]
@@ -529,7 +501,6 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
         assert!(!resolution.model_reentry);
@@ -549,7 +520,6 @@ mod tests {
                 exact_task_wait: false,
                 exact_wait_recheck: false,
             },
-            None,
         );
 
         assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
@@ -606,13 +576,10 @@ mod tests {
             exact_task_wait: true,
             exact_wait_recheck: false,
         };
-        let resolution = resolve_continuation(
-            &waiting(WaitingReason::AwaitingOperatorInput),
-            &trigger,
-            None,
-        );
+        let resolution =
+            resolve_continuation(&waiting(WaitingReason::AwaitingOperatorInput), &trigger);
         assert!(resolution.model_reentry);
-        assert_eq!(resolution.class, ContinuationClass::ResumeOverride);
+        assert_eq!(resolution.class, ContinuationClass::ResumeExpectedWait);
         assert!(resolution
             .evidence
             .iter()
@@ -620,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn polluted_closure_without_exact_task_wait_stays_liveness_only() {
+    fn polluted_closure_without_exact_task_wait_requests_result_reentry_only() {
         let trigger = ContinuationTrigger {
             kind: ContinuationTriggerKind::TaskResult,
             contentful: true,
@@ -630,13 +597,10 @@ mod tests {
             exact_task_wait: false,
             exact_wait_recheck: false,
         };
-        let resolution = resolve_continuation(
-            &waiting(WaitingReason::AwaitingOperatorInput),
-            &trigger,
-            None,
-        );
-        assert!(!resolution.model_reentry);
-        assert_eq!(resolution.class, ContinuationClass::LivenessOnly);
+        let resolution =
+            resolve_continuation(&waiting(WaitingReason::AwaitingOperatorInput), &trigger);
+        assert!(resolution.model_reentry);
+        assert_eq!(resolution.class, ContinuationClass::TaskResultReentry);
         assert!(resolution
             .evidence
             .iter()
