@@ -243,20 +243,64 @@ fn resolve_and_validate_path(
         .map_err(|_| forbidden("path escapes workspace root"))
 }
 
+/// Anchor-deduplication priority for [`registered_file_roots`].
+///
+/// Multiple root ids can point at the same filesystem directory (stale
+/// canonical-root backfills whose workspace entry no longer exists, or the
+/// legacy shared `agent_home` alias next to a canonical `agent_home:<id>`).
+/// Only one root may claim an anchor, or every absolute-path reference below
+/// it fails with `AmbiguousRoot`.
+const ANCHOR_PRIORITY_CANONICAL_AGENT_HOME: u8 = 4;
+const ANCHOR_PRIORITY_LIVE_WORKSPACE: u8 = 3;
+const ANCHOR_PRIORITY_REGISTERED_ROOT: u8 = 2;
+const ANCHOR_PRIORITY_REMOVED_ROOT: u8 = 1;
+
+fn insert_deduplicated_root(
+    roots: &mut Vec<crate::system::FileRoot>,
+    anchors: &mut std::collections::HashMap<PathBuf, (usize, u8)>,
+    root: crate::system::FileRoot,
+    priority: u8,
+) {
+    let Ok(normalized) = crate::system::workspace::normalize_path(&root.filesystem_path) else {
+        // Paths that cannot be normalized never collide; keep old behavior.
+        roots.push(root);
+        return;
+    };
+    match anchors.get(&normalized) {
+        Some(&(_, existing_priority)) if existing_priority >= priority => {}
+        Some(&(index, _)) => {
+            roots[index] = root;
+            anchors.insert(normalized, (index, priority));
+        }
+        None => {
+            anchors.insert(normalized, (roots.len(), priority));
+            roots.push(root);
+        }
+    }
+}
+
 fn registered_file_roots(
     state: &AppState,
 ) -> Result<Vec<crate::system::FileRoot>, (StatusCode, Json<Value>)> {
     let workspaces = state.host.workspace_entries().map_err(error_response)?;
-    let mut roots = workspaces
-        .into_iter()
-        .map(|workspace| crate::system::FileRoot {
+    let mut roots = Vec::new();
+    let mut anchors = std::collections::HashMap::new();
+    for workspace in workspaces {
+        let workspace_id = workspace.workspace_id.clone();
+        let root = crate::system::FileRoot {
             execution_root_id: crate::system::canonical_execution_root_id(&workspace.workspace_id),
-            workspace_id: workspace.workspace_id,
+            workspace_id,
             filesystem_path: workspace.workspace_anchor,
             kind: crate::system::WorkspaceProjectionKind::CanonicalRoot,
             removed: false,
-        })
-        .collect::<Vec<_>>();
+        };
+        let priority = if root.workspace_id.starts_with("agent_home:") {
+            ANCHOR_PRIORITY_CANONICAL_AGENT_HOME
+        } else {
+            ANCHOR_PRIORITY_LIVE_WORKSPACE
+        };
+        insert_deduplicated_root(&mut roots, &mut anchors, root, priority);
+    }
     let registered = state
         .host
         .runtime_db()
@@ -270,13 +314,23 @@ fn registered_file_roots(
         {
             continue;
         }
-        roots.push(crate::system::FileRoot {
-            workspace_id: entry.workspace_id,
-            execution_root_id: entry.execution_root_id,
-            filesystem_path: entry.filesystem_path,
-            kind: entry.root_kind,
-            removed: entry.removed_at.is_some(),
-        });
+        let priority = if entry.removed_at.is_some() {
+            ANCHOR_PRIORITY_REMOVED_ROOT
+        } else {
+            ANCHOR_PRIORITY_REGISTERED_ROOT
+        };
+        insert_deduplicated_root(
+            &mut roots,
+            &mut anchors,
+            crate::system::FileRoot {
+                workspace_id: entry.workspace_id,
+                execution_root_id: entry.execution_root_id,
+                filesystem_path: entry.filesystem_path,
+                kind: entry.root_kind,
+                removed: entry.removed_at.is_some(),
+            },
+            priority,
+        );
     }
     Ok(roots)
 }

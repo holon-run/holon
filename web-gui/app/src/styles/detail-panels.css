@@ -114,6 +114,4 @@
 .file-preview-page { height: 100dvh; display: flex; flex-direction: column; padding: 16px 24px; box-sizing: border-box; gap: 12px; }
 .file-preview-page > header { display: flex; align-items: center; gap: 16px; flex: none; }
 .file-preview-page > .file-browser { flex: 1; min-height: 0; }
-.file-reference-error { overflow-wrap: anywhere; }
-.file-reference-error small { color: var(--text-muted); font-size: 0.85em; }
-.file-reference-error button { font: inherit; text-decoration: underline; }
+.file-reference-unresolved { overflow-wrap: anywhere; }
