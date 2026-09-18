@@ -133,6 +133,10 @@ export function filterFallbackSuggestions(
       ))
     .slice(0, 10);
 }
+function isProviderKeyCredential(kind: string): boolean {
+  return kind === "api_key" || kind === "bearer_token";
+}
+
 type ProviderDraft = Pick<
   RuntimeProviderSummary,
   "transport" | "baseUrl" | "oauthSupported" | "apiKeySupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
@@ -618,21 +622,22 @@ export function SettingsPage({
     if (!draft) return;
     setProviderSaveMessage(undefined);
 
-    // For API Key mode, the UI manages credentials exclusively through credential profiles.
-    // Ensure the provider config references the credential profile, even if the draft was
-    // loaded from a builtin provider that originally used env-based auth.
-    const effectiveProfile = draft.credentialKind === "api_key"
+    const keyCredential = isProviderKeyCredential(draft.credentialKind);
+    const key = keyCredential ? apiKeyDrafts[providerId]?.trim() : undefined;
+    // Switch to a stored profile only when entering a key or already using one.
+    // Saving an unrelated setting must preserve existing environment credentials.
+    const useProfile = keyCredential && (Boolean(key) || draft.credentialSource === "credential_profile");
+    const effectiveProfile = useProfile
       ? (draft.credentialProfile?.trim() || `${providerId}:default`)
       : (draft.credentialProfile?.trim() ?? "");
-    const effectiveSource = draft.credentialKind === "api_key" ? "credential_profile" : draft.credentialSource;
-    const effectiveEnv = draft.credentialKind === "api_key" ? "" : (draft.credentialEnv?.trim() ?? "");
+    const effectiveSource = useProfile ? "credential_profile" : draft.credentialSource;
+    const effectiveEnv = useProfile ? "" : (draft.credentialEnv?.trim() ?? "");
 
-    // Unified save: if API Key mode and user entered a key, save credential first
-    if (draft.credentialKind === "api_key") {
-      const key = apiKeyDrafts[providerId]?.trim();
+    // Store the secret before referencing it, preserving the provider's credential kind.
+    if (keyCredential) {
       if (key) {
         setCredentialMessages((prev) => ({ ...prev, [providerId]: "Saving…" }));
-        const credResult = await onSetCredential(effectiveProfile, "api_key", key);
+        const credResult = await onSetCredential(effectiveProfile, draft.credentialKind, key);
         if (credResult) {
           setCredentialMessages((prev) => ({
             ...prev,
@@ -654,7 +659,7 @@ export function SettingsPage({
       { key: `providers.${providerId}.auth.kind`, value: draft.credentialKind },
       { key: `providers.${providerId}.auth.env`, value: effectiveEnv },
       { key: `providers.${providerId}.auth.profile`, value: effectiveProfile },
-      { key: `providers.${providerId}.auth.external`, value: draft.credentialExternal?.trim() ?? "" },
+      { key: `providers.${providerId}.auth.external`, value: useProfile ? "" : (draft.credentialExternal?.trim() ?? "") },
     ]);
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
@@ -1533,7 +1538,7 @@ export function SettingsPage({
                       </div>
                     )}
                     {/* Primary: API Key management */}
-                    {draft.credentialKind === "api_key" ? (
+                    {isProviderKeyCredential(draft.credentialKind) ? (
                       <div className="settings-api-key-section">
                         <div className="settings-api-key-header">
                           <span>{t("settings.apiKeyFor", { profile: effectiveProfile })}</span>
@@ -1619,7 +1624,7 @@ export function SettingsPage({
                         ) : null}
                       </div>
                     ) : null}
-                    {draft.credentialKind !== "none" && draft.credentialKind !== "api_key" && draft.credentialKind !== "oauth" ? (
+                    {draft.credentialKind !== "none" && !isProviderKeyCredential(draft.credentialKind) && draft.credentialKind !== "oauth" ? (
                       <p className="settings-hint">
                         This provider uses <code>{draft.credentialKind}</code>{t("settings.authVia")}<code>{draft.credentialSource}</code>{t("settings.configureIn")}<code>{runtimeConfig.configFilePath ?? "config.json"}</code>.
                       </p>

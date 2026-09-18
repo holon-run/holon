@@ -155,3 +155,81 @@ test("failed model changes keep selection and do not enter recent history", asyn
   await picker.getByRole("textbox", { name: "Search models or services…" }).fill("OpenAI");
   await expect(picker.locator("[data-model-choice]")).toHaveAttribute("aria-pressed", "true");
 });
+
+for (const kind of ["bearer_token", "api_key"] as const) {
+  test(`${kind} provider accepts, replaces and removes a stored key without changing credential kind`, async ({ page }, info) => {
+    await setup(page);
+    const id = kind === "bearer_token" ? "vercel-ai-gateway" : "deepseek";
+    const profile = `${id}:default`;
+    let current = { ...provider(id, false), transport: "anthropic_messages", credential_kind: kind,
+      credential_source: "env", credential_env: "TEST_PROVIDER_KEY", credential_profile: "" };
+    let stored: { profile: string; kind: string; configured: boolean } | undefined;
+    let rejectKey = true;
+    const mutations: { method: string; body?: any }[] = [];
+    const patches: { key: string; value?: unknown }[][] = [];
+    await page.route("**/api/control/runtime/config", async (route) => {
+      if (route.request().method() === "PATCH") {
+        const updates = route.request().postDataJSON().updates;
+        patches.push(updates);
+        for (const [configKey, field] of [["base_url", "base_url"], ["auth.source", "credential_source"], ["auth.kind", "credential_kind"], ["auth.env", "credential_env"], ["auth.profile", "credential_profile"]]) {
+          const update = updates.find((item: any) => item.key === `providers.${id}.${configKey}`);
+          if (update) current = { ...current, [field]: update.value };
+        }
+      }
+      await route.fulfill({ json: { ok: true, changed: true, runtime_surface: { model_default: primary, model_fallbacks: [],
+        providers: [{ ...current, credential_configured: Boolean(stored) }], web_search_providers: [] } } });
+    });
+    await page.route("**/api/control/runtime/credentials", (route) => route.fulfill({ json: { profiles: stored ? [stored] : [] } }));
+    await page.route("**/api/control/runtime/credentials/*", async (route) => {
+      expect(decodeURIComponent(new URL(route.request().url()).pathname.split("/").at(-1)!)).toBe(profile);
+      const method = route.request().method();
+      mutations.push({ method, ...(method === "PUT" ? { body: route.request().postDataJSON() } : {}) });
+      if (method === "PUT" && rejectKey) {
+        await route.fulfill({ status: 400, json: { error: "Test credential store failure" } }); return;
+      }
+      stored = method === "DELETE" ? undefined : { profile, kind, configured: true };
+      await route.fulfill({ json: { profile: stored ?? { profile, kind, configured: false }, reload_generation: 0 } });
+    });
+    await page.goto("/settings");
+    await page.getByRole("button", { name: "Connect a service", exact: true }).click();
+    await page.locator(`[data-provider="${id}"]`).click();
+    const editor = page.locator(".model-services-card .settings-provider-editor");
+    const key = editor.getByLabel("API Key", { exact: true });
+    const save = editor.getByRole("button", { name: `Save ${id}`, exact: true });
+    await expect(key).toBeVisible();
+    await expect(key).toHaveAttribute("type", "password");
+    await expect(editor).not.toContainText("This provider uses");
+    await page.screenshot({ path: info.outputPath("provider-key-input.png") });
+    // Editing another setting with no new key must keep environment authentication.
+    await save.click();
+    await expect.poll(() => patches.length).toBe(1);
+    expect(patches[0]).toContainEqual({ key: `providers.${id}.auth.source`, value: "env" });
+    expect(patches[0]).toContainEqual({ key: `providers.${id}.auth.env`, value: "TEST_PROVIDER_KEY" });
+    expect(mutations).toHaveLength(0);
+    await key.fill("test-key-not-a-secret");
+    await save.click();
+    await expect(editor).toContainText("Failed to save API key.");
+    expect(patches).toHaveLength(1);
+    await expect(key).toHaveValue("test-key-not-a-secret");
+    rejectKey = false;
+    await save.click();
+    await expect.poll(() => patches.length).toBe(2);
+    expect(mutations.at(-1)).toEqual({ method: "PUT", body: { kind, material: "test-key-not-a-secret" } });
+    for (const [field, value] of [["source", "credential_profile"], ["kind", kind], ["env", ""], ["profile", profile]]) {
+      expect(patches[1]).toContainEqual({ key: `providers.${id}.auth.${field}`, value });
+    }
+    expect(JSON.stringify(patches)).not.toContain("test-key-not-a-secret");
+    await expect(key).toHaveValue("");
+    await expect(editor.getByRole("button", { name: "Remove Key", exact: true })).toBeVisible();
+    await page.reload();
+    await page.locator(`[data-provider="${id}"]`).click();
+    await expect(key).toHaveValue("");
+    await key.fill("replacement-test-key");
+    await save.click();
+    await expect.poll(() => patches.length).toBe(3);
+    expect(mutations.at(-1)).toEqual({ method: "PUT", body: { kind, material: "replacement-test-key" } });
+    await editor.getByRole("button", { name: "Remove Key", exact: true }).click();
+    await expect.poll(() => mutations.at(-1)?.method).toBe("DELETE");
+    await expect(editor.getByRole("button", { name: "Remove Key", exact: true })).toHaveCount(0);
+  });
+}
