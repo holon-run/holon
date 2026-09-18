@@ -360,7 +360,10 @@ impl RuntimeHandle {
                 }
             }
         }
-        if let Some(prepared) = outcome.prepared_wait_for.as_ref() {
+        if let Some(prepared) = outcome.prepared_wait_for.as_mut() {
+            prepared.brief_publication_scope = Some(crate::runtime::WaitForBriefPublicationScope {
+                existing_brief_ids: turn_record.produced_brief_ids.clone(),
+            });
             if let Some(brief) = prepared.brief.as_ref() {
                 if !turn_record.produced_brief_ids.contains(&brief.id) {
                     turn_record.produced_brief_ids.push(brief.id.clone());
@@ -403,13 +406,15 @@ impl RuntimeHandle {
             cleanup_started_at,
             message,
         );
-        Ok(TurnTerminalTransition {
+        let mut transition = TurnTerminalTransition {
             terminal: outcome.terminal,
             turn_record,
             prepared_work_item_completion: outcome.prepared_work_item_completion,
             prepared_wait_for: outcome.prepared_wait_for,
             terminal_tool_executions: outcome.terminal_tool_executions,
-        })
+        };
+        transition.normalize_brief_settlement();
+        Ok(transition)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

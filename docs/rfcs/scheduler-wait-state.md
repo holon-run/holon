@@ -281,8 +281,8 @@ Rules:
 - `delivery` is required. `final` defers registration until the model produces
   one non-empty operator-facing assistant final; the follow-up accepts text
   only, with at most one corrective retry for empty text or an extra tool call.
-  `silent` performs no follow-up model round and records typed no-brief
-  settlement.
+  `silent` performs no follow-up model round and publishes no new Brief. It
+  records typed no-brief settlement only when the Turn has no earlier Brief.
 - `reason` is scheduling metadata, not operator-facing assistant text.
   `delivery=silent` never promotes it into a result brief; waiting state remains
   authoritative in the wait condition and WorkItem projection.
@@ -309,10 +309,22 @@ invalidates that preparation, the runtime must not publish an obsolete
 "still waiting" brief or leave a partially registered wait.
 
 For `delivery=final`, that same transaction binds the result brief to the
-canonical Turn and source assistant round, commits exactly one deterministic
-`brief_created` event, and stores the event sequence on the brief. Conversation
-read models must therefore observe the terminal Turn and its available result
-together. `delivery=silent` commits neither a brief nor a `brief_created` event.
+canonical Turn and source assistant round, commits exactly one new deterministic
+`brief_created` event, and stores the event sequence on the brief. The Turn may
+already contain an earlier Brief, such as a detached WorkItem completion report;
+validation preserves that prefix and requires the new publication suffix to be
+exactly the prepared final-wait Brief. Conversation read models must therefore
+observe the terminal Turn and its available results together. `delivery=silent`
+commits neither a new Brief nor a `brief_created` event and preserves any earlier
+Turn Briefs.
+
+If terminal materialization or commit fails, the runtime first reads back the
+queue, Turn, and exact execution attempt. A durably committed transition wins
+even if post-commit projection work reported a warning. A confirmed-uncommitted
+completed transition is replaced by one fenced `Aborted` settlement that closes
+the same queue claim and execution attempt without publishing the prepared wait
+or completion artifacts. Ambiguous readback is not overwritten; it is left for
+explicit recovery rather than risking a conflicting second terminal outcome.
 
 Historical final-wait briefs that predate this invariant are repaired only by
 the explicit, default-read-only

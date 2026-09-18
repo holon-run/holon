@@ -115,6 +115,11 @@ pub(crate) enum WaitForRegistrationOutcome {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct WaitForBriefPublicationScope {
+    pub(crate) existing_brief_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct PreparedWaitForSettlement {
     pub(crate) delivery: crate::tool::tools::wait_for::WaitForDeliveryArg,
     pub(crate) wake: WaitForWakeKind,
@@ -124,6 +129,7 @@ pub(crate) struct PreparedWaitForSettlement {
     pub(crate) expected_task: Option<crate::runtime_db::transitions::TaskExpectation>,
     pub(crate) tool_execution: Option<crate::types::ToolExecutionRecord>,
     pub(crate) brief: Option<crate::types::BriefRecord>,
+    pub(crate) brief_publication_scope: Option<WaitForBriefPublicationScope>,
 }
 
 pub(crate) enum PrepareWaitForOutcome {
@@ -648,6 +654,7 @@ impl RuntimeHandle {
                 expected_task,
                 tool_execution: None,
                 brief: None,
+                brief_publication_scope: None,
             },
         )))
     }
@@ -942,6 +949,7 @@ impl RuntimeHandle {
                 expected_task: Some(expected_task),
                 tool_execution: None,
                 brief: None,
+                brief_publication_scope: None,
             },
         )))
     }

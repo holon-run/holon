@@ -68,6 +68,12 @@ struct CompleteWorkItemReportProvider {
     calls: Mutex<usize>,
 }
 
+struct DetachedCompletionThenWaitProvider {
+    work_item_id: String,
+    delivery: &'static str,
+    calls: Mutex<usize>,
+}
+
 fn assert_valid_provider_tool_result_sequence(conversation: &[ConversationMessage]) {
     let mut seen_tool_result_ids = std::collections::HashSet::new();
     for (index, message) in conversation.iter().enumerate() {
@@ -196,6 +202,56 @@ impl AgentProvider for CompleteWorkItemReportProvider {
             vec![ModelBlock::Text {
                 text: "done".into(),
             }]
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+#[async_trait]
+impl AgentProvider for DetachedCompletionThenWaitProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = match *calls {
+            1 => vec![
+                ModelBlock::Text {
+                    text: "Detached target is complete.".into(),
+                },
+                ModelBlock::ToolUse {
+                    id: "complete-detached-before-wait".into(),
+                    name: "CompleteWorkItem".into(),
+                    input: serde_json::json!({
+                        "work_item_id": self.work_item_id
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                },
+            ],
+            2 => vec![ModelBlock::ToolUse {
+                id: "wait-after-detached-completion".into(),
+                name: "WaitFor".into(),
+                input: serde_json::json!({
+                    "wake": "external",
+                    "delivery": self.delivery,
+                    "resource": "github:holon-run/holon#3055",
+                    "reason": "verify detached completion publication scope"
+                }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }],
+            3 if self.delivery == "final" => vec![ModelBlock::Text {
+                text: "Waiting after detached completion.".into(),
+            }],
+            call => panic!("unexpected provider call {call}"),
         };
         Ok(ProviderTurnResponse {
             blocks,
@@ -391,6 +447,164 @@ async fn detached_complete_work_item_with_same_round_report_continues_current_ex
 #[tokio::test]
 async fn detached_complete_work_item_with_followup_report_continues_current_execution() {
     assert_detached_completion_continues_current_execution(None, 3).await;
+}
+
+async fn assert_detached_completion_then_wait_preserves_brief_scope(
+    delivery: &'static str,
+    expected_provider_calls: usize,
+    expected_brief_count: usize,
+) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let active = seed_runtime
+        .create_work_item(
+            "wait after detached completion".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(active.id.clone())
+        .await
+        .unwrap();
+    let detached = seed_runtime
+        .create_work_item(
+            "detached completion before wait".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let provider = Arc::new(DetachedCompletionThenWaitProvider {
+        work_item_id: detached.id.clone(),
+        delivery,
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "complete the detached target, then wait".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    message.work_item_id = Some(active.id.clone());
+    let message = runtime.enqueue(message).await.unwrap();
+    let turn_id = message.turn_id.clone().expect("enqueued turn id");
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let wait_active = runtime
+                .storage()
+                .active_wait_conditions_for_agent("default")
+                .unwrap()
+                .iter()
+                .any(|wait| wait.work_item_id.as_deref() == Some(active.id.as_str()));
+            let turn_finished = runtime
+                .agent_state()
+                .await
+                .unwrap()
+                .current_run_id
+                .is_none();
+            if wait_active && turn_finished {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before detached completion WaitFor settled: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("detached completion WaitFor should settle");
+    runtime_task.abort();
+
+    assert_eq!(*provider.calls.lock().await, expected_provider_calls);
+    assert_eq!(
+        runtime
+            .latest_work_item(&detached.id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        WorkItemState::Completed
+    );
+    let turn = runtime
+        .storage()
+        .read_turn_by_id(&turn_id)
+        .unwrap()
+        .expect("terminal Turn");
+    assert_eq!(
+        turn.terminal.as_ref().map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Completed)
+    );
+    assert_eq!(
+        turn.terminal
+            .as_ref()
+            .and_then(|terminal| terminal.no_brief_reason.as_ref()),
+        None
+    );
+    assert_eq!(turn.produced_brief_ids.len(), expected_brief_count);
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Processed
+    );
+}
+
+#[tokio::test]
+async fn detached_completion_then_silent_wait_preserves_existing_brief() {
+    assert_detached_completion_then_wait_preserves_brief_scope("silent", 2, 1).await;
+}
+
+#[tokio::test]
+async fn detached_completion_then_final_wait_adds_exactly_one_brief() {
+    assert_detached_completion_then_wait_preserves_brief_scope("final", 3, 2).await;
 }
 
 #[tokio::test]

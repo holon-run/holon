@@ -572,6 +572,11 @@ struct GatedFailingProvider {
     release: Arc<tokio::sync::Notify>,
 }
 
+struct GatedSuccessProvider {
+    started: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Notify>,
+}
+
 struct CanonicalCompletionProvider {
     work_item_id: String,
     calls: Arc<Mutex<usize>>,
@@ -1499,6 +1504,26 @@ impl AgentProvider for GatedFailingProvider {
         self.started.notify_one();
         self.release.notified().await;
         Err(anyhow!("injected gated provider failure"))
+    }
+}
+
+#[async_trait]
+impl AgentProvider for GatedSuccessProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "terminal settlement result".into(),
+            }],
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
     }
 }
 
@@ -9192,7 +9217,7 @@ async fn terminal_settlement_survives_post_commit_effect_faults() {
 }
 
 #[tokio::test]
-async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_evidence() {
+async fn runtime_failure_terminal_fault_retries_confirmed_rollback_and_commits_failure_evidence() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
@@ -9251,22 +9276,33 @@ async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_e
     );
     release.notify_one();
 
-    let error = tokio::time::timeout(std::time::Duration::from_secs(2), runner)
-        .await
-        .expect("runtime should exit after terminal settlement fault")
+    wait_for_audit_events(
+        &runtime,
+        128,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "runtime_error" && event.data["message_id"] == message.id
+            })
+        },
+        "retried runtime failure settlement",
+    )
+    .await;
+    runner.abort();
+    let settled_execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
         .unwrap()
-        .unwrap_err();
-    assert_injected_transition_fault(&error);
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized("default")
-            .unwrap()
-            .unwrap(),
-        claimed
-    );
+        .unwrap();
+    assert_ne!(settled_execution, claimed);
+    assert!(settled_execution
+        .attempts
+        .values()
+        .filter(|attempt| attempt.source_message_id.as_deref() == Some(message.id.as_str()))
+        .all(|attempt| {
+            attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Open
+        }));
     assert_eq!(
         runtime
             .inner
@@ -9277,54 +9313,223 @@ async fn runtime_failure_terminal_fault_rolls_back_queue_canonical_and_failure_e
             .into_iter()
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dequeued)
+        Some(QueueEntryStatus::Aborted)
     );
-    assert!(runtime
-        .inner
-        .runtime_db
-        .agent_states()
-        .latest("default")
-        .unwrap()
-        .unwrap()
-        .last_turn_terminal
-        .is_none());
     let retained_turn = runtime
         .storage()
         .read_turn_by_id(&turn_id)
         .unwrap()
-        .expect("admission remains durable when terminal settlement rolls back");
-    assert!(retained_turn.terminal.is_none());
+        .expect("terminal runtime failure remains durable");
+    assert!(retained_turn
+        .terminal
+        .as_ref()
+        .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Aborted));
     assert!(runtime
         .storage()
         .read_recent_briefs(16)
         .unwrap()
         .iter()
-        .all(|brief| brief.related_message_id.as_deref() != Some(message.id.as_str())));
+        .any(|brief| brief.related_message_id.as_deref() == Some(message.id.as_str())));
     assert!(runtime
         .storage()
         .read_recent_transcript(32)
         .unwrap()
         .iter()
-        .all(|entry| {
-            entry.kind != TranscriptEntryKind::RuntimeFailure
-                || entry.related_message_id.as_deref() != Some(message.id.as_str())
+        .any(|entry| {
+            entry.kind == TranscriptEntryKind::RuntimeFailure
+                && entry.related_message_id.as_deref() == Some(message.id.as_str())
         }));
     assert!(runtime
         .storage()
         .read_recent_events(128)
         .unwrap()
         .iter()
-        .all(|event| {
-            event.data["message_id"] != message.id
-                || !matches!(
-                    event.kind.as_str(),
-                    "runtime_error" | "queue_entry_settled" | "turn_terminal"
-                )
+        .any(|event| {
+            event.data["message_id"] == message.id
+                && matches!(event.kind.as_str(), "runtime_error" | "queue_entry_settled")
         }));
 }
 
 #[tokio::test]
-async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() {
+async fn terminal_settlement_readback_rejects_terminal_queue_and_turn_with_open_attempt() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "simulate a partial terminal settlement",
+        ))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("operator prompt should be claimed");
+    };
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+    finish_claimed_test_run(&runtime).await;
+
+    let terminal = terminal_transition_from_started_turn(&runtime, &message);
+    let processed = QueueEntryRecord {
+        message_id: message.id.clone(),
+        agent_id: message.agent_id.clone(),
+        priority: message.priority,
+        status: QueueEntryStatus::Processed,
+        created_at: message.created_at,
+        updated_at: Utc::now(),
+    };
+    let expected_execution_outcome = terminal_execution_settlement_outcome(
+        &runtime.inner.storage,
+        &runtime.inner.runtime_db,
+        &processed,
+        &terminal,
+    )
+    .unwrap()
+    .expect("claimed message should prepare an execution outcome");
+    runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .commit_queue(&crate::runtime_db::transitions::QueueTransitionCommand {
+            agent_id: "default".into(),
+            operation: crate::runtime_db::transitions::QueueOperation::Settle,
+            mutation: crate::runtime_db::transitions::QueueMutation::Upsert(processed.clone()),
+            scheduler_claim_work_item: None,
+            agent_state: None,
+            message_evidence: Vec::new(),
+            transcript_entries: Vec::new(),
+            turn_record: Some(terminal.turn_record.clone()),
+            audit_events: Vec::new(),
+            notify_scheduler: false,
+            fault: None,
+            brief_evidence: Vec::new(),
+        })
+        .unwrap();
+
+    assert_eq!(
+        runtime
+            .terminal_settlement_readback(&processed, &terminal, Some(&expected_execution_outcome),)
+            .unwrap(),
+        TerminalSettlementReadback::Ambiguous
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution.attempts[&expected_execution_outcome.attempt_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
+    );
+}
+
+#[tokio::test]
+async fn successful_turn_terminal_fault_is_fenced_and_aborted_without_losing_earlier_brief() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let started = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Notify::new());
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(GatedSuccessProvider {
+            started: started.clone(),
+            release: release.clone(),
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message = runtime
+        .enqueue(trusted_operator_prompt(
+            None,
+            "settle with an injected fault",
+        ))
+        .await
+        .unwrap();
+    let turn_id = message.turn_id.clone().expect("enqueued turn id");
+    let attempt_id = scheduler_executor::canonical_activation_id(&message.id);
+
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(std::time::Duration::from_secs(2), started.notified())
+        .await
+        .expect("provider should start");
+    runtime.inject_next_transition_fault(
+        crate::runtime_db::transitions::TransitionFaultPoint::AfterAuditWrites,
+    );
+    release.notify_one();
+
+    wait_for_audit_events(
+        &runtime,
+        128,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "turn_terminal_settlement_failed"
+                    && event.data["message_id"] == message.id
+            })
+        },
+        "fenced terminal settlement abort",
+    )
+    .await;
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Aborted
+    );
+    let turn = runtime
+        .storage()
+        .read_turn_by_id(&turn_id)
+        .unwrap()
+        .expect("terminal Turn should be retained");
+    assert_eq!(
+        turn.terminal.as_ref().map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Aborted)
+    );
+    assert!(
+        !turn.produced_brief_ids.is_empty(),
+        "the pre-settlement Brief remains a Turn artifact"
+    );
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_ne!(
+        execution.attempts[&attempt_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Open
+    );
+    runner.abort();
+}
+
+#[tokio::test]
+async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
@@ -9393,22 +9598,26 @@ async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() 
         .await
         .unwrap();
 
-    let error = tokio::time::timeout(std::time::Duration::from_secs(2), runner)
+    tokio::time::timeout(std::time::Duration::from_secs(2), runner)
         .await
-        .expect("runtime should exit after interrupted terminal settlement fault")
+        .expect("runtime should stop after committing the interrupted settlement")
         .unwrap()
-        .unwrap_err();
-    assert_injected_transition_fault(&error);
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized("default")
-            .unwrap()
-            .unwrap(),
-        claimed
-    );
+        .unwrap();
+    let settled_execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_ne!(settled_execution, claimed);
+    assert!(settled_execution
+        .attempts
+        .values()
+        .filter(|attempt| attempt.source_message_id.as_deref() == Some(message.id.as_str()))
+        .all(|attempt| {
+            attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Open
+        }));
     assert_eq!(
         runtime
             .inner
@@ -9419,33 +9628,27 @@ async fn interrupted_terminal_fault_rolls_back_queue_canonical_and_turn_facts() 
             .into_iter()
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Dequeued)
+        Some(QueueEntryStatus::Interrupted)
     );
-    assert!(runtime
-        .inner
-        .runtime_db
-        .agent_states()
-        .latest("default")
-        .unwrap()
-        .unwrap()
-        .last_turn_terminal
-        .is_none());
     let retained_turn = runtime
         .storage()
         .read_turn_by_id(&turn_id)
         .unwrap()
-        .expect("admission remains durable when terminal settlement rolls back");
-    assert!(retained_turn.terminal.is_none());
+        .expect("interrupted terminal Turn remains durable");
+    assert!(retained_turn
+        .terminal
+        .as_ref()
+        .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Aborted));
     assert!(runtime
         .storage()
         .read_recent_events(128)
         .unwrap()
         .iter()
-        .all(|event| {
-            event.data["message_id"] != message.id
-                || !matches!(
+        .any(|event| {
+            event.data["message_id"] == message.id
+                && matches!(
                     event.kind.as_str(),
-                    "message_processing_aborted" | "turn_terminal_aborted" | "turn_terminal"
+                    "message_processing_aborted" | "turn_terminal_aborted"
                 )
         }));
 }
