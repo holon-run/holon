@@ -107,7 +107,10 @@ test("brief and live assistant keep the same absolute references; relative refer
   for (const id of ["done", "live"]) {
     const block = page.locator(`[data-turn-id="${id}"]`);
     await expect(block.getByRole("link", { name: "Absolute", exact: true })).toHaveAttribute("href", preview(targetName) + "#target");
-    await expect(block.getByText("Missing file location context", { exact: false })).toBeVisible();
+    const relative = block.getByText(`./${encodeURIComponent(targetName)}#target`, { exact: true });
+    await expect(relative).toBeVisible();
+    await expect(relative).toHaveAttribute("title", "Missing file location context");
+    await expect(block.getByRole("link", { name: "Relative", exact: true })).toHaveCount(0);
   }
   expect(batches.flat().some((ref) => ref.type === "relative_path")).toBe(false);
   await page.locator(".sidebar").getByRole("button", { name: /other-agent posture:/ }).click();
@@ -149,4 +152,52 @@ test("stream additions resolve only new references and late old-content replies 
     await expect(block.getByRole("link", { name: "Old", exact: true })).toHaveCount(0);
     expect(batches.flat().filter((ref) => ref.absolute_path === "/tmp/feature/current.md")).toHaveLength(1);
   } finally { release(); }
+});
+
+test("invalid file and image references remain original text while transient failures can retry", async ({ page, context }, info) => {
+  await context.addCookies([{ name: "holon_e2e_session", value: `unresolved-${info.testId}`, domain: "127.0.0.1", path: "/" }]);
+  const markdown = [
+    "[Report](/data/report%20draft.md#summary)",
+    "`/data/literal%20#?.md`",
+    "![Unmanaged image](/data/chart.png)",
+    "[Unsupported](workspace://ws/unsupported.md)",
+    "[Bad encoding](/data/bad%xx.md)",
+    "[Temporary](/tmp/feature/temporary.md)",
+    "![Temporary image](/tmp/feature/temporary.png)",
+  ].join("\n\n");
+  await mockFiles(context);
+  await context.route("**/api/workspaces/ws/files/base.md**", (route) => route.fulfill({ json: {
+    ...locator("base.md"), type: "file", mime_type: "text/markdown", content: markdown, size: markdown.length,
+  } }));
+  const attempts = new Map<string, number>();
+  await context.route("**/api/file-references/resolve", async (route) => {
+    const results = route.request().postDataJSON().references.map((ref: any) => {
+      const path = ref.absolute_path ?? ref.workspace_uri;
+      attempts.set(path, (attempts.get(path) ?? 0) + 1);
+      if (path.includes("temporary")) {
+        return attempts.get(path)! > 1
+          ? { status: "resolved", location: locator(path.endsWith(".png") ? "image.png" : "temporary.md") }
+          : { status: "unresolved", reason: "resolve_failed", message: "Temporary resolver failure" };
+      }
+      return { status: "unresolved", reason: path.includes("unsupported") ? "unsupported_reference" : "invalid_reference", message: "no registered execution root contains the path" };
+    });
+    await route.fulfill({ json: { results } });
+  });
+  await page.goto(preview("base.md"));
+  const content = page.locator(".file-browser-markdown");
+  for (const path of ["/data/report%20draft.md#summary", "/data/literal%20#?.md", "/data/chart.png", "workspace://ws/unsupported.md", "/data/bad%xx.md"]) {
+    const fallback = content.getByText(path, { exact: true });
+    await expect(fallback).toBeVisible();
+    await expect(fallback).toHaveJSProperty("tagName", "SPAN");
+    await expect(fallback).toHaveAttribute("title", /.+/);
+    await expect(fallback.locator("a, button, small, img")).toHaveCount(0);
+  }
+  await expect(content.getByText("no registered execution root contains the path", { exact: false })).toHaveCount(0);
+  await expect(content.getByRole("link")).toHaveCount(0);
+  await expect(content.getByRole("button", { name: "Retry", exact: true })).toHaveCount(2);
+  await content.getByRole("button", { name: "Retry", exact: true }).first().click();
+  await expect(content.getByRole("link", { name: "Temporary", exact: true })).toHaveAttribute("href", preview("temporary.md"));
+  await expect(content.getByRole("img", { name: "Temporary image", exact: true })).toHaveAttribute("src", /^blob:/);
+  await expect(content.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+  expect(attempts.get("/tmp/feature/temporary.md")).toBe(2);
 });

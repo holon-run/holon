@@ -195,12 +195,17 @@ function MarkdownContentView({ text, citations, compact = false, baseFile, fragm
     store.openResolvedFile(store.selectedAgentId, target);
   });
   const renderReference = (key: string, children: ReactNode, image = false, alt?: string, linkProps?: AnchorHTMLAttributes<HTMLAnchorElement>, imageProps?: ImgHTMLAttributes<HTMLImageElement>) => {
-    const entry = references.get(key)?.value;
+    const reference = references.get(key);
+    const entry = reference?.value;
     if (!entry) return children;
     if (entry.kind === "anchor") return <a {...linkProps} href={`#${prefix}${entry.fragment}`} onClick={(event) => { event.preventDefault(); scrollToFragment(entry.fragment); onFragmentChange?.(entry.fragment); }}>{children}</a>;
     if (entry.kind === "external") return children;
     const result = results.get(key);
     const error = entry.kind === "error" ? entry.message : result?.status === "unresolved" ? result.message : undefined;
+    if (entry.kind === "error") return <span title={entry.message}>{reference?.raw}</span>;
+    if (result?.status === "unresolved" && (result.reason === "invalid_reference" || result.reason === "unsupported_reference")) {
+      return <span title={`${result.reason}: ${result.message}`}>{reference?.raw}</span>;
+    }
     if (error) return <span className="file-reference-error" title={error}>{children} <small>({error})</small>{entry.kind === "file" ? <> <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); retry(); }}>Retry</button></> : null}</span>;
     if (entry.kind !== "file" || result?.status !== "resolved") return <span className="file-reference-pending" title="Resolving file…">{children}</span>;
     const target = { ...result.location, fragment: entry.fragment };
