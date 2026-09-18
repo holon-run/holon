@@ -97,6 +97,18 @@ absolute path. It first selects the unique most-specific path-component match
 and only then checks removal state, so a removed nested root cannot fall back
 to a wider active root.
 
+When matching absolute paths, the resolution root set is deduplicated by
+normalized anchor path before the most-specific match. Distinct root ids may
+point at the same directory (stale canonical-root backfills whose workspace
+entry no longer exists, or the legacy shared `agent_home` alias next to a
+canonical `agent_home:<id>` anchor); without deduplication every reference
+below such a directory fails with `AmbiguousRoot`. One root claims each
+anchor, chosen by priority: canonical `agent_home:<id>` live workspace
+anchor, other live workspace anchors, non-removed registry entries, then
+tombstoned entries; equal-priority collisions keep the first entry in
+collection order. A tombstoned root that still uniquely claims its anchor
+keeps returning 410.
+
 ### Provider Turn Resolver
 
 `resolve_markdown_image_src` parses `?root=` from `workspace://` URIs and
