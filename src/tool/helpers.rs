@@ -124,6 +124,9 @@ fn coerce_string(s: &str) -> Option<Value> {
     }
     if let Ok(f) = s.parse::<f64>() {
         if f.is_finite() {
+            if let Some(i) = parse_integral_decimal_i64(s) {
+                return Some(Value::Number(i.into()));
+            }
             return Some(Value::Number(serde_json::Number::from_f64(f)?));
         }
     }
@@ -140,6 +143,71 @@ fn coerce_string(s: &str) -> Option<Value> {
         }
     }
     None
+}
+
+fn parse_integral_decimal_i64(s: &str) -> Option<i64> {
+    let (negative, unsigned) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    let (mantissa, exponent) = match unsigned.find(['e', 'E']) {
+        Some(index) => {
+            let exponent = unsigned.get(index + 1..)?.parse::<i64>().ok()?;
+            (&unsigned[..index], exponent)
+        }
+        None => (unsigned, 0),
+    };
+    let (integer, fractional) = match mantissa.split_once('.') {
+        Some((integer, fractional)) if !fractional.contains('.') => (integer, fractional),
+        Some(_) => return None,
+        None => (mantissa, ""),
+    };
+    if integer.is_empty() && fractional.is_empty() {
+        return None;
+    }
+    if !integer.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+
+    let mut digits = String::with_capacity(integer.len() + fractional.len());
+    digits.push_str(integer);
+    digits.push_str(fractional);
+    if digits.bytes().all(|byte| byte == b'0') {
+        return Some(0);
+    }
+
+    let significant_start = digits.bytes().position(|byte| byte != b'0')?;
+    let mut normalized = digits[significant_start..].to_string();
+    let fractional_len = i64::try_from(fractional.len()).ok()?;
+    let decimal_shift = exponent.checked_sub(fractional_len)?;
+    if decimal_shift >= 0 {
+        let trailing_zeros = usize::try_from(decimal_shift).ok()?;
+        if normalized.len().checked_add(trailing_zeros)? > 19 {
+            return None;
+        }
+        normalized.extend(std::iter::repeat_n('0', trailing_zeros));
+    } else {
+        let removed_digits = usize::try_from(decimal_shift.unsigned_abs()).ok()?;
+        if removed_digits >= normalized.len() {
+            return None;
+        }
+        let integer_len = normalized.len() - removed_digits;
+        if !normalized.as_bytes()[integer_len..]
+            .iter()
+            .all(|byte| *byte == b'0')
+        {
+            return None;
+        }
+        normalized.truncate(integer_len);
+    }
+
+    if negative {
+        normalized.insert(0, '-');
+    }
+    normalized.parse::<i64>().ok()
 }
 
 pub(crate) fn invalid_tool_input(
@@ -533,6 +601,47 @@ mod tests {
         assert_eq!(
             result,
             Some(Value::Number(serde_json::Number::from_f64(4.567).unwrap()))
+        );
+    }
+
+    #[test]
+    fn coerce_integral_decimal_strings_to_integer() {
+        assert_eq!(
+            coerce_string("900000.0"),
+            Some(Value::Number(900000i64.into()))
+        );
+        assert_eq!(coerce_string("-3.0"), Some(Value::Number((-3i64).into())));
+        assert_eq!(coerce_string("1e3"), Some(Value::Number(1000i64.into())));
+        assert_eq!(coerce_string("1.23e3"), Some(Value::Number(1230i64.into())));
+        assert_eq!(
+            coerce_string("9007199254740993.0"),
+            Some(Value::Number(9007199254740993i64.into()))
+        );
+        assert_eq!(
+            coerce_string("9223372036854775807.0"),
+            Some(Value::Number(i64::MAX.into()))
+        );
+        assert_eq!(
+            coerce_string("-9223372036854775808.0"),
+            Some(Value::Number(i64::MIN.into()))
+        );
+    }
+
+    #[test]
+    fn coerce_non_integral_decimal_string_stays_float() {
+        let value = 1e-1f64;
+        assert_eq!(
+            coerce_string("1e-1"),
+            Some(Value::Number(serde_json::Number::from_f64(value).unwrap()))
+        );
+    }
+
+    #[test]
+    fn coerce_out_of_range_integral_decimal_string_stays_float() {
+        let value = 9223372036854775808.0f64;
+        assert_eq!(
+            coerce_string("9223372036854775808.0"),
+            Some(Value::Number(serde_json::Number::from_f64(value).unwrap()))
         );
     }
 
