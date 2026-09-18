@@ -821,6 +821,29 @@ fn append_default_host_identity(runtime: &RuntimeHandle) {
         .unwrap();
 }
 
+async fn begin_canonical_operator_turn(
+    runtime: &RuntimeHandle,
+    text: &str,
+) -> (MessageEnvelope, String) {
+    let message = runtime
+        .enqueue(trusted_operator_prompt(None, text))
+        .await
+        .unwrap();
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("operator prompt should be claimed");
+    };
+    runtime
+        .begin_interactive_turn(Some(&scheduled.message), None, None)
+        .await
+        .unwrap();
+    let activation_id = scheduler_executor::canonical_activation_id(&message.id);
+    (message, activation_id)
+}
+
 #[tokio::test]
 async fn canonical_agent_lifecycle_binding_does_not_inherit_replay_or_message_work_item() {
     let dir = tempdir().unwrap();
@@ -1096,6 +1119,11 @@ struct OperatorInterjectionProbeProvider {
     calls: Mutex<usize>,
     requests: Mutex<Vec<ProviderTurnRequest>>,
     first_tool_round: Arc<tokio::sync::Notify>,
+}
+
+struct TerminalWaitInterjectionProvider {
+    calls: Mutex<usize>,
+    requests: Mutex<Vec<ProviderTurnRequest>>,
 }
 
 fn task_wait_condition_for_work_item(task_id: &str, work_item_id: &str) -> WaitConditionRecord {
@@ -1576,6 +1604,53 @@ impl AgentProvider for OperatorInterjectionProbeProvider {
     #[cfg(test)]
     fn configured_model_refs(&self) -> Vec<String> {
         vec!["stub".into()]
+    }
+}
+
+#[async_trait]
+impl AgentProvider for TerminalWaitInterjectionProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let call = *calls;
+        drop(calls);
+        self.requests.lock().await.push(request);
+
+        match call {
+            1 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::ToolUse {
+                    id: "terminal-wait".into(),
+                    name: "WaitFor".into(),
+                    input: serde_json::json!({
+                        "reason": "wait after the task result",
+                        "wake": "operator_input",
+                        "delivery": "silent",
+                    }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                }],
+                stop_reason: Some("tool_use".into()),
+                input_tokens: 10,
+                output_tokens: 10,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            }),
+            2 => Ok(ProviderTurnResponse {
+                blocks: vec![ModelBlock::Text {
+                    text: "queued operator input handled".into(),
+                }],
+                stop_reason: None,
+                input_tokens: 10,
+                output_tokens: 10,
+                cache_usage: None,
+                provider_message_id: None,
+                provider_request_id: None,
+                request_diagnostics: None,
+            }),
+            _ => anyhow::bail!("terminal wait interjection test should use two provider turns"),
+        }
     }
 }
 
@@ -15047,6 +15122,215 @@ async fn operator_interjection_prompt_is_interjected_before_next_provider_round(
 }
 
 #[tokio::test]
+async fn terminal_wait_leaves_late_interjection_for_next_activation() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(TerminalWaitInterjectionProvider {
+        calls: Mutex::new(0),
+        requests: Mutex::new(Vec::new()),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    append_default_host_identity(&runtime);
+
+    let work_item = runtime
+        .create_work_item(
+            "terminal wait interjection owner".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    append_running_rejoin_task(&runtime, "task-terminal-wait", &work_item.id);
+    let registration = runtime
+        .register_wait_for(
+            "default",
+            Some(work_item.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some("task-terminal-wait".into()),
+            "waiting for the task result".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let work_item = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    persist_waiting_work_execution(&runtime, &work_item, &registration.condition.id);
+
+    let mut task_result = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-terminal-wait".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "task completed before terminal wait".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    task_result.metadata = Some(serde_json::json!({
+        "task_id": "task-terminal-wait",
+        "task_kind": "command_task",
+        "task_status": "completed",
+        "task_result_id": "result-task-terminal-wait",
+        "work_item_id": work_item.id,
+    }));
+    task_result.task_id = Some("task-terminal-wait".into());
+    task_result.work_item_id = Some(work_item.id.clone());
+    let task_result_id = task_result.id.clone();
+    let task = TaskRecord {
+        id: "task-terminal-wait".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(task_result.id.clone()),
+        work_item_id: Some(work_item.id.clone()),
+        summary: Some("task completed before terminal wait".into()),
+        detail: Some(serde_json::json!({
+            "rejoin_obligation_id": "task-terminal-wait",
+            "rejoin_generation": 1,
+            "parent_turn_id": "turn-task-terminal-wait-parent",
+        })),
+        recovery: None,
+    };
+    runtime
+        .commit_terminal_task_result(&task, "task_status_updated", &task_result)
+        .await
+        .unwrap();
+
+    runtime.arm_terminal_tool_interjection_checkpoint();
+    let runner = tokio::spawn(runtime.clone().run());
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        runtime.wait_for_terminal_tool_interjection_checkpoint(),
+    )
+    .await
+    .expect("terminal WaitFor should reach the pre-interjection checkpoint");
+
+    let mut interjection =
+        trusted_operator_prompt(Some(&work_item.id), "handle this in the next activation");
+    interjection.priority = Priority::Interject;
+    let interjection = runtime.enqueue(interjection).await.unwrap();
+    let interjection_id = interjection.id.clone();
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection_id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+    runtime.release_terminal_tool_interjection_checkpoint();
+
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let processed = runtime
+                .storage()
+                .latest_queue_entries()
+                .unwrap()
+                .into_iter()
+                .find(|entry| entry.message_id == interjection_id)
+                .is_some_and(|entry| entry.status == QueueEntryStatus::Processed);
+            if processed && provider.requests.lock().await.len() >= 2 {
+                break;
+            }
+            if runner.is_finished() {
+                panic!("runtime exited before processing the queued interjection");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("queued interjection should run in the next activation");
+
+    runtime
+        .control(crate::types::ControlAction::Stop)
+        .await
+        .unwrap();
+    runner.await.unwrap().unwrap();
+
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    let contains_operator_input = |request: &ProviderTurnRequest| {
+        request.conversation.iter().any(|message| match message {
+            ConversationMessage::UserText(text) => {
+                text.contains("handle this in the next activation")
+            }
+            ConversationMessage::UserBlocks(blocks) => blocks
+                .iter()
+                .any(|block| block.text.contains("handle this in the next activation")),
+            _ => false,
+        })
+    };
+    assert!(!contains_operator_input(&requests[0]));
+    assert!(contains_operator_input(&requests[1]));
+    drop(requests);
+
+    let turns = runtime.storage().read_recent_turns(10).unwrap();
+    let task_result_turn = turns
+        .iter()
+        .find(|turn| turn.input_message_ids.contains(&task_result_id))
+        .expect("task-result turn");
+    assert_eq!(
+        task_result_turn
+            .terminal
+            .as_ref()
+            .map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Completed)
+    );
+    assert!(!task_result_turn
+        .input_message_ids
+        .contains(&interjection_id));
+    assert!(turns.iter().any(|turn| {
+        turn.input_message_ids.contains(&interjection_id)
+            && !turn.input_message_ids.contains(&task_result_id)
+    }));
+
+    let task_result_attempt_id = scheduler_executor::canonical_activation_id(&task_result_id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("task-result execution authority");
+    assert_eq!(
+        execution.attempts[&task_result_attempt_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Settled
+    );
+    assert!(!runtime
+        .storage()
+        .read_recent_events(200)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "operator_interjection_admitted"
+                && event.data["message_id"].as_str() == Some(interjection_id.as_str())
+        }));
+}
+
+#[tokio::test]
 async fn operator_interjection_preserves_unified_lifecycle_attempt() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -15179,6 +15463,132 @@ async fn operator_interjection_preserves_unified_lifecycle_attempt() {
             .find(|entry| entry.message_id == interjection.id)
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Interjected)
+    );
+}
+
+#[tokio::test]
+async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch() {
+    let closed_dir = tempdir().unwrap();
+    let closed_workspace = tempdir().unwrap();
+    let closed_runtime = RuntimeHandle::new(
+        "default",
+        closed_dir.path().to_path_buf(),
+        closed_workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    append_default_host_identity(&closed_runtime);
+    let (_message, activation_id) =
+        begin_canonical_operator_turn(&closed_runtime, "start closed-attempt turn").await;
+    let execution = closed_runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let settled = crate::domain::execution_protocol::settle_execution(
+        &execution,
+        &crate::domain::execution_protocol::SettleExecution {
+            outcome: crate::domain::execution_protocol::ExecutionOutcomeRecord {
+                outcome_id: "outcome-closed-interjection-attempt".into(),
+                attempt_id: activation_id,
+                outcome: crate::domain::execution_protocol::ExecutionOutcome::Conversation(
+                    crate::domain::execution_protocol::ConversationOutcome::Replied,
+                ),
+                created_at: Utc::now().to_rfc3339(),
+            },
+        },
+    )
+    .unwrap();
+    closed_runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &settled.state))
+        .unwrap();
+    let mut interjection = trusted_operator_prompt(None, "closed attempt input");
+    interjection.priority = Priority::Interject;
+    let interjection = closed_runtime.enqueue(interjection).await.unwrap();
+    let error = closed_runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::AfterToolResults,
+        )
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("requires an open execution attempt"));
+    assert_eq!(
+        closed_runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
+    );
+
+    let mismatch_dir = tempdir().unwrap();
+    let mismatch_workspace = tempdir().unwrap();
+    let mismatch_runtime = RuntimeHandle::new(
+        "default",
+        mismatch_dir.path().to_path_buf(),
+        mismatch_workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    append_default_host_identity(&mismatch_runtime);
+    let (_message, activation_id) =
+        begin_canonical_operator_turn(&mismatch_runtime, "start source-mismatch turn").await;
+    let mut execution = mismatch_runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    execution
+        .attempts
+        .get_mut(&activation_id)
+        .unwrap()
+        .source_message_id = Some("different-source-message".into());
+    mismatch_runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+        .unwrap();
+    let mut interjection = trusted_operator_prompt(None, "source mismatch input");
+    interjection.priority = Priority::Interject;
+    let interjection = mismatch_runtime.enqueue(interjection).await.unwrap();
+    let error = mismatch_runtime
+        .drain_operator_interjections(
+            "default",
+            1,
+            crate::runtime::scheduler::InterjectionBoundary::AfterToolResults,
+        )
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("source message does not match the current execution"));
+    assert_eq!(
+        mismatch_runtime
+            .storage()
+            .latest_queue_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == interjection.id)
+            .map(|entry| entry.status),
+        Some(QueueEntryStatus::Queued)
     );
 }
 

@@ -503,6 +503,9 @@ impl RuntimeHandle {
                 fail_non_retryable_after_next_runtime_claim: AtomicBool::new(false),
                 #[cfg(test)]
                 claim_work_item_plan_status_before_commit: StdMutex::new(None),
+                #[cfg(test)]
+                terminal_tool_interjection_checkpoint:
+                    super::TerminalToolInterjectionCheckpoint::default(),
                 transition_warnings: StdMutex::new(Vec::new()),
             }),
         };
