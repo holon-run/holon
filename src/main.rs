@@ -4075,10 +4075,6 @@ fn handle_runtime_db_debug_command(
             diagnostic_sample_limit,
             json,
         } => {
-            let db = RuntimeDb::open_and_migrate(
-                config.runtime_db_path(),
-                config.runtime_db_lock_path(),
-            )?;
             let mut progress = |progress: &holon::runtime_db::TurnSettlementRepairProgress| {
                 eprintln!("Turn settlement reconciliation: {progress}");
             };
@@ -4086,11 +4082,22 @@ fn handle_runtime_db_debug_command(
                 let plan = plan
                     .as_deref()
                     .context("--apply requires a completed repair plan")?;
-                db.preflight_turn_settlement_repair_plan(plan)?;
                 let _maintenance_lock =
                     RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
                         "Turn settlement reconciliation apply requires holon serve to be stopped",
                     )?;
+                let _migration_lock = RuntimeDbLock::try_lock(config.runtime_db_lock_path())
+                    .context(
+                    "Turn settlement reconciliation apply cannot run during a database migration",
+                )?;
+                RuntimeDb::preflight_turn_settlement_repair_plan_read_only(
+                    &config.runtime_db_path(),
+                    plan,
+                )?;
+                let db = RuntimeDb::open_for_turn_settlement_repair(
+                    config.runtime_db_path(),
+                    config.runtime_db_lock_path(),
+                )?;
                 let backup_path = if no_backup {
                     None
                 } else {
@@ -4103,7 +4110,8 @@ fn handle_runtime_db_debug_command(
                     &mut progress,
                 )?
             } else {
-                db.prepare_turn_settlement_repair(
+                RuntimeDb::prepare_turn_settlement_repair_read_only(
+                    &config.runtime_db_path(),
                     plan.as_deref(),
                     agent.as_deref(),
                     turn.as_deref(),
