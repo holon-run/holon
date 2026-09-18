@@ -81,7 +81,7 @@ impl RuntimeReadModels {
             })
             .collect::<BTreeMap<_, _>>();
         let active_wait_conditions = self
-            .active_wait_conditions()?
+            .active_wait_conditions_for_scope()?
             .into_iter()
             .filter_map(|condition| condition.work_item_id.clone().map(|id| (id, condition)))
             .fold(
@@ -285,7 +285,7 @@ impl RuntimeReadModels {
             item.is_current && item.scheduling_state == WorkItemSchedulingState::WaitingTask
         }) {
             let task_id = self
-                .active_wait_conditions()?
+                .active_wait_conditions_for_scope()?
                 .into_iter()
                 .find(|condition| {
                     condition.status == WaitConditionStatus::Active
@@ -416,10 +416,13 @@ impl RuntimeReadModels {
         &self,
         agent_id: &str,
     ) -> Result<Vec<WaitConditionRecord>> {
+        let mut timer = attribution::WAIT_QUERY_AGENT.start();
         let records = self
             .runtime_db
             .wait_conditions()
             .active_for_agent(agent_id)?;
+        timer.rows(records.len());
+        drop(timer);
         self.filter_active_wait_conditions_for_live_scope(records)
     }
 
@@ -429,6 +432,20 @@ impl RuntimeReadModels {
         timer.rows(records.len());
         drop(timer);
         self.filter_active_wait_conditions_for_live_scope(records)
+    }
+
+    /// Active wait conditions for this read model's agent scope.
+    ///
+    /// Wait conditions always reference work items owned by the waiting agent
+    /// (enforced by `validate_owned_work_item`), so agent-scoped projections
+    /// such as the work queue and posture derivation can filter in SQL instead
+    /// of scanning every agent's wait rows. Global-scope read models keep the
+    /// unfiltered query.
+    pub(crate) fn active_wait_conditions_for_scope(&self) -> Result<Vec<WaitConditionRecord>> {
+        match self.agent_id.as_deref() {
+            Some(agent_id) => self.active_wait_conditions_for_agent(agent_id),
+            None => self.active_wait_conditions(),
+        }
     }
 
     fn filter_active_wait_conditions_for_live_scope(

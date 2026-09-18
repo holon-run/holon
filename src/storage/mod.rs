@@ -1118,6 +1118,12 @@ impl AppStorage {
         self.read_models().active_wait_conditions()
     }
 
+    /// Active wait conditions for this storage's agent scope (all agents when
+    /// the storage is global-scoped).
+    pub fn active_wait_conditions_for_scope(&self) -> Result<Vec<WaitConditionRecord>> {
+        self.read_models().active_wait_conditions_for_scope()
+    }
+
     pub fn active_wait_conditions_for_agent(
         &self,
         agent_id: &str,

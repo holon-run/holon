@@ -98,6 +98,7 @@ stages! {
     WORK_QUEUE => "projection.work_queue",
     WORK_ITEMS => "projection.work_queue.latest_items",
     WAIT_QUERY => "projection.waits.active_all_query",
+    WAIT_QUERY_AGENT => "projection.waits.active_agent_query",
     WAIT_FILTER => "projection.waits.live_scope_filter",
     WAIT_ITEM => "projection.waits.work_item_lookup",
     AGENT_LOCK => "projection.agent_state.lock_wait",
