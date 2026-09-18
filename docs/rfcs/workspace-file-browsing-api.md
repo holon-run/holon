@@ -238,8 +238,14 @@ and root-relative `path` with the existing GET endpoint.
 Absolute-path matching considers all registered roots, including removed
 tombstones, and selects the unique most-specific path-component match. This
 prevents a removed nested root from being silently reinterpreted through a
-wider canonical root. `FileLocation` is a location, not a permanent content
-identity; path reuse after cleanup is outside this contract.
+wider canonical root. Roots are first deduplicated by normalized anchor path,
+so multiple root ids claiming the same directory (stale registry rows, or the
+legacy `agent_home` alias next to a canonical `agent_home:<id>` anchor)
+cannot yield `ambiguous_root`; the live workspace anchor wins over stale
+registry rows, non-removed entries over tombstones, and canonical
+`agent_home:<id>` over the legacy shared alias. `FileLocation` is a location,
+not a permanent content identity; path reuse after cleanup is outside this
+contract.
 
 ## Optional desktop integration
 

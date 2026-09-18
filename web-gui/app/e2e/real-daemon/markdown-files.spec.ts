@@ -46,7 +46,7 @@ test("real roots, literal filenames, authenticated images/download, login restor
   const content = page.locator(".file-browser-markdown");
   await expect(content.getByRole("link", { name: "Historical", exact: true })).toHaveAttribute("href", new URL(gui(name)).pathname + new URL(gui(name)).search);
   await expect(content.getByRole("img", { name: "Authenticated chart" })).toHaveAttribute("src", /^blob:/);
-  await expect(content.locator(".file-reference-error")).toHaveCount(3);
+  await expect(content.locator(".file-reference-unresolved")).toHaveCount(3);
   await page.screenshot({ path: test.info().outputPath("file-preview.png") });
   await content.getByRole("link", { name: "Historical", exact: true }).click();
   await expect(content).toContainText("Only worktree");

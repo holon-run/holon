@@ -43,7 +43,9 @@ test("Explorer shares resolver rules; native new-tab links, fragments, images an
   const content = page.locator(".file-browser-markdown");
   await expect(content.getByRole("link", { name: "Absolute", exact: true })).toHaveAttribute("href", preview(targetName) + "#target");
   await expect(content.getByRole("img", { name: "Chart", exact: true })).toHaveAttribute("src", /^blob:/);
-  await expect(content.getByText("File not found", { exact: false })).toBeVisible();
+  const missing = content.getByText("/tmp/missing.md", { exact: true });
+  await expect(missing).toBeVisible();
+  await expect(missing).toHaveAttribute("title", /File not found/);
   expect(batches.flat().find((ref) => ref.type === "relative_path").base_file.execution_root_id).toBe(root);
   await content.getByRole("link", { name: "Local", exact: true }).click();
   await expect(content.getByRole("heading", { name: "Local section" })).toBeInViewport();
@@ -156,7 +158,7 @@ test("stream additions resolve only new references and late old-content replies 
   } finally { release(); }
 });
 
-test("invalid file and image references remain original text while transient failures can retry", async ({ page, context }, info) => {
+test("invalid file and image references degrade to original text; transient failures recover after reload", async ({ page, context }, info) => {
   await context.addCookies([{ name: "holon_e2e_session", value: `unresolved-${info.testId}`, domain: "127.0.0.1", path: "/" }]);
   const markdown = [
     "[Report](/data/report%20draft.md#summary)",
@@ -187,7 +189,7 @@ test("invalid file and image references remain original text while transient fai
   });
   await page.goto(preview("base.md"));
   const content = page.locator(".file-browser-markdown");
-  for (const path of ["/data/report%20draft.md#summary", "/data/literal%20#?.md", "/data/chart.png", "workspace://ws/unsupported.md", "/data/bad%xx.md"]) {
+  for (const path of ["/data/report%20draft.md#summary", "/data/literal%20#?.md", "/data/chart.png", "workspace://ws/unsupported.md", "/data/bad%xx.md", "/tmp/feature/temporary.md", "/tmp/feature/temporary.png"]) {
     const fallback = content.getByText(path, { exact: true });
     await expect(fallback).toBeVisible();
     await expect(fallback).toHaveJSProperty("tagName", "SPAN");
@@ -195,11 +197,12 @@ test("invalid file and image references remain original text while transient fai
     await expect(fallback.locator("a, button, small, img")).toHaveCount(0);
   }
   await expect(content.getByText("no registered execution root contains the path", { exact: false })).toHaveCount(0);
+  await expect(content.getByText("Temporary resolver failure", { exact: false })).toHaveCount(0);
   await expect(content.getByRole("link")).toHaveCount(0);
-  await expect(content.getByRole("button", { name: "Retry", exact: true })).toHaveCount(2);
-  await content.getByRole("button", { name: "Retry", exact: true }).first().click();
+  await expect(content.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
+  expect(attempts.get("/tmp/feature/temporary.md")).toBe(1);
+  await page.reload();
   await expect(content.getByRole("link", { name: "Temporary", exact: true })).toHaveAttribute("href", preview("temporary.md"));
   await expect(content.getByRole("img", { name: "Temporary image", exact: true })).toHaveAttribute("src", /^blob:/);
-  await expect(content.getByRole("button", { name: "Retry", exact: true })).toHaveCount(0);
   expect(attempts.get("/tmp/feature/temporary.md")).toBe(2);
 });

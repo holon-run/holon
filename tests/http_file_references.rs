@@ -188,3 +188,68 @@ async fn file_references_reject_removed_matching_root() -> Result<()> {
     server.abort();
     Ok(())
 }
+
+#[tokio::test]
+async fn file_references_resolve_duplicate_anchor_prefers_live_workspace() -> Result<()> {
+    let (host, base, server) = support::spawn_server().await?;
+    let client = reqwest::Client::new();
+    let workspace_id = "agent_home:default";
+    let anchor = host
+        .workspace_entries()?
+        .into_iter()
+        .find(|entry| entry.workspace_id == workspace_id)
+        .expect("agent home workspace")
+        .workspace_anchor;
+    let file = anchor.join("notes/duplicate-anchor.txt");
+    std::fs::create_dir_all(anchor.join("notes"))?;
+    std::fs::write(&file, "duplicate anchor")?;
+
+    // Legacy shared `agent_home` alias pointing at the same anchor as the
+    // canonical agent-home workspace (issue #3088 systematic collision).
+    host.runtime_db()
+        .workspace_entries()
+        .upsert(&holon::types::WorkspaceEntry::new(
+            "agent_home",
+            anchor.clone(),
+            None,
+        ))?;
+    // Stale canonical-root backfill whose workspace entry no longer exists
+    // (issue #3088 orphan collision).
+    host.runtime_db()
+        .execution_root_entries()
+        .upsert(&ExecutionRootEntry {
+            execution_root_id: "canonical_root:ws-orphan".into(),
+            workspace_id: "ws-orphan".into(),
+            filesystem_path: anchor.clone(),
+            root_kind: WorkspaceProjectionKind::CanonicalRoot,
+            worktree: None,
+            created_at: Utc::now(),
+            removed_at: None,
+        })?;
+
+    let response = client
+        .post(format!("{base}/api/file-references/resolve"))
+        .json(&serde_json::json!({
+            "references": [
+                {
+                    "type": "absolute_path",
+                    "absolute_path": file,
+                },
+            ],
+        }))
+        .send()
+        .await?;
+    assert_eq!(response.status(), 200, "{}", response.text().await?);
+    let body: serde_json::Value = response.json().await?;
+    let results = body["results"].as_array().expect("results array");
+    assert_eq!(results[0]["status"], "resolved");
+    assert_eq!(results[0]["location"]["workspace_id"], workspace_id);
+    assert_eq!(
+        results[0]["location"]["execution_root_id"],
+        format!("canonical_root:{workspace_id}")
+    );
+    assert_eq!(results[0]["location"]["path"], "notes/duplicate-anchor.txt");
+
+    server.abort();
+    Ok(())
+}
