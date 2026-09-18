@@ -1,3 +1,4 @@
+import { useCopyText } from "../../components/ClipboardProvider";
 import {
   conversationTimelineEntries,
   operatorActivityIsRepresented,
@@ -401,6 +402,7 @@ const ConversationBriefCard = memo(function ConversationBriefCard({
 
 function BriefCardBody({ brief, onOpenWorkItemId }: { brief: BriefRecord; onOpenWorkItemId?: (id: string) => void }) {
   const { t } = useTranslation();
+  const copyText = useCopyText();
   const [copied, setCopied] = useState(false);
   const created = useMemo(
     () => (brief.created_at ? new Date(brief.created_at) : null),
@@ -421,7 +423,7 @@ function BriefCardBody({ brief, onOpenWorkItemId }: { brief: BriefRecord; onOpen
           onClick={() => onOpenWorkItemId(brief.work_item_id!)}>{t("currentWork.viewWork")}<ExternalLink size={12} /></button> : null}
         <button type="button" aria-label={t(copied ? "agentPage.copiedReply" : "agentPage.copyReply")}
           onClick={async () => {
-            try { await navigator.clipboard.writeText(brief.text); setCopied(true); }
+            try { setCopied(await copyText(brief.text)); }
             catch { setCopied(false); }
           }}>
           {copied ? <Check size={14} /> : <Copy size={14} />}

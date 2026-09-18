@@ -1,3 +1,4 @@
+import { useCopyText } from "../../components/ClipboardProvider";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -38,11 +39,6 @@ function computeDuration(createdAt: string, updatedAt: string, isRunning: boolea
   const end = isRunning ? Date.now() : new Date(updatedAt).getTime();
   if (Number.isNaN(start) || Number.isNaN(end)) return "-";
   return formatDuration(end - start);
-}
-
-function copyToClipboard(text: string): void {
-  if (!navigator.clipboard) return;
-  void navigator.clipboard.writeText(text);
 }
 
 interface TaskDetailPanelProps {
@@ -242,6 +238,7 @@ function CommandTaskSection({
   status?: TaskStatusSnapshot;
   t: TFunc;
 }) {
+  const copyToClipboard = useCopyText();
   const cmd = status?.command?.cmd ?? task.command ?? "";
   const workdir = status?.command?.workdir ?? task.workdir;
   const shell = status?.command?.shell;
@@ -416,6 +413,7 @@ function TaskOutputSection({
   isRunning: boolean;
   t: TFunc;
 }) {
+  const copyToClipboard = useCopyText();
   const tabs = useMemo(() => {
     const result: { key: OutputTab; label: string; value: string; variant?: "error" }[] = [];
     if (detail.stdout) result.push({ key: "stdout", label: t("inspector.stdout"), value: detail.stdout });

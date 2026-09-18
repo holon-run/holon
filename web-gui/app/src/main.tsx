@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 
 import { I18nProvider } from "./i18n";
+import { ClipboardProvider } from "./components/ClipboardProvider";
 import { App } from "./app/App";
 import "./styles/tokens.css";
 import "./styles/global.css";
@@ -16,7 +17,7 @@ if (__HOLON_E2E_DIAGNOSTICS__) {
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <I18nProvider>
-      <App />
+      <ClipboardProvider><App /></ClipboardProvider>
     </I18nProvider>
   </React.StrictMode>,
 );

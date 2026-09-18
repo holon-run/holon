@@ -2,6 +2,13 @@
  * English translation resources.
  */
 const en = {
+  clipboard: {
+    copied: "Copied",
+    failed: "Could not copy automatically",
+    manual: "The browser blocked automatic copying. The text is selected below; press Ctrl+C or ⌘C, or use the selection menu to copy.",
+    content: "Text to copy",
+    close: "Close",
+  },
   modelUi: {
     loadMore: "Show more matching models",
     "models": "Models",
