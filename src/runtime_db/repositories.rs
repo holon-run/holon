@@ -4583,6 +4583,22 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
                 wait_id
             ],
         )?;
+        // Mirror the revision bookkeeping applied to every other wait
+        // mutation: conversation consumers invalidate cached wait state via
+        // source/turn revisions, so a cancelled row must not keep its
+        // pre-cancellation revisions.
+        let _ = bump_source_revision_tx(
+            tx,
+            SOURCE_WAIT,
+            &stale.id,
+            &stale.agent_id,
+            stale.turn_id.as_deref(),
+            stale.updated_at,
+        )?;
+        if let Some(turn_id) = stale.turn_id.as_deref() {
+            let _ =
+                bump_turn_revision_tx(tx, &stale.agent_id, turn_id, true, true, stale.updated_at)?;
+        }
         cancelled.push(wait_id);
     }
     if !cancelled.is_empty() {

@@ -579,19 +579,27 @@ fn truncate_chars(value: &str, limit: usize) -> String {
 /// transient convergence races, not permanent state damage: the next wait
 /// registration cancels the stale unresolved row. Classify them as retryable so
 /// the host rebuilds the runtime loop instead of leaving the agent stopped.
+/// Match only the two migration 44 owner-index messages: the migration 43
+/// trigger-message index shares the `agent_id` prefix, but a duplicate trigger
+/// is not repaired by owner convergence, so it must stay non-retryable.
+fn is_wait_owner_uniqueness_message(message: &str) -> bool {
+    matches!(
+        message,
+        "UNIQUE constraint failed: wait_conditions.agent_id"
+            | "UNIQUE constraint failed: wait_conditions.agent_id, wait_conditions.work_item_id"
+    )
+}
+
 fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)) -> bool {
     if let Some(db_error) = source.downcast_ref::<rusqlite::Error>() {
         return matches!(
             db_error,
             rusqlite::Error::SqliteFailure(inner, Some(message))
                 if inner.code == rusqlite::ErrorCode::ConstraintViolation
-                    && message
-                        .starts_with("UNIQUE constraint failed: wait_conditions.agent_id")
+                    && is_wait_owner_uniqueness_message(message)
         );
     }
-    source
-        .to_string()
-        .starts_with("UNIQUE constraint failed: wait_conditions.agent_id")
+    is_wait_owner_uniqueness_message(&source.to_string())
 }
 
 #[cfg(test)]
@@ -643,6 +651,35 @@ mod tests {
 
         assert_eq!(descriptor.code, "wait_condition_owner_conflict");
         assert!(descriptor.retryable);
+    }
+
+    #[test]
+    fn trigger_message_uniqueness_violation_is_not_owner_conflict() {
+        let error = AnyhowError::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+            Some(
+                "UNIQUE constraint failed: wait_conditions.agent_id, wait_conditions.trigger_message_id"
+                    .into(),
+            ),
+        ))
+        .context("runtime db transaction rolled back");
+
+        let descriptor = describe_runtime_error(&error);
+
+        assert_ne!(descriptor.code, "wait_condition_owner_conflict");
+        assert!(!descriptor.retryable);
+    }
+
+    #[test]
+    fn trigger_message_uniqueness_violation_is_not_owner_conflict_rendered() {
+        let error = AnyhowError::msg(
+            "UNIQUE constraint failed: wait_conditions.agent_id, wait_conditions.trigger_message_id",
+        );
+
+        let descriptor = describe_runtime_error(&error);
+
+        assert_ne!(descriptor.code, "wait_condition_owner_conflict");
+        assert!(!descriptor.retryable);
     }
 
     #[test]
