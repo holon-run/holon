@@ -4284,7 +4284,6 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         delivery: Option<&AgentMessageDeliveryRecord>,
     ) -> Result<TransitionCommit> {
-        let wait_trigger = self.wait_trigger_transition_for_message(message)?;
         let message_is_new = self
             .inner
             .storage
@@ -4328,17 +4327,6 @@ impl RuntimeHandle {
                 &MessageLifecycleAuditEvent::from_message(&message),
             )?,
         ];
-        if let Some(wait_trigger) = wait_trigger.as_ref() {
-            audit_events.push(AuditEvent::legacy(
-                "wait_condition_triggered",
-                serde_json::json!({
-                    "agent_id": message.agent_id,
-                    "wait_condition_id": wait_trigger.record.id,
-                    "trigger_message_id": message.id,
-                    "work_item_id": wait_trigger.record.work_item_id,
-                }),
-            ));
-        }
         let commit = {
             let mut guard = self.inner.agent.lock().await;
             let queue_needs_push = guard
@@ -4386,7 +4374,7 @@ impl RuntimeHandle {
                     created_at: existing_queue_entry
                         .as_ref()
                         .map_or(message.created_at, |entry| entry.created_at),
-                    updated_at: Utc::now(),
+                    updated_at: self.now(),
                 }),
                 scheduler_claim_work_item: None,
                 agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
@@ -4405,12 +4393,12 @@ impl RuntimeHandle {
                 self.inner
                     .runtime_db
                     .transitions()
-                    .commit_delivery_admission(&command, wait_trigger.as_ref(), delivery)?
+                    .commit_delivery_admission(&command, delivery)?
             } else {
                 self.inner
                     .runtime_db
                     .transitions()
-                    .commit_queue_with_wait_trigger(&command, wait_trigger.as_ref())?
+                    .commit_queue_with_wait_trigger(&command)?
             };
             let queue_admitted = commit.delivery_receipt.as_ref().is_none_or(|receipt| {
                 receipt.outcome == AgentMessageDeliveryOutcome::Accepted

@@ -13725,6 +13725,14 @@ async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_messag
         .await
         .unwrap();
 
+    let scheduled = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = scheduled else {
+        panic!("current triggered wait should bypass the stale correlated queue head");
+    };
+    assert_eq!(scheduled.message.id, valid.id);
     assert!(matches!(
         scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
             .poll()
@@ -13742,14 +13750,16 @@ async fn canonical_stale_correlated_wait_is_dropped_without_blocking_next_messag
             .map(|entry| entry.status),
         Some(QueueEntryStatus::Dropped)
     );
-    let scheduled = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-        .poll()
-        .await
-        .unwrap();
-    let scheduler_executor::RunLoopPoll::Message(scheduled) = scheduled else {
-        panic!("message behind stale exact-wait head should be admitted");
-    };
-    assert_eq!(scheduled.message.id, valid.id);
+    assert!(runtime
+        .storage()
+        .read_recent_events(100)
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event.kind == "wait_trigger_correlation_stale"
+                && event.data["message_id"] == stale.id
+                && event.data["wait_condition_id"] == "wait-stale-history"
+        }));
 }
 
 #[tokio::test]
@@ -15517,15 +15527,17 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
     )
     .unwrap();
     let now = Utc::now();
-    for (id, kind, wake_sources) in [
+    for (id, kind, subject_ref, wake_sources) in [
         (
             "wait-timer",
             WaitConditionKind::Timer,
+            Some("timer-1"),
             vec![WakeSource::Timer { wake_at: now }],
         ),
         (
             "wait-system",
             WaitConditionKind::System,
+            None,
             vec![WakeSource::SystemTick],
         ),
     ] {
@@ -15542,7 +15554,7 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
                 status: WaitConditionStatus::Active,
                 kind,
                 source: None,
-                subject_ref: None,
+                subject_ref: subject_ref.map(ToString::to_string),
                 waiting_for: format!("{id} fired"),
                 wake_sources,
                 continuation: None,
@@ -15559,7 +15571,7 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
             .unwrap();
     }
 
-    for message in [
+    for mut message in [
         MessageEnvelope::new(
             "default",
             MessageKind::TimerTick,
@@ -15585,6 +15597,14 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
             },
         ),
     ] {
+        message.work_item_id = Some(
+            match message.kind {
+                MessageKind::TimerTick => "wait-timer-work",
+                MessageKind::SystemTick => "wait-system-work",
+                _ => unreachable!(),
+            }
+            .into(),
+        );
         runtime
             .record_wait_reconciliation_signals(&message)
             .await
@@ -15605,8 +15625,8 @@ async fn timer_and_system_ticks_record_wait_reconciliation_signals() {
         .unwrap();
     assert_eq!(
         active_conditions.len(),
-        0,
-        "both waits should be resolved after reconciliation"
+        2,
+        "reconciliation is audit-only and must not advance wait state"
     );
 }
 

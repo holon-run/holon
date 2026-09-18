@@ -38,8 +38,9 @@ use crate::{
         AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AgentMessageDeliveryState,
         AgentState, AuditEvent, BriefRecord, MessageEnvelope, QueueEntryRecord, QueueEntryStatus,
         TaskRecord, ToolExecutionRecord, TranscriptEntry, TurnNoBriefReason, TurnRecord,
-        TurnTerminalKind, TurnTerminalSummary, WaitConditionRecord, WorkItemContinuationFrame,
-        WorkItemContinuationState, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
+        TurnTerminalKind, TurnTerminalSummary, WaitConditionRecord, WaitConditionStatus,
+        WorkItemContinuationFrame, WorkItemContinuationState, WorkItemRecord,
+        WorkItemSchedulingState, WorkItemState,
     },
 };
 
@@ -234,6 +235,30 @@ pub(crate) struct QueueWaitTransition {
     pub record: WaitConditionRecord,
     pub work_item: Option<WorkItemMutation>,
     pub index_changes: Vec<RuntimeIndexChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TriggerWaitAndEnqueueOutcome {
+    Triggered { wait_id: String },
+    Duplicate { wait_id: String },
+    DuplicateMessage,
+    Stale { wait_id: String },
+    NoMatch,
+}
+
+#[derive(Debug)]
+pub(super) struct TriggerWaitAndEnqueueResult {
+    pub message: MessageEnvelope,
+    pub message_inserted: bool,
+    pub queue_applied: bool,
+    pub wait_applied: bool,
+    pub outcome: TriggerWaitAndEnqueueOutcome,
+}
+
+impl TriggerWaitAndEnqueueResult {
+    fn applied(&self) -> bool {
+        self.message_inserted || self.queue_applied || self.wait_applied
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1351,12 +1376,11 @@ impl RuntimeTransitionRepository<'_> {
     pub fn commit_queue_with_wait_trigger(
         &self,
         command: &QueueTransitionCommand,
-        wait_transition: Option<&QueueWaitTransition>,
     ) -> Result<TransitionCommit> {
         self.commit_queue_transaction(
             command,
             &ExecutionProtocolTransition::default(),
-            wait_transition,
+            None,
             None,
             None,
             &[],
@@ -1409,13 +1433,12 @@ impl RuntimeTransitionRepository<'_> {
     pub fn commit_delivery_admission(
         &self,
         command: &QueueTransitionCommand,
-        wait_trigger: Option<&QueueWaitTransition>,
         delivery: &AgentMessageDeliveryRecord,
     ) -> Result<TransitionCommit> {
         self.commit_queue_transaction_with_delivery(
             command,
             &ExecutionProtocolTransition::default(),
-            wait_trigger,
+            None,
             None,
             None,
             &[],
@@ -1691,20 +1714,40 @@ impl RuntimeTransitionRepository<'_> {
                 execution_continuations,
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
-            let mutation_applied = match &command.mutation {
-                QueueMutation::Consume(record) => match command.operation {
-                    QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
-                    QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
-                    QueueOperation::Admit
-                    | QueueOperation::Requeue
-                    | QueueOperation::Settle
-                    | QueueOperation::RepairDrop => {
-                        unreachable!("queue operation validation rejects this combination")
+            let trigger_wait_and_enqueue = if command.operation == QueueOperation::Admit
+                && !command.message_evidence.is_empty()
+            {
+                let QueueMutation::Upsert(record) = &command.mutation else {
+                    unreachable!("queue operation validation requires Admit to use Upsert");
+                };
+                let [message] = command.message_evidence.as_slice() else {
+                    bail!(
+                        "TriggerWaitAndEnqueue requires exactly one admitted message for queue entry {}",
+                        record.message_id
+                    );
+                };
+                Some(trigger_wait_and_enqueue_tx(tx, message, record)?)
+            } else {
+                None
+            };
+            let mutation_applied = if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+                result.applied()
+            } else {
+                match &command.mutation {
+                    QueueMutation::Consume(record) => match command.operation {
+                        QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
+                        QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
+                        QueueOperation::Admit
+                        | QueueOperation::Requeue
+                        | QueueOperation::Settle
+                        | QueueOperation::RepairDrop => {
+                            unreachable!("queue operation validation rejects this combination")
+                        }
+                    },
+                    QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
+                    QueueMutation::CompareAndSet { expected, record } => {
+                        compare_and_set_queue_entry_tx(tx, expected, record)?
                     }
-                },
-                QueueMutation::Upsert(record) => upsert_queue_entry_tx(tx, record)?,
-                QueueMutation::CompareAndSet { expected, record } => {
-                    compare_and_set_queue_entry_tx(tx, expected, record)?
                 }
             };
             if !matches!(&command.mutation, QueueMutation::Upsert(_)) && !mutation_applied {
@@ -1869,11 +1912,19 @@ impl RuntimeTransitionRepository<'_> {
                 applied = true;
             }
             let mut message_index_changes = Vec::new();
-            for message in &command.message_evidence {
-                let (message, inserted) = append_message_tx(tx, message)?;
-                if inserted {
-                    applied = true;
-                    message_index_changes.push(RuntimeIndexChange::for_message(&message));
+            if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+                if result.message_inserted {
+                    message_index_changes.push(RuntimeIndexChange::for_message(&result.message));
+                }
+                applied |= result.applied();
+                let _ = &result.outcome;
+            } else {
+                for message in &command.message_evidence {
+                    let (message, inserted) = append_message_tx(tx, message)?;
+                    if inserted {
+                        applied = true;
+                        message_index_changes.push(RuntimeIndexChange::for_message(&message));
+                    }
                 }
             }
             if !applied {
@@ -1988,14 +2039,26 @@ impl RuntimeTransitionRepository<'_> {
             )?;
             inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
+            let trigger_wait_and_enqueue =
+                if let Some(queue_entry) = command.queue_entry.as_ref() {
+                    let [message] = command.message_evidence.as_slice() else {
+                        bail!(
+                            "TaskResult TriggerWaitAndEnqueue requires exactly one message for queue entry {}",
+                            queue_entry.message_id
+                        );
+                    };
+                    Some(trigger_wait_and_enqueue_tx(tx, message, queue_entry)?)
+                } else {
+                    None
+                };
             let task_applied = upsert_task_tx(tx, &command.task)?;
             let mut applied = task_applied;
             if let Some(settlement) = command.task_result_settlement.as_ref() {
                 applied |=
                     crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, settlement)?;
             }
-            if let Some(queue_entry) = command.queue_entry.as_ref() {
-                applied |= upsert_queue_entry_tx(tx, queue_entry)?;
+            if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+                applied |= result.applied();
             }
             let mut work_items = Vec::new();
             for work_item in &command.work_items {
@@ -2012,11 +2075,18 @@ impl RuntimeTransitionRepository<'_> {
                 apply_agent_state_mutation_tx(tx, command.agent_state.as_ref())?;
             applied |= agent_state_applied;
             let mut message_index_changes = Vec::new();
-            for message in &command.message_evidence {
-                let (message, inserted) = append_message_tx(tx, message)?;
-                if inserted {
-                    applied = true;
-                    message_index_changes.push(RuntimeIndexChange::for_message(&message));
+            if let Some(result) = trigger_wait_and_enqueue.as_ref() {
+                if result.message_inserted {
+                    message_index_changes.push(RuntimeIndexChange::for_message(&result.message));
+                }
+                let _ = &result.outcome;
+            } else {
+                for message in &command.message_evidence {
+                    let (message, inserted) = append_message_tx(tx, message)?;
+                    if inserted {
+                        applied = true;
+                        message_index_changes.push(RuntimeIndexChange::for_message(&message));
+                    }
                 }
             }
             applied |= command.commit_on_idempotent;
@@ -2053,6 +2123,151 @@ impl RuntimeTransitionRepository<'_> {
             )
         })
     }
+}
+
+pub(super) fn trigger_wait_and_enqueue_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    queue_entry: &QueueEntryRecord,
+) -> Result<TriggerWaitAndEnqueueResult> {
+    if message.id != queue_entry.message_id
+        || message.agent_id != queue_entry.agent_id
+        || queue_entry.status != QueueEntryStatus::Queued
+    {
+        bail!("TriggerWaitAndEnqueue message and queue entry do not share one admission identity");
+    }
+    validate_queue_mutation_tx(tx, &QueueMutation::Upsert(queue_entry.clone()))?;
+    let existing_admission = tx.query_row(
+        "SELECT
+            EXISTS(SELECT 1 FROM messages WHERE message_id = ?1)
+            OR EXISTS(SELECT 1 FROM queue_entries WHERE message_id = ?1)",
+        [&message.id],
+        |row| row.get::<_, bool>(0),
+    )?;
+
+    let conditions = {
+        let mut statement = tx.prepare(
+            "SELECT payload_json
+             FROM wait_conditions
+             WHERE agent_id = ?1 AND status IN ('active', 'triggered')
+             ORDER BY updated_at DESC, created_at DESC, wait_condition_id DESC",
+        )?;
+        let conditions = statement
+            .query_map([&message.agent_id], |row| row.get::<_, String>(0))?
+            .map(|payload| {
+                serde_json::from_str::<WaitConditionRecord>(&payload?)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        conditions
+    };
+
+    let selection = crate::wake_contract::select_wait_to_trigger(message, &conditions);
+    let mut triggered_wait = None;
+    let outcome = match selection {
+        crate::wake_contract::WaitTriggerSelection::Match { condition, wake } => {
+            if !wait_generation_matches_tx(tx, message, condition)? {
+                TriggerWaitAndEnqueueOutcome::Stale {
+                    wait_id: condition.id.clone(),
+                }
+            } else if condition.status == WaitConditionStatus::Triggered {
+                TriggerWaitAndEnqueueOutcome::Duplicate {
+                    wait_id: condition.id.clone(),
+                }
+            } else if existing_admission {
+                TriggerWaitAndEnqueueOutcome::DuplicateMessage
+            } else {
+                let mut triggered = condition.clone();
+                triggered.mark_triggered(&message.id, queue_entry.updated_at);
+                validate_wait_condition_tx(tx, &triggered)?;
+                let wait_id = triggered.id.clone();
+                triggered_wait = Some((triggered, wake));
+                TriggerWaitAndEnqueueOutcome::Triggered { wait_id }
+            }
+        }
+        crate::wake_contract::WaitTriggerSelection::StaleExact { wait_id } => {
+            TriggerWaitAndEnqueueOutcome::Stale { wait_id }
+        }
+        crate::wake_contract::WaitTriggerSelection::NoMatch => {
+            TriggerWaitAndEnqueueOutcome::NoMatch
+        }
+        crate::wake_contract::WaitTriggerSelection::Ambiguous { wait_ids } => {
+            bail!(
+                "TriggerWaitAndEnqueue rejected ambiguous wait correlation for message {}: {}",
+                message.id,
+                wait_ids.join(",")
+            );
+        }
+    };
+
+    let (message, message_inserted) = append_message_tx(tx, message)?;
+    let queue_applied = upsert_queue_entry_tx(tx, queue_entry)?;
+    let wait_applied = if let Some((triggered, wake)) = triggered_wait.as_ref() {
+        let applied = upsert_wait_condition_tx(tx, triggered)?;
+        let mut event = AuditEvent::legacy(
+            "wait_condition_triggered",
+            serde_json::json!({
+                "agent_id": message.agent_id,
+                "wait_condition_id": triggered.id,
+                "trigger_message_id": message.id,
+                "work_item_id": triggered.work_item_id,
+                "wake_source": wake.source,
+                "subject_ref": wake.subject_ref,
+            }),
+        );
+        event.id = format!("audit:wait-triggered:{}", message.id);
+        append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
+        applied
+    } else {
+        false
+    };
+    if let TriggerWaitAndEnqueueOutcome::Stale { wait_id } = &outcome {
+        let mut event = AuditEvent::legacy(
+            "wait_trigger_correlation_stale",
+            serde_json::json!({
+                "agent_id": message.agent_id,
+                "message_id": message.id,
+                "wait_condition_id": wait_id,
+                "work_item_id": message.work_item_id,
+            }),
+        );
+        event.id = format!("audit:wait-trigger-stale:{}", message.id);
+        append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
+    }
+
+    Ok(TriggerWaitAndEnqueueResult {
+        message,
+        message_inserted,
+        queue_applied,
+        wait_applied,
+        outcome,
+    })
+}
+
+fn wait_generation_matches_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    condition: &WaitConditionRecord,
+) -> Result<bool> {
+    let Some(raw_generation) = message.source_refs.get("wait_generation") else {
+        return Ok(true);
+    };
+    let Ok(expected_generation) = raw_generation.parse::<u64>() else {
+        return Ok(false);
+    };
+    let Some(work_item_id) = condition.work_item_id.as_deref() else {
+        return Ok(false);
+    };
+    let state = execution_protocol_repository::load_state_tx(tx, &message.agent_id)?;
+    Ok(state.work_items.get(work_item_id).is_some_and(|record| {
+        matches!(
+            &record.state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+                generation,
+                wait,
+            } if *generation == expected_generation && wait.wait_id == condition.id
+        )
+    }))
 }
 
 pub(super) fn validate_wait_condition_expectation_tx(

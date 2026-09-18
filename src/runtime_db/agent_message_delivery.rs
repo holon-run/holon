@@ -848,22 +848,18 @@ mod tests {
         assert_eq!(prepared.message.turn_id, None);
         assert_eq!(prepared.message.task_id, None);
         assert_eq!(prepared.message.work_item_id, None);
-        let first = db.transitions().commit_delivery_admission(
-            &admission_command(&prepared),
-            None,
-            &prepared.record,
-        )?;
+        let first = db
+            .transitions()
+            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
         let first = first.delivery_receipt.context("missing delivery receipt")?;
         assert_eq!(first.outcome, AgentMessageDeliveryOutcome::Accepted);
         assert_eq!(first.state, AgentMessageDeliveryState::Queued);
         assert!(!first.idempotent_replay);
 
         let replay = prepare("stable-key", "hello")?;
-        let replay = db.transitions().commit_delivery_admission(
-            &admission_command(&replay),
-            None,
-            &replay.record,
-        )?;
+        let replay = db
+            .transitions()
+            .commit_delivery_admission(&admission_command(&replay), &replay.record)?;
         let replay = replay.delivery_receipt.context("missing replay receipt")?;
         assert_eq!(replay.delivery_id, first.delivery_id);
         assert!(replay.idempotent_replay);
@@ -916,11 +912,9 @@ mod tests {
         let (dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let prepared = prepare_from_peer("peer-default", "delegate work")?;
-        let accepted = db.transitions().commit_delivery_admission(
-            &admission_command(&prepared),
-            None,
-            &prepared.record,
-        )?;
+        let accepted = db
+            .transitions()
+            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
         let delivery_id = accepted
             .delivery_receipt
             .context("missing accepted peer receipt")?
@@ -1036,16 +1030,13 @@ mod tests {
         let (_dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let first = prepare("conflict-key", "first")?;
-        db.transitions().commit_delivery_admission(
-            &admission_command(&first),
-            None,
-            &first.record,
-        )?;
+        db.transitions()
+            .commit_delivery_admission(&admission_command(&first), &first.record)?;
 
         let conflicting = prepare("conflict-key", "different")?;
         let error = db
             .transitions()
-            .commit_delivery_admission(&admission_command(&conflicting), None, &conflicting.record)
+            .commit_delivery_admission(&admission_command(&conflicting), &conflicting.record)
             .unwrap_err();
         assert!(error.downcast_ref::<AgentMessageDeliveryError>().is_some());
         assert_eq!(db.queue_entries().latest_all()?.len(), 1);
@@ -1074,11 +1065,9 @@ mod tests {
         state.status = AgentStatus::AwakeIdle;
         db.agent_states().upsert(&state)?;
         let retry = prepare("retry-key", "retry me")?;
-        let accepted = db.transitions().commit_delivery_admission(
-            &admission_command(&retry),
-            None,
-            &retry.record,
-        )?;
+        let accepted = db
+            .transitions()
+            .commit_delivery_admission(&admission_command(&retry), &retry.record)?;
         let accepted = accepted
             .delivery_receipt
             .context("missing accepted retry receipt")?;
@@ -1094,11 +1083,9 @@ mod tests {
         let (_dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let prepared = prepare("delete-race", "race")?;
-        let accepted = db.transitions().commit_delivery_admission(
-            &admission_command(&prepared),
-            None,
-            &prepared.record,
-        )?;
+        let accepted = db
+            .transitions()
+            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
         let delivery_id = accepted
             .delivery_receipt
             .context("missing delivery receipt")?
@@ -1172,11 +1159,9 @@ mod tests {
         let (_dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let prepared = prepare("recovery-delivery", "recover")?;
-        let accepted = db.transitions().commit_delivery_admission(
-            &admission_command(&prepared),
-            None,
-            &prepared.record,
-        )?;
+        let accepted = db
+            .transitions()
+            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
         let delivery_id = accepted
             .delivery_receipt
             .context("missing delivery receipt")?
@@ -1213,11 +1198,9 @@ mod tests {
         let (_dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let prepared = prepare("diagnostic-key", "fail")?;
-        let accepted = db.transitions().commit_delivery_admission(
-            &admission_command(&prepared),
-            None,
-            &prepared.record,
-        )?;
+        let accepted = db
+            .transitions()
+            .commit_delivery_admission(&admission_command(&prepared), &prepared.record)?;
         let delivery_id = accepted
             .delivery_receipt
             .context("missing delivery receipt")?
