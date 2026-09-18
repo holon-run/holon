@@ -1,6 +1,6 @@
 {
   "siteTitle": "Holon",
-  "siteDescription": "Keep project work moving after the chat ends. Holon is a local workbench for long-lived agents, explicit work state, and event-driven waits and wakes.",
+  "siteDescription": "Agents that act and follow through. Run Holon on your computer or a team server. Connect events and schedules so agents can act, save progress, and ask for your input when needed.",
   "siteUrl": "https://holon.run",
   "locales": [
     {
@@ -11,7 +11,7 @@
     {
       "code": "zh-CN",
       "label": "中文",
-      "siteDescription": "让项目工作在对话结束后继续推进。Holon 为长期 Agent 提供本地工作台、显式工作状态和事件驱动的等待与唤醒。",
+      "siteDescription": "Agent 主动工作，持续跟进。Holon 是可部署在个人电脑或团队服务器上的 Agent 工作台；接入系统事件和定时安排，让 Agent 按约定行动、保留进度，并在需要时请你参与。",
       "topNav": [
         {
           "label": "开始",

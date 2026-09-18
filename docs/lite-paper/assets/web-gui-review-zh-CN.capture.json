@@ -1,0 +1,25 @@
+{
+  "gui_commit": "a8eaf9815bf430f1555ff517067e902ec90364b7",
+  "gui_dirty": "",
+  "locale": "zh-CN",
+  "timezone": "Asia/Shanghai",
+  "fixed_time": "2026-09-17T02:15:00Z",
+  "viewport": {
+    "width": 1500,
+    "height": 940
+  },
+  "device_scale_factor": 2,
+  "synthetic_data": true,
+  "live_runtime": false,
+  "scenario_sha256": "2202de53c8b5d9d00dfa685b9d877f30e6a4dcb86bf6299579e4a8be4e569eb2",
+  "capture_script_sha256": "0531c9ac65258e809a377eacf9e4c293fc69da40621e72040920995ce243d083",
+  "fixture_transport_sha256": "5656d7e7ec31b090a8732b4b9ca3270982c55c9ceb29ba8a3d7a22140e0fe464",
+  "screenshot_sha256": "9d9c474bb2c424b87b343b25a1c718c7342a46f52f96fa4b1cab63156bc6f666",
+  "checks": [
+    "Chinese heading visible",
+    "webhook source expanded and within viewport",
+    "full work item checklist within viewport",
+    "waitingExternal state",
+    "no external requests or page errors"
+  ]
+}

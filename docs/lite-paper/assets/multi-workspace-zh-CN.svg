@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title description">
+<title id="title">一个目标，跨工作区推进并汇总。</title><desc id="description">一个接口升级目标由主 Agent 在服务端、SDK 和示例应用间切换推进，同一时刻一个活动工作区。子 Agent 接收独立复核任务，可以在 SDK 仓库的独立 worktree 执行，结果返回主 Agent 验收汇总。</desc>
+<defs><style>text { font-family: "Heiti SC", "PingFang SC", "Noto Sans CJK SC", sans-serif; fill: #142E36; }</style>
+<marker id="teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#087F77" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<marker id="gold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#B5792B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<marker id="blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#4C68A7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<marker id="muted" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#587078" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+</defs>
+<rect x="0" y="0" width="1800" height="1080" rx="0" fill="#F7F7F2"/>
+<text x="62" y="76" font-size="44" style="fill:#142E36" font-weight="600">一个目标，跨工作区推进并汇总。</text>
+<text x="62" y="124" font-size="23" style="fill:#587078">主 Agent 保留总体计划，在项目之间切换；可独立推进的复核交给受监督的子任务。</text>
+<text x="1740" y="68" font-size="16" style="fill:#087F77" text-anchor="end">HOLON / MULTI-WORKSPACE</text>
+<rect x="62" y="176" width="1678" height="96" rx="14" fill="#142E36"/>
+<text x="90" y="216" font-size="30" style="fill:#FFFFFF" font-weight="600">工作目标 · 为接口增加字段，同步 SDK 与示例应用</text>
+<text x="90" y="251" font-size="22" style="fill:#C3D9D3">同一个 WorkItem 保存总体计划、各项目进度与验收条件</text>
+<rect x="62" y="302" width="1118" height="513" rx="14" fill="#FFFFFF" stroke="#D5DFDC" stroke-width="1.6"/>
+<rect x="90" y="330" width="1060" height="99" rx="14" fill="#E5F1EB"/>
+<text x="112" y="369" font-size="27" style="fill:#087F77" font-weight="600">主 Agent · 开发与协调</text>
+<text x="112" y="406" font-size="22" style="fill:#587078">当前活动工作区：SDK；本图展示执行到第二步时的现场。</text>
+<rect x="1240" y="302" width="500" height="513" rx="14" fill="#FFFFFF" stroke="#D5DFDC" stroke-width="1.6"/>
+<path d="M1150 365 H1268" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="1184" y="341" font-size="20" style="fill:#087F77">委派</text>
+<rect x="1268" y="350" width="444" height="115" rx="14" fill="#E5F1EB"/>
+<text x="1290" y="389" font-size="27" style="fill:#087F77" font-weight="600">子 Agent · 独立复核</text>
+<text x="1290" y="426" font-size="22" style="fill:#587078">接收检查范围与交付要求</text>
+<text x="1290" y="457" font-size="22" style="fill:#587078">主 Agent 可查看状态、补充输入</text>
+<path d="M254 429 V503" fill="none" stroke="#587078" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 7"/>
+<rect x="90" y="503" width="328" height="135" rx="14" fill="#F5F7F5" stroke="#D5DFDC" stroke-width="1.6"/>
+<text x="112" y="542" font-size="29" style="fill:#142E36" font-weight="600">服务端</text>
+<text x="112" y="580" font-size="22" style="fill:#587078">接口与兼容性检查</text>
+<text x="112" y="615" font-size="22" style="fill:#587078">已完成本轮修改</text>
+<path d="M620 429 V503" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<rect x="456" y="503" width="328" height="135" rx="14" fill="#E5F1EB" stroke="#087F77" stroke-width="1.6"/>
+<text x="478" y="542" font-size="29" style="fill:#087F77" font-weight="600">SDK</text>
+<text x="478" y="580" font-size="22" style="fill:#587078">类型与调用方式</text>
+<text x="478" y="615" font-size="22" style="fill:#087F77">当前正在执行</text>
+<path d="M986 429 V503" fill="none" stroke="#587078" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="7 7"/>
+<rect x="822" y="503" width="328" height="135" rx="14" fill="#F5F7F5" stroke="#D5DFDC" stroke-width="1.6"/>
+<text x="844" y="542" font-size="29" style="fill:#142E36" font-weight="600">示例应用</text>
+<text x="844" y="580" font-size="22" style="fill:#587078">用法与集成验证</text>
+<text x="844" y="615" font-size="22" style="fill:#587078">后续切换到这里</text>
+<text x="102" y="692" font-size="24" style="fill:#142E36">① 修改接口</text>
+<path d="M296 684 H449" fill="none" stroke="#087F77" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="470" y="692" font-size="24" style="fill:#087F77" font-weight="600">② 更新 SDK</text>
+<path d="M666 684 H816" fill="none" stroke="#087F77" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="838" y="692" font-size="24" style="fill:#142E36">③ 更新用法</text>
+<text x="90" y="759" font-size="23" style="fill:#587078">本例按步骤切换；绑定多个工作区，每次在一个当前工作区执行。</text>
+<path d="M1490 465 V511" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<rect x="1268" y="511" width="444" height="127" rx="14" fill="#F5F7F5" stroke="#D5DFDC" stroke-width="1.6"/>
+<text x="1290" y="550" font-size="26" style="fill:#142E36" font-weight="600">SDK 仓库 / 独立 worktree</text>
+<text x="1290" y="589" font-size="22" style="fill:#587078">需要独立检出或并行修改时使用</text>
+<text x="1290" y="623" font-size="22" style="fill:#587078">同一仓库的独立目录</text>
+<path d="M1490 638 V681" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<rect x="1268" y="681" width="444" height="106" rx="14" fill="#E5F1EB"/>
+<text x="1290" y="720" font-size="27" style="fill:#087F77" font-weight="600">返回复核结果</text>
+<text x="1290" y="757" font-size="22" style="fill:#587078">发现的问题、检查范围与证据</text>
+<path d="M620 815 V869" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<path d="M1490 787 V915 H1180" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)"/>
+<text x="1520" y="849" font-size="22" style="fill:#087F77">交回主 Agent</text>
+<rect x="62" y="869" width="1118" height="97" rx="14" fill="#142E36"/>
+<text x="90" y="910" font-size="28" style="fill:#FFFFFF" font-weight="600">主 Agent 核对并汇总交付</text>
+<text x="90" y="947" font-size="23" style="fill:#C3D9D3">各项目改动 + 验证依据 + 遗留事项 → 用户验收</text>
+<text x="62" y="1018" font-size="23" style="fill:#587078">Workspace 指定项目执行环境；worktree 为同一 Git 仓库提供独立的代码工作目录。</text>
+<text x="1740" y="1052" font-size="16" style="fill:#587078" text-anchor="end">中文图示草稿 · 2026-09-17</text>
+</svg>

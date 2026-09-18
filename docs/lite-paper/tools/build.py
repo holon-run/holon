@@ -5,6 +5,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -103,6 +104,11 @@ def main():
                   for role, font in [('regular', regular), ('bold', bold)]},
         'renderer_sha256': {name: sha256(PAPER_ROOT / 'tools' / name)
                            for name in ['build.py', 'layout.py']},
+        'assets_sha256': {
+            (source.parent / name).resolve().relative_to(REPO_ROOT).as_posix():
+                sha256((source.parent / name).resolve())
+            for name in re.findall(r'^!\[[^\]]*\]\(([^)]+)\)$', body, re.MULTILINE)
+        },
         'pdf_sha256': sha256(output),
         'preview_rendered': False,
         'visual_review': 'pending',

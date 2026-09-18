@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title description">
+  <title id="title">Respond to change and keep work moving</title>
+  <desc id="description">External events, schedules, and user input enter a clockwise work loop. Work pauses for results or decisions, resumes when conditions are met, and exits on completion.</desc>
+  <defs>
+    <marker id="arrow-teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#087F77" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#7A9298" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+    <marker id="arrow-gold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#B5792B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+    <style>
+      text { font-family: Arial, sans-serif; fill: #142E36; }
+      .title { font-size: 44px; font-weight: 600; }
+      .subtitle { font-size: 22px; fill: #587078; }
+      .label { font-size: 20px; font-weight: 600; }
+      .detail { font-size: 17px; fill: #587078; }
+      .small { font-size: 16px; fill: #587078; }
+      .number { font-size: 16px; fill: #087F77; font-weight: 600; }
+      .loop { fill: none; stroke: #087F77; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-teal); }
+      .input { fill: none; stroke: #7A9298; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+      .wait { fill: none; stroke: #B5792B; stroke-width: 2.3; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-gold); }
+      .delivery { fill: none; stroke: #087F77; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; marker-end: url(#arrow-teal); }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1080" fill="#F7F7F2" />
+  <text x="62" y="76" class="title">Respond to change. Keep work moving.</text>
+  <text x="62" y="124" class="subtitle">The agent decides and acts. Holon preserves progress, manages the environment, and wakes it when needed.</text>
+  <text x="1740" y="68" text-anchor="end" class="small" style="letter-spacing: 2px; fill: #087F77;">HOLON / WORK MODEL</text>
+
+
+  <rect x="426" y="176" width="1314" height="790" rx="24" fill="#FFFFFF" stroke="#D5DFDC" stroke-width="1.5" />
+  <rect x="454" y="202" width="8" height="25" rx="4" fill="#087F77" />
+  <text x="476" y="222" class="label">Holon · The environment for ongoing work</text>
+
+
+  <text x="62" y="282" class="label" style="fill: #587078;">How work arrives</text>
+  <rect x="62" y="332" width="282" height="96" rx="14" fill="#E5F1EB" />
+  <circle cx="87" cy="360" r="5" fill="#087F77" />
+  <text x="104" y="368" class="label">External events</text>
+  <text x="86" y="401" class="detail">Email / orders / CI / logs</text>
+  <text x="356" y="367" class="small">webhook</text>
+
+  <rect x="62" y="476" width="282" height="96" rx="14" fill="#FBF0DC" />
+  <circle cx="87" cy="504" r="5" fill="#B5792B" />
+  <text x="104" y="512" class="label">Schedules</text>
+  <text x="86" y="545" class="detail">Follow-ups / regular checks</text>
+
+  <rect x="62" y="620" width="282" height="96" rx="14" fill="#EBEFF8" />
+  <circle cx="87" cy="648" r="5" fill="#4C68A7" />
+  <text x="104" y="656" class="label">Tasks and feedback</text>
+  <text x="86" y="689" class="detail">Web / terminal / API</text>
+
+  <path class="input" d="M344 380 H392 V668 H344 M344 524 H392" />
+  <circle cx="392" cy="524" r="4" fill="#7A9298" />
+  <path class="input" d="M392 524 H470 V310 H855" marker-end="url(#arrow-muted)" />
+  <text x="558" y="296" class="small">New work / new signal</text>
+
+
+  <path class="loop" d="M1155 332 C1222 332 1260 370 1260 462" />
+  <path class="loop" d="M1260 550 C1260 632 1214 676 1155 676" />
+  <path class="loop" d="M855 676 C788 676 750 630 750 550" />
+  <path class="loop" d="M750 462 C750 390 787 354 855 354" />
+  <text x="680" y="396" class="small" style="fill: #087F77;">Continue</text>
+
+  <circle cx="1005" cy="507" r="86" fill="#F0F7F3" />
+  <text x="1005" y="498" text-anchor="middle" class="label" style="fill: #087F77;;font-size:19.79px;">Agent work loop</text>
+  <text x="1005" y="530" text-anchor="middle" class="small">Take the next step</text>
+
+  <rect x="855" y="288" width="300" height="88" rx="14" fill="#E5F1EB" stroke="#C6DDD3" />
+  <text x="873" y="321" class="number">01</text>
+  <text x="906" y="321" class="label" style=";font-size:17.77px;">Read updates and progress</text>
+  <text x="906" y="350" class="detail" style=";font-size:16.97px;">Review findings and next steps</text>
+
+  <rect x="1110" y="462" width="300" height="88" rx="14" fill="#E5F1EB" stroke="#C6DDD3" />
+  <text x="1128" y="495" class="number">02</text>
+  <text x="1161" y="495" class="label">Decide what to do next</text>
+  <text x="1161" y="524" class="detail">Use context and permissions</text>
+
+  <rect x="855" y="632" width="300" height="88" rx="14" fill="#E5F1EB" stroke="#C6DDD3" />
+  <text x="873" y="665" class="number">03</text>
+  <text x="906" y="665" class="label">Act and check results</text>
+  <text x="906" y="694" class="detail" style=";font-size:16.84px;">Work with project files and data</text>
+
+  <rect x="600" y="462" width="300" height="88" rx="14" fill="#E5F1EB" stroke="#C6DDD3" />
+  <text x="618" y="495" class="number">04</text>
+  <text x="651" y="495" class="label">Update progress</text>
+  <text x="651" y="524" class="detail">Save findings and next steps</text>
+
+
+  <path class="wait" d="M1410 506 H1480" />
+  <text x="1426" y="481" class="small" style="fill: #B5792B;">Wait</text>
+  <rect x="1480" y="422" width="232" height="124" rx="14" fill="#FBF0DC" stroke="#E8D2AB" />
+  <text x="1497" y="455" class="label" style="fill: #936325;;font-size:17.90px;">Save progress and wait</text>
+  <text x="1497" y="490" class="detail">Results / external events</text>
+  <text x="1497" y="519" class="detail">or your decision</text>
+  <path class="wait" stroke-dasharray="7 7" d="M1596 422 V252 H1005 V288" />
+  <rect x="1197" y="232" width="240" height="32" rx="7" fill="#FFFFFF" />
+  <text x="1317" y="254" text-anchor="middle" class="small" style="fill: #B5792B;">Conditions met: resume</text>
+
+
+  <path class="delivery" d="M600 506 H550 V802 H1596 V754" />
+  <rect x="1010" y="785" width="190" height="34" rx="7" fill="#FFFFFF" />
+  <text x="1105" y="808" text-anchor="middle" class="small" style="fill: #087F77;">Requirements met</text>
+  <rect x="1480" y="646" width="232" height="108" rx="14" fill="#142E36" />
+  <text x="1499" y="684" class="label" style="fill: #FFFFFF; font-size: 24px;">Deliver results</text>
+  <text x="1499" y="722" class="small" style="fill: #C3D9D3; font-size: 14px;">Results · Evidence · Report</text>
+
+
+  <rect x="454" y="872" width="1258" height="67" rx="12" fill="#F2F5F2" />
+  <text x="476" y="913" class="detail" style="fill: #087F77;">Holon provides</text>
+  <text x="665" y="913" class="label" style="font-size: 18px;">Roles and skills</text>
+  <text x="909" y="913" class="label" style="font-size: 18px;">Work state</text>
+  <text x="1145" y="913" class="label" style="font-size: 18px;">Workspaces and tools</text>
+  <text x="1443" y="913" class="label" style="font-size: 18px;">Waits and wake-ups</text>
+
+  <text x="62" y="1019" class="subtitle" style="font-size: 23px;">Continue when ready. Wait for replies or results. Deliver when requirements are met.</text>
+  <text x="1740" y="1020" text-anchor="end" class="small">Draft illustration · 2026-09-18</text>
+</svg>

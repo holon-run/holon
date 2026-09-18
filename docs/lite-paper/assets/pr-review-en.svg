@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1080" viewBox="0 0 1800 1080" role="img" aria-labelledby="title description">
+<title id="title">One PR. Review as new updates arrive.</title><desc id="description">New PRs, commits, and CI results trigger successive actions. The same work item preserves goals, findings, waits, and evidence.</desc>
+<defs><style>text { font-family: Arial, sans-serif; fill: #142E36; }</style>
+<marker id="teal" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#087F77" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+<marker id="gold" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#B5792B" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+<marker id="blue" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#4C68A7" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+<marker id="muted" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M1 1 L8 5 L1 9" fill="none" stroke="#587078" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></marker>
+</defs>
+<rect x="0" y="0" width="1800" height="1080" rx="0" fill="#F7F7F2" />
+<text x="62" y="76" font-size="44" style="fill:#142E36" font-weight="600">One PR. Review as new updates arrive.</text>
+<text x="62" y="124" font-size="23" style="fill:#587078">New code or check results prompt the reviewer to revisit its earlier findings.</text>
+<text x="1740" y="68" font-size="16" style="fill:#087F77" text-anchor="end">HOLON / CONTINUOUS REVIEW</text>
+<path d="M90 213 H1710" fill="none" stroke="#587078" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#muted)" />
+<rect x="90" y="175" width="240" height="66" rx="0" fill="#F7F7F2" />
+<text x="90" y="210" font-size="20" style="fill:#087F77" font-weight="600">01</text>
+<text x="133" y="210" font-size="27" style="fill:#142E36" font-weight="600">New PR</text>
+<rect x="665" y="175" width="240" height="66" rx="0" fill="#F7F7F2" />
+<text x="665" y="210" font-size="20" style="fill:#087F77" font-weight="600">02</text>
+<text x="708" y="210" font-size="27" style="fill:#142E36" font-weight="600">New commit</text>
+<rect x="1240" y="175" width="240" height="66" rx="0" fill="#F7F7F2" />
+<text x="1240" y="210" font-size="20" style="fill:#087F77" font-weight="600">03</text>
+<text x="1283" y="210" font-size="27" style="fill:#142E36" font-weight="600">CI complete</text>
+<rect x="90" y="270" width="470" height="112" rx="14" fill="#EBEFF8" />
+<text x="112" y="309" font-size="27" style="fill:#4C68A7" font-weight="600">GitHub · New PR</text>
+<text x="112" y="346" font-size="22" style="fill:#587078">Identifies the PR and scope</text>
+<path d="M325 382 V468" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" />
+<text x="342" y="430" font-size="19" style="fill:#587078">webhook</text>
+<rect x="665" y="270" width="470" height="112" rx="14" fill="#EBEFF8" />
+<text x="687" y="309" font-size="27" style="fill:#4C68A7" font-weight="600">GitHub · New commit</text>
+<text x="687" y="346" font-size="22" style="fill:#587078">Provides the updated code</text>
+<path d="M900 382 V468" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" />
+<text x="917" y="430" font-size="19" style="fill:#587078">webhook</text>
+<rect x="1240" y="270" width="470" height="112" rx="14" fill="#EBEFF8" />
+<text x="1262" y="309" font-size="27" style="fill:#4C68A7" font-weight="600">CI · Check results</text>
+<text x="1262" y="346" font-size="22" style="fill:#587078">Links check results to the version</text>
+<path d="M1475 382 V468" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" />
+<text x="1492" y="430" font-size="19" style="fill:#587078">webhook</text>
+<rect x="90" y="468" width="470" height="126" rx="14" fill="#E5F1EB" />
+<text x="112" y="507" font-size="27" style="fill:#087F77" font-weight="600">Reviewer · Start review</text>
+<text x="112" y="544" font-size="22" style="fill:#587078">Read rules and inspect changes</text>
+<text x="112" y="575" font-size="22" style="fill:#587078">Record findings and pending checks</text>
+<rect x="665" y="468" width="470" height="126" rx="14" fill="#E5F1EB" />
+<text x="687" y="507" font-size="27" style="fill:#087F77" font-weight="600">Reviewer · Re-review</text>
+<text x="687" y="544" font-size="22" style="fill:#587078">Compare changes with earlier findings</text>
+<text x="687" y="575" font-size="22" style="fill:#587078">Update conclusions and follow CI</text>
+<rect x="1240" y="468" width="470" height="126" rx="14" fill="#E5F1EB" />
+<text x="1262" y="507" font-size="27" style="fill:#087F77" font-weight="600">Reviewer · Verify results</text>
+<text x="1262" y="544" font-size="22" style="fill:#587078">Check the version and remaining work</text>
+<text x="1262" y="575" font-size="22" style="fill:#587078">Summarize resolved issues and evidence</text>
+<path d="M325 594 V640" fill="none" stroke="#B5792B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#gold)" />
+<path d="M900 594 V640" fill="none" stroke="#B5792B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#gold)" />
+<path d="M1475 594 V640" fill="none" stroke="#087F77" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" />
+<rect x="90" y="640" width="470" height="93" rx="14" fill="#FBF0DC" />
+<text x="112" y="679" font-size="27" style="fill:#B5792B" font-weight="600">Wait for changes</text>
+<text x="112" y="716" font-size="22" style="fill:#587078">Keep the findings while waiting</text>
+<rect x="665" y="640" width="470" height="93" rx="14" fill="#FBF0DC" />
+<text x="687" y="679" font-size="27" style="fill:#B5792B" font-weight="600">Wait for CI</text>
+<text x="687" y="716" font-size="22" style="fill:#587078">Keep pending checks while waiting</text>
+<rect x="1240" y="640" width="470" height="93" rx="14" fill="#142E36" />
+<text x="1262" y="679" font-size="26" style="fill:#FFFFFF" font-weight="600">Ready: deliver the review</text>
+<text x="1262" y="713" font-size="22" style="fill:#C3D9D3">Version · Conclusion · Evidence</text>
+<path d="M560 686 H612 V326 H665" fill="none" stroke="#B5792B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#gold)" stroke-dasharray="7 7" />
+<path d="M1135 686 H1187 V326 H1240" fill="none" stroke="#B5792B" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#gold)" stroke-dasharray="7 7" />
+<rect x="90" y="808" width="1620" height="130" rx="14" fill="#FFFFFF" stroke="#D5DFDC" stroke-width="1.6" />
+<text x="116" y="848" font-size="28" style="fill:#087F77" font-weight="600">One work item · Follow this PR</text>
+<text x="116" y="888" font-size="24" style="fill:#142E36;font-size:22.13px;">Goal and scope</text>
+<text x="473" y="888" font-size="24" style="fill:#142E36">Findings</text>
+<text x="895" y="888" font-size="24" style="fill:#142E36;font-size:22.64px;">Waits and progress</text>
+<text x="1354" y="888" font-size="24" style="fill:#142E36">Evidence and report</text>
+<path d="M275 881 H442" fill="none" stroke="#087F77" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" />
+<path d="M647 881 H864" fill="none" stroke="#087F77" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" />
+<path d="M1097 881 H1323" fill="none" stroke="#087F77" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#teal)" />
+<text x="62" y="1018" font-size="23" style="fill:#587078">Shown with issues resolved. Open issues prompt follow-up; disputed choices wait for your decision.</text>
+<text x="1740" y="1052" font-size="16" style="fill:#587078" text-anchor="end">Draft illustration · 2026-09-18</text>
+</svg>

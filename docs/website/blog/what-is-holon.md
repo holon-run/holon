@@ -48,13 +48,15 @@ As long as the background service and host machine remain running, closing the t
 
 Handing work to the background should not mean that you can only wait for a result. You need to know how far it has progressed and where it is stuck, and you need a way to add judgment and adjust requirements. Holon's terminal TUI and Web GUI connect you to the original agent and work item, without making you recreate the task just to intervene.
 
-Open the work item to see the plan, checklist, and reason for waiting. If it is waiting for CI, you can check progress and leave. If it needs you to decide the compatibility scope, add the requirement directly so it can continue. The following image shows the latter case.
+Open the work item to see the plan, checklist, and reason for waiting. If it is waiting for CI, you can check progress and leave. If it needs you to decide the compatibility scope, add the requirement directly so it can continue. The screenshot below shows a reviewer that has checked the latest changes and is waiting for CI results.
 
-<img src="/assets/holon-tour-review-work.webp" width="1600" height="1000" alt="Reviewer work item details in a Web GUI demonstration: a review plan, a three-item checklist, and the reason for waiting for the operator to confirm scope." loading="lazy" decoding="async">
+<a href="/assets/lite-paper/web-gui-review-en.png">
+<img src="/assets/lite-paper/web-gui-review-en.png" width="3000" height="1880" alt="Holon web workbench showing review progress, the work item plan and checklist, and the reason for waiting for CI results before continuing." loading="lazy" decoding="async">
+</a>
 
-*Web GUI demonstration using simulated data.*
+*Web workbench with demo data: changes reviewed, CI results pending, and the next steps saved in the same work item. Click the image to enlarge.*
 
-For example, after you confirm "keep the old interface and add regression tests," the reviewer follows later changes according to that requirement. The objective, existing findings, and remaining checks still belong to the same work item. If you separately authorize it to arrange a fix, it can also delegate changes to a child agent and review the returned results.
+If a compatibility decision is needed, for example, you can specify "keep the old interface and add regression tests." Then the reviewer follows later changes according to that requirement. The objective, existing findings, and remaining checks still belong to the same work item. If you separately authorize it to arrange a fix, it can also delegate changes to a child agent and review the returned results.
 
 ### Leave verifiable results when the work is complete
 

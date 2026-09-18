@@ -1,15 +1,15 @@
 # Holon lite paper
 
-This directory owns the editable content and PDF build tools. The paper is still
-under review; the Chinese version is being developed first. No website download
-has been published by this change.
+This directory owns the editable content and PDF build tools. Chinese and English editions are available. Each homepage links to the matching-language
+PDF copy under website assets. The site deployment workflow publishes those
+assets when the website changes are merged into the default branch.
 
 ## Files and ownership
 
 | Path | Purpose | Commit? |
 | --- | --- | --- |
 | `zh-CN.md` | Chinese reader-facing copy; the PDF's content source | Yes |
-| `en.md` | English counterpart, created when translation starts | Later |
+| `en.md` | English reader-facing copy, localized from the Chinese edition | Yes |
 | `editorial.md` | Open decisions, supporting evidence and editing notes | Yes |
 | `assets/` | Shared diagram sources and necessary images | Yes |
 | `tools/build.py` | Locale selection, source reading and build metadata | Yes |
@@ -17,7 +17,7 @@ has been published by this change.
 | `tools/requirements.txt` | Pinned Python dependencies | Yes |
 | `tools/fonts/` | Font setup; future licensed distribution fonts | Docs now |
 | `../../build/lite-paper/<lang>/` | Review PDF, previews and build metadata | No |
-| `../website/assets/lite-paper/` | Reviewed publication PDFs | On approval |
+| `../website/assets/lite-paper/` | Website copies of PDFs and localized GUI screenshots | Yes |
 
 The previous v0.1/v0.3 PDFs, fixed-page scripts and diagnostics have been retained
 locally under `build/lite-paper/history/`. The latest six-page script is also
@@ -27,7 +27,8 @@ archived scripts/notes are not maintained.
 
 ## Edit the content
 
-Edit `zh-CN.md` and rebuild. Product copy is not duplicated in Python. Keep
+Edit the language Markdown and rebuild that edition. Keep the two editions
+aligned when changing product claims. Product copy is not duplicated in Python. Keep
 internal decisions and unverified numerical claims in `editorial.md`.
 
 The source begins with a small `key: value` metadata block delimited by `---`.
@@ -39,13 +40,13 @@ The intermediate renderer supports the subset currently used by the paper:
 
 - headings at levels 1–3, paragraphs, bold, emphasis and inline code;
 - links, quotes, flat bullet lists and simple Markdown tables;
+- local PNG/JPEG diagrams from `assets/`, with their editable sources beside them;
 - fenced code and text diagrams.
 
 Level-2 sections start on a fresh page after the opening section. Longer sections
 can span pages; the renderer does not silently shorten the text to force six
-pages. It retains the teal/off-white typography of the prior mock-up, but the
-earlier six-page bespoke diagrams remain a visual reference for the next layout
-pass. Edit paragraph length or the shared layout to tune pagination.
+pages. It uses shared typography and embeds the localized diagrams from
+`assets/`. Edit paragraph length or the shared layout to tune pagination.
 
 Local links into `docs/website/` become public `https://holon.run/` links in PDFs.
 Other local source links fail the build rather than expose local filesystem
@@ -63,7 +64,7 @@ build/lite-paper/.venv/bin/python docs/lite-paper/tools/build.py --lang zh-CN
 
 The build writes `build/lite-paper/zh-CN/holon-lite-paper.pdf` and
 `build-info.json`. It reads the Markdown at build time and records its hash, the
-renderer hashes, font hashes, dependency version and output hash.
+renderer hashes, font hashes, embedded image hashes, dependency version and output hash.
 
 To generate page previews, install Poppler and ensure `pdftoppm` is on `PATH`:
 
@@ -80,25 +81,43 @@ PNGs is not visual acceptance: `build-info.json` leaves `visual_review` pending.
 
 ## English version
 
-Create `en.md` only when translation starts; no placeholder English download is
-exposed. Use the same section order and stable metadata keys, and record the
-Chinese source revision used for translation in `editorial.md`. Both locales
-share `layout.py`, but can have different page counts. `--lang en` fails clearly
-until an English source exists.
+`en.md` follows the Chinese edition's section order and product claims, with
+localized SVG / PNG diagrams and an English GUI capture. Both editions currently
+have six pages and share `layout.py`. Translation provenance is in `editorial.md`.
 
-## Publish later
+For the current English preview on macOS:
 
-Once the content and rendered PDF are reviewed, copy the selected output to:
+```bash
+python3 docs/lite-paper/tools/build.py --lang en --preview \
+  --font-regular '/System/Library/Fonts/Supplemental/Arial.ttf' \
+  --font-bold '/System/Library/Fonts/Supplemental/Arial Bold.ttf'
+```
+
+On other systems, supply suitable licensed TrueType fonts using the same flags.
+Fonts are embedded in the PDF; the font source files are not copied into Git.
+
+## Website downloads and local preview
+
+Each language homepage links to its corresponding edition at a stable path:
 
 - `docs/website/assets/lite-paper/holon-lite-paper-zh-CN.pdf`
-- `docs/website/assets/lite-paper/holon-lite-paper-en.pdf` (when ready)
+- `docs/website/assets/lite-paper/holon-lite-paper-en.pdf`
 
-These are stable download paths; version details stay inside the document. Track
-approved PDFs in Git with their source changes. The build tool never publishes
-and rejects output destinations under `docs/website/`.
+After editing and reviewing a language, copy its generated PDF from
+`build/lite-paper/<lang>/holon-lite-paper.pdf` to the corresponding website path.
+Keep source and website copies in sync; verify that their SHA-256 hashes match.
+The build command still rejects output paths under `docs/website/`, so this
+copy remains an explicit step. `docs-site.yml` includes website assets in the
+normal site deployment; adding files locally does not deploy the site.
 
-Add the Chinese link to `docs/website/zh-CN/README.md` first, and the English link
-to `docs/website/README.md` once ready. Verify the site bundle includes the PDF and
-the homepage download works. `docs-site.yml` already watches `docs/website/**`;
-normal site deployment then includes the reviewed asset. This source directory
-does not itself trigger PDF publication.
+Use the repository's locked mdorigin dependency (older global versions may not
+support locale navigation):
+
+```bash
+npm ci --prefix docs/website/.tools
+./docs/website/.tools/node_modules/.bin/mdorigin dev \
+  --root docs/website --config docs/website/mdorigin.config.json --port 43210
+```
+
+Open `/zh-CN/` for Chinese or `/` for English. Check the language-matched PDF link on each homepage and narrow
+screen layouts. Preview reports belong under `build/lite-paper/site-preview/`.
