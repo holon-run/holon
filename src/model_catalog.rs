@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
 
@@ -571,8 +572,18 @@ pub struct BuiltInModelCatalog {
 
 impl BuiltInModelCatalog {
     pub fn new() -> Self {
-        snapshot::built_in_catalog()
-            .unwrap_or_else(|error| panic!("invalid built-in model registry snapshot: {error}"))
+        // The built-in snapshot is immutable for the process, but callers such
+        // as RuntimeModelCatalog::from_config rebuild it on every model
+        // resolution and provider diagnostics scan (hundreds of parses per
+        // call). Parse it once and hand out cheap clones.
+        static BUILT_IN_CATALOG: OnceLock<BuiltInModelCatalog> = OnceLock::new();
+        BUILT_IN_CATALOG
+            .get_or_init(|| {
+                snapshot::built_in_catalog().unwrap_or_else(|error| {
+                    panic!("invalid built-in model registry snapshot: {error}")
+                })
+            })
+            .clone()
     }
 
     #[cfg(test)]
