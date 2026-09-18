@@ -332,6 +332,9 @@ pub(crate) fn project(
     if let Some(summary) = &envelope.summary_text {
         receipt["summary_text"] = json!(truncate_chars(summary, 256));
     }
+    if let Some(input_coercion) = &envelope.input_coercion {
+        receipt["input_coercion"] = json!(input_coercion);
+    }
     if let Some(error) = &envelope.error {
         receipt["error"] = json!({
             "kind": error.kind,

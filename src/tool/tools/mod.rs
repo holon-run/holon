@@ -411,6 +411,15 @@ fn execute_builtin_tool_inner<'a>(
 }
 
 pub(crate) fn render_tool_result_for_model(result: &ToolResult) -> Result<String> {
+    let rendered = render_tool_result_for_model_base(result)?;
+    Ok(if uses_custom_model_renderer(result) {
+        append_input_coercion_notice(rendered, result)
+    } else {
+        rendered
+    })
+}
+
+fn render_tool_result_for_model_base(result: &ToolResult) -> Result<String> {
     if result.is_error() {
         let error = result
             .tool_error()
@@ -433,10 +442,17 @@ pub(crate) fn render_tool_result_for_model_with_context(
     result: &ToolResult,
     context: &ToolModelRenderContext<'_>,
 ) -> Result<String> {
-    let rendered = if result.envelope.tool_name == get_workspace_state::NAME && !result.is_error() {
+    let custom_workspace_render =
+        result.envelope.tool_name == get_workspace_state::NAME && !result.is_error();
+    let rendered = if custom_workspace_render {
         get_workspace_state::render_for_model(result, context)?
     } else {
-        render_tool_result_for_model(result)?
+        render_tool_result_for_model_base(result)?
+    };
+    let rendered = if custom_workspace_render || uses_custom_model_renderer(result) {
+        append_input_coercion_notice(rendered, result)
+    } else {
+        rendered
     };
     if result.envelope.tool_name != list_work_items::NAME
         && estimated_tokens(&rendered) <= context.tool_output_budget_estimated_tokens
@@ -456,6 +472,36 @@ pub(crate) fn render_tool_result_for_model_with_context(
             result.envelope.tool_name
         )
     })
+}
+
+fn uses_custom_model_renderer(result: &ToolResult) -> bool {
+    result.is_error()
+        || matches!(
+            result.envelope.tool_name.as_str(),
+            apply_patch_tool::NAME
+                | exec_command::NAME
+                | exec_command_batch::NAME
+                | task_output::NAME
+                | generate_image::NAME
+                | view_image::NAME
+        )
+}
+
+fn append_input_coercion_notice(mut rendered: String, result: &ToolResult) -> String {
+    let Some(crate::tool::spec::ToolInputCoercion::UnwrapToolInputEnvelope {
+        envelope_key,
+        outer_keys,
+        inner_keys,
+    }) = &result.envelope.input_coercion
+    else {
+        return rendered;
+    };
+    rendered.push_str(&format!(
+        "\n\nInput recovery: unwrapped top-level `{envelope_key}` tool-input envelope; outer keys: {}; inner keys: {}.",
+        outer_keys.join(", "),
+        inner_keys.join(", "),
+    ));
+    rendered
 }
 
 fn estimated_tokens(text: &str) -> usize {

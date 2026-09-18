@@ -57,6 +57,8 @@ runtime_async_tests!(
     shell_tools_capture_command_output,
     shell_tools_truncate_large_output_before_provider_reinjection,
     exec_command_reports_nonzero_exit_and_truncates_output,
+    exec_command_recovers_known_input_envelope_and_reports_coercion,
+    exec_command_rejects_ambiguous_input_envelopes_without_execution,
     exec_command_batch_returns_grouped_item_results,
     exec_command_batch_does_not_wait_for_background_pipe_holders,
     exec_command_batch_top_level_defaults_apply_to_items,

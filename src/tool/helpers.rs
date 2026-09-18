@@ -4,18 +4,55 @@
 
 use anyhow::Result;
 use serde::de::DeserializeOwned;
-use serde_json::json;
-use serde_json::Value;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
-use crate::tool::ToolError;
+use crate::tool::{spec::ToolInputCoercion, ToolError};
 use crate::types::CommandCostDiagnostics;
 
 pub(crate) const DEFAULT_TOOL_OUTPUT_TOKENS: u64 = 8_000;
 pub(crate) const MAX_TOOL_OUTPUT_TOKENS: u64 = 64_000;
 pub(crate) const COMMAND_COST_SOFT_THRESHOLD_CHARS: usize = 4_000;
 pub(crate) const COMMAND_PREVIEW_CHARS: usize = 240;
+const TOOL_INPUT_ENVELOPE_KEYS: [&str; 4] = ["arguments", "parameters", "params", "input"];
+const MAX_STRING_JSON_PARSE_ERRORS: usize = 8;
+const MAX_STRING_JSON_PARSE_ERROR_CHARS: usize = 240;
+
+tokio::task_local! {
+    static TOOL_INPUT_COERCION: RefCell<Option<ToolInputCoercion>>;
+}
+
+struct CoercionOutcome {
+    value: Option<Value>,
+    string_json_parse_errors: Vec<Value>,
+}
+
+pub(crate) async fn capture_tool_input_coercion<F>(
+    future: F,
+) -> (F::Output, Option<ToolInputCoercion>)
+where
+    F: Future,
+{
+    TOOL_INPUT_COERCION
+        .scope(RefCell::new(None), async move {
+            let output = future.await;
+            let input_coercion = TOOL_INPUT_COERCION.with(|coercion| coercion.borrow().clone());
+            (output, input_coercion)
+        })
+        .await
+}
+
+fn record_tool_input_coercion(input_coercion: ToolInputCoercion) {
+    let _ = TOOL_INPUT_COERCION.try_with(|recorded| {
+        let mut recorded = recorded.borrow_mut();
+        if recorded.is_none() {
+            *recorded = Some(input_coercion);
+        }
+    });
+}
 
 pub(crate) fn parse_tool_args<T>(tool_name: &str, input: &Value) -> Result<T>
 where
@@ -35,21 +72,58 @@ where
     T: DeserializeOwned,
     F: FnOnce() -> String,
 {
-    let coerced = coerce_string_scalars(input);
-    let input = coerced.as_ref().unwrap_or(input);
-    serde_json::from_value(input.clone()).map_err(|error| {
-        anyhow::Error::from(
-            ToolError::new(
-                "invalid_tool_input",
-                format!("input for {tool_name} does not match the tool schema"),
-            )
-            .with_details(serde_json::json!({
-                "tool_name": tool_name,
-                "parse_error": error.to_string(),
-            }))
-            .with_recovery_hint(recovery_hint()),
+    let coercion = coerce_string_scalars_with_diagnostics(input);
+    let input = coercion.value.as_ref().unwrap_or(input);
+    let first_error = match serde_json::from_value(input.clone()) {
+        Ok(args) => return Ok(args),
+        Err(error) => error,
+    };
+
+    let mut parse_error = first_error.to_string();
+    if !coercion.string_json_parse_errors.is_empty() {
+        parse_error = redact_serde_string_value(&parse_error);
+    }
+    if let Some(unknown_field) = unknown_field_name(&parse_error) {
+        if TOOL_INPUT_ENVELOPE_KEYS.contains(&unknown_field) {
+            if let Some((candidate, coercion)) = recover_tool_input_envelope_from_normalized(input)
+            {
+                let ToolInputCoercion::UnwrapToolInputEnvelope { envelope_key, .. } = &coercion;
+                if envelope_key == unknown_field {
+                    if let Ok(args) = serde_json::from_value(candidate) {
+                        record_tool_input_coercion(coercion);
+                        return Ok(args);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut details = json!({
+        "tool_name": tool_name,
+        "parse_error": parse_error,
+    });
+    if !coercion.string_json_parse_errors.is_empty() {
+        details
+            .as_object_mut()
+            .expect("tool error details should be an object")
+            .insert(
+                "string_json_parse_errors".into(),
+                Value::Array(coercion.string_json_parse_errors),
+            );
+    }
+    let default_hint = recovery_hint();
+    let hint = unknown_field_recovery_hint(&parse_error)
+        .map(|specific| format!("{specific}; {default_hint}"))
+        .unwrap_or(default_hint);
+
+    Err(anyhow::Error::from(
+        ToolError::new(
+            "invalid_tool_input",
+            format!("input for {tool_name} does not match the tool schema"),
         )
-    })
+        .with_details(details)
+        .with_recovery_hint(hint),
+    ))
 }
 
 /// Recursively coerces string scalars to their typed JSON equivalents so that
@@ -60,17 +134,32 @@ where
 /// converted. Mixed strings like `"10px"` or `"hello"` are left untouched.
 /// Returns `None` when no changes were made so the caller can avoid a
 /// needless clone.
+#[cfg(test)]
 fn coerce_string_scalars(value: &Value) -> Option<Value> {
-    coerce_value(value)
+    coerce_string_scalars_with_diagnostics(value).value
 }
 
-fn coerce_value(value: &Value) -> Option<Value> {
+fn coerce_string_scalars_with_diagnostics(value: &Value) -> CoercionOutcome {
+    let mut string_json_parse_errors = Vec::new();
+    let value = coerce_value(value, "", &mut string_json_parse_errors);
+    CoercionOutcome {
+        value,
+        string_json_parse_errors,
+    }
+}
+
+fn coerce_value(
+    value: &Value,
+    path: &str,
+    string_json_parse_errors: &mut Vec<Value>,
+) -> Option<Value> {
     match value {
         Value::Object(map) => {
             let mut changed = false;
             let mut new_map = serde_json::Map::with_capacity(map.len());
             for (k, v) in map {
-                match coerce_value(v) {
+                let child_path = json_pointer_child(path, k);
+                match coerce_value(v, &child_path, string_json_parse_errors) {
                     Some(coerced) => {
                         new_map.insert(k.clone(), coerced);
                         changed = true;
@@ -89,8 +178,9 @@ fn coerce_value(value: &Value) -> Option<Value> {
         Value::Array(arr) => {
             let mut changed = false;
             let mut new_arr = Vec::with_capacity(arr.len());
-            for v in arr {
-                match coerce_value(v) {
+            for (index, v) in arr.iter().enumerate() {
+                let child_path = json_pointer_child(path, &index.to_string());
+                match coerce_value(v, &child_path, string_json_parse_errors) {
                     Some(coerced) => {
                         new_arr.push(coerced);
                         changed = true;
@@ -106,12 +196,21 @@ fn coerce_value(value: &Value) -> Option<Value> {
                 None
             }
         }
-        Value::String(s) => coerce_string(s),
+        Value::String(s) => coerce_string_at_path(s, path, string_json_parse_errors),
         _ => None,
     }
 }
 
+#[cfg(test)]
 fn coerce_string(s: &str) -> Option<Value> {
+    coerce_string_at_path(s, "", &mut Vec::new())
+}
+
+fn coerce_string_at_path(
+    s: &str,
+    path: &str,
+    string_json_parse_errors: &mut Vec<Value>,
+) -> Option<Value> {
     if s.eq_ignore_ascii_case("true") {
         return Some(Value::Bool(true));
     }
@@ -136,13 +235,116 @@ fn coerce_string(s: &str) -> Option<Value> {
     // field as a JSON string instead of inline JSON.
     let trimmed = s.trim_start();
     if trimmed.starts_with('[') || trimmed.starts_with('{') {
-        if let Ok(parsed) = serde_json::from_str::<Value>(s) {
-            if parsed.is_array() || parsed.is_object() {
-                return Some(parsed);
+        match serde_json::from_str::<Value>(s) {
+            Ok(parsed) if parsed.is_array() || parsed.is_object() => {
+                return Some(
+                    coerce_value(&parsed, path, string_json_parse_errors).unwrap_or(parsed),
+                );
             }
+            Err(error) => {
+                if string_json_parse_errors.len() < MAX_STRING_JSON_PARSE_ERRORS {
+                    string_json_parse_errors.push(json!({
+                        "path": if path.is_empty() { "/" } else { path },
+                        "error": truncate_text(
+                            &error.to_string(),
+                            MAX_STRING_JSON_PARSE_ERROR_CHARS,
+                        ),
+                        "line": error.line(),
+                        "column": error.column(),
+                    }));
+                }
+            }
+            _ => {}
         }
     }
     None
+}
+
+fn json_pointer_child(path: &str, component: &str) -> String {
+    let escaped = component.replace('~', "~0").replace('/', "~1");
+    format!("{path}/{escaped}")
+}
+
+fn redact_serde_string_value(parse_error: &str) -> String {
+    for prefix in ["invalid type: string ", "invalid value: string "] {
+        let Some(rest) = parse_error.strip_prefix(prefix) else {
+            continue;
+        };
+        let Some((_, expected)) = rest.rsplit_once(", expected ") else {
+            continue;
+        };
+        return format!("{}, expected {expected}", prefix.trim_end());
+    }
+    parse_error.to_owned()
+}
+
+fn recover_tool_input_envelope_from_normalized(
+    input: &Value,
+) -> Option<(Value, ToolInputCoercion)> {
+    let outer = input.as_object()?;
+    let envelope_keys = TOOL_INPUT_ENVELOPE_KEYS
+        .iter()
+        .filter(|key| outer.contains_key(**key))
+        .copied()
+        .collect::<Vec<_>>();
+    let [envelope_key] = envelope_keys.as_slice() else {
+        return None;
+    };
+    let inner = outer.get(*envelope_key)?.as_object()?;
+    let mut merged = inner.clone();
+    for (key, value) in outer {
+        if key != envelope_key {
+            merged.insert(key.clone(), value.clone());
+        }
+    }
+    let coercion = ToolInputCoercion::UnwrapToolInputEnvelope {
+        envelope_key: (*envelope_key).to_string(),
+        outer_keys: outer.keys().cloned().collect(),
+        inner_keys: inner.keys().cloned().collect(),
+    };
+    Some((Value::Object(merged), coercion))
+}
+
+fn unknown_field_recovery_hint(parse_error: &str) -> Option<String> {
+    let field = unknown_field_name(parse_error)?;
+    let rest = parse_error.strip_prefix("unknown field `")?;
+    let field_end = rest.find('`')?;
+    let expected = rest[field_end + 1..]
+        .split_once(", expected ")
+        .map(|(_, expected)| backtick_values(expected))
+        .unwrap_or_default();
+    let accepted = if expected.is_empty() {
+        String::new()
+    } else {
+        format!("; accepted top-level fields: {}", expected.join(", "))
+    };
+    if TOOL_INPUT_ENVELOPE_KEYS.contains(&field) {
+        Some(format!(
+            "remove the top-level `{field}` envelope and place its object fields at the top level{accepted}"
+        ))
+    } else {
+        Some(format!(
+            "remove unsupported top-level field `{field}`{accepted}"
+        ))
+    }
+}
+
+fn unknown_field_name(parse_error: &str) -> Option<&str> {
+    let rest = parse_error.strip_prefix("unknown field `")?;
+    Some(&rest[..rest.find('`')?])
+}
+
+fn backtick_values(value: &str) -> Vec<String> {
+    let mut remaining = value;
+    let mut values = Vec::new();
+    while let Some((_, after_open)) = remaining.split_once('`') {
+        let Some((value, after_close)) = after_open.split_once('`') else {
+            break;
+        };
+        values.push(format!("`{value}`"));
+        remaining = after_close;
+    }
+    values
 }
 
 fn parse_integral_decimal_i64(s: &str) -> Option<i64> {
@@ -526,6 +728,214 @@ pub(crate) fn truncate_output_with_flag(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
+    #[serde(deny_unknown_fields)]
+    struct EnvelopeArgs {
+        cmd: String,
+        #[serde(default)]
+        max_output_tokens: Option<u64>,
+        #[serde(default)]
+        workdir: Option<String>,
+    }
+
+    #[test]
+    fn parse_tool_args_recovers_known_object_and_string_envelopes() {
+        for envelope_key in TOOL_INPUT_ENVELOPE_KEYS {
+            let direct = json!({
+                envelope_key: {"cmd": "printf ok"},
+                "max_output_tokens": "800"
+            });
+            let parsed: EnvelopeArgs = parse_tool_args("TestTool", &direct).unwrap();
+            assert_eq!(
+                parsed,
+                EnvelopeArgs {
+                    cmd: "printf ok".into(),
+                    max_output_tokens: Some(800),
+                    workdir: None,
+                }
+            );
+
+            let string = json!({
+                envelope_key: "{\"cmd\":\"printf ok\",\"max_output_tokens\":\"900\"}"
+            });
+            let parsed: EnvelopeArgs = parse_tool_args("TestTool", &string).unwrap();
+            assert_eq!(
+                parsed,
+                EnvelopeArgs {
+                    cmd: "printf ok".into(),
+                    max_output_tokens: Some(900),
+                    workdir: None,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn parse_tool_args_prefers_explicit_outer_fields_when_unwrapping() {
+        let parsed: EnvelopeArgs = parse_tool_args(
+            "TestTool",
+            &json!({
+                "arguments": {
+                    "cmd": "inner",
+                    "workdir": "inner-dir"
+                },
+                "cmd": "outer",
+                "max_output_tokens": "800"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(parsed.cmd, "outer");
+        assert_eq!(parsed.workdir.as_deref(), Some("inner-dir"));
+        assert_eq!(parsed.max_output_tokens, Some(800));
+    }
+
+    #[test]
+    fn parse_tool_args_does_not_recover_multiple_or_non_object_envelopes() {
+        for input in [
+            json!({
+                "arguments": {"cmd": "printf arguments"},
+                "params": {"cmd": "printf params"}
+            }),
+            json!({"arguments": ["printf", "ok"]}),
+            json!({"arguments": "printf ok"}),
+        ] {
+            let error = parse_tool_args::<EnvelopeArgs>("TestTool", &input).unwrap_err();
+            let error = error.downcast_ref::<ToolError>().expect("tool error");
+            assert_eq!(error.kind, "invalid_tool_input");
+        }
+    }
+
+    #[test]
+    fn parse_tool_args_does_not_unwrap_a_recognized_object_field() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegitimateInputArgs {
+            #[allow(dead_code)]
+            input: Value,
+            #[allow(dead_code)]
+            required: String,
+        }
+
+        let error = parse_tool_args::<LegitimateInputArgs>(
+            "TestTool",
+            &json!({"input": {"required": "must stay nested"}}),
+        )
+        .unwrap_err();
+        let error = error.downcast_ref::<ToolError>().expect("tool error");
+
+        assert!(error
+            .details
+            .as_ref()
+            .and_then(|details| details["parse_error"].as_str())
+            .is_some_and(|message| message.contains("missing field `required`")));
+    }
+
+    #[tokio::test]
+    async fn failed_envelope_candidate_preserves_first_parse_error_and_hint() {
+        let input = json!({"arguments": {"workdir": "."}});
+        let (result, input_coercion) = capture_tool_input_coercion(async {
+            parse_tool_args::<EnvelopeArgs>("TestTool", &input)
+        })
+        .await;
+        let error = result.unwrap_err();
+        let error = error.downcast_ref::<ToolError>().expect("tool error");
+        let details = error.details.as_ref().expect("details");
+
+        assert_eq!(input_coercion, None);
+        assert!(details["parse_error"]
+            .as_str()
+            .expect("parse error")
+            .contains("unknown field `arguments`"));
+        let hint = error.recovery_hint.as_deref().expect("recovery hint");
+        assert!(hint.contains("remove the top-level `arguments` envelope"));
+        assert!(hint.contains("accepted top-level fields"));
+    }
+
+    #[test]
+    fn unknown_field_hint_names_unsupported_and_accepted_fields() {
+        let error = parse_tool_args::<EnvelopeArgs>(
+            "TestTool",
+            &json!({"cmd": "printf ok", "work_dir": "."}),
+        )
+        .unwrap_err();
+        let error = error.downcast_ref::<ToolError>().expect("tool error");
+        let hint = error.recovery_hint.as_deref().expect("recovery hint");
+
+        assert!(hint.contains("remove unsupported top-level field `work_dir`"));
+        assert!(hint.contains("`cmd`"));
+        assert!(hint.contains("`workdir`"));
+    }
+
+    #[test]
+    fn invalid_structured_json_reports_bounded_path_and_location_without_value() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct StructuredArgs {
+            #[allow(dead_code)]
+            items: Vec<String>,
+        }
+
+        let error = parse_tool_args::<StructuredArgs>(
+            "TestTool",
+            &json!({"items": "[\"SECRET_MARKER\",]"}),
+        )
+        .unwrap_err();
+        let error = error.downcast_ref::<ToolError>().expect("tool error");
+        let details = error.details.as_ref().expect("details");
+        let diagnostics = details["string_json_parse_errors"]
+            .as_array()
+            .expect("string JSON diagnostics");
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["path"], "/items");
+        assert!(diagnostics[0]["line"].as_u64().unwrap() >= 1);
+        assert!(diagnostics[0]["column"].as_u64().unwrap() >= 1);
+        assert!(!details.to_string().contains("SECRET_MARKER"));
+    }
+
+    #[tokio::test]
+    async fn input_coercion_capture_records_actual_recovery_without_values() {
+        let input = json!({
+            "arguments": "{\"cmd\":\"SECRET_MARKER\"}",
+            "max_output_tokens": "800"
+        });
+        let (parsed, coercion) = capture_tool_input_coercion(async {
+            parse_tool_args::<EnvelopeArgs>("TestTool", &input)
+        })
+        .await;
+        assert_eq!(parsed.unwrap().cmd, "SECRET_MARKER");
+        let coercion = coercion.expect("input coercion");
+        let value = serde_json::to_value(coercion).unwrap();
+
+        assert_eq!(value["kind"], "unwrap_tool_input_envelope");
+        assert_eq!(value["envelope_key"], "arguments");
+        assert_eq!(
+            value["outer_keys"],
+            json!(["arguments", "max_output_tokens"])
+        );
+        assert_eq!(value["inner_keys"], json!(["cmd"]));
+        assert!(!value.to_string().contains("SECRET_MARKER"));
+    }
+
+    #[tokio::test]
+    async fn input_coercion_capture_does_not_infer_from_directly_accepted_input() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct LegitimateInputArgs {
+            input: Value,
+        }
+
+        let input = json!({"input": {"value": "nested"}});
+        let (parsed, input_coercion) = capture_tool_input_coercion(async {
+            parse_tool_args::<LegitimateInputArgs>("TestTool", &input)
+        })
+        .await;
+
+        assert_eq!(parsed.unwrap().input, json!({"value": "nested"}));
+        assert_eq!(input_coercion, None);
+    }
 
     #[test]
     fn output_budget_defaults_to_command_tool_default() {

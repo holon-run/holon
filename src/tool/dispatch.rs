@@ -13,6 +13,7 @@ use crate::{
 };
 
 use super::{
+    helpers::capture_tool_input_coercion,
     spec::{ToolCall, ToolExecutionContext, ToolResult, ToolSpec},
     tools,
 };
@@ -171,15 +172,20 @@ impl ToolRegistry {
             .into());
         }
         let tool_started = std::time::Instant::now();
-        let mut result = tools::execute_builtin_tool_with_context(
-            runtime,
-            agent_id,
-            authority_class,
-            call,
-            context,
-        )
-        .await?;
+        let (result, input_coercion) =
+            capture_tool_input_coercion(tools::execute_builtin_tool_with_context(
+                runtime,
+                agent_id,
+                authority_class,
+                call,
+                context,
+            ))
+            .await;
+        let mut result = result?;
         let execution_id = crate::ids::tool_execution_id();
+        if !result.is_error() {
+            result.envelope.input_coercion = input_coercion;
+        }
         tools::attach_result_recovery(runtime, &mut result, &execution_id).await?;
         crate::diagnostics::record_tool_execution(&call.name, tool_started.elapsed(), None);
         if !result.is_error() {
