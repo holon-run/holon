@@ -78,6 +78,7 @@ jobs:
   changes:
     name: Detect changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
       pull-requests: read
@@ -144,6 +145,7 @@ jobs:
   web:
     name: Web
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.web == 'true'
     steps:
@@ -165,6 +167,7 @@ jobs:
   conversation-sdk:
     name: Conversation SDK
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.conversation_sdk == 'true'
     steps:
@@ -194,6 +197,7 @@ jobs:
   macos-app:
     name: Build macOS menu app
     runs-on: macos-latest
+    timeout-minutes: 45
     needs: changes
     # Main pushes run this only for macOS-specific changes; rust-tier main
     # pushes skip it (PRs and nightly/dispatch full sweeps cover it).
@@ -270,6 +274,7 @@ jobs:
   docker:
     name: Docker
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || (github.event_name == 'push' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'))
     permissions:
@@ -334,6 +339,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -393,6 +399,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -442,6 +449,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     env:
       RUSTFLAGS: -D warnings
     steps:
@@ -469,10 +477,12 @@ jobs:
   coverage:
     name: Coverage
     needs: changes
-    # Main pushes skip Coverage (PRs always gate merges); nightly and
-    # manual full sweeps keep it covered.
-    if: needs.changes.outputs.full_sweep == 'true' || (github.event_name == 'pull_request' && needs.changes.outputs.rust == 'true')
+    # Coverage runs only in nightly and manual full sweeps: the lcov
+    # artifact has no downstream gate, so PRs and path-tiered main
+    # pushes no longer spend a Linux runner slot (~23m) on it.
+    if: needs.changes.outputs.full_sweep == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       CARGO_TARGET_DIR: target/llvm-cov
     steps:
@@ -736,6 +746,7 @@ jobs:
       - scheduler-e2e-required
     if: always() && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       actions: read
       contents: read
