@@ -126,6 +126,7 @@ holon (v0.40.0)
 │   │   ├── audit    Audit runtime database invariants
 │   │   ├── retention Run retention cleanup on old database records
 │   │   ├── compact  Compact the runtime database
+│   │   ├── turn-settlement Audit or apply a fingerprint-fenced historical Turn settlement repair
 │   │   └── conversation-input-assignment-rollback Preflight or rollback v66 repair marker
 │   ├── scheduler-recovery  Inspect/apply scheduler recovery
 │   └── scheduler-fixture Generate scheduler fixture data

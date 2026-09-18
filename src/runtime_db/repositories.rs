@@ -1984,6 +1984,24 @@ impl WaitConditionRepository<'_> {
         Ok(records)
     }
 
+    pub fn for_turn(&self, agent_id: &str, turn_id: &str) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
+                wake_sources_json, continuation_json
+             FROM wait_conditions
+             WHERE agent_id = ?1 AND last_turn_id = ?2
+             ORDER BY created_at ASC, wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map(params![agent_id, turn_id], |row| {
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading wait conditions for turn: {e}"))
+    }
+
     pub fn active_for_agent(&self, agent_id: &str) -> Result<Vec<WaitConditionRecord>> {
         let connection = self.db.connection()?;
         let mut statement = connection.prepare(
@@ -3036,6 +3054,49 @@ impl MessageRepository<'_> {
             .transpose()
     }
 
+    pub fn for_turn(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        source_message_id: Option<&str>,
+    ) -> Result<Vec<MessageEnvelope>> {
+        let connection = self.db.connection()?;
+        let mut records = if let Some(source_message_id) = source_message_id {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1
+                   AND (turn_id = ?2 OR message_id = ?3)
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC,
+                          created_at ASC,
+                          message_id ASC",
+            )?;
+            let records = statement
+                .query_map(params![agent_id, turn_id, source_message_id], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?;
+            records
+        } else {
+            let mut statement = connection.prepare(
+                "SELECT payload_json
+                 FROM messages
+                 WHERE agent_id = ?1 AND turn_id = ?2
+                 ORDER BY COALESCE(message_seq, 9223372036854775807) ASC,
+                          created_at ASC,
+                          message_id ASC",
+            )?;
+            let records = statement
+                .query_map(params![agent_id, turn_id], |row| row.get::<_, String>(0))?
+                .map(|row| decode_message_payload(&row?))
+                .collect::<Result<Vec<_>>>()?;
+            records
+        };
+        records.dedup_by(|left, right| left.id == right.id);
+        Ok(records)
+    }
+
     pub fn count(&self, agent_id: Option<&str>) -> Result<usize> {
         let connection = self.db.connection()?;
         let count: i64 = if let Some(agent_id) = agent_id {
@@ -3430,6 +3491,29 @@ impl EvidenceRepository<'_> {
         Ok(records)
     }
 
+    fn payloads_for_turn(
+        &self,
+        kind: EvidenceKind,
+        agent_id: &str,
+        turn_id: &str,
+    ) -> Result<Vec<EvidencePayloadRow>> {
+        let sql = format!(
+            "SELECT payload_json
+             FROM {}
+             WHERE agent_id = ?1 AND turn_id = ?2
+             ORDER BY created_at ASC, evidence_id ASC",
+            kind.table_name()
+        );
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(&sql)?;
+        let rows = statement.query_map(params![agent_id, turn_id], |row| {
+            Ok(EvidencePayloadRow {
+                payload_json: row.get(0)?,
+            })
+        })?;
+        rows.map(|row| row.map_err(Into::into)).collect()
+    }
+
     pub fn payload_by_id(
         &self,
         kind: EvidenceKind,
@@ -3497,6 +3581,13 @@ impl EvidenceRepository<'_> {
             .collect()
     }
 
+    pub fn briefs_for_turn(&self, agent_id: &str, turn_id: &str) -> Result<Vec<BriefRecord>> {
+        self.payloads_for_turn(EvidenceKind::Brief, agent_id, turn_id)?
+            .into_iter()
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .collect()
+    }
+
     pub fn brief_by_id(&self, agent_id: &str, brief_id: &str) -> Result<Option<BriefRecord>> {
         self.payload_by_id(EvidenceKind::Brief, agent_id, brief_id)?
             .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
@@ -3516,6 +3607,17 @@ impl EvidenceRepository<'_> {
         limit: usize,
     ) -> Result<Vec<ToolExecutionRecord>> {
         self.recent_payloads(EvidenceKind::ToolExecution, agent_id, limit)?
+            .into_iter()
+            .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
+            .collect()
+    }
+
+    pub fn tool_executions_for_turn(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+    ) -> Result<Vec<ToolExecutionRecord>> {
+        self.payloads_for_turn(EvidenceKind::ToolExecution, agent_id, turn_id)?
             .into_iter()
             .map(|row| serde_json::from_str(&row.payload_json).map_err(Into::into))
             .collect()

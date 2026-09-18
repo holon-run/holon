@@ -1982,6 +1982,110 @@ mod tests {
     }
 
     #[test]
+    fn debug_runtime_db_turn_settlement_defaults_to_dry_run() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "turn-settlement",
+            "--agent",
+            "agent-a",
+            "--turn",
+            "turn-a",
+            "--json",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::TurnSettlement {
+                            apply,
+                            no_backup,
+                            plan,
+                            agent,
+                            turn,
+                            diagnostic_sample_limit,
+                            json,
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected Turn settlement reconciliation command");
+        };
+        assert!(!apply);
+        assert!(!no_backup);
+        assert!(plan.is_none());
+        assert_eq!(agent.as_deref(), Some("agent-a"));
+        assert_eq!(turn.as_deref(), Some("turn-a"));
+        assert_eq!(diagnostic_sample_limit, 20);
+        assert!(json);
+    }
+
+    #[test]
+    fn debug_runtime_db_turn_settlement_parses_apply_options() {
+        let cli = Cli::parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "turn-settlement",
+            "--apply",
+            "--plan",
+            "turn-settlement.json",
+            "--no-backup",
+            "--diagnostic-sample-limit",
+            "7",
+        ]);
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command:
+                        RuntimeDbDebugCommands::TurnSettlement {
+                            apply,
+                            no_backup,
+                            plan,
+                            agent,
+                            turn,
+                            diagnostic_sample_limit,
+                            json,
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected Turn settlement reconciliation command");
+        };
+        assert!(apply);
+        assert!(no_backup);
+        assert_eq!(
+            plan.as_deref(),
+            Some(std::path::Path::new("turn-settlement.json"))
+        );
+        assert!(agent.is_none());
+        assert!(turn.is_none());
+        assert_eq!(diagnostic_sample_limit, 7);
+        assert!(!json);
+        assert!(Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "turn-settlement",
+            "--apply",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "turn-settlement",
+            "--apply",
+            "--plan",
+            "turn-settlement.json",
+            "--turn",
+            "turn-a",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn debug_scheduler_recovery_command_parses_read_only_options() {
         let cli = Cli::parse_from([
             "holon",
@@ -3956,6 +4060,87 @@ fn handle_runtime_db_debug_command(
                         diagnostic.brief_id,
                         diagnostic.agent_id,
                         diagnostic.turn_id.as_deref().unwrap_or("<none>"),
+                        diagnostic.reason
+                    );
+                }
+                Ok(())
+            }
+        }
+        holon::cli::RuntimeDbDebugCommands::TurnSettlement {
+            apply,
+            no_backup,
+            plan,
+            agent,
+            turn,
+            diagnostic_sample_limit,
+            json,
+        } => {
+            let db = RuntimeDb::open_and_migrate(
+                config.runtime_db_path(),
+                config.runtime_db_lock_path(),
+            )?;
+            let mut progress = |progress: &holon::runtime_db::TurnSettlementRepairProgress| {
+                eprintln!("Turn settlement reconciliation: {progress}");
+            };
+            let report = if apply {
+                let plan = plan
+                    .as_deref()
+                    .context("--apply requires a completed repair plan")?;
+                db.preflight_turn_settlement_repair_plan(plan)?;
+                let _maintenance_lock =
+                    RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
+                        "Turn settlement reconciliation apply requires holon serve to be stopped",
+                    )?;
+                let backup_path = if no_backup {
+                    None
+                } else {
+                    Some(db.create_turn_settlement_repair_backup()?)
+                };
+                db.apply_turn_settlement_repair_plan(
+                    plan,
+                    backup_path,
+                    diagnostic_sample_limit,
+                    &mut progress,
+                )?
+            } else {
+                db.prepare_turn_settlement_repair(
+                    plan.as_deref(),
+                    agent.as_deref(),
+                    turn.as_deref(),
+                    diagnostic_sample_limit,
+                    &mut progress,
+                )?
+            };
+            if json {
+                print_json(&serde_json::to_value(report)?)
+            } else {
+                println!(
+                    "Turn settlement reconciliation: mode={} scanned={} repairable={} repaired={} already_settled={} skipped={}",
+                    if report.apply {
+                        "apply"
+                    } else if report.plan_path.is_some() {
+                        "prepare"
+                    } else {
+                        "dry-run"
+                    },
+                    report.scanned_turns,
+                    report.repairable_turns,
+                    report.repaired_turns,
+                    report.already_settled_turns,
+                    report.skipped_turns
+                );
+                if let Some(plan_path) = &report.plan_path {
+                    println!("  plan: {}", plan_path.display());
+                }
+                if let Some(backup_path) = &report.backup_path {
+                    println!("  backup: {}", backup_path.display());
+                }
+                for diagnostic in &report.diagnostics {
+                    println!(
+                        "  {} agent={} turn={} reason={}",
+                        diagnostic.status,
+                        diagnostic.agent_id,
+                        diagnostic.turn_id,
                         diagnostic.reason
                     );
                 }
