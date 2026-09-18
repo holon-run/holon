@@ -8,7 +8,6 @@ import {
   LEDGER_STORES,
   type LedgerScopeKey,
   type LedgerRemoteScopeKey,
-  LedgerCursorRegressionError,
   LedgerIdentityConflictError,
   LedgerQuotaError,
   LedgerTransactionAbortedError,
@@ -414,15 +413,22 @@ describe("event ledger atomic transactions", () => {
     ledger.close();
   });
 
-  it("rejects cursor regression", async () => {
+  it("merges a stale cursor patch monotonically without aborting its batch", async () => {
     const ledger = await openLedger();
     const scope = makeScope();
     await ledger.beginWrite().advanceIngestionCursor(scope, 5).commit();
 
-    await expect(ledger.beginWrite().advanceIngestionCursor(scope, 3).commit()).rejects.toBeInstanceOf(
-      LedgerCursorRegressionError,
-    );
+    // A stale writer (snapshot install raced its tracker) offers overlapping
+    // raw events plus a backward cursor advance: the batch must commit, keep
+    // the higher stored cursor, and still store the new raw event.
+    await ledger
+      .beginWrite()
+      .putRawEvent(scope, 6, envelope(6), { projectionEffect: "none" })
+      .advanceIngestionCursor(scope, 3)
+      .commit();
+
     expect((await ledger.getAgentSession(scope))?.ingestedThroughSeq).toBe(5);
+    expect((await ledger.getRawEvent(scope, 6))?.eventSeq).toBe(6);
     ledger.close();
   });
 
