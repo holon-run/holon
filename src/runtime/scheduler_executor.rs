@@ -3055,6 +3055,68 @@ mod tests {
             .any(|event| event.kind == "scheduler_stale_run_projection_recovered"));
     }
 
+    #[tokio::test]
+    async fn stale_run_recovery_occ_conflict_keeps_projection_unchanged() {
+        use crate::runtime::tests::support::{context_config, CountingProvider};
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let previous_state = {
+            let mut guard = runtime.inner.agent.lock().await;
+            guard.state.status = AgentStatus::AwakeRunning;
+            guard.state.current_run_id = Some("run-stale".into());
+            guard.persist_state(&runtime.inner.storage).unwrap();
+            guard.state.clone()
+        };
+        let mut concurrent_state = previous_state.clone();
+        concurrent_state.total_input_tokens = 41;
+        runtime.storage().write_agent(&concurrent_state).unwrap();
+
+        let error = SchedulerDecisionExecutor::new(&runtime)
+            .reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
+            .await
+            .expect_err("concurrent agent-state mutation must abort recovery");
+        let conflict = error
+            .downcast_ref::<crate::runtime_db::RuntimeStateTransitionConflict>()
+            .expect("stale state should remain an OCC conflict");
+        assert_eq!(conflict.domain(), "agent_state");
+
+        let guard = runtime.inner.agent.lock().await;
+        assert_eq!(guard.state, previous_state);
+        assert_eq!(guard.last_persisted_state, previous_state);
+        assert_eq!(
+            runtime
+                .inner
+                .runtime_db
+                .agent_states()
+                .latest("default")
+                .unwrap()
+                .unwrap(),
+            concurrent_state
+        );
+        drop(guard);
+        assert!(!runtime
+            .storage()
+            .read_recent_events(20)
+            .unwrap()
+            .iter()
+            .any(|event| event.kind == "scheduler_stale_run_projection_recovered"));
+    }
+
     #[test]
     fn unbound_trusted_operator_prompt_uses_stable_conversation_owner() {
         let first = operator_prompt("first");
