@@ -34,6 +34,9 @@ async function mockFiles(context: BrowserContext) {
 const preview = (path: string) => `/files?${new URLSearchParams({ workspace: "ws", root, path })}`;
 
 test("Explorer shares resolver rules; native new-tab links, fragments, images and refresh preserve the root", async ({ page, context }, info) => {
+  // Popup navigation plus multiple markdown renders make this the heaviest spec
+  // in the suite; the default 30s test timeout is too tight under parallel load.
+  test.setTimeout(60_000);
   await context.addCookies([{ name: "holon_e2e_session", value: `file-preview-${info.testId}-${info.retry}-${info.repeatEachIndex}`, domain: "127.0.0.1", path: "/" }]);
   const batches = await mockFiles(context);
   await page.goto(preview("base.md"));
