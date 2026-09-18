@@ -1099,17 +1099,50 @@ pub(crate) fn append_scheduler_decision(
 ) -> Result<bool> {
     let events = scheduler_decision_events(agent_id, decision)?;
     let legacy_event = &events[1];
+    let signature = scheduler_decision_signature(&legacy_event.data);
     let duplicate = storage
         .read_recent_events(32)?
         .into_iter()
         .rev()
-        .find(|latest| latest.kind == legacy_event.kind)
-        .is_some_and(|latest| latest.data == legacy_event.data);
+        .any(|latest| {
+            latest.kind == legacy_event.kind
+                && scheduler_decision_signature(&latest.data) == signature
+        });
     if duplicate {
         return Ok(false);
     }
     storage.append_events(&events)?;
     Ok(true)
+}
+
+type SchedulerDecisionSignature<'a> = (
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+    Option<&'a str>,
+);
+
+/// Stable identity of a scheduler decision for duplicate suppression.
+///
+/// Idle run loops alternate boundaries (`run_loop_idle` / `idle_tick`) with the
+/// same wait decision, so comparing only the latest same-kind event never
+/// matches: each decision must be compared against its own most recent
+/// occurrence. Volatile evidence (per-tick idempotency keys, active counts) is
+/// excluded so an unchanged scheduler state is recorded once.
+fn scheduler_decision_signature(data: &serde_json::Value) -> SchedulerDecisionSignature<'_> {
+    fn field<'a>(data: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+        data.get(key).and_then(serde_json::Value::as_str)
+    }
+    (
+        field(data, "decision"),
+        field(data, "reason"),
+        field(data, "boundary"),
+        field(data, "message_id"),
+        field(data, "work_item_id"),
+        field(data, "task_id"),
+    )
 }
 
 pub(crate) fn scheduler_diagnostic_audit_event(
