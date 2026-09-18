@@ -366,6 +366,10 @@ test("wake and task JSON open full canonical messages in the inspector", async (
   await request.post(`/__e2e__/conversation?session=${encodeURIComponent(session)}`, { data: { agentId,
     turns: [turn("wake", 1, { presentation_class: "system", inputs: [{ message_id: "wake-message", preview }] }),
       turn("task", 2, { presentation_class: "task", inputs: [{ message_id: "task-message", preview: JSON.stringify({ type: "json", value: { summary: "Task completed", task_id: "t" } }) }] })],
+    activitiesByTurnId: Object.fromEntries(["wake", "task"].map((id) => [id, [
+      { kind: "operator", id: `operator:${id}-message`, key: { event_seq: 1, activity_id: `operator:${id}-message` }, revision: 1, summary: preview },
+      activity(2, `${id} progress`),
+    ]])),
   } });
   const requested: string[] = [];
   await page.route("**/api/agents/bootstrap-agent/messages:batchGet", async (route) => {
@@ -376,6 +380,11 @@ test("wake and task JSON open full canonical messages in the inspector", async (
     }], missing_message_ids: [] } });
   });
   await page.goto(`/agents/${agentId}/conversation`);
+  for (const id of ["wake", "task"]) {
+    const block = page.locator(`[data-turn-id="${id}"]`);
+    await expect(block.getByText(`${id} progress`, { exact: true })).toBeVisible();
+    await expect(block.locator(".conversation-activity.is-operator")).toHaveCount(0);
+  }
   const source = page.locator('[data-turn-id="wake"] .conversation-source');
   await source.locator("summary").click();
   await expect(source).toContainText("Wake notification");
@@ -477,4 +486,60 @@ test("message senders survive history, pending input, live interjection and relo
   await expect(sender("queued")).toHaveText("Carol");
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
+});
+
+test("unmatched historical input opens complete text and does not repeat represented input after completion or reload", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "long-input");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const fullText = "Investigation result\n\n" + "A complete explanation. ".repeat(300) + "END OF MESSAGE";
+  const preview = JSON.stringify({ type: "text", text: fullText }).slice(0, 120);
+  let current = turn("long-input", 1, { presentation_class: "system", inputs: [
+    { message_id: "initial", preview, presentation_class: "system" },
+  ], inputs_truncated: true });
+  const inputActivity = (id: string, seq: number): ConversationActivity => ({ kind: "operator", id: `operator:${id}`,
+    key: { event_seq: seq, activity_id: `operator:${id}` }, revision: 1, summary: preview });
+  const update = () => request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [current], activitiesByTurnId: { "long-input": [inputActivity("initial", 1), inputActivity("overflow", 2), activity(3, "Checking the result.")] },
+  } });
+  const requested: string[] = [];
+  await page.route("**/api/agents/bootstrap-agent/messages:batchGet", async (route) => {
+    const id = route.request().postDataJSON().message_ids[0]; requested.push(id);
+    await route.fulfill({ json: { messages: [{ id, agent_id: agentId, body: { type: "text", text: fullText },
+      origin: { kind: "system", subsystem: "tasks" } }], missing_message_ids: [] } });
+  });
+  expect((await update()).ok()).toBe(true);
+  await page.goto(`/agents/${agentId}/conversation`);
+  const block = page.locator('[data-turn-id="long-input"]');
+  const fallback = block.locator('[data-activity-id="operator:overflow"]');
+  const verify = async () => {
+    await expect(block.getByText("Checking the result.", { exact: true })).toBeVisible();
+    await expect(block.locator('[data-activity-id="operator:initial"]')).toHaveCount(0);
+    await expect(fallback).toContainText("Structured event");
+    await expect(fallback.locator(".lucide-user")).toHaveCount(0);
+    await expect(fallback).not.toContainText('"type":"text"');
+  };
+  await verify();
+  await fallback.getByRole("button").click();
+  const panel = page.locator(".side-panel");
+  await expect(panel.getByRole("heading", { name: "Investigation result", exact: true })).toBeVisible();
+  await expect(panel.locator(".inspector-detail pre")).toHaveText(fullText);
+  await expect(panel.locator(".inspector-detail pre")).not.toContainText('"type":"text"');
+  expect(requested).toEqual(["overflow"]);
+  await page.getByRole("button", { name: "Close side panel", exact: true }).click();
+  // Closing the inspector can restore focus to the activity and keep the process open.
+  await block.locator(".conversation-detail-toggle").click();
+  await expect(block.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  current = { ...current, revision: 2, execution: { kind: "terminal", outcome: "completed" }, settled: true,
+    result: { kind: "none", reason: { kind: "reducer_only", reason: "done" } } };
+  expect((await update()).ok()).toBe(true);
+  await expect(block.locator(".conversation-detail-toggle")).toHaveAttribute("aria-expanded", "false");
+  await block.locator(".conversation-detail-toggle").click();
+  await verify();
+  await page.reload();
+  await block.locator(".conversation-detail-toggle").click();
+  await verify();
+  await fallback.getByRole("button").click();
+  await expect(panel.locator(".inspector-detail pre")).toHaveText(fullText);
+  await page.screenshot({ path: info.outputPath("event-detail.png") });
 });

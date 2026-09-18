@@ -21,3 +21,11 @@ it("interleaves inputs using durable activity keys without repeating represented
 it("keeps an input when its ordering key is unavailable", () => {
   expect(conversationTimelineEntries([{ message_id: "old", preview: "Still visible" }], [])).toHaveLength(1);
 });
+
+it("deduplicates initial input identities even without ordering keys, without matching body text", () => {
+  const inputs: TurnInputSummary[] = [{ message_id: "wake", preview: "Same text", presentation_class: "system" }];
+  const activities: ConversationActivity[] = ["wake", "different"].map((id, index) => ({
+    kind: "operator", id: `operator:${id}`, key: { event_seq: index, activity_id: `operator:${id}` }, revision: 1, summary: "Same text",
+  }));
+  expect(conversationTimelineEntries(inputs, activities).map((entry) => entry.id)).toEqual(["operator:different", "wake"]);
+});

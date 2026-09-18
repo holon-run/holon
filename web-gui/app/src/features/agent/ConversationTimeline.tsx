@@ -17,6 +17,7 @@ import {
   RefreshCw,
   Unplug,
   User,
+  MessageSquare,
   Wrench,
   ExternalLink,
 } from "lucide-react";
@@ -494,7 +495,7 @@ function ConversationDetailPanel({
       return brief ? [brief.text] : [];
     }),
     turn.execution.kind === "terminal",
-    inputs,
+    turn.inputs,
   );
   const onlyResult = activities.length === 0 && detail.activities.some((activity) =>
     activity.kind === "assistant" && summarizeActivity(activity).display.trim().length > 0)
@@ -603,7 +604,7 @@ function ConversationActivityRow({
     [activity],
   );
   const icon = activityIcon(activity);
-  const label = t(`agentPage.activityKind.${activity.kind}`);
+  const label = t(`agentPage.activityKind.${activity.kind === "operator" ? "input" : activity.kind}`);
   return (
     <li className={`conversation-activity is-${activity.kind}${selected ? " is-selected" : ""}`} data-activity-id={activity.id}
       data-conversation-anchor={`activity:${activity.id}`}>
@@ -648,10 +649,15 @@ export function conversationActivityToInspectorActivity(
   activity: ConversationActivity,
 ): AgentTimelineActivity {
   const summary = summarizeActivity(activity);
+  if (activity.kind === "operator") {
+    // This legacy activity kind covers all input sources, not just people.
+    const messageId = activity.id.startsWith("operator:") ? activity.id.slice("operator:".length) : "";
+    const input = inputInspectorActivity({ message_id: messageId, preview: activity.summary });
+    return { ...input, id: activity.id, meta: `#${activity.key.event_seq} r${activity.revision}` };
+  }
   return {
     id: activity.id,
     kind:
-      activity.kind === "operator" ||
       activity.kind === "assistant" ||
       activity.kind === "tool"
         ? activity.kind
@@ -671,7 +677,7 @@ export function conversationActivityToInspectorActivity(
 function activityIcon(activity: ConversationActivity) {
   switch (activity.kind) {
     case "operator":
-      return <User size={12} />;
+      return <MessageSquare size={12} />;
     case "assistant":
       return <Bot size={12} />;
     case "tool":
@@ -699,8 +705,8 @@ export function summarizeActivity(activity: ConversationActivity): ActivitySumma
     return { display: text, plain: text };
   }
   if (activity.kind === "operator") {
-    const text = parseInputPreview(raw);
-    return { display: text, plain: text };
+    const presentation = inputPresentation(raw);
+    return { display: presentation.summary, plain: presentation.text };
   }
   return { display: raw, plain: raw };
 }

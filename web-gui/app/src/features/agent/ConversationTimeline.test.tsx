@@ -13,7 +13,7 @@ import type {
 } from "@holon/conversation-sdk";
 
 import "../../i18n";
-import { ConversationTimeline, executionProcessActivities, parseInputPreview, summarizeActivity } from "./ConversationTimeline";
+import { ConversationTimeline, executionProcessActivities, parseInputPreview, summarizeActivity, conversationActivityToInspectorActivity } from "./ConversationTimeline";
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
 
 function renderToStaticMarkup(node: ReactNode): string {
@@ -83,11 +83,12 @@ function renderTimeline(
     status?: never;
     pendingInputs?: never;
     onLoadBrief?: (briefId: string) => void;
+    details?: ConversationStateView["details"];
   } = {},
 ): string {
   const model = buildConversationSessionModel({
     status: options.status ?? { kind: "ready" },
-    view: stateView(turns),
+    view: { ...stateView(turns), details: options.details ?? [] },
     historyState: { kind: "idle" },
     briefs: new Map([["brief-1", brief]]),
     briefLoadStates: new Map(),
@@ -424,5 +425,34 @@ describe("operator sender attribution", () => {
     expect(html.match(/class="conversation-input-sender"/g)).toHaveLength(3);
     for (const name of ["Alice", "Bob", "Carol"]) expect(html).toContain(`>${name}</span>`);
     expect(html).not.toContain("Not an operator");
+  });
+});
+
+describe("input event presentation", () => {
+  it.each(["operator", "system", "task", "timer"] as const)("renders initial %s inputs once while retaining execution progress", (source) => {
+    const input = { message_id: "initial", preview: "Start work", presentation_class: source };
+    const html = renderTimeline([turnSummary("dedup", 1, { presentation_class: source, inputs: [input] })], {
+      details: [{ turn_id: "dedup", detail_revision: 1, coverage: { kind: "complete" },
+        has_more: false, next_before_cursor: null, invalidated: false, truncated: false,
+        activities: [
+          { kind: "operator", id: "operator:initial", key: { event_seq: 1, activity_id: "operator:initial" }, revision: 1, summary: "Start work" },
+          { kind: "assistant", id: "progress", key: { event_seq: 2, activity_id: "progress" }, revision: 1, summary: "Checking results" },
+        ],
+      }],
+    });
+    expect(html.match(/Start work/g)).toHaveLength(1);
+    expect(html).not.toContain('data-activity-id="operator:initial"');
+    expect(html).toContain("Checking results");
+  });
+
+  it("keeps unmatched input identity for full-message hydration without assuming a human sender", () => {
+    const summary = JSON.stringify({ type: "text", text: "A long task result" }).slice(0, -5);
+    const activity: ConversationActivity = { kind: "operator", id: "operator:old-message", revision: 1,
+      key: { event_seq: 10, activity_id: "operator:old-message" }, summary };
+    const inspector = conversationActivityToInspectorActivity(activity);
+    expect(inspector).toMatchObject({ id: activity.id, messageId: "old-message", kind: "event", label: "Input message" });
+    expect(inspector.body).toBe("Structured event");
+    expect(summarizeActivity(activity).display).toBe("Structured event");
+    expect(executionProcessActivities([activity], [], false, [])).toEqual([activity]);
   });
 });

@@ -528,6 +528,7 @@ const zh: Record<string, any> = {
     detailEmpty: "此轮没有可见活动。",
     loadOlderActivities: "加载更早的活动",
     activityKind: {
+      input: "输入消息",
       operator: "操作者",
       assistant: "助手",
       tool: "工具",

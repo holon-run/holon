@@ -527,6 +527,7 @@ const en = {
     detailEmpty: "No visible activity in this turn.",
     loadOlderActivities: "Load older activities",
     activityKind: {
+      input: "Input message",
       operator: "Operator",
       assistant: "Assistant",
       tool: "Tool",
