@@ -147,7 +147,7 @@ Create an agent from an Agent Template, define its role, and give it a first tas
 
 First, install Holon, configure a model provider, and start the background service. Then open `http://localhost:7878` in your browser or run `holon tui`.
 
-<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.42.0">v0.42.0</a></p>
+<p class="home-start__boundary">Recommended release: <a href="https://github.com/holon-run/holon/releases/tag/v0.43.0">v0.43.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/getting-started/">Full setup guide</a>
