@@ -45,11 +45,11 @@ export function inputPresentation(body: unknown): { summary: string; text: strin
     : text.split("\n")[0] || i18next.t("agentPage.structuredEvent"), text };
 }
 
-export function inputInspectorActivity(input: { message_id: string; preview: string; created_at?: string }, source: string): AgentTimelineActivity {
+export function inputInspectorActivity(input: { message_id: string; preview: string; created_at?: string }, source?: string): AgentTimelineActivity {
   const presentation = inputPresentation(input.preview);
   return {
     id: `message:${input.message_id}`, messageId: input.message_id, kind: source === "operator" ? "operator" : "event",
-    label: i18next.t(`agentPage.turnSource.${source}`), body: presentation.summary,
+    label: i18next.t(source === "operator" ? "agentPage.activityKind.operator" : source ? `agentPage.turnSource.${source}` : "agentPage.activityKind.input"), body: presentation.summary,
     timestamp: input.created_at ?? "", meta: input.message_id, minDisplayLevel: "info", sourceIds: [input.message_id],
     detail: { label: i18next.t("agentPage.eventPreview"), text: presentation.text, tone: "data" },
   };

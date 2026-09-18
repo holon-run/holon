@@ -9,8 +9,10 @@ export function operatorActivityIsRepresented(
   inputs: readonly TurnInputSummary[],
 ): boolean {
   return activity.kind === "operator" && inputs.some((input) =>
-    input.activity_key?.event_seq === activity.key.event_seq
-    && input.activity_key.activity_id === activity.key.activity_id
+    // Older summaries can omit the ordering key; the message identity is stable.
+    activity.id === `operator:${input.message_id}`
+    || (input.activity_key?.event_seq === activity.key.event_seq
+      && input.activity_key.activity_id === activity.key.activity_id)
   );
 }
 

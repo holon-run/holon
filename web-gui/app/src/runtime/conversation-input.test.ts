@@ -25,3 +25,14 @@ describe("conversation input presentation", () => {
     expect(hydrated.messageId).toBe("m");
   });
 });
+
+  it("replaces a truncated MessageBody preview with complete plain text", () => {
+    const text = "Task result\n\n" + "Details ".repeat(1000) + "END OF MESSAGE";
+    const preview = JSON.stringify({ type: "text", text }).slice(0, 100);
+    const activity = inputInspectorActivity({ message_id: "long-result", preview });
+    expect(activity.body).toBe("Structured event");
+    const full = hydrateInputActivity(activity, { id: "long-result", body: { type: "text", text } });
+    expect(full.body).toBe("Task result");
+    expect(full.detail?.text).toBe(text);
+    expect(full.detail?.text).not.toContain('"type":"text"');
+  });
