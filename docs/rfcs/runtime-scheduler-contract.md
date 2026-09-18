@@ -347,6 +347,33 @@ struct SchedulerState {
 The important point is not this exact struct. The important point is that the
 scheduler decision can be derived from one explicit projection.
 
+### Live-run authority and stale projection recovery
+
+`AgentState.status` and `AgentState.current_run_id` are durable scheduler
+projections. They do not, by themselves, prove that the current runtime still
+owns a live provider/tool execution.
+
+Within one runtime process, a run still owns execution when the projected run
+id has a matching `CurrentRunAbortHandle`. Cancellation requests termination
+but does not prove that execution has exited, so a cancelled matching handle
+remains authoritative cancellation evidence until the owning execution clears
+it. The runtime must reconcile a projection that claims a running turn but
+lacks that ownership evidence at wake-hint submission, pending-system-tick
+evaluation, and run-loop polling:
+
+- `Stopped` remains authoritative and is never repaired into a runnable state;
+- only a missing handle permits deterministic recovery to `AwakeIdle` with
+  `current_run_id` cleared;
+- a non-empty mismatched handle is an invariant violation and fails closed;
+- recovery preserves queued messages, pending wake hints, waits, work items,
+  and tasks, then re-evaluates the original scheduling signal in the same
+  runtime call;
+- the projection repair and its audit evidence commit atomically.
+
+This recovery is ownership-based, not time-based. A wall-clock stale-run
+timeout could terminate a legitimate long provider request or tool wait and is
+therefore not part of the scheduler contract.
+
 ## Scheduler Decisions
 
 The scheduler should produce one explicit decision at each boundary:

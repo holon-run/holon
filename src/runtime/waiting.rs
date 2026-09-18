@@ -1198,6 +1198,11 @@ impl RuntimeHandle {
 
     pub async fn submit_wake_hint(&self, hint: WakeHint) -> Result<WakeDisposition> {
         let runtime_agent_id = self.agent_id().await?;
+        scheduler_executor::SchedulerDecisionExecutor::new(self)
+            .reconcile_stale_run_projection(
+                scheduler_executor::StaleRunProjectionBoundary::WakeHintSubmission,
+            )
+            .await?;
         let pending = PendingWakeHint {
             reason: hint.reason.clone(),
             description: hint.description.clone(),

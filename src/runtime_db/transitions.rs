@@ -137,6 +137,14 @@ pub(crate) struct AgentStateMutation {
     pub record: Box<AgentState>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct AgentPostureTransitionCommand {
+    pub agent_id: String,
+    pub agent_state: AgentStateMutation,
+    pub audit_events: Vec<AuditEvent>,
+    pub fault: Option<TransitionFaultPoint>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TransitionCommit {
     pub applied: bool,
@@ -686,6 +694,40 @@ fn reconcile_orphaned_dequeued_claims_tx(
 }
 
 impl RuntimeTransitionRepository<'_> {
+    pub fn commit_agent_posture(
+        &self,
+        command: &AgentPostureTransitionCommand,
+    ) -> Result<TransitionCommit> {
+        anyhow::ensure!(
+            command.agent_id == command.agent_state.record.id,
+            "agent posture transition identity mismatch"
+        );
+        self.db.transaction(|tx| {
+            validate_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+
+            let agent_state_applied =
+                apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
+            if !agent_state_applied {
+                return Ok(TransitionCommit::default());
+            }
+            inject_fault(command.fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+
+            finish_transition_tx(
+                tx,
+                true,
+                &command.agent_id,
+                &command.audit_events,
+                &[],
+                command.fault,
+                PostCommitEffects {
+                    agent_state: Some(command.agent_state.clone()),
+                    ..PostCommitEffects::default()
+                },
+            )
+        })
+    }
+
     pub fn commit_queue_head_no_progress(
         &self,
         command: &QueueHeadNoProgressCommand,
