@@ -4,8 +4,9 @@ import {
   type APIRequestContext,
   type BrowserContext,
   type Page,
-  type TestInfo,
 } from "@playwright/test";
+
+import { sessionFor } from "./test-session";
 
 interface LedgerSnapshot {
   agentId: string;
@@ -33,11 +34,6 @@ interface LedgerSnapshot {
     sessionGapCount?: number;
     pendingProjectionHydrationCount?: number;
   };
-}
-
-function sessionFor(testInfo: TestInfo): string {
-  const testCase = testInfo.testId.replace(/[^a-zA-Z0-9_-]/g, "-");
-  return `${testInfo.workerIndex}-${testInfo.repeatEachIndex}-${testInfo.retry}-${testCase}`;
 }
 
 function controlPath(session: string, path: string): string {

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { sessionFor } from "./test-session";
 
 interface DiagnosticsSnapshot {
   bootstrapLoading: boolean;
@@ -9,7 +10,7 @@ interface DiagnosticsSnapshot {
 }
 
 test("cold start bootstraps and applies a live roster event", async ({ page, request }, testInfo) => {
-  const session = `${testInfo.workerIndex}-${testInfo.repeatEachIndex}-${testInfo.retry}`;
+  const session = sessionFor(testInfo);
   const controlPath = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   await page.context().addCookies([{
     name: "holon_e2e_session",

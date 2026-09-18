@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { sessionFor } from "./test-session";
 
 const discoveryGates = new Map<string, () => void>();
 test.afterEach(async ({}, info) => {
@@ -7,7 +8,7 @@ test.afterEach(async ({}, info) => {
 });
 
 test.beforeEach(async ({ page, context }, info) => {
-  await context.addCookies([{ name: "holon_e2e_session", value: `panel-${info.testId}`, domain: "127.0.0.1", path: "/" }]);
+  await context.addCookies([{ name: "holon_e2e_session", value: sessionFor(info, "panel"), domain: "127.0.0.1", path: "/" }]);
   await page.route("**/api/agents/list", async (route) => {
     const response = await route.fetch();
     const agents = await response.json();
@@ -89,12 +90,16 @@ test("inspector never partially covers the conversation across viewport widths",
       await expect(panel.getByRole("button", { name: "Back to conversation" })).toBeVisible();
     } else {
       await expect(shell).toHaveAttribute("data-panel-full", "false");
-      const main = (await page.locator(".main-shell").boundingBox())!;
-      const detail = (await panel.boundingBox())!;
-      expect(main.width).toBeGreaterThanOrEqual(640);
-      expect(main.x + main.width).toBeLessThanOrEqual(detail.x + 1);
+      // Resize transitions can still be settling after the panel reaches the
+      // viewport edge; poll the geometry instead of sampling it once.
+      await expect.poll(async () => {
+        const main = await page.locator(".main-shell").boundingBox();
+        const detail = await panel.boundingBox();
+        if (!main || !detail) return false;
+        return main.width >= 640 && main.x + main.width <= detail.x + 1;
+      }).toBe(true);
     }
-    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   }
   await panel.getByRole("button", { name: "Back to conversation" }).click();
   await expect(page.locator(".composer")).toBeVisible();
@@ -150,7 +155,8 @@ test("files keep selection, preview mode and scroll through overview, maximize a
 });
 
 test("reading a maximized file keeps the live turn updating and returns to its tool detail", async ({ page, request }, info) => {
-  const control = (path: string) => `${path}?session=${encodeURIComponent(`panel-${info.testId}`)}`;
+  const session = sessionFor(info, "panel");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
   const panel = page.locator(".side-panel");
   const turn = { turn_id: "live-panel", key: { turn_id: "live-panel", turn_index: 1 }, revision: 1,
     presentation_class: "operator", inputs: [{ message_id: "input-panel", preview: "Check files" }],
@@ -190,6 +196,7 @@ test("reading a maximized file keeps the live turn updating and returns to its t
 });
 
 test("work item details prioritize results and keep technical fields and plan navigation available", async ({ page, request }, info) => {
+  const session = sessionFor(info, "panel");
   const work = { id: "work-detail-style", objective: "Review the release checklist", state: "open", readiness: "ready",
     revision: 7, updated_at: "2026-09-16T01:00:00Z", result_summary: "**Checks passed**\n\n- Build complete\n- Tests complete",
     plan_artifact: { path: "/test/README.md", relative_path: "README.md", workspace_id: "files-test", preview: "## Release plan\n\n- Verify artifacts", preview_complete: true },
@@ -197,7 +204,7 @@ test("work item details prioritize results and keep technical fields and plan na
   await page.route("**/api/agents/bootstrap-agent/work-items**", async (route) => {
     await route.fulfill({ json: new URL(route.request().url()).pathname.endsWith(work.id) ? work : [work] });
   });
-  await request.post(`/__e2e__/append-event?session=${encodeURIComponent(`panel-${info.testId}`)}`, { data: { envelope: {
+  await request.post(`/__e2e__/append-event?session=${encodeURIComponent(session)}`, { data: { envelope: {
     id: "work-written", event_seq: 1, event_log_epoch: "e2e-epoch", contract_version: 2,
     ts: "2026-09-16T01:00:00Z", agent_id: "bootstrap-agent", type: "work_item_written",
     payload_schema: "holon.runtime_event.work_item_written", payload_schema_version: 1,

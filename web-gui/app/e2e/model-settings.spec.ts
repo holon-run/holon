@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { sessionFor } from "./test-session";
 
 const primary = "openai@default/shared-model";
 const alternative = "dashscope@coding/shared-model";
@@ -48,7 +49,7 @@ async function setup(page: Page) {
   return { posts, updates };
 }
 test.beforeEach(async ({ context }, info) => {
-  await context.addCookies([{ name: "holon_e2e_session", value: `models-${info.testId}`, domain: "127.0.0.1", path: "/" }]);
+  await context.addCookies([{ name: "holon_e2e_session", value: sessionFor(info, "models"), domain: "127.0.0.1", path: "/" }]);
 });
 
 test("provider directory searches aliases, edits one service and preserves drafts", async ({ page }) => {
