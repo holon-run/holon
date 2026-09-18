@@ -4259,8 +4259,49 @@ CREATE TABLE working_memory_deltas (
         newer.updated_at = newer.created_at;
         newer.trigger_message_id = Some("message-owner-newer".into());
         newer.triggered_at = Some(newer.created_at);
-        db.wait_conditions().upsert(&older)?;
-        db.wait_conditions().upsert(&newer)?;
+        // Seed the pre-migration duplicate rows directly: the registration
+        // write path now converges stale unresolved owners before insert,
+        // which would hide a broken migration-44 converge from this test.
+        // The post-migration upsert below stays as the registration-path
+        // assertion.
+        {
+            let connection = db.connection()?;
+            for record in [&older, &newer] {
+                connection.execute(
+                    "INSERT INTO wait_conditions (
+                        wait_condition_id, agent_id, work_item_id, status, kind, source,
+                        subject_ref, waiting_for, created_at, updated_at, expires_at,
+                        resolved_at, cancelled_at, last_turn_id, trigger_message_id,
+                        triggered_at, wake_sources_json, continuation_json, payload_json
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+                    params![
+                        record.id,
+                        record.agent_id,
+                        record.work_item_id,
+                        enum_string(&record.status)?,
+                        enum_string(&record.kind)?,
+                        record.source,
+                        record.subject_ref,
+                        record.waiting_for,
+                        timestamp(record.created_at),
+                        timestamp(record.updated_at),
+                        record.expires_at.map(timestamp),
+                        record.resolved_at.map(timestamp),
+                        record.cancelled_at.map(timestamp),
+                        record.turn_id,
+                        record.trigger_message_id,
+                        record.triggered_at.map(timestamp),
+                        serde_json::to_string(&record.wake_sources)?,
+                        record
+                            .continuation
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()?,
+                        serde_json::to_string(record)?,
+                    ],
+                )?;
+            }
+        }
 
         let migration = MIGRATIONS
             .iter()
@@ -4288,7 +4329,131 @@ CREATE TABLE working_memory_deltas (
         duplicate.id = "wait-owner-duplicate".into();
         duplicate.created_at = now + chrono::Duration::seconds(2);
         duplicate.updated_at = duplicate.created_at;
-        assert!(db.wait_conditions().upsert(&duplicate).is_err());
+        db.wait_conditions().upsert(&duplicate)?;
+        let waits = db.wait_conditions().latest_all()?;
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == newer.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Cancelled)
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == duplicate.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Active)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wait_owner_registration_converges_stale_unresolved_rows() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let now = Utc::now();
+        let stale = WaitConditionRecord {
+            id: "wait-owner-stale".into(),
+            agent_id: "agent-a".into(),
+            work_item_id: Some("work-owner".into()),
+            status: WaitConditionStatus::Triggered,
+            kind: WaitConditionKind::Task,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: "stale task wait".into(),
+            wake_sources: Vec::new(),
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: Some("turn-owner-stale".into()),
+            trigger_message_id: None,
+            triggered_at: Some(now),
+        };
+        db.wait_conditions().upsert(&stale)?;
+
+        let mut replacement = stale.clone();
+        replacement.id = "wait-owner-replacement".into();
+        replacement.status = WaitConditionStatus::Active;
+        replacement.waiting_for = "replacement task wait".into();
+        replacement.created_at = now + chrono::Duration::seconds(1);
+        replacement.updated_at = replacement.created_at;
+        replacement.triggered_at = None;
+        replacement.turn_id = None;
+        db.wait_conditions().upsert(&replacement)?;
+
+        let waits = db.wait_conditions().latest_all()?;
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == stale.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Cancelled)
+        );
+        assert_eq!(
+            waits
+                .iter()
+                .filter(|wait| matches!(
+                    wait.status,
+                    WaitConditionStatus::Active | WaitConditionStatus::Triggered
+                ))
+                .map(|wait| wait.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wait-owner-replacement"]
+        );
+
+        // Convergence must keep revision bookkeeping aligned with every other
+        // wait mutation so revision-based consumers invalidate cached state.
+        let source_revision: i64 = db.connection()?.query_row(
+            "SELECT revision FROM conversation_source_revisions
+                 WHERE source_id = 'wait-owner-stale'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(source_revision, 2);
+        let turn_revision: i64 = db.connection()?.query_row(
+            "SELECT summary_revision FROM conversation_turn_revisions
+                 WHERE agent_id = 'agent-a' AND turn_id = 'turn-owner-stale'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(turn_revision, 2);
+
+        // Agent-level waits (NULL work_item_id) converge on the same owner key.
+        let mut agent_level = stale.clone();
+        agent_level.id = "wait-owner-agent-stale".into();
+        agent_level.work_item_id = None;
+        agent_level.kind = WaitConditionKind::Operator;
+        agent_level.triggered_at = None;
+        agent_level.turn_id = None;
+        agent_level.created_at = now + chrono::Duration::seconds(2);
+        agent_level.updated_at = agent_level.created_at;
+        db.wait_conditions().upsert(&agent_level)?;
+        let mut agent_replacement = agent_level.clone();
+        agent_replacement.id = "wait-owner-agent-new".into();
+        agent_replacement.created_at = now + chrono::Duration::seconds(3);
+        agent_replacement.updated_at = agent_replacement.created_at;
+        agent_replacement.turn_id = None;
+        db.wait_conditions().upsert(&agent_replacement)?;
+        let waits = db.wait_conditions().latest_all()?;
+        assert_eq!(
+            waits
+                .iter()
+                .find(|wait| wait.id == agent_level.id)
+                .map(|wait| &wait.status),
+            Some(&WaitConditionStatus::Cancelled)
+        );
+
+        // A delayed older registration must not cancel the newer live wait;
+        // it surfaces as a conflict for the caller to resolve.
+        let mut delayed = replacement.clone();
+        delayed.id = "wait-owner-delayed".into();
+        delayed.created_at = now;
+        delayed.updated_at = now;
+        assert!(db.wait_conditions().upsert(&delayed).is_err());
         Ok(())
     }
 

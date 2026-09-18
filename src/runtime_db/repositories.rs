@@ -4444,6 +4444,12 @@ pub(crate) fn upsert_wait_condition_tx(
             StateTransitionOutcome::Idempotent => return Ok(false),
         }
     }
+    if matches!(
+        record.status,
+        crate::types::WaitConditionStatus::Active | crate::types::WaitConditionStatus::Triggered
+    ) {
+        cancel_stale_unresolved_wait_owner_rows_tx(tx, record)?;
+    }
 
     let payload_json = serde_json::to_string(record)?;
     let status = enum_string(&record.status)?;
@@ -4524,6 +4530,87 @@ pub(crate) fn upsert_wait_condition_tx(
         }
     }
     Ok(changed == 1)
+}
+
+/// Cancel stale unresolved wait rows that own the same key as an incoming
+/// active/triggered registration: (agent_id, work_item_id), or (agent_id) when
+/// work_item_id is NULL. Migration 44 enforces at most one unresolved row per
+/// owner via partial unique indexes; a trigger settlement racing a
+/// re-registration can leave an older unresolved row behind, and writing the
+/// next registration would violate the index and roll back the whole
+/// transition — which the runtime classifies as a fatal loop failure. Newest
+/// registration wins, matching converge_unresolved_wait_owners.
+fn cancel_stale_unresolved_wait_owner_rows_tx(
+    tx: &Transaction<'_>,
+    record: &WaitConditionRecord,
+) -> Result<()> {
+    let rows = tx
+        .prepare(
+            "SELECT wait_condition_id, payload_json FROM wait_conditions
+             WHERE agent_id = ?1
+               AND work_item_id IS ?2
+               AND wait_condition_id != ?3
+               AND status IN ('active', 'triggered')",
+        )?
+        .query_map(
+            params![record.agent_id, record.work_item_id, record.id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let mut cancelled = Vec::new();
+    for (wait_id, payload_json) in rows {
+        let mut stale = decode_wait_condition_payload(&payload_json)?;
+        if stale.updated_at > record.updated_at {
+            // A newer unresolved wait already owns this key; surface the
+            // stale write as a conflict instead of discarding the live wait.
+            continue;
+        }
+        stale.status = crate::types::WaitConditionStatus::Cancelled;
+        stale.updated_at = record.updated_at;
+        stale.resolved_at = None;
+        stale.cancelled_at = Some(record.updated_at);
+        tx.execute(
+            "UPDATE wait_conditions
+             SET status = 'cancelled',
+                 updated_at = ?1,
+                 resolved_at = NULL,
+                 cancelled_at = ?1,
+                 payload_json = ?2
+             WHERE wait_condition_id = ?3",
+            params![
+                timestamp(record.updated_at),
+                serde_json::to_string(&stale)?,
+                wait_id
+            ],
+        )?;
+        // Mirror the revision bookkeeping applied to every other wait
+        // mutation: conversation consumers invalidate cached wait state via
+        // source/turn revisions, so a cancelled row must not keep its
+        // pre-cancellation revisions.
+        let _ = bump_source_revision_tx(
+            tx,
+            SOURCE_WAIT,
+            &stale.id,
+            &stale.agent_id,
+            stale.turn_id.as_deref(),
+            stale.updated_at,
+        )?;
+        if let Some(turn_id) = stale.turn_id.as_deref() {
+            let _ =
+                bump_turn_revision_tx(tx, &stale.agent_id, turn_id, true, true, stale.updated_at)?;
+        }
+        cancelled.push(wait_id);
+    }
+    if !cancelled.is_empty() {
+        tracing::warn!(
+            agent_id = %record.agent_id,
+            work_item_id = ?record.work_item_id,
+            replacement_wait_condition_id = %record.id,
+            cancelled_wait_condition_ids = ?cancelled,
+            "cancelled stale unresolved wait conditions superseded by newer registration"
+        );
+    }
+    Ok(())
 }
 
 pub(crate) fn upsert_queue_entry_tx(
