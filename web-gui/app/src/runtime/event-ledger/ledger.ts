@@ -220,9 +220,11 @@ type WriteOperation =
 
 /*
  * Agent-session patches share one patch channel: per-scope patches inside one
- * batch coalesce by ordered spread and the merged value is written once. Both
- * cursors are validated monotonically against the value observed inside the
- * same transaction, so a coalesced patch can never regress either cursor.
+ * batch coalesce by ordered spread and the merged value is written once.
+ * Cursor fields merge monotonically against the value observed inside the
+ * same transaction: a stale writer (snapshot install racing an in-flight
+ * ingest, or a second tab sharing the database) keeps the higher cursor
+ * instead of aborting its whole batch.
  */
 type AgentSessionCursorField =
   | "ingestedThroughSeq"
@@ -641,6 +643,12 @@ export class EventLedgerWriteBatch {
       if (!get) continue;
       get.onsuccess = () => {
         const existing = get.result;
+        // Concurrent writers can race on one scope: a snapshot install may
+        // commit a higher cursor while an ingest batch computed from a stale
+        // tracker is in flight (same page or a second tab sharing the
+        // database). Aborting that batch would discard its idempotent raw
+        // events until the next backfill, so merge cursor fields
+        // monotonically instead.
         for (const field of CURSOR_FIELDS) {
           const current = existing?.[field];
           const requested = entry.patch[field];
@@ -649,9 +657,7 @@ export class EventLedgerWriteBatch {
             typeof requested === "number" &&
             requested < current
           ) {
-            failure = failure ?? new LedgerCursorRegressionError(current, requested);
-            tryAbort(tx);
-            return;
+            entry.patch[field] = current;
           }
         }
         // Readiness may never claim past the contiguous ingestion cursor.

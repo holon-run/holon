@@ -81,8 +81,10 @@ export class LedgerIdentityConflictError extends Error {
 }
 
 /**
- * The contiguous ingestion cursor would move backwards. The ingestion
- * protocol only allows monotonic advance; callers must never regress it.
+ * A projection readiness cursor claims past the contiguous ingestion cursor
+ * within one coalesced patch. Field-versus-stored cursor races merge
+ * monotonically instead of failing; this error now only flags a patch whose
+ * own fields are inconsistent, which is always a programming error.
  */
 export class LedgerCursorRegressionError extends Error {
   readonly currentThroughSeq: number;
