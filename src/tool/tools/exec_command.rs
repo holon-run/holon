@@ -235,6 +235,41 @@ mod tests {
     }
 
     #[test]
+    fn exec_command_model_receipt_reports_input_envelope_recovery_without_values() {
+        let mut result = serialize_success(
+            NAME,
+            &ExecCommandResult {
+                outcome: ExecCommandOutcome::Completed {
+                    exit_status: Some(0),
+                    stdout_preview: None,
+                    stderr_preview: None,
+                    truncated: false,
+                    artifacts: Vec::new(),
+                    stdout_artifact: None,
+                    stderr_artifact: None,
+                },
+                command_diagnostics: None,
+                summary_text: Some("command exited with status 0".into()),
+            },
+        )
+        .unwrap();
+        result.envelope.input_coercion = Some(
+            crate::tool::spec::ToolInputCoercion::UnwrapToolInputEnvelope {
+                envelope_key: "arguments".into(),
+                outer_keys: vec!["arguments".into(), "max_output_tokens".into()],
+                inner_keys: vec!["cmd".into()],
+            },
+        );
+
+        let rendered = super::super::render_tool_result_for_model(&result).unwrap();
+
+        assert!(rendered.contains("unwrapped top-level `arguments`"));
+        assert!(rendered.contains("outer keys: arguments, max_output_tokens"));
+        assert!(rendered.contains("inner keys: cmd"));
+        assert!(!rendered.contains("SECRET_MARKER"));
+    }
+
+    #[test]
     fn exec_command_rejects_command_field_instead_of_cmd() {
         let error = parse_tool_args::<ExecCommandArgs>(
             NAME,

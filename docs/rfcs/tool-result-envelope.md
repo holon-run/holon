@@ -106,6 +106,12 @@ The canonical envelope should have this shape:
   "tool_name": "ExecCommand",
   "status": "success",
   "summary_text": "command exited with status 0",
+  "input_coercion": {
+    "kind": "unwrap_tool_input_envelope",
+    "envelope_key": "arguments",
+    "outer_keys": ["arguments", "max_output_tokens"],
+    "inner_keys": ["cmd"]
+  },
   "result": {},
   "error": null
 }
@@ -133,6 +139,25 @@ The same canonical envelope should be used for errors:
 ```
 
 This canonical envelope is the shared semantic record Holon keeps internally.
+
+### `input_coercion`
+
+`input_coercion` is optional canonical receipt metadata. It records a safe,
+semantics-preserving input recovery that was required before a tool could parse
+and execute successfully.
+
+For `unwrap_tool_input_envelope`, the receipt records only:
+
+- the recognized envelope key
+- the outer object keys
+- the inner object keys
+
+It must not record input values. If the original input already matches the
+published schema, recovery is ambiguous, or the recovered candidate still
+fails strict typed parsing, `input_coercion` must be absent.
+
+This metadata does not relax the tool schema. Unknown fields remain errors, and
+tools should keep strict typed parsing as the final acceptance boundary.
 It is not, by itself, a requirement that the model-visible rendering must be
 JSON.
 
@@ -471,6 +496,7 @@ preserve:
 - `tool_name`
 - `status`
 - `summary_text`
+- `input_coercion`, when present
 - `error`
 
 For errors, Holon should also preserve:

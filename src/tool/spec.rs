@@ -98,12 +98,24 @@ pub enum ToolResultStatus {
     Error,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolInputCoercion {
+    UnwrapToolInputEnvelope {
+        envelope_key: String,
+        outer_keys: Vec<String>,
+        inner_keys: Vec<String>,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResultEnvelope {
     pub tool_name: String,
     pub status: ToolResultStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_coercion: Option<ToolInputCoercion>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -120,6 +132,7 @@ impl ToolResult {
             tool_name: tool_name.into(),
             status: ToolResultStatus::Success,
             summary_text,
+            input_coercion: None,
             result: Some(result),
             error: None,
         };
@@ -144,6 +157,7 @@ impl ToolResult {
             tool_name: tool_name.into(),
             status: ToolResultStatus::Success,
             summary_text,
+            input_coercion: None,
             result: Some(result),
             error: None,
         };
@@ -168,6 +182,7 @@ impl ToolResult {
             tool_name: tool_name.into(),
             status: ToolResultStatus::Deferred,
             summary_text,
+            input_coercion: None,
             result: Some(result),
             error: None,
         };
@@ -187,6 +202,7 @@ impl ToolResult {
             tool_name: tool_name.into(),
             status: ToolResultStatus::Error,
             summary_text: Some(error.message.clone()),
+            input_coercion: None,
             result: None,
             error: Some(error.clone()),
         };

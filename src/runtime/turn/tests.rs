@@ -438,6 +438,7 @@ fn compacted_round_recap_preserves_view_image_observation_evidence() {
         tool_name: "ViewImage".to_string(),
         status: ToolResultStatus::Success,
         summary_text: Some("generated observation".to_string()),
+        input_coercion: None,
         result: Some(serde_json::json!({
             "visual_reference": {
                 "id": "vis_warning",
@@ -622,6 +623,7 @@ fn fixture_round_with_tool_result(
         tool_name: tool_name.to_string(),
         status,
         summary_text: None,
+        input_coercion: None,
         result: None,
         error: None,
     }];
@@ -1076,6 +1078,7 @@ fn compacted_tool_result_projection_uses_canonical_recoverable_receipt() {
         tool_name: "ExecCommand".into(),
         status: ToolResultStatus::Success,
         summary_text: Some("completed exit_status=0 truncated=true".into()),
+        input_coercion: None,
         result: Some(serde_json::json!({
             "stdout_preview": "sensitive-large-payload ".repeat(500),
             "output_ref": "tool_execution:tool_123:output",
@@ -1213,6 +1216,7 @@ fn compacted_tool_result_projection_fails_closed_when_minimum_receipt_cannot_fit
         tool_name: "ExecCommand".into(),
         status: ToolResultStatus::Success,
         summary_text: Some("completed".into()),
+        input_coercion: None,
         result: Some(serde_json::json!({"output_ref": "tool_execution:tool_123:output"})),
         error: None,
     };
@@ -2851,6 +2855,7 @@ fn invalidates_checkpoint_for_successful_state_mutation_tools() {
             tool_name: tool_name.to_string(),
             status: ToolResultStatus::Success,
             summary_text: None,
+            input_coercion: None,
             result: Some(serde_json::json!({"ok": true})),
             error: None,
         };
@@ -2867,6 +2872,7 @@ fn does_not_invalidate_checkpoint_for_failed_state_mutation() {
         tool_name: "CreateWorkItem".to_string(),
         status: ToolResultStatus::Error,
         summary_text: None,
+        input_coercion: None,
         result: None,
         error: Some(ToolError {
             kind: "invalid_input".to_string(),
@@ -2895,6 +2901,7 @@ fn does_not_invalidate_checkpoint_for_non_state_tools() {
             tool_name: tool_name.to_string(),
             status: ToolResultStatus::Success,
             summary_text: None,
+            input_coercion: None,
             result: Some(serde_json::json!({"ok": true})),
             error: None,
         };
@@ -2917,6 +2924,7 @@ fn round_invalidates_when_any_envelope_invalidates() {
             tool_name: "ExecCommand".to_string(),
             status: ToolResultStatus::Success,
             summary_text: None,
+            input_coercion: None,
             result: Some(serde_json::json!({})),
             error: None,
         },
@@ -2924,6 +2932,7 @@ fn round_invalidates_when_any_envelope_invalidates() {
             tool_name: "ApplyPatch".to_string(),
             status: ToolResultStatus::Success,
             summary_text: None,
+            input_coercion: None,
             result: Some(serde_json::json!({})),
             error: None,
         },
@@ -2939,6 +2948,7 @@ fn round_does_not_invalidate_when_no_state_mutations() {
             tool_name: "ExecCommand".to_string(),
             status: ToolResultStatus::Success,
             summary_text: None,
+            input_coercion: None,
             result: Some(serde_json::json!({})),
             error: None,
         },
@@ -2946,6 +2956,7 @@ fn round_does_not_invalidate_when_no_state_mutations() {
             tool_name: "WebFetch".to_string(),
             status: ToolResultStatus::Success,
             summary_text: None,
+            input_coercion: None,
             result: Some(serde_json::json!({})),
             error: None,
         },
@@ -2969,6 +2980,7 @@ fn result_work_item_id_extracts_from_nested_result() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({
             "work_item": {
                 "id": "work_abc123"
@@ -2988,6 +3000,7 @@ fn result_work_item_id_none_when_missing_result() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: None,
         error: None,
     };
@@ -3000,6 +3013,7 @@ fn result_work_item_id_none_when_missing_nested_path() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({"other": "data"})),
         error: None,
     };
@@ -3016,6 +3030,7 @@ fn envelope_completes_work_item_true_for_valid_completion() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({
             "completed_transition": true,
             "work_item": {"id": "work_1"}
@@ -3031,6 +3046,7 @@ fn envelope_completes_work_item_false_for_failed() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Error,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({"completed_transition": true})),
         error: None,
     };
@@ -3043,6 +3059,7 @@ fn envelope_completes_work_item_false_for_wrong_tool() {
         tool_name: "UpdateWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({"completed_transition": true})),
         error: None,
     };
@@ -3055,6 +3072,7 @@ fn envelope_completes_work_item_false_for_missing_transition() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({"work_item": {"id": "work_1"}})),
         error: None,
     };
@@ -3156,6 +3174,7 @@ fn append_completion_warning_creates_array_when_missing() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({"ok": true})),
         error: None,
     };
@@ -3183,6 +3202,7 @@ fn append_completion_warning_appends_to_existing_array() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({
             "ok": true,
             "warnings": [serde_json::json!({"kind": "existing", "message": "old"})]
@@ -3209,6 +3229,7 @@ fn append_completion_warning_noop_when_no_result() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: None,
         error: None,
     };
@@ -3241,6 +3262,7 @@ fn update_tool_result_block_content_updates_correct_index() {
         tool_name: "CompleteWorkItem".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({"completion_report_promoted": true})),
         error: None,
     };
@@ -3269,6 +3291,7 @@ fn update_tool_result_block_content_out_of_bounds_is_noop() {
         tool_name: "Test".to_string(),
         status: ToolResultStatus::Success,
         summary_text: None,
+        input_coercion: None,
         result: Some(serde_json::json!({})),
         error: None,
     };

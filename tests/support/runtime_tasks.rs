@@ -873,6 +873,87 @@ pub async fn exec_command_reports_nonzero_exit_and_truncates_output() -> Result<
     Ok(())
 }
 
+pub async fn exec_command_recovers_known_input_envelope_and_reports_coercion() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+
+    let (result, record) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &ToolCall {
+                id: "tool-exec-input-envelope".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "arguments": "{\"cmd\":\"printf envelope-ok\"}",
+                    "login": false,
+                    "max_output_tokens": "800"
+                }),
+            },
+        )
+        .await?;
+
+    assert!(!result.is_error());
+    assert_eq!(record.status, holon::types::ToolExecutionStatus::Success);
+    let envelope = parse_tool_result_value(&result)?;
+    assert_eq!(envelope["result"]["stdout_preview"], "envelope-ok");
+    assert_eq!(
+        envelope["result"]["command_diagnostics"]["effective_max_output_tokens"],
+        800
+    );
+    assert_eq!(
+        envelope["input_coercion"],
+        json!({
+            "kind": "unwrap_tool_input_envelope",
+            "envelope_key": "arguments",
+            "outer_keys": ["arguments", "login", "max_output_tokens"],
+            "inner_keys": ["cmd"]
+        })
+    );
+    assert!(!envelope["input_coercion"]
+        .to_string()
+        .contains("printf envelope-ok"));
+    Ok(())
+}
+
+pub async fn exec_command_rejects_ambiguous_input_envelopes_without_execution() -> Result<()> {
+    let host =
+        RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
+    attach_default_workspace(&host).await?;
+    let runtime = host.default_runtime().await?;
+    let registry = ToolRegistry::new(runtime.workspace_root());
+    let marker = runtime.workspace_root().join("ambiguous-envelope-marker");
+    let command = format!("touch {}", marker.display());
+
+    let error = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &ToolCall {
+                id: "tool-exec-ambiguous-envelope".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "arguments": {"cmd": command},
+                    "params": {"cmd": command}
+                }),
+            },
+        )
+        .await
+        .expect_err("multiple input envelopes should stay invalid");
+    let error = error
+        .downcast_ref::<ToolError>()
+        .expect("invalid input should be a tool error");
+
+    assert_eq!(error.kind, "invalid_tool_input");
+    assert!(!marker.exists(), "rejected command must not execute");
+    Ok(())
+}
+
 pub async fn exec_command_batch_returns_grouped_item_results() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;
