@@ -5,6 +5,7 @@ import {
   ConversationCapabilityError,
   ConversationController,
   ConversationProtocolError,
+  ConversationResetError,
 } from "../dist/index.js";
 import { activity, batch, detail, identity, summary, turn } from "./helpers.mjs";
 
@@ -298,6 +299,43 @@ test("network failure reconnects with bounded backoff and resumes checkpoint", a
   assert.deepEqual(delays, [500]);
   const second = client.calls.stream.at(-1);
   assert.equal(second.after, "checkpoint-10");
+  controller.dispose();
+});
+
+test("reset-required attach recovers via a fresh snapshot instead of retrying the stale checkpoint", async () => {
+  const hub = new StreamQueue();
+  const client = fakeClient({ hub });
+  const statusKinds = [];
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    retry: { initialDelayMs: 100, jitterRatio: 0 },
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+    onEvent: (event) => {
+      if (event.type === "status") {
+        statusKinds.push(event.status.kind);
+      }
+    },
+  });
+  const originalStream = client.stream.bind(client);
+  let streamAttempt = 0;
+  client.stream = async function* (agentId, options = {}) {
+    streamAttempt += 1;
+    if (streamAttempt === 1) {
+      throw new ConversationResetError("replay_limit_exceeded");
+    }
+    yield* originalStream(agentId, options);
+  };
+  controller.start();
+  await waitFor(() => controller.status.kind === "ready" && streamAttempt >= 2);
+  // The reset must trigger a fresh bootstrap (second summary) and the retry
+  // must attach from the fresh snapshot checkpoint, not loop on the stale one.
+  assert.equal(client.calls.summary.length, 2);
+  assert.equal(client.calls.stream.length, 1);
+  assert.equal(client.calls.stream[0].after, "checkpoint-10");
+  assert.ok(statusKinds.includes("reconnecting"));
+  assert.equal(controller.status.kind, "ready");
   controller.dispose();
 });
 

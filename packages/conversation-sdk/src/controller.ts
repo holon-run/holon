@@ -22,6 +22,7 @@ import {
   type ConversationDetailCursor,
   type ConversationHistoryCursor,
   type ConversationRequestIdentity,
+  type ConversationResetReason,
   type ConversationSnapshotCacheEntry,
   type ConversationStateLimits,
   type ConversationStreamItem,
@@ -777,6 +778,18 @@ export class ConversationController {
           return;
         }
         this.#discardUnauthorizedCache(error, true);
+        // A stream attach rejected with a reset means the local checkpoint
+        // can never be resumed (retention pruning, replay limit,
+        // epoch/schema change): retrying the same checkpoint
+        // deterministically fails again. Drop the stale state so the next
+        // loop takes the fresh-snapshot path, the same self-heal an
+        // in-stream reset_required message receives.
+        if (
+          error instanceof ConversationResetError &&
+          error.reason !== "agent_not_found"
+        ) {
+          this.#applyStreamReset(error.reason);
+        }
         const klass = classifyConversationError(error);
         if (klass !== "retryable") {
           this.#starting = false;
@@ -948,10 +961,7 @@ export class ConversationController {
         return;
       }
       if (item.type === "reset_required") {
-        this.#cancelSnapshotTimer();
-        this.#snapshotBase = undefined;
-        this.#state.reset(item.reset.reason);
-        this.#emitView("reset");
+        this.#applyStreamReset(item.reset.reason);
         return;
       }
       try {
@@ -965,15 +975,20 @@ export class ConversationController {
         if (error instanceof ConversationStaleResponseError) {
           // Divergence between checkpoint and server framing: self-heal by
           // clearing state so the supervise loop re-snapshots serially.
-          this.#cancelSnapshotTimer();
-          this.#snapshotBase = undefined;
-          this.#state.reset("stream_recovery_failed");
-          this.#emitView("reset");
+          this.#applyStreamReset("stream_recovery_failed");
           return;
         }
         throw error;
       }
     }
+  }
+
+  #applyStreamReset(reason: ConversationResetReason): void {
+    this.#cancelSnapshotTimer();
+    this.#snapshotBase = undefined;
+    this.#pendingRevalidate = undefined;
+    this.#state.reset(reason);
+    this.#emitView("reset");
   }
 
   #cancelSnapshotTimer(): void {
