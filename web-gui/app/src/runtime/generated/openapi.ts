@@ -3964,6 +3964,8 @@ export interface components {
                         /** Format: uint64 */
                         event_seq: number;
                     } | null;
+                    /** @description Operator display name snapshotted in the canonical message origin. */
+                    actor_display_name?: string | null;
                     /** @default false */
                     interjected: boolean;
                     message_id: string;
@@ -4112,6 +4114,8 @@ export interface components {
         } | {
             event_log_epoch: string;
             input: {
+                /** @description Operator display name snapshotted in the canonical message origin. */
+                actor_display_name?: string | null;
                 created_at: string;
                 message_id: string;
                 /** @enum {string} */
@@ -4185,6 +4189,8 @@ export interface components {
                         /** Format: uint64 */
                         event_seq: number;
                     } | null;
+                    /** @description Operator display name snapshotted in the canonical message origin. */
+                    actor_display_name?: string | null;
                     /** @default false */
                     interjected: boolean;
                     message_id: string;
@@ -4388,6 +4394,8 @@ export interface components {
                         /** Format: uint64 */
                         event_seq: number;
                     } | null;
+                    /** @description Operator display name snapshotted in the canonical message origin. */
+                    actor_display_name?: string | null;
                     /** @default false */
                     interjected: boolean;
                     message_id: string;
@@ -4449,6 +4457,8 @@ export interface components {
             /** Format: uint64 */
             oldest_retained_seq: number;
             pending_inputs: {
+                /** @description Operator display name snapshotted in the canonical message origin. */
+                actor_display_name?: string | null;
                 created_at: string;
                 message_id: string;
                 /** @enum {string} */
@@ -4517,6 +4527,8 @@ export interface components {
                         /** Format: uint64 */
                         event_seq: number;
                     } | null;
+                    /** @description Operator display name snapshotted in the canonical message origin. */
+                    actor_display_name?: string | null;
                     /** @default false */
                     interjected: boolean;
                     message_id: string;

@@ -409,3 +409,20 @@ describe("conversation presentation boundaries", () => {
     expect(html.indexOf("Pending events")).toBeLessThan(html.indexOf('data-turn-id="latest"'));
   });
 });
+
+describe("operator sender attribution", () => {
+  it("shows each message's sender in initial, interjected and pending inputs", () => {
+    const html = renderTimeline([turnSummary("senders", 1, { inputs: [
+      { message_id: "alice", preview: "Initial", actor_display_name: "Alice" },
+      { message_id: "bob", preview: "Correction", actor_display_name: "Bob", presentation_class: "operator", interjected: true },
+      { message_id: "local", preview: "Local control" },
+      { message_id: "empty", preview: "Blank name", actor_display_name: "  " },
+    ] })], { pendingInputs: [
+      { message_id: "pending", revision: 1, state: "queued", preview: "Next", presentation_class: "operator", actor_display_name: "Carol" },
+      { message_id: "system", revision: 1, state: "queued", preview: "Event", presentation_class: "system", actor_display_name: "Not an operator" },
+    ] } as never);
+    expect(html.match(/class="conversation-input-sender"/g)).toHaveLength(3);
+    for (const name of ["Alice", "Bob", "Carol"]) expect(html).toContain(`>${name}</span>`);
+    expect(html).not.toContain("Not an operator");
+  });
+});

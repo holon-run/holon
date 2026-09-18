@@ -6,7 +6,7 @@ import type { Root, Nodes } from "mdast";
 import type { ResolvedFileLocation } from "../../runtime/types";
 import { classifyReference, createHeadingSlugger, isInlineReference, type Reference } from "./references";
 
-export interface MarkdownReference { key: string; value: Reference }
+export interface MarkdownReference { key: string; raw: string; value: Reference }
 interface Options { base?: ResolvedFileLocation; prefix?: string; collect?: Map<string, MarkdownReference> }
 function nodeText(node: Nodes): string {
   if ("value" in node) return node.value;
@@ -53,7 +53,7 @@ export function remarkFileReferences(options: Options = {}) {
       const value = classifyReference(raw, options.base, literal);
       if (value.kind === "external") return;
       const key = JSON.stringify([raw, literal, options.base ?? null]);
-      options.collect?.set(key, { key, value });
+      options.collect?.set(key, { key, raw, value });
       node.data = { ...node.data, hProperties: { ...node.data?.hProperties, "data-file-reference": key } };
       // Keep local and rejected schemes away from native navigation and sanitization.
       node.url = "#";

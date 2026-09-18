@@ -5842,6 +5842,13 @@
                         "null"
                       ]
                     },
+                    "actor_display_name": {
+                      "description": "Operator display name snapshotted in the canonical message origin.",
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "interjected": {
                       "default": false,
                       "type": "boolean"
@@ -6428,6 +6435,13 @@
               },
               "input": {
                 "properties": {
+                  "actor_display_name": {
+                    "description": "Operator display name snapshotted in the canonical message origin.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "created_at": {
                     "type": "string"
                   },
@@ -6738,6 +6752,13 @@
                           ],
                           "type": [
                             "object",
+                            "null"
+                          ]
+                        },
+                        "actor_display_name": {
+                          "description": "Operator display name snapshotted in the canonical message origin.",
+                          "type": [
+                            "string",
                             "null"
                           ]
                         },
@@ -7563,6 +7584,13 @@
                           "null"
                         ]
                       },
+                      "actor_display_name": {
+                        "description": "Operator display name snapshotted in the canonical message origin.",
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
                       "interjected": {
                         "default": false,
                         "type": "boolean"
@@ -7811,6 +7839,13 @@
           "pending_inputs": {
             "items": {
               "properties": {
+                "actor_display_name": {
+                  "description": "Operator display name snapshotted in the canonical message origin.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "created_at": {
                   "type": "string"
                 },
@@ -8094,6 +8129,13 @@
                         ],
                         "type": [
                           "object",
+                          "null"
+                        ]
+                      },
+                      "actor_display_name": {
+                        "description": "Operator display name snapshotted in the canonical message origin.",
+                        "type": [
+                          "string",
                           "null"
                         ]
                       },

@@ -7033,6 +7033,9 @@ code {
 }
 .conversation-input-line .markdown-content,
 .conversation-pending-chip .markdown-content { font-size: 15px; line-height: 1.65; }
+.conversation-input-sender { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.conversation-input-sender svg { flex-shrink: 0; }
+.conversation-input-sender span { min-width: 0; }
 .conversation-pending-inputs { display: flex; flex-direction: column; gap: 12px; }
 .conversation-pending-chip { margin-bottom: 0; }
 .conversation-pending-events { min-width: 0; color: var(--muted); font-size: 12px; }

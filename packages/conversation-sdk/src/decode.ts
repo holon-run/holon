@@ -309,6 +309,7 @@ export function decodePendingInput(
     ...(source.created_at === undefined ? {} : {
       created_at: optionalTimestamp(source.created_at, `${path}.created_at`),
     }),
+    ...(source.actor_display_name == null ? {} : { actor_display_name: stringValue(source.actor_display_name, `${path}.actor_display_name`) }),
     preview:
       source.preview === undefined || source.preview === null
         ? ""
@@ -326,6 +327,7 @@ export function decodeTurnInputSummary(
     ...(source.presentation_class == null ? {} : { presentation_class: enumValue(source.presentation_class, presentationClasses, `${path}.presentation_class`) }),
     ...(source.activity_key == null ? {} : { activity_key: decodeActivityKey(source.activity_key, `${path}.activity_key`) }),
     ...(source.interjected === undefined ? {} : { interjected: booleanValue(source.interjected, `${path}.interjected`) }),
+    ...(source.actor_display_name == null ? {} : { actor_display_name: stringValue(source.actor_display_name, `${path}.actor_display_name`) }),
     preview:
       source.preview === undefined || source.preview === null
         ? ""
