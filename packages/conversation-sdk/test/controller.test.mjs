@@ -746,6 +746,44 @@ test("snapshot cache revalidates with a fresh snapshot when content changed", as
   controller.dispose();
 });
 
+test("cached snapshot paints before the capability handshake resolves", async () => {
+  const hub = new StreamQueue();
+  let releaseCapability;
+  const capabilityGate = new Promise((resolve) => {
+    releaseCapability = resolve;
+  });
+  const client = fakeClient({
+    summary: () => ({ summary: null, etag: "etag-10" }),
+    hub,
+  });
+  client.requireCapability = async () => {
+    await capabilityGate;
+    return { ok: true };
+  };
+  const snapshotCache = {
+    async load() {
+      return { etag: "etag-10", summary: summary() };
+    },
+    async store() {},
+  };
+  const controller = new ConversationController({
+    client,
+    agentId: identity.agent_id,
+    snapshotCache,
+    sleep: immediateSleep(),
+    random: fixedRandom(0.5),
+  });
+  controller.start();
+  // The cached conversation renders while the handshake is still pending.
+  await waitFor(() => (controller.view().turns ?? []).length === 1);
+  assert.equal(controller.status.kind, "loading");
+  releaseCapability();
+  await waitFor(() => controller.status.kind === "ready");
+  assert.equal(controller.view().checkpoint, "checkpoint-10");
+  assert.equal(client.calls.stream[0].after, "checkpoint-10");
+  controller.dispose();
+});
+
 test("fresh bootstraps persist their snapshot for later opens", async () => {
   const hub = new StreamQueue();
   const client = fakeClient({ hub });
@@ -920,6 +958,7 @@ test("immediate pause/resume replaces an aborted handshake without stranding the
   };
   const controller = new ConversationController({ client, agentId: identity.agent_id });
   controller.start();
+  await waitFor(() => attempts === 1);
   controller.pause();
   controller.start();
   await waitFor(() => client.calls.openStreams === 1);

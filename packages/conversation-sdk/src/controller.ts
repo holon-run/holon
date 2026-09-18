@@ -714,19 +714,24 @@ export class ConversationController {
     while (this.#alive(runToken)) {
       let openedAt = 0;
       try {
+        if (this.#state.reconnectCheckpoint() === null && !this.#hydrateAttempted) {
+          // Paint the persisted snapshot before any network I/O so a cached
+          // conversation renders without waiting for the capability
+          // handshake. Hydration validates schema/query versions locally,
+          // and every network step below still runs after the handshake.
+          this.#setStatus({ kind: "loading" });
+          this.#hydrateAttempted = true;
+          await this.#hydrateCachedSnapshot(runToken);
+          if (!this.#alive(runToken)) {
+            return;
+          }
+        }
         await this.#ensureCapability();
         if (!this.#alive(runToken)) {
           return;
         }
         if (this.#state.reconnectCheckpoint() === null) {
           this.#setStatus({ kind: "loading" });
-          if (!this.#hydrateAttempted) {
-            this.#hydrateAttempted = true;
-            await this.#hydrateCachedSnapshot(runToken);
-            if (!this.#alive(runToken)) {
-              return;
-            }
-          }
         }
         if (this.#pendingRevalidate !== undefined) {
           // Stale-while-revalidate: render the cached snapshot now, confirm
