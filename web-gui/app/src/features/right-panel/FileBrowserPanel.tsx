@@ -1,3 +1,4 @@
+import { useCopyText } from "../../components/ClipboardProvider";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
@@ -274,6 +275,7 @@ export function FileBrowserPanel(props: FileBrowserPanelProps) {
 }
 
 function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, workspaceLabel, onClose, snapshot, onSnapshot }: FileBrowserPanelProps & { identity: string }) {
+  const copyText = useCopyText();
   const { t } = useTranslation();
   const [fragment, setFragment] = useState(snapshot?.fragment ?? initialFragment);
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
@@ -619,7 +621,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
   ) => {
     if (!value) return;
     try {
-      await navigator.clipboard.writeText(value);
+      if (!await copyText(value)) return;
       setCopiedValue(kind);
       window.setTimeout(() => setCopiedValue(null), 2000);
     } catch {

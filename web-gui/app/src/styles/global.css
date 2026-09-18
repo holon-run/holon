@@ -7297,3 +7297,16 @@ code {
   .agent-id-copy { display: none; }
   .agent-list-entry .agent-row { padding-inline: 8px; }
 }
+
+/* Status and copy actions share the row center even when the label has two lines. */
+.agent-row-indicators { display: flex; align-items: center; flex: 0 0 auto; gap: 7px; }
+.app-shell[data-nav-collapsed="true"] .agent-row-indicators { display: none; }
+@media (max-width: 760px) { .sidebar .agent-row-indicators { display: none; } }
+.clipboard-toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%); z-index: 10000; padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); box-shadow: 0 4px 16px #0002; pointer-events: none; }
+.clipboard-dialog { width: min(480px, calc(100vw - 32px)); margin: auto; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--text); }
+.clipboard-dialog::backdrop { background: #0005; }
+.clipboard-dialog h2 { margin: 0 0 12px; font-size: 16px; }
+.clipboard-dialog p { color: var(--muted); font-size: 13px; }
+.clipboard-dialog textarea { width: 100%; min-height: 100px; max-height: 50vh; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); resize: vertical; }
+.clipboard-dialog form { display: flex; justify-content: flex-end; margin-top: 12px; }
+.clipboard-dialog button { padding: 6px 16px; border: 1px solid var(--line); border-radius: 6px; }

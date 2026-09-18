@@ -1,4 +1,6 @@
-import { renderToStaticMarkup } from "react-dom/server";
+import { renderToStaticMarkup as renderStatic } from "react-dom/server";
+import type { ReactNode } from "react";
+import { ClipboardProvider } from "../../components/ClipboardProvider";
 import { describe, expect, it } from "vitest";
 
 import type {
@@ -13,6 +15,10 @@ import type {
 import "../../i18n";
 import { ConversationTimeline, executionProcessActivities, parseInputPreview, summarizeActivity } from "./ConversationTimeline";
 import { buildConversationSessionModel } from "../../runtime/conversation-view-model";
+
+function renderToStaticMarkup(node: ReactNode): string {
+  return renderStatic(<ClipboardProvider>{node}</ClipboardProvider>);
+}
 
 function turnSummary(
   turnId: string,

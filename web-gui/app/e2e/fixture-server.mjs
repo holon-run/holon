@@ -14,7 +14,7 @@ const sessions = new Map();
 const vite = await createViteServer({
   appType: "spa",
   mode: "e2e",
-  server: { hmr: false, middlewareMode: true },
+  server: { hmr: false, middlewareMode: true, allowedHosts: ["holon-http.test"] },
 });
 
 function record(req, url) {

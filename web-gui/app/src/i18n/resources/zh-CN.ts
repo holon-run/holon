@@ -5,6 +5,13 @@ import type { EnResource } from "./en";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const zh: Record<string, any> = {
+  clipboard: {
+    copied: "已复制",
+    failed: "无法自动复制",
+    manual: "浏览器阻止了自动复制。下方文字已选中，请按 Ctrl+C 或 ⌘C，或使用选区菜单复制。",
+    content: "待复制内容",
+    close: "关闭",
+  },
   modelUi: {
     loadMore: "显示更多匹配模型",
     "models": "模型",

@@ -1,3 +1,4 @@
+import { useCopyText } from "../components/ClipboardProvider";
 import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
@@ -618,28 +619,30 @@ export function App() {
                     <span className="agent-row-main">
                       <span className="agent-row-title">
                         <strong>{agent.name ?? agent.id}</strong>
-                        {unreadView?.mode === "stale_sync_error" ? (
-                          <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
-                            !
-                          </span>
-                        ) : unreadView && unreadView.count > 0 ? (
-                          <span
-                            className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
-                            aria-label={unreadTitle(unreadView, t)}
-                            title={unreadTitle(unreadView, t)}
-                          >
-                            {formatUnreadCount(unreadView.count)}{unreadView.mode === "truncated" ? "+" : ""}
-                          </span>
-                        ) : null}
-                        <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
-                          <StatusDotIcon tone={status.tone} />
-                        </span>
                       </span>
                       {secondaryText ? (
                         <span className="agent-row-meta" title={secondaryText}>
                           <span>{workSummary ? truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH) : secondaryText}</span>
                         </span>
                       ) : null}
+                    </span>
+                    <span className="agent-row-indicators">
+                      {unreadView?.mode === "stale_sync_error" ? (
+                        <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
+                          !
+                        </span>
+                      ) : unreadView && unreadView.count > 0 ? (
+                        <span
+                          className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
+                          aria-label={unreadTitle(unreadView, t)}
+                          title={unreadTitle(unreadView, t)}
+                        >
+                          {formatUnreadCount(unreadView.count)}{unreadView.mode === "truncated" ? "+" : ""}
+                        </span>
+                      ) : null}
+                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
+                        <StatusDotIcon tone={status.tone} />
+                      </span>
                     </span>
                   </button>
                   <AgentIdCopyButton agentId={agent.id} />
@@ -1100,6 +1103,7 @@ function ConnectionStatus({ connection, loading, onRetry }: {
 }
 
 function AgentIdCopyButton({ agentId }: { agentId: string }) {
+  const copyText = useCopyText();
   const { t } = useTranslation();
   const [state, setState] = useState<"idle" | "copied" | "error">("idle");
   useEffect(() => {
@@ -1111,8 +1115,7 @@ function AgentIdCopyButton({ agentId }: { agentId: string }) {
   return <button type="button" className="agent-id-copy" aria-label={label} title={label}
     onClick={async () => {
       try {
-        await navigator.clipboard.writeText(agentId);
-        setState("copied");
+        setState(await copyText(agentId) ? "copied" : "error");
       } catch {
         setState("error");
       }

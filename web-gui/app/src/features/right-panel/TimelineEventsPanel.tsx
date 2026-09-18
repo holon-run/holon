@@ -1,3 +1,4 @@
+import { useCopyText } from "../../components/ClipboardProvider";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useTranslation } from "react-i18next";
@@ -35,6 +36,7 @@ export function TimelineEventsPanel({
   onLoadOlder,
 }: TimelineEventsPanelProps) {
   const { t } = useTranslation();
+  const copyText = useCopyText();
   const [query, setQuery] = useState("");
   const [family, setFamily] = useState<TimelineEventFamily | "all">("all");
   const [status, setStatus] = useState<TimelineEventDisposition | "all">("all");
@@ -211,7 +213,7 @@ export function TimelineEventsPanel({
             <>
               <div className="timeline-event-detail-head">
                 <div><span className="eyebrow">#{selectedEvent.event_seq}</span><h3>{selectedEvent.type}</h3></div>
-                <Button type="button" size="sm" variant="secondary" onClick={() => void copyJson(selectedEvent)}>{t("timelineEvents.copyEvent")}</Button>
+                <Button type="button" size="sm" variant="secondary" onClick={() => void copyText(JSON.stringify(selectedEvent, null, 2))}>{t("timelineEvents.copyEvent")}</Button>
               </div>
               <dl className="inspector-facts">
                 <div><dt>{t("timelineEvents.timestamp")}</dt><dd>{formatTimestamp(selectedEvent.ts)}</dd></div>
@@ -259,8 +261,4 @@ function formatTimestamp(value: string | undefined): string {
 
 function isTimelineEvent(event: SessionEventEnvelope | undefined): event is SessionEventEnvelope {
   return event?.event_seq != null;
-}
-
-async function copyJson(value: unknown): Promise<void> {
-  await navigator.clipboard?.writeText(JSON.stringify(value, null, 2));
 }
