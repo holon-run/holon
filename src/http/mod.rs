@@ -104,6 +104,7 @@ mod ingress;
 mod jobs;
 // S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
 // unit tests now and wired into handlers by the S2/S4/S5 slices.
+mod desktop;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod observer_sync;
 mod projection_gate;
@@ -114,6 +115,7 @@ mod templates;
 mod types;
 mod web;
 mod workspace_files;
+pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
@@ -206,6 +208,7 @@ pub struct AppState {
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
     pub web_dist: Option<Arc<PathBuf>>,
+    desktop_integration: bool,
     pub skills_registry: Arc<tokio::sync::RwLock<SkillsRegistry>>,
     pub jobs: JobRegistry,
     pub skill_library_write_jobs: Arc<tokio::sync::Semaphore>,
@@ -326,6 +329,7 @@ impl AppState {
             runtime_service,
             advertise_url: None,
             web_dist: None,
+            desktop_integration: false,
             skills_registry,
             jobs,
             skill_library_write_jobs,
@@ -362,6 +366,7 @@ impl AppState {
             runtime_service,
             advertise_url: None,
             web_dist: None,
+            desktop_integration: false,
             skills_registry,
             jobs,
             skill_library_write_jobs,
@@ -380,6 +385,19 @@ impl AppState {
 
     fn uses_trusted_local_admission(&self) -> bool {
         self.transport == ControlTransportKind::Unix
+    }
+
+    pub fn with_desktop_integration(mut self, enabled: bool) -> Self {
+        self.desktop_integration = enabled
+            && cfg!(target_os = "macos")
+            && self.transport == ControlTransportKind::Tcp
+            && self
+                .host
+                .config()
+                .http_addr
+                .parse::<std::net::SocketAddr>()
+                .is_ok_and(|address| address.ip().is_loopback());
+        self
     }
 
     pub fn with_web_dist(mut self, web_dist: Option<PathBuf>) -> Self {
@@ -728,6 +746,11 @@ pub fn router(state: AppState) -> Router {
         .route("/worktree-summary", get(state::worktree_summary_default));
 
     let api_routes = api_routes
+        .route("/desktop/capabilities", get(desktop::capabilities))
+        .route(
+            "/desktop/reveal",
+            post(desktop::reveal).layer(DefaultBodyLimit::max(16 * 1024)),
+        )
         .route(
             "/file-references/resolve",
             post(workspace_files::resolve_file_references).layer(DefaultBodyLimit::max(

@@ -629,6 +629,16 @@
         "required": false
       },
       {
+        "long": "desktop-integration",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
+        "required": false
+      },
+      {
         "long": "host",
         "short": null,
         "default_value": null,
@@ -701,6 +711,16 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "desktop-integration",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
         "required": false
       },
       {
@@ -1719,6 +1739,16 @@
         "short": null,
         "default_value": null,
         "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "desktop-integration",
+        "short": null,
+        "default_value": null,
+        "possible_values": [
+          "true",
+          "false"
+        ],
         "required": false
       },
       {

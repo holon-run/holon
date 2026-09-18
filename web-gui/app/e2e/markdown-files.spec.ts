@@ -56,7 +56,9 @@ test("Explorer shares resolver rules; native new-tab links, fragments, images an
   await page.evaluate(() => {
     Object.defineProperty(navigator.clipboard, "writeText", { configurable: true, value: async (value: string) => { (window as any).__copiedFileLink = value; } });
   });
+  await page.getByRole("button", { name: "File actions", exact: true }).click();
   await page.getByRole("button", { name: "Copy web link", exact: true }).click();
+  await page.keyboard.press("Escape");
   await expect.poll(() => page.evaluate(() => (window as any).__copiedFileLink)).toBe(page.url());
   const headingTabEvent = context.waitForEvent("page");
   await page.getByRole("button", { name: "Open in new tab", exact: true }).click();

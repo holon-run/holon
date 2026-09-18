@@ -751,6 +751,9 @@ fn serve_args_for_options(options: &ServeOptions) -> DaemonServeLaunchOptions {
             token_file.as_os_str().to_os_string(),
         ]);
     }
+    if let Some(enabled) = options.desktop_integration {
+        args.push(OsString::from(format!("--desktop-integration={enabled}")));
+    }
     if let Some(web_dist) = &options.web_dist {
         args.extend([
             OsString::from("--web-dist"),
@@ -775,6 +778,9 @@ fn merge_serve_options(inherited: ServeOptions, explicit: ServeOptions) -> Serve
     let clear_inherited_advertise =
         explicit_access || explicit_host || explicit_listen || explicit_port;
     ServeOptions {
+        desktop_integration: explicit
+            .desktop_integration
+            .or(inherited.desktop_integration),
         access: explicit.access.or(inherited.access),
         host: explicit.host.or(inherited.host),
         listen: if explicit_listen {
@@ -861,8 +867,18 @@ async fn emit_first_run_intro(config: &AppConfig, runtime: &holon::runtime::Runt
 
 async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     let serve_args = serve_args_for_options(&options).args;
+    let desktop_integration = options.desktop_integration.unwrap_or(false);
     let web_dist = options.web_dist.clone();
     let advertise_url = apply_serve_options(&mut config, options)?;
+    if desktop_integration {
+        let address: std::net::SocketAddr = config
+            .http_addr
+            .parse()
+            .context("desktop integration requires a numeric loopback listen address")?;
+        if !cfg!(target_os = "macos") || !address.ip().is_loopback() {
+            anyhow::bail!("desktop integration requires macOS and a loopback-only listener");
+        }
+    }
     if let Some(web_dist) = &web_dist {
         if !web_dist.is_dir() {
             return Err(anyhow!(
@@ -935,6 +951,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
 
     let tcp_router = http::router(
         AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+            .with_desktop_integration(desktop_integration)
             .with_advertise_url(advertise_url.clone())
             .with_web_dist(web_dist.clone()),
     );
@@ -970,10 +987,13 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     #[cfg(unix)]
     {
         let tcp_server = async {
-            axum::serve(listener, tcp_router)
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
-                .await
-                .context("TCP server failed")?;
+            axum::serve(
+                listener,
+                tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
+            .await
+            .context("TCP server failed")?;
             Ok::<(), anyhow::Error>(())
         };
         let unix_server = async {
@@ -985,14 +1005,18 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         let result = if let Some(local) = local_listener {
             let local_router = http::router(
                 AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                    .with_desktop_integration(desktop_integration)
                     .with_advertise_url(advertise_url.clone())
                     .with_web_dist(web_dist.clone()),
             );
             let local_server = async {
-                axum::serve(local, local_router)
-                    .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
-                    .await
-                    .context("localhost server failed")?;
+                axum::serve(
+                    local,
+                    local_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
+                .await
+                .context("localhost server failed")?;
                 Ok::<(), anyhow::Error>(())
             };
             tokio::try_join!(tcp_server, unix_server, local_server)
@@ -1018,21 +1042,31 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         if let Some(local) = local_listener {
             let local_router = http::router(
                 AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                    .with_desktop_integration(desktop_integration)
                     .with_advertise_url(advertise_url.clone())
                     .with_web_dist(web_dist.clone()),
             );
-            let local_server = axum::serve(local, local_router)
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
-            let tcp_server = axum::serve(listener, tcp_router)
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+            let local_server = axum::serve(
+                local,
+                local_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+            let tcp_server = axum::serve(
+                listener,
+                tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
             tokio::try_join!(tcp_server, local_server)
                 .map(|_| ())
                 .context("runtime servers failed")?;
         } else {
-            axum::serve(listener, tcp_router)
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
-                .await
-                .context("HTTP server failed")?;
+            axum::serve(
+                listener,
+                tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
+            .await
+            .context("HTTP server failed")?;
         }
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
@@ -1163,6 +1197,29 @@ async fn dump_prompt(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn desktop_serve_option_roundtrips_and_can_be_disabled_on_restart() {
+        let enabled =
+            parse_serve_options_from_args(&[OsString::from("--desktop-integration")]).unwrap();
+        assert_eq!(enabled.desktop_integration, Some(true));
+        let args = serve_args_for_options(&enabled).args;
+        assert!(args.contains(&OsString::from("--desktop-integration=true")));
+        let inherited = parse_serve_options_from_args(&args).unwrap();
+        let disabled =
+            parse_serve_options_from_args(&[OsString::from("--desktop-integration=false")])
+                .unwrap();
+        assert_eq!(
+            merge_serve_options(inherited, disabled).desktop_integration,
+            Some(false)
+        );
+        assert_eq!(
+            parse_serve_options_from_args(&[])
+                .unwrap()
+                .desktop_integration,
+            None
+        );
+    }
+
     use super::*;
     use holon::{
         cli::RuntimeDbDebugCommands,
@@ -1258,6 +1315,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
         )
         .unwrap();
@@ -1282,6 +1340,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
         )
         .unwrap();
@@ -2485,6 +2544,7 @@ mod tests {
             token: Some("secret-token".into()),
             token_file: None,
             web_dist: None,
+            desktop_integration: None,
         };
 
         let serve_launch = serve_args_for_options(&options);
@@ -2555,6 +2615,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
             Some(&metadata),
         )
@@ -2618,6 +2679,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
             Some(&metadata),
         )
@@ -2667,6 +2729,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
             Some(&metadata),
         )
@@ -2713,6 +2776,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
             Some(&metadata),
         )
@@ -2749,6 +2813,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
             Some(&metadata),
         )
@@ -2790,6 +2855,7 @@ mod tests {
                 token: Some("restart-secret".into()),
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
             Some(&metadata),
         )
@@ -2821,6 +2887,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
             Some(&metadata),
         )
@@ -2926,6 +2993,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
         )
         .unwrap();
@@ -2952,6 +3020,7 @@ mod tests {
                 token: None,
                 token_file: None,
                 web_dist: None,
+                desktop_integration: None,
             },
         )
         .unwrap();

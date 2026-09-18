@@ -1793,6 +1793,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/desktop/capabilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Desktop capabilities
+         * @description Explicit desktop integration available for this authenticated loopback connection. Does not prove the browser and runtime share a filesystem.
+         */
+        get: operations["desktopCapabilities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/desktop/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reveal a file in Finder
+         * @description Requires explicit desktop integration, a loopback peer and Host, and matching Origin. Resolves the registered file locator before invoking Finder.
+         */
+        post: operations["desktopReveal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/enqueue": {
         parameters: {
             query?: never;
@@ -4635,6 +4675,10 @@ export interface components {
             /** @default false */
             cascade_private_children: boolean;
         };
+        /** DesktopCapabilities */
+        DesktopCapabilities: {
+            reveal_in_finder: boolean;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         DetachWorkspaceRequest: {
             [key: string]: unknown;
@@ -5524,6 +5568,12 @@ export interface components {
                 /** @constant */
                 status: "unresolved";
             })[];
+        };
+        /** RevealFileRequest */
+        RevealFileRequest: {
+            execution_root_id: string;
+            path: string;
+            workspace_id: string;
         };
         /** RuntimeConfigReadResponse */
         RuntimeConfigReadResponse: {
@@ -10741,6 +10791,86 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["RemoveTemplateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    desktopCapabilities: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DesktopCapabilities"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    desktopReveal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevealFileRequest"];
             };
         };
         responses: {

@@ -131,49 +131,46 @@ For CLI-based skill management, see [Skills Guide](/guides/skills.md).
 
 ### Workspace File Browser
 
-The Web GUI includes a workspace file browser accessible from the left
-sidebar when a workspace is attached:
+Open **Files** in the context side panel, or follow a file reference in a
+conversation. Selecting a file opens its preview. Markdown supports **Preview**
+and **Source** modes; text files support syntax highlighting.
 
-- **Directory tree** — Navigate workspace directories in a collapsible
-  tree view with expand/collapse for subdirectories.
-- **File preview** — Click a file to preview its content in the main
-  panel. Text files render inline with syntax highlighting; binary and
-  image files display metadata and a download link.
-- **Image rendering** — Image files render inline in the preview panel
-  and in conversation messages via `workspace://` URIs. Supported formats
-  include PNG, JPEG, GIF, and WebP.
-- **Resizable panels** — Drag the divider between the file tree and
-  content panel to adjust the layout.
-- **Drag-and-drop attachments** — Drag files from the file browser or
-  your desktop into the agent input bar to attach them as operator
-  messages. Images and text files are attached inline; other file types
-  appear as metadata references. A drop hint appears when dragging
-  files over the conversation area.
-- **Dedicated file viewer page** — Open files in a full-page viewer for
-  a larger reading surface, accessible via the file tree context menu.
+- **Browse folder** switches back to the directory while retaining the selected
+  file and reading position. Expanded panels can show directory and preview
+  together.
+- The location row contains the workspace selector and folder breadcrumb. Long
+  paths collapse their ancestors into a menu. **File information** shows the full
+  path, execution root, type, size, and modification time.
+- **File actions** contains copy path, copy Markdown reference, copy web link,
+  download, and refresh. **Open in new tab** provides a dedicated viewer.
+- The panel's Back button returns through file navigation to its source. The
+  top-right close button closes the side panel.
 
-The file browser uses the workspace file browsing API
-(`GET /api/workspaces/{id}/files` and `GET /api/workspaces/{id}/files/{path}`).
-Path traversal and symlink escapes are blocked; file reads are capped
-at 1 MB.
+Files are resolved against registered workspaces and execution roots. Path
+traversal and symlink escapes are blocked. Text previews are capped at 1 MB;
+downloads can retrieve the complete file.
 
-### Navigation improvements
+#### Optional Finder integration (macOS)
 
-The Web GUI includes several navigation and usability enhancements:
+When Holon runs directly on the same Mac as your browser, explicitly enable
+desktop integration at startup:
 
-- **Navigation stack** — Pages maintain a history stack so the Back button
-  returns to the previous view with its scroll position and state preserved,
-  rather than resetting to the Dashboard.
-- **File-level refresh** — The file browser supports per-file refresh
-  without reloading the entire page. A refresh button in the file toolbar
-  re-fetches the selected file's content.
-- **Toolbar** — File viewer pages include a toolbar with actions including
-  refresh and markdown source/rendered toggle.
-- **Auto-scroll** — The file viewer auto-scrolls to the bottom when new
-  content arrives (e.g., streaming log output).
-- **Markdown rendered view** — When viewing a `.md` file, a toggle switches
-  between rendered HTML and raw markdown source. The rendered view supports
-  syntax-highlighted code blocks, tables, and links.
+```bash
+holon daemon start --access local --desktop-integration
+# To enable it on an already running local instance, restart intentionally:
+holon daemon restart --access local --desktop-integration
+```
+
+The file actions menu then offers **Show in Finder**. It locates the selected
+file without opening or executing its contents. Other platforms continue to
+support preview, copying, and downloading.
+
+The option defaults to off and requires a loopback-only listener. Restart
+retains the option; use `--desktop-integration=false` to disable it. Do not enable
+it for a forwarded port, reverse proxy, or container: a loopback address does
+not prove that files belong to the computer displaying the browser. The
+connection indicator says **Loopback address**, rather than claiming that the
+runtime is local.
 
 ### Settings
 
