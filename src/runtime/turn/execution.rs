@@ -792,12 +792,16 @@ impl RuntimeHandle {
         let attempt = execution.attempts.get(activation_id).ok_or_else(|| {
             anyhow::anyhow!("operator interjection references an unknown execution attempt")
         })?;
-        if attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Open
-            || attempt.source_message_id.as_deref()
-                != Some(execution_binding.source_message_id.as_str())
+        if attempt.state != crate::domain::execution_protocol::ExecutionAttemptState::Open {
+            return Err(anyhow::anyhow!(
+                "operator interjection requires an open execution attempt"
+            ));
+        }
+        if attempt.source_message_id.as_deref()
+            != Some(execution_binding.source_message_id.as_str())
         {
             return Err(anyhow::anyhow!(
-                "operator interjection attempt disagrees with the current source message"
+                "operator interjection source message does not match the current execution"
             ));
         }
         let attempt_owner = match &attempt.binding {
@@ -3187,6 +3191,7 @@ impl TurnExecution<'_> {
             let mut tool_execution_refs: Vec<(String, String)> = Vec::new();
             let mut all_tool_results_should_sleep = !round_tool_calls.is_empty();
             let mut terminal_tool_transition = false;
+            let mut execution_terminal_transition_seen = false;
             for (tool_call_index, call) in tool_calls.into_iter().enumerate() {
                 if let Err(err) = runtime.ensure_not_aborted().await {
                     if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
@@ -3673,6 +3678,7 @@ impl TurnExecution<'_> {
                             is_error: result.is_error(),
                             error: result.tool_error().cloned(),
                         });
+                        execution_terminal_transition_seen |= result.terminal_transition;
                         if pending_completion_report.is_some() || pending_wait_report.is_some() {
                             break;
                         }
@@ -3839,9 +3845,16 @@ impl TurnExecution<'_> {
             } else {
                 runtime.persist_transcript_evidence(&tool_results_transcript)?;
             }
+            #[cfg(test)]
+            if execution_terminal_transition_seen {
+                runtime
+                    .pause_at_terminal_tool_interjection_checkpoint()
+                    .await;
+            }
             let after_tool_results_interjections = if pending_completion_report.is_some()
                 || pending_wait_report.is_some()
                 || prepared_work_item_completion.is_some()
+                || execution_terminal_transition_seen
             {
                 Vec::new()
             } else {

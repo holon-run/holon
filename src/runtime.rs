@@ -447,7 +447,17 @@ struct RuntimeInner {
     #[cfg(test)]
     claim_work_item_plan_status_before_commit:
         StdMutex<Option<(String, crate::types::WorkItemPlanStatus)>>,
+    #[cfg(test)]
+    terminal_tool_interjection_checkpoint: TerminalToolInterjectionCheckpoint,
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+struct TerminalToolInterjectionCheckpoint {
+    armed: AtomicBool,
+    reached: Notify,
+    release: Notify,
 }
 
 const SCHEDULER_ACCEPTANCE_FIXTURES_ENV: &str = "HOLON_SCHEDULER_ACCEPTANCE_FIXTURES";
@@ -3071,6 +3081,44 @@ impl RuntimeHandle {
             .fail_non_retryable_after_next_runtime_claim
             .store(true, Ordering::SeqCst);
         self.inner.notify.notify_one();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn arm_terminal_tool_interjection_checkpoint(&self) {
+        assert!(
+            !self
+                .inner
+                .terminal_tool_interjection_checkpoint
+                .armed
+                .swap(true, Ordering::SeqCst),
+            "terminal tool interjection checkpoint is already armed"
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_terminal_tool_interjection_checkpoint(&self) {
+        self.inner
+            .terminal_tool_interjection_checkpoint
+            .reached
+            .notified()
+            .await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_terminal_tool_interjection_checkpoint(&self) {
+        self.inner
+            .terminal_tool_interjection_checkpoint
+            .release
+            .notify_one();
+    }
+
+    #[cfg(test)]
+    async fn pause_at_terminal_tool_interjection_checkpoint(&self) {
+        let checkpoint = &self.inner.terminal_tool_interjection_checkpoint;
+        if checkpoint.armed.swap(false, Ordering::SeqCst) {
+            checkpoint.reached.notify_one();
+            checkpoint.release.notified().await;
+        }
     }
 
     #[cfg(test)]

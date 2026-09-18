@@ -176,6 +176,18 @@ Operator interjections admitted after tool results are appended as follow-up
 user text in the same round. They should be visible to the next provider request
 after the tool results.
 
+This boundary is no longer a safe point once any tool result in the round
+declares `terminal_transition`. The current execution has already chosen its
+terminal path, so an interjection arriving in that window must remain queued for
+a later activation rather than being attached to a turn that will not run
+another provider round. This rule applies uniformly to terminal transitions
+from `WaitFor`, `PickWorkItem`, `CompleteWorkItem`, and future tools with the
+same result contract.
+
+The runtime must not weaken open-attempt, source-message, activation, or owner
+checks to accommodate this race. Those checks remain fail-closed diagnostics
+for invalid direct admission attempts.
+
 ### Explicit Cancel Or Abort
 
 Skipping pending tool calls is only valid for an explicit cancel or abort action,
@@ -215,6 +227,9 @@ The current code has three relevant anchors:
   emits `operator_interjection_admitted`.
 - The turn loop currently drains interjections at `after_provider_round`,
   `before_tool_execution`, and `after_tool_results`.
+- `after_tool_results` is conditional: a terminal tool result closes that safe
+  point, leaving newly arrived interjections under scheduler ownership for a
+  later activation.
 
 Canonical rollout has an additional dependency invariant:
 `operator_interjection` may be authoritative only while all model-running
