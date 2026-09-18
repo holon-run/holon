@@ -13,7 +13,7 @@ pub async fn root(
     headers: HeaderMap,
 ) -> Result<AxumResponse, (StatusCode, Json<Value>)> {
     if accepts_html(&headers) {
-        if let Some(response) = web_asset_response(&state, "index.html", false).await {
+        if let Some(response) = web_asset_response(&state, "index.html", &headers, false).await {
             return Ok(response);
         }
     }
