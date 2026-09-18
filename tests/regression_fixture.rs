@@ -99,6 +99,7 @@ async fn fixture_coding_loop_regression_stays_green() -> Result<()> {
         RuntimeHarness::with_test_config_and_provider(test_config, Arc::new(provider)).await?;
     let runtime = harness.runtime.clone();
 
+    let expected_content = fixture.expected_content.clone();
     runtime
         .enqueue(MessageEnvelope::new(
             "default",
@@ -116,10 +117,14 @@ async fn fixture_coding_loop_regression_stays_green() -> Result<()> {
         .await?;
 
     let expected_path = workspace.join(&fixture.expected_file);
-    eventually(|| Ok(expected_path.exists())).await?;
-
-    let content = fs::read_to_string(expected_path)?;
-    assert_eq!(content, fixture.expected_content);
+    // The runtime tool creates the file before its content is fully written;
+    // poll until the content matches instead of racing on first existence.
+    eventually(|| {
+        Ok(fs::read_to_string(&expected_path)
+            .map(|content| content == expected_content)
+            .unwrap_or(false))
+    })
+    .await?;
 
     eventually(|| {
         let briefs = runtime.storage().read_recent_briefs(10)?;
