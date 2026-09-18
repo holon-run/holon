@@ -11,6 +11,24 @@ homepage = "https://holon.run"
 repository = "https://github.com/holon-run/holon"
 documentation = "https://holon.run"
 
+# crates.io caps package uploads at 10 MB. Ship only what is required to build
+# and use the crate; keep monorepo-only assets (docs site, benchmarks, macOS
+# app, bot service, SDK packages, raw models.dev data) out of the tarball.
+exclude = [
+    ".codex",
+    ".github",
+    "apps",
+    "benchmark",
+    "benchmarks",
+    "docs",
+    "holonbot",
+    "models.dev/artifact.json",
+    "models.dev/refresh-summary.md",
+    "models.dev/snapshot.json",
+    "packages",
+    "scripts",
+]
+
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
