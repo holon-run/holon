@@ -1,3 +1,4 @@
+import { connectionLocation } from "../runtime/connection-location";
 import { useCopyText } from "../components/ClipboardProvider";
 import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
@@ -1043,6 +1044,8 @@ function ConnectionStatus({ connection, loading, onRetry }: {
   const panelRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  const location = connectionLocation(connection, window.location.origin);
+  const addressLabel = location.loopback ? `${t("connection.localAddress")} · ${location.host}` : location.host;
   const status = loading ? t("connection.connecting")
     : connection.error ? t("connection.disconnected") : t("connection.connected");
 
@@ -1069,10 +1072,10 @@ function ConnectionStatus({ connection, loading, onRetry }: {
     <div className="connection-switcher is-popover" ref={panelRef}>
       <button className="connection-status" type="button" ref={triggerRef}
         aria-expanded={open} aria-haspopup="dialog" aria-controls="connection-panel"
-        aria-label={`${t("connection.title")}: ${status} · ${window.location.host}`}
-        title={window.location.origin} onClick={() => setOpen(!open)}>
+        aria-label={`${t("connection.title")}: ${status} · ${addressLabel}`}
+        title={location.origin} onClick={() => setOpen(!open)}>
         <span className={`runtime-dot ${loading ? "connecting" : connection.error ? "error" : ""}`} />
-        <span><strong>{status}</strong><small>{window.location.host}</small></span>
+        <span><strong>{status}</strong><small>{addressLabel}</small></span>
       </button>
       {open ? (
         <div className="connection-panel" id="connection-panel" role="dialog" aria-label={t("connection.title")}>
@@ -1083,7 +1086,7 @@ function ConnectionStatus({ connection, loading, onRetry }: {
           </div>
           <div className="connection-site">
             <span>{t("connection.currentServer")}</span>
-            <strong>{window.location.origin}</strong>
+            <strong>{location.origin}</strong>
           </div>
           <div className="connection-health" role="status">
             <span className={`runtime-dot ${loading ? "connecting" : connection.error ? "error" : ""}`} />

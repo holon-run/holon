@@ -177,6 +177,7 @@ export function RightSidePanel({
   const fileSnapshots = useRef(new Map<string, FileBrowserSnapshot>());
   const [fileTitle, setFileTitle] = useState<{ viewKey: string; path?: string }>();
   const bodyRef = useRef<HTMLDivElement>(null);
+  const fileBackAction = useRef<(() => void) | null>(null);
   const bodyPositions = useRef(new Map<string, { top: number; expanded: boolean[] }>());
   const viewKey = JSON.stringify(activeView.kind === "file_browser" ? activeView : {
     kind: activeView.kind,
@@ -282,7 +283,8 @@ export function RightSidePanel({
               onClick={() => {
                 setShowSkillManager(false);
                 setShowRuntimeTrace(false);
-                onNavigateBack();
+                if (activeView.kind === "file_browser" && fileBackAction.current) fileBackAction.current();
+                else onNavigateBack();
               }}
             >
               <ArrowLeft size={14} />
@@ -318,10 +320,6 @@ export function RightSidePanel({
         <button type="button" aria-current={activeView.kind === "file_browser" ? "page" : undefined} disabled={!lastFile.current && !workspaces.length} onClick={openFiles}>{t("fileBrowser.files")}</button>
         <button type="button" aria-current={activeView.kind !== "file_browser" && activeView.kind !== "agent_overview" ? "page" : undefined} disabled={!lastDetail.current && (activeView.kind === "file_browser" || activeView.kind === "agent_overview")} onClick={() => { if (lastDetail.current) onSelectView(lastDetail.current); }}>{t("rightPanel.detailTab")}</button>
       </nav>
-      {activeView.kind === "file_browser" && workspaces.length > 1 ? <select className="panel-workspace-select" aria-label={t("rightPanel.workspaces")} value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
-        onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles({ workspaceId: selected.workspaceId, path: "", executionRootId: selected.executionRootId }); }}>
-        {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
-      </select> : null}
       <div className="panel-body" ref={bodyRef} key={viewKey}>
         {open && (runtimeTraceActive ? (
           <RuntimeTracePanel agentId={agent.id} connection={connection} />
@@ -362,7 +360,10 @@ export function RightSidePanel({
             <ToolExecutionDetailPanel toolExecutionId={activeView.toolExecutionId} toolName={activeView.toolName} detailState={toolExecutionDetailState} relatedStateObjectRef={activeView.relatedStateObjectRef} onOpenWorkItem={onOpenWorkItemDetail} onOpenTask={onOpenTask} onBrowseFiles={onBrowseFiles} />
           </div>
         ) : activeView.kind === "file_browser" ? (
-          <FileBrowserPanel key={viewKey} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} initialFragment={activeView.fragment} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
+          <FileBrowserPanel backActionRef={fileBackAction} workspaceControl={activeView.kind === "file_browser" && workspaces.length > 1 ? <select className="panel-workspace-select" aria-label={t("rightPanel.workspaces")} value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
+        onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles({ workspaceId: selected.workspaceId, path: "", executionRootId: selected.executionRootId }); }}>
+        {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
+      </select> : null} key={viewKey} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} initialFragment={activeView.fragment} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
             snapshot={fileSnapshots.current.get(viewKey)} onSnapshot={(snapshot) => {
               if (snapshot.selectedFile?.loading || !snapshot.listing) return;
               rememberPanelFileLocation({ ...activeView, initialPath: snapshot.currentPath, initialFilePath: snapshot.selectedFile?.path, fragment: snapshot.fragment });

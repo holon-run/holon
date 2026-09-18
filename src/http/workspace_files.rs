@@ -147,7 +147,7 @@ enum ResolveFileReferenceResult {
 }
 
 /// Resolve a workspace by id and determine the execution root to browse.
-fn resolve_workspace_root(
+pub(super) fn resolve_workspace_root(
     state: &AppState,
     workspace_id: &str,
     root_id: Option<&str>,
@@ -235,7 +235,7 @@ fn resolve_workspace_root(
 }
 
 /// Resolve and validate a relative path within the workspace root.
-fn resolve_and_validate_path(
+pub(super) fn resolve_and_validate_path(
     root: &FsPath,
     relative: &str,
 ) -> Result<PathBuf, (StatusCode, Json<Value>)> {

@@ -1504,6 +1504,16 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         content: response.content,
       };
     },
+    async desktopCapabilities(): Promise<{ reveal_in_finder: boolean }> {
+      if (!baseUrl) return { reveal_in_finder: false };
+      return getJson(fetchImpl, baseUrl, "/desktop/capabilities", requestHeaders);
+    },
+    async revealFileInFinder(target: WorkspaceFileLocation): Promise<void> {
+      if (!baseUrl) throw new Error("Holon API base URL is not configured.");
+      await postJson(fetchImpl, baseUrl, "/desktop/reveal", {
+        workspace_id: target.workspaceId, execution_root_id: target.executionRootId, path: target.path,
+      }, requestHeaders);
+    },
     async resolveFileReferences(references: FileReference[]): Promise<ResolveFileReferencesResponse> {
       if (!baseUrl) {
         throw new Error("Holon API base URL is not configured.");

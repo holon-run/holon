@@ -8520,6 +8520,18 @@
         "title": "DeleteAgentRequest",
         "type": "object"
       },
+      "DesktopCapabilities": {
+        "properties": {
+          "reveal_in_finder": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "reveal_in_finder"
+        ],
+        "title": "DesktopCapabilities",
+        "type": "object"
+      },
       "DetachWorkspaceRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -11230,6 +11242,27 @@
           "results"
         ],
         "title": "ResolveFileReferencesResponse",
+        "type": "object"
+      },
+      "RevealFileRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "execution_root_id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "execution_root_id",
+          "path"
+        ],
+        "title": "RevealFileRequest",
         "type": "object"
       },
       "RuntimeConfigReadResponse": {
@@ -22142,6 +22175,112 @@
         "summary": "Remove template",
         "tags": [
           "templates"
+        ]
+      }
+    },
+    "/api/desktop/capabilities": {
+      "get": {
+        "description": "Explicit desktop integration available for this authenticated loopback connection. Does not prove the browser and runtime share a filesystem.",
+        "operationId": "desktopCapabilities",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DesktopCapabilities"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Desktop capabilities",
+        "tags": [
+          "workspaces"
+        ]
+      }
+    },
+    "/api/desktop/reveal": {
+      "post": {
+        "description": "Requires explicit desktop integration, a loopback peer and Host, and matching Origin. Resolves the registered file locator before invoking Finder.",
+        "operationId": "desktopReveal",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevealFileRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Reveal a file in Finder",
+        "tags": [
+          "workspaces"
         ]
       }
     },

@@ -391,6 +391,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--token <TOKEN>` | 用于鉴权的 Bearer token |
 | `--token-file <PATH>` | 从文件读取 token |
 | `--advertise <URL>` | 对外公布的 URL |
+| `--desktop-integration[=true\|false]` | 开启 Finder 操作；仅支持 macOS 和回环监听，默认关闭 |
 
 ### `holon daemon start` 参数
 
@@ -401,6 +402,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--host <HOST>` | 绑定主机 |
 | `--listen <ADDR>` | 监听地址 |
 | `--token <TOKEN>` | 鉴权 token |
+| `--desktop-integration[=true\|false]` | 与 serve 相同；restart 继承设置，除非显式覆盖 |
 
 ### `holon agent create` 参数
 

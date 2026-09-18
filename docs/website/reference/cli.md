@@ -406,6 +406,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--token <TOKEN>` | Bearer token for auth |
 | `--token-file <PATH>` | Read token from file |
 | `--advertise <URL>` | Advertised URL |
+| `--desktop-integration[=true\|false]` | Opt into Finder actions; macOS and loopback listener only; default off |
 
 ### `holon daemon start` options
 
@@ -416,6 +417,7 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 | `--host <HOST>` | Bind host |
 | `--listen <ADDR>` | Listen address |
 | `--token <TOKEN>` | Auth token |
+| `--desktop-integration[=true\|false]` | Same as serve; restart inherits the setting unless explicitly overridden |
 
 ### `holon agent create` options
 

@@ -13,11 +13,11 @@ use crate::{
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
         CompleteWorkItemRequest, ConversationActivityResponse, ConversationReadQuery,
         ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
-        CreateTimerRequest, DeleteAgentRequest, MemoryGetRequest, ModelConfigMigrationRequest,
-        PickWorkItemRequest, PickWorkItemResponse, ResolveFileReferencesRequest,
-        ResolveFileReferencesResponse, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, SearchRequest, SearchResponse, UpdateWorkItemRequest,
-        CONVERSATION_SHADOW_DEFAULT_LIMIT,
+        CreateTimerRequest, DeleteAgentRequest, DesktopCapabilities, MemoryGetRequest,
+        ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
+        ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
+        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+        SearchRequest, SearchResponse, UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -118,6 +118,8 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/skills/catalog/{skill_id}", "skillDetail", "skills", "Skill detail", "Return catalog metadata and SKILL.md content for a Global Skill Library skill.", None, AuthKind::RemoteAccess),
     route("get", "/workspaces/{workspace_id}/files", "workspaceFilesRoot", "workspaces", "Browse workspace root", "List directory entries at the workspace root. Query parameters: execution_root_id.", None, AuthKind::RemoteAccess),
     route("get", "/workspaces/{workspace_id}/files/{path}", "workspaceFiles", "workspaces", "Browse workspace files", "List a directory or read a file by path. Supports content negotiation: Accept: application/json returns structured metadata + content, other Accept values return raw body. Query parameters: execution_root_id, download, meta.", None, AuthKind::RemoteAccess),
+    route_with_response("get", "/desktop/capabilities", "desktopCapabilities", "workspaces", "Desktop capabilities", "Explicit desktop integration available for this authenticated loopback connection. Does not prove the browser and runtime share a filesystem.", None, "DesktopCapabilities", AuthKind::Control),
+    route("post", "/desktop/reveal", "desktopReveal", "workspaces", "Reveal a file in Finder", "Requires explicit desktop integration, a loopback peer and Host, and matching Origin. Resolves the registered file locator before invoking Finder.", Some("RevealFileRequest"), AuthKind::Control),
     route_with_response("post", "/file-references/resolve", "resolveFileReferences", "workspaces", "Resolve file references", "Resolve absolute paths, historical workspace URIs, or relative paths with an explicit base file into registered workspace and execution-root locations.", Some("ResolveFileReferencesRequest"), "ResolveFileReferencesResponse", AuthKind::RemoteAccess),
     route_with_response("post", "/jobs", "createJob", "jobs", "Create job", "Create an asynchronous job. Currently supports kind=skill.install for Global Skill Library installation.", Some("CreateJobRequest"), "JobResponse", AuthKind::Control),
     route_with_response("get", "/jobs/{job_id}", "jobStatus", "jobs", "Job status", "Return a generic asynchronous job snapshot by id.", None, "JobResponse", AuthKind::RemoteAccess),
@@ -925,6 +927,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "MemoryGetResult".into(),
         component_schema::<MemoryGetResult>(),
+    );
+    schemas.insert(
+        "DesktopCapabilities".into(),
+        component_schema::<DesktopCapabilities>(),
+    );
+    schemas.insert(
+        "RevealFileRequest".into(),
+        component_schema::<RevealFileRequest>(),
     );
     schemas.insert(
         "ResolveFileReferencesRequest".into(),

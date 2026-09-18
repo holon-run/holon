@@ -14,3 +14,4 @@ Phase 2 macOS menu bar skeleton for Holon.
 - bundled `holon` CLI lookup via `HOLON_BINARY_PATH` or app bundle lookup
 - `SMAppService.mainApp` login item toggle
 - fake client for Swift tests
+- starting or restarting the bundled daemon enables desktop integration for Finder actions

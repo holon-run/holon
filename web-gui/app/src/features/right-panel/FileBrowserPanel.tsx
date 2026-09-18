@@ -1,7 +1,12 @@
 import { useCopyText } from "../../components/ClipboardProvider";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   ArrowLeft,
+  Info,
+  Monitor,
+  Globe,
+  MoreHorizontal,
+  ExternalLink,
   ArrowUp,
   Braces,
   File as FileIcon,
@@ -11,7 +16,6 @@ import {
   FileText,
   Folder,
   Link,
-  RefreshCw,
   Search,
   X,
   type LucideIcon,
@@ -24,6 +28,8 @@ import { useTranslation } from "react-i18next";
 import { MarkdownContent, WorkspaceImage } from "../../components/MarkdownContent";
 import { filePreviewUrl, type FileTarget } from "../../components/file-references/references";
 import { useFileIdentity } from "../../components/file-references/use-references";
+import { createRuntimeClient } from "../../runtime/client";
+import { connectionLocation } from "../../runtime/connection-location";
 import { triggerBlobDownload, triggerHrefDownload } from "./download";
 import { buildPlainCodeHtml, normalizeShikiLineBreaks } from "./source-view";
 
@@ -35,6 +41,8 @@ interface FileBrowserPanelProps {
   initialFragment?: string;
   onOpenFile?: (target: FileTarget) => void;
   workspaceLabel?: string;
+  workspaceControl?: ReactNode;
+  backActionRef?: RefObject<(() => void) | null>;
   onClose?: () => void;
   snapshot?: FileBrowserSnapshot;
   onSnapshot?: (snapshot: FileBrowserSnapshot) => void;
@@ -274,8 +282,44 @@ export function FileBrowserPanel(props: FileBrowserPanelProps) {
     snapshot={props.snapshot?.identity === identity ? props.snapshot : undefined} />;
 }
 
-function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, workspaceLabel, onClose, snapshot, onSnapshot }: FileBrowserPanelProps & { identity: string }) {
+function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, workspaceLabel, workspaceControl, backActionRef, onClose, snapshot, onSnapshot }: FileBrowserPanelProps & { identity: string }) {
   const copyText = useCopyText();
+  const client = useMemo(() => createRuntimeClient(getRuntimeConnectionConfig()), [identity]);
+  const connection = connectionLocation(getRuntimeConnectionConfig(), window.location.origin);
+  const [canReveal, setCanReveal] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  const [actionError, setActionError] = useState<string>();
+  const [showInfo, setShowInfo] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [ancestorsOpen, setAncestorsOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const ancestorsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (connection.loopback && connection.sameOrigin) {
+      void client.desktopCapabilities().then((caps) => {
+        if (!cancelled) setCanReveal(caps.reveal_in_finder === true);
+      }).catch(() => { /* Older servers and disabled integrations have no desktop actions. */ });
+    }
+    return () => { cancelled = true; };
+  }, [client, connection.loopback, connection.sameOrigin]);
+  useEffect(() => {
+    if (!menuOpen && !ancestorsOpen) return;
+    const close = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
+      if (!ancestorsRef.current?.contains(event.target as Node)) setAncestorsOpen(false);
+    };
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopImmediatePropagation();
+      event.preventDefault();
+      (menuOpen ? menuRef : ancestorsRef).current?.querySelector<HTMLButtonElement>("button")?.focus();
+      setMenuOpen(false); setAncestorsOpen(false);
+    };
+    document.addEventListener("click", close);
+    document.addEventListener("keydown", escape, true);
+    return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", escape, true); };
+  }, [menuOpen, ancestorsOpen]);
   const { t } = useTranslation();
   const [fragment, setFragment] = useState(snapshot?.fragment ?? initialFragment);
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
@@ -347,6 +391,11 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     setLoading(false);
     setError(undefined);
   };
+  useLayoutEffect(() => {
+    if (!backActionRef) return;
+    backActionRef.current = goBack;
+    return () => { backActionRef.current = null; };
+  });
   const [imageDims, setImageDims] = useState<{ width: number; height: number }>();
 
   // Determine whether the selected file is markdown.
@@ -362,6 +411,8 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     }
     setShowRendered(true);
     setImageDims(undefined);
+    setActionError(undefined);
+    setMenuOpen(false);
   }, [selectedFile?.path]);
 
   const highlightedHtml = useShikiHighlight(selectedFile?.content, selectedFile?.path);
@@ -677,6 +728,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     : undefined;
   const selectedFileTotalBytes =
     selectedFile?.totalSize ?? selectedFile?.size;
+  const previewVisible = Boolean(selectedFile) && (viewMode === "preview" || split);
   const largePreviewHint =
     selectedFileTotalBytes != null && isLargePreview(selectedFileTotalBytes)
       ? t("fileBrowser.largeFileHint", { size: formatSize(selectedFileTotalBytes) })
@@ -690,92 +742,71 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
         if (latestSnapshot.current) onSnapshot?.({ ...latestSnapshot.current, scroll: scroll.current });
       }
     }}>
+      {!backActionRef && selectedFile ? <div className="file-browser-standalone-title">
+        <strong title={selectedFile.path}>{selectedFile.path.split("/").pop()}</strong>
+      </div> : null}
       <div className="file-browser-toolbar">
-        <button type="button" className="file-browser-back-btn" onClick={goBack}>
-          <ArrowLeft size={14} />
-          {t("rightPanel.backToSource")}
-        </button>
-        <span className="file-browser-ws-label">{workspaceLabel ?? workspaceId}</span>
-        <span
-          className="file-browser-ws-label"
-          title={listing?.executionRootId ?? executionRootId ?? "canonical"}
-        >
-          {listing?.rootKind ?? (executionRootId ? "execution_root" : "canonical_root")}
-          {" · "}
-          {listing?.executionRootId ?? executionRootId ?? "canonical"}
-        </span>
+        {!backActionRef && (onClose || history.current.length > 0) ? <button type="button" aria-label={t("rightPanel.backToSource")} onClick={goBack}><ArrowLeft size={14} /></button> : null}
+        <span className="file-browser-location" role="img" aria-label={`${connection.loopback ? t("connection.localAddress") : connection.host} · ${connection.origin}`} title={`${connection.loopback ? t("connection.localAddress") : connection.host} · ${connection.origin}`}>{connection.loopback ? <Monitor size={14} aria-hidden="true" /> : <Globe size={14} aria-hidden="true" />}<span className="file-browser-location-label">{connection.loopback ? t("connection.localAddress") : connection.host}</span></span>
+        {workspaceControl ?? <span className="file-browser-workspace" title={workspaceLabel ?? workspaceId}>{workspaceLabel ?? workspaceId}</span>}
+        {listing?.rootKind === "git_worktree_root" ? <span className="file-browser-root-kind">{t("fileBrowser.worktree")}</span> : null}
         <nav className="file-browser-breadcrumb" aria-label={t("fileBrowser.pathBreadcrumb")}>
-          <button
-            type="button"
-            className="file-browser-crumb"
-            onClick={() => void loadDir("")}
-          >
-            {t("fileBrowser.root")}
-          </button>
-          {breadcrumbParts.map((part, i) => (
-            <span key={i} className="file-browser-crumb-group">
-              <span className="file-browser-sep">/</span>
-              <button
-                type="button"
-                className="file-browser-crumb"
-                onClick={() => navigateToBreadcrumb(i)}
-              >
-                {part}
-              </button>
-            </span>
-          ))}
+          <button type="button" className="file-browser-crumb" onClick={() => void loadDir("")}>{t("fileBrowser.root")}</button>
+          {breadcrumbParts.length > 1 ? <div className="file-browser-popover" ref={ancestorsRef}>
+            <button type="button" aria-label={t("fileBrowser.parentFolders")} aria-expanded={ancestorsOpen} onClick={() => setAncestorsOpen(!ancestorsOpen)}>…</button>
+            {ancestorsOpen ? <div className="file-browser-popover-content file-browser-ancestors">
+              {breadcrumbParts.slice(0, -1).map((part, i) => <button type="button" key={i} title={breadcrumbParts.slice(0, i + 1).join("/")} onClick={() => { setAncestorsOpen(false); navigateToBreadcrumb(i); }}>{part}</button>)}
+            </div> : null}
+          </div> : null}
+          {breadcrumbParts.length > 0 ? <><span className="file-browser-sep">/</span><button type="button" className="file-browser-crumb file-browser-current-folder" title={currentPath} onClick={() => navigateToBreadcrumb(breadcrumbParts.length - 1)}>{breadcrumbParts.at(-1)}</button></> : null}
         </nav>
-        <button
-          type="button"
-          className="file-browser-up-btn"
-          disabled={atRoot}
-          aria-label={t("fileBrowser.upDir")}
-          onClick={() => void loadDir(parentPath)}
-        >
-          <ArrowUp size={14} />
-        </button>
-        {viewMode === "files" ? (
-        <label className="file-browser-hidden-toggle">
-          <input
-            type="checkbox"
-            checked={showHidden}
-            onChange={(e) => setShowHidden(e.target.checked)}
-          />
-          <small>{t("fileBrowser.hidden")}</small>
-        </label>
-        ) : null}
-        <button
-          type="button"
-          className="file-browser-refresh"
-          aria-label={viewMode === "preview" && selectedFile ? t("fileBrowser.refreshFile") : t("fileBrowser.refreshDir")}
-          onClick={() => void (viewMode === "preview" && selectedFile ? reloadFile() : loadDir(currentPath))}
-        >
-          <RefreshCw size={14} />
-        </button>
+        <button type="button" aria-label={t("fileBrowser.fileInfo")} aria-expanded={showInfo} onClick={() => setShowInfo(!showInfo)}><Info size={16} /></button>
       </div>
 
-      <div className="file-browser-tabs" role="tablist">
-        {wide && selectedFile ? <button type="button" onClick={() => setDirectoryVisible(!directoryVisible)} aria-pressed={directoryVisible}>{t("fileBrowser.toggleDirectory")}</button> : null}
-        <button
-          type="button"
-          role="tab"
-          aria-selected={viewMode === "files"}
-          className={viewMode === "files" ? "active" : ""}
-          onClick={() => setViewMode("files")}
-        >
-          {t("fileBrowser.files")}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={viewMode === "preview"}
-          className={viewMode === "preview" ? "active" : ""}
-          disabled={!selectedFile}
-          onClick={() => setViewMode("preview")}
-        >
-          {t("fileBrowser.preview")}
-        </button>
+      <div className="file-browser-controls">
+        {(viewMode === "preview" || split) && selectedFile ? <button type="button" className="file-browser-browse" aria-label={t("fileBrowser.browseDirectory")} title={t("fileBrowser.browseDirectory")} aria-pressed={split} onClick={() => {
+          if (wide) { setViewMode("preview"); setDirectoryVisible(!directoryVisible); } else setViewMode("files");
+        }}><Folder size={14} /><span>{t("fileBrowser.browseDirectory")}</span></button> : <>
+          <button type="button" disabled={atRoot} aria-label={t("fileBrowser.upDir")} onClick={() => void loadDir(parentPath)}><ArrowUp size={14} /></button>
+          <label className="file-browser-hidden-toggle"><input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /><small>{t("fileBrowser.hidden")}</small></label>
+          {selectedFile ? <button type="button" onClick={() => setViewMode("preview")}>{t("fileBrowser.returnToFile")}</button> : null}
+        </>}
+        {(viewMode === "preview" || split) && selectedFile && isMarkdownFile ? <div className="file-browser-md-toggle" role="group" aria-label={t("fileBrowser.markdownView")}>
+          <button type="button" className={showRendered ? "active" : ""} onClick={() => setShowRendered(true)}>{t("fileBrowser.rendered")}</button>
+          <button type="button" className={!showRendered ? "active" : ""} onClick={() => setShowRendered(false)}>{t("fileBrowser.source")}</button>
+        </div> : null}
+        <div className="file-browser-controls-end">
+          {selectedFile && (viewMode === "preview" || split) ? <button type="button" aria-label={t("fileBrowser.openInNewTab")} title={t("fileBrowser.openInNewTab")} disabled={!selectedWebUrl} onClick={openSelectedFileInNewTab}><ExternalLink size={16} /></button> : null}
+          <div className="file-browser-popover" ref={menuRef}>
+            <button type="button" aria-label={t("fileBrowser.fileActions")} aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><MoreHorizontal size={18} /></button>
+            {menuOpen ? <div className="file-browser-popover-content">
+              {selectedFile && (viewMode === "preview" || split) ? <>
+                {canReveal ? <button type="button" disabled={revealing || selectedFile.loading || Boolean(selectedFile.error) || !effectiveRootId} onClick={() => {
+                  setActionError(undefined); setRevealing(true);
+                  void client.revealFileInFinder({ workspaceId, executionRootId: effectiveRootId!, path: selectedFile.path })
+                    .then(() => setMenuOpen(false)).catch((cause: unknown) => setActionError(cause instanceof Error ? cause.message : t("fileBrowser.revealFailed")))
+                    .finally(() => setRevealing(false));
+                }}>{t("fileBrowser.revealInFinder")}</button> : null}
+                <button type="button" disabled={!selectedFile.absolutePath} onClick={() => void copySelectedFileValue("absolute", selectedFile.absolutePath)}>{copiedValue === "absolute" ? t("fileBrowser.pathCopied") : t("fileBrowser.copyAbsolutePath")}</button>
+                <button type="button" onClick={() => void copySelectedFileValue("markdown", selectedMarkdownReference)}>{copiedValue === "markdown" ? t("fileBrowser.markdownCopied") : t("fileBrowser.copyMarkdownReference")}</button>
+                <button type="button" disabled={!selectedWebUrl} onClick={() => void copySelectedFileValue("web", selectedWebUrl)}>{copiedValue === "web" ? t("fileBrowser.linkCopied") : t("fileBrowser.copyWebLink")}</button>
+                <button type="button" onClick={() => { setMenuOpen(false); void downloadSelectedFile(); }}>{t("fileBrowser.download")}</button>
+              </> : null}
+              <button type="button" onClick={() => { setMenuOpen(false); void (viewMode === "preview" && selectedFile ? reloadFile() : loadDir(currentPath)); }}>{viewMode === "preview" && selectedFile ? t("fileBrowser.refreshFile") : t("fileBrowser.refreshDir")}</button>
+            </div> : null}
+          </div>
+        </div>
       </div>
+      {showInfo ? <div className="file-browser-info" role="region" aria-label={t("fileBrowser.fileInfo")}>
+        <dl>
+          <dt>{t("connection.currentServer")}</dt><dd>{connection.origin}</dd>
+          <dt>{t("fileBrowser.fullPath")}</dt><dd>{(previewVisible ? selectedFile?.absolutePath : listing?.absolutePath) ?? currentPath}</dd>
+          <dt>{t("fileBrowser.executionRoot")}</dt><dd>{effectiveRootId}</dd>
+          {previewVisible && selectedFile ? <><dt>{t("fileBrowser.fileInfo")}</dt><dd>{[selectedFile.mimeType, selectedFileTotalBytes == null ? undefined : formatSize(selectedFileTotalBytes), selectedFile.modified == null ? undefined : t("fileBrowser.modifiedAt", { time: formatDateTime(selectedFile.modified) }), selectedFile.lineCount == null ? undefined : t("fileBrowser.lineCount", { count: selectedFile.lineCount }), imageDims ? t("fileBrowser.imageDimensions", imageDims) : undefined].filter(Boolean).join(" · ")}</dd></> : null}
+        </dl>
+      </div> : null}
+      {actionError ? <p className="inspector-error" role="alert">{actionError}</p> : null}
+      {error ? <p className="inspector-error">{error}</p> : null}
 
       {viewMode === "files" || split ? (
         <div className="file-browser-filter">
@@ -869,101 +900,6 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
       ) : null}
       {(viewMode === "preview" || split) && selectedFile ? (
         <div className="file-browser-viewer">
-          <div className="file-browser-viewer-head">
-            <strong title={selectedFile.path}>{selectedFile.path}</strong>
-            <div className="file-browser-viewer-actions">
-              {isMarkdownFile ? (
-                <div className="file-browser-md-toggle" role="group" aria-label={t("fileBrowser.markdownView")}>
-                  <button
-                    type="button"
-                    className={showRendered ? "active" : ""}
-                    onClick={() => setShowRendered(true)}
-                  >
-                    {t("fileBrowser.rendered")}
-                  </button>
-                  <button
-                    type="button"
-                    className={!showRendered ? "active" : ""}
-                    onClick={() => setShowRendered(false)}
-                  >
-                    {t("fileBrowser.source")}
-                  </button>
-                </div>
-              ) : null}
-              <button
-                type="button"
-                className="file-browser-link-btn"
-                disabled={!selectedWebUrl}
-                onClick={openSelectedFileInNewTab}
-              >
-                {t("fileBrowser.openInNewTab")}
-              </button>
-              <button
-                type="button"
-                className="file-browser-link-btn"
-                disabled={!selectedFile.absolutePath}
-                onClick={() => void copySelectedFileValue("absolute", selectedFile.absolutePath)}
-              >
-                {copiedValue === "absolute"
-                  ? t("fileBrowser.pathCopied")
-                  : t("fileBrowser.copyAbsolutePath")}
-              </button>
-              <button
-                type="button"
-                className="file-browser-link-btn"
-                onClick={() => void copySelectedFileValue("markdown", selectedMarkdownReference)}
-              >
-                {copiedValue === "markdown"
-                  ? t("fileBrowser.markdownCopied")
-                  : t("fileBrowser.copyMarkdownReference")}
-              </button>
-              <button
-                type="button"
-                className="file-browser-link-btn"
-                disabled={!selectedWebUrl}
-                onClick={() => void copySelectedFileValue("web", selectedWebUrl)}
-              >
-                {copiedValue === "web" ? t("fileBrowser.linkCopied") : t("fileBrowser.copyWebLink")}
-              </button>
-              <button
-                type="button"
-                className="file-browser-download-btn"
-                onClick={downloadSelectedFile}
-              >
-                {t("fileBrowser.download")}
-              </button>
-              <button type="button" className="file-browser-close-btn" aria-label={t("fileBrowser.closeFile")} onClick={() => { setSelectedFile(null); setViewMode("files"); }}>{t("fileBrowser.closeFile")}</button>
-            </div>
-          </div>
-          <div className="file-browser-meta-bar">
-            {selectedFile.absolutePath ? (
-              <span className="file-browser-meta-item" title={selectedFile.absolutePath}>
-                {selectedFile.absolutePath}
-              </span>
-            ) : null}
-            {selectedFile.rootKind ? (
-              <span className="file-browser-meta-item">{selectedFile.rootKind}</span>
-            ) : null}
-            {selectedFile.mimeType ? <span className="file-browser-meta-item">{selectedFile.mimeType}</span> : null}
-            {selectedFileTotalBytes != null ? (
-              <span className="file-browser-meta-item">{formatSize(selectedFileTotalBytes)}</span>
-            ) : null}
-            {selectedFile.modified ? (
-              <span className="file-browser-meta-item">
-                {t("fileBrowser.modifiedAt", { time: formatDateTime(selectedFile.modified) })}
-              </span>
-            ) : null}
-            {selectedFile.lineCount != null ? (
-              <span className="file-browser-meta-item">
-                {t("fileBrowser.lineCount", { count: selectedFile.lineCount })}
-              </span>
-            ) : null}
-            {imageDims ? (
-              <span className="file-browser-meta-item">
-                {t("fileBrowser.imageDimensions", { width: imageDims.width, height: imageDims.height })}
-              </span>
-            ) : null}
-          </div>
           {selectedFile.loading ? (
             <p className="inspector-muted">{t("fileBrowser.loadingFile")}</p>
           ) : selectedFile.error ? (

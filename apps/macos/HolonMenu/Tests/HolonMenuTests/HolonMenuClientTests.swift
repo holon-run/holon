@@ -77,7 +77,14 @@ final class HolonMenuClientTests: XCTestCase {
         let startInvocations = await launcher.invocations()
         XCTAssertEqual(
             startInvocations.last?.arguments,
-            ["daemon", "start", "--access", "local", "--port", "7878"]
+            ["daemon", "start", "--access", "local", "--port", "7878", "--desktop-integration"]
+        )
+
+        _ = try await client.restart()
+        let restartInvocations = await launcher.invocations()
+        XCTAssertEqual(
+            restartInvocations.last?.arguments,
+            ["daemon", "restart", "--access", "local", "--port", "7878", "--desktop-integration"]
         )
     }
 }

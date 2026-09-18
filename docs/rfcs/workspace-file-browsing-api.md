@@ -241,6 +241,39 @@ prevents a removed nested root from being silently reinterpreted through a
 wider canonical root. `FileLocation` is a location, not a permanent content
 identity; path reuse after cleanup is outside this contract.
 
+## Optional desktop integration
+
+`holon serve --desktop-integration` (also accepted by `daemon start/restart`)
+opts into macOS Finder integration. The flag defaults to off, is retained in
+daemon launch arguments, and can be explicitly disabled with
+`--desktop-integration=false`. Enabling it requires a numeric loopback listen
+address and macOS; other configurations fail before runtime startup.
+
+This is an operator assertion that the instance is being used directly on its
+desktop. Do not enable it for a container, forwarded port, or reverse proxy.
+Neither a loopback URL nor the existing `connection.mode = local` proves that
+the browser and runtime share a filesystem. The GUI therefore calls these
+URLs “Loopback address”, and otherwise displays the endpoint host.
+
+- `GET /desktop/capabilities` returns `{ "reveal_in_finder": boolean }` after
+  control authentication. It reports true only when explicitly enabled and
+  requested through a loopback peer and Host. Missing peer information fails
+  closed. Forwarded headers are never used to infer locality.
+- `POST /desktop/reveal` accepts `{ workspace_id, execution_root_id, path }`.
+  It requires control authentication, the same capability conditions, and an
+  explicit Origin matching the loopback Host (including port). Cross-site
+  Fetch Metadata is rejected. Missing or null Origin fails closed.
+- The server resolves the opaque root and relative path through the existing
+  workspace file resolver, validates canonical containment and existence,
+  then invokes the fixed `/usr/bin/open -R <canonical path>` argument vector.
+  No shell, arbitrary executable, or client-supplied absolute path is accepted.
+- Finder availability is advisory; POST rechecks all boundaries. A failed
+  launch produces an error shown in the GUI. This API does not edit files.
+
+The GUI displays the action only for a same-origin loopback API that advertises
+this capability. Older servers and unsupported platforms retain preview,
+copy, and download. Authentication and file/root identity are unchanged.
+
 ## MIME Type Inference
 
 MIME types are inferred from file extensions using the `mime_guess` crate
