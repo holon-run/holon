@@ -93,6 +93,8 @@ struct HolonDaemonLaunchOptions: Equatable, Sendable {
             arguments += ["--web-dist", webDistPath]
         }
 
+        // The menu app runs alongside its managed daemon on this Mac.
+        arguments.append("--desktop-integration")
         return arguments
     }
 }

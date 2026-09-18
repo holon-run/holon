@@ -105,9 +105,9 @@ holon daemon start --access local --desktop-integration
 holon daemon restart --access local --desktop-integration
 ```
 
-文件操作菜单会出现 **在 Finder 中显示**，用于定位文件，不会打开或执行文件内容。其他平台仍支持预览、复制和下载。
+Holon macOS 菜单应用启动或重启它管理的 daemon 时，会自动添加 `--desktop-integration`。文件操作菜单会出现 **在 Finder 中显示**，用于定位文件，不会打开或执行文件内容。其他平台仍支持预览、复制和下载。
 
-此选项默认关闭，只允许回环地址监听；重启会继承设置，可通过 `--desktop-integration=false` 关闭。不要对端口转发、反向代理或容器实例启用：`localhost` 并不能证明文件属于当前电脑。因此界面显示“本机地址”，不据此断言“本机运行”。
+直接使用 CLI 启动时，此选项默认关闭，需要手动指定；菜单应用每次启动或重启都会开启。CLI 重启会继承设置，也可以用 `--desktop-integration=false` 覆盖。运行时只允许回环地址监听。不要对端口转发、反向代理或容器实例启用：`localhost` 并不能证明文件属于当前电脑。因此界面显示“本机地址”，不据此断言“本机运行”。
 
 ### 设置
 

@@ -161,12 +161,15 @@ holon daemon start --access local --desktop-integration
 holon daemon restart --access local --desktop-integration
 ```
 
-The file actions menu then offers **Show in Finder**. It locates the selected
+The Holon macOS menu app adds `--desktop-integration` automatically when it
+starts or restarts its managed daemon. The file actions menu then offers **Show in Finder**. It locates the selected
 file without opening or executing its contents. Other platforms continue to
 support preview, copying, and downloading.
 
-The option defaults to off and requires a loopback-only listener. Restart
-retains the option; use `--desktop-integration=false` to disable it. Do not enable
+Direct CLI launches default to off and require an explicit option. The menu app
+enables it on each start and restart; a CLI restart retains the setting unless
+overridden with `--desktop-integration=false`. The runtime requires a
+loopback-only listener. Do not enable
 it for a forwarded port, reverse proxy, or container: a loopback address does
 not prove that files belong to the computer displaying the browser. The
 connection indicator says **Loopback address**, rather than claiming that the
