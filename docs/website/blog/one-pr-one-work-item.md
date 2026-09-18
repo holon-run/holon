@@ -22,6 +22,10 @@ That happened in PR #2854 in the Holon repository. It changed work-item completi
 
 This process took place on September 9, 2026. Commits, public reviews, and the merge result have been checked against GitHub snapshots. Some CI jobs were conditionally skipped; “passed” in the table refers only to the relevant checks that actually ran.
 
+Across the three months from June 12 to September 12, 2026, Holon Reviewer reviewed **763 merged PRs** in the Holon repository—**about 95%** of the 804 PRs merged during that period—and submitted **1,529 reviews** on those PRs.
+
+These figures combine reviews submitted by `holonbot` and `jolestar`, the personal GitHub account used by the local Reviewer, and exclude Copilot. PR coverage counts each PR once.
+
 The steps below set up a reviewer to pick up new repository PRs automatically and follow them through fixes and CI updates.
 
 ## Create a reviewer from a template
