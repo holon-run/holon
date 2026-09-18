@@ -477,4 +477,17 @@ mod tests {
 
         assert_eq!(args.recheck_after_ms, Some(300000));
     }
+
+    #[test]
+    fn wait_for_parses_integral_decimal_string_recheck_after_ms() {
+        let args = parse_wait_for_args(&json!({
+            "reason": "wait",
+            "wake": "external",
+            "delivery": "silent",
+            "recheck_after_ms": "900000.0",
+        }))
+        .unwrap();
+
+        assert_eq!(args.recheck_after_ms, Some(900000));
+    }
 }
