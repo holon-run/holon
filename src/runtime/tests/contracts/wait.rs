@@ -324,7 +324,8 @@ async fn wait_trigger_and_message_enqueue_are_atomic_across_pre_commit_faults() 
             .await
             .unwrap();
         let before = harness.snapshot();
-        let message = task_result_message("task-atomic-trigger");
+        let mut message = task_result_message("task-atomic-trigger");
+        message.work_item_id = Some(work_item.id.clone());
         harness.arm_fault(fault);
 
         let error = harness
@@ -756,7 +757,7 @@ async fn duplicate_historical_waits_do_not_reject_current_trigger_message() {
         .runtime()
         .register_wait_for(
             "default",
-            Some(current_work.id),
+            Some(current_work.id.clone()),
             WaitForWakeKind::TaskResult,
             Some("task-duplicate-wait".into()),
             "current wait".into(),
@@ -776,11 +777,9 @@ async fn duplicate_historical_waits_do_not_reject_current_trigger_message() {
         .append_wait_condition(&historical)
         .unwrap();
 
-    let queued = harness
-        .runtime()
-        .enqueue(task_result_message("task-duplicate-wait"))
-        .await
-        .unwrap();
+    let mut message = task_result_message("task-duplicate-wait");
+    message.work_item_id = Some(current_work.id);
+    let queued = harness.runtime().enqueue(message).await.unwrap();
 
     let waits = harness.snapshot().wait_conditions;
     let historical = waits
@@ -794,6 +793,63 @@ async fn duplicate_historical_waits_do_not_reject_current_trigger_message() {
     assert_eq!(historical.status, WaitConditionStatus::Active);
     assert_eq!(current.status, WaitConditionStatus::Triggered);
     assert_eq!(current.trigger_message_id(), Some(queued.id.as_str()));
+}
+
+#[tokio::test(start_paused = true)]
+async fn replayed_message_does_not_trigger_a_newly_armed_wait() {
+    let harness = LifecycleHarness::new();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::CallbackEvent,
+        MessageOrigin::Callback {
+            descriptor_id: "callback-replay".into(),
+            source: Some("test".into()),
+        },
+        AuthorityClass::IntegrationSignal,
+        Priority::Next,
+        MessageBody::Text {
+            text: "callback body".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpCallbackWake,
+        AdmissionContext::ExternalTriggerCapability,
+    );
+    message
+        .source_refs
+        .insert("external_trigger_id".into(), "trigger-replay".into());
+    let message = harness.runtime().enqueue(message).await.unwrap();
+    let registration = harness
+        .runtime()
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::External,
+            Some("github:holon-run/holon#replay".into()),
+            "new wait after old callback".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    harness.runtime().enqueue(message.clone()).await.unwrap();
+
+    let replayed = harness.snapshot();
+    let wait = replayed
+        .wait_conditions
+        .iter()
+        .find(|condition| condition.id == registration.condition.id)
+        .unwrap();
+    assert_eq!(wait.status, WaitConditionStatus::Active);
+    assert_eq!(wait.trigger_message_id(), None);
+    assert_eq!(
+        replayed
+            .queue_entries
+            .iter()
+            .filter(|entry| entry.message_id == message.id)
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]

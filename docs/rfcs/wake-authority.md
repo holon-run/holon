@@ -97,3 +97,6 @@ authorization visible in evidence.
 
 Later phases may move more state transitions to an explicit authorization
 record, but are out of scope for this RFC's initial implementation.
+
+The transaction and admission rules for contentful wake writers are defined in
+[`atomic-wake-writer-contract.md`](atomic-wake-writer-contract.md).

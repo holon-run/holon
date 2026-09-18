@@ -399,11 +399,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .latest_wait_conditions_for_agent(&guard.state.id)?
                     .into_iter()
                     .filter(|condition| {
-                        matches!(
-                            condition.status,
-                            crate::types::WaitConditionStatus::Triggered
-                                | crate::types::WaitConditionStatus::Resolved
-                        )
+                        condition.status == crate::types::WaitConditionStatus::Triggered
                     })
                     .filter_map(|condition| condition.trigger_message_id)
                     .collect::<std::collections::BTreeSet<_>>();
@@ -693,11 +689,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .latest_wait_conditions_for_agent(&guard.state.id)?
                     .into_iter()
                     .filter(|condition| {
-                        matches!(
-                            condition.status,
-                            crate::types::WaitConditionStatus::Triggered
-                                | crate::types::WaitConditionStatus::Resolved
-                        )
+                        condition.status == crate::types::WaitConditionStatus::Triggered
                     })
                     .filter_map(|condition| condition.trigger_message_id)
                     .collect::<std::collections::BTreeSet<_>>();

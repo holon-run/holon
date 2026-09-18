@@ -182,8 +182,8 @@ impl RuntimeHandle {
         if !matches!(state.status, AgentStatus::Stopped) && state.current_run_id.is_none() {
             scheduler::apply_idle_projection(&mut state, &self.inner.storage)?;
         }
-        let mut expected_wait_conditions = Vec::new();
-        let mut wait_conditions = Vec::new();
+        let expected_wait_conditions = Vec::new();
+        let wait_conditions = Vec::new();
         let work_items = Vec::new();
         let mut audit_events = Vec::new();
         let mut index_changes = Vec::new();
@@ -216,23 +216,6 @@ impl RuntimeHandle {
             }
             if !skip_event {
                 audit_events.push(event);
-            }
-        }
-        if is_terminal_task_status(&task.status) {
-            if let Some(message) = transition.message_evidence {
-                if let Some(wait_trigger) = self.wait_trigger_transition_for_message(message)? {
-                    expected_wait_conditions.push(wait_trigger.expected);
-                    wait_conditions.push(wait_trigger.record.clone());
-                    audit_events.push(AuditEvent::legacy(
-                        "wait_condition_triggered",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "wait_condition_id": wait_trigger.record.id,
-                            "trigger_message_id": message.id,
-                            "work_item_id": wait_trigger.record.work_item_id,
-                        }),
-                    ));
-                }
             }
         }
         #[cfg(test)]
@@ -271,7 +254,7 @@ impl RuntimeHandle {
                 created_at: existing_queue_entry
                     .as_ref()
                     .map_or(message.created_at, |entry| entry.created_at),
-                updated_at: Utc::now(),
+                updated_at: self.now(),
             });
         if let Some(message) = transition
             .message_evidence

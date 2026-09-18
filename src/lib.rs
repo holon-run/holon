@@ -60,6 +60,7 @@ pub mod tui;
 mod tui_markdown;
 pub mod types;
 mod utf8;
+mod wake_contract;
 pub mod web;
 pub mod work_item_plan;
 pub mod work_item_refs;

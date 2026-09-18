@@ -157,54 +157,6 @@ impl WorkItemBlockerClearance {
 }
 
 impl RuntimeHandle {
-    pub(super) fn wait_trigger_transition_for_message(
-        &self,
-        message: &MessageEnvelope,
-    ) -> Result<Option<crate::runtime_db::transitions::QueueWaitTransition>> {
-        let matching = self
-            .inner
-            .storage
-            .raw_active_wait_conditions_for_agent(&message.agent_id)?
-            .into_iter()
-            .filter(|condition| {
-                message
-                    .turn_id
-                    .as_deref()
-                    .zip(condition.turn_id.as_deref())
-                    .is_none_or(|(message_turn, wait_turn)| message_turn != wait_turn)
-            })
-            .filter(|condition| matching_wake_source(message, condition).is_some())
-            .collect::<Vec<_>>();
-        let correlated_wait_id = message.source_refs.get("wait_id");
-        let condition = if let Some(wait_id) = correlated_wait_id {
-            matching.iter().find(|condition| condition.id == *wait_id)
-        } else {
-            matching.iter().max_by_key(|condition| {
-                (
-                    condition.updated_at,
-                    condition.created_at,
-                    condition.id.as_str(),
-                )
-            })
-        };
-        let Some(condition) = condition else {
-            return Ok(None);
-        };
-        let mut triggered = condition.clone();
-        triggered.mark_triggered(&message.id, self.now());
-        Ok(Some(crate::runtime_db::transitions::QueueWaitTransition {
-            expected: crate::runtime_db::transitions::WaitConditionExpectation {
-                id: condition.id.clone(),
-                agent_id: condition.agent_id.clone(),
-                status: condition.status.clone(),
-                updated_at: condition.updated_at,
-            },
-            record: triggered,
-            work_item: None,
-            index_changes: Vec::new(),
-        }))
-    }
-
     pub(super) fn wait_resolution_transition_for_message(
         &self,
         message: &MessageEnvelope,
@@ -1589,7 +1541,6 @@ impl RuntimeHandle {
         message.normalize_admission_fields();
 
         for attempt in 0..super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS {
-            let wait_transition = self.wait_trigger_transition_for_message(&message)?;
             let mut guard = self.inner.agent.lock().await;
             let expected_state = guard.last_persisted_state.clone();
             let mut committed_state = guard.state.clone();
@@ -1613,7 +1564,6 @@ impl RuntimeHandle {
                     },
                     agent_state: (expected_state, committed_state.clone()),
                 },
-                wait_transition.as_ref(),
                 self.take_transition_fault(),
             );
             match result {
@@ -1641,19 +1591,6 @@ impl RuntimeHandle {
                             "wake_created": result.wake_created,
                         }),
                     ))?;
-                    if result.wake_created {
-                        if let Some(wait_transition) = wait_transition.as_ref() {
-                            self.inner.storage.append_event(&AuditEvent::legacy(
-                                "wait_condition_triggered",
-                                serde_json::json!({
-                                    "agent_id": message.agent_id,
-                                    "wait_condition_id": wait_transition.record.id,
-                                    "trigger_message_id": message.id,
-                                    "work_item_id": wait_transition.record.work_item_id,
-                                }),
-                            ))?;
-                        }
-                    }
                     if result.wake_created {
                         self.inner.notify.notify_one();
                     }
@@ -1876,17 +1813,6 @@ impl RuntimeHandle {
             ))?;
         }
 
-        // Resolve matching wait conditions and clear WorkItem blockers so the
-        // scheduler can advance the WorkItem without requiring the model to
-        // explicitly call PickWorkItem(clear_blocker) or CompleteWorkItem.
-        self.resolve_reconciled_wait_conditions(
-            &agent_id,
-            message,
-            &unresolved_conditions,
-            &signals,
-        )
-        .await?;
-
         Ok(())
     }
 
@@ -1991,129 +1917,6 @@ impl RuntimeHandle {
             _ => false,
         };
         Ok(owner_matches.then(|| condition.clone()))
-    }
-
-    async fn resolve_reconciled_wait_conditions(
-        &self,
-        agent_id: &str,
-        message: &MessageEnvelope,
-        active_conditions: &[WaitConditionRecord],
-        signals: &[serde_json::Value],
-    ) -> Result<()> {
-        if signals.is_empty() {
-            return Ok(());
-        }
-
-        let now = Utc::now();
-        let mut resolved_conditions = Vec::new();
-        let mut work_items = Vec::new();
-        let mut audit_events = Vec::new();
-        let mut index_changes = Vec::new();
-        let mut updated_work_item_ids = std::collections::BTreeSet::new();
-
-        for signal in signals {
-            let condition_id = signal["wait_condition_id"].as_str().unwrap_or_default();
-            let Some(condition) = active_conditions.iter().find(|c| c.id == condition_id) else {
-                continue;
-            };
-            if !matches!(
-                condition.status,
-                WaitConditionStatus::Active | WaitConditionStatus::Triggered
-            ) {
-                continue;
-            }
-
-            let mut resolved = condition.clone();
-            resolved.status = WaitConditionStatus::Resolved;
-            resolved.updated_at = now;
-            resolved.resolved_at = Some(now);
-            resolved_conditions.push(resolved.clone());
-
-            if let Some(work_item_id) = resolved.work_item_id.as_deref() {
-                if updated_work_item_ids.insert(work_item_id.to_string()) {
-                    if let Some(existing) =
-                        self.inner.runtime_db.work_items().latest(work_item_id)?
-                    {
-                        if existing.state == WorkItemState::Open
-                            && existing.blocked_by.as_deref() == Some(resolved.waiting_for.as_str())
-                        {
-                            let mut record = WorkItemRecord {
-                                revision: existing.revision + 1,
-                                blocked_by: None,
-                                recheck_at: None,
-                                recheck_consumed_at: None,
-                                updated_at: now,
-                                ..existing.clone()
-                            };
-                            let plan_artifact_changed =
-                                crate::work_item_plan::refresh_plan_artifact_metadata(
-                                    self.agent_home().as_path(),
-                                    &mut record,
-                                )?;
-                            if plan_artifact_changed {
-                                if let Some(event) =
-                                    self.work_item_plan_artifact_refreshed_event(&record)
-                                {
-                                    audit_events.push(event);
-                                }
-                            }
-                            audit_events.push(self.work_item_written_event(
-                                "wait_reconciliation_resolved",
-                                &record,
-                                serde_json::json!({
-                                    "wait_condition_id": resolved.id,
-                                    "message_id": message.id,
-                                }),
-                            ));
-                            index_changes
-                                .extend(self.inner.storage.index_changes_for_work_item(&record)?);
-                            work_items.push(
-                                crate::runtime_db::transitions::WorkItemMutation::Update {
-                                    record,
-                                    expected_revision: existing.revision,
-                                },
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        if resolved_conditions.is_empty() {
-            return Ok(());
-        }
-
-        audit_events.push(AuditEvent::legacy(
-            "wait_conditions_resolved",
-            serde_json::json!({
-                "agent_id": agent_id,
-                "message_id": message.id,
-                "reason": "wait_reconciliation",
-                "wait_condition_ids": resolved_conditions
-                    .iter()
-                    .map(|c| c.id.clone())
-                    .collect::<Vec<_>>(),
-            }),
-        ));
-
-        let commit = self.inner.runtime_db.transitions().commit_wait(
-            &crate::runtime_db::transitions::WaitTransitionCommand {
-                task_result_admission: None,
-                agent_id: agent_id.to_string(),
-                work_items,
-                expected_wait_conditions: Vec::new(),
-                wait_conditions: resolved_conditions,
-                timer_wake: None,
-                agent_state: None,
-                audit_events,
-                index_changes,
-                notify_scheduler: true,
-                fault: self.take_transition_fault(),
-            },
-        )?;
-        self.apply_transition_commit(commit).await;
-
-        Ok(())
     }
 }
 
@@ -2236,145 +2039,22 @@ fn reconciliation_signal_for_condition(
     message: &MessageEnvelope,
     condition: &WaitConditionRecord,
 ) -> Option<serde_json::Value> {
-    let (wake_source, subject_ref) = matching_wake_source(message, condition)?;
+    let wake = crate::wake_contract::matching_wake_source(message, condition)?;
     let dedupe_key = format!(
         "wait_reconciliation:{}:{}:{}",
-        condition.id, wake_source, message.id
+        condition.id, wake.source, message.id
     );
     Some(serde_json::json!({
         "dedupe_key": dedupe_key,
         "message_id": message.id,
         "trigger_kind": message.trigger_kind,
         "wait_condition_id": condition.id,
-        "wake_source": wake_source,
+        "wake_source": wake.source,
         "work_item_id": condition.work_item_id,
-        "subject_ref": subject_ref.or_else(|| condition.subject_ref.clone()),
+        "subject_ref": wake.subject_ref.or_else(|| condition.subject_ref.clone()),
         "waiting_for": condition.waiting_for,
         "source": condition.source,
     }))
-}
-
-fn matching_wake_source(
-    message: &MessageEnvelope,
-    condition: &WaitConditionRecord,
-) -> Option<(String, Option<String>)> {
-    if condition.status == WaitConditionStatus::Triggered
-        && condition.trigger_message_id() != Some(message.id.as_str())
-    {
-        return None;
-    }
-    match (&message.kind, &message.origin) {
-        (MessageKind::TaskResult, MessageOrigin::Task { task_id }) => condition
-            .wake_sources
-            .iter()
-            .any(|source| matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id))
-            .then(|| ("task_result".to_string(), Some(task_id.clone()))),
-        (MessageKind::CallbackEvent, _) => {
-            let external_trigger_id = message.source_refs.get("external_trigger_id");
-            let correlated_wait_id = message.source_refs.get("wait_id");
-            condition
-                .wake_sources
-                .iter()
-                .any(|source| match source {
-                    WakeSource::ExternalIngress {
-                        external_trigger_id: Some(id),
-                    } => {
-                        external_trigger_id == Some(id) && correlated_wait_id == Some(&condition.id)
-                    }
-                    _ => false,
-                })
-                .then(|| ("external_ingress".to_string(), external_trigger_id.cloned()))
-        }
-        (MessageKind::TimerTick, MessageOrigin::Timer { timer_id }) => (condition
-            .subject_ref
-            .as_deref()
-            .is_none_or(|subject_ref| subject_ref == timer_id)
-            && condition
-                .wake_sources
-                .iter()
-                .any(|source| matches!(source, WakeSource::Timer { .. })))
-        .then(|| ("timer".to_string(), Some(timer_id.clone()))),
-        (MessageKind::OperatorPrompt, MessageOrigin::Operator { actor_id, .. }) => {
-            let owner_matches = match message.work_item_id.as_deref() {
-                Some(work_item_id) => condition.work_item_id.as_deref() == Some(work_item_id),
-                None => condition.work_item_id.is_none(),
-            };
-            (owner_matches
-                && condition
-                    .wake_sources
-                    .iter()
-                    .any(|source| matches!(source, WakeSource::OperatorInput)))
-            .then(|| ("operator_input".to_string(), actor_id.clone()))
-        }
-        (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
-            if exact_wait_recheck_source(message, condition, subsystem) {
-                return Some(("wait_recheck".to_string(), Some(condition.id.clone())));
-            }
-            if let Some(external) = matching_wake_hint_external_source(message, condition) {
-                return Some(external);
-            }
-            condition
-                .wake_sources
-                .iter()
-                .any(|source| matches!(source, WakeSource::SystemTick))
-                .then(|| ("system_tick".to_string(), Some(subsystem.clone())))
-        }
-        _ => None,
-    }
-}
-
-fn exact_wait_recheck_source(
-    message: &MessageEnvelope,
-    condition: &WaitConditionRecord,
-    subsystem: &str,
-) -> bool {
-    if subsystem != "wait_condition_recheck"
-        || message.authority_class != AuthorityClass::RuntimeInstruction
-        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
-        || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
-        || message.source_refs.get("wait_id") != Some(&condition.id)
-    {
-        return false;
-    }
-    let Some(recheck_at) = condition.recheck_at() else {
-        return false;
-    };
-    let recheck = message
-        .metadata
-        .as_ref()
-        .and_then(|value| value.get("wait_condition_recheck"));
-    recheck
-        .and_then(|value| value.get("wait_id"))
-        .and_then(serde_json::Value::as_str)
-        == Some(condition.id.as_str())
-        && recheck
-            .and_then(|value| value.get("recheck_at"))
-            .and_then(serde_json::Value::as_str)
-            .and_then(|value| value.parse::<DateTime<Utc>>().ok())
-            == Some(recheck_at)
-}
-
-fn matching_wake_hint_external_source(
-    message: &MessageEnvelope,
-    condition: &WaitConditionRecord,
-) -> Option<(String, Option<String>)> {
-    let wake_hint = message.metadata.as_ref()?.get("wake_hint")?;
-    let external_trigger_id = wake_hint
-        .get("external_trigger_id")
-        .and_then(serde_json::Value::as_str);
-    let correlated_wait_id = message.source_refs.get("wait_id");
-    let matches_external = condition.wake_sources.iter().any(|source| match source {
-        WakeSource::ExternalIngress {
-            external_trigger_id: Some(id),
-        } => Some(id.as_str()) == external_trigger_id && correlated_wait_id == Some(&condition.id),
-        _ => false,
-    });
-    matches_external.then(|| {
-        (
-            "external_ingress".to_string(),
-            external_trigger_id.map(ToString::to_string),
-        )
-    })
 }
 
 fn task_expectation(task: &TaskRecord) -> crate::runtime_db::transitions::TaskExpectation {

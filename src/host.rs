@@ -8680,7 +8680,6 @@ mod tests {
                     fault: None,
                     brief_evidence: Vec::new(),
                 },
-                None,
                 &prepared.record,
             )
             .unwrap()
