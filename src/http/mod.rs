@@ -13,7 +13,8 @@ pub(crate) use axum::{
     extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
     http::{
         header::{
-            ACCEPT, AUTHORIZATION, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH, LOCATION, SET_COOKIE,
+            ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH,
+            LOCATION, SET_COOKIE,
         },
         HeaderMap, HeaderName, HeaderValue, Method, Request as AxumRequest, Response, StatusCode,
         Uri,
