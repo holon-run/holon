@@ -1137,12 +1137,44 @@ enum TerminalSettlementDisposition {
     AbortedFallback,
 }
 
-fn terminal_execution_settlement_outcome(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TerminalExecutionSettlementWitness {
+    attempt_id: String,
+    expected_outcome: Option<crate::domain::execution_protocol::ExecutionOutcomeRecord>,
+    expected_attempt_state: Option<crate::domain::execution_protocol::ExecutionAttemptState>,
+}
+
+impl TerminalExecutionSettlementWitness {
+    fn unmaterialized(attempt_id: String) -> Self {
+        Self {
+            attempt_id,
+            expected_outcome: None,
+            expected_attempt_state: None,
+        }
+    }
+}
+
+fn terminal_execution_open_attempt_id(
+    runtime_db: &RuntimeDb,
+    record: &QueueEntryRecord,
+) -> Result<Option<String>> {
+    Ok(runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized(&record.agent_id)?
+        .as_ref()
+        .and_then(|state| execution_attempt_for_message(state, &record.message_id))
+        .filter(|attempt| {
+            attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+        })
+        .map(|attempt| attempt.attempt_id.clone()))
+}
+
+fn terminal_execution_settlement_witness(
     storage: &AppStorage,
     runtime_db: &RuntimeDb,
     record: &QueueEntryRecord,
     transition: &turn::TurnTerminalTransition,
-) -> Result<Option<crate::domain::execution_protocol::ExecutionOutcomeRecord>> {
+) -> Result<Option<TerminalExecutionSettlementWitness>> {
     let execution_protocol =
         if let Some(prepared) = transition.prepared_work_item_completion.as_ref() {
             execution_protocol_completion_transition_from_prepared(
@@ -1165,11 +1197,47 @@ fn terminal_execution_settlement_outcome(
         .iter()
         .filter_map(|command| match command {
             crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(command) => {
-                Some(command.outcome.clone())
+                Some(Ok(TerminalExecutionSettlementWitness {
+                    attempt_id: command.outcome.attempt_id.clone(),
+                    expected_outcome: Some(command.outcome.clone()),
+                    expected_attempt_state: Some(
+                        crate::domain::execution_protocol::ExecutionAttemptState::Settled,
+                    ),
+                }))
+            }
+            crate::domain::execution_protocol::ExecutionProtocolCommand::Interrupt(command) => {
+                Some((|| {
+                    let state = runtime_db
+                        .transitions()
+                        .load_execution_protocol_state_if_initialized(&record.agent_id)?
+                        .ok_or_else(|| {
+                            anyhow!("terminal interruption requires canonical execution state")
+                        })?;
+                    let interrupted =
+                        crate::domain::execution_protocol::interrupt_execution(&state, command)
+                            .map_err(|error| anyhow!(error))?;
+                    let outcome = interrupted
+                        .state
+                        .outcomes
+                        .get(&command.outcome_id)
+                        .cloned()
+                        .ok_or_else(|| {
+                            anyhow!(
+                                "terminal interruption did not materialize its execution outcome"
+                            )
+                        })?;
+                    Ok(TerminalExecutionSettlementWitness {
+                        attempt_id: command.attempt_id.clone(),
+                        expected_outcome: Some(outcome),
+                        expected_attempt_state: Some(
+                            crate::domain::execution_protocol::ExecutionAttemptState::Interrupted,
+                        ),
+                    })
+                })())
             }
             _ => None,
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     anyhow::ensure!(
         settlements.len() <= 1,
         "terminal settlement prepared multiple execution outcomes"
@@ -5077,9 +5145,7 @@ impl RuntimeHandle {
         &self,
         record: &QueueEntryRecord,
         transition: &turn::TurnTerminalTransition,
-        expected_execution_outcome: Option<
-            &crate::domain::execution_protocol::ExecutionOutcomeRecord,
-        >,
+        execution_witness: Option<&TerminalExecutionSettlementWitness>,
     ) -> Result<TerminalSettlementReadback> {
         let durable_queue = self
             .inner
@@ -5095,18 +5161,23 @@ impl RuntimeHandle {
             .runtime_db
             .transitions()
             .load_execution_protocol_state_if_initialized(&record.agent_id)?;
-        let execution_committed = expected_execution_outcome.is_none_or(|expected| {
+        let execution_committed = execution_witness.is_none_or(|witness| {
+            let (Some(expected_outcome), Some(expected_attempt_state)) = (
+                witness.expected_outcome.as_ref(),
+                witness.expected_attempt_state,
+            ) else {
+                return false;
+            };
             durable_execution.as_ref().is_some_and(|state| {
                 state
                     .attempts
-                    .get(&expected.attempt_id)
+                    .get(&witness.attempt_id)
                     .is_some_and(|attempt| {
-                        attempt.state
-                            == crate::domain::execution_protocol::ExecutionAttemptState::Settled
+                        attempt.state == expected_attempt_state
                             && attempt.terminal_outcome_id.as_deref()
-                                == Some(expected.outcome_id.as_str())
+                                == Some(expected_outcome.outcome_id.as_str())
                     })
-                    && state.outcomes.get(&expected.outcome_id) == Some(expected)
+                    && state.outcomes.get(&expected_outcome.outcome_id) == Some(expected_outcome)
             })
         });
         if durable_queue
@@ -5119,16 +5190,21 @@ impl RuntimeHandle {
         {
             return Ok(TerminalSettlementReadback::Committed);
         }
-        let open_attempt_matches = durable_execution.as_ref().is_some_and(|state| {
-            let attempt = expected_execution_outcome
-                .and_then(|expected| state.attempts.get(&expected.attempt_id))
-                .or_else(|| execution_attempt_for_message(state, &record.message_id));
-            attempt.is_some_and(|attempt| {
-                attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
-                    && attempt.turn_id.as_deref() == Some(transition.terminal.turn_id.as_str())
-                    && attempt.terminal_outcome_id.is_none()
-                    && expected_execution_outcome
-                        .is_none_or(|expected| !state.outcomes.contains_key(&expected.outcome_id))
+        let open_attempt_matches = execution_witness.is_some_and(|witness| {
+            durable_execution.as_ref().is_some_and(|state| {
+                state
+                    .attempts
+                    .get(&witness.attempt_id)
+                    .is_some_and(|attempt| {
+                        attempt.state
+                            == crate::domain::execution_protocol::ExecutionAttemptState::Open
+                            && attempt.turn_id.as_deref()
+                                == Some(transition.terminal.turn_id.as_str())
+                            && attempt.terminal_outcome_id.is_none()
+                            && witness.expected_outcome.as_ref().is_none_or(|expected| {
+                                !state.outcomes.contains_key(&expected.outcome_id)
+                            })
+                    })
             })
         });
         if durable_queue
@@ -5154,33 +5230,49 @@ impl RuntimeHandle {
         brief_evidence: Vec<BriefRecord>,
         duration_ms: u64,
     ) -> Result<TerminalSettlementDisposition> {
-        let expected_execution_outcome = terminal_execution_settlement_outcome(
+        let open_attempt_id = terminal_execution_open_attempt_id(&self.inner.runtime_db, &record)?;
+        let materialized_witness = terminal_execution_settlement_witness(
             &self.inner.storage,
             &self.inner.runtime_db,
             &record,
             terminal_transition,
-        )?;
-        let first_commit = self
-            .commit_queue_terminal_settlement_with_evidence(
-                record.clone(),
-                audit_events.clone(),
+        );
+        let (error, execution_witness, materialization_failed) = match materialized_witness {
+            Ok(materialized_witness) => {
+                let execution_witness = materialized_witness.or_else(|| {
+                    open_attempt_id
+                        .clone()
+                        .map(TerminalExecutionSettlementWitness::unmaterialized)
+                });
+                let first_commit = self
+                    .commit_queue_terminal_settlement_with_evidence(
+                        record.clone(),
+                        audit_events.clone(),
+                        true,
+                        Some(terminal_transition),
+                        committed_agent_state.clone(),
+                        transcript_entries.clone(),
+                        brief_evidence.clone(),
+                    )
+                    .await;
+                let Err(error) = first_commit else {
+                    return Ok(TerminalSettlementDisposition::Intended);
+                };
+                (error, execution_witness, false)
+            }
+            Err(error) => (
+                error,
+                open_attempt_id.map(TerminalExecutionSettlementWitness::unmaterialized),
                 true,
-                Some(terminal_transition),
-                committed_agent_state.clone(),
-                transcript_entries.clone(),
-                brief_evidence.clone(),
-            )
-            .await;
-        let Err(error) = first_commit else {
-            return Ok(TerminalSettlementDisposition::Intended);
+            ),
         };
-        if execution_settlement_conflict(&error) {
+        if !materialization_failed && execution_settlement_conflict(&error) {
             return Err(error);
         }
         match self.terminal_settlement_readback(
             &record,
             terminal_transition,
-            expected_execution_outcome.as_ref(),
+            execution_witness.as_ref(),
         )? {
             TerminalSettlementReadback::Committed => {
                 tracing::warn!(
@@ -5199,7 +5291,9 @@ impl RuntimeHandle {
             TerminalSettlementReadback::NotCommitted => {}
         }
 
-        if terminal_transition.terminal.kind != TurnTerminalKind::Completed {
+        if !materialization_failed
+            && terminal_transition.terminal.kind != TurnTerminalKind::Completed
+        {
             self.commit_queue_terminal_settlement_with_evidence(
                 record,
                 audit_events,
