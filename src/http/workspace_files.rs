@@ -250,6 +250,10 @@ fn resolve_and_validate_path(
 /// legacy shared `agent_home` alias next to a canonical `agent_home:<id>`).
 /// Only one root may claim an anchor, or every absolute-path reference below
 /// it fails with `AmbiguousRoot`.
+///
+/// Tombstone invariant: a removed root keeps claiming its anchor (and keeps
+/// answering 410) only when no higher-priority root points at the same
+/// normalized path.
 const ANCHOR_PRIORITY_CANONICAL_AGENT_HOME: u8 = 4;
 const ANCHOR_PRIORITY_LIVE_WORKSPACE: u8 = 3;
 const ANCHOR_PRIORITY_REGISTERED_ROOT: u8 = 2;
