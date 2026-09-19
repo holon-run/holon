@@ -98,6 +98,81 @@ function renderKotlinArrayAlias(name, schema) {
   ].join("\n");
 }
 
+const kotlinKeywords = new Set([
+  "as",
+  "break",
+  "class",
+  "continue",
+  "do",
+  "else",
+  "false",
+  "for",
+  "fun",
+  "if",
+  "in",
+  "interface",
+  "is",
+  "null",
+  "object",
+  "package",
+  "return",
+  "super",
+  "this",
+  "throw",
+  "true",
+  "try",
+  "typealias",
+  "typeof",
+  "val",
+  "var",
+  "when",
+  "while",
+]);
+
+function renderKotlinIdentifier(value) {
+  if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(value) && !kotlinKeywords.has(value)) {
+    return value;
+  }
+  if (!value.includes("`") && !value.includes("\n")) {
+    return `\`${value}\``;
+  }
+  throw new Error(`Unsupported Kotlin wire enum value: ${value}`);
+}
+
+function renderKotlinOpenEnum(name, schema) {
+  if (schema.type !== "string" || !Array.isArray(schema.enum)) {
+    throw new Error(`Kotlin open enum ${name} must be a string enum`);
+  }
+  const knownValues = schema.enum.flatMap((value) => [
+    `        val ${renderKotlinIdentifier(value)}: ${name} =`,
+    `            ${name}(${JSON.stringify(value)})`,
+    "",
+  ]);
+  return [
+    "// Generated from docs/website/reference/openapi.json by web-gui/openapi-tools.",
+    "// Do not edit by hand. Run `make transport-types` from the repository root.",
+    "",
+    `package ${kotlinPackage}`,
+    "",
+    "import kotlinx.serialization.Serializable",
+    "",
+    "/**",
+    " * An open wire enum. Known values are exposed as constants, while unknown",
+    " * values remain decodable so newer runtimes stay compatible with this client.",
+    " */",
+    "@JvmInline",
+    "@Serializable",
+    `value class ${name}(val value: kotlin.String) {`,
+    "    override fun toString(): kotlin.String = value",
+    "",
+    "    companion object {",
+    ...knownValues,
+    "    }",
+    "}",
+    "",
+  ].join("\n");
+}
+
 async function readKotlinFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true }).catch(() => []);
   const files = new Map();
@@ -128,6 +203,10 @@ async function generateKotlinModels(openapi) {
 
   const selectedNames = collectSchemaClosure(schemas, kotlinRoots);
   const aliases = selectedNames.filter((name) => schemas[name].type === "array");
+  const openEnums = selectedNames.filter(
+    (name) =>
+      schemas[name].type === "string" && Array.isArray(schemas[name].enum),
+  );
   const modelNames = selectedNames.filter((name) => schemas[name].type !== "array");
   const reducedOpenapi = {
     openapi: openapi.openapi,
@@ -176,6 +255,9 @@ async function generateKotlinModels(openapi) {
     const generated = await readKotlinFiles(generatedDirectory);
     for (const name of aliases) {
       generated.set(`${name}.kt`, renderKotlinArrayAlias(name, schemas[name]));
+    }
+    for (const name of openEnums) {
+      generated.set(`${name}.kt`, renderKotlinOpenEnum(name, schemas[name]));
     }
     return generated;
   } finally {

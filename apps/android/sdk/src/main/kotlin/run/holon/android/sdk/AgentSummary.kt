@@ -1,0 +1,26 @@
+package run.holon.android.sdk
+
+import run.holon.client.wire.generated.models.AgentListEntry
+
+public data class AgentSummary(
+    val id: String,
+    val displayName: String,
+    val isDefault: Boolean,
+    val registryStatus: String,
+    val runtimeStatus: String,
+    val effectiveModel: String,
+    val pending: Int,
+    val currentRunId: String?,
+)
+
+public fun AgentListEntry.toAgentSummary(): AgentSummary =
+    AgentSummary(
+        id = identity.agentId,
+        displayName = identity.name ?: identity.agentId,
+        isDefault = identity.isDefaultAgent,
+        registryStatus = identity.status.value,
+        runtimeStatus = status.value,
+        effectiveModel = model.effectiveModel,
+        pending = pending ?: 0,
+        currentRunId = currentRunId,
+    )

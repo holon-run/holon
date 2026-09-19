@@ -26,5 +26,6 @@ holon-output-*/
 e2e-manual/**/artifacts/
 
 # Local tool state
+.gradle/
 .claude/
 .playwright-mcp/

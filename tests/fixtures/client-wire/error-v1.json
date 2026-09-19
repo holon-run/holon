@@ -1,0 +1,13 @@
+{
+  "ok": false,
+  "code": "invalid_json",
+  "error": "request body must be valid JSON matching the expected shape",
+  "context": {
+    "detail": "unknown field `kind`"
+  },
+  "domain": "http",
+  "retryable": false,
+  "endpoint_specific_field": {
+    "ignored": true
+  }
+}
