@@ -570,8 +570,15 @@ impl WaitForOnlyToolProvider {
 
 pub(crate) struct WaitForFinalReportProvider {
     pub(crate) calls: Mutex<usize>,
-    pub(crate) corrective_tool_round: bool,
+    pub(crate) scenario: WaitForFinalReportScenario,
     pub(crate) silent_progress: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WaitForFinalReportScenario {
+    Direct,
+    DisallowedToolCorrective,
+    AllowedToolBudget,
 }
 
 impl WaitForFinalReportProvider {
@@ -1045,7 +1052,7 @@ impl AgentProvider for WaitForOnlyToolProvider {
 
 #[async_trait]
 impl AgentProvider for WaitForFinalReportProvider {
-    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         let blocks = if let Some(prior_round) = self.silent_progress {
@@ -1093,13 +1100,38 @@ impl AgentProvider for WaitForFinalReportProvider {
                     kind: crate::provider::ModelToolCallKind::Function,
                     provider_data: None,
                 }],
-                2 if self.corrective_tool_round => vec![ModelBlock::ToolUse {
-                    id: "forbidden-follow-up-tool".into(),
-                    name: "GetAgent".into(),
-                    input: serde_json::json!({}),
-                    kind: crate::provider::ModelToolCallKind::Function,
-                    provider_data: None,
-                }],
+                2 if self.scenario == WaitForFinalReportScenario::DisallowedToolCorrective => {
+                    vec![ModelBlock::ToolUse {
+                        id: "forbidden-follow-up-tool".into(),
+                        name: "ExecCommand".into(),
+                        input: serde_json::json!({"cmd": "echo should-not-run"}),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    }]
+                }
+                2 | 3 if self.scenario == WaitForFinalReportScenario::AllowedToolBudget => {
+                    assert!(
+                        request.tools.iter().any(|tool| tool.name == "GetAgent"),
+                        "allowed report tools should remain available within the budget"
+                    );
+                    vec![ModelBlock::ToolUse {
+                        id: format!("allowed-report-tool-{}", *calls),
+                        name: "GetAgent".into(),
+                        input: serde_json::json!({}),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    }]
+                }
+                4 if self.scenario == WaitForFinalReportScenario::AllowedToolBudget => {
+                    assert!(
+                        request.tools.is_empty(),
+                        "the report request after two tool rounds must be text-only"
+                    );
+                    vec![ModelBlock::Text {
+                        text: "Waiting for final verification; I will resume when it changes."
+                            .into(),
+                    }]
+                }
                 2 | 3 => vec![ModelBlock::Text {
                     text: "Waiting for final verification; I will resume when it changes.".into(),
                 }],
