@@ -5070,6 +5070,72 @@ export interface components {
                 /** Format: uint64 */
                 total_ms: number;
             }[];
+            /**
+             * @default {
+             *       "foreground_queue_depth": 0,
+             *       "foreground_timeouts": 0,
+             *       "maintenance_queue_depth": 0,
+             *       "maintenance_timeouts": 0,
+             *       "max_foreground_queue_depth": 0,
+             *       "max_maintenance_queue_depth": 0,
+             *       "max_queue_depth": 0,
+             *       "operations": [],
+             *       "queue_depth": 0
+             *     }
+             */
+            memory_index_writer: {
+                /** Format: uint64 */
+                foreground_queue_depth: number;
+                /** Format: uint64 */
+                foreground_timeouts: number;
+                /** Format: uint64 */
+                maintenance_queue_depth: number;
+                /** Format: uint64 */
+                maintenance_timeouts: number;
+                /** Format: uint64 */
+                max_foreground_queue_depth: number;
+                /** Format: uint64 */
+                max_maintenance_queue_depth: number;
+                /** Format: uint64 */
+                max_queue_depth: number;
+                operations: {
+                    operation: string;
+                    queue_wait: {
+                        /** Format: double */
+                        avg_bytes?: number | null;
+                        /** Format: double */
+                        avg_ms: number;
+                        /** Format: uint64 */
+                        count: number;
+                        /** Format: uint64 */
+                        max_ms: number;
+                        name: string;
+                        /**
+                         * Format: uint64
+                         * @default 0
+                         */
+                        p50_ms: number;
+                        /**
+                         * Format: uint64
+                         * @default 0
+                         */
+                        p95_ms: number;
+                        /**
+                         * Format: uint64
+                         * @default 0
+                         */
+                        p99_ms: number;
+                        /** Format: uint64 */
+                        total_bytes?: number | null;
+                        /** Format: uint64 */
+                        total_ms: number;
+                    };
+                    /** Format: uint64 */
+                    timeouts: number;
+                }[];
+                /** Format: uint64 */
+                queue_depth: number;
+            };
             /** Format: uint64 */
             process_uptime_ms: number;
             projection_gate: {

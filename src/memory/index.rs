@@ -24,7 +24,8 @@ use crate::{
     agent_template::{agent_memory_operator_path, agent_memory_self_path},
     memory::refs::{RuntimeRef, ToolExecutionRefSelector, ToolOutputSelector},
     memory::write_coordinator::{
-        memory_index_write_coordinator, MemoryIndexWriteCoordinator, MemoryIndexWriteTurn,
+        memory_index_write_coordinator, MemoryIndexWriteClass, MemoryIndexWriteCoordinator,
+        MemoryIndexWriteTurn,
     },
     object_resolver::RuntimeObjectResolver,
     runtime_db::{EvidenceKind, RuntimeDb, RuntimeIndexOperation, RuntimeIndexOutboxRow},
@@ -862,7 +863,11 @@ impl MemoryIndex {
         let index_path = shared_indexes_dir.join(INDEX_FILENAME);
         let write_coordinator = memory_index_write_coordinator(&index_path)?;
         let deadline = Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE;
-        let _turn = write_coordinator.wait_turn_until("memory_index.open_writer", deadline)?;
+        let _turn = write_coordinator.wait_turn_until(
+            MemoryIndexWriteClass::Foreground,
+            "memory_index.open_writer",
+            deadline,
+        )?;
         let result = (|| {
             let connection = Connection::open(&index_path)?;
             let index = Self {
@@ -959,6 +964,7 @@ impl MemoryIndex {
 
     fn write_turn_until(
         &self,
+        write_class: MemoryIndexWriteClass,
         operation: &'static str,
         deadline: Instant,
     ) -> Result<MemoryIndexWriteTurn> {
@@ -966,7 +972,8 @@ impl MemoryIndex {
             self.access == MemoryIndexAccess::Writer,
             "cannot write through read-only memory index connection"
         );
-        self.write_coordinator.wait_turn_until(operation, deadline)
+        self.write_coordinator
+            .wait_turn_until(write_class, operation, deadline)
     }
 
     fn finish_write<T>(&self, operation: &'static str, result: Result<T>) -> Result<T> {
@@ -979,17 +986,36 @@ impl MemoryIndex {
         operation: &'static str,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.run_write_transaction_with_deadline(operation, MEMORY_INDEX_TRANSACTION_DEADLINE, f)
+        self.run_write_transaction_with_deadline(
+            MemoryIndexWriteClass::Foreground,
+            operation,
+            MEMORY_INDEX_TRANSACTION_DEADLINE,
+            f,
+        )
+    }
+
+    fn run_maintenance_write_transaction<T>(
+        &self,
+        operation: &'static str,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.run_write_transaction_with_deadline(
+            MemoryIndexWriteClass::Maintenance,
+            operation,
+            MEMORY_INDEX_TRANSACTION_DEADLINE,
+            f,
+        )
     }
 
     fn run_write_transaction_with_deadline<T>(
         &self,
+        write_class: MemoryIndexWriteClass,
         operation: &'static str,
         deadline: Duration,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         let deadline = Instant::now() + deadline;
-        let _turn = self.write_turn_until(operation, deadline)?;
+        let _turn = self.write_turn_until(write_class, operation, deadline)?;
         self.run_immediate_transaction_until(operation, deadline, f)
     }
 
@@ -1351,7 +1377,7 @@ impl MemoryIndex {
             .produced_watermark_for_agent(&agent_id)?;
         let generation = Uuid::new_v4().simple().to_string();
         let now = Utc::now();
-        self.run_write_transaction("memory_index.start_rebuild", |transaction| {
+        self.run_maintenance_write_transaction("memory_index.start_rebuild", |transaction| {
             transaction.execute(
                 "INSERT INTO memory_index_rebuild_jobs (
                     agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
@@ -1422,22 +1448,25 @@ impl MemoryIndex {
             } else {
                 MEMORY_INDEX_REBUILD_PHASE_SCAN
             };
-            self.run_write_transaction("memory_index.advance_rebuild_cursor", |transaction| {
-                transaction.execute(
-                    "UPDATE memory_index_rebuild_jobs
+            self.run_maintenance_write_transaction(
+                "memory_index.advance_rebuild_cursor",
+                |transaction| {
+                    transaction.execute(
+                        "UPDATE memory_index_rebuild_jobs
                          SET phase = ?1, source_kind_index = ?2, source_cursor = '',
                              source_offset = 0, last_progress_at = ?3
                          WHERE agent_id = ?4 AND generation = ?5",
-                    params![
-                        phase,
-                        i64::try_from(next_index).unwrap_or(i64::MAX),
-                        Utc::now().to_rfc3339(),
-                        job.agent_id,
-                        job.generation,
-                    ],
-                )?;
-                Ok(())
-            })?;
+                        params![
+                            phase,
+                            i64::try_from(next_index).unwrap_or(i64::MAX),
+                            Utc::now().to_rfc3339(),
+                            job.agent_id,
+                            job.generation,
+                        ],
+                    )?;
+                    Ok(())
+                },
+            )?;
             return Ok(0);
         }
 
@@ -1464,7 +1493,7 @@ impl MemoryIndex {
         }
 
         let now = Utc::now();
-        self.run_write_transaction("memory_index.rebuild_scan", |transaction| {
+        self.run_maintenance_write_transaction("memory_index.rebuild_scan", |transaction| {
             for document in &documents {
                 upsert_document_if_needed_tx(transaction, document)?;
                 upsert_source_state_tx(
@@ -1509,9 +1538,10 @@ impl MemoryIndex {
     fn prune_rebuild_slice(&mut self, job: &RebuildJob, slice_limit: usize) -> Result<usize> {
         let document_key_start = format!("{}:", job.agent_id);
         let document_key_end = format!("{};", job.agent_id);
-        let keys = self.run_write_transaction("memory_index.rebuild_prune", |transaction| {
-            let mut statement = transaction.prepare(
-                "SELECT d.document_key
+        let keys =
+            self.run_maintenance_write_transaction("memory_index.rebuild_prune", |transaction| {
+                let mut statement = transaction.prepare(
+                    "SELECT d.document_key
                      FROM memory_documents d
                      WHERE d.document_key >= ?1
                        AND d.document_key < ?2
@@ -1524,44 +1554,44 @@ impl MemoryIndex {
                        )
                      ORDER BY d.document_key
                      LIMIT ?5",
-            )?;
-            let rows = statement.query_map(
-                params![
-                    document_key_start,
-                    document_key_end,
-                    job.agent_id,
-                    job.generation,
-                    i64::try_from(slice_limit).unwrap_or(i64::MAX)
-                ],
-                |row| row.get::<_, String>(0),
-            )?;
-            let keys = rows.collect::<rusqlite::Result<Vec<_>>>()?;
-            drop(statement);
-            if keys.is_empty() {
-                transaction.execute(
-                    "UPDATE memory_index_rebuild_jobs
-                         SET phase = ?1, last_progress_at = ?2
-                         WHERE agent_id = ?3 AND generation = ?4",
+                )?;
+                let rows = statement.query_map(
                     params![
-                        MEMORY_INDEX_REBUILD_PHASE_FINALIZE,
-                        Utc::now().to_rfc3339(),
+                        document_key_start,
+                        document_key_end,
                         job.agent_id,
                         job.generation,
+                        i64::try_from(slice_limit).unwrap_or(i64::MAX)
                     ],
+                    |row| row.get::<_, String>(0),
                 )?;
-                return Ok(keys);
-            }
-            for document_key in &keys {
-                delete_document_tx(transaction, document_key)?;
-            }
-            transaction.execute(
-                "UPDATE memory_index_rebuild_jobs
+                let keys = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+                drop(statement);
+                if keys.is_empty() {
+                    transaction.execute(
+                        "UPDATE memory_index_rebuild_jobs
+                         SET phase = ?1, last_progress_at = ?2
+                         WHERE agent_id = ?3 AND generation = ?4",
+                        params![
+                            MEMORY_INDEX_REBUILD_PHASE_FINALIZE,
+                            Utc::now().to_rfc3339(),
+                            job.agent_id,
+                            job.generation,
+                        ],
+                    )?;
+                    return Ok(keys);
+                }
+                for document_key in &keys {
+                    delete_document_tx(transaction, document_key)?;
+                }
+                transaction.execute(
+                    "UPDATE memory_index_rebuild_jobs
                      SET last_progress_at = ?1
                      WHERE agent_id = ?2 AND generation = ?3",
-                params![Utc::now().to_rfc3339(), job.agent_id, job.generation],
-            )?;
-            Ok(keys)
-        })?;
+                    params![Utc::now().to_rfc3339(), job.agent_id, job.generation],
+                )?;
+                Ok(keys)
+            })?;
         if keys.is_empty() {
             return Ok(0);
         }
@@ -1580,7 +1610,7 @@ impl MemoryIndex {
             .context("runtime database is required for memory index rebuild")?;
         let runtime_id = runtime_index_runtime_id(&runtime_db);
         let now = Utc::now();
-        self.run_write_transaction("memory_index.rebuild_finalize", |transaction| {
+        self.run_maintenance_write_transaction("memory_index.rebuild_finalize", |transaction| {
             for source_kind in all_backfill_source_kinds() {
                 transaction.execute(
                     "INSERT INTO memory_index_checkpoints (agent_id, source_kind, cursor, updated_at)
@@ -1646,15 +1676,18 @@ impl MemoryIndex {
     }
 
     fn update_rebuild_phase(&self, job: &RebuildJob, phase: &str) -> Result<()> {
-        self.run_write_transaction("memory_index.update_rebuild_phase", |transaction| {
-            transaction.execute(
-                "UPDATE memory_index_rebuild_jobs
+        self.run_maintenance_write_transaction(
+            "memory_index.update_rebuild_phase",
+            |transaction| {
+                transaction.execute(
+                    "UPDATE memory_index_rebuild_jobs
                  SET phase = ?1, last_progress_at = ?2
                  WHERE agent_id = ?3 AND generation = ?4",
-                params![phase, Utc::now().to_rfc3339(), job.agent_id, job.generation],
-            )?;
-            Ok(())
-        })?;
+                    params![phase, Utc::now().to_rfc3339(), job.agent_id, job.generation],
+                )?;
+                Ok(())
+            },
+        )?;
         tracing::info!(
             agent_id = %job.agent_id,
             generation = %job.generation,
@@ -4884,6 +4917,7 @@ mod tests {
         let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
         let writer = MemoryIndex::open(&storage)?;
         let _turn = writer.write_turn_until(
+            MemoryIndexWriteClass::Foreground,
             "test.hold_writer",
             Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE,
         )?;
@@ -4911,6 +4945,7 @@ mod tests {
         drop(Connection::open(&index_path)?);
         let coordinator = memory_index_write_coordinator(&index_path)?;
         let writer_turn = coordinator.wait_turn_until(
+            MemoryIndexWriteClass::Foreground,
             "test.schema_initialization",
             Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE,
         )?;
@@ -5024,6 +5059,7 @@ mod tests {
 
         let error = index
             .run_write_transaction_with_deadline(
+                MemoryIndexWriteClass::Foreground,
                 "test.retry_deadline",
                 Duration::from_millis(50),
                 |_| {
@@ -5089,6 +5125,7 @@ mod tests {
         let mut waiting_index = MemoryIndex::open(&storage)?;
         let writer = MemoryIndex::open(&storage)?;
         let writer_turn = writer.write_turn_until(
+            MemoryIndexWriteClass::Foreground,
             "test.hold_writer",
             Instant::now() + MEMORY_INDEX_TRANSACTION_DEADLINE,
         )?;

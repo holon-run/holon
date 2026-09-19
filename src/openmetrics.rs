@@ -25,6 +25,57 @@ pub fn render(snapshot: &PerformanceDiagnosticsSnapshot) -> String {
         render_metric(&mut output, metric);
     }
 
+    let writer = &snapshot.memory_index_writer;
+    gauge(
+        &mut output,
+        "holon_memory_index_writer_queue_depth",
+        writer.queue_depth,
+    );
+    gauge(
+        &mut output,
+        "holon_memory_index_writer_max_queue_depth",
+        writer.max_queue_depth,
+    );
+    gauge(
+        &mut output,
+        "holon_memory_index_writer_foreground_queue_depth",
+        writer.foreground_queue_depth,
+    );
+    gauge(
+        &mut output,
+        "holon_memory_index_writer_max_foreground_queue_depth",
+        writer.max_foreground_queue_depth,
+    );
+    gauge(
+        &mut output,
+        "holon_memory_index_writer_maintenance_queue_depth",
+        writer.maintenance_queue_depth,
+    );
+    gauge(
+        &mut output,
+        "holon_memory_index_writer_max_maintenance_queue_depth",
+        writer.max_maintenance_queue_depth,
+    );
+    counter(
+        &mut output,
+        "holon_memory_index_writer_foreground_timeouts_total",
+        writer.foreground_timeouts,
+    );
+    counter(
+        &mut output,
+        "holon_memory_index_writer_maintenance_timeouts_total",
+        writer.maintenance_timeouts,
+    );
+    for operation in &writer.operations {
+        render_metric(&mut output, &operation.queue_wait);
+        let prefix = format!("holon_{}", metric_name(&operation.queue_wait.name));
+        counter(
+            &mut output,
+            &format!("{prefix}_timeouts_total"),
+            operation.timeouts,
+        );
+    }
+
     let gate = &snapshot.projection_gate;
     counter(
         &mut output,
@@ -324,11 +375,22 @@ mod tests {
 
         assert!(rendered.ends_with("# EOF\n"));
         assert_eq!(names.len(), samples.len(), "series names must be unique");
-        assert!(samples.len() < 500, "series count must remain bounded");
+        assert!(
+            samples.len() < 650,
+            "series count must remain bounded, got {}",
+            samples.len()
+        );
         assert!(samples.iter().all(|line| !line.contains('{')));
         assert!(names.contains("holon_otlp_exporter_queue_depth"));
         assert!(names.contains("holon_otlp_exporter_exported_spans_total"));
         assert!(names.contains("holon_otlp_exporter_failed_batches_total"));
+        assert!(names.contains("holon_memory_index_writer_queue_depth"));
+        assert!(names.contains("holon_memory_index_writer_foreground_timeouts_total"));
+        assert!(names.contains("holon_memory_index_writer_maintenance_timeouts_total"));
+        assert!(names.contains(
+            "holon_memory_index_writer_rebuild_scan_queue_wait_duration_milliseconds_p95"
+        ));
+        assert!(names.contains("holon_memory_index_writer_rebuild_scan_queue_wait_timeouts_total"));
         assert!(names.iter().all(|name| {
             name.chars()
                 .all(|character| character.is_ascii_alphanumeric() || character == '_')
