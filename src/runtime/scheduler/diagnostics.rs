@@ -173,7 +173,7 @@ pub(crate) fn scheduling_advisories_for_facts(
     diagnostics
 }
 
-fn scheduling_advisory_event(diagnostic: &SchedulingAdvisory) -> AuditEvent {
+pub(crate) fn scheduling_advisory_event(diagnostic: &SchedulingAdvisory) -> AuditEvent {
     AuditEvent::legacy(
         "scheduling_advisory",
         serde_json::json!({

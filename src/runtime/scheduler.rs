@@ -153,9 +153,14 @@ mod diagnostics;
 mod projection;
 
 pub(crate) use diagnostics::{append_ambiguous_wait_advisory, append_scheduling_advisories};
+// Preserve the pre-split scheduler facade even when the current crate has no callers.
 #[cfg(test)]
 pub(crate) use diagnostics::{
     scheduling_advisories, scheduling_advisories_for_facts, scheduling_advisories_with_queue_len,
+};
+#[allow(unused_imports)]
+pub(crate) use diagnostics::{
+    scheduling_advisory_event, SchedulingAdvisory, SchedulingAdvisorySeverity,
 };
 use projection::CanonicalWorkExecutionState;
 pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerProjection};
