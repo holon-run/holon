@@ -4831,30 +4831,16 @@ export interface components {
         };
         /** HttpErrorEnvelope */
         ErrorResponse: {
-            code?: string | null;
+            code: string;
             context?: {
                 [key: string]: string;
             };
-            correlation?: {
-                causation_id?: string | null;
-                correlation_id?: string | null;
-                message_id?: string | null;
-                model_ref?: string | null;
-                provider?: string | null;
-                run_id?: string | null;
-                task_id?: string | null;
-                tool_execution_id?: string | null;
-                turn_id?: string | null;
-                work_item_id?: string | null;
-            };
-            /** @enum {string|null} */
-            domain?: "runtime" | "storage" | "policy" | "io" | "conflict" | "not_found" | "validation" | "provider" | "tool" | "task" | "http" | "unknown" | null;
+            correlation?: components["schemas"]["RuntimeErrorContext"];
+            domain?: components["schemas"]["RuntimeErrorDomain"] | null;
             error: string;
             hint?: string | null;
             ok: boolean;
             retryable?: boolean | null;
-        } & {
-            [key: string]: unknown;
         };
         /** EventsPageResponse */
         EventsPageResponse: {
@@ -6057,6 +6043,20 @@ export interface components {
                 }[];
             };
         };
+        RuntimeErrorContext: {
+            causation_id?: string | null;
+            correlation_id?: string | null;
+            message_id?: string | null;
+            model_ref?: string | null;
+            provider?: string | null;
+            run_id?: string | null;
+            task_id?: string | null;
+            tool_execution_id?: string | null;
+            turn_id?: string | null;
+            work_item_id?: string | null;
+        };
+        /** @enum {string} */
+        RuntimeErrorDomain: "runtime" | "storage" | "policy" | "io" | "conflict" | "not_found" | "validation" | "provider" | "tool" | "task" | "http" | "unknown";
         /** SchedulerRepairInspection */
         SchedulerRepairInspection: {
             active_waits: {

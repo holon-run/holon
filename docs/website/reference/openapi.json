@@ -9040,13 +9040,9 @@
         "type": "object"
       },
       "ErrorResponse": {
-        "additionalProperties": true,
         "properties": {
           "code": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "context": {
             "additionalProperties": {
@@ -9055,89 +9051,16 @@
             "type": "object"
           },
           "correlation": {
-            "properties": {
-              "causation_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "correlation_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "message_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "model_ref": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "provider": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "run_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "task_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "tool_execution_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "turn_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "work_item_id": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              }
-            },
-            "type": "object"
+            "$ref": "#/components/schemas/RuntimeErrorContext"
           },
           "domain": {
-            "enum": [
-              "runtime",
-              "storage",
-              "policy",
-              "io",
-              "conflict",
-              "not_found",
-              "validation",
-              "provider",
-              "tool",
-              "task",
-              "http",
-              "unknown",
-              null
-            ],
-            "type": [
-              "string",
-              "null"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeErrorDomain"
+              },
+              {
+                "type": "null"
+              }
             ]
           },
           "error": {
@@ -9161,7 +9084,8 @@
         },
         "required": [
           "ok",
-          "error"
+          "error",
+          "code"
         ],
         "title": "HttpErrorEnvelope",
         "type": "object"
@@ -13056,6 +12980,88 @@
         ],
         "title": "RuntimeConfigUpdateResponse",
         "type": "object"
+      },
+      "RuntimeErrorContext": {
+        "properties": {
+          "causation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "correlation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model_ref": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tool_execution_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "work_item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "RuntimeErrorDomain": {
+        "enum": [
+          "runtime",
+          "storage",
+          "policy",
+          "io",
+          "conflict",
+          "not_found",
+          "validation",
+          "provider",
+          "tool",
+          "task",
+          "http",
+          "unknown"
+        ],
+        "type": "string"
       },
       "SchedulerRepairInspection": {
         "properties": {

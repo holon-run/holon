@@ -393,10 +393,10 @@ fn event_seq_not_found(
 ) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::NOT_FOUND,
-        HttpErrorEnvelope::new(format!(
-            "after_seq {after_seq} was not found in the replay window"
-        ))
-        .code("cursor_not_found")
+        HttpErrorEnvelope::new(
+            "cursor_not_found",
+            format!("after_seq {after_seq} was not found in the replay window"),
+        )
         .extension("after_seq", after_seq)
         .extension("event_seq", after_seq)
         .extension("event_log_epoch", recovery_window.event_log_epoch.clone())

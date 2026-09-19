@@ -225,8 +225,10 @@ pub async fn stream(
                 crate::diagnostics::record_conversation_cursor_failure();
                 return http_error(
                     StatusCode::BAD_REQUEST,
-                    HttpErrorEnvelope::new("Last-Event-ID is not valid UTF-8")
-                        .code("conversation_cursor_malformed"),
+                    HttpErrorEnvelope::new(
+                        "conversation_cursor_malformed",
+                        "Last-Event-ID is not valid UTF-8",
+                    ),
                 )
                 .into_response();
             }
@@ -685,8 +687,10 @@ pub async fn activities(
     let Some(response) = activity_response(snapshot) else {
         return http_error(
             StatusCode::NOT_FOUND,
-            HttpErrorEnvelope::new("no conversation turn for this request")
-                .code("conversation_turn_not_found"),
+            HttpErrorEnvelope::new(
+                "conversation_turn_not_found",
+                "no conversation turn for this request",
+            ),
         )
         .into_response();
     };
@@ -843,7 +847,7 @@ fn activity_response(
 fn agent_not_found() -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::NOT_FOUND,
-        HttpErrorEnvelope::new("no accessible Agent for this request").code("agent_not_found"),
+        HttpErrorEnvelope::new("agent_not_found", "no accessible Agent for this request"),
     )
 }
 
@@ -860,8 +864,7 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
             actual,
         } => http_error(
             StatusCode::BAD_REQUEST,
-            HttpErrorEnvelope::new(error.to_string())
-                .code("conversation_invalid_limit")
+            HttpErrorEnvelope::new("conversation_invalid_limit", error.to_string())
                 .extension("resource", *resource)
                 .extension("minimum", *minimum)
                 .extension("maximum", *maximum)
@@ -869,15 +872,13 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
         ),
         ConversationReadError::CountLimitExceeded { resource, limit } => http_error(
             StatusCode::PAYLOAD_TOO_LARGE,
-            HttpErrorEnvelope::new(error.to_string())
-                .code("conversation_count_limit_exceeded")
+            HttpErrorEnvelope::new("conversation_count_limit_exceeded", error.to_string())
                 .extension("resource", *resource)
                 .extension("limit", *limit),
         ),
         ConversationReadError::CursorOutsideCoverage => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(error.to_string())
-                .code("conversation_cursor_outside_coverage")
+            HttpErrorEnvelope::new("conversation_cursor_outside_coverage", error.to_string())
                 .hint("restart from a fresh conversation snapshot"),
         ),
         ConversationReadError::Cursor(cursor_error) => {
@@ -906,7 +907,7 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
             };
             http_error(
                 StatusCode::BAD_REQUEST,
-                HttpErrorEnvelope::new(error.to_string()).code(code),
+                HttpErrorEnvelope::new(code, error.to_string()),
             )
         }
         ConversationReadError::ResetRequired {
@@ -916,8 +917,7 @@ fn conversation_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
             event_head_seq,
         } => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(error.to_string())
-                .code("conversation_reset_required")
+            HttpErrorEnvelope::new("conversation_reset_required", error.to_string())
                 .hint("restart from a fresh conversation snapshot")
                 .extension(
                     "reason",
@@ -949,8 +949,7 @@ fn conversation_stream_error(error: anyhow::Error) -> (StatusCode, Json<Value>) 
             record_cursor_reset(cursor_error);
             return http_error(
                 StatusCode::CONFLICT,
-                HttpErrorEnvelope::new(error.to_string())
-                    .code("conversation_reset_required")
+                HttpErrorEnvelope::new("conversation_reset_required", error.to_string())
                     .hint("restart from a fresh conversation snapshot")
                     .extension(
                         "reason",
@@ -1042,11 +1041,13 @@ fn oversized_turn<'a>(
             crate::diagnostics::record_conversation_payload_failure();
             return Some(http_error(
                 StatusCode::PAYLOAD_TOO_LARGE,
-                HttpErrorEnvelope::new("conversation turn exceeds the maximum serialized size")
-                    .code("conversation_turn_too_large")
-                    .extension("turn_id", turn.turn_id.clone())
-                    .extension("serialized_bytes", serialized_bytes)
-                    .extension("max_serialized_bytes", max_serialized_bytes),
+                HttpErrorEnvelope::new(
+                    "conversation_turn_too_large",
+                    "conversation turn exceeds the maximum serialized size",
+                )
+                .extension("turn_id", turn.turn_id.clone())
+                .extension("serialized_bytes", serialized_bytes)
+                .extension("max_serialized_bytes", max_serialized_bytes),
             ));
         }
     }
@@ -1062,8 +1063,7 @@ fn payload_too_large(
     crate::diagnostics::record_conversation_payload_failure();
     http_error(
         StatusCode::PAYLOAD_TOO_LARGE,
-        HttpErrorEnvelope::new(message)
-            .code(code)
+        HttpErrorEnvelope::new(code, message)
             .extension("serialized_bytes", serialized_bytes)
             .extension("max_serialized_bytes", max_serialized_bytes),
     )
@@ -1073,11 +1073,13 @@ fn timeout_error(kind: &'static str, timeout: Duration) -> (StatusCode, Json<Val
     crate::diagnostics::record_conversation_timeout();
     http_error(
         StatusCode::SERVICE_UNAVAILABLE,
-        HttpErrorEnvelope::new(format!(
-            "conversation {kind} snapshot exceeded the {} second budget",
-            timeout.as_secs()
-        ))
-        .code("conversation_snapshot_timeout")
+        HttpErrorEnvelope::new(
+            "conversation_snapshot_timeout",
+            format!(
+                "conversation {kind} snapshot exceeded the {} second budget",
+                timeout.as_secs()
+            ),
+        )
         .retryable(true),
     )
 }

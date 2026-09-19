@@ -224,8 +224,7 @@ pub struct AppState {
 pub(crate) struct HttpErrorEnvelope {
     ok: bool,
     error: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    code: Option<String>,
+    code: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -241,11 +240,11 @@ pub(crate) struct HttpErrorEnvelope {
 }
 
 impl HttpErrorEnvelope {
-    fn new(error: impl Into<String>) -> Self {
+    fn new(code: impl Into<String>, error: impl Into<String>) -> Self {
         Self {
             ok: false,
             error: error.into(),
-            code: None,
+            code: code.into(),
             hint: None,
             domain: None,
             retryable: None,
@@ -253,11 +252,6 @@ impl HttpErrorEnvelope {
             correlation: Box::default(),
             extensions: Map::new(),
         }
-    }
-
-    fn code(mut self, code: impl Into<String>) -> Self {
-        self.code = Some(code.into());
-        self
     }
 
     fn hint(mut self, hint: impl Into<String>) -> Self {
@@ -275,23 +269,22 @@ impl HttpErrorEnvelope {
         self
     }
 
-    fn descriptor(mut self, descriptor: RuntimeErrorDescriptor) -> Self {
-        self.error = descriptor.operator_message;
-        self.code = Some(descriptor.code);
-        self.hint = descriptor.recovery_hint;
-        self.domain = Some(descriptor.domain);
-        self.retryable = Some(descriptor.retryable);
-        self.correlation.message_id = descriptor.safe_context.get("message_id").cloned();
-        self.correlation.turn_id = descriptor.safe_context.get("turn_id").cloned();
-        self.correlation.run_id = descriptor.safe_context.get("run_id").cloned();
-        self.correlation.work_item_id = descriptor.safe_context.get("work_item_id").cloned();
-        self.correlation.tool_execution_id =
+    fn from_descriptor(descriptor: RuntimeErrorDescriptor) -> Self {
+        let mut envelope = Self::new(descriptor.code, descriptor.operator_message);
+        envelope.hint = descriptor.recovery_hint;
+        envelope.domain = Some(descriptor.domain);
+        envelope.retryable = Some(descriptor.retryable);
+        envelope.correlation.message_id = descriptor.safe_context.get("message_id").cloned();
+        envelope.correlation.turn_id = descriptor.safe_context.get("turn_id").cloned();
+        envelope.correlation.run_id = descriptor.safe_context.get("run_id").cloned();
+        envelope.correlation.work_item_id = descriptor.safe_context.get("work_item_id").cloned();
+        envelope.correlation.tool_execution_id =
             descriptor.safe_context.get("tool_execution_id").cloned();
-        self.correlation.task_id = descriptor.safe_context.get("task_id").cloned();
-        self.correlation.provider = descriptor.safe_context.get("provider").cloned();
-        self.correlation.model_ref = descriptor.safe_context.get("model_ref").cloned();
-        self.context = descriptor.safe_context;
-        self
+        envelope.correlation.task_id = descriptor.safe_context.get("task_id").cloned();
+        envelope.correlation.provider = descriptor.safe_context.get("provider").cloned();
+        envelope.correlation.model_ref = descriptor.safe_context.get("model_ref").cloned();
+        envelope.context = descriptor.safe_context;
+        envelope
     }
 }
 
@@ -1045,10 +1038,12 @@ pub(crate) fn projection_gate_error_response(error: ProjectionGateError) -> Axum
             StatusCode::TOO_MANY_REQUESTS,
             [(axum::http::header::RETRY_AFTER, "1")],
             Json(
-                HttpErrorEnvelope::new("projection capacity is busy; retry later")
-                    .code("projection_busy")
-                    .hint("keep the current projection and retry on the next scheduled refresh")
-                    .retryable(true),
+                HttpErrorEnvelope::new(
+                    "projection_busy",
+                    "projection capacity is busy; retry later",
+                )
+                .hint("keep the current projection and retry on the next scheduled refresh")
+                .retryable(true),
             ),
         )
             .into_response(),
@@ -1367,15 +1362,14 @@ pub(crate) fn validate_operator_transport_delivery_auth(
 pub(crate) fn forbidden(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::FORBIDDEN,
-        HttpErrorEnvelope::new(reason).code("forbidden"),
+        HttpErrorEnvelope::new("forbidden", reason),
     )
 }
 
 pub(crate) fn auth_required(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::UNAUTHORIZED,
-        HttpErrorEnvelope::new(reason)
-            .code("auth_required")
+        HttpErrorEnvelope::new("auth_required", reason)
             .hint("retry with an Authorization: Bearer <session> header or session cookie"),
     )
 }
@@ -1383,21 +1377,21 @@ pub(crate) fn auth_required(reason: impl Into<String>) -> (StatusCode, Json<Valu
 pub(crate) fn bad_request(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::BAD_REQUEST,
-        HttpErrorEnvelope::new(reason).code("bad_request"),
+        HttpErrorEnvelope::new("bad_request", reason),
     )
 }
 
 pub(crate) fn service_unavailable(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::SERVICE_UNAVAILABLE,
-        HttpErrorEnvelope::new(reason).code("service_unavailable"),
+        HttpErrorEnvelope::new("service_unavailable", reason),
     )
 }
 
 pub(crate) fn not_found(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::NOT_FOUND,
-        HttpErrorEnvelope::new(reason).code("not_found"),
+        HttpErrorEnvelope::new("not_found", reason),
     )
 }
 
@@ -1447,8 +1441,7 @@ pub(crate) fn stopped_agent_conflict(
     );
     http_error(
         StatusCode::CONFLICT,
-        HttpErrorEnvelope::new(reason)
-            .code("agent_stopped")
+        HttpErrorEnvelope::new("agent_stopped", reason)
             .hint(hint)
             .extension("agent_id", agent_id),
     )
@@ -1464,40 +1457,39 @@ pub(crate) fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<V
         }
         PublicAgentError::Deleted { agent_id } => http_error(
             StatusCode::GONE,
-            HttpErrorEnvelope::new(format!("agent {} was deleted", agent_id))
-                .code("agent_deleted")
+            HttpErrorEnvelope::new("agent_deleted", format!("agent {} was deleted", agent_id))
                 .extension("agent_id", agent_id),
         ),
         PublicAgentError::Deleting { agent_id } => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(format!("agent {} is being deleted", agent_id))
-                .code("agent_deleting")
-                .extension("agent_id", agent_id),
+            HttpErrorEnvelope::new(
+                "agent_deleting",
+                format!("agent {} is being deleted", agent_id),
+            )
+            .extension("agent_id", agent_id),
         ),
         PublicAgentError::DeleteForbidden { agent_id, reason } => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(reason)
-                .code("agent_delete_forbidden")
+            HttpErrorEnvelope::new("agent_delete_forbidden", reason)
                 .extension("agent_id", agent_id),
         ),
         PublicAgentError::RenameForbidden { agent_id, reason } => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(reason)
-                .code("agent_rename_forbidden")
+            HttpErrorEnvelope::new("agent_rename_forbidden", reason)
                 .extension("agent_id", agent_id),
         ),
         PublicAgentError::InvalidName { agent_id, reason } => http_error(
             StatusCode::BAD_REQUEST,
-            HttpErrorEnvelope::new(reason)
-                .code("agent_name_invalid")
-                .extension("agent_id", agent_id),
+            HttpErrorEnvelope::new("agent_name_invalid", reason).extension("agent_id", agent_id),
         ),
         PublicAgentError::NameConflict { agent_id, name } => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(format!("agent name {:?} is already in use", name))
-                .code("agent_name_conflict")
-                .extension("agent_id", agent_id)
-                .extension("name", name),
+            HttpErrorEnvelope::new(
+                "agent_name_conflict",
+                format!("agent name {:?} is already in use", name),
+            )
+            .extension("agent_id", agent_id)
+            .extension("name", name),
         ),
         PublicAgentError::Stopped { agent_id } => stopped_agent_conflict(
             format!("agent {} is stopped; start first", agent_id),
@@ -1505,8 +1497,7 @@ pub(crate) fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<V
         ),
         PublicAgentError::ShuttingDown => http_error(
             StatusCode::SERVICE_UNAVAILABLE,
-            HttpErrorEnvelope::new("runtime is shutting down")
-                .code("runtime_shutting_down")
+            HttpErrorEnvelope::new("runtime_shutting_down", "runtime is shutting down")
                 .retryable(true),
         ),
         PublicAgentError::Runtime(error) => error_response(error),
@@ -1520,18 +1511,20 @@ pub(crate) fn abort_error_response(error: anyhow::Error) -> (StatusCode, Json<Va
             current_run_id,
         }) => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(format!(
-                "stale run_id {requested_run_id}; current run is {current_run_id}"
-            ))
-            .code("stale_run_id")
+            HttpErrorEnvelope::new(
+                "stale_run_id",
+                format!("stale run_id {requested_run_id}; current run is {current_run_id}"),
+            )
             .extension("requested_run_id", requested_run_id)
             .extension("current_run_id", current_run_id),
         ),
         Ok(CurrentRunAbortError::NoCurrentRun { agent_id }) => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(format!("agent {agent_id} has no current run to abort"))
-                .code("no_current_run")
-                .extension("agent_id", agent_id),
+            HttpErrorEnvelope::new(
+                "no_current_run",
+                format!("agent {agent_id} has no current run to abort"),
+            )
+            .extension("agent_id", agent_id),
         ),
         Err(error) => error_response(error),
     }
@@ -1541,8 +1534,7 @@ pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode,
     match error.downcast::<crate::skills::SkillInstallConflict>() {
         Ok(conflict) => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(conflict.to_string())
-                .code("skill_already_installed")
+            HttpErrorEnvelope::new("skill_already_installed", conflict.to_string())
                 .hint("uninstall the existing skill first or choose a different skill name")
                 .extension("skill_name", conflict.skill_name)
                 .extension(
@@ -1562,8 +1554,7 @@ pub(crate) fn skill_install_error_response(error: anyhow::Error) -> (StatusCode,
             Err(error) => match error.downcast::<crate::skills::RemoteSkillInstallTimedOut>() {
                 Ok(timeout) => http_error(
                     StatusCode::GATEWAY_TIMEOUT,
-                    HttpErrorEnvelope::new(timeout.to_string())
-                        .code("remote_skill_install_timeout")
+                    HttpErrorEnvelope::new("remote_skill_install_timeout", timeout.to_string())
                         .extension("package", timeout.package)
                         .extension("timeout_seconds", timeout.timeout_seconds),
                 ),
@@ -1578,10 +1569,9 @@ fn remote_skill_install_failed_envelope(
 ) -> HttpErrorEnvelope {
     if failed.status == Some(404) {
         let package = failed.package;
-        return HttpErrorEnvelope::new(format!(
+        return HttpErrorEnvelope::new("remote_skill_not_found", format!(
             "remote skill '{package}' was not found; for multi-skill GitHub repositories, specify a skill name such as '{package}@<skill>' or fill the Skill field"
         ))
-        .code("remote_skill_not_found")
         .hint("browse the repository's skills/ directory and install one concrete skill")
         .extension("package", package)
         .extension("exit_status", 404)
@@ -1589,8 +1579,7 @@ fn remote_skill_install_failed_envelope(
         .extension("stderr", failed.stderr);
     }
 
-    HttpErrorEnvelope::new(failed.to_string())
-        .code("remote_skill_install_failed")
+    HttpErrorEnvelope::new("remote_skill_install_failed", failed.to_string())
         .extension("package", failed.package)
         .extension("exit_status", failed.status)
         .extension("stdout", failed.stdout)
@@ -1600,10 +1589,7 @@ fn remote_skill_install_failed_envelope(
 pub(crate) fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
     let descriptor = describe_runtime_error(&error);
     let status = runtime_error_status(&descriptor);
-    http_error(
-        status,
-        HttpErrorEnvelope::new(descriptor.operator_message.clone()).descriptor(descriptor),
-    )
+    http_error(status, HttpErrorEnvelope::from_descriptor(descriptor))
 }
 
 fn runtime_error_status(descriptor: &RuntimeErrorDescriptor) -> StatusCode {
@@ -1695,7 +1681,7 @@ mod tests {
     use super::{
         add_retry_after_to_service_unavailable, authenticate_session, error_response,
         if_none_match_satisfied, projection_gate_error_response, router, session_credential,
-        AppState, ProjectionGate, ProjectionGateError,
+        AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -1793,6 +1779,18 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[test]
+    fn http_error_envelope_always_serializes_machine_code() {
+        let value = serde_json::to_value(HttpErrorEnvelope::new(
+            "invalid_request",
+            "request is invalid",
+        ))
+        .expect("serialize HTTP error envelope");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"], "request is invalid");
+        assert_eq!(value["code"], "invalid_request");
     }
 
     #[tokio::test]
