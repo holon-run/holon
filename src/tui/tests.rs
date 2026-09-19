@@ -376,17 +376,13 @@ fn build_workspace_snapshot_from_active(
             access_mode: Some(entry.access_mode),
             worktree: entry.projection_metadata.as_ref().map(|m| {
                 let (branch, path) = match m {
-                    crate::types::WorkspaceProjectionMetadata::ManagedWorktree {
-                        worktree_branch,
-                        worktree_path,
-                        ..
-                    } => (
-                        Some(worktree_branch.clone()),
-                        Some(worktree_path.display().to_string()),
+                    crate::types::WorkspaceProjectionMetadata::ManagedWorktree(metadata) => (
+                        Some(metadata.worktree_branch.clone()),
+                        Some(metadata.worktree_path.display().to_string()),
                     ),
-                    crate::types::WorkspaceProjectionMetadata::ExistingGitWorktree {
-                        worktree_root,
-                    } => (None, Some(worktree_root.display().to_string())),
+                    crate::types::WorkspaceProjectionMetadata::ExistingGitWorktree(metadata) => {
+                        (None, Some(metadata.worktree_root.display().to_string()))
+                    }
                 };
                 WorktreeInfo {
                     branch,

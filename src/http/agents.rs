@@ -8,6 +8,36 @@ use crate::{
     provider::resolved_model_availability,
 };
 
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct HandshakeResponse {
+    pub ok: bool,
+    pub protocol: HandshakeProtocol,
+    pub auth: HandshakeAuth,
+    pub capabilities: Vec<String>,
+    pub runtime: HandshakeRuntime,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct HandshakeProtocol {
+    pub name: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct HandshakeAuth {
+    pub mode: String,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct HandshakeRuntime {
+    pub default_agent: String,
+    pub workspace_dir: String,
+    pub home_dir: String,
+    pub listen: String,
+    pub advertise_url: Option<String>,
+}
+
 pub async fn root(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -257,25 +287,32 @@ pub async fn handshake(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let config = state.host.config();
-    Ok(Json(json!({
-        "ok": true,
-        "protocol": {
-            "name": "holon-control",
-            "version": 1,
+    Ok(Json(HandshakeResponse {
+        ok: true,
+        protocol: HandshakeProtocol {
+            name: "holon-control".to_string(),
+            version: 1,
         },
-        "auth": {
-            "mode": if state.require_control_token { "bearer" } else { "local" },
-            "required": state.require_control_token,
+        auth: HandshakeAuth {
+            mode: if state.require_control_token {
+                "bearer".to_string()
+            } else {
+                "local".to_string()
+            },
+            required: state.require_control_token,
         },
-        "capabilities": handshake_capabilities(&state),
-        "runtime": {
-            "default_agent": config.default_agent_id,
-            "workspace_dir": config.workspace_dir,
-            "home_dir": config.home_dir,
-            "listen": config.http_addr,
-            "advertise_url": state.advertise_url,
-        }
-    })))
+        capabilities: handshake_capabilities(&state)
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        runtime: HandshakeRuntime {
+            default_agent: config.default_agent_id.clone(),
+            workspace_dir: config.workspace_dir.to_string_lossy().into_owned(),
+            home_dir: config.home_dir.to_string_lossy().into_owned(),
+            listen: config.http_addr.to_string(),
+            advertise_url: state.advertise_url.clone(),
+        },
+    }))
 }
 
 pub async fn list_agent_entries(

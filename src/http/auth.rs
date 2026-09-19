@@ -24,7 +24,7 @@ pub struct AuthMethodResponse {
     mode: crate::authentication::AuthenticationMode,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct CurrentUserResponse {
     ok: bool,
     user_id: String,

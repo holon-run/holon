@@ -101,7 +101,7 @@ pub enum IncomingOrigin {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
 pub(crate) struct EnqueueResponse {
     pub(crate) ok: bool,
     pub(crate) agent_id: String,
@@ -130,7 +130,7 @@ pub(crate) struct CallbackResponse {
     pub(crate) result: CallbackDeliveryResult,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Eq)]
 pub struct ControlPromptRequest {
     pub text: String,
     #[serde(default)]
@@ -139,19 +139,90 @@ pub struct ControlPromptRequest {
     pub attachments: Vec<ControlPromptAttachment>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ControlPromptAttachment {
-    Image {
-        name: Option<String>,
-        media_type: String,
-        data_base64: String,
-    },
-    File {
-        name: Option<String>,
-        media_type: String,
-        data_base64: String,
-    },
+    Image(ControlPromptImageAttachment),
+    File(ControlPromptFileAttachment),
+}
+
+impl JsonSchema for ControlPromptAttachment {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ControlPromptAttachment".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "oneOf": [
+                generator.subschema_for::<ControlPromptImageAttachment>(),
+                generator.subschema_for::<ControlPromptFileAttachment>()
+            ],
+            "discriminator": {
+                "propertyName": "kind",
+                "mapping": {
+                    "image": "#/components/schemas/ControlPromptImageAttachment",
+                    "file": "#/components/schemas/ControlPromptFileAttachment"
+                }
+            }
+        })
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct ControlPromptImageAttachment {
+    pub name: Option<String>,
+    pub media_type: String,
+    pub data_base64: String,
+}
+
+impl JsonSchema for ControlPromptImageAttachment {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ControlPromptImageAttachment".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        control_prompt_attachment_schema("image")
+    }
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct ControlPromptFileAttachment {
+    pub name: Option<String>,
+    pub media_type: String,
+    pub data_base64: String,
+}
+
+impl JsonSchema for ControlPromptFileAttachment {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ControlPromptFileAttachment".into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        control_prompt_attachment_schema("file")
+    }
+}
+
+fn control_prompt_attachment_schema(kind: &'static str) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "object",
+        "properties": {
+            "kind": {
+                "type": "string",
+                "const": kind,
+                "enum": [kind]
+            },
+            "name": {
+                "type": ["string", "null"]
+            },
+            "media_type": {
+                "type": "string"
+            },
+            "data_base64": {
+                "type": "string"
+            }
+        },
+        "required": ["kind", "media_type", "data_base64"]
+    })
 }
 
 #[derive(Debug, Deserialize, Serialize)]

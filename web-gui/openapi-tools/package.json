@@ -8,6 +8,7 @@
     "check": "node generate-openapi-types.mjs --check"
   },
   "devDependencies": {
+    "@openapitools/openapi-generator-cli": "2.41.0",
     "openapi-typescript": "7.13.0",
     "typescript": "5.9.3"
   }

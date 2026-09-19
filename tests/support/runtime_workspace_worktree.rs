@@ -237,7 +237,7 @@ pub async fn use_workspace_path_adopts_attached_parent_for_existing_git_worktree
     assert!(state.worktree_session.is_none());
     assert!(matches!(
         active.projection_metadata.as_ref(),
-        Some(WorkspaceProjectionMetadata::ExistingGitWorktree { .. })
+        Some(WorkspaceProjectionMetadata::ExistingGitWorktree(_))
     ));
     Ok(())
 }

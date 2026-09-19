@@ -1071,11 +1071,11 @@ fn control_prompt_text_with_attachments(
     for (index, attachment) in request.attachments.into_iter().enumerate() {
         let position = index + 1;
         match attachment {
-            ControlPromptAttachment::Image {
+            ControlPromptAttachment::Image(ControlPromptImageAttachment {
                 name,
                 media_type,
                 data_base64,
-            } => {
+            }) => {
                 let bytes = decode_control_prompt_attachment(
                     "image",
                     position,
@@ -1101,11 +1101,11 @@ fn control_prompt_text_with_attachments(
                     percent_encode_path_segment(&file_name)
                 ));
             }
-            ControlPromptAttachment::File {
+            ControlPromptAttachment::File(ControlPromptFileAttachment {
                 name,
                 media_type,
                 data_base64,
-            } => {
+            }) => {
                 let bytes = decode_control_prompt_attachment(
                     "file",
                     position,
@@ -1352,6 +1352,19 @@ mod tests {
         assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
     }
 
+    #[test]
+    fn control_prompt_request_ignores_unknown_fields() {
+        let request: ControlPromptRequest = serde_json::from_value(json!({
+            "text": "hello",
+            "future_field": true
+        }))
+        .unwrap();
+
+        assert_eq!(request.text, "hello");
+        assert_eq!(request.work_item_id, None);
+        assert!(request.attachments.is_empty());
+    }
+
     fn encoded(bytes: &[u8]) -> String {
         BASE64_STANDARD.encode(bytes)
     }
@@ -1375,11 +1388,13 @@ mod tests {
             ControlPromptRequest {
                 text: "look".into(),
                 work_item_id: None,
-                attachments: vec![ControlPromptAttachment::Image {
-                    name: Some("diagram.png".into()),
-                    media_type: "image/png".into(),
-                    data_base64: encoded(b"png"),
-                }],
+                attachments: vec![ControlPromptAttachment::Image(
+                    ControlPromptImageAttachment {
+                        name: Some("diagram.png".into()),
+                        media_type: "image/png".into(),
+                        data_base64: encoded(b"png"),
+                    },
+                )],
             },
         )
         .unwrap();
@@ -1402,11 +1417,11 @@ mod tests {
             ControlPromptRequest {
                 text: "read this".into(),
                 work_item_id: None,
-                attachments: vec![ControlPromptAttachment::File {
+                attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("report.pdf".into()),
                     media_type: "application/pdf".into(),
                     data_base64: encoded(b"%PDF-1.7"),
-                }],
+                })],
             },
         )
         .unwrap();
@@ -1448,11 +1463,11 @@ mod tests {
             ControlPromptRequest {
                 text: String::new(),
                 work_item_id: None,
-                attachments: vec![ControlPromptAttachment::File {
+                attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("empty.txt".into()),
                     media_type: "text/plain".into(),
                     data_base64: encoded(b""),
-                }],
+                })],
             },
         )
         .unwrap_err();
@@ -1469,11 +1484,11 @@ mod tests {
             ControlPromptRequest {
                 text: String::new(),
                 work_item_id: None,
-                attachments: vec![ControlPromptAttachment::File {
+                attachments: vec![ControlPromptAttachment::File(ControlPromptFileAttachment {
                     name: Some("../../secret[name].md".into()),
                     media_type: "text/markdown".into(),
                     data_base64: encoded(b"# secret"),
-                }],
+                })],
             },
         )
         .unwrap();

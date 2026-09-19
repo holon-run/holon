@@ -136,15 +136,21 @@ impl WorkspaceEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(untagged)]
 pub enum WorkspaceProjectionMetadata {
-    ManagedWorktree {
-        original_cwd: PathBuf,
-        original_branch: String,
-        worktree_path: PathBuf,
-        worktree_branch: String,
-    },
-    ExistingGitWorktree {
-        worktree_root: PathBuf,
-    },
+    ManagedWorktree(ManagedWorktreeProjectionMetadata),
+    ExistingGitWorktree(ExistingGitWorktreeProjectionMetadata),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ManagedWorktreeProjectionMetadata {
+    pub original_cwd: PathBuf,
+    pub original_branch: String,
+    pub worktree_path: PathBuf,
+    pub worktree_branch: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ExistingGitWorktreeProjectionMetadata {
+    pub worktree_root: PathBuf,
 }
 
 /// Unified per-workspace info returned by the workspace state snapshot.
@@ -6092,12 +6098,14 @@ mod tests {
             access_mode: WorkspaceAccessMode::ExclusiveWrite,
             cwd: PathBuf::from("/tmp/ws-b"),
             occupancy_id: Some("occupancy-b".into()),
-            projection_metadata: Some(WorkspaceProjectionMetadata::ManagedWorktree {
-                original_cwd: PathBuf::from("/tmp/ws-b"),
-                original_branch: "main".into(),
-                worktree_path: PathBuf::from("/tmp/ws-b-worktree"),
-                worktree_branch: "feature/metadata-test".into(),
-            }),
+            projection_metadata: Some(WorkspaceProjectionMetadata::ManagedWorktree(
+                ManagedWorktreeProjectionMetadata {
+                    original_cwd: PathBuf::from("/tmp/ws-b"),
+                    original_branch: "main".into(),
+                    worktree_path: PathBuf::from("/tmp/ws-b-worktree"),
+                    worktree_branch: "feature/metadata-test".into(),
+                },
+            )),
         });
         state.worktree_session = Some(WorktreeSession {
             original_cwd: PathBuf::from("/tmp/ws-b"),

@@ -1,7 +1,9 @@
-.PHONY: help web web-ci conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
+KOTLIN_WIRE_CHECK_DIR := $(OPENAPI_TOOLS_DIR)/kotlin-compile-check
+GRADLE ?= gradle
 CONVERSATION_SDK_DIR := packages/conversation-sdk
 CONCURRENT_REPEATS ?= 3
 DOCKER_IMAGE ?= holon:dev
@@ -37,6 +39,7 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 	cd $(CONVERSATION_SDK_DIR) && npm_config_engine_strict=true npm ci && npm test && \
 	cd ../../$(OPENAPI_TOOLS_DIR) && npm ci && npm run check && \
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
+	$(MAKE) transport-types-kotlin-check
 
 conversation-sdk-ci: ## Test the TypeScript conversation SDK against the real Rust HTTP/SSE server
 	@bash -c 'set -e; \
@@ -58,15 +61,18 @@ macos-menu-package: ## Package a universal (x86_64 + arm64) Holon.app and DMG
 		-output target/universal-macos/release/holon
 	scripts/package-macos-menu-app.sh target/universal-macos/release/holon dist
 
-transport-types: ## Refresh OpenAPI and generated TypeScript transport types
+transport-types: ## Refresh OpenAPI and generated TypeScript/Kotlin transport types
 	cargo test --test openapi_snapshot refresh_openapi_snapshot -- --ignored
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
 	cd $(OPENAPI_TOOLS_DIR) && npm ci && npm run generate
 
-transport-types-check: ## Check OpenAPI and generated TypeScript transport type drift
+transport-types-check: ## Check OpenAPI and generated TypeScript/Kotlin transport type drift
 	cargo test --test openapi_snapshot
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
 	cd $(OPENAPI_TOOLS_DIR) && npm ci && npm run check
+
+transport-types-kotlin-check: ## Compile generated Kotlin transport types
+	$(GRADLE) --no-daemon -p $(KOTLIN_WIRE_CHECK_DIR) compileKotlin
 
 snapshots-check: ## Check CLI, OpenAPI, HTTP route, runtime status, and model tool schema snapshots
 	cargo test --test cli_snapshot

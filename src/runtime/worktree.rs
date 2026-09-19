@@ -203,12 +203,14 @@ impl RuntimeHandle {
                 access_mode: WorkspaceAccessMode::ExclusiveWrite,
                 cwd: worktree_path.clone(),
                 occupancy_id: occupancy.as_ref().map(|record| record.occupancy_id.clone()),
-                projection_metadata: Some(WorkspaceProjectionMetadata::ManagedWorktree {
-                    original_cwd: worktree_session.original_cwd.clone(),
-                    original_branch: worktree_session.original_branch.clone(),
-                    worktree_path: worktree_session.worktree_path.clone(),
-                    worktree_branch: worktree_session.worktree_branch.clone(),
-                }),
+                projection_metadata: Some(WorkspaceProjectionMetadata::ManagedWorktree(
+                    crate::types::ManagedWorktreeProjectionMetadata {
+                        original_cwd: worktree_session.original_cwd.clone(),
+                        original_branch: worktree_session.original_branch.clone(),
+                        worktree_path: worktree_session.worktree_path.clone(),
+                        worktree_branch: worktree_session.worktree_branch.clone(),
+                    },
+                )),
             });
             guard.state.worktree_session = Some(worktree_session.clone());
             guard.persist_state(&self.inner.storage)?;

@@ -269,7 +269,30 @@ describe("AgentSessionRepository ledger ingestion", () => {
       event_head_seq: 2,
       oldest_retained_seq: 0,
       projection: {
-        agent: {},
+        agent: {
+          identity: {
+            agent_id: "agent-a",
+            can_rename: false,
+            incarnation: 1,
+            is_default_agent: false,
+            status: "active",
+          },
+          lifecycle: {
+            accepts_external_messages: true,
+          },
+          model: {
+            source: "runtime_default",
+            runtime_default_model: "openai-codex@default/gpt-5.6",
+            effective_model: "openai-codex@default/gpt-5.6",
+            fallback_active: false,
+          },
+          pending: 0,
+          scheduling_posture: {
+            posture: "idle",
+            reason: "idle",
+          },
+          status: "awake_idle",
+        },
         conversation: { latest_message_id: null, latest_transcript_entry_id: null },
         current_work_item: null,
         hydration_references: [],

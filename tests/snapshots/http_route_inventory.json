@@ -1730,7 +1730,7 @@
       }
     ],
     "request_schema": "ControlPromptRequest",
-    "request_strict": false,
+    "request_strict": null,
     "response_content_types": [
       "application/json"
     ],

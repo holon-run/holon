@@ -426,11 +426,10 @@ fn resolve_reference(
 
 fn ensure_reference_length(value: &str) -> Result<(), (StatusCode, Json<Value>)> {
     if value.len() > MAX_REFERENCE_LENGTH {
-        return Err((
+        return Err(http_error(
             StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": "file reference exceeds maximum length",
-            })),
+            HttpErrorEnvelope::new("file reference exceeds maximum length")
+                .code("file_reference_too_long"),
         ));
     }
     Ok(())
@@ -441,20 +440,20 @@ fn file_location_error_response(
 ) -> (StatusCode, Json<Value>) {
     match error {
         crate::system::FileLocationError::PathNotFound => not_found(error.to_string()),
-        crate::system::FileLocationError::RootRemoved => (
+        crate::system::FileLocationError::RootRemoved => http_error(
             StatusCode::GONE,
-            Json(json!({ "error": error.to_string() })),
+            HttpErrorEnvelope::new(error.to_string()).code("file_root_removed"),
         ),
         crate::system::FileLocationError::PathEscapesRoot => forbidden(error.to_string()),
         crate::system::FileLocationError::RootNotFound
         | crate::system::FileLocationError::InvalidWorkspaceUri
-        | crate::system::FileLocationError::InvalidEncoding => (
+        | crate::system::FileLocationError::InvalidEncoding => http_error(
             StatusCode::BAD_REQUEST,
-            Json(json!({ "error": error.to_string() })),
+            HttpErrorEnvelope::new(error.to_string()).code("invalid_file_reference"),
         ),
-        crate::system::FileLocationError::AmbiguousRoot => (
+        crate::system::FileLocationError::AmbiguousRoot => http_error(
             StatusCode::CONFLICT,
-            Json(json!({ "error": error.to_string() })),
+            HttpErrorEnvelope::new(error.to_string()).code("ambiguous_file_root"),
         ),
     }
 }
@@ -486,13 +485,13 @@ pub(crate) async fn resolve_file_references(
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     if request.references.len() > MAX_RESOLVE_REFERENCES {
-        return Err((
+        return Err(http_error(
             StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": format!(
-                    "at most {MAX_RESOLVE_REFERENCES} file references may be resolved at once"
-                ),
-            })),
+            HttpErrorEnvelope::new(format!(
+                "at most {MAX_RESOLVE_REFERENCES} file references may be resolved at once"
+            ))
+            .code("too_many_file_references")
+            .extension("maximum", MAX_RESOLVE_REFERENCES),
         ));
     }
     let roots = registered_file_roots(&state)?;
