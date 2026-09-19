@@ -1235,6 +1235,16 @@ impl RuntimeHandle {
             let (child_agent_id, child_turn_baseline, task_detail) = match spawned {
                 Ok(spawned) => spawned,
                 Err(err) => {
+                    let failed_child_agent_id = err
+                        .downcast_ref::<crate::host::ChildTaskSpawnFailure>()
+                        .map(|failure| failure.child_agent_id().to_string());
+                    let mut failed_task_detail = task_record
+                        .detail
+                        .clone()
+                        .unwrap_or_else(|| serde_json::json!({}));
+                    if let Some(child_agent_id) = failed_child_agent_id.as_ref() {
+                        failed_task_detail["child_agent_id"] = serde_json::json!(child_agent_id);
+                    }
                     let result_message = MessageEnvelope {
                         turn_id: Some(crate::ids::turn_id()),
                         metadata: Some(serde_json::json!({
@@ -1242,7 +1252,7 @@ impl RuntimeHandle {
                             "task_kind": task_record.kind,
                             "task_status": "failed",
                             "task_summary": task_record.summary,
-                            "task_detail": task_record.detail,
+                            "task_detail": failed_task_detail,
                             "task_recovery": task_record.recovery,
                             "work_item_id": task_record.work_item_id.clone(),
                         })),
@@ -1266,22 +1276,54 @@ impl RuntimeHandle {
                     let failed_task = task_with_result_message(
                         &task_record,
                         TaskStatus::Failed,
-                        task_record.detail.clone(),
+                        Some(failed_task_detail),
                         &result_message,
                     );
-                    if let Err(error) = runtime
-                        .commit_terminal_task_result(
+                    let agent_deletion =
+                        failed_child_agent_id.as_ref().and_then(|child_agent_id| {
+                            (lifecycle_disposition == AgentLifecycleDisposition::DeleteOnTerminal)
+                                .then(|| {
+                                    crate::runtime_db::repositories::AgentDeletionRequest {
+                                agent_id: child_agent_id.clone(),
+                                admission: crate::runtime_db::repositories::
+                                    AgentDeletionAdmission::TerminalEphemeralChild {
+                                        parent_agent_id: agent_id.clone(),
+                                        task_id: failed_task.id.clone(),
+                                    },
+                                requested_by: "parent_task_spawn_failed".into(),
+                                cascade_private_children: false,
+                            }
+                                })
+                        });
+                    match runtime
+                        .commit_terminal_child_task_result(
                             &failed_task,
                             "task_status_updated",
                             &result_message,
+                            agent_deletion,
                         )
                         .await
                     {
-                        tracing::warn!(
+                        Ok(true) => {
+                            if let Some(child_agent_id) = failed_child_agent_id.as_deref() {
+                                if let Err(error) =
+                                    bridge.activate_agent_deletion(child_agent_id).await
+                                {
+                                    tracing::warn!(
+                                        task_id = %failed_task.id,
+                                        child_agent_id,
+                                        error = %error,
+                                        "failed child deletion job persisted but coordinator activation failed"
+                                    );
+                                }
+                            }
+                        }
+                        Ok(false) => {}
+                        Err(error) => tracing::warn!(
                             task_id = %failed_task.id,
                             error = %error,
                             "failed to persist terminal task status before task result"
-                        );
+                        ),
                     }
 
                     runtime
@@ -1662,7 +1704,7 @@ impl RuntimeHandle {
                 cascade_private_children: false,
             });
         match self
-            .commit_terminal_task_result_with_agent_deletion(
+            .commit_terminal_child_task_result(
                 &terminal_task,
                 "task_status_updated",
                 &result_message,
@@ -1670,7 +1712,7 @@ impl RuntimeHandle {
             )
             .await
         {
-            Ok(()) if lifecycle_disposition == AgentLifecycleDisposition::DeleteOnTerminal => {
+            Ok(true) => {
                 if let Err(error) = bridge.activate_agent_deletion(&child_agent_id).await {
                     tracing::warn!(
                         task_id = %terminal_task.id,
@@ -1680,7 +1722,7 @@ impl RuntimeHandle {
                     );
                 }
             }
-            Ok(()) => {}
+            Ok(false) => {}
             Err(error) => {
                 tracing::warn!(
                     task_id = %terminal_task.id,

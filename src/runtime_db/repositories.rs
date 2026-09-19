@@ -43,6 +43,30 @@ pub(crate) struct AgentDeletionRequest {
     pub cascade_private_children: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("terminal child deletion admission rejected for agent {agent_id}: {reason}")]
+pub(crate) struct TerminalChildDeletionAdmissionRejected {
+    agent_id: String,
+    reason: String,
+}
+
+impl TerminalChildDeletionAdmissionRejected {
+    fn new(agent_id: &str, reason: impl Into<String>) -> Self {
+        Self {
+            agent_id: agent_id.to_string(),
+            reason: reason.into(),
+        }
+    }
+}
+
+pub(crate) fn is_terminal_child_deletion_admission_rejected(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<TerminalChildDeletionAdmissionRejected>()
+            .is_some()
+    })
+}
+
 impl WorkItemRepository<'_> {
     pub fn import_legacy(&self, records: Vec<WorkItemRecord>) -> Result<()> {
         if self.db.storage_domain_is_complete("work_items", "db")? {
@@ -807,8 +831,22 @@ pub(crate) fn ensure_agent_deletion_tx(
             [agent_id],
             |row| row.get::<_, String>(0),
         )
-        .optional()?
-        .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
+        .optional()?;
+    let payload = match payload {
+        Some(payload) => payload,
+        None if matches!(
+            request.admission,
+            AgentDeletionAdmission::TerminalEphemeralChild { .. }
+        ) =>
+        {
+            return Err(TerminalChildDeletionAdmissionRejected::new(
+                agent_id,
+                "identity not found",
+            )
+            .into());
+        }
+        None => return Err(anyhow!("agent {agent_id} not found")),
+    };
     let mut identity = decode_agent_identity_payload(&payload)?;
 
     let existing_job = tx
@@ -858,47 +896,51 @@ pub(crate) fn ensure_agent_deletion_tx(
             parent_agent_id,
             task_id,
         } => {
-            anyhow::ensure!(
-                identity.status != AgentRegistryStatus::Deleted,
-                "terminal child cleanup does not repair deleted agent {agent_id}"
-            );
-            anyhow::ensure!(
-                identity.kind == AgentKind::Child
-                    && identity.visibility == AgentVisibility::Private
-                    && identity.ownership() == AgentOwnership::ParentSupervised,
-                "agent {agent_id} is not a private parent-supervised child"
-            );
+            let reject = |reason| {
+                anyhow::Error::new(TerminalChildDeletionAdmissionRejected::new(
+                    agent_id, reason,
+                ))
+            };
+            if identity.status == AgentRegistryStatus::Deleted {
+                return Err(reject("identity is already deleted"));
+            }
+            if identity.kind != AgentKind::Child
+                || identity.visibility != AgentVisibility::Private
+                || identity.ownership() != AgentOwnership::ParentSupervised
+            {
+                return Err(reject("identity is not a private parent-supervised child"));
+            }
             let relations = canonical_relations_from_connection(tx, agent_id)?
-                .ok_or_else(|| anyhow!("agent {agent_id} has no canonical relation projection"))?;
-            anyhow::ensure!(
-                relations.resolution == AgentCanonicalResolution::Resolved,
-                "agent {agent_id} canonical relations are not resolved"
-            );
+                .ok_or_else(|| reject("canonical relation projection is missing"))?;
+            if relations.resolution != AgentCanonicalResolution::Resolved {
+                return Err(reject("canonical relations are not resolved"));
+            }
             let lineage = relations
                 .lineage
                 .as_ref()
-                .ok_or_else(|| anyhow!("agent {agent_id} has no canonical lineage"))?;
+                .ok_or_else(|| reject("canonical lineage is missing"))?;
             let supervision = relations
                 .supervision
                 .as_ref()
-                .ok_or_else(|| anyhow!("agent {agent_id} has no canonical supervision"))?;
+                .ok_or_else(|| reject("canonical supervision is missing"))?;
             let durability = relations
                 .durability
                 .as_ref()
-                .ok_or_else(|| anyhow!("agent {agent_id} has no canonical durability"))?;
+                .ok_or_else(|| reject("canonical durability is missing"))?;
             let lifecycle_attachment = relations
                 .lifecycle_attachment
                 .as_ref()
-                .ok_or_else(|| anyhow!("agent {agent_id} has no canonical lifecycle attachment"))?;
-            anyhow::ensure!(
-                lineage.parent_agent_id == *parent_agent_id
-                    && supervision.supervisor_agent_id == *parent_agent_id
-                    && supervision.delegated_from_task_id.as_deref() == Some(task_id.as_str())
-                    && durability.durability == AgentCanonicalDurability::Ephemeral
-                    && lifecycle_attachment.attachment
-                        == AgentLifecycleAttachment::SupervisionAttached,
-                "agent {agent_id} is not the terminal ephemeral child owned by parent task {task_id}"
-            );
+                .ok_or_else(|| reject("canonical lifecycle attachment is missing"))?;
+            if lineage.parent_agent_id != *parent_agent_id
+                || supervision.supervisor_agent_id != *parent_agent_id
+                || supervision.delegated_from_task_id.as_deref() != Some(task_id.as_str())
+                || durability.durability != AgentCanonicalDurability::Ephemeral
+                || lifecycle_attachment.attachment != AgentLifecycleAttachment::SupervisionAttached
+            {
+                return Err(reject(&format!(
+                    "canonical relations do not attach the child to parent task {task_id}"
+                )));
+            }
             identity.revision
         }
     };

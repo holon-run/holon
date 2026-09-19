@@ -506,6 +506,42 @@ impl RuntimeHandle {
         self.apply_task_transition(transition).await
     }
 
+    pub(super) async fn commit_terminal_child_task_result(
+        &self,
+        task: &TaskRecord,
+        event_kind: &'static str,
+        message: &MessageEnvelope,
+        deletion: Option<crate::runtime_db::repositories::AgentDeletionRequest>,
+    ) -> Result<bool> {
+        let deletion_requested = deletion.is_some();
+        match self
+            .commit_terminal_task_result_with_agent_deletion(
+                task,
+                event_kind,
+                message,
+                deletion,
+            )
+            .await
+        {
+            Ok(()) => Ok(deletion_requested),
+            Err(error)
+                if deletion_requested
+                    && crate::runtime_db::repositories::
+                        is_terminal_child_deletion_admission_rejected(&error) =>
+            {
+                tracing::warn!(
+                    task_id = %task.id,
+                    error = %error,
+                    "terminal child deletion admission rejected; settling task without deletion"
+                );
+                self.commit_terminal_task_result(task, event_kind, message)
+                    .await?;
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub(super) async fn reduce_task_status_message(&self, task: TaskRecord) -> Result<()> {
         self.persist_task_transition(&task, "task_status_updated")
             .await
@@ -1388,5 +1424,49 @@ mod tests {
 
         let briefs = runtime.storage().read_recent_briefs(10).unwrap();
         assert!(briefs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rejected_terminal_child_deletion_still_settles_parent_task() {
+        let runtime = runtime();
+        let running = task("task-1", TaskStatus::Running, false);
+        runtime
+            .reduce_task_status_message(running.clone())
+            .await
+            .unwrap();
+
+        let mut terminal = running;
+        terminal.status = TaskStatus::Failed;
+        terminal.updated_at = Utc::now();
+        let message = task_result_message(&terminal.id);
+        let deletion = crate::runtime_db::repositories::AgentDeletionRequest {
+            agent_id: "default".into(),
+            admission:
+                crate::runtime_db::repositories::AgentDeletionAdmission::TerminalEphemeralChild {
+                    parent_agent_id: "default".into(),
+                    task_id: terminal.id.clone(),
+                },
+            requested_by: "parent_task_terminal".into(),
+            cascade_private_children: false,
+        };
+
+        assert!(!runtime
+            .commit_terminal_child_task_result(
+                &terminal,
+                "task_status_updated",
+                &message,
+                Some(deletion),
+            )
+            .await
+            .unwrap());
+        assert_eq!(
+            runtime
+                .task_record(&terminal.id)
+                .await
+                .unwrap()
+                .expect("terminal task should remain persisted")
+                .status,
+            TaskStatus::Failed
+        );
     }
 }
