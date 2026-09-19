@@ -1436,6 +1436,30 @@ mod tests {
     }
 
     #[test]
+    fn idle_agent_without_pending_work_emits_no_system_tick() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(!emitted, "idle agent without pending work should stay idle");
+        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
+        assert!(
+            test_runtime
+                .runtime
+                .inner
+                .agent
+                .blocking_lock()
+                .queue
+                .is_empty(),
+            "idle reconciliation should not enqueue a message without a trigger"
+        );
+    }
+
+    #[test]
     fn queue_nonempty_consumes_due_blocked_recheck_without_tick() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
@@ -1640,6 +1664,68 @@ mod tests {
     }
 
     #[test]
+    fn current_work_item_takes_precedence_over_due_blocked_recheck() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        add_current_work_item(&test_runtime, "wi-active", "active-target");
+        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
+        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(emitted, "current runnable work should emit a system tick");
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "work_queue");
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("continue_active"));
+        assert_eq!(ticks[0].1["work_item_id"].as_str(), Some("wi-active"));
+
+        let latest = latest_work_item(&test_runtime, "wi-blocked");
+        assert!(
+            latest
+                .recheck_consumed_at
+                .zip(latest.recheck_at)
+                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
+            "the execution opportunity should consume the due recheck"
+        );
+    }
+
+    #[test]
+    fn queued_work_item_takes_precedence_over_due_blocked_recheck() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
+        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(emitted, "queued runnable work should emit a system tick");
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "work_queue");
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("queued_available"));
+        assert_eq!(ticks[0].1["work_item_id"].as_str(), Some("wi-queued"));
+
+        let latest = latest_work_item(&test_runtime, "wi-blocked");
+        assert!(
+            latest
+                .recheck_consumed_at
+                .zip(latest.recheck_at)
+                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
+            "the execution opportunity should consume the due recheck"
+        );
+    }
+
+    #[test]
     fn current_work_item_takes_precedence_over_queued_notification() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
@@ -1667,6 +1753,37 @@ mod tests {
             "continue_active",
             "Active item should be continued, not queued item activated"
         );
+    }
+
+    #[test]
+    fn queued_notification_selects_the_oldest_runnable_work_item() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+
+        let now = Utc::now();
+        let mut newer = WorkItemRecord::new("default", "newer-target", WorkItemState::Open);
+        newer.id = "wi-newer".to_string();
+        newer.created_at = now;
+        newer.updated_at = now;
+        persist_test_work_item(&test_runtime, &newer);
+
+        let mut older = WorkItemRecord::new("default", "older-target", WorkItemState::Open);
+        older.id = "wi-older".to_string();
+        older.created_at = now - chrono::Duration::seconds(1);
+        older.updated_at = older.created_at;
+        persist_test_work_item(&test_runtime, &older);
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let emitted = rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(emitted, "oldest queued work should emit a system tick");
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].0, "work_queue");
+        assert_eq!(ticks[0].1["reason"].as_str(), Some("queued_available"));
+        assert_eq!(ticks[0].1["work_item_id"].as_str(), Some("wi-older"));
     }
 
     #[test]
