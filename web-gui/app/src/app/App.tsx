@@ -638,7 +638,7 @@ export function App() {
                           aria-label={unreadTitle(unreadView, t)}
                           title={unreadTitle(unreadView, t)}
                         >
-                          {formatUnreadCount(unreadView.count)}{unreadView.mode === "truncated" ? "+" : ""}
+                          {formatUnreadBadge(unreadView.count, unreadView.mode === "truncated")}
                         </span>
                       ) : null}
                       <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
@@ -1201,8 +1201,9 @@ function unreadTitle(
   if (view.mode === "stale_sync_error") return t("app.unreadSyncError");
   return t("app.unreadUpdates", { count: view.count });
 }
-function formatUnreadCount(count: number): string {
-  return count > 99 ? "99+" : String(count);
+export function formatUnreadBadge(count: number, truncated: boolean): string {
+  if (count > 99) return "99+";
+  return truncated ? `${count}+` : String(count);
 }
 
 function StatusDotIcon({ tone, size = 13 }: { tone: string; size?: number }) {
