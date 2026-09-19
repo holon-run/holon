@@ -288,6 +288,75 @@ impl RuntimeDb {
             auto_vacuum_after: pragma_u64(&connection, "auto_vacuum")? as u32,
         })
     }
+
+    /// Best-effort online WAL checkpoint for long-running daemons.
+    ///
+    /// `wal_autocheckpoint` only recycles WAL frames: the file keeps its
+    /// high-water mark, so every page read still pays a wal-index lookup that
+    /// grows with the checkpoint history. TRUNCATE also resets the file. The
+    /// short busy timeout keeps maintenance non-blocking: a busy runtime
+    /// reports `busy` and retries on the next maintenance round.
+    pub fn run_wal_checkpoint_pass(&self) -> Result<RuntimeDbWalCheckpointReport> {
+        const WAL_CHECKPOINT_BUSY_TIMEOUT_MS: u64 = 500;
+
+        let started_at = Utc::now();
+        let started = Instant::now();
+        let wal_path = wal_sidecar_path(&self.path);
+        let wal_bytes_before = file_size(&wal_path).unwrap_or(0);
+        let connection = self.connection()?;
+        connection.busy_timeout(std::time::Duration::from_millis(
+            WAL_CHECKPOINT_BUSY_TIMEOUT_MS,
+        ))?;
+        let (busy, log_frames, checkpointed_frames) = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .or_else(|error| match error {
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if failure.code == rusqlite::ffi::ErrorCode::DatabaseBusy =>
+                {
+                    Ok((1, 0, 0))
+                }
+                other => Err(other),
+            })?;
+        Ok(RuntimeDbWalCheckpointReport {
+            started_at,
+            elapsed_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+            wal_bytes_before,
+            wal_bytes_after: file_size(&wal_path).unwrap_or(0),
+            busy: busy != 0,
+            log_frames: log_frames.max(0) as u64,
+            checkpointed_frames: checkpointed_frames.max(0) as u64,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct RuntimeDbWalCheckpointReport {
+    pub started_at: DateTime<Utc>,
+    pub elapsed_ms: u64,
+    pub wal_bytes_before: u64,
+    pub wal_bytes_after: u64,
+    /// True when readers or writers held the WAL and the pass could not
+    /// finish; the next maintenance round retries.
+    pub busy: bool,
+    /// Frames reported by the checkpoint pragma. A completed TRUNCATE
+    /// resets the wal-index, so both counters read zero on success; the
+    /// authoritative success signals are `busy == false` and
+    /// `wal_bytes_after`.
+    pub log_frames: u64,
+    /// See `log_frames`: zero after a completed TRUNCATE pass.
+    pub checkpointed_frames: u64,
+}
+
+fn wal_sidecar_path(db_path: &Path) -> std::path::PathBuf {
+    let mut wal = db_path.as_os_str().to_os_string();
+    wal.push("-wal");
+    wal.into()
 }
 
 fn build_retention_report(
@@ -1225,6 +1294,63 @@ mod tests {
         let error = RuntimeDb::compact_offline(&db_path, &migration_lock, &maintenance_lock)
             .expect_err("compact must fail while daemon maintenance lock is held");
         assert!(error.to_string().contains("daemon to be stopped"));
+        Ok(())
+    }
+
+    #[test]
+    fn wal_checkpoint_pass_truncates_the_wal_file() -> Result<()> {
+        let (_directory, db) = runtime_db()?;
+        let now = Utc::now();
+        for id in ["wal-a", "wal-b", "wal-c"] {
+            let mut entry = TranscriptEntry::new(
+                "agent-a",
+                TranscriptEntryKind::IncomingMessage,
+                None,
+                None,
+                serde_json::json!({"text": id}),
+            );
+            entry.id = id.into();
+            entry.created_at = now;
+            db.transcript_entries().append(&entry)?;
+        }
+        assert!(file_size(&wal_sidecar_path(db.path()))? > 0);
+
+        let report = db.run_wal_checkpoint_pass()?;
+
+        assert!(!report.busy);
+        assert!(report.wal_bytes_before > 0);
+        assert_eq!(report.wal_bytes_after, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn wal_checkpoint_pass_reports_busy_while_reader_holds_snapshot() -> Result<()> {
+        let (_directory, db) = runtime_db()?;
+        let mut entry = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::IncomingMessage,
+            None,
+            None,
+            serde_json::json!({"text": "wal-busy"}),
+        );
+        entry.created_at = Utc::now();
+        db.transcript_entries().append(&entry)?;
+
+        let reader = db.connection()?;
+        let read_tx = reader.unchecked_transaction()?;
+        let _entries: i64 =
+            read_tx.query_row("SELECT COUNT(*) FROM transcript_entries", [], |row| {
+                row.get(0)
+            })?;
+
+        let busy_report = db.run_wal_checkpoint_pass()?;
+        assert!(busy_report.busy);
+
+        drop(read_tx);
+        drop(reader);
+        let retried = db.run_wal_checkpoint_pass()?;
+        assert!(!retried.busy);
+        assert_eq!(retried.wal_bytes_after, 0);
         Ok(())
     }
 }
