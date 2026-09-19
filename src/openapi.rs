@@ -11,10 +11,11 @@ use crate::{
     http::{
         AgentDeletionResponse, AgentDeletionStatusResponse, BatchGetBriefsRequest,
         BatchGetMessagesRequest, BatchGetTranscriptEntriesRequest, CancelTimerRequest,
-        CompleteWorkItemRequest, ConversationActivityResponse, ConversationReadQuery,
-        ConversationShadowQuery, ConversationStreamMessage, ConversationSummaryResponse,
-        CreateTimerRequest, DeleteAgentRequest, DesktopCapabilities, MemoryGetRequest,
-        ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
+        CompleteWorkItemRequest, ControlPromptRequest, ConversationActivityResponse,
+        ConversationReadQuery, ConversationShadowQuery, ConversationStreamMessage,
+        ConversationSummaryResponse, CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest,
+        DesktopCapabilities, EnqueueResponse, HandshakeResponse, HttpErrorEnvelope,
+        MemoryGetRequest, ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
         ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
         RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
         SearchRequest, SearchResponse, UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
@@ -25,7 +26,7 @@ use crate::{
     observability::{RecentTrace, RecentTraceSummary},
     runtime::{SchedulerRepairInspection, SchedulerRepairRequest, SchedulerRepairResult},
     types::{
-        AddSkillRequest, BriefRecord, CheckSkillRequest, ReconcileSkillRequest,
+        AddSkillRequest, AgentListEntry, BriefRecord, CheckSkillRequest, ReconcileSkillRequest,
         RefreshCatalogRequest, SyncTemplateRemoteSourcesRequest, TaskInputResult, TaskOutputResult,
         TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord, WorkItemRecord,
     },
@@ -76,10 +77,10 @@ enum MetadataSource {
 // contracts are tightened in follow-up work.
 const ROUTES: &[RouteSpec] = &[
     route("get", "/", "root", "discovery", "Root discovery", "Return the default agent id.", None, AuthKind::RemoteAccess),
-    route("get", "/handshake", "handshake", "discovery", "Protocol handshake", "Return auth mode, protocol version, capabilities, and runtime hints.", None, AuthKind::RemoteAccess),
+    route_with_response("get", "/handshake", "handshake", "discovery", "Protocol handshake", "Return auth mode, protocol version, capabilities, and runtime hints.", None, "HandshakeResponse", AuthKind::RemoteAccess),
     route("get", "/models", "models", "discovery", "List available models", "Return model catalog entries and runtime availability.", None, AuthKind::RemoteAccess),
     route("post", "/models/refresh", "refreshModels", "discovery", "Refresh available models", "Discover models for providers with missing or expired caches, then return the model catalog and runtime availability.", None, AuthKind::RemoteAccess),
-    aide_route("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries.", None, AuthKind::RemoteAccess),
+    aide_route_with_response("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries.", None, "AgentListResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/snapshot", "agentsSnapshot", "agents", "Agent roster snapshot", "Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentRosterSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/projection-snapshot", "agentProjectionSnapshot", "agents", "Agent projection snapshot", "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentProjectionSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
@@ -162,7 +163,7 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/control/agents/{agent_id}/model/clear", "clearAgentModel", "control", "Clear agent model override", "Clear an agent model override.", Some("ClearAgentModelRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/control", "controlAgent", "control", "Control agent lifecycle", "Submit a lifecycle control action.", Some("ControlRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/current-run/abort", "abortCurrentRun", "control", "Abort current run", "Request abort for the current agent run.", Some("AbortCurrentRunRequest"), AuthKind::Control),
-    route("post", "/control/agents/{agent_id}/prompt", "controlPrompt", "control", "Submit operator prompt", "Submit a trusted operator prompt through the control plane.", Some("ControlPromptRequest"), AuthKind::Control),
+    route_with_response("post", "/control/agents/{agent_id}/prompt", "controlPrompt", "control", "Submit operator prompt", "Submit a trusted operator prompt through the control plane.", Some("ControlPromptRequest"), "EnqueueResponse", AuthKind::Control),
     route("post", "/control/agents/{agent_id}/operator-bindings", "createOperatorTransportBinding", "control", "Create operator binding", "Create or update a remote operator transport binding.", Some("OperatorTransportBindingRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/operator-ingress", "operatorIngress", "control", "Operator ingress", "Deliver an authenticated remote operator prompt.", Some("OperatorIngressRequest"), AuthKind::Control),
     route("get", "/control/runtime/readiness", "runtimeReadiness", "runtime", "Runtime readiness", "Return daemon readiness metadata.", None, AuthKind::Control),
@@ -181,7 +182,7 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/auth/codex/device/start", "startCodexDeviceLogin", "auth", "Start Codex device login", "Request an OpenAI Codex device code and start a background job that persists the OAuth credential profile after user authorization.", None, AuthKind::Control),
     route("post", "/auth/{provider}/device/start", "startOAuthDeviceLogin", "auth", "Start OAuth device login", "Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex and xai.", None, AuthKind::Control),
     route("get", "/auth/method", "authMethod", "auth", "Authentication method", "Return the configured authentication mode used by the Web login page.", None, AuthKind::None),
-    route("get", "/auth/session/me", "sessionMe", "auth", "Current session user", "Return the identity behind the current session: the authenticated OIDC user, or the stable local control identity for static-token deployments.", None, AuthKind::None),
+    route_with_response("get", "/auth/session/me", "sessionMe", "auth", "Current session user", "Return the identity behind the current session: the authenticated OIDC user, or the stable local control identity for static-token deployments.", None, "CurrentUserResponse", AuthKind::None),
     route("post", "/control/runtime/shutdown", "runtimeShutdown", "runtime", "Runtime shutdown", "Request graceful runtime shutdown.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/debug-prompt", "debugPrompt", "control", "Debug prompt", "Render a diagnostic prompt preview.", Some("DebugPromptRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/wake", "controlWake", "control", "Wake agent", "Submit a trusted wake hint.", Some("ControlWakeRequest"), AuthKind::Control),
@@ -270,6 +271,32 @@ const fn aide_route(
         description,
         request_schema,
         response_schema: None,
+        response_kind: ResponseKind::Json,
+        auth,
+        metadata_source: MetadataSource::Aide,
+    }
+}
+
+const fn aide_route_with_response(
+    method: &'static str,
+    path: &'static str,
+    operation_id: &'static str,
+    tag: &'static str,
+    summary: &'static str,
+    description: &'static str,
+    request_schema: Option<&'static str>,
+    response_schema: &'static str,
+    auth: AuthKind,
+) -> RouteSpec {
+    RouteSpec {
+        method,
+        path,
+        operation_id,
+        tag,
+        summary,
+        description,
+        request_schema,
+        response_schema: Some(response_schema),
         response_kind: ResponseKind::Json,
         auth,
         metadata_source: MetadataSource::Aide,
@@ -696,20 +723,27 @@ fn component_schemas() -> Value {
     }));
     schemas.insert(
         "ErrorResponse".into(),
-        json!({
-            "type": "object",
-            "properties": {
-                "ok": { "type": "boolean", "const": false },
-                "error": { "type": "string" },
-                "code": { "type": "string" },
-                "agent_id": { "type": "string" },
-                "hint": { "type": "string" },
-                "after_seq": { "type": "integer", "minimum": 0 },
-                "event_seq": { "type": "integer", "minimum": 0 }
-            },
-            "required": ["error"],
-            "additionalProperties": true
-        }),
+        component_schema::<HttpErrorEnvelope>(),
+    );
+    schemas.insert(
+        "HandshakeResponse".into(),
+        component_schema_with_refs::<HandshakeResponse>(),
+    );
+    schemas.insert(
+        "AgentListResponse".into(),
+        component_schema_with_refs::<Vec<AgentListEntry>>(),
+    );
+    schemas.insert(
+        "CurrentUserResponse".into(),
+        component_schema_with_refs::<CurrentUserResponse>(),
+    );
+    schemas.insert(
+        "ControlPromptRequest".into(),
+        component_schema_with_refs::<ControlPromptRequest>(),
+    );
+    schemas.insert(
+        "EnqueueResponse".into(),
+        component_schema_with_refs::<EnqueueResponse>(),
     );
     schemas.insert(
         "GenericJsonPayload".into(),
@@ -1074,14 +1108,6 @@ fn component_schemas() -> Value {
         }),
     );
     schemas.insert(
-        "AgentListEntry".into(),
-        json!({
-            "type": "object",
-            "description": "Public Agent entry, same shape as GET /api/agents/list response entries. Baseline object schema until the agents/list DTO stabilizes under a named schema.",
-            "additionalProperties": true
-        }),
-    );
-    schemas.insert(
         "AgentEventWindow".into(),
         json!({
             "type": "object",
@@ -1270,7 +1296,6 @@ fn component_schemas() -> Value {
         "ClearAgentModelRequest",
         "ControlRequest",
         "AbortCurrentRunRequest",
-        "ControlPromptRequest",
         "OperatorTransportBindingRequest",
         "OperatorIngressRequest",
         "SetCredentialRequest",
@@ -1348,6 +1373,17 @@ fn component_schema<T: JsonSchema>() -> Value {
         .with(|settings| {
             settings.inline_subschemas = true;
         })
+        .into_generator()
+        .into_root_schema_for::<T>();
+    let mut value = serde_json::to_value(schema).expect("serialize OpenAPI component schema");
+    if let Some(object) = value.as_object_mut() {
+        object.remove("$schema");
+    }
+    value
+}
+
+fn component_schema_with_refs<T: JsonSchema>() -> Value {
+    let schema = SchemaSettings::draft07()
         .into_generator()
         .into_root_schema_for::<T>();
     let mut value = serde_json::to_value(schema).expect("serialize OpenAPI component schema");
@@ -1441,6 +1477,40 @@ mod tests {
                 ["application/json"]["schema"]["$ref"],
             "#/components/schemas/AgentStateSnapshotDto"
         );
+        for (path, method, schema) in [
+            ("/api/handshake", "get", "HandshakeResponse"),
+            ("/api/agents/list", "get", "AgentListResponse"),
+            (
+                "/api/control/agents/{agent_id}/prompt",
+                "post",
+                "EnqueueResponse",
+            ),
+            ("/api/auth/session/me", "get", "CurrentUserResponse"),
+        ] {
+            assert_eq!(
+                paths[path][method]["responses"]["200"]["content"]["application/json"]["schema"]
+                    ["$ref"],
+                format!("#/components/schemas/{schema}")
+            );
+        }
+        assert_eq!(
+            paths["/api/control/agents/{agent_id}/prompt"]["post"]["requestBody"]["content"]
+                ["application/json"]["schema"]["$ref"],
+            "#/components/schemas/ControlPromptRequest"
+        );
+        let error = &api["components"]["schemas"]["ErrorResponse"];
+        for field in [
+            "ok",
+            "error",
+            "code",
+            "hint",
+            "domain",
+            "retryable",
+            "context",
+            "correlation",
+        ] {
+            assert!(error["properties"][field].is_object(), "{field}");
+        }
     }
 
     #[test]

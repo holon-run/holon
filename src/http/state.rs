@@ -650,16 +650,12 @@ fn build_worktree_info(
 ) -> Option<crate::types::WorktreeInfo> {
     use crate::types::WorkspaceProjectionMetadata;
     let (branch, path) = match metadata {
-        Some(WorkspaceProjectionMetadata::ManagedWorktree {
-            worktree_branch,
-            worktree_path,
-            ..
-        }) => (
-            Some(worktree_branch.clone()),
-            Some(worktree_path.display().to_string()),
+        Some(WorkspaceProjectionMetadata::ManagedWorktree(metadata)) => (
+            Some(metadata.worktree_branch.clone()),
+            Some(metadata.worktree_path.display().to_string()),
         ),
-        Some(WorkspaceProjectionMetadata::ExistingGitWorktree { worktree_root }) => {
-            (None, Some(worktree_root.display().to_string()))
+        Some(WorkspaceProjectionMetadata::ExistingGitWorktree(metadata)) => {
+            (None, Some(metadata.worktree_root.display().to_string()))
         }
         None => match session {
             Some(s) => (
@@ -950,12 +946,14 @@ mod tests {
 
     #[test]
     fn build_worktree_info_managed_worktree_metadata() {
-        let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
-            original_cwd: PathBuf::from("/tmp/project"),
-            original_branch: "main".into(),
-            worktree_path: PathBuf::from("/tmp/project/.worktrees/feature"),
-            worktree_branch: "feature".into(),
-        };
+        let metadata = WorkspaceProjectionMetadata::ManagedWorktree(
+            crate::types::ManagedWorktreeProjectionMetadata {
+                original_cwd: PathBuf::from("/tmp/project"),
+                original_branch: "main".into(),
+                worktree_path: PathBuf::from("/tmp/project/.worktrees/feature"),
+                worktree_branch: "feature".into(),
+            },
+        );
         let session = Some(WorktreeSession {
             original_cwd: PathBuf::from("/tmp/project"),
             original_branch: "main".into(),
@@ -981,9 +979,11 @@ mod tests {
 
     #[test]
     fn build_worktree_info_existing_git_worktree_metadata() {
-        let metadata = WorkspaceProjectionMetadata::ExistingGitWorktree {
-            worktree_root: PathBuf::from("/tmp/existing-wt"),
-        };
+        let metadata = WorkspaceProjectionMetadata::ExistingGitWorktree(
+            crate::types::ExistingGitWorktreeProjectionMetadata {
+                worktree_root: PathBuf::from("/tmp/existing-wt"),
+            },
+        );
 
         let info = super::build_worktree_info(Some(&metadata), None);
         let info = info.expect("should produce WorktreeInfo");
@@ -1025,12 +1025,14 @@ mod tests {
 
     #[test]
     fn build_worktree_info_session_enriches_metadata_originals() {
-        let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
-            original_cwd: PathBuf::from("/tmp/project"),
-            original_branch: "main".into(),
-            worktree_path: PathBuf::from("/tmp/wt"),
-            worktree_branch: "feat".into(),
-        };
+        let metadata = WorkspaceProjectionMetadata::ManagedWorktree(
+            crate::types::ManagedWorktreeProjectionMetadata {
+                original_cwd: PathBuf::from("/tmp/project"),
+                original_branch: "main".into(),
+                worktree_path: PathBuf::from("/tmp/wt"),
+                worktree_branch: "feat".into(),
+            },
+        );
         let session = WorktreeSession {
             original_cwd: PathBuf::from("/tmp/project"),
             original_branch: "main".into(),

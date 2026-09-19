@@ -1447,12 +1447,14 @@ impl RuntimeHandle {
                     worktree_path: seed.worktree_path.clone(),
                     worktree_branch: seed.worktree_branch.clone(),
                 };
-                let metadata = WorkspaceProjectionMetadata::ManagedWorktree {
-                    original_cwd: session.original_cwd.clone(),
-                    original_branch: session.original_branch.clone(),
-                    worktree_path: session.worktree_path.clone(),
-                    worktree_branch: session.worktree_branch.clone(),
-                };
+                let metadata = WorkspaceProjectionMetadata::ManagedWorktree(
+                    crate::types::ManagedWorktreeProjectionMetadata {
+                        original_cwd: session.original_cwd.clone(),
+                        original_branch: session.original_branch.clone(),
+                        worktree_path: session.worktree_path.clone(),
+                        worktree_branch: session.worktree_branch.clone(),
+                    },
+                );
                 (session.worktree_path.clone(), Some(session), Some(metadata))
             }
         };
@@ -1659,9 +1661,11 @@ impl RuntimeHandle {
             access_mode,
             cwd: selected_cwd.clone(),
             occupancy_id: occupancy.as_ref().map(|record| record.occupancy_id.clone()),
-            projection_metadata: Some(WorkspaceProjectionMetadata::ExistingGitWorktree {
-                worktree_root: execution_root.clone(),
-            }),
+            projection_metadata: Some(WorkspaceProjectionMetadata::ExistingGitWorktree(
+                crate::types::ExistingGitWorktreeProjectionMetadata {
+                    worktree_root: execution_root.clone(),
+                },
+            )),
         };
         let previous_occupancy_id = existing_state
             .active_workspace_entry

@@ -6,6 +6,57 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "ActiveWorkspaceEntry": {
+        "properties": {
+          "access_mode": {
+            "$ref": "#/components/schemas/WorkspaceAccessMode"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "execution_root": {
+            "type": "string"
+          },
+          "execution_root_id": {
+            "type": "string"
+          },
+          "occupancy_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "projection_kind": {
+            "$ref": "#/components/schemas/WorkspaceProjectionKind"
+          },
+          "projection_metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkspaceProjectionMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workspace_anchor": {
+            "type": "string"
+          },
+          "workspace_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workspace_id",
+          "workspace_anchor",
+          "execution_root_id",
+          "execution_root",
+          "projection_kind",
+          "access_mode",
+          "cwd"
+        ],
+        "type": "object"
+      },
       "AddSkillRequest": {
         "properties": {
           "kind": {
@@ -1397,6 +1448,61 @@
         ],
         "type": "object"
       },
+      "AgentIdentityView": {
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "can_rename": {
+            "default": false,
+            "description": "True when this identity satisfies the backend rename guard (public,\n self-owned, not the configured default agent). UI surfaces use this to\n show the rename entry point; the rename endpoint stays authoritative.",
+            "type": "boolean"
+          },
+          "delegated_from_task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "incarnation": {
+            "default": 1,
+            "description": "Monotonic incarnation counter; 1 for the original identity and +1\n for every explicit recreation of the same agent id after a fully\n completed deletion.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "is_default_agent": {
+            "type": "boolean"
+          },
+          "lineage_parent_agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parent_agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentRegistryStatus"
+          }
+        },
+        "required": [
+          "agent_id",
+          "status",
+          "is_default_agent"
+        ],
+        "type": "object"
+      },
       "AgentLatestBrief": {
         "additionalProperties": false,
         "description": "Latest Brief anchor derived from canonical Brief storage, not a second UI-summary table.",
@@ -1434,9 +1540,193 @@
         ],
         "type": "object"
       },
+      "AgentLifecycleHint": {
+        "properties": {
+          "accepts_external_messages": {
+            "type": "boolean"
+          },
+          "operator_hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "accepts_external_messages"
+        ],
+        "type": "object"
+      },
       "AgentListEntry": {
-        "additionalProperties": true,
-        "description": "Public Agent entry, same shape as GET /api/agents/list response entries. Baseline object schema until the agents/list DTO stabilizes under a named schema.",
+        "properties": {
+          "active_workspace_entry": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveWorkspaceEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "current_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "identity": {
+            "$ref": "#/components/schemas/AgentIdentityView"
+          },
+          "lifecycle": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AgentLifecycleHint"
+              }
+            ],
+            "default": {
+              "accepts_external_messages": true
+            }
+          },
+          "model": {
+            "$ref": "#/components/schemas/AgentListModelSummary"
+          },
+          "pending": {
+            "default": 0,
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "scheduling_posture": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AgentPostureProjection"
+              }
+            ],
+            "default": {
+              "posture": "unknown",
+              "reason": "posture projection unavailable"
+            }
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentStatus"
+          },
+          "waiting_reason": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WaitingReason"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "identity",
+          "status",
+          "model"
+        ],
+        "type": "object"
+      },
+      "AgentListModelSummary": {
+        "properties": {
+          "active_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "effective_fallback_models": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "effective_model": {
+            "type": "string"
+          },
+          "fallback_active": {
+            "default": false,
+            "type": "boolean"
+          },
+          "override_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "override_reasoning_effort": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime_default_model": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/AgentModelSource"
+          }
+        },
+        "required": [
+          "source",
+          "runtime_default_model",
+          "effective_model"
+        ],
+        "type": "object"
+      },
+      "AgentListResponse": {
+        "items": {
+          "$ref": "#/components/schemas/AgentListEntry"
+        },
+        "title": "Array_of_AgentListEntry",
+        "type": "array"
+      },
+      "AgentModelSource": {
+        "enum": [
+          "runtime_default",
+          "agent_override"
+        ],
+        "type": "string"
+      },
+      "AgentPostureProjection": {
+        "properties": {
+          "posture": {
+            "$ref": "#/components/schemas/AgentSchedulingPosture"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "work_item_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "posture",
+          "reason"
+        ],
         "type": "object"
       },
       "AgentProjectionSnapshot": {
@@ -1490,6 +1780,14 @@
           "projection"
         ],
         "type": "object"
+      },
+      "AgentRegistryStatus": {
+        "enum": [
+          "active",
+          "deleting",
+          "deleted"
+        ],
+        "type": "string"
       },
       "AgentRosterEntry": {
         "additionalProperties": false,
@@ -1555,6 +1853,21 @@
           "agents"
         ],
         "type": "object"
+      },
+      "AgentSchedulingPosture": {
+        "enum": [
+          "unknown",
+          "stopped",
+          "active_turn",
+          "has_queued_input",
+          "has_runnable_work",
+          "waiting_for_task",
+          "waiting_for_external",
+          "waiting_for_operator",
+          "blocked",
+          "idle"
+        ],
+        "type": "string"
       },
       "AgentStateSnapshotDto": {
         "properties": {
@@ -3257,6 +3570,17 @@
         ],
         "title": "AgentStateSnapshotDto",
         "type": "object"
+      },
+      "AgentStatus": {
+        "enum": [
+          "booting",
+          "awake_idle",
+          "awake_running",
+          "awaiting_task",
+          "asleep",
+          "stopped"
+        ],
+        "type": "string"
       },
       "AgentTreeNode": {
         "properties": {
@@ -5281,9 +5605,105 @@
         "title": "CompleteWorkItemRequest",
         "type": "object"
       },
+      "ControlPromptAttachment": {
+        "discriminator": {
+          "mapping": {
+            "file": "#/components/schemas/ControlPromptFileAttachment",
+            "image": "#/components/schemas/ControlPromptImageAttachment"
+          },
+          "propertyName": "kind"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/ControlPromptImageAttachment"
+          },
+          {
+            "$ref": "#/components/schemas/ControlPromptFileAttachment"
+          }
+        ]
+      },
+      "ControlPromptFileAttachment": {
+        "properties": {
+          "data_base64": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "file",
+            "enum": [
+              "file"
+            ],
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "media_type",
+          "data_base64"
+        ],
+        "type": "object"
+      },
+      "ControlPromptImageAttachment": {
+        "properties": {
+          "data_base64": {
+            "type": "string"
+          },
+          "kind": {
+            "const": "image",
+            "enum": [
+              "image"
+            ],
+            "type": "string"
+          },
+          "media_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "media_type",
+          "data_base64"
+        ],
+        "type": "object"
+      },
       "ControlPromptRequest": {
-        "additionalProperties": true,
-        "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
+        "properties": {
+          "attachments": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ControlPromptAttachment"
+            },
+            "type": "array"
+          },
+          "text": {
+            "type": "string"
+          },
+          "work_item_id": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ControlPromptRequest",
         "type": "object"
       },
       "ControlRequest": {
@@ -8482,6 +8902,32 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "CurrentUserResponse": {
+        "properties": {
+          "auth_method": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "user_id",
+          "auth_method"
+        ],
+        "title": "CurrentUserResponse",
+        "type": "object"
+      },
       "CursorNotFoundError": {
         "additionalProperties": true,
         "description": "Rich cursor_not_found body for event pages and SSE. event_log_epoch, oldest_retained_seq, and event_head_seq must come from one committed read view so clients can distinguish a retained-prefix gap from an epoch change and select the correct reset path.",
@@ -8573,37 +9019,151 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
-      "ErrorResponse": {
-        "additionalProperties": true,
+      "EnqueueResponse": {
         "properties": {
-          "after_seq": {
-            "minimum": 0,
-            "type": "integer"
-          },
           "agent_id": {
             "type": "string"
           },
-          "code": {
-            "type": "string"
-          },
-          "error": {
-            "type": "string"
-          },
-          "event_seq": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "hint": {
+          "message_id": {
             "type": "string"
           },
           "ok": {
-            "const": false,
             "type": "boolean"
           }
         },
         "required": [
+          "ok",
+          "agent_id",
+          "message_id"
+        ],
+        "title": "EnqueueResponse",
+        "type": "object"
+      },
+      "ErrorResponse": {
+        "additionalProperties": true,
+        "properties": {
+          "code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "context": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "correlation": {
+            "properties": {
+              "causation_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "correlation_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "message_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "model_ref": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "run_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "task_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "tool_execution_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "turn_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "work_item_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "type": "object"
+          },
+          "domain": {
+            "enum": [
+              "runtime",
+              "storage",
+              "policy",
+              "io",
+              "conflict",
+              "not_found",
+              "validation",
+              "provider",
+              "tool",
+              "task",
+              "http",
+              "unknown",
+              null
+            ],
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": "string"
+          },
+          "hint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "retryable": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ok",
           "error"
         ],
+        "title": "HttpErrorEnvelope",
         "type": "object"
       },
       "EventsPageResponse": {
@@ -8761,6 +9321,17 @@
         "title": "EventsPageResponse",
         "type": "object"
       },
+      "ExistingGitWorktreeProjectionMetadata": {
+        "properties": {
+          "worktree_root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "worktree_root"
+        ],
+        "type": "object"
+      },
       "ExitWorkspaceRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -8768,6 +9339,98 @@
       },
       "GenericJsonPayload": {
         "$ref": "#/components/schemas/JsonValue"
+      },
+      "HandshakeAuth": {
+        "properties": {
+          "mode": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "mode",
+          "required"
+        ],
+        "type": "object"
+      },
+      "HandshakeProtocol": {
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "version"
+        ],
+        "type": "object"
+      },
+      "HandshakeResponse": {
+        "properties": {
+          "auth": {
+            "$ref": "#/components/schemas/HandshakeAuth"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/HandshakeProtocol"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/HandshakeRuntime"
+          }
+        },
+        "required": [
+          "ok",
+          "protocol",
+          "auth",
+          "capabilities",
+          "runtime"
+        ],
+        "title": "HandshakeResponse",
+        "type": "object"
+      },
+      "HandshakeRuntime": {
+        "properties": {
+          "advertise_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "default_agent": {
+            "type": "string"
+          },
+          "home_dir": {
+            "type": "string"
+          },
+          "listen": {
+            "type": "string"
+          },
+          "workspace_dir": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "default_agent",
+          "workspace_dir",
+          "home_dir",
+          "listen"
+        ],
+        "type": "object"
       },
       "IncomingOrigin": {
         "additionalProperties": true,
@@ -8863,6 +9526,29 @@
       },
       "JsonValue": {
         "description": "Arbitrary JSON value. Used as a conservative baseline for routes whose DTO is not yet stabilized."
+      },
+      "ManagedWorktreeProjectionMetadata": {
+        "properties": {
+          "original_branch": {
+            "type": "string"
+          },
+          "original_cwd": {
+            "type": "string"
+          },
+          "worktree_branch": {
+            "type": "string"
+          },
+          "worktree_path": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "original_cwd",
+          "original_branch",
+          "worktree_path",
+          "worktree_branch"
+        ],
+        "type": "object"
       },
       "MemoryGetRequest": {
         "properties": {
@@ -16289,6 +16975,15 @@
         "title": "UpdateWorkItemRequest",
         "type": "object"
       },
+      "WaitingReason": {
+        "enum": [
+          "awaiting_operator_input",
+          "awaiting_external_change",
+          "awaiting_task_result",
+          "awaiting_timer"
+        ],
+        "type": "string"
+      },
       "WorkItemRecord": {
         "properties": {
           "agent_id": {
@@ -16597,6 +17292,31 @@
         ],
         "title": "WorkItemRecord",
         "type": "object"
+      },
+      "WorkspaceAccessMode": {
+        "enum": [
+          "shared_read",
+          "exclusive_write"
+        ],
+        "type": "string"
+      },
+      "WorkspaceProjectionKind": {
+        "enum": [
+          "canonical_root",
+          "git_worktree_root"
+        ],
+        "type": "string"
+      },
+      "WorkspaceProjectionMetadata": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/ManagedWorktreeProjectionMetadata"
+          },
+          {
+            "$ref": "#/components/schemas/ExistingGitWorktreeProjectionMetadata"
+          }
+        ],
+        "description": "Typed metadata for workspace projections, replacing untyped `serde_json::Value`.\n Uses `untagged` serde for backward compatibility with previously serialized JSON."
       }
     },
     "securitySchemes": {
@@ -16676,11 +17396,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/AgentListResponse"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -18822,11 +19542,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/CurrentUserResponse"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -20031,11 +20751,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/EnqueueResponse"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {
@@ -22624,11 +23344,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/JsonValue"
+                  "$ref": "#/components/schemas/HandshakeResponse"
                 }
               }
             },
-            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+            "description": "Successful JSON response using a stable DTO schema."
           },
           "4XX": {
             "content": {

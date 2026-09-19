@@ -11,6 +11,7 @@ on:
       - "Dockerfile"
       - "src/**"
       - "tests/**"
+      - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "agent_templates/**"
       - "builtin_templates/**"
@@ -41,6 +42,7 @@ on:
       - "Dockerfile"
       - "src/**"
       - "tests/**"
+      - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "agent_templates/**"
       - "builtin_templates/**"
@@ -130,6 +132,7 @@ jobs:
               - '.github/workflows/ci.yml'
             web:
               - 'web-gui/**'
+              - 'packages/client-wire-kotlin/**'
               - '.github/workflows/ci.yml'
               - 'docs/website/reference/openapi.json'
             macos_app:
@@ -160,6 +163,17 @@ jobs:
             web-gui/app/package-lock.json
             web-gui/openapi-tools/package-lock.json
             packages/conversation-sdk/package-lock.json
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
 
       - name: Test and build web GUI
         run: make web-ci

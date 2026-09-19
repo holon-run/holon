@@ -119,6 +119,7 @@ pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
+pub(crate) use auth::CurrentUserResponse;
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
     ConversationStreamMessage, ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,
@@ -219,7 +220,7 @@ pub struct AppState {
     pub(crate) projection_gate: Arc<ProjectionGate>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub(crate) struct HttpErrorEnvelope {
     ok: bool,
     error: String,
@@ -1364,7 +1365,10 @@ pub(crate) fn validate_operator_transport_delivery_auth(
 }
 
 pub(crate) fn forbidden(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
-    http_error(StatusCode::FORBIDDEN, HttpErrorEnvelope::new(reason))
+    http_error(
+        StatusCode::FORBIDDEN,
+        HttpErrorEnvelope::new(reason).code("forbidden"),
+    )
 }
 
 pub(crate) fn auth_required(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
@@ -1377,18 +1381,24 @@ pub(crate) fn auth_required(reason: impl Into<String>) -> (StatusCode, Json<Valu
 }
 
 pub(crate) fn bad_request(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
-    http_error(StatusCode::BAD_REQUEST, HttpErrorEnvelope::new(reason))
+    http_error(
+        StatusCode::BAD_REQUEST,
+        HttpErrorEnvelope::new(reason).code("bad_request"),
+    )
 }
 
 pub(crate) fn service_unavailable(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
     http_error(
         StatusCode::SERVICE_UNAVAILABLE,
-        HttpErrorEnvelope::new(reason),
+        HttpErrorEnvelope::new(reason).code("service_unavailable"),
     )
 }
 
 pub(crate) fn not_found(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
-    http_error(StatusCode::NOT_FOUND, HttpErrorEnvelope::new(reason))
+    http_error(
+        StatusCode::NOT_FOUND,
+        HttpErrorEnvelope::new(reason).code("not_found"),
+    )
 }
 
 pub(crate) fn task_lifecycle_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {

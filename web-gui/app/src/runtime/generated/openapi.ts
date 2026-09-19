@@ -2421,6 +2421,17 @@ export interface components {
         AbortCurrentRunRequest: {
             [key: string]: unknown;
         };
+        ActiveWorkspaceEntry: {
+            access_mode: components["schemas"]["WorkspaceAccessMode"];
+            cwd: string;
+            execution_root: string;
+            execution_root_id: string;
+            occupancy_id?: string | null;
+            projection_kind: components["schemas"]["WorkspaceProjectionKind"];
+            projection_metadata?: components["schemas"]["WorkspaceProjectionMetadata"] | null;
+            workspace_anchor: string;
+            workspace_id: string;
+        };
         /** AddSkillRequest */
         AddSkillRequest: {
             kind: {
@@ -2831,6 +2842,30 @@ export interface components {
             /** @enum {string} */
             record_kind: "message" | "brief" | "transcript_entry";
         };
+        AgentIdentityView: {
+            agent_id: string;
+            /**
+             * @description True when this identity satisfies the backend rename guard (public,
+             *      self-owned, not the configured default agent). UI surfaces use this to
+             *      show the rename entry point; the rename endpoint stays authoritative.
+             * @default false
+             */
+            can_rename: boolean;
+            delegated_from_task_id?: string | null;
+            /**
+             * Format: uint64
+             * @description Monotonic incarnation counter; 1 for the original identity and +1
+             *      for every explicit recreation of the same agent id after a fully
+             *      completed deletion.
+             * @default 1
+             */
+            incarnation: number;
+            is_default_agent: boolean;
+            lineage_parent_agent_id?: string | null;
+            name?: string | null;
+            parent_agent_id?: string | null;
+            status: components["schemas"]["AgentRegistryStatus"];
+        };
         /** @description Latest Brief anchor derived from canonical Brief storage, not a second UI-summary table. */
         AgentLatestBrief: {
             brief_id: string;
@@ -2841,9 +2876,58 @@ export interface components {
             /** @description Bounded to 512 UTF-8 bytes. Full Brief content remains available from the canonical Brief APIs. */
             preview: string;
         };
-        /** @description Public Agent entry, same shape as GET /api/agents/list response entries. Baseline object schema until the agents/list DTO stabilizes under a named schema. */
+        AgentLifecycleHint: {
+            accepts_external_messages: boolean;
+            operator_hint?: string | null;
+        };
         AgentListEntry: {
-            [key: string]: unknown;
+            active_workspace_entry?: components["schemas"]["ActiveWorkspaceEntry"] | null;
+            current_run_id?: string | null;
+            identity: components["schemas"]["AgentIdentityView"];
+            /**
+             * @default {
+             *       "accepts_external_messages": true
+             *     }
+             */
+            lifecycle: components["schemas"]["AgentLifecycleHint"];
+            model: components["schemas"]["AgentListModelSummary"];
+            /**
+             * Format: uint
+             * @default 0
+             */
+            pending: number;
+            /**
+             * @default {
+             *       "posture": "unknown",
+             *       "reason": "posture projection unavailable"
+             *     }
+             */
+            scheduling_posture: components["schemas"]["AgentPostureProjection"];
+            status: components["schemas"]["AgentStatus"];
+            waiting_reason?: components["schemas"]["WaitingReason"] | null;
+        };
+        AgentListModelSummary: {
+            active_model?: string | null;
+            effective_fallback_models?: string[];
+            effective_model: string;
+            /** @default false */
+            fallback_active: boolean;
+            override_model?: string | null;
+            override_reasoning_effort?: string | null;
+            requested_model?: string | null;
+            runtime_default_model: string;
+            source: components["schemas"]["AgentModelSource"];
+        };
+        /** Array_of_AgentListEntry */
+        AgentListResponse: components["schemas"]["AgentListEntry"][];
+        /** @enum {string} */
+        AgentModelSource: "runtime_default" | "agent_override";
+        AgentPostureProjection: {
+            posture: components["schemas"]["AgentSchedulingPosture"];
+            reason: string;
+            run_id?: string | null;
+            task_id?: string | null;
+            work_item_id?: string | null;
         };
         /** @description Per-Agent canonical projection snapshot at one consistency boundary (RFC: observer sync). Served by GET /api/agents/{agent_id}/projection-snapshot only while the agents.projection-snapshot.v1 capability is advertised. */
         AgentProjectionSnapshot: {
@@ -2861,6 +2945,8 @@ export interface components {
             snapshot_through_seq: number;
             visibility_scope_id: string;
         };
+        /** @enum {string} */
+        AgentRegistryStatus: "active" | "deleting" | "deleted";
         AgentRosterEntry: {
             agent: components["schemas"]["AgentListEntry"];
             event_window: components["schemas"]["AgentEventWindow"];
@@ -2880,6 +2966,8 @@ export interface components {
             /** @description Server-generated scope id derived from stable runtime identity, resolved authority, normalized visibility entitlement, and policy generation. Never contains credentials or tokens. */
             visibility_scope_id: string;
         };
+        /** @enum {string} */
+        AgentSchedulingPosture: "unknown" | "stopped" | "active_turn" | "has_queued_input" | "has_runnable_work" | "waiting_for_task" | "waiting_for_external" | "waiting_for_operator" | "blocked" | "idle";
         /** AgentStateSnapshotDto */
         AgentStateSnapshotDto: {
             agent: {
@@ -3314,6 +3402,8 @@ export interface components {
                 }[];
             };
         };
+        /** @enum {string} */
+        AgentStatus: "booting" | "awake_idle" | "awake_running" | "awaiting_task" | "asleep" | "stopped";
         AgentTreeNode: {
             agent: {
                 active_workspace_entry?: {
@@ -3851,9 +3941,34 @@ export interface components {
             } | null;
             report_text: string;
         };
-        /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
+        ControlPromptAttachment: components["schemas"]["ControlPromptImageAttachment"] | components["schemas"]["ControlPromptFileAttachment"];
+        ControlPromptFileAttachment: {
+            data_base64: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "file";
+            media_type: string;
+            name?: string | null;
+        };
+        ControlPromptImageAttachment: {
+            data_base64: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "image";
+            media_type: string;
+            name?: string | null;
+        };
+        /** ControlPromptRequest */
         ControlPromptRequest: {
-            [key: string]: unknown;
+            /** @default [] */
+            attachments: components["schemas"]["ControlPromptAttachment"][];
+            text: string;
+            /** @default null */
+            work_item_id: string | null;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         ControlRequest: {
@@ -4657,6 +4772,13 @@ export interface components {
         CreateWorkItemRequest: {
             [key: string]: unknown;
         };
+        /** CurrentUserResponse */
+        CurrentUserResponse: {
+            auth_method: string;
+            display_name?: string | null;
+            ok: boolean;
+            user_id: string;
+        };
         /** @description Rich cursor_not_found body for event pages and SSE. event_log_epoch, oldest_retained_seq, and event_head_seq must come from one committed read view so clients can distinguish a retained-prefix gap from an epoch change and select the correct reset path. */
         CursorNotFoundError: {
             after_seq: number;
@@ -4701,15 +4823,36 @@ export interface components {
         EnqueueRequest: {
             [key: string]: unknown;
         };
+        /** EnqueueResponse */
+        EnqueueResponse: {
+            agent_id: string;
+            message_id: string;
+            ok: boolean;
+        };
+        /** HttpErrorEnvelope */
         ErrorResponse: {
-            after_seq?: number;
-            agent_id?: string;
-            code?: string;
+            code?: string | null;
+            context?: {
+                [key: string]: string;
+            };
+            correlation?: {
+                causation_id?: string | null;
+                correlation_id?: string | null;
+                message_id?: string | null;
+                model_ref?: string | null;
+                provider?: string | null;
+                run_id?: string | null;
+                task_id?: string | null;
+                tool_execution_id?: string | null;
+                turn_id?: string | null;
+                work_item_id?: string | null;
+            };
+            /** @enum {string|null} */
+            domain?: "runtime" | "storage" | "policy" | "io" | "conflict" | "not_found" | "validation" | "provider" | "tool" | "task" | "http" | "unknown" | null;
             error: string;
-            event_seq?: number;
-            hint?: string;
-            /** @constant */
-            ok?: false;
+            hint?: string | null;
+            ok: boolean;
+            retryable?: boolean | null;
         } & {
             [key: string]: unknown;
         };
@@ -4764,11 +4907,38 @@ export interface components {
             /** @enum {string} */
             order: "asc" | "desc";
         };
+        ExistingGitWorktreeProjectionMetadata: {
+            worktree_root: string;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         ExitWorkspaceRequest: {
             [key: string]: unknown;
         };
         GenericJsonPayload: components["schemas"]["JsonValue"];
+        HandshakeAuth: {
+            mode: string;
+            required: boolean;
+        };
+        HandshakeProtocol: {
+            name: string;
+            /** Format: uint32 */
+            version: number;
+        };
+        /** HandshakeResponse */
+        HandshakeResponse: {
+            auth: components["schemas"]["HandshakeAuth"];
+            capabilities: string[];
+            ok: boolean;
+            protocol: components["schemas"]["HandshakeProtocol"];
+            runtime: components["schemas"]["HandshakeRuntime"];
+        };
+        HandshakeRuntime: {
+            advertise_url?: string | null;
+            default_agent: string;
+            home_dir: string;
+            listen: string;
+            workspace_dir: string;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         IncomingOrigin: {
             [key: string]: unknown;
@@ -4810,6 +4980,12 @@ export interface components {
         };
         /** @description Arbitrary JSON value. Used as a conservative baseline for routes whose DTO is not yet stabilized. */
         JsonValue: unknown;
+        ManagedWorktreeProjectionMetadata: {
+            original_branch: string;
+            original_cwd: string;
+            worktree_branch: string;
+            worktree_path: string;
+        };
         /** MemoryGetRequest */
         MemoryGetRequest: {
             /** Format: uint */
@@ -6901,6 +7077,8 @@ export interface components {
                 text: string;
             }[] | null;
         };
+        /** @enum {string} */
+        WaitingReason: "awaiting_operator_input" | "awaiting_external_change" | "awaiting_task_result" | "awaiting_timer";
         /** WorkItemRecord */
         WorkItemRecord: {
             agent_id: string;
@@ -6984,6 +7162,15 @@ export interface components {
             /** @default agent_home */
             workspace_id: string;
         };
+        /** @enum {string} */
+        WorkspaceAccessMode: "shared_read" | "exclusive_write";
+        /** @enum {string} */
+        WorkspaceProjectionKind: "canonical_root" | "git_worktree_root";
+        /**
+         * @description Typed metadata for workspace projections, replacing untyped `serde_json::Value`.
+         *      Uses `untagged` serde for backward compatibility with previously serialized JSON.
+         */
+        WorkspaceProjectionMetadata: components["schemas"]["ManagedWorktreeProjectionMetadata"] | components["schemas"]["ExistingGitWorktreeProjectionMetadata"];
     };
     responses: never;
     parameters: never;
@@ -7040,13 +7227,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            /** @description Successful JSON response using a stable DTO schema. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonValue"];
+                    "application/json": components["schemas"]["AgentListResponse"];
                 };
             };
             /** @description Client error JSON response. */
@@ -8462,13 +8649,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            /** @description Successful JSON response using a stable DTO schema. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonValue"];
+                    "application/json": components["schemas"]["CurrentUserResponse"];
                 };
             };
             /** @description Client error JSON response. */
@@ -9287,13 +9474,13 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            /** @description Successful JSON response using a stable DTO schema. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonValue"];
+                    "application/json": components["schemas"]["EnqueueResponse"];
                 };
             };
             /** @description Client error JSON response. */
@@ -11097,13 +11284,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            /** @description Successful JSON response using a stable DTO schema. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["JsonValue"];
+                    "application/json": components["schemas"]["HandshakeResponse"];
                 };
             };
             /** @description Client error JSON response. */
