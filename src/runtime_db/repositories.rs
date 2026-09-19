@@ -46,6 +46,7 @@ pub(crate) struct AgentDeletionRequest {
 #[derive(Debug, Clone)]
 pub(crate) struct LegacyDeletionScanBatch {
     pub identities: Vec<AgentIdentityRecord>,
+    start_cursor: Option<String>,
     pub cursor: Option<String>,
 }
 
@@ -739,6 +740,7 @@ impl AgentIdentityRepository<'_> {
         if limit == 0 {
             return Ok(LegacyDeletionScanBatch {
                 identities: Vec::new(),
+                start_cursor: None,
                 cursor: None,
             });
         }
@@ -773,6 +775,7 @@ impl AgentIdentityRepository<'_> {
                 tx.execute("DELETE FROM runtime_metadata WHERE key = ?1", [CURSOR_KEY])?;
                 return Ok(LegacyDeletionScanBatch {
                     identities: Vec::new(),
+                    start_cursor: cursor,
                     cursor: None,
                 });
             }
@@ -784,6 +787,34 @@ impl AgentIdentityRepository<'_> {
                 .last()
                 .map(|identity| identity.agent_id.clone())
                 .expect("non-empty identity scan batch has a cursor");
+            Ok(LegacyDeletionScanBatch {
+                identities,
+                start_cursor: cursor,
+                cursor: Some(next_cursor),
+            })
+        })
+    }
+
+    pub(crate) fn commit_legacy_deletion_scan_batch(
+        &self,
+        batch: &LegacyDeletionScanBatch,
+    ) -> Result<()> {
+        const CURSOR_KEY: &str = "legacy_deletion_repair_cursor";
+        let Some(next_cursor) = batch.cursor.as_deref() else {
+            return Ok(());
+        };
+        self.db.transaction(|tx| {
+            let current_cursor = tx
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = ?1",
+                    [CURSOR_KEY],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                current_cursor == batch.start_cursor,
+                "legacy deletion repair cursor changed while processing batch"
+            );
             let now = timestamp(Utc::now());
             tx.execute(
                 "INSERT INTO runtime_metadata (key, value, created_at, updated_at)
@@ -793,10 +824,7 @@ impl AgentIdentityRepository<'_> {
                    updated_at = excluded.updated_at",
                 params![CURSOR_KEY, next_cursor, now],
             )?;
-            Ok(LegacyDeletionScanBatch {
-                identities,
-                cursor: Some(next_cursor),
-            })
+            Ok(())
         })
     }
 
@@ -1058,15 +1086,14 @@ pub(crate) fn ensure_agent_deletion_tx(
                     "delegated task does not require deletion on terminal",
                 ));
             }
-            if let Some(detail_child_id) = task
+            let detail_child_id = task
                 .detail
                 .as_ref()
                 .and_then(|detail| detail.get("child_agent_id"))
                 .and_then(serde_json::Value::as_str)
-            {
-                if detail_child_id != agent_id {
-                    return Err(reject("delegated task child identity does not match"));
-                }
+                .ok_or_else(|| reject("delegated task child identity link is missing"))?;
+            if detail_child_id != agent_id {
+                return Err(reject("delegated task child identity does not match"));
             }
             identity.revision
         }

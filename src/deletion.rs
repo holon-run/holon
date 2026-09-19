@@ -152,10 +152,10 @@ impl RuntimeHost {
             .next_legacy_deletion_scan_batch(LEGACY_DELETION_REPAIR_BATCH_LIMIT)?;
         let mut outcome = LegacyDeletionRepairScanOutcome {
             scanned: batch.identities.len(),
-            cursor: batch.cursor,
+            cursor: batch.cursor.clone(),
             ..LegacyDeletionRepairScanOutcome::default()
         };
-        for identity in batch.identities {
+        for identity in &batch.identities {
             if identity.agent_id == self.config().default_agent_id {
                 continue;
             }
@@ -406,6 +406,9 @@ impl RuntimeHost {
                 }
             }
         }
+        self.runtime_db()
+            .agent_identities()
+            .commit_legacy_deletion_scan_batch(&batch)?;
         Ok(outcome)
     }
 

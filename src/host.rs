@@ -11825,6 +11825,132 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_residue_scanner_retries_failed_batch_after_restart_without_duplicates() {
+        let (_home, host) = test_host();
+        let config = host.config().as_ref().clone();
+        let mut first = AgentIdentityRecord::new(
+            "legacy-retry-00",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-legacy-retry-00".into()),
+        );
+        first.status = AgentRegistryStatus::Deleted;
+        first.deleted_at = Some(first.updated_at);
+        host.runtime_db().agent_identities().upsert(&first).unwrap();
+
+        let mut second = AgentIdentityRecord::new(
+            "legacy-retry-01",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-legacy-retry-01".into()),
+        );
+        second.status = AgentRegistryStatus::Deleted;
+        second.deleted_at = Some(second.updated_at);
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&second)
+            .unwrap();
+        let (_, second_job, created) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin(
+                &second.agent_id,
+                second.revision,
+                "legacy-retry-test",
+                false,
+            )
+            .unwrap();
+        assert!(created);
+
+        let connection = host.runtime_db().connection().unwrap();
+        let second_payload: String = connection
+            .query_row(
+                "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+                [&second.agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE agent_deletion_jobs SET payload_json = '{' WHERE agent_id = ?1",
+                [&second.agent_id],
+            )
+            .unwrap();
+
+        let error = host
+            .scan_legacy_deletion_residue_batch()
+            .await
+            .expect_err("malformed later job must fail the batch");
+        assert!(error.chain().any(|cause| cause
+            .to_string()
+            .contains("decoding agent deletion job payload")));
+        let first_job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&first.agent_id)
+            .unwrap()
+            .expect("the first residue side effect should persist");
+        assert_eq!(first_job.mode, AgentDeletionMode::CleanupRepair);
+
+        connection
+            .execute(
+                "UPDATE agent_deletion_jobs SET payload_json = ?1 WHERE agent_id = ?2",
+                rusqlite::params![second_payload, second.agent_id],
+            )
+            .unwrap();
+        drop(connection);
+        drop(host);
+
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let retried = restarted
+            .runtime_db()
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(crate::deletion::LEGACY_DELETION_REPAIR_BATCH_LIMIT)
+            .unwrap();
+        assert!(retried
+            .identities
+            .iter()
+            .any(|identity| identity.agent_id == first.agent_id));
+        assert!(retried
+            .identities
+            .iter()
+            .any(|identity| identity.agent_id == second.agent_id));
+
+        let outcome = restarted
+            .scan_legacy_deletion_residue_batch()
+            .await
+            .unwrap();
+        assert_eq!(outcome.created, 0);
+        assert_eq!(
+            restarted
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&first.agent_id)
+                .unwrap()
+                .expect("first repair job")
+                .deletion_id,
+            first_job.deletion_id
+        );
+        assert_eq!(
+            restarted
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&second.agent_id)
+                .unwrap()
+                .expect("second repair job")
+                .deletion_id,
+            second_job.deletion_id
+        );
+    }
+
+    #[tokio::test]
     async fn legacy_residue_scanner_diagnoses_missing_relations_without_deleting() {
         let (_home, host) = test_host();
         let parent_id = host.config().default_agent_id.clone();
