@@ -8,6 +8,7 @@ on:
       - ".dockerignore"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/**"
       - "Dockerfile"
       - "src/**"
       - "tests/**"
@@ -120,6 +121,7 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'src/**'
               - 'tests/**'
+              - 'crates/**'
               - 'scripts/ci_test_shards.py'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -390,6 +392,12 @@ jobs:
       - name: Check formatting
         run: make fmt-check
 
+      - name: Check decision crate formatting
+        run: |
+          cargo fmt --manifest-path crates/decision-core/Cargo.toml -- --check
+          cargo fmt --manifest-path crates/decision-jev/Cargo.toml -- --check
+          cargo fmt --manifest-path crates/decision-openai/Cargo.toml -- --check
+
       - name: Audit test temp resources
         run: make test-resource-lint
 
@@ -403,6 +411,12 @@ jobs:
 
       - name: Build all targets, including benchmarks
         run: make build
+
+      - name: Test decision crates
+        run: |
+          cargo test --manifest-path crates/decision-core/Cargo.toml --locked
+          cargo test --manifest-path crates/decision-jev/Cargo.toml --locked
+          cargo test --manifest-path crates/decision-openai/Cargo.toml --locked
 
       - name: Package check
         run: cargo publish --dry-run --locked

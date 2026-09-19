@@ -1,0 +1,14 @@
+[package]
+name = "decision-openai"
+version = "0.1.0"
+edition = "2021"
+description = "OpenAI-compatible adapter for decision-core"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[dependencies]
+async-trait = "0.1"
+decision-core = { path = "../decision-core" }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
