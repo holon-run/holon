@@ -483,7 +483,7 @@ fn result_error(error: (StatusCode, Json<Value>)) -> ResolveFileReferenceResult 
 pub(crate) async fn resolve_file_references(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<ResolveFileReferencesRequest>,
+    ApiJson(request): ApiJson<ResolveFileReferencesRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     if request.references.len() > MAX_RESOLVE_REFERENCES {

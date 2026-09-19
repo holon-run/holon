@@ -126,7 +126,7 @@ pub async fn complete_oidc_login(
 
 pub async fn exchange_session(
     State(state): State<Arc<AppState>>,
-    Json(request): Json<SessionExchangeRequest>,
+    ApiJson(request): ApiJson<SessionExchangeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     if request.credential.trim().is_empty() {
         return Err(bad_request("credential must not be empty"));

@@ -74,7 +74,7 @@ pub(crate) async fn reveal(
     State(state): State<Arc<AppState>>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
-    Json(request): Json<RevealFileRequest>,
+    ApiJson(request): ApiJson<RevealFileRequest>,
 ) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     if !state.desktop_integration

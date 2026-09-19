@@ -46,7 +46,7 @@ pub async fn templates_catalog(
 pub async fn sync_template_remote_sources(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::SyncTemplateRemoteSourcesRequest>,
+    ApiJson(request): ApiJson<crate::types::SyncTemplateRemoteSourcesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     super::jobs::create_template_remote_source_sync_job(state, request).await
@@ -111,7 +111,7 @@ pub async fn template_detail(
 pub async fn check_template(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::CheckTemplateRequest>,
+    ApiJson(request): ApiJson<crate::types::CheckTemplateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
@@ -175,7 +175,7 @@ pub async fn check_template(
 pub async fn install_template(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::InstallTemplateRequest>,
+    ApiJson(request): ApiJson<crate::types::InstallTemplateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
@@ -206,7 +206,7 @@ pub async fn install_template(
 pub async fn remove_template(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::RemoveTemplateRequest>,
+    ApiJson(request): ApiJson<crate::types::RemoveTemplateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
 
