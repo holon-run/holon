@@ -98,7 +98,10 @@ mod tests {
         runtime_db::observer_sync::{
             AGENT_ROSTER_LATEST_BRIEFS_SQL, EVENT_PROJECTION_EFFECT_VERIFIER_VERSION,
         },
-        runtime_db::repositories::{enum_string, slim_task_record_for_payload},
+        runtime_db::repositories::{
+            enum_string, is_terminal_child_deletion_admission_rejected,
+            slim_task_record_for_payload,
+        },
         runtime_db::transitions::{
             AgentStateMutation, QueueHeadNoProgressCommand, QueueHeadNoProgressOutcome,
             TransitionFaultPoint,
@@ -107,7 +110,7 @@ mod tests {
         types::{
             ActiveWorkspaceEntry, AgentDeletionJob, AgentDeletionMode, AgentDeletionPhase,
             AgentDeletionStatus, AgentKind, AgentOwnership, AgentProfilePreset,
-            AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind, TimerStatus,
+            AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind, TaskKind, TimerStatus,
         },
     };
     use rusqlite::OptionalExtension;
@@ -5560,6 +5563,183 @@ CREATE TABLE working_memory_deltas (
                 .status,
             AgentRegistryStatus::Deleting
         );
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_deletion_scan_cursor_is_bounded_fair_and_survives_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        for index in 0..25 {
+            let agent_id = format!("legacy-scan-{index:02}");
+            db.agent_identities()
+                .upsert(&agent_identity(&agent_id, 1))?;
+        }
+
+        let first = db.agent_identities().next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(first.identities.len(), 10);
+        assert_eq!(first.identities[0].agent_id, "legacy-scan-00");
+        assert_eq!(first.identities[9].agent_id, "legacy-scan-09");
+        assert_eq!(first.cursor.as_deref(), Some("legacy-scan-09"));
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let retried = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(retried.identities, first.identities);
+        reopened
+            .agent_identities()
+            .commit_legacy_deletion_scan_batch(&retried)?;
+        let second = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(second.identities.len(), 10);
+        assert_eq!(second.identities[0].agent_id, "legacy-scan-10");
+        assert_eq!(second.identities[9].agent_id, "legacy-scan-19");
+        reopened
+            .agent_identities()
+            .commit_legacy_deletion_scan_batch(&second)?;
+        let third = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(third.identities.len(), 5);
+        assert_eq!(third.identities[0].agent_id, "legacy-scan-20");
+        assert_eq!(third.identities[4].agent_id, "legacy-scan-24");
+        reopened
+            .agent_identities()
+            .commit_legacy_deletion_scan_batch(&third)?;
+
+        let reset = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert!(reset.identities.is_empty());
+        assert!(reset.cursor.is_none());
+        let wrapped = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(wrapped.identities[0].agent_id, "legacy-scan-00");
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_child_deletion_rejects_missing_task_child_link() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let parent = AgentIdentityRecord::new(
+            "parent-agent",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        db.agent_identities().upsert(&parent)?;
+
+        let mut task = task_record(
+            "legacy-terminal-child-task",
+            "parent-agent",
+            TaskStatus::Completed,
+            1,
+        );
+        task.kind = TaskKind::ChildAgentTask;
+        task.detail = Some(serde_json::json!({
+            "child_agent_id": "legacy-child",
+        }));
+        db.tasks().upsert(&task)?;
+
+        let child = AgentIdentityRecord::new(
+            "legacy-child",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent.agent_id.clone()),
+            Some(task.id.clone()),
+        )
+        .with_lineage_parent_agent_id(Some(parent.agent_id.clone()));
+        let relations = crate::runtime_db::agent_relations::supervised_creation_records(
+            &child,
+            &parent.agent_id,
+            &task.id,
+            None,
+        );
+        db.agent_identities()
+            .create_with_relations(&child, &relations)?;
+
+        let connection = db.connection()?;
+        let payload: String = connection.query_row(
+            "SELECT payload_json FROM tasks WHERE task_id = ?1",
+            [&task.id],
+            |row| row.get(0),
+        )?;
+        let mut payload: serde_json::Value = serde_json::from_str(&payload)?;
+        payload
+            .get_mut("detail")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("task detail object")
+            .remove("child_agent_id");
+        connection.execute(
+            "UPDATE tasks SET payload_json = ?1 WHERE task_id = ?2",
+            rusqlite::params![serde_json::to_string(&payload)?, task.id],
+        )?;
+
+        let error = db
+            .agent_deletions()
+            .begin_terminal_ephemeral_child(
+                &child.agent_id,
+                &parent.agent_id,
+                &task.id,
+                "legacy_residue_scanner",
+            )
+            .expect_err("missing task child link must reject deletion");
+        assert!(is_terminal_child_deletion_admission_rejected(&error));
+        assert!(error.chain().any(|cause| cause
+            .to_string()
+            .contains("delegated task child identity link is missing")));
+        assert!(db
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)?
+            .is_none());
+        assert_eq!(
+            db.agent_identities()
+                .latest(&child.agent_id)?
+                .expect("child identity")
+                .status,
+            AgentRegistryStatus::Active
+        );
+
+        payload
+            .get_mut("detail")
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("task detail object")
+            .insert(
+                "child_agent_id".into(),
+                serde_json::Value::String("different-child".into()),
+            );
+        connection.execute(
+            "UPDATE tasks SET payload_json = ?1 WHERE task_id = ?2",
+            rusqlite::params![serde_json::to_string(&payload)?, task.id],
+        )?;
+
+        let error = db
+            .agent_deletions()
+            .begin_terminal_ephemeral_child(
+                &child.agent_id,
+                &parent.agent_id,
+                &task.id,
+                "legacy_residue_scanner",
+            )
+            .expect_err("mismatched task child link must reject deletion");
+        assert!(is_terminal_child_deletion_admission_rejected(&error));
+        assert!(error.chain().any(|cause| cause
+            .to_string()
+            .contains("delegated task child identity does not match")));
+        assert!(db
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)?
+            .is_none());
         Ok(())
     }
 

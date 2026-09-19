@@ -6696,14 +6696,15 @@ mod tests {
         system::{WorkspaceAccessMode, WorkspaceProjectionKind},
         types::{
             AgentDeletionMode, AgentDeletionPhase, AgentDeletionStatus, AgentKind,
-            AgentMessageSendRequest, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-            AgentStatus, AgentVisibility, AuthorityClass, BriefKind, BriefRecord,
-            ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord, InvokeAgentRequest,
-            InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
-            QueueEntryRecord, QueueEntryStatus, TaskRecord, TaskRecoverySpec, TaskStatus,
-            TimerRecord, TimerStatus, TurnTerminalKind, WaitConditionKind, WaitConditionRecord,
-            WaitConditionStatus, WakeSource, WorkItemRecord, WorkItemState,
-            ACTOR_INVOCATION_TASK_KIND, AGENT_MESSAGE_WAIT_TASK_KIND,
+            AgentLifecycleDisposition, AgentMessageSendRequest, AgentOwnership, AgentProfilePreset,
+            AgentRegistryStatus, AgentStatus, AgentVisibility, AuthorityClass, BriefKind,
+            BriefRecord, ChildAgentWorkspaceMode, ControlAction, DeliverySummaryRecord,
+            InvokeAgentRequest, InvokeAgentTarget, MessageBody, MessageEnvelope, MessageKind,
+            MessageOrigin, Priority, QueueEntryRecord, QueueEntryStatus, TaskRecord,
+            TaskRecoverySpec, TaskStatus, TimerRecord, TimerStatus, TurnTerminalKind,
+            WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
+            WorkItemRecord, WorkItemState, ACTOR_INVOCATION_TASK_KIND,
+            AGENT_MESSAGE_WAIT_TASK_KIND,
         },
     };
 
@@ -11488,12 +11489,20 @@ mod tests {
             .produced_watermark_for_agent(&child.agent_id)
             .unwrap();
 
-        let (same_identity, job, created) = host
+        let outcome = host.scan_legacy_deletion_residue_batch().await.unwrap();
+        assert_eq!(outcome.created, 1);
+        let same_identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(&child.agent_id)
+            .unwrap()
+            .unwrap();
+        let job = host
             .runtime_db()
             .agent_deletions()
-            .begin(&child.agent_id, child.revision, "operator", false)
-            .unwrap();
-        assert!(created);
+            .latest_for_agent(&child.agent_id)
+            .unwrap()
+            .expect("scanner should create cleanup repair");
         assert_eq!(same_identity.status, AgentRegistryStatus::Deleted);
         assert_eq!(job.mode, AgentDeletionMode::CleanupRepair);
         host.execute_deletion_job(job).await.unwrap();
@@ -11519,6 +11528,476 @@ mod tests {
                 .unwrap(),
             produced
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_residue_scanner_replaces_completed_delete_once_for_partial_cleanup() {
+        let (_home, host) = test_host();
+        let agent = AgentIdentityRecord::new(
+            "legacy-completed-delete",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        fs::create_dir_all(host.agent_data_dir(&agent.agent_id)).unwrap();
+        let (_, delete_job, created) = host
+            .begin_public_agent_deletion(&agent.agent_id, false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+        let (_, completed_delete) = host
+            .runtime_db()
+            .agent_deletions()
+            .finalize(&delete_job)
+            .unwrap();
+        assert_eq!(completed_delete.mode, AgentDeletionMode::Delete);
+        host.runtime_db()
+            .runtime_index_outbox()
+            .append_changes(&[crate::runtime_db::RuntimeIndexChange {
+                agent_id: agent.agent_id.clone(),
+                source_kind: "brief".into(),
+                source_id: "legacy-completed-source".into(),
+                source_ref: "brief:legacy-completed-source".into(),
+                operation: crate::runtime_db::RuntimeIndexOperation::Upsert,
+                source_updated_at: Some(Utc::now()),
+                reason: "legacy_completed_partial_cleanup".into(),
+            }])
+            .unwrap();
+
+        let outcome = host.scan_legacy_deletion_residue_batch().await.unwrap();
+        assert_eq!(outcome.created, 1);
+        let repair = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&agent.agent_id)
+            .unwrap()
+            .expect("cleanup repair should replace completed delete");
+        assert_ne!(repair.deletion_id, completed_delete.deletion_id);
+        assert_eq!(repair.mode, AgentDeletionMode::CleanupRepair);
+        host.execute_deletion_job(repair.clone()).await.unwrap();
+        assert!(!host.agent_data_dir(&agent.agent_id).exists());
+        assert_eq!(
+            host.runtime_db()
+                .runtime_index_outbox()
+                .pending_count_for_agent(&agent.agent_id, 0)
+                .unwrap(),
+            0
+        );
+
+        host.scan_legacy_deletion_residue_batch().await.unwrap();
+        let repeated = host.scan_legacy_deletion_residue_batch().await.unwrap();
+        assert_eq!(repeated.created, 0);
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&agent.agent_id)
+                .unwrap()
+                .unwrap()
+                .deletion_id,
+            repair.deletion_id
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_residue_scanner_deletes_terminal_one_shot_child_and_cleans_three_layers() {
+        let (_home, host) = test_host();
+        let parent_id = host.config().default_agent_id.clone();
+        let child_id = "legacy-terminal-one-shot";
+        let mut task = test_child_supervision_task(&parent_id, "task-legacy-terminal-one-shot");
+        task.status = TaskStatus::Completed;
+        task.detail = Some(serde_json::json!({ "child_agent_id": child_id }));
+        host.runtime_db().tasks().upsert(&task).unwrap();
+
+        let child = AgentIdentityRecord::new(
+            child_id,
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id.clone()),
+            Some(task.id.clone()),
+        )
+        .with_lineage_parent_agent_id(Some(parent_id.clone()));
+        let relations = supervised_creation_records(
+            &child,
+            &parent_id,
+            &task.id,
+            task.effective_work_item_id(),
+        );
+        host.runtime_db()
+            .agent_identities()
+            .create_with_relations(&child, &relations)
+            .unwrap();
+        fs::create_dir_all(host.agent_data_dir(child_id)).unwrap();
+        host.runtime_db()
+            .runtime_index_outbox()
+            .append_changes(&[crate::runtime_db::RuntimeIndexChange {
+                agent_id: child_id.into(),
+                source_kind: "brief".into(),
+                source_id: "legacy-source".into(),
+                source_ref: "brief:legacy-source".into(),
+                operation: crate::runtime_db::RuntimeIndexOperation::Upsert,
+                source_updated_at: Some(Utc::now()),
+                reason: "legacy_residue_test".into(),
+            }])
+            .unwrap();
+        let default_storage = host.agent_storage(&parent_id).unwrap();
+        crate::memory::ensure_memory_indexes_fresh(&default_storage, None, &[]).unwrap();
+        let index_path = crate::memory::index::memory_index_path(&default_storage);
+        let index = rusqlite::Connection::open(index_path).unwrap();
+        index
+            .execute(
+                "INSERT INTO memory_index_source_state (
+                   document_key, source_ref, agent_id, source_kind, source_id,
+                   source_updated_at, content_hash, indexed_at,
+                   index_schema_version, projection_version
+                 ) VALUES (?1, ?2, ?3, 'brief', 'legacy-source', NULL, NULL, ?4, 1, 1)",
+                rusqlite::params![
+                    format!("{child_id}:brief:legacy-source"),
+                    "brief:legacy-source",
+                    child_id,
+                    Utc::now().to_rfc3339(),
+                ],
+            )
+            .unwrap();
+        drop(index);
+
+        let outcome = host.scan_legacy_deletion_residue_batch().await.unwrap();
+        assert_eq!(outcome.created, 1);
+        let job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(child_id)
+            .unwrap()
+            .expect("scanner should create deletion job");
+        assert_eq!(job.mode, AgentDeletionMode::Delete);
+        host.execute_deletion_job(job).await.unwrap();
+
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(child_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleted
+        );
+        assert_eq!(
+            host.runtime_db()
+                .agent_canonical_relations()
+                .latest(child_id)
+                .unwrap()
+                .unwrap()
+                .supervision
+                .unwrap()
+                .state,
+            crate::types::AgentSupervisionState::Closed
+        );
+        assert!(!host.agent_data_dir(child_id).exists());
+        assert_eq!(
+            host.runtime_db()
+                .runtime_index_outbox()
+                .pending_count_for_agent(child_id, 0)
+                .unwrap(),
+            0
+        );
+        let index =
+            rusqlite::Connection::open(crate::memory::index::memory_index_path(&default_storage))
+                .unwrap();
+        let source_count: i64 = index
+            .query_row(
+                "SELECT COUNT(*) FROM memory_index_source_state WHERE agent_id = ?1",
+                [child_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_count, 0);
+    }
+
+    #[tokio::test]
+    async fn legacy_residue_scanner_preserves_reusable_actor_invocation_child() {
+        let (_home, host) = test_host();
+        let parent_id = host.config().default_agent_id.clone();
+        let child_id = "reusable-actor-invocation-child";
+        let mut task = test_child_supervision_task(&parent_id, "task-reusable-actor-invocation");
+        task.kind = crate::types::TaskKind::ActorInvocation;
+        task.status = TaskStatus::Completed;
+        task.detail = Some(serde_json::json!({ "child_agent_id": child_id }));
+        task.recovery = Some(TaskRecoverySpec::AgentInvocation {
+            summary: "reusable child".into(),
+            prompt: "continue later".into(),
+            authority_class: AuthorityClass::RuntimeInstruction,
+            target_agent_id: Some(child_id.into()),
+            created_new_subagent: true,
+            workspace_mode: ChildAgentWorkspaceMode::Inherit,
+            lifecycle_disposition: AgentLifecycleDisposition::Retain,
+        });
+        host.runtime_db().tasks().upsert(&task).unwrap();
+        let child = AgentIdentityRecord::new(
+            child_id,
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id.clone()),
+            Some(task.id.clone()),
+        )
+        .with_lineage_parent_agent_id(Some(parent_id.clone()));
+        let relations = supervised_creation_records(
+            &child,
+            &parent_id,
+            &task.id,
+            task.effective_work_item_id(),
+        );
+        host.runtime_db()
+            .agent_identities()
+            .create_with_relations(&child, &relations)
+            .unwrap();
+
+        let outcome = host.scan_legacy_deletion_residue_batch().await.unwrap();
+        assert_eq!(outcome.created, 0);
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(child_id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(child_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_residue_scanner_bounds_batches_and_reaches_all_deleted_residue() {
+        let (_home, host) = test_host();
+        for index in 0..35 {
+            let mut identity = AgentIdentityRecord::new(
+                format!("legacy-deleted-{index:02}"),
+                AgentKind::Child,
+                AgentVisibility::Private,
+                AgentOwnership::ParentSupervised,
+                AgentProfilePreset::PrivateChild,
+                Some(host.config().default_agent_id.clone()),
+                Some(format!("task-legacy-deleted-{index:02}")),
+            );
+            identity.status = AgentRegistryStatus::Deleted;
+            identity.deleted_at = Some(identity.updated_at);
+            host.runtime_db()
+                .agent_identities()
+                .upsert(&identity)
+                .unwrap();
+        }
+
+        let mut total_created = 0;
+        let mut batches = 0;
+        loop {
+            let outcome = host.scan_legacy_deletion_residue_batch().await.unwrap();
+            assert!(outcome.scanned <= crate::deletion::LEGACY_DELETION_REPAIR_BATCH_LIMIT);
+            total_created += outcome.created;
+            batches += 1;
+            if outcome.cursor.is_none() {
+                break;
+            }
+        }
+        assert!(batches >= 3);
+        assert_eq!(total_created, 35);
+        for index in 0..35 {
+            let job = host
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&format!("legacy-deleted-{index:02}"))
+                .unwrap()
+                .expect("each residue should receive a repair job");
+            assert_eq!(job.mode, AgentDeletionMode::CleanupRepair);
+            assert_eq!(job.status, AgentDeletionStatus::Pending);
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_residue_scanner_retries_failed_batch_after_restart_without_duplicates() {
+        let (_home, host) = test_host();
+        let config = host.config().as_ref().clone();
+        let mut first = AgentIdentityRecord::new(
+            "legacy-retry-00",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-legacy-retry-00".into()),
+        );
+        first.status = AgentRegistryStatus::Deleted;
+        first.deleted_at = Some(first.updated_at);
+        host.runtime_db().agent_identities().upsert(&first).unwrap();
+
+        let mut second = AgentIdentityRecord::new(
+            "legacy-retry-01",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(host.config().default_agent_id.clone()),
+            Some("task-legacy-retry-01".into()),
+        );
+        second.status = AgentRegistryStatus::Deleted;
+        second.deleted_at = Some(second.updated_at);
+        host.runtime_db()
+            .agent_identities()
+            .upsert(&second)
+            .unwrap();
+        let (_, second_job, created) = host
+            .runtime_db()
+            .agent_deletions()
+            .begin(
+                &second.agent_id,
+                second.revision,
+                "legacy-retry-test",
+                false,
+            )
+            .unwrap();
+        assert!(created);
+
+        let connection = host.runtime_db().connection().unwrap();
+        let second_payload: String = connection
+            .query_row(
+                "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+                [&second.agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE agent_deletion_jobs SET payload_json = '{' WHERE agent_id = ?1",
+                [&second.agent_id],
+            )
+            .unwrap();
+
+        let error = host
+            .scan_legacy_deletion_residue_batch()
+            .await
+            .expect_err("malformed later job must fail the batch");
+        assert!(error.chain().any(|cause| cause
+            .to_string()
+            .contains("decoding agent deletion job payload")));
+        let first_job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&first.agent_id)
+            .unwrap()
+            .expect("the first residue side effect should persist");
+        assert_eq!(first_job.mode, AgentDeletionMode::CleanupRepair);
+
+        connection
+            .execute(
+                "UPDATE agent_deletion_jobs SET payload_json = ?1 WHERE agent_id = ?2",
+                rusqlite::params![second_payload, second.agent_id],
+            )
+            .unwrap();
+        drop(connection);
+        drop(host);
+
+        let restarted =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let retried = restarted
+            .runtime_db()
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(crate::deletion::LEGACY_DELETION_REPAIR_BATCH_LIMIT)
+            .unwrap();
+        assert!(retried
+            .identities
+            .iter()
+            .any(|identity| identity.agent_id == first.agent_id));
+        assert!(retried
+            .identities
+            .iter()
+            .any(|identity| identity.agent_id == second.agent_id));
+
+        let outcome = restarted
+            .scan_legacy_deletion_residue_batch()
+            .await
+            .unwrap();
+        assert_eq!(outcome.created, 0);
+        assert_eq!(
+            restarted
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&first.agent_id)
+                .unwrap()
+                .expect("first repair job")
+                .deletion_id,
+            first_job.deletion_id
+        );
+        assert_eq!(
+            restarted
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&second.agent_id)
+                .unwrap()
+                .expect("second repair job")
+                .deletion_id,
+            second_job.deletion_id
+        );
+    }
+
+    #[tokio::test]
+    async fn legacy_residue_scanner_diagnoses_missing_relations_without_deleting() {
+        let (_home, host) = test_host();
+        let parent_id = host.config().default_agent_id.clone();
+        let child = AgentIdentityRecord::new(
+            "legacy-ambiguous-child",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id),
+            Some("task-legacy-ambiguous".into()),
+        );
+        host.runtime_db().agent_identities().upsert(&child).unwrap();
+
+        let first = host.scan_legacy_deletion_residue_batch().await.unwrap();
+        assert_eq!(first.ambiguous, 1);
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            host.runtime_db()
+                .agent_identities()
+                .latest(&child.agent_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+
+        host.scan_legacy_deletion_residue_batch().await.unwrap();
+        let repeated = host.scan_legacy_deletion_residue_batch().await.unwrap();
+        assert_eq!(repeated.ambiguous, 0);
+        let diagnostics: i64 = host
+            .runtime_db()
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE agent_id = ?1 AND kind = 'legacy_deletion_repair_ambiguous'",
+                [&child.agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(diagnostics, 1);
     }
 
     #[tokio::test]

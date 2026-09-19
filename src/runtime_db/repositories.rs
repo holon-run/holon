@@ -43,6 +43,13 @@ pub(crate) struct AgentDeletionRequest {
     pub cascade_private_children: bool,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct LegacyDeletionScanBatch {
+    pub identities: Vec<AgentIdentityRecord>,
+    start_cursor: Option<String>,
+    pub cursor: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("terminal child deletion admission rejected for agent {agent_id}: {reason}")]
 pub(crate) struct TerminalChildDeletionAdmissionRejected {
@@ -725,6 +732,102 @@ impl AgentIdentityRepository<'_> {
         Ok(records)
     }
 
+    pub(crate) fn next_legacy_deletion_scan_batch(
+        &self,
+        limit: usize,
+    ) -> Result<LegacyDeletionScanBatch> {
+        const CURSOR_KEY: &str = "legacy_deletion_repair_cursor";
+        if limit == 0 {
+            return Ok(LegacyDeletionScanBatch {
+                identities: Vec::new(),
+                start_cursor: None,
+                cursor: None,
+            });
+        }
+        self.db.transaction(|tx| {
+            let cursor = tx
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = ?1",
+                    [CURSOR_KEY],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            let payloads = {
+                let mut statement = tx.prepare(
+                    "SELECT payload_json
+                     FROM agent_identities
+                     WHERE agent_id > ?1
+                     ORDER BY agent_id ASC
+                     LIMIT ?2",
+                )?;
+                let rows = statement
+                    .query_map(
+                        params![
+                            cursor.as_deref().unwrap_or_default(),
+                            i64::try_from(limit).unwrap_or(i64::MAX)
+                        ],
+                        |row| row.get::<_, String>(0),
+                    )?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                rows
+            };
+            if payloads.is_empty() {
+                tx.execute("DELETE FROM runtime_metadata WHERE key = ?1", [CURSOR_KEY])?;
+                return Ok(LegacyDeletionScanBatch {
+                    identities: Vec::new(),
+                    start_cursor: cursor,
+                    cursor: None,
+                });
+            }
+            let identities = payloads
+                .into_iter()
+                .map(|payload| decode_agent_identity_payload(&payload))
+                .collect::<Result<Vec<_>>>()?;
+            let next_cursor = identities
+                .last()
+                .map(|identity| identity.agent_id.clone())
+                .expect("non-empty identity scan batch has a cursor");
+            Ok(LegacyDeletionScanBatch {
+                identities,
+                start_cursor: cursor,
+                cursor: Some(next_cursor),
+            })
+        })
+    }
+
+    pub(crate) fn commit_legacy_deletion_scan_batch(
+        &self,
+        batch: &LegacyDeletionScanBatch,
+    ) -> Result<()> {
+        const CURSOR_KEY: &str = "legacy_deletion_repair_cursor";
+        let Some(next_cursor) = batch.cursor.as_deref() else {
+            return Ok(());
+        };
+        self.db.transaction(|tx| {
+            let current_cursor = tx
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = ?1",
+                    [CURSOR_KEY],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            anyhow::ensure!(
+                current_cursor == batch.start_cursor,
+                "legacy deletion repair cursor changed while processing batch"
+            );
+            let now = timestamp(Utc::now());
+            tx.execute(
+                "INSERT INTO runtime_metadata (key, value, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?3)
+                 ON CONFLICT(key) DO UPDATE SET
+                   value = excluded.value,
+                   updated_at = excluded.updated_at",
+                params![CURSOR_KEY, next_cursor, now],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentIdentityRecord>> {
         let connection = self.db.connection()?;
         connection
@@ -941,6 +1044,57 @@ pub(crate) fn ensure_agent_deletion_tx(
                     "canonical relations do not attach the child to parent task {task_id}"
                 )));
             }
+            let task_payload = tx
+                .query_row(
+                    "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                    [task_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .ok_or_else(|| reject("delegated parent task is missing"))?;
+            let task = decode_task_payload(&task_payload)?;
+            if task.agent_id != *parent_agent_id {
+                return Err(reject(
+                    "delegated parent task owner does not match supervision",
+                ));
+            }
+            if !matches!(
+                task.kind,
+                TaskKind::ChildAgentTask | TaskKind::SubagentTask | TaskKind::WorktreeSubagentTask
+            ) {
+                return Err(reject("delegated task is not a one-shot child task"));
+            }
+            if !is_terminal_task_status(&task.status) {
+                return Err(reject("delegated parent task is not terminal"));
+            }
+            let delete_on_terminal = match task.recovery.as_ref() {
+                Some(TaskRecoverySpec::ChildAgentTask {
+                    lifecycle_disposition,
+                    ..
+                }) => *lifecycle_disposition == AgentLifecycleDisposition::DeleteOnTerminal,
+                Some(TaskRecoverySpec::SubagentTask { .. })
+                | Some(TaskRecoverySpec::WorktreeSubagentTask { .. })
+                | None
+                    if task.kind.is_child_agent() =>
+                {
+                    true
+                }
+                _ => false,
+            };
+            if !delete_on_terminal {
+                return Err(reject(
+                    "delegated task does not require deletion on terminal",
+                ));
+            }
+            let detail_child_id = task
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.get("child_agent_id"))
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| reject("delegated task child identity link is missing"))?;
+            if detail_child_id != agent_id {
+                return Err(reject("delegated task child identity does not match"));
+            }
             identity.revision
         }
     };
@@ -1047,6 +1201,29 @@ impl AgentDeletionRepository<'_> {
                     admission: AgentDeletionAdmission::ExpectedRevision(expected_identity_revision),
                     requested_by: requested_by.to_string(),
                     cascade_private_children,
+                },
+            )
+        })
+    }
+
+    pub(crate) fn begin_terminal_ephemeral_child(
+        &self,
+        agent_id: &str,
+        parent_agent_id: &str,
+        task_id: &str,
+        requested_by: &str,
+    ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+        self.db.transaction(|tx| {
+            ensure_agent_deletion_tx(
+                tx,
+                &AgentDeletionRequest {
+                    agent_id: agent_id.to_string(),
+                    admission: AgentDeletionAdmission::TerminalEphemeralChild {
+                        parent_agent_id: parent_agent_id.to_string(),
+                        task_id: task_id.to_string(),
+                    },
+                    requested_by: requested_by.to_string(),
+                    cascade_private_children: false,
                 },
             )
         })
