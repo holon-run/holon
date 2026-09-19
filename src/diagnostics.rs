@@ -52,6 +52,54 @@ static OBJECT_QUERY_CACHE_MISS: MetricAccumulator =
 static DB_CONNECTION_OPEN: MetricAccumulator = MetricAccumulator::new("db.connection.open");
 static DB_SIDECAR_CONSISTENCY_SCAN: MetricAccumulator =
     MetricAccumulator::new("db.sidecar_consistency_scan");
+static MEMORY_INDEX_WRITER_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_MAX_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_FOREGROUND_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_MAX_FOREGROUND_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_MAINTENANCE_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_MAX_MAINTENANCE_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_FOREGROUND_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_MAINTENANCE_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+static MEMORY_INDEX_WRITER_OPEN: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.open_writer.queue_wait");
+static MEMORY_INDEX_WRITER_START_REBUILD: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.start_rebuild.queue_wait");
+static MEMORY_INDEX_WRITER_ADVANCE_REBUILD_CURSOR: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new(
+        "memory_index.writer.advance_rebuild_cursor.queue_wait",
+    );
+static MEMORY_INDEX_WRITER_REBUILD_SCAN: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.rebuild_scan.queue_wait");
+static MEMORY_INDEX_WRITER_REBUILD_PRUNE: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.rebuild_prune.queue_wait");
+static MEMORY_INDEX_WRITER_REBUILD_FINALIZE: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.rebuild_finalize.queue_wait");
+static MEMORY_INDEX_WRITER_UPDATE_REBUILD_PHASE: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new(
+        "memory_index.writer.update_rebuild_phase.queue_wait",
+    );
+static MEMORY_INDEX_WRITER_UPSERT_DOCUMENT: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.upsert_document.queue_wait");
+static MEMORY_INDEX_WRITER_DELETE_DOCUMENT: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.delete_document.queue_wait");
+static MEMORY_INDEX_WRITER_ENQUEUE_SOURCE: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.enqueue_source.queue_wait");
+static MEMORY_INDEX_WRITER_CONSUME_PENDING_SOURCE: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new(
+        "memory_index.writer.consume_pending_source.queue_wait",
+    );
+static MEMORY_INDEX_WRITER_CONSUME_STALE_SOURCE: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new(
+        "memory_index.writer.consume_stale_source.queue_wait",
+    );
+static MEMORY_INDEX_WRITER_REFRESH_STALE_META: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.refresh_stale_meta.queue_wait");
+static MEMORY_INDEX_WRITER_CONSUME_RUNTIME_OUTBOX: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new(
+        "memory_index.writer.consume_runtime_outbox.queue_wait",
+    );
+static MEMORY_INDEX_WRITER_OTHER: MemoryIndexWriterOperationAccumulator =
+    MemoryIndexWriterOperationAccumulator::new("memory_index.writer.other.queue_wait");
 
 static SCHEDULER_POLL_ALL: MetricAccumulator = MetricAccumulator::new("scheduler.poll.all");
 static SCHEDULER_POLL_MESSAGE: MetricAccumulator = MetricAccumulator::new("scheduler.poll.message");
@@ -160,6 +208,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub projections: Vec<MetricSnapshot>,
     pub projection_gate: ProjectionGateDiagnosticsSnapshot,
     pub db: Vec<MetricSnapshot>,
+    #[serde(default)]
+    pub memory_index_writer: MemoryIndexWriterDiagnosticsSnapshot,
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
@@ -169,6 +219,26 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub diagnostics_writer: crate::diagnostics_store::DiagnosticsWriterStats,
     #[serde(default)]
     pub attribution: Vec<attribution::StageSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryIndexWriterDiagnosticsSnapshot {
+    pub queue_depth: u64,
+    pub max_queue_depth: u64,
+    pub foreground_queue_depth: u64,
+    pub max_foreground_queue_depth: u64,
+    pub maintenance_queue_depth: u64,
+    pub max_maintenance_queue_depth: u64,
+    pub foreground_timeouts: u64,
+    pub maintenance_timeouts: u64,
+    pub operations: Vec<MemoryIndexWriterOperationSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct MemoryIndexWriterOperationSnapshot {
+    pub operation: String,
+    pub queue_wait: MetricSnapshot,
+    pub timeouts: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -255,6 +325,35 @@ struct MetricAccumulator {
     histogram: [AtomicU64; HISTOGRAM_UPPER_BOUNDS_MS.len()],
 }
 
+struct MemoryIndexWriterOperationAccumulator {
+    operation: &'static str,
+    queue_wait: MetricAccumulator,
+    timeouts: AtomicU64,
+}
+
+impl MemoryIndexWriterOperationAccumulator {
+    const fn new(queue_wait_name: &'static str) -> Self {
+        Self {
+            operation: queue_wait_name,
+            queue_wait: MetricAccumulator::new(queue_wait_name),
+            timeouts: AtomicU64::new(0),
+        }
+    }
+
+    fn snapshot(&self) -> MemoryIndexWriterOperationSnapshot {
+        MemoryIndexWriterOperationSnapshot {
+            operation: self
+                .operation
+                .strip_prefix("memory_index.writer.")
+                .and_then(|name| name.strip_suffix(".queue_wait"))
+                .unwrap_or(self.operation)
+                .to_string(),
+            queue_wait: self.queue_wait.snapshot(false),
+            timeouts: self.timeouts.load(Ordering::Relaxed),
+        }
+    }
+}
+
 impl MetricAccumulator {
     const fn new(name: &'static str) -> Self {
         Self {
@@ -316,6 +415,54 @@ pub fn record_http_json_response(route: &'static str, elapsed: Duration, bytes: 
     process_started_at();
     HTTP_ALL.record(elapsed, Some(bytes));
     http_route_accumulator(route).record(elapsed, Some(bytes));
+}
+
+pub fn record_memory_index_writer_enqueued(maintenance: bool) {
+    process_started_at();
+    let queue_depth = MEMORY_INDEX_WRITER_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed) + 1;
+    update_max(&MEMORY_INDEX_WRITER_MAX_QUEUE_DEPTH, queue_depth);
+    let (depth, max_depth) = if maintenance {
+        (
+            &MEMORY_INDEX_WRITER_MAINTENANCE_QUEUE_DEPTH,
+            &MEMORY_INDEX_WRITER_MAX_MAINTENANCE_QUEUE_DEPTH,
+        )
+    } else {
+        (
+            &MEMORY_INDEX_WRITER_FOREGROUND_QUEUE_DEPTH,
+            &MEMORY_INDEX_WRITER_MAX_FOREGROUND_QUEUE_DEPTH,
+        )
+    };
+    let queue_depth = depth.fetch_add(1, Ordering::Relaxed) + 1;
+    update_max(max_depth, queue_depth);
+}
+
+pub fn record_memory_index_writer_dequeued(maintenance: bool) {
+    decrement(&MEMORY_INDEX_WRITER_QUEUE_DEPTH);
+    decrement(if maintenance {
+        &MEMORY_INDEX_WRITER_MAINTENANCE_QUEUE_DEPTH
+    } else {
+        &MEMORY_INDEX_WRITER_FOREGROUND_QUEUE_DEPTH
+    });
+}
+
+pub fn record_memory_index_writer_timeout(maintenance: bool, operation: &'static str) {
+    process_started_at();
+    record_memory_index_writer_dequeued(maintenance);
+    if maintenance {
+        MEMORY_INDEX_WRITER_MAINTENANCE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+    } else {
+        MEMORY_INDEX_WRITER_FOREGROUND_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
+    }
+    memory_index_writer_operation_accumulator(operation)
+        .timeouts
+        .fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_memory_index_writer_queue_wait(operation: &'static str, elapsed: Duration) {
+    process_started_at();
+    memory_index_writer_operation_accumulator(operation)
+        .queue_wait
+        .record(elapsed, None);
 }
 
 pub fn record_conversation_summary(elapsed: Duration, bytes: usize) {
@@ -725,6 +872,24 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             DB_CONNECTION_OPEN.snapshot(false),
             DB_SIDECAR_CONSISTENCY_SCAN.snapshot(false),
         ],
+        memory_index_writer: MemoryIndexWriterDiagnosticsSnapshot {
+            queue_depth: MEMORY_INDEX_WRITER_QUEUE_DEPTH.load(Ordering::Relaxed),
+            max_queue_depth: MEMORY_INDEX_WRITER_MAX_QUEUE_DEPTH.load(Ordering::Relaxed),
+            foreground_queue_depth: MEMORY_INDEX_WRITER_FOREGROUND_QUEUE_DEPTH
+                .load(Ordering::Relaxed),
+            max_foreground_queue_depth: MEMORY_INDEX_WRITER_MAX_FOREGROUND_QUEUE_DEPTH
+                .load(Ordering::Relaxed),
+            maintenance_queue_depth: MEMORY_INDEX_WRITER_MAINTENANCE_QUEUE_DEPTH
+                .load(Ordering::Relaxed),
+            max_maintenance_queue_depth: MEMORY_INDEX_WRITER_MAX_MAINTENANCE_QUEUE_DEPTH
+                .load(Ordering::Relaxed),
+            foreground_timeouts: MEMORY_INDEX_WRITER_FOREGROUND_TIMEOUTS.load(Ordering::Relaxed),
+            maintenance_timeouts: MEMORY_INDEX_WRITER_MAINTENANCE_TIMEOUTS.load(Ordering::Relaxed),
+            operations: memory_index_writer_operation_accumulators()
+                .iter()
+                .map(|operation| operation.snapshot())
+                .collect(),
+        },
         scheduler: vec![
             SCHEDULER_POLL_ALL.snapshot(false),
             SCHEDULER_POLL_MESSAGE.snapshot(false),
@@ -795,6 +960,55 @@ fn update_max(target: &AtomicU64, value: u64) {
             Err(next) => current = next,
         }
     }
+}
+
+fn decrement(target: &AtomicU64) {
+    let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+        Some(value.saturating_sub(1))
+    });
+}
+
+fn memory_index_writer_operation_accumulator(
+    operation: &'static str,
+) -> &'static MemoryIndexWriterOperationAccumulator {
+    match operation {
+        "memory_index.open_writer" => &MEMORY_INDEX_WRITER_OPEN,
+        "memory_index.start_rebuild" => &MEMORY_INDEX_WRITER_START_REBUILD,
+        "memory_index.advance_rebuild_cursor" => &MEMORY_INDEX_WRITER_ADVANCE_REBUILD_CURSOR,
+        "memory_index.rebuild_scan" => &MEMORY_INDEX_WRITER_REBUILD_SCAN,
+        "memory_index.rebuild_prune" => &MEMORY_INDEX_WRITER_REBUILD_PRUNE,
+        "memory_index.rebuild_finalize" => &MEMORY_INDEX_WRITER_REBUILD_FINALIZE,
+        "memory_index.update_rebuild_phase" => &MEMORY_INDEX_WRITER_UPDATE_REBUILD_PHASE,
+        "memory_index.upsert_document" => &MEMORY_INDEX_WRITER_UPSERT_DOCUMENT,
+        "memory_index.delete_document" => &MEMORY_INDEX_WRITER_DELETE_DOCUMENT,
+        "memory_index.enqueue_source" => &MEMORY_INDEX_WRITER_ENQUEUE_SOURCE,
+        "memory_index.consume_pending_source" => &MEMORY_INDEX_WRITER_CONSUME_PENDING_SOURCE,
+        "memory_index.consume_stale_source" => &MEMORY_INDEX_WRITER_CONSUME_STALE_SOURCE,
+        "memory_index.refresh_stale_meta" => &MEMORY_INDEX_WRITER_REFRESH_STALE_META,
+        "memory_index.consume_runtime_outbox" => &MEMORY_INDEX_WRITER_CONSUME_RUNTIME_OUTBOX,
+        _ => &MEMORY_INDEX_WRITER_OTHER,
+    }
+}
+
+fn memory_index_writer_operation_accumulators(
+) -> [&'static MemoryIndexWriterOperationAccumulator; 15] {
+    [
+        &MEMORY_INDEX_WRITER_OPEN,
+        &MEMORY_INDEX_WRITER_START_REBUILD,
+        &MEMORY_INDEX_WRITER_ADVANCE_REBUILD_CURSOR,
+        &MEMORY_INDEX_WRITER_REBUILD_SCAN,
+        &MEMORY_INDEX_WRITER_REBUILD_PRUNE,
+        &MEMORY_INDEX_WRITER_REBUILD_FINALIZE,
+        &MEMORY_INDEX_WRITER_UPDATE_REBUILD_PHASE,
+        &MEMORY_INDEX_WRITER_UPSERT_DOCUMENT,
+        &MEMORY_INDEX_WRITER_DELETE_DOCUMENT,
+        &MEMORY_INDEX_WRITER_ENQUEUE_SOURCE,
+        &MEMORY_INDEX_WRITER_CONSUME_PENDING_SOURCE,
+        &MEMORY_INDEX_WRITER_CONSUME_STALE_SOURCE,
+        &MEMORY_INDEX_WRITER_REFRESH_STALE_META,
+        &MEMORY_INDEX_WRITER_CONSUME_RUNTIME_OUTBOX,
+        &MEMORY_INDEX_WRITER_OTHER,
+    ]
 }
 
 fn http_route_accumulator(route: &'static str) -> &'static MetricAccumulator {
