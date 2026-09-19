@@ -59,6 +59,7 @@ async fn wake_hint_coalesces_while_running_and_reenters_once() -> anyhow::Result
 http_async_tests!(
     callback_enqueue_message_repeats_until_cancelled,
     callback_wake_hint_routes_through_wake_hint,
+    callback_capability_routes_only_to_owning_agent,
     callback_wake_hint_rejects_stopped_public_agent_without_side_effects,
     unknown_callback_token_is_rejected,
     callback_mode_mismatch_is_rejected,

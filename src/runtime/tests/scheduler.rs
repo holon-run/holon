@@ -6,7 +6,7 @@ use crate::types::{
     ToolExecutionStatus, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
     WorkItemPlanStatus, WorkItemSchedulingState, WorkItemState, WorkReactivationMode,
 };
-use chrono::DateTime;
+use chrono::{DateTime, Duration};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
@@ -949,6 +949,78 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
         scheduler::SchedulerDecisionKind::EmitSystemTick
     );
     assert_eq!(decision.reason, "queued_available");
+}
+
+#[test]
+fn work_reactivation_prefers_runnable_current_over_queued_candidates() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-current".into());
+
+    let mut current = WorkItemRecord::new("default", "current work", WorkItemState::Open);
+    current.id = "work-current".into();
+    current.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&current).unwrap();
+    seed_runnable_work_execution(&storage, &current);
+    storage.write_agent(&agent).unwrap();
+
+    let mut queued = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    queued.id = "work-queued".into();
+    queued.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &queued);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection
+            .work_reactivation_signal()
+            .as_ref()
+            .map(|signal| (signal.work_item_id.as_str(), signal.reactivation_mode)),
+        Some(("work-current", WorkReactivationMode::ContinueActive))
+    );
+}
+
+#[test]
+fn work_reactivation_uses_stable_fifo_order_for_queued_candidates() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+
+    let now = Utc::now();
+    let mut newer = WorkItemRecord::new("default", "newer work", WorkItemState::Open);
+    newer.id = "work-newer".into();
+    newer.plan_status = WorkItemPlanStatus::Ready;
+    newer.created_at = now;
+    newer.updated_at = now;
+    storage.append_work_item(&newer).unwrap();
+    seed_runnable_work_execution(&storage, &newer);
+
+    let mut older = WorkItemRecord::new("default", "older work", WorkItemState::Open);
+    older.id = "work-older".into();
+    older.plan_status = WorkItemPlanStatus::Ready;
+    older.created_at = now - Duration::seconds(1);
+    older.updated_at = older.created_at;
+    storage.append_work_item(&older).unwrap();
+    seed_runnable_work_execution(&storage, &older);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection
+            .queued_runnable_work_items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["work-older", "work-newer"]
+    );
+    assert_eq!(
+        projection
+            .work_reactivation_signal()
+            .as_ref()
+            .map(|signal| (signal.work_item_id.as_str(), signal.reactivation_mode)),
+        Some(("work-older", WorkReactivationMode::ActivateQueued))
+    );
 }
 
 #[test]

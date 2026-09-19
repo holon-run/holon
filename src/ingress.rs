@@ -65,3 +65,68 @@ pub struct WakeHint {
     pub correlation_id: Option<String>,
     pub causation_id: Option<String>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inbound_request_preserves_exact_routing_and_provenance_facts() {
+        let trace_context = TraceContext {
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            span_id: "0123456789abcdef".into(),
+            trace_flags: 1,
+            trace_state: Some("vendor=value".into()),
+        };
+        let request = InboundRequest {
+            agent_id: "agent-alpha".into(),
+            kind: MessageKind::WebhookEvent,
+            priority: Priority::Next,
+            origin: MessageOrigin::Webhook {
+                source: "github".into(),
+                event_type: Some("pull_request".into()),
+            },
+            authority_class: AuthorityClass::IntegrationSignal,
+            body: MessageBody::Text {
+                text: "updated".into(),
+            },
+            delivery_surface: MessageDeliverySurface::HttpWebhook,
+            admission_context: AdmissionContext::ExternalTriggerCapability,
+            work_item_id: Some("work-123".into()),
+            metadata: Some(serde_json::json!({"delivery": "abc"})),
+            correlation_id: Some("correlation-1".into()),
+            causation_id: Some("causation-1".into()),
+            trace_context: Some(trace_context.clone()),
+        };
+
+        let message = request.into_message();
+
+        assert_eq!(message.agent_id, "agent-alpha");
+        assert_eq!(message.work_item_id.as_deref(), Some("work-123"));
+        assert_eq!(message.kind, MessageKind::WebhookEvent);
+        assert_eq!(
+            message.origin,
+            MessageOrigin::Webhook {
+                source: "github".into(),
+                event_type: Some("pull_request".into()),
+            }
+        );
+        assert_eq!(message.authority_class, AuthorityClass::IntegrationSignal);
+        assert_eq!(message.priority, Priority::Next);
+        assert_eq!(
+            message.delivery_surface,
+            Some(MessageDeliverySurface::HttpWebhook)
+        );
+        assert_eq!(
+            message.admission_context,
+            Some(AdmissionContext::ExternalTriggerCapability)
+        );
+        assert_eq!(
+            message.metadata,
+            Some(serde_json::json!({"delivery": "abc"}))
+        );
+        assert_eq!(message.correlation_id.as_deref(), Some("correlation-1"));
+        assert_eq!(message.causation_id.as_deref(), Some("causation-1"));
+        assert_eq!(message.trace_context, Some(trace_context));
+    }
+}
