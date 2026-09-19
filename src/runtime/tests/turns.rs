@@ -1445,7 +1445,7 @@ async fn wait_for_only_tool_round_completes_without_extra_provider_turn() {
 }
 
 async fn run_wait_for_final_report_test(
-    corrective_tool_round: bool,
+    scenario: WaitForFinalReportScenario,
     silent_progress: Option<bool>,
     work_item_owned: bool,
 ) {
@@ -1453,7 +1453,7 @@ async fn run_wait_for_final_report_test(
     let workspace = tempdir().unwrap();
     let provider = Arc::new(WaitForFinalReportProvider {
         calls: Mutex::new(0),
-        corrective_tool_round,
+        scenario,
         silent_progress,
     });
     let runtime = RuntimeHandle::new(
@@ -1586,7 +1586,8 @@ async fn run_wait_for_final_report_test(
         match silent_progress {
             Some(false) => 1,
             Some(true) => 2,
-            None if corrective_tool_round => 3,
+            None if scenario == WaitForFinalReportScenario::DisallowedToolCorrective => 3,
+            None if scenario == WaitForFinalReportScenario::AllowedToolBudget => 4,
             None => 2,
         }
     );
@@ -1667,10 +1668,24 @@ async fn run_wait_for_final_report_test(
         .find(|tool| tool.tool_name == "WaitFor")
         .expect("final WaitFor should atomically persist successful tool evidence");
     assert_eq!(wait_tool.status, crate::types::ToolExecutionStatus::Success);
-    assert!(
-        tools.iter().all(|tool| tool.tool_name != "GetAgent"),
-        "the corrective report round must not execute extra tools"
-    );
+    match scenario {
+        WaitForFinalReportScenario::DisallowedToolCorrective => assert!(
+            tools.iter().all(|tool| tool.tool_name != "ExecCommand"),
+            "the corrective report round must not execute disallowed tools"
+        ),
+        WaitForFinalReportScenario::AllowedToolBudget => assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| tool.tool_name == "GetAgent")
+                .count(),
+            2,
+            "allowed report tools should execute for both budgeted rounds"
+        ),
+        WaitForFinalReportScenario::Direct => assert!(
+            tools.iter().all(|tool| tool.tool_name != "GetAgent"),
+            "the direct report path should not execute extra tools"
+        ),
+    }
     assert!(turn.produced_brief_ids.contains(&brief.id));
     assert!(turn.tool_execution_ids.contains(&wait_tool.id));
     assert_eq!(turn.waiting_condition_ids.len(), 1);
@@ -1689,32 +1704,43 @@ async fn run_wait_for_final_report_test(
 
 #[tokio::test]
 async fn wait_for_final_report_commits_brief_wait_tool_and_turn_atomically() {
-    run_wait_for_final_report_test(false, None, false).await;
+    run_wait_for_final_report_test(WaitForFinalReportScenario::Direct, None, false).await;
 }
 
 #[tokio::test]
 async fn wait_for_final_report_corrects_extra_tool_once_without_executing_it() {
-    run_wait_for_final_report_test(true, None, false).await;
+    run_wait_for_final_report_test(
+        WaitForFinalReportScenario::DisallowedToolCorrective,
+        None,
+        false,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn wait_for_final_report_executes_allowed_tools_then_uses_text_only_fallback() {
+    run_wait_for_final_report_test(WaitForFinalReportScenario::AllowedToolBudget, None, false)
+        .await;
 }
 
 #[tokio::test]
 async fn wait_for_silent_does_not_publish_same_round_text() {
-    run_wait_for_final_report_test(false, Some(false), false).await;
+    run_wait_for_final_report_test(WaitForFinalReportScenario::Direct, Some(false), false).await;
 }
 
 #[tokio::test]
 async fn wait_for_silent_does_not_publish_prior_round_text() {
-    run_wait_for_final_report_test(false, Some(true), false).await;
+    run_wait_for_final_report_test(WaitForFinalReportScenario::Direct, Some(true), false).await;
 }
 
 #[tokio::test]
 async fn work_item_wait_for_final_skips_precommit_message_bookkeeping() {
-    run_wait_for_final_report_test(false, None, true).await;
+    run_wait_for_final_report_test(WaitForFinalReportScenario::Direct, None, true).await;
 }
 
 #[tokio::test]
 async fn work_item_wait_for_silent_skips_precommit_message_bookkeeping() {
-    run_wait_for_final_report_test(false, Some(true), true).await;
+    run_wait_for_final_report_test(WaitForFinalReportScenario::Direct, Some(true), true).await;
 }
 
 struct PickThenSilentOperatorWaitProvider {
