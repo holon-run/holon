@@ -19,12 +19,12 @@ class SdkFoundationTest {
 
         val result =
             handshake.checkCompatibility(
-                requiredCapabilities = setOf("agents.list.v1"),
+                requiredCapabilities = setOf("agents.list"),
             )
         val compatible = assertIs<CompatibilityResult.Compatible>(result)
 
         assertEquals("main", compatible.server.defaultAgentId)
-        assertEquals("session", compatible.server.authMode)
+        assertEquals("bearer", compatible.server.authMode)
         assertTrue(compatible.server.authRequired)
     }
 
