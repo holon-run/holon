@@ -1,5 +1,7 @@
 Mark an owned open work item completed by ID. Write the operator-facing completion report as assistant text in the same round; the runtime promotes that text after this tool succeeds.
 
+Before calling this tool, finish any required queries, verification, and material collection. After this tool succeeds, the runtime enters a pending-report continuation and requires a non-empty operator-facing completion report. That continuation may use read-only fact-checking tools, but do not call `CompleteWorkItem`, `WaitFor`, or another lifecycle-control tool recursively. Use the tool results first, then provide the final report as text.
+
 If the target is the WorkItem bound to this execution, completion settles the execution, may resume its yielded direct caller, and ends the turn. If the target is different, completion is detached: it completes only that target and preserves the current execution, run, focus, and turn.
 
 An active WorkItem cannot be completed from another execution or through control HTTP. Let its owning execution complete it, or stop that execution before retrying. Detached completion that would resume a caller while another execution is active is also rejected rather than replacing the active execution.
