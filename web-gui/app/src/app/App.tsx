@@ -20,6 +20,7 @@ import {
   ListTree,
   LoaderCircle,
   LogOut,
+  Menu,
   RefreshCw,
   Search as SearchIcon,
   Settings as SettingsIcon,
@@ -100,6 +101,7 @@ export function App() {
   const [createAgentError, setCreateAgentError] = useState<string | undefined>();
   const [createAgentBusy, setCreateAgentBusy] = useState(false);
   const [agentFilter, setAgentFilter] = useState("");
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const route = useRuntimeStore((state) => state.route);
   const selectedAgentId = useRuntimeStore((state) => state.selectedAgentId);
   const selectedSkillId = useRuntimeStore((state) => state.selectedSkillId);
@@ -400,6 +402,14 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const closeForDesktop = () => {
+      if (window.innerWidth > 760) setMobileNavOpen(false);
+    };
+    window.addEventListener("resize", closeForDesktop);
+    return () => window.removeEventListener("resize", closeForDesktop);
+  }, []);
+
+  useEffect(() => {
     if (!developerDiagnosticsEnabled) {
       disableDeveloperDiagnosticsUi();
     }
@@ -416,21 +426,25 @@ export function App() {
   }, [route, loading, bootstrap.connection.error, activeAgent, agentDetailLoading, setRoute]);
 
   function navigateRoute(nextRoute: RouteKey) {
+    setMobileNavOpen(false);
     setRoute(nextRoute);
     pushBrowserRoute(nextRoute, selectedAgentId);
   }
 
   function navigateSkill(skillId: string, agentId?: string) {
+    setMobileNavOpen(false);
     openSkill(skillId, agentId);
     pushBrowserRoute("skillDetail", skillId, undefined, undefined, agentId);
   }
 
   function navigateTemplate(catalogId: string) {
+    setMobileNavOpen(false);
     openTemplate(catalogId);
     pushBrowserRoute("templateDetail", undefined, catalogId);
   }
 
   function navigateAgent(agentId: string, eventSeq?: number) {
+    setMobileNavOpen(false);
     openAgent(agentId);
     pushBrowserRoute("agent", agentId, undefined, eventSeq == null ? undefined : { event_seq: eventSeq });
   }
@@ -509,6 +523,7 @@ export function App() {
       data-panel-mode={rightPanelMode}
       data-nav-collapsed={navCollapsed}
       data-panel-full={panelLayout.full}
+      data-mobile-nav-open={mobileNavOpen}
       style={{ "--panel-w": `${panelLayout.width}px`, "--nav-w": `${NAV_WIDTH}px` } as CSSProperties}
     >
       <aside className="sidebar" aria-label="Holon navigation">
@@ -546,10 +561,11 @@ export function App() {
           <button
             className="nav-collapse"
             type="button"
-            aria-label={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
-            title={navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
+            aria-label={mobileNavOpen ? t("app.collapseNav") : navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
+            title={mobileNavOpen ? t("app.collapseNav") : navCollapsed ? t("app.expandNav") : t("app.collapseNav")}
             onClick={() => {
-              if (panelLayout.full || (navCollapsed && !navPreference)) setRightPanelOpen(false);
+              if (mobileNavOpen) setMobileNavOpen(false);
+              else if (panelLayout.full || (navCollapsed && !navPreference)) setRightPanelOpen(false);
               else toggleNavCollapsed();
             }}
           >
@@ -657,11 +673,30 @@ export function App() {
           <ConnectionStatus connection={bootstrap.connection} loading={loading} onRetry={() => refresh()} />
         </div>
       </aside>
+      {mobileNavOpen ? (
+        <button
+          className="mobile-nav-scrim"
+          type="button"
+          aria-label={t("app.collapseNav")}
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
 
       <main className="main-shell" inert={panelLayout.full}>
         <header className="topbar">
           <div className="topbar-primary">
             <div className="top-title">
+              <Button
+                className="mobile-nav-toggle"
+                type="button"
+                size="icon"
+                variant="ghost"
+                aria-label={mobileNavOpen ? t("app.collapseNav") : t("app.expandNav")}
+                aria-expanded={mobileNavOpen}
+                onClick={() => setMobileNavOpen((open) => !open)}
+              >
+                <Menu size={18} />
+              </Button>
               {route === "agent" ? (
                 <Button
                   className="back-button"

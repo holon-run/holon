@@ -206,13 +206,16 @@ export function AgentPage({
       const rect = anchor.getBoundingClientRect();
       if (rect.width === 0 && rect.height === 0) return;
       const margin = 12;
-      const next = {
-        right: Math.max(margin, Math.min(window.innerWidth - rect.right, window.innerWidth - 280 - margin)),
-        bottom: window.innerHeight - rect.top + 8,
-        width: Math.max(280, Math.min(480, window.innerWidth - margin * 2)),
-        maxHeight: Math.max(180, Math.min(480, rect.top - 16)),
-      };
-      const key = `${next.right}|${next.bottom}|${next.width}|${next.maxHeight}`;
+      const width = Math.min(480, Math.max(240, window.innerWidth - margin * 2));
+      const left = Math.max(margin, Math.min(rect.right - width, window.innerWidth - width - margin));
+      const spaceAbove = Math.max(0, rect.top - margin - 8);
+      const spaceBelow = Math.max(0, window.innerHeight - rect.bottom - margin - 8);
+      const showAbove = spaceAbove >= 260 || spaceAbove >= spaceBelow;
+      const maxHeight = Math.max(180, Math.min(480, showAbove ? spaceAbove : spaceBelow));
+      const next = showAbove
+        ? { left, bottom: window.innerHeight - rect.top + 8, width, maxHeight }
+        : { left, top: rect.bottom + 8, width, maxHeight };
+      const key = `${next.left}|${"bottom" in next ? next.bottom : next.top}|${next.width}|${next.maxHeight}`;
       if (key === lastKey) return;
       lastKey = key;
       setModelMenuStyle(next);

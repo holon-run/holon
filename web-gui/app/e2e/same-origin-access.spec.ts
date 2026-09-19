@@ -95,7 +95,7 @@ test("unavailable sign-in discovery stays on the page and can be retried", async
   await expect(page.getByLabel("Access token", { exact: true })).toBeVisible();
 });
 
-test("connection recovery and sign-out remain available in the compact sidebar", async ({ page }) => {
+test("connection recovery and sign-out remain available in the mobile navigation drawer", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.addInitScript(() => {
     if (location.pathname === "/") sessionStorage.setItem("holon.webGui.activeRuntimeConnection.v1", JSON.stringify({ mode: "local", token: "legacy-local-token" }));
@@ -104,6 +104,7 @@ test("connection recovery and sign-out remain available in the compact sidebar",
   await page.route("**/api/handshake", (route) => disconnected
     ? route.fulfill({ status: 503, json: {} }) : route.continue());
   await page.goto("/");
+  await page.locator(".mobile-nav-toggle").click();
   await page.locator(".connection-status").click();
   const panel = page.getByRole("dialog", { name: "Connection", exact: true });
   await expect(panel.getByText("Disconnected", { exact: true })).toBeVisible();
@@ -111,7 +112,10 @@ test("connection recovery and sign-out remain available in the compact sidebar",
   await panel.getByRole("button", { name: "Retry connection" }).click();
   // Initial bootstrap may briefly replace the workspace while retrying.
   await expect(page.locator(".sidebar")).toBeVisible();
-  if (!await panel.isVisible()) await page.locator(".connection-status").click();
+  if (!await panel.isVisible()) {
+    if (!await page.locator(".connection-status").isInViewport()) await page.locator(".mobile-nav-toggle").click();
+    await page.locator(".connection-status").click();
+  }
   await expect(panel.getByText("Connected", { exact: true })).toBeVisible();
   const bounds = await panel.boundingBox();
   expect(bounds!.x).toBeGreaterThanOrEqual(0);
