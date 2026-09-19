@@ -192,7 +192,7 @@ boundary records the canonical facts required by the next boundary:
 | Settlement (`runtime::commit_queue_settlement`) | `Settle` | matching activation, terminal Turn, WorkItem disposition |
 | Delivery disposition | `Settle` | settlement-bound brief or delivery evidence |
 | Operator interjection | `Interject` | running activation and safe-point identity |
-| Work-queue idle tick (`memory_refresh::emit_system_tick_from_work_queue`) | `Admit` | runnable WorkItem identity, generation, and source revision |
+| Work-queue idle tick (`scheduler_continuation::emit_system_tick_from_work_queue`) | `Admit` | runnable WorkItem identity, generation, and source revision |
 
 The semantic decision plane is not part of production admission. Its production
 module and fixtures have been removed. Deterministic structural binding and the

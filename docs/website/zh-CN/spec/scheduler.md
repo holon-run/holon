@@ -172,7 +172,7 @@ brief、投递、activation、结算和执行事实共享同一权威和事务�
 | 结算（`runtime::commit_queue_settlement`） | `Settle` | 匹配的 activation、终态 Turn、WorkItem 处置 |
 | 投递处置 | `Settle` | 绑定结算的 brief 或投递证据 |
 | 操作者插话 | `Interject` | 运行中的 activation 和安全点身份 |
-| 工作队列空闲 tick（`memory_refresh::emit_system_tick_from_work_queue`） | `Admit` | 可运行 WorkItem 的身份、generation 和源修订 |
+| 工作队列空闲 tick（`scheduler_continuation::emit_system_tick_from_work_queue`） | `Admit` | 可运行 WorkItem 的身份、generation 和源修订 |
 
 语义决策平面不属于生产准入。它的生产模块和 fixture 已被移除。确定性的结构绑定和
 规范协议保留了全部状态转换控制。

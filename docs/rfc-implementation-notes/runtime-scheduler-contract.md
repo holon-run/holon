@@ -87,7 +87,7 @@ Focused verification currently lives in:
 - `src/runtime/tests/runtime_state.rs`
 - `src/runtime/tests/wake_hints.rs`
 - `src/runtime/continuation.rs`
-- `src/runtime/memory_refresh.rs`
+- `src/runtime/scheduler_continuation.rs`
 - `src/runtime/task_state_reducer.rs`
 - `src/runtime/runtime_db/transitions.rs` (protocol transition atomics)
 - `src/runtime_db/tests.rs` (retired rollout compatibility, concurrent load,
