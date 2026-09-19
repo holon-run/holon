@@ -9551,6 +9551,161 @@
             },
             "type": "array"
           },
+          "memory_index_writer": {
+            "default": {
+              "foreground_queue_depth": 0,
+              "foreground_timeouts": 0,
+              "maintenance_queue_depth": 0,
+              "maintenance_timeouts": 0,
+              "max_foreground_queue_depth": 0,
+              "max_maintenance_queue_depth": 0,
+              "max_queue_depth": 0,
+              "operations": [],
+              "queue_depth": 0
+            },
+            "properties": {
+              "foreground_queue_depth": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "foreground_timeouts": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maintenance_queue_depth": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "maintenance_timeouts": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_foreground_queue_depth": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_maintenance_queue_depth": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "max_queue_depth": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "operations": {
+                "items": {
+                  "properties": {
+                    "operation": {
+                      "type": "string"
+                    },
+                    "queue_wait": {
+                      "properties": {
+                        "avg_bytes": {
+                          "format": "double",
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "avg_ms": {
+                          "format": "double",
+                          "type": "number"
+                        },
+                        "count": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "max_ms": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "p50_ms": {
+                          "default": 0,
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "p95_ms": {
+                          "default": 0,
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "p99_ms": {
+                          "default": 0,
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "total_bytes": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": [
+                            "integer",
+                            "null"
+                          ]
+                        },
+                        "total_ms": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "count",
+                        "total_ms",
+                        "max_ms",
+                        "avg_ms"
+                      ],
+                      "type": "object"
+                    },
+                    "timeouts": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "operation",
+                    "queue_wait",
+                    "timeouts"
+                  ],
+                  "type": "object"
+                },
+                "type": "array"
+              },
+              "queue_depth": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "queue_depth",
+              "max_queue_depth",
+              "foreground_queue_depth",
+              "max_foreground_queue_depth",
+              "maintenance_queue_depth",
+              "max_maintenance_queue_depth",
+              "foreground_timeouts",
+              "maintenance_timeouts",
+              "operations"
+            ],
+            "type": "object"
+          },
           "process_uptime_ms": {
             "format": "uint64",
             "minimum": 0,
