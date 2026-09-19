@@ -7213,6 +7213,125 @@ code {
 .file-browser-popover-content { position: absolute; right: 0; top: calc(100% + 4px); z-index: 30; display: flex; flex-direction: column; min-width: 200px; max-width: min(300px, 80vw); max-height: 280px; overflow: auto; padding: 5px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: 0 8px 24px #0002; }
 .file-browser-popover-content button { display: block; width: 100%; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; padding: 8px 10px; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; font-size: 12px; }
 .file-browser-popover-content button:hover { background: var(--surface-hover); }
+
+/* Mobile navigation and conversation controls. The narrow layout keeps the
+   conversation as the primary surface and opens the full roster on demand;
+   this also leaves enough width for the composer actions on small phones. */
+.mobile-nav-toggle,
+.mobile-nav-scrim { display: none; }
+@media (max-width: 760px), (orientation: landscape) and (max-height: 600px) and (max-width: 900px) {
+  .app-shell,
+  .app-shell[data-panel="open"],
+  .app-shell[data-panel="open"][data-panel-mode="normal"],
+  .app-shell[data-panel="open"][data-panel-mode="expanded"],
+  .app-shell[data-nav-collapsed="true"],
+  .app-shell[data-nav-collapsed="true"][data-panel="open"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 80;
+    width: min(320px, 88vw);
+    height: 100dvh;
+    padding: max(10px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+    border-right: 1px solid var(--line-strong);
+    box-shadow: 18px 0 42px rgba(24, 34, 48, 0.16);
+    transform: translateX(-105%);
+    transition: transform 180ms ease;
+  }
+
+  .app-shell[data-mobile-nav-open="true"] .sidebar { transform: translateX(0); }
+  .mobile-nav-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 70;
+    display: block;
+    border: 0;
+    background: rgba(24, 34, 48, 0.22);
+    backdrop-filter: blur(2px);
+  }
+
+  .mobile-nav-toggle {
+    display: grid;
+    flex: 0 0 auto;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+  }
+
+  .app-shell .sidebar .brand-name { display: inline; }
+  .app-shell .sidebar .global-nav strong { display: block; }
+  .app-shell .sidebar .agent-row-main { display: grid; }
+  .app-shell .sidebar .agent-row-status { display: grid; }
+  .app-shell .sidebar .side-heading { display: flex; }
+  .app-shell .sidebar .connection-status span:last-child { display: block; }
+  .app-shell .sidebar .sidebar-brand { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .app-shell .sidebar .brand-icon-link { display: grid; }
+  .app-shell .sidebar .agent-filter { display: block; }
+  .app-shell .sidebar .agent-row-indicators { display: flex; }
+  .app-shell .sidebar .agent-row { padding-inline: 8px; }
+  .app-shell .sidebar .agent-id-copy { display: grid; }
+
+  .topbar-primary {
+    min-height: 52px;
+    gap: 6px;
+    padding: 6px max(10px, env(safe-area-inset-right)) 6px max(10px, env(safe-area-inset-left));
+  }
+  .top-title { gap: 6px; min-width: 0; }
+  .top-title > div { gap: 5px; min-width: 0; }
+  .top-title strong { max-width: 42vw; }
+  .top-actions { gap: 4px; }
+  .top-actions .source-chip { display: none; }
+  .agent-top-controls,
+  .agent-stream-controls { gap: 3px; }
+  .agent-stream-controls .live-status { display: none; }
+
+  .message-list { padding: 12px 12px 18px; }
+  .composer {
+    width: calc(100% - 16px);
+    margin-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+  .composer textarea {
+    min-height: 44px;
+    max-height: min(240px, 34dvh);
+    padding: 12px 14px 7px;
+  }
+  .composer-toolbar { padding: 5px 8px max(9px, env(safe-area-inset-bottom)); }
+  .composer-right { width: 100%; min-width: 0; justify-content: space-between; gap: 5px; }
+  .composer-right > .attachment-button,
+  .composer-right > .send-button { flex: 0 0 32px; }
+  .model-picker { min-width: 0; flex: 1 1 auto; }
+  .model-button { min-width: 0; max-width: none; flex: 1 1 auto; }
+  .model-button-label { max-width: 100%; }
+  .thinking-button { padding-inline: 5px; }
+  .thinking-button small { display: none; }
+  .thinking-popover { right: 0; max-width: calc(100vw - 24px); }
+  .model-menu {
+    box-sizing: border-box;
+    max-width: calc(100vw - 24px);
+    border-radius: 12px;
+  }
+  .model-menu-header { align-items: flex-start; }
+  .model-menu-header > div { min-width: 0; }
+  .model-menu-header span { display: block; overflow-wrap: anywhere; }
+
+  .current-work-bar { width: calc(100% - 16px); margin-bottom: 6px; }
+  .side-panel[data-full="true"] { left: 0; }
+  .app-shell[data-panel-full="true"] > .sidebar { visibility: visible; }
+}
+
+@media (orientation: landscape) and (max-height: 600px) and (max-width: 900px) {
+  .topbar-primary { min-height: 44px; padding-block: 4px; }
+  .message-list { padding-block: 8px 12px; }
+  .conversation-timeline { gap: 22px; padding-block: 8px 16px; }
+  .conversation-input-line,
+  .conversation-pending-chip { margin-bottom: 14px; padding-block: 9px; }
+  .composer textarea { max-height: 120px; }
+  .current-work-bar { padding-block: 6px; }
+}
 .file-browser-info { flex: none; max-height: 180px; overflow: auto; padding: 8px 10px; background: var(--surface-hover); border-radius: 6px; font-size: 12px; }
 .file-browser-info dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 5px 12px; margin: 0; }
 .file-browser-info dt { color: var(--muted); }
