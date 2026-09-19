@@ -1,0 +1,19 @@
+[
+  {
+    "identity": {
+      "agent_id": "main",
+      "is_default_agent": true,
+      "status": "active",
+      "name": "Primary",
+      "future_identity_field": "ignored"
+    },
+    "model": {
+      "effective_model": "openai/gpt-5.6",
+      "runtime_default_model": "openai/gpt-5.6",
+      "source": "runtime_default"
+    },
+    "status": "awake_idle",
+    "pending": 2,
+    "future_agent_field": true
+  }
+]

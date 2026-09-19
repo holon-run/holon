@@ -1,0 +1,15 @@
+[
+  {
+    "identity": {
+      "agent_id": "future",
+      "is_default_agent": false,
+      "status": "archived"
+    },
+    "model": {
+      "effective_model": "openai/future",
+      "runtime_default_model": "openai/future",
+      "source": "policy_selected"
+    },
+    "status": "suspended"
+  }
+]

@@ -11,6 +11,7 @@ on:
       - "Dockerfile"
       - "src/**"
       - "tests/**"
+      - "apps/android/**"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "agent_templates/**"
@@ -42,6 +43,7 @@ on:
       - "Dockerfile"
       - "src/**"
       - "tests/**"
+      - "apps/android/**"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "agent_templates/**"
@@ -131,6 +133,8 @@ jobs:
               - 'packages/conversation-sdk/**'
               - '.github/workflows/ci.yml'
             web:
+              - 'apps/android/**'
+              - 'tests/fixtures/client-wire/**'
               - 'web-gui/**'
               - 'packages/client-wire-kotlin/**'
               - '.github/workflows/ci.yml'
@@ -172,8 +176,6 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.14.3'
 
       - name: Test and build web GUI
         run: make web-ci

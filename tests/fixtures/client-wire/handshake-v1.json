@@ -1,0 +1,25 @@
+{
+  "ok": true,
+  "protocol": {
+    "name": "holon-control",
+    "version": 1
+  },
+  "auth": {
+    "mode": "session",
+    "required": true
+  },
+  "capabilities": [
+    "agents.list.v1",
+    "agents.conversation-read.v1"
+  ],
+  "runtime": {
+    "default_agent": "main",
+    "workspace_dir": "/srv/holon/workspaces",
+    "home_dir": "/srv/holon",
+    "listen": "127.0.0.1:8787",
+    "advertise_url": "https://holon.example.test"
+  },
+  "future_handshake_field": {
+    "version": 2
+  }
+}

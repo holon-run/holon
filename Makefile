@@ -1,9 +1,10 @@
-.PHONY: help web web-ci conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci android-sdk-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
+ANDROID_DIR := apps/android
 WEB_DIR := web-gui/app
 OPENAPI_TOOLS_DIR := web-gui/openapi-tools
 KOTLIN_WIRE_CHECK_DIR := $(OPENAPI_TOOLS_DIR)/kotlin-compile-check
-GRADLE ?= gradle
+GRADLE ?= $(ANDROID_DIR)/gradlew
 CONVERSATION_SDK_DIR := packages/conversation-sdk
 CONCURRENT_REPEATS ?= 3
 DOCKER_IMAGE ?= holon:dev
@@ -40,6 +41,10 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 	cd ../../$(OPENAPI_TOOLS_DIR) && npm ci && npm run check && \
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
 	$(MAKE) transport-types-kotlin-check
+	$(MAKE) android-sdk-test
+
+android-sdk-test: ## Compile and test the Android SDK foundation against generated wire models
+	$(GRADLE) --no-daemon -p $(ANDROID_DIR) :sdk:test
 
 conversation-sdk-ci: ## Test the TypeScript conversation SDK against the real Rust HTTP/SSE server
 	@bash -c 'set -e; \
