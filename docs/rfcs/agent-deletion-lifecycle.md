@@ -15,8 +15,10 @@ deletion:
 - `delete` transitions identity `Active -> Deleting -> Deleted`;
 - `purge` is a future evidence-erasure contract and is not part of delete.
 
-Deletion is an authenticated operator control-plane operation. It creates a
-durable, idempotent deletion job before cleanup begins.
+Deletion is normally an authenticated operator control-plane operation. A
+parent-supervised task may also persist an explicit lifecycle disposition that
+admits deletion when its one-shot child becomes terminal. Both paths create the
+same durable, idempotent deletion job before cleanup begins.
 
 The same operation repairs legacy terminal private children that were archived
 without a deletion job. A repair job records `mode=cleanup_repair`, keeps the
@@ -62,6 +64,36 @@ idempotent; revision validation fences only job creation or replacement.
 After the fence commits, runtime bootstrap, ingress, wake, prompt, enqueue, and
 control paths must not return or create a runnable runtime for that identity.
 An already loaded runtime is unloaded when the deletion request is admitted.
+
+## Supervised Child Terminal Disposition
+
+The task recovery contract persists an `AgentLifecycleDisposition`:
+
+- legacy and current `ChildAgentTask` records default to
+  `delete_on_terminal`;
+- `ActorInvocation` records created by `InvokeAgent`, including
+  `InvokeAgent(new_subagent)`, default to `retain`.
+
+Terminal deletion admission is allowed only when the target resolves to the
+canonical `Child + Private + ParentSupervised + Ephemeral` shape, its lifecycle
+is `supervision_attached`, and its lineage, supervisor, and delegated task all
+match the terminal parent task. Agent names and legacy name prefixes are not
+admission evidence.
+
+For `delete_on_terminal`, the terminal task/result settlement, the
+`Active -> Deleting` identity fence, and deletion-job creation commit in one
+runtime-database transaction. The parent then wakes the deletion coordinator;
+a crash or wake failure after commit cannot lose the durable job. Replayed
+terminal notifications return the existing job, including a completed job,
+and never promote normal terminal cleanup to `cleanup_repair`.
+
+For `retain`, task completion does not create or wake a deletion job. The child
+identity remains available for another invocation, including after runtime
+restart. This preserves the reusable `InvokeAgent(new_subagent)` contract.
+
+Normal supervised terminal cleanup never uses the archive-only compatibility
+path. Repairing already-deleted legacy residue remains an explicit operator or
+maintenance admission and is outside terminal-task cleanup.
 
 ## Coordinator Ownership and Retry
 
@@ -130,10 +162,12 @@ workspace bindings.
 - If the latest deletion job is not `Completed` (in-flight, pending, or
   `retryable_failed`), create fails closed with `409 Conflict`,
   `deletion_incomplete`, including job status/phase/last_error details.
-- Release only ever happens through an operator-triggered deletion;
-  agents cannot delete themselves or each other. External stale references
-  to a recreated id resolve to the new incarnation — the accepted residual
-  risk, mitigated by the incarnation counter and audit boundary.
+- Release only happens after a canonical deletion job completes. Admission is
+  either operator-authenticated or the persisted terminal disposition of the
+  lifecycle-owning supervision task; agents cannot otherwise delete themselves
+  or peers. External stale references to a recreated id resolve to the new
+  incarnation — the accepted residual risk, mitigated by the incarnation
+  counter and audit boundary.
 
 ## Cleanup Boundary
 
@@ -147,11 +181,11 @@ The `Index` phase removes the agent's shared memory projection, pending source
 state, checkpoints, metadata, cursors, and pending runtime-index outbox rows.
 The produced outbox watermark is retained as monotonic propagation evidence.
 
-Single private parent-supervised children use the authenticated operator delete
-surface. Explicit parent cascade uses the same ensure-job transaction for
-`Active`, `Deleting`, and legacy `Deleted` children, so a terminal child without
-a job receives cleanup repair. Public named descendants never cascade
-automatically.
+Single private parent-supervised children use either the authenticated operator
+delete surface or the lifecycle-owning task's persisted
+`delete_on_terminal` disposition. Explicit parent cascade uses the same
+ensure-job transaction for `Active`, `Deleting`, and legacy `Deleted` children.
+Public named descendants never cascade automatically.
 
 ## Memory Index Admission
 
@@ -163,6 +197,6 @@ Only `Active` identities proceed; active private children remain eligible.
 Unknown, `Deleting`, `Deleted`, or undecodable identities fail closed for that
 round.
 
-Operator deletion and parent cascade acquire the same fence before changing a
-child identity, preventing a refresh from crossing the deletion admission
-boundary.
+Operator deletion, parent cascade, and terminal supervised cleanup acquire the
+same fence before changing a child identity, preventing a refresh from crossing
+the deletion admission boundary.

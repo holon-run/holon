@@ -5109,7 +5109,6 @@ impl RuntimeHost {
         child_agent_id: &str,
         child_turn_baseline: u64,
         worktree: bool,
-        cleanup_agent_on_terminal: bool,
     ) -> Result<ChildTaskTerminalResult> {
         let storage = self.agent_storage(child_agent_id)?;
         let identity = self
@@ -5119,9 +5118,6 @@ impl RuntimeHost {
             .completed_child_terminal_from_storage(&storage, &identity, child_turn_baseline)
             .await?
         {
-            if cleanup_agent_on_terminal {
-                self.archive_private_agent(child_agent_id).await?;
-            }
             return Ok(result);
         }
         let runtime = self.get_or_create_agent(child_agent_id).await?;
@@ -5238,9 +5234,6 @@ impl RuntimeHost {
             }
             let task_detail = Some(metadata);
 
-            if cleanup_agent_on_terminal {
-                self.archive_private_agent(child_agent_id).await?;
-            }
             return Ok(ChildTaskTerminalResult {
                 status,
                 text,
@@ -6262,6 +6255,21 @@ impl RuntimeHostBridge {
         self.host()?.agent_identity_record(agent_id)
     }
 
+    pub(crate) async fn activate_agent_deletion(&self, agent_id: &str) -> Result<()> {
+        let host = self.host()?;
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)?
+            .ok_or_else(|| {
+                anyhow!("agent {agent_id} identity not found after deletion admission")
+            })?;
+        host.cache_agent_identity(&identity)?;
+        host.unload_runtime(agent_id).await;
+        host.notify_deletion_coordinator();
+        Ok(())
+    }
+
     pub(crate) async fn canonical_relations_for_agent(
         &self,
         agent_id: &str,
@@ -6412,7 +6420,6 @@ impl RuntimeHostBridge {
         delivery_id: Option<&str>,
         invocation_task_id: &str,
         worktree: bool,
-        cleanup_agent_on_terminal: bool,
     ) -> Result<ChildTaskTerminalResult> {
         if let Some(delivery_id) = delivery_id {
             return self
@@ -6426,12 +6433,7 @@ impl RuntimeHostBridge {
                 .await;
         }
         self.host()?
-            .await_child_terminal_result(
-                child_agent_id,
-                child_turn_baseline,
-                worktree,
-                cleanup_agent_on_terminal,
-            )
+            .await_child_terminal_result(child_agent_id, child_turn_baseline, worktree)
             .await
     }
 
@@ -8271,6 +8273,12 @@ mod tests {
         assert_eq!(child_identity.status, AgentRegistryStatus::Active);
         assert_eq!(child_identity.durability, Some(AgentDurability::Ephemeral));
         assert!(host.agent_data_dir(&created.agent_id).exists());
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&created.agent_id)
+            .unwrap()
+            .is_none());
 
         let reused = parent
             .agent_invocation_service()
@@ -8307,6 +8315,12 @@ mod tests {
             .expect("terminal invocation must not delete its target during restart convergence");
         assert_eq!(restarted_identity.status, AgentRegistryStatus::Active);
         assert!(restarted.agent_data_dir(&created.agent_id).exists());
+        assert!(restarted
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&created.agent_id)
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -9840,6 +9854,8 @@ mod tests {
                     prompt: "continue delegated child".into(),
                     authority_class: AuthorityClass::OperatorInstruction,
                     workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                    lifecycle_disposition:
+                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
                 }),
             })
             .unwrap();
@@ -9878,6 +9894,7 @@ mod tests {
 
         let restarted =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        restarted.spawn_daemon_deletion_coordinator();
         let runtime = restarted.default_runtime().await.unwrap();
         let runtime_task = tokio::spawn(runtime.clone().run());
 
@@ -9926,13 +9943,37 @@ mod tests {
                 && event.data.get("id").and_then(|value| value.as_str())
                     == Some("task-recover-child")
         }));
-        let child_identity = restarted
-            .agent_identity_record("child_recover")
-            .unwrap()
-            .expect("child identity should remain recorded");
-        assert_eq!(child_identity.status, AgentRegistryStatus::Deleted);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deletion_job = loop {
+            let child_identity = restarted
+                .agent_identity_record("child_recover")
+                .unwrap()
+                .expect("child identity should remain recorded");
+            let deletion_job = restarted
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent("child_recover")
+                .unwrap()
+                .expect("terminal child cleanup should use a canonical deletion job");
+            if child_identity.status == AgentRegistryStatus::Deleted
+                && deletion_job.status == crate::types::AgentDeletionStatus::Completed
+            {
+                break deletion_job;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for canonical terminal child deletion to complete"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(
+            deletion_job.status,
+            crate::types::AgentDeletionStatus::Completed
+        );
+        assert_eq!(deletion_job.mode, crate::types::AgentDeletionMode::Delete);
 
         runtime_task.abort();
+        restarted.shutdown_daemon_deletion_coordinator().await;
     }
 
     #[tokio::test]
@@ -9962,6 +10003,8 @@ mod tests {
                     prompt: "continue delegated child".into(),
                     authority_class: AuthorityClass::OperatorInstruction,
                     workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                    lifecycle_disposition:
+                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
                 }),
             })
             .unwrap();
@@ -10092,6 +10135,8 @@ mod tests {
                     prompt: "continue delegated child".into(),
                     authority_class: AuthorityClass::OperatorInstruction,
                     workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                    lifecycle_disposition:
+                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
                 }),
             })
             .unwrap();

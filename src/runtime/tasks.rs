@@ -8,12 +8,12 @@ use crate::runtime_error::{
 use crate::tool::helpers::truncate_output_to_char_budget;
 use crate::tool::ToolError;
 use crate::types::{
-    brief_created_event_for, AgentModelRequest, AgentModelResolution, AgentModelResolutionStatus,
-    BriefKind, BriefRecord, ChildAgentWorkspaceMode, CommandTaskStatusSnapshot,
-    CompletionReportRequirement, CompletionReportState, FailureArtifact, FailureArtifactCategory,
-    TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult, TaskOutputRetrievalStatus,
-    TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef, WaitConditionRecord,
-    WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
+    brief_created_event_for, AgentLifecycleDisposition, AgentModelRequest, AgentModelResolution,
+    AgentModelResolutionStatus, BriefKind, BriefRecord, ChildAgentWorkspaceMode,
+    CommandTaskStatusSnapshot, CompletionReportRequirement, CompletionReportState, FailureArtifact,
+    FailureArtifactCategory, TaskInputResult, TaskKind, TaskListEntry, TaskOutputResult,
+    TaskOutputRetrievalStatus, TaskOutputSnapshot, TaskStatusSnapshot, TodoItem, ToolArtifactRef,
+    WaitConditionRecord, WaitConditionStatus, WorkItemCompletionIntent, WorkItemContinuationFrame,
     WorkItemContinuationReturnPolicy, WorkItemContinuationState, WorkItemDelegationRecord,
     WorkItemDelegationState, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
     AGENT_MESSAGE_WAIT_TASK_KIND, CHILD_AGENT_TASK_KIND,
@@ -184,6 +184,7 @@ fn child_agent_task_detail(workspace_mode: ChildAgentWorkspaceMode) -> serde_jso
     serde_json::json!({
         "wait_policy": crate::types::TaskWaitPolicy::Background,
         "workspace_mode": workspace_mode,
+        "lifecycle_disposition": AgentLifecycleDisposition::DeleteOnTerminal,
     })
 }
 
@@ -431,6 +432,7 @@ impl RuntimeHandle {
             target_agent_id,
             created_new_subagent,
             workspace_mode,
+            lifecycle_disposition: AgentLifecycleDisposition::Retain,
         };
         let task_id = crate::ids::task_id();
         let detail = self
@@ -602,6 +604,13 @@ impl RuntimeHandle {
         let runtime = self.clone();
         let task_record = queued_task.clone();
         let task_id = queued_task.id.clone();
+        let lifecycle_disposition = match queued_task.recovery.as_ref() {
+            Some(TaskRecoverySpec::AgentInvocation {
+                lifecycle_disposition,
+                ..
+            }) => *lifecycle_disposition,
+            _ => AgentLifecycleDisposition::Retain,
+        };
         let handle = tokio::spawn(async move {
             let _ = runtime
                 .monitor_spawned_child_agent_task(
@@ -609,7 +618,7 @@ impl RuntimeHandle {
                     authority_class,
                     worktree,
                     false,
-                    false,
+                    lifecycle_disposition,
                     child_agent_id,
                     child_turn_baseline,
                     delivery_id,
@@ -692,6 +701,7 @@ impl RuntimeHandle {
             prompt: prompt.clone(),
             authority_class: authority_class.clone(),
             workspace_mode,
+            lifecycle_disposition: AgentLifecycleDisposition::DeleteOnTerminal,
         };
         let task_id = crate::ids::task_id();
         let detail = self
@@ -976,6 +986,7 @@ impl RuntimeHandle {
             prompt: prompt.clone(),
             authority_class: authority_class.clone(),
             workspace_mode,
+            lifecycle_disposition: AgentLifecycleDisposition::DeleteOnTerminal,
         };
         let task_id = crate::ids::task_id();
         let detail = self
@@ -1150,6 +1161,13 @@ impl RuntimeHandle {
             return Err(anyhow!("child agent runtime requires a host bridge"));
         };
         let agent_id = self.agent_id().await?;
+        let lifecycle_disposition = match task_record.recovery.as_ref() {
+            Some(TaskRecoverySpec::ChildAgentTask {
+                lifecycle_disposition,
+                ..
+            }) => *lifecycle_disposition,
+            _ => AgentLifecycleDisposition::DeleteOnTerminal,
+        };
 
         let existing_detail = task_record.detail.clone();
         let existing_child_id = detail_string(&existing_detail, "child_agent_id");
@@ -1281,7 +1299,7 @@ impl RuntimeHandle {
                     authority_class,
                     worktree,
                     recovered,
-                    true,
+                    lifecycle_disposition,
                     child_agent_id,
                     child_turn_baseline,
                     None,
@@ -1424,7 +1442,7 @@ impl RuntimeHandle {
         authority_class: AuthorityClass,
         worktree: bool,
         recovered: bool,
-        cleanup_agent_on_terminal: bool,
+        lifecycle_disposition: AgentLifecycleDisposition,
         child_agent_id: String,
         child_turn_baseline: u64,
         delivery_id: Option<String>,
@@ -1492,7 +1510,6 @@ impl RuntimeHandle {
                 delivery_id.as_deref(),
                 &task_record.id,
                 worktree,
-                cleanup_agent_on_terminal,
             )
             .await;
         let (mut text, status, mut task_detail) = match result {
@@ -1616,7 +1633,7 @@ impl RuntimeHandle {
             turn_id: Some(crate::ids::turn_id()),
             metadata: Some(metadata),
             ..MessageEnvelope::new(
-                agent_id,
+                agent_id.clone(),
                 MessageKind::TaskResult,
                 MessageOrigin::Task {
                     task_id: task_record.id.clone(),
@@ -1632,15 +1649,45 @@ impl RuntimeHandle {
         };
         let terminal_task =
             task_with_result_message(&task_record, status, Some(task_detail), &result_message);
-        if let Err(error) = self
-            .commit_terminal_task_result(&terminal_task, "task_status_updated", &result_message)
+        let agent_deletion = (lifecycle_disposition
+            == AgentLifecycleDisposition::DeleteOnTerminal)
+            .then(|| crate::runtime_db::repositories::AgentDeletionRequest {
+                agent_id: child_agent_id.clone(),
+                admission:
+                    crate::runtime_db::repositories::AgentDeletionAdmission::TerminalEphemeralChild {
+                        parent_agent_id: agent_id,
+                        task_id: terminal_task.id.clone(),
+                    },
+                requested_by: "parent_task_terminal".into(),
+                cascade_private_children: false,
+            });
+        match self
+            .commit_terminal_task_result_with_agent_deletion(
+                &terminal_task,
+                "task_status_updated",
+                &result_message,
+                agent_deletion,
+            )
             .await
         {
-            tracing::warn!(
-                task_id = %terminal_task.id,
-                error = %error,
-                "failed to persist terminal task status before task result"
-            );
+            Ok(()) if lifecycle_disposition == AgentLifecycleDisposition::DeleteOnTerminal => {
+                if let Err(error) = bridge.activate_agent_deletion(&child_agent_id).await {
+                    tracing::warn!(
+                        task_id = %terminal_task.id,
+                        child_agent_id,
+                        error = %error,
+                        "terminal child deletion job persisted but coordinator activation failed"
+                    );
+                }
+            }
+            Ok(()) => {}
+            Err(error) => {
+                tracing::warn!(
+                    task_id = %terminal_task.id,
+                    error = %error,
+                    "failed to atomically persist terminal task status and child lifecycle disposition"
+                );
+            }
         }
 
         Ok(())

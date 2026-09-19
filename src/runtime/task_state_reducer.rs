@@ -61,6 +61,7 @@ pub(super) struct TaskTransition<'a> {
     pub(super) event_kind: &'static str,
     pub(super) message_evidence: Option<&'a MessageEnvelope>,
     pub(super) admit_result_message: bool,
+    pub(super) agent_deletion: Option<crate::runtime_db::repositories::AgentDeletionRequest>,
 }
 
 impl<'a> TaskTransition<'a> {
@@ -70,6 +71,7 @@ impl<'a> TaskTransition<'a> {
             event_kind,
             message_evidence: None,
             admit_result_message: false,
+            agent_deletion: None,
         }
     }
 
@@ -82,6 +84,14 @@ impl<'a> TaskTransition<'a> {
     pub(super) fn with_terminal_result(mut self, message: &'a MessageEnvelope) -> Self {
         self.message_evidence = Some(message);
         self.admit_result_message = true;
+        self
+    }
+
+    pub(super) fn with_agent_deletion(
+        mut self,
+        request: crate::runtime_db::repositories::AgentDeletionRequest,
+    ) -> Self {
+        self.agent_deletion = Some(request);
         self
     }
 }
@@ -339,6 +349,7 @@ impl RuntimeHandle {
             self.commit_task_transition(&crate::runtime_db::transitions::TaskTransitionCommand {
                 agent_id,
                 task: persisted_task,
+                agent_deletion: transition.agent_deletion.clone(),
                 task_result_settlement,
                 queue_entry,
                 work_items,
@@ -475,12 +486,24 @@ impl RuntimeHandle {
         event_kind: &'static str,
         message: &MessageEnvelope,
     ) -> Result<()> {
+        self.commit_terminal_task_result_with_agent_deletion(task, event_kind, message, None)
+            .await
+    }
+
+    pub(super) async fn commit_terminal_task_result_with_agent_deletion(
+        &self,
+        task: &TaskRecord,
+        event_kind: &'static str,
+        message: &MessageEnvelope,
+        agent_deletion: Option<crate::runtime_db::repositories::AgentDeletionRequest>,
+    ) -> Result<()> {
         let mut message = message.clone();
         message.normalize_admission_fields();
-        self.apply_task_transition(
-            TaskTransition::new(task, event_kind).with_terminal_result(&message),
-        )
-        .await
+        let mut transition = TaskTransition::new(task, event_kind).with_terminal_result(&message);
+        if let Some(agent_deletion) = agent_deletion {
+            transition = transition.with_agent_deletion(agent_deletion);
+        }
+        self.apply_task_transition(transition).await
     }
 
     pub(super) async fn reduce_task_status_message(&self, task: TaskRecord) -> Result<()> {

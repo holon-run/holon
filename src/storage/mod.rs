@@ -4652,6 +4652,7 @@ mod tests {
                 prompt: "resume".into(),
                 authority_class: AuthorityClass::OperatorInstruction,
                 workspace_mode: crate::types::ChildAgentWorkspaceMode::Worktree,
+                lifecycle_disposition: crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
             }),
         };
 

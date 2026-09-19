@@ -392,6 +392,14 @@ pub enum AgentDurability {
     Ephemeral,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentLifecycleDisposition {
+    #[default]
+    Retain,
+    DeleteOnTerminal,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRegistryStatus {
@@ -4499,6 +4507,8 @@ pub enum TaskRecoverySpec {
         target_agent_id: Option<String>,
         created_new_subagent: bool,
         workspace_mode: ChildAgentWorkspaceMode,
+        #[serde(default)]
+        lifecycle_disposition: AgentLifecycleDisposition,
     },
     ChildAgentTask {
         summary: String,
@@ -4506,6 +4516,8 @@ pub enum TaskRecoverySpec {
         #[serde(alias = "trust")]
         authority_class: AuthorityClass,
         workspace_mode: ChildAgentWorkspaceMode,
+        #[serde(default = "delete_agent_on_terminal")]
+        lifecycle_disposition: AgentLifecycleDisposition,
     },
     SubagentTask {
         summary: String,
@@ -4526,6 +4538,10 @@ pub enum TaskRecoverySpec {
         authority_class: AuthorityClass,
         promoted_from_exec_command: bool,
     },
+}
+
+fn delete_agent_on_terminal() -> AgentLifecycleDisposition {
+    AgentLifecycleDisposition::DeleteOnTerminal
 }
 
 fn task_detail_string(detail: &Option<Value>, key: &str) -> Option<String> {
@@ -6319,11 +6335,42 @@ mod tests {
 
         match spec {
             TaskRecoverySpec::ChildAgentTask {
-                authority_class, ..
+                authority_class,
+                lifecycle_disposition,
+                ..
             } => {
                 assert_eq!(authority_class, AuthorityClass::OperatorInstruction);
+                assert_eq!(
+                    lifecycle_disposition,
+                    AgentLifecycleDisposition::DeleteOnTerminal
+                );
             }
             other => panic!("expected ChildAgentTask, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn legacy_agent_invocation_recovery_retains_created_subagent() {
+        let legacy = serde_json::json!({
+            "kind": "agent_invocation",
+            "summary": "invoke reusable subagent",
+            "prompt": "do work",
+            "authority_class": "operator_instruction",
+            "target_agent_id": "child-reusable",
+            "created_new_subagent": true,
+            "workspace_mode": "inherit"
+        });
+
+        let spec: TaskRecoverySpec = serde_json::from_value(legacy).unwrap();
+
+        match spec {
+            TaskRecoverySpec::AgentInvocation {
+                lifecycle_disposition,
+                ..
+            } => {
+                assert_eq!(lifecycle_disposition, AgentLifecycleDisposition::Retain);
+            }
+            other => panic!("expected AgentInvocation, got {:?}", other),
         }
     }
 
@@ -6646,6 +6693,7 @@ mod tests {
                 prompt: "finish child work".into(),
                 authority_class: AuthorityClass::OperatorInstruction,
                 workspace_mode: ChildAgentWorkspaceMode::Inherit,
+                lifecycle_disposition: AgentLifecycleDisposition::DeleteOnTerminal,
             }),
         };
 
