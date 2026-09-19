@@ -11058,19 +11058,101 @@ async fn run_loop_idle_sleep_refreshes_sleeping_until_when_already_asleep() {
         .unwrap()
         .expect("already-asleep run loop projection should refresh sleeping_until");
 
-    assert_eq!(transition.status, AgentStatus::Asleep);
-    assert_eq!(transition.sleeping_until, Some(next_deadline));
+    assert!(!transition.posture_changed);
+    assert_eq!(transition.state.status, AgentStatus::Asleep);
+    assert_eq!(transition.state.sleeping_until, Some(next_deadline));
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::Asleep);
     assert_eq!(state.sleeping_until, Some(next_deadline));
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision" && event.data["boundary"] == "run_loop_idle"
+    }));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == "agent_state_changed"));
+}
+
+#[tokio::test]
+async fn already_asleep_lifecycle_sleep_refresh_skips_posture_and_state_changed_audits() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let previous_deadline = Utc::now() + chrono::Duration::seconds(60);
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Asleep;
+        guard.state.sleeping_until = Some(previous_deadline);
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime.transition_to_sleep(Some(5_000)).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Asleep);
+    let refreshed = state
+        .sleeping_until
+        .expect("deadline-only refresh should persist a new sleeping_until");
+    assert!(refreshed < previous_deadline);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision" && event.data["boundary"] == "lifecycle_sleep"
+    }));
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == "agent_state_changed"));
+}
+
+#[tokio::test]
+async fn awake_lifecycle_sleep_records_posture_and_state_changed_audits() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        runtime.storage().write_agent(&guard.state).unwrap();
+    }
+
+    runtime.transition_to_sleep(Some(60_000)).await.unwrap();
+
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(state.status, AgentStatus::Asleep);
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
     assert!(events.iter().any(|event| {
         event.kind == "scheduler_posture_decision"
-            && event.data["boundary"] == "run_loop_idle"
+            && event.data["boundary"] == "lifecycle_sleep"
             && event.data["reason"] == "sleep"
-            && event.data["previous_status"] == "asleep"
+            && event.data["previous_status"] == "awake_idle"
             && event.data["next_status"] == "asleep"
     }));
+    assert!(events
+        .iter()
+        .any(|event| event.kind == "agent_state_changed"));
 }
 
 #[tokio::test]
@@ -11104,11 +11186,16 @@ async fn run_loop_idle_sleep_preserves_existing_timed_sleep_when_no_recheck() {
         .unwrap()
         .expect("already-asleep run loop projection should preserve timed sleep");
 
-    assert_eq!(transition.status, AgentStatus::Asleep);
-    assert_eq!(transition.sleeping_until, Some(existing_deadline));
+    assert!(!transition.posture_changed);
+    assert_eq!(transition.state.status, AgentStatus::Asleep);
+    assert_eq!(transition.state.sleeping_until, Some(existing_deadline));
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::Asleep);
     assert_eq!(state.sleeping_until, Some(existing_deadline));
+    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
+    assert!(!events.iter().any(|event| {
+        event.kind == "scheduler_posture_decision" && event.data["boundary"] == "run_loop_idle"
+    }));
 }
 
 #[tokio::test]

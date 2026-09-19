@@ -1,5 +1,7 @@
 use super::super::support::*;
-use crate::types::{AdmissionContext, MessageDeliverySurface, MessageEnvelope, QueueEntryRecord};
+use crate::types::{
+    AdmissionContext, AgentStatus, MessageDeliverySurface, MessageEnvelope, QueueEntryRecord,
+};
 
 #[tokio::test]
 async fn queue_settlement_commits_with_canonical_execution_protocol() {
@@ -235,23 +237,23 @@ async fn queue_replays_unprocessed_message_once_after_restart() {
 
     let settled = harness.snapshot();
     let settled_briefs = settled.briefs.len();
-    let settled_events = settled.audit_events.len();
     assert_eq!(provider.call_count().await, 1);
     harness.restart();
     let runtime = harness.runtime().clone();
     let runtime_task = tokio::spawn(runtime.clone().run());
-    wait_for_audit_events(
-        &runtime,
-        settled_events + 10,
-        |events| {
-            events.iter().skip(settled_events).any(|event| {
-                event.kind == "scheduler_posture_decision"
-                    && event.data["boundary"] == "run_loop_idle"
-            })
-        },
-        "second restart idle checkpoint",
-    )
-    .await;
+    // Post-restart the agent resumes already asleep, and a deadline-only
+    // sleep refresh no longer emits a posture audit (see decision 134), so
+    // settle on the durable status instead of an audit event.
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if runtime.agent_state().await.unwrap().status == AgentStatus::Asleep {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("second restart should settle back to sleep");
     runtime_task.abort();
 
     let restarted = harness.snapshot();

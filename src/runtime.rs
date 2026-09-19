@@ -5705,13 +5705,15 @@ impl RuntimeHandle {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),
                     };
-                    let idle_state = scheduler_executor::SchedulerDecisionExecutor::new(&self)
+                    let idle_transition = scheduler_executor::SchedulerDecisionExecutor::new(&self)
                         .transition_run_loop_idle_to_sleep(next_recheck_at)
                         .await?;
-                    let Some(idle_state) = idle_state else {
+                    let Some(idle_transition) = idle_transition else {
                         continue;
                     };
-                    self.append_state_changed_events(&idle_state)?;
+                    if idle_transition.posture_changed {
+                        self.append_state_changed_events(&idle_transition.state)?;
+                    }
                     if let Some(next_recheck_at) = next_recheck_at {
                         if next_recheck_at > self.now() {
                             tokio::select! {

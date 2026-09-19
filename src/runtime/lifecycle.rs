@@ -1816,15 +1816,17 @@ impl RuntimeHandle {
                 return Ok(());
             }
         }
-        let state = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
+        let transition = super::scheduler_executor::SchedulerDecisionExecutor::new(self)
             .transition_to_sleep(
                 sleeping_until,
                 super::scheduler_executor::SleepTransitionBoundary::LifecycleSleep,
             )
             .await?;
-        self.append_state_changed_events(&state)?;
+        if transition.posture_changed {
+            self.append_state_changed_events(&transition.state)?;
+        }
         if sleeping_until.is_none() {
-            self.observe_indefinite_sleep_without_wake_source(&state)?;
+            self.observe_indefinite_sleep_without_wake_source(&transition.state)?;
         }
         if let (Some(duration_ms), Some(sleeping_until)) = (duration_ms, sleeping_until) {
             self.spawn_session_sleep_wake(duration_ms, sleeping_until);
