@@ -298,6 +298,8 @@ pub(crate) struct HostInner {
     daemon_retention_token: CancellationToken,
     daemon_retention_handle: Mutex<Option<JoinHandle<()>>>,
     pub(crate) daemon_deletion_token: CancellationToken,
+    pub(crate) daemon_deletion_notify: Arc<Notify>,
+    pub(crate) daemon_deletion_handle: Mutex<Option<JoinHandle<()>>>,
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Option<Arc<dyn AgentProvider>>,
@@ -715,6 +717,8 @@ impl RuntimeHost {
                 daemon_retention_token: CancellationToken::new(),
                 daemon_retention_handle: Mutex::new(None),
                 daemon_deletion_token: CancellationToken::new(),
+                daemon_deletion_notify: Arc::new(Notify::new()),
+                daemon_deletion_handle: Mutex::new(None),
                 runtime_db_maintenance_lock: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider,
@@ -1324,6 +1328,10 @@ impl RuntimeHost {
     /// Signal the deletion coordinator to stop.
     pub async fn shutdown_daemon_deletion_coordinator(&self) {
         self.inner.daemon_deletion_token.cancel();
+        let handle = self.inner.daemon_deletion_handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            let _ = handle.await;
+        }
     }
 
     async fn run_daemon_runtime_db_retention(self) {
@@ -2360,12 +2368,9 @@ impl RuntimeHost {
             .cache_agent_identity(&updated_identity)
             .map_err(PublicAgentError::Runtime)?;
         self.unload_runtime(agent_id).await;
-        // Trigger the deletion coordinator inline for immediate progress.
+        // Coalesce new work into the single daemon deletion coordinator.
         if created {
-            let host = self.clone();
-            tokio::spawn(async move {
-                let _ = host.execute_pending_deletions().await;
-            });
+            self.notify_deletion_coordinator();
         }
         Ok((updated_identity, job, created))
     }
@@ -11118,6 +11123,151 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn daemon_deletion_coordinator_is_singleton_and_admission_wakes_it() {
+        let (_home, host) = test_host();
+        host.spawn_daemon_deletion_coordinator();
+        let first_handle_id = host
+            .inner
+            .daemon_deletion_handle
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("coordinator handle")
+            .id();
+        host.spawn_daemon_deletion_coordinator();
+        let second_handle_id = host
+            .inner
+            .daemon_deletion_handle
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("same coordinator handle")
+            .id();
+        assert_eq!(first_handle_id, second_handle_id);
+
+        let agent = AgentIdentityRecord::new(
+            "delete-daemon-wake",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let (_, job, created) = host
+            .begin_public_agent_deletion("delete-daemon-wake", false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(job.status, AgentDeletionStatus::Pending);
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let job = host
+                    .runtime_db()
+                    .agent_deletions()
+                    .latest_for_agent("delete-daemon-wake")
+                    .unwrap()
+                    .expect("deletion job");
+                if job.status == AgentDeletionStatus::Completed {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("coalesced admission wake should complete deletion");
+
+        host.shutdown_daemon_deletion_coordinator().await;
+        assert!(host.inner.daemon_deletion_handle.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn deletion_retry_deadline_bounds_real_index_lock_retries() {
+        let (_home, host) = test_host();
+        let default_storage = host.agent_storage(&host.config().default_agent_id).unwrap();
+        crate::memory::ensure_memory_indexes_fresh(&default_storage, None, &[]).unwrap();
+        let index_path = crate::memory::index::memory_index_path(&default_storage);
+        let blocker = rusqlite::Connection::open(index_path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let agent = AgentIdentityRecord::new(
+            "delete-locked",
+            AgentKind::Default,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&agent).unwrap();
+        host.runtime_db().agent_identities().upsert(&agent).unwrap();
+        let (_, job, created) = host
+            .begin_public_agent_deletion("delete-locked", false, "operator")
+            .await
+            .unwrap();
+        assert!(created);
+
+        let error = host
+            .execute_deletion_job(job)
+            .await
+            .expect_err("index lock should schedule a retry");
+        assert!(error.to_string().contains("database is locked"));
+        let failed = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-locked")
+            .unwrap()
+            .expect("failed job should exist");
+        assert_eq!(failed.status, AgentDeletionStatus::RetryableFailed);
+        assert_eq!(failed.phase, AgentDeletionPhase::Index);
+        assert_eq!(failed.attempts, 1);
+        assert!(failed
+            .next_attempt_at
+            .is_some_and(|at| at > failed.updated_at));
+
+        let read_started = std::time::Instant::now();
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-locked")
+            .unwrap()
+            .is_some());
+        assert!(read_started.elapsed() < Duration::from_secs(1));
+
+        for _ in 0..32 {
+            host.notify_deletion_coordinator();
+            host.execute_deletion_job(failed.clone()).await.unwrap();
+        }
+        let still_waiting = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-locked")
+            .unwrap()
+            .expect("retry job should remain");
+        assert_eq!(still_waiting.attempts, 1);
+        assert_eq!(still_waiting.next_attempt_at, failed.next_attempt_at);
+
+        blocker.execute_batch("ROLLBACK").unwrap();
+        let wait_for = (still_waiting.next_attempt_at.unwrap() - Utc::now())
+            .to_std()
+            .unwrap_or_default()
+            + Duration::from_millis(20);
+        tokio::time::sleep(wait_for).await;
+        host.execute_deletion_job(still_waiting).await.unwrap();
+        let completed = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("delete-locked")
+            .unwrap()
+            .expect("completed job should exist");
+        assert_eq!(completed.status, AgentDeletionStatus::Completed);
+        assert_eq!(completed.attempts, 2);
+    }
+
+    #[tokio::test]
     async fn operator_deletion_accepts_private_parent_supervised_child() {
         let (_home, host) = test_host();
         let parent_id = host.config().default_agent_id.clone();
@@ -11317,8 +11467,27 @@ mod tests {
             .update(&advanced_job)
             .unwrap();
 
-        // Execute should resume from Ingress.
-        host.execute_deletion_job(advanced_job).await.unwrap();
+        // Startup recovery makes the persisted ownerless Running job due.
+        let recovery_at = Utc::now();
+        assert_eq!(
+            host.runtime_db()
+                .agent_deletions()
+                .recover_running_jobs(recovery_at)
+                .unwrap(),
+            1
+        );
+        let recovered_job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent("resume-me")
+            .unwrap()
+            .expect("recovered job should exist");
+        assert_eq!(recovered_job.status, AgentDeletionStatus::RetryableFailed);
+        assert_eq!(recovered_job.phase, AgentDeletionPhase::Ingress);
+        assert_eq!(recovered_job.next_attempt_at, Some(recovery_at));
+
+        // Execute should resume from Ingress after recovery.
+        host.execute_deletion_job(recovered_job).await.unwrap();
 
         // Verify completion.
         let final_job = host

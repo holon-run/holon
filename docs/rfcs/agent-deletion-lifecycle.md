@@ -63,6 +63,34 @@ After the fence commits, runtime bootstrap, ingress, wake, prompt, enqueue, and
 control paths must not return or create a runnable runtime for that identity.
 An already loaded runtime is unloaded when the deletion request is admitted.
 
+## Coordinator Ownership and Retry
+
+One daemon-owned coordinator is the only normal executor of deletion jobs.
+Deletion admission emits a coalesced wake; it never starts a detached full
+sweep. The coordinator processes a bounded batch, yields between full batches,
+and then checks for newly admitted work again.
+
+Persisted status has one owner interpretation:
+
+- `Pending` is eligible for the coordinator;
+- `Running` is owned by the live process-local coordinator and is excluded from
+  ordinary due queries;
+- `RetryableFailed` is eligible only when `next_attempt_at` is absent for
+  legacy compatibility or has elapsed;
+- `Completed` is terminal.
+
+At daemon startup, before ordinary draining begins, persisted `Running` jobs
+are atomically reset to due `RetryableFailed` jobs. Recovery preserves phase,
+attempt count, and last error; normal sweeps never infer that a `Running` job
+is stale.
+
+Transient phase failure persists a capped exponential retry deadline with
+deterministic per-job jitter. The coordinator wakes for the earliest deadline
+or a periodic safety sweep. This bounds lock-error amplification while keeping
+retry state crash-recoverable. A future multi-process runtime sharing one
+database would require explicit owner leases and fenced updates; that contract
+is not implied by the current single-daemon model.
+
 ## HTTP Contract
 
 The authenticated operator control plane exposes:

@@ -1,15 +1,15 @@
-//! Reentrant agent deletion cleanup coordinator.
+//! Single-flight agent deletion cleanup coordinator.
 //!
 //! Drives an [`AgentDeletionJob`] through its ordered phases from `Fence` to
 //! `Finalize`. Each phase is idempotent: re-running a phase that has already
 //! been completed is a safe no-op. On transient failure the job is marked
-//! `RetryableFailed` with an actionable `last_error`; a subsequent retry
-//! resumes from the failed phase.
+//! `RetryableFailed` with an actionable `last_error` and persisted retry
+//! deadline; a subsequent retry resumes from the failed phase.
 //!
 //! The coordinator is triggered:
-//! - inline after operator deletion begins;
+//! - by a coalesced wake after deletion admission;
 //! - on daemon startup for crash recovery;
-//! - periodically for retry of failed jobs.
+//! - by persisted retry deadlines and a periodic safety sweep.
 
 use std::path::Path;
 use std::time::Duration;
@@ -23,6 +23,10 @@ use crate::types::*;
 
 /// Interval between periodic deletion coordinator sweeps.
 const DELETION_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+const DELETION_BATCH_LIMIT: usize = 16;
+const DELETION_RETRY_BASE: Duration = Duration::from_millis(250);
+const DELETION_RETRY_CAP: Duration = Duration::from_secs(30);
+const DELETION_COORDINATOR_ERROR_DELAY: Duration = Duration::from_secs(1);
 
 impl RuntimeHost {
     /// Spawn the background deletion coordinator task.
@@ -34,63 +38,132 @@ impl RuntimeHost {
             debug!("deletion coordinator not spawned: no Tokio runtime");
             return;
         }
+        let mut coordinator = self.inner.daemon_deletion_handle.lock().unwrap();
+        if coordinator.is_some() {
+            return;
+        }
         let host = self.clone();
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             host.run_daemon_deletion_coordinator().await;
         });
+        *coordinator = Some(handle);
     }
 
     async fn run_daemon_deletion_coordinator(self) {
-        let mut interval = tokio::time::interval(DELETION_SWEEP_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut startup_recovery_complete = false;
         loop {
+            let mut coordinator_failed = false;
+            if !startup_recovery_complete {
+                match self
+                    .runtime_db()
+                    .agent_deletions()
+                    .recover_running_jobs(Utc::now())
+                {
+                    Ok(recovered) => {
+                        startup_recovery_complete = true;
+                        if recovered > 0 {
+                            info!(recovered, "recovered running deletion jobs at startup");
+                        }
+                    }
+                    Err(err) => {
+                        coordinator_failed = true;
+                        warn!(error = %err, "deletion coordinator startup recovery failed");
+                    }
+                }
+            }
+            if startup_recovery_complete {
+                if let Err(err) = self.drain_due_deletions().await {
+                    coordinator_failed = true;
+                    warn!(error = %err, "deletion coordinator sweep failed");
+                }
+            }
+            let sleep_for = if coordinator_failed {
+                DELETION_COORDINATOR_ERROR_DELAY
+            } else {
+                match self.next_deletion_coordinator_delay() {
+                    Ok(delay) => delay.min(DELETION_SWEEP_INTERVAL),
+                    Err(err) => {
+                        warn!(error = %err, "reading deletion retry deadline failed");
+                        DELETION_COORDINATOR_ERROR_DELAY
+                    }
+                }
+            };
             tokio::select! {
                 _ = self.inner.daemon_deletion_token.cancelled() => {
                     debug!("deletion coordinator cancelled");
                     break;
                 }
-                _ = interval.tick() => {
-                    if let Err(err) = self.execute_pending_deletions().await {
-                        warn!(error = %err, "deletion coordinator sweep failed");
-                    }
-                }
+                _ = self.inner.daemon_deletion_notify.notified() => {}
+                _ = tokio::time::sleep(sleep_for) => {}
             }
         }
     }
 
-    /// Execute all actionable deletion jobs (Pending, Running, RetryableFailed).
-    pub(crate) async fn execute_pending_deletions(&self) -> Result<()> {
-        let jobs = self.runtime_db().agent_deletions().actionable_jobs()?;
-        for job in jobs {
-            let agent_id = job.agent_id.clone();
-            if let Err(err) = self.execute_deletion_job(job).await {
+    pub(crate) fn notify_deletion_coordinator(&self) {
+        self.inner.daemon_deletion_notify.notify_one();
+    }
+
+    fn next_deletion_coordinator_delay(&self) -> Result<Duration> {
+        let Some(next_attempt_at) = self.runtime_db().agent_deletions().earliest_retry_at()? else {
+            return Ok(DELETION_SWEEP_INTERVAL);
+        };
+        Ok((next_attempt_at - Utc::now())
+            .to_std()
+            .unwrap_or(Duration::ZERO))
+    }
+
+    async fn drain_due_deletions(&self) -> Result<()> {
+        loop {
+            if self.inner.daemon_deletion_token.is_cancelled() {
+                return Ok(());
+            }
+            let jobs = self
+                .runtime_db()
+                .agent_deletions()
+                .due_jobs(Utc::now(), DELETION_BATCH_LIMIT)?;
+            let batch_len = jobs.len();
+            if batch_len == 0 {
+                return Ok(());
+            }
+            let mut failed = 0;
+            for job in jobs {
+                if self.inner.daemon_deletion_token.is_cancelled() {
+                    return Ok(());
+                }
+                if self.execute_deletion_job(job).await.is_err() {
+                    failed += 1;
+                }
+            }
+            if failed > 0 {
                 warn!(
-                    agent_id = %agent_id,
-                    error = %err,
-                    "deletion job execution failed"
+                    processed = batch_len,
+                    failed, "deletion coordinator batch completed with failures"
                 );
             }
+            if batch_len < DELETION_BATCH_LIMIT {
+                return Ok(());
+            }
+            tokio::task::yield_now().await;
         }
-        Ok(())
     }
 
     /// Drive a single deletion job through its remaining phases.
     pub(crate) async fn execute_deletion_job(&self, mut job: AgentDeletionJob) -> Result<()> {
-        // Optimistic concurrency guard: re-read the job from the database and
-        // check if it's still actionable. If another coordinator already picked
-        // it up (status changed to Running or Completed), skip it.
-        // However, if the caller explicitly passed a Running job (crash-restart
-        // resume), allow execution to proceed.
-        let caller_intends_resume = job.status == AgentDeletionStatus::Running;
         if let Some(fresh) = self
             .runtime_db()
             .agent_deletions()
             .latest_for_agent(&job.agent_id)?
         {
-            if fresh.status == AgentDeletionStatus::Completed
-                || (fresh.status == AgentDeletionStatus::Running && !caller_intends_resume)
-            {
-                debug!(agent_id = %job.agent_id, "deletion job already claimed by another coordinator");
+            let now = Utc::now();
+            let actionable = fresh.status == AgentDeletionStatus::Pending
+                || (fresh.status == AgentDeletionStatus::RetryableFailed
+                    && fresh.next_attempt_at.is_none_or(|deadline| deadline <= now));
+            if !actionable {
+                debug!(
+                    agent_id = %job.agent_id,
+                    status = ?fresh.status,
+                    "deletion job is not due"
+                );
                 return Ok(());
             }
             job = fresh;
@@ -104,13 +177,19 @@ impl RuntimeHost {
             "executing deletion job"
         );
 
-        // Mark as Running if currently Pending or RetryableFailed.
-        if job.status != AgentDeletionStatus::Running {
-            job.status = AgentDeletionStatus::Running;
-            job.attempts = job.attempts.saturating_add(1);
-            job.last_error = None;
-            job.updated_at = Utc::now();
-            self.runtime_db().agent_deletions().update(&job)?;
+        job.status = AgentDeletionStatus::Running;
+        job.attempts = job.attempts.saturating_add(1);
+        job.last_error = None;
+        job.next_attempt_at = None;
+        let claim_at = Utc::now();
+        job.updated_at = claim_at;
+        if !self
+            .runtime_db()
+            .agent_deletions()
+            .claim_due(&job, claim_at)?
+        {
+            debug!(agent_id = %job.agent_id, "deletion job claim lost");
+            return Ok(());
         }
 
         // Execute each phase from the current one onward.
@@ -152,7 +231,10 @@ impl RuntimeHost {
                     );
                     job.status = AgentDeletionStatus::RetryableFailed;
                     job.last_error = Some(error_msg);
-                    job.updated_at = Utc::now();
+                    let now = Utc::now();
+                    let retry_delay = deletion_retry_delay(&job);
+                    job.next_attempt_at = Some(now + chrono::Duration::from_std(retry_delay)?);
+                    job.updated_at = now;
                     self.runtime_db().agent_deletions().update(&job)?;
                     return Err(anyhow!(
                         "deletion job for {agent_id} failed at phase {phase:?}: {err}"
@@ -164,6 +246,7 @@ impl RuntimeHost {
         // All phases completed.
         if job.status != AgentDeletionStatus::Completed {
             job.status = AgentDeletionStatus::Completed;
+            job.next_attempt_at = None;
             job.completed_at = Some(Utc::now());
             job.updated_at = Utc::now();
             self.runtime_db().agent_deletions().update(&job)?;
@@ -676,6 +759,29 @@ impl RuntimeHost {
     }
 }
 
+fn deletion_retry_delay(job: &AgentDeletionJob) -> Duration {
+    let exponent = job.attempts.saturating_sub(1).min(16);
+    let base_millis = DELETION_RETRY_BASE
+        .as_millis()
+        .saturating_mul(1_u128 << exponent)
+        .min(DELETION_RETRY_CAP.as_millis());
+    let jitter_headroom = DELETION_RETRY_CAP.as_millis().saturating_sub(base_millis);
+    let jitter_bound = (base_millis / 4).min(jitter_headroom);
+    let stable_hash = job
+        .deletion_id
+        .bytes()
+        .chain(format!("{:?}", job.phase).bytes())
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+        });
+    let jitter = if jitter_bound == 0 {
+        0
+    } else {
+        u128::from(stable_hash) % (jitter_bound + 1)
+    };
+    Duration::from_millis(u64::try_from(base_millis + jitter).unwrap_or(u64::MAX))
+}
+
 fn delete_agent_memory_index_projection(
     tx: &rusqlite::Transaction<'_>,
     agent_id: &str,
@@ -756,6 +862,43 @@ fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn retry_job(attempts: u32) -> AgentDeletionJob {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-19T07:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        AgentDeletionJob {
+            deletion_id: "delete_retry_test".into(),
+            agent_id: "retry-agent".into(),
+            mode: AgentDeletionMode::Delete,
+            status: AgentDeletionStatus::RetryableFailed,
+            phase: AgentDeletionPhase::Index,
+            requested_by: "test".into(),
+            expected_identity_revision: 1,
+            cascade_private_children: false,
+            attempts,
+            last_error: Some("database is locked".into()),
+            next_attempt_at: None,
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn deletion_retry_delay_is_deterministic_exponential_and_capped() {
+        let first = deletion_retry_delay(&retry_job(1));
+        assert!(first >= DELETION_RETRY_BASE);
+        assert!(first <= Duration::from_millis(312));
+        assert_eq!(first, deletion_retry_delay(&retry_job(1)));
+
+        let second = deletion_retry_delay(&retry_job(2));
+        assert!(second >= Duration::from_millis(500));
+        assert!(second <= Duration::from_millis(625));
+        assert!(second > first);
+
+        assert_eq!(deletion_retry_delay(&retry_job(32)), DELETION_RETRY_CAP);
+    }
 
     #[test]
     fn index_cleanup_removes_row_map_before_fts_rowid_reuse() -> Result<()> {

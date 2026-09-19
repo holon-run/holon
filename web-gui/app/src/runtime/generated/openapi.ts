@@ -2511,6 +2511,8 @@ export interface components {
                  * @enum {string}
                  */
                 mode: "delete" | "cleanup_repair";
+                /** Format: date-time */
+                next_attempt_at?: string | null;
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
                 requested_by: string;
@@ -2566,6 +2568,8 @@ export interface components {
                  * @enum {string}
                  */
                 mode: "delete" | "cleanup_repair";
+                /** Format: date-time */
+                next_attempt_at?: string | null;
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
                 requested_by: string;
@@ -2764,6 +2768,8 @@ export interface components {
                  * @enum {string}
                  */
                 mode: "delete" | "cleanup_repair";
+                /** Format: date-time */
+                next_attempt_at?: string | null;
                 /** @enum {string} */
                 phase: "fence" | "quiesce" | "ingress" | "scheduler" | "workspace" | "index" | "home" | "finalize";
                 requested_by: string;

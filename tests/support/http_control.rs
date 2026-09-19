@@ -237,6 +237,7 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
     attach_default_workspace(&host).await?;
     host.create_named_agent("reborn-http", None).await?;
     host.get_or_create_agent("reborn-http").await?;
+    host.spawn_daemon_deletion_coordinator();
     let (base, server) = spawn_server_for_host(host.clone()).await?;
     let client = Client::new();
 
@@ -335,6 +336,7 @@ pub async fn control_agent_recreate_after_completed_deletion_reincarnates() -> R
     assert_eq!(third["identity"]["status"], "active");
     assert_eq!(third["identity"]["incarnation"], 3);
 
+    host.shutdown_daemon_deletion_coordinator().await;
     server.abort();
     Ok(())
 }
@@ -355,6 +357,7 @@ pub async fn control_agent_create_returns_deletion_incomplete_until_job_complete
     std::fs::remove_dir_all(&home)?;
     std::os::unix::fs::symlink(victim.path(), &home)?;
 
+    host.spawn_daemon_deletion_coordinator();
     let (base, server) = spawn_server_for_host(host.clone()).await?;
     let client = Client::new();
     client
@@ -382,6 +385,7 @@ pub async fn control_agent_create_returns_deletion_incomplete_until_job_complete
     assert_eq!(body["code"], "deletion_incomplete");
     assert!(victim.path().join("sentinel.txt").exists());
 
+    host.shutdown_daemon_deletion_coordinator().await;
     server.abort();
     Ok(())
 }
@@ -402,6 +406,7 @@ pub async fn control_agent_delete_fails_closed_when_home_is_symlink() -> Result<
     std::fs::remove_dir_all(&home)?;
     std::os::unix::fs::symlink(victim.path(), &home)?;
 
+    host.spawn_daemon_deletion_coordinator();
     let (base, server) = spawn_server_for_host(host.clone()).await?;
     let client = Client::new();
     let response: serde_json::Value = client
@@ -443,6 +448,7 @@ pub async fn control_agent_delete_fails_closed_when_home_is_symlink() -> Result<
     assert!(victim.path().join("sentinel.txt").exists());
     assert!(home.symlink_metadata().is_ok());
 
+    host.shutdown_daemon_deletion_coordinator().await;
     server.abort();
     Ok(())
 }
