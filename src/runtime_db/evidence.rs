@@ -572,8 +572,8 @@ pub(crate) fn insert_agent_deletion_job_tx(
     tx.execute(
         "INSERT INTO agent_deletion_jobs (
             deletion_id, agent_id, status, phase, created_at, updated_at,
-            completed_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            completed_at, next_attempt_at, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             job.deletion_id,
             job.agent_id,
@@ -582,6 +582,7 @@ pub(crate) fn insert_agent_deletion_job_tx(
             timestamp(job.created_at),
             timestamp(job.updated_at),
             job.completed_at.map(timestamp),
+            job.next_attempt_at.map(timestamp),
             payload_json,
         ],
     )?;

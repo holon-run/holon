@@ -45,6 +45,8 @@ pub(crate) const TURN_REPLAY_SOURCE_INDEX_VERSION: i64 = 68;
 pub(crate) const TURN_REPLAY_SOURCE_INDEX_NAME: &str = "turn_replay_source_index";
 pub(crate) const TASK_RESULT_SETTLEMENT_OWNER_VERSION: i64 = 69;
 pub(crate) const TASK_RESULT_SETTLEMENT_OWNER_NAME: &str = "task_result_settlement_nullable_owner";
+pub(crate) const AGENT_DELETION_RETRY_DEADLINE_VERSION: i64 = 70;
+pub(crate) const AGENT_DELETION_RETRY_DEADLINE_NAME: &str = "agent_deletion_retry_deadline";
 pub(crate) const CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL: &str = r#"
 SELECT
   json_extract(
@@ -3659,6 +3661,23 @@ CREATE INDEX idx_task_result_settlements_activation
   ON task_result_settlements(agent_id, activation_id, state, created_at);
 CREATE INDEX idx_task_result_settlements_due
   ON task_result_settlements(agent_id, next_recheck_at, state);
+"#,
+    },
+    Migration {
+        version: AGENT_DELETION_RETRY_DEADLINE_VERSION,
+        name: AGENT_DELETION_RETRY_DEADLINE_NAME,
+        sql: r#"
+ALTER TABLE agent_deletion_jobs ADD COLUMN next_attempt_at TEXT;
+
+UPDATE agent_deletion_jobs
+SET next_attempt_at = updated_at,
+    payload_json = json_set(payload_json, '$.next_attempt_at', updated_at)
+WHERE status = 'retryable_failed';
+
+DROP INDEX IF EXISTS idx_agent_deletion_jobs_status_updated;
+
+CREATE INDEX idx_agent_deletion_jobs_status_retry_created
+  ON agent_deletion_jobs(status, next_attempt_at, created_at);
 "#,
     },
 ];

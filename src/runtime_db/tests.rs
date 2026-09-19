@@ -10,9 +10,9 @@ use crate::runtime_db::migrations::{
     apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
     backfill_work_item_recheck_columns, current_schema_version, ensure_migration_table,
     max_known_migration_version, schema_fingerprint, table_exists,
-    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
-    MIGRATIONS, PUBLISHED_MIGRATION_FLOOR, RELEASE_BASELINE_TARGET,
-    TURN_REPLAY_SOURCE_INDEX_VERSION,
+    AGENT_DELETION_RETRY_DEADLINE_VERSION, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
+    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR,
+    RELEASE_BASELINE_TARGET, TURN_REPLAY_SOURCE_INDEX_VERSION,
 };
 #[cfg(test)]
 use crate::runtime_db::storage_domain::upsert_storage_domain;
@@ -159,6 +159,60 @@ mod tests {
             apply_migration(connection, migration)?;
         }
         assert_eq!(current_schema_version(connection)?, target_version);
+        Ok(())
+    }
+
+    #[test]
+    fn deletion_retry_deadline_migration_backfills_retryable_jobs() -> Result<()> {
+        let mut connection = rusqlite::Connection::open_in_memory()?;
+        migrate_through(&mut connection, AGENT_DELETION_RETRY_DEADLINE_VERSION - 1)?;
+        connection.pragma_update(None, "foreign_keys", false)?;
+        connection.execute(
+            "INSERT INTO agent_deletion_jobs (
+                deletion_id, agent_id, status, phase, created_at, updated_at,
+                completed_at, payload_json
+             ) VALUES (
+                'delete-legacy-retry', 'legacy-agent', 'retryable_failed', 'index',
+                '2026-09-18T00:00:00.000Z', '2026-09-18T00:00:05.000Z', NULL,
+                json_object(
+                    'deletion_id', 'delete-legacy-retry',
+                    'agent_id', 'legacy-agent',
+                    'status', 'retryable_failed',
+                    'phase', 'index',
+                    'requested_by', 'test',
+                    'expected_identity_revision', 1,
+                    'cascade_private_children', false,
+                    'attempts', 2,
+                    'created_at', '2026-09-18T00:00:00Z',
+                    'updated_at', '2026-09-18T00:00:05Z'
+                )
+             )",
+            [],
+        )?;
+        let migration = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == AGENT_DELETION_RETRY_DEADLINE_VERSION)
+            .expect("deletion retry deadline migration");
+        apply_migration(&mut connection, migration)?;
+
+        let (column_value, payload_value): (String, String) = connection.query_row(
+            "SELECT next_attempt_at, json_extract(payload_json, '$.next_attempt_at')
+             FROM agent_deletion_jobs
+             WHERE deletion_id = 'delete-legacy-retry'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(column_value, "2026-09-18T00:00:05.000Z");
+        assert_eq!(payload_value, column_value);
+        assert!(connection.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM sqlite_master
+                 WHERE type = 'index'
+                   AND name = 'idx_agent_deletion_jobs_status_retry_created'
+             )",
+            [],
+            |row| row.get::<_, bool>(0),
+        )?);
         Ok(())
     }
 
@@ -485,6 +539,8 @@ mod tests {
         let connection = open_connection(db_path)?;
         connection.execute_batch(
             "DELETE FROM schema_migrations WHERE version >= 41;
+             DROP INDEX idx_agent_deletion_jobs_status_retry_created;
+             ALTER TABLE agent_deletion_jobs DROP COLUMN next_attempt_at;
              DROP TABLE execution_protocol_command_results;
              DROP TABLE execution_protocol_outcomes;
              DROP INDEX execution_protocol_one_open_attempt;
@@ -5577,6 +5633,87 @@ CREATE TABLE working_memory_deltas (
             .remove("mode");
         let decoded: AgentDeletionJob = serde_json::from_value(payload)?;
         assert_eq!(decoded.mode, AgentDeletionMode::Delete);
+        Ok(())
+    }
+
+    #[test]
+    fn deletion_due_jobs_exclude_running_and_future_retries() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let identity = agent_identity("deletion-due", 1);
+        db.agent_identities().upsert(&identity)?;
+        let (_, mut job, _) = db.agent_deletions().begin(
+            "deletion-due",
+            identity.revision,
+            "operator:test",
+            false,
+        )?;
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-19T07:00:00Z")?.with_timezone(&Utc);
+        let future = now + chrono::Duration::seconds(30);
+
+        job.status = AgentDeletionStatus::RetryableFailed;
+        job.attempts = 2;
+        job.next_attempt_at = Some(future);
+        db.agent_deletions().update(&job)?;
+        assert!(db.agent_deletions().due_jobs(now, 10)?.is_empty());
+        assert_eq!(db.agent_deletions().earliest_retry_at()?, Some(future));
+
+        assert_eq!(
+            db.agent_deletions()
+                .due_jobs(future + chrono::Duration::milliseconds(1), 10)?,
+            vec![job.clone()]
+        );
+
+        job.status = AgentDeletionStatus::Running;
+        job.next_attempt_at = None;
+        db.agent_deletions().update(&job)?;
+        assert!(db
+            .agent_deletions()
+            .due_jobs(future + chrono::Duration::seconds(1), 10)?
+            .is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn deletion_startup_recovery_preserves_progress_and_attempt_evidence() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let identity = agent_identity("deletion-recovery", 1);
+        db.agent_identities().upsert(&identity)?;
+        let (_, mut job, _) = db.agent_deletions().begin(
+            "deletion-recovery",
+            identity.revision,
+            "operator:test",
+            false,
+        )?;
+        job.status = AgentDeletionStatus::Running;
+        job.phase = AgentDeletionPhase::Index;
+        job.attempts = 4;
+        job.last_error = Some("database is locked".into());
+        let previous_updated_at = job.updated_at;
+        db.agent_deletions().update(&job)?;
+
+        let recovery_at = previous_updated_at + chrono::Duration::seconds(1);
+        assert_eq!(db.agent_deletions().recover_running_jobs(recovery_at)?, 1);
+        let recovered = db
+            .agent_deletions()
+            .latest_for_agent("deletion-recovery")?
+            .expect("recovered deletion job");
+        assert_eq!(recovered.status, AgentDeletionStatus::RetryableFailed);
+        assert_eq!(recovered.phase, AgentDeletionPhase::Index);
+        assert_eq!(recovered.attempts, 4);
+        assert_eq!(recovered.last_error.as_deref(), Some("database is locked"));
+        assert_eq!(recovered.next_attempt_at, Some(recovery_at));
+        assert!(recovered.updated_at > previous_updated_at);
+        assert_eq!(
+            db.agent_deletions().due_jobs(recovery_at, 1)?,
+            vec![recovered]
+        );
+        assert_eq!(
+            db.agent_deletions()
+                .recover_running_jobs(recovery_at + chrono::Duration::seconds(1))?,
+            0
+        );
         Ok(())
     }
 

@@ -647,6 +647,8 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
             "DROP TABLE agent_relation_backfill_outcomes;
              DROP TABLE agent_relation_backfill_runs;
              DROP TABLE agent_message_deliveries;
+             DROP INDEX idx_agent_deletion_jobs_status_retry_created;
+             ALTER TABLE agent_deletion_jobs DROP COLUMN next_attempt_at;
              DELETE FROM schema_migrations WHERE version > 59;",
         )?;
     }

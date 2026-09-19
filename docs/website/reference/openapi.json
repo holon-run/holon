@@ -264,6 +264,13 @@
                 ],
                 "type": "string"
               },
+              "next_attempt_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "phase": {
                 "enum": [
                   "fence",
@@ -428,6 +435,13 @@
                   "cleanup_repair"
                 ],
                 "type": "string"
+              },
+              "next_attempt_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "phase": {
                 "enum": [
@@ -1163,6 +1177,13 @@
                   "cleanup_repair"
                 ],
                 "type": "string"
+              },
+              "next_attempt_at": {
+                "format": "date-time",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "phase": {
                 "enum": [

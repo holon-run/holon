@@ -17,12 +17,7 @@ use crate::domain::conversation::{
     PendingInputState, ResultState, StreamCursor, TerminalOutcome, TurnKey,
     CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
-use crate::runtime_db::{
-    migrations::{
-        CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL, TASK_RESULT_SETTLEMENT_OWNER_VERSION,
-    },
-    RuntimeDb,
-};
+use crate::runtime_db::{migrations::CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL, RuntimeDb};
 use crate::types::{
     AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
     AgentVisibility, AuditEvent, AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind,
@@ -890,7 +885,7 @@ DELETE FROM schema_migrations WHERE version = 66;
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
     assert_eq!(
         db.current_schema_version()?,
-        TASK_RESULT_SETTLEMENT_OWNER_VERSION
+        crate::runtime_db::max_known_migration_version()
     );
     let assignment_count: i64 = db.connection()?.query_row(
         "SELECT COUNT(*)
@@ -944,7 +939,7 @@ fn migration_skips_conflicting_replay_input_sources() -> Result<()> {
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
     assert_eq!(
         db.current_schema_version()?,
-        TASK_RESULT_SETTLEMENT_OWNER_VERSION
+        crate::runtime_db::max_known_migration_version()
     );
     let assignment = db.connection()?.query_row(
         "SELECT turn_id, revision
@@ -1115,7 +1110,7 @@ DELETE FROM schema_migrations WHERE version = 66;
     let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
     assert_eq!(
         db.current_schema_version()?,
-        TASK_RESULT_SETTLEMENT_OWNER_VERSION
+        crate::runtime_db::max_known_migration_version()
     );
     let cleaned_replay_count: i64 = db.connection()?.query_row(
         "SELECT COUNT(*)

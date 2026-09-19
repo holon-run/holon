@@ -891,6 +891,7 @@ impl AgentDeletionRepository<'_> {
                 cascade_private_children,
                 attempts: 0,
                 last_error: None,
+                next_attempt_at: None,
                 created_at: now,
                 updated_at: now,
                 completed_at: None,
@@ -1013,19 +1014,21 @@ impl AgentDeletionRepository<'_> {
             completed_job.status = AgentDeletionStatus::Completed;
             completed_job.phase = AgentDeletionPhase::Finalize;
             completed_job.last_error = None;
+            completed_job.next_attempt_at = None;
             completed_job.updated_at = now;
             completed_job.completed_at = Some(now);
             let payload_json = serde_json::to_string(&completed_job)?;
             let updated = tx.execute(
                 "UPDATE agent_deletion_jobs
                  SET status = ?1, phase = ?2, updated_at = ?3,
-                     completed_at = ?4, payload_json = ?5
-                 WHERE deletion_id = ?6 AND agent_id = ?7",
+                     completed_at = ?4, next_attempt_at = ?5, payload_json = ?6
+                 WHERE deletion_id = ?7 AND agent_id = ?8",
                 params![
                     enum_string(&completed_job.status)?,
                     enum_string(&completed_job.phase)?,
                     timestamp(completed_job.updated_at),
                     completed_job.completed_at.map(timestamp),
+                    completed_job.next_attempt_at.map(timestamp),
                     payload_json,
                     completed_job.deletion_id,
                     completed_job.agent_id,
@@ -1047,13 +1050,14 @@ impl AgentDeletionRepository<'_> {
             let updated = tx.execute(
                 "UPDATE agent_deletion_jobs
                  SET status = ?1, phase = ?2, updated_at = ?3,
-                     completed_at = ?4, payload_json = ?5
-                 WHERE deletion_id = ?6",
+                     completed_at = ?4, next_attempt_at = ?5, payload_json = ?6
+                 WHERE deletion_id = ?7",
                 params![
                     enum_string(&job.status)?,
                     enum_string(&job.phase)?,
                     timestamp(job.updated_at),
                     job.completed_at.map(timestamp),
+                    job.next_attempt_at.map(timestamp),
                     payload_json,
                     job.deletion_id,
                 ],
@@ -1068,18 +1072,108 @@ impl AgentDeletionRepository<'_> {
         })
     }
 
-    /// Find all deletion jobs that are actionable (Pending, Running, or
-    /// RetryableFailed) and not yet Completed.
-    pub fn actionable_jobs(&self) -> Result<Vec<AgentDeletionJob>> {
+    /// Atomically claim one due job for the process-local coordinator.
+    pub fn claim_due(&self, job: &AgentDeletionJob, now: DateTime<Utc>) -> Result<bool> {
+        self.db.transaction(|tx| {
+            let payload_json = serde_json::to_string(job)?;
+            let updated = tx.execute(
+                "UPDATE agent_deletion_jobs
+                 SET status = ?1, phase = ?2, updated_at = ?3,
+                     completed_at = ?4, next_attempt_at = ?5, payload_json = ?6
+                 WHERE deletion_id = ?7
+                   AND (
+                       status = 'pending'
+                       OR (
+                           status = 'retryable_failed'
+                           AND (next_attempt_at IS NULL OR next_attempt_at <= ?8)
+                       )
+                   )",
+                params![
+                    enum_string(&job.status)?,
+                    enum_string(&job.phase)?,
+                    timestamp(job.updated_at),
+                    job.completed_at.map(timestamp),
+                    job.next_attempt_at.map(timestamp),
+                    payload_json,
+                    job.deletion_id,
+                    timestamp(now),
+                ],
+            )?;
+            Ok(updated == 1)
+        })
+    }
+
+    /// Find pending jobs and retries whose persisted deadline has elapsed.
+    pub fn due_jobs(&self, now: DateTime<Utc>, limit: usize) -> Result<Vec<AgentDeletionJob>> {
         let connection = self.db.connection()?;
         let mut stmt = connection.prepare(
             "SELECT payload_json FROM agent_deletion_jobs
-             WHERE status IN ('pending', 'running', 'retryable_failed')
-             ORDER BY created_at ASC",
+             WHERE status = 'pending'
+                OR (
+                    status = 'retryable_failed'
+                    AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)
+                )
+             ORDER BY COALESCE(next_attempt_at, created_at) ASC, created_at ASC
+             LIMIT ?2",
         )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let rows = stmt.query_map(
+            params![timestamp(now), i64::try_from(limit).unwrap_or(i64::MAX)],
+            |row| row.get::<_, String>(0),
+        )?;
         rows.map(|row| serde_json::from_str(&row?).context("decoding agent deletion job payload"))
             .collect()
+    }
+
+    pub fn earliest_retry_at(&self) -> Result<Option<DateTime<Utc>>> {
+        let connection = self.db.connection()?;
+        let value = connection.query_row(
+            "SELECT MIN(next_attempt_at)
+             FROM agent_deletion_jobs
+             WHERE status = 'retryable_failed' AND next_attempt_at IS NOT NULL",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )?;
+        value
+            .map(|value| parse_timestamp(&value).context("parsing deletion retry deadline"))
+            .transpose()
+    }
+
+    /// Recover jobs whose process-local owner disappeared before completion.
+    pub fn recover_running_jobs(&self, now: DateTime<Utc>) -> Result<usize> {
+        self.db.transaction(|tx| {
+            let payloads = {
+                let mut stmt = tx.prepare(
+                    "SELECT payload_json FROM agent_deletion_jobs WHERE status = 'running'",
+                )?;
+                let payloads = stmt
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                payloads
+            };
+            let mut recovered = 0;
+            for payload in payloads {
+                let mut job: AgentDeletionJob = serde_json::from_str(&payload)
+                    .context("decoding running deletion job for recovery")?;
+                job.status = AgentDeletionStatus::RetryableFailed;
+                job.next_attempt_at = Some(now);
+                job.updated_at =
+                    std::cmp::max(now, job.updated_at + chrono::Duration::nanoseconds(1));
+                let payload_json = serde_json::to_string(&job)?;
+                recovered += tx.execute(
+                    "UPDATE agent_deletion_jobs
+                     SET status = ?1, updated_at = ?2, next_attempt_at = ?3, payload_json = ?4
+                     WHERE deletion_id = ?5 AND status = 'running'",
+                    params![
+                        enum_string(&job.status)?,
+                        timestamp(job.updated_at),
+                        job.next_attempt_at.map(timestamp),
+                        payload_json,
+                        job.deletion_id,
+                    ],
+                )?;
+            }
+            Ok(recovered)
+        })
     }
 }
 
