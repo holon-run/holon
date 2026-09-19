@@ -95,6 +95,14 @@ impl SleepTransitionBoundary {
     }
 }
 
+pub(super) struct SleepTransition {
+    pub(super) state: AgentState,
+    // False when the agent was already asleep and at most the deadline moved:
+    // logical posture is unchanged, so posture/state-changed audits stay
+    // quiet and only the durable agent row is refreshed.
+    pub(super) posture_changed: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BootstrapRecoveryFacts {
     pub(super) queued_messages: usize,
@@ -440,29 +448,38 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         &self,
         sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
         boundary: SleepTransitionBoundary,
-    ) -> Result<AgentState> {
+    ) -> Result<SleepTransition> {
         let mut guard = self.runtime.inner.agent.lock().await;
         let previous_status = guard.state.status.clone();
         let previous_run_id = guard.state.current_run_id.clone();
+        let previous_sleeping_until = guard.state.sleeping_until;
         scheduler::apply_sleep_projection(&mut guard.state, sleeping_until);
-        self.append_posture_decision(
-            boundary.as_str(),
-            "sleep",
-            &previous_status,
-            &guard.state.status,
-            vec![
-                format!("previous_run_id={previous_run_id:?}"),
-                format!("sleeping_until={:?}", guard.state.sleeping_until),
-            ],
-        )?;
-        guard.persist_state(&self.runtime.inner.storage)?;
-        Ok(guard.state.clone())
+        let posture_changed = previous_status != guard.state.status;
+        if posture_changed {
+            self.append_posture_decision(
+                boundary.as_str(),
+                "sleep",
+                &previous_status,
+                &guard.state.status,
+                vec![
+                    format!("previous_run_id={previous_run_id:?}"),
+                    format!("sleeping_until={:?}", guard.state.sleeping_until),
+                ],
+            )?;
+        }
+        if posture_changed || previous_sleeping_until != guard.state.sleeping_until {
+            guard.persist_state(&self.runtime.inner.storage)?;
+        }
+        Ok(SleepTransition {
+            state: guard.state.clone(),
+            posture_changed,
+        })
     }
 
     pub(super) async fn transition_run_loop_idle_to_sleep(
         &self,
         sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
-    ) -> Result<Option<AgentState>> {
+    ) -> Result<Option<SleepTransition>> {
         let mut guard = self.runtime.inner.agent.lock().await;
         if matches!(guard.state.status, AgentStatus::Stopped) || !guard.queue.is_empty() {
             return Ok(None);
@@ -470,8 +487,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
 
         let previous_status = guard.state.status.clone();
         let previous_run_id = guard.state.current_run_id.clone();
+        let previous_sleeping_until = guard.state.sleeping_until;
         let next_sleeping_until = if matches!(previous_status, AgentStatus::Asleep) {
-            match (guard.state.sleeping_until, sleeping_until) {
+            match (previous_sleeping_until, sleeping_until) {
                 (Some(current), Some(proposed)) => Some(current.min(proposed)),
                 (Some(current), None) => Some(current),
                 (None, proposed) => proposed,
@@ -480,18 +498,26 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             sleeping_until
         };
         scheduler::apply_sleep_projection(&mut guard.state, next_sleeping_until);
-        self.append_posture_decision(
-            SleepTransitionBoundary::RunLoopIdle.as_str(),
-            "sleep",
-            &previous_status,
-            &guard.state.status,
-            vec![
-                format!("previous_run_id={previous_run_id:?}"),
-                format!("sleeping_until={:?}", guard.state.sleeping_until),
-            ],
-        )?;
-        guard.persist_state(&self.runtime.inner.storage)?;
-        Ok(Some(guard.state.clone()))
+        let posture_changed = previous_status != guard.state.status;
+        if posture_changed {
+            self.append_posture_decision(
+                SleepTransitionBoundary::RunLoopIdle.as_str(),
+                "sleep",
+                &previous_status,
+                &guard.state.status,
+                vec![
+                    format!("previous_run_id={previous_run_id:?}"),
+                    format!("sleeping_until={:?}", guard.state.sleeping_until),
+                ],
+            )?;
+        }
+        if posture_changed || previous_sleeping_until != guard.state.sleeping_until {
+            guard.persist_state(&self.runtime.inner.storage)?;
+        }
+        Ok(Some(SleepTransition {
+            state: guard.state.clone(),
+            posture_changed,
+        }))
     }
 
     pub(super) async fn poll(&self) -> Result<RunLoopPoll> {

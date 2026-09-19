@@ -230,6 +230,14 @@ any `model_reentry` decision recorded after the last matching occurrence: a
 genuine work → idle revert is re-recorded, keeping the latest recorded
 decision aligned with the current posture.
 
+Posture transition audits (`scheduler_posture_decision` and the paired
+`agent_state_changed`) are recorded only when the logical posture actually
+changes. A sleep-boundary refresh that leaves an already-sleeping agent
+asleep moves at most `sleeping_until`: the durable agent row is refreshed
+when the deadline changes, but no posture or state-changed audit is
+re-recorded. Genuine transitions (awake → asleep, asleep → awake via
+message admission, lifecycle control) are always recorded.
+
 ### Scheduling advisories
 
 `SchedulingAdvisory` is an internal, non-authoritative warning system that
