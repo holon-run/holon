@@ -12,7 +12,7 @@ handle: rfc-deterministic-scheduler-decision-hooks
 Holon's scheduler needs explicit internal decision boundaries before any
 semantic decision provider can be integrated safely.
 
-Phase 1 defines and connects six synchronous, typed, internal hooks:
+This RFC defines six synchronous, typed internal hook boundaries for Phase 1:
 
 1. ingress routing;
 2. wake eligibility;
