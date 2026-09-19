@@ -5,11 +5,11 @@
     "version": 1
   },
   "auth": {
-    "mode": "session",
+    "mode": "bearer",
     "required": true
   },
   "capabilities": [
-    "agents.list.v1",
+    "agents.list",
     "agents.conversation-read.v1"
   ],
   "runtime": {
