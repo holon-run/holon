@@ -1099,6 +1099,18 @@ pub(crate) fn append_scheduler_decision(
 ) -> Result<bool> {
     let events = scheduler_decision_events(agent_id, decision)?;
     let legacy_event = &events[1];
+    let recent_events = storage.read_recent_events(32)?;
+    if recent_scheduler_decision_is_duplicate(&recent_events, legacy_event) {
+        return Ok(false);
+    }
+    storage.append_events(&events)?;
+    Ok(true)
+}
+
+fn recent_scheduler_decision_is_duplicate(
+    recent_events: &[AuditEvent],
+    legacy_event: &AuditEvent,
+) -> bool {
     let signature = scheduler_decision_signature(&legacy_event.data);
     // Suppress only when the most recent same-signature occurrence in the
     // window has no model-reentry decision after it: idle boundary alternation
@@ -1106,7 +1118,7 @@ pub(crate) fn append_scheduler_decision(
     // latest recorded decision keeps mirroring the current posture.
     let mut duplicate = false;
     let mut model_reentry_since_last_match = false;
-    for event in storage.read_recent_events(32)? {
+    for event in recent_events {
         if event.kind != legacy_event.kind {
             continue;
         }
@@ -1117,11 +1129,7 @@ pub(crate) fn append_scheduler_decision(
             model_reentry_since_last_match = true;
         }
     }
-    if duplicate && !model_reentry_since_last_match {
-        return Ok(false);
-    }
-    storage.append_events(&events)?;
-    Ok(true)
+    duplicate && !model_reentry_since_last_match
 }
 
 fn scheduler_decision_model_reentry(data: &serde_json::Value) -> bool {
