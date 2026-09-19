@@ -1962,11 +1962,30 @@ impl TurnExecution<'_> {
                 let runtime_reminder = budget_warning;
                 let mut recent_turns_budget = effective_prompt.recent_turns_initial_budget();
                 let mut recent_turns_retry_attempts = 0usize;
+                let report_fallback = pending_completion_report
+                    .as_ref()
+                    .is_some_and(|pending| pending.text_only_fallback)
+                    || pending_wait_report
+                        .as_ref()
+                        .is_some_and(|pending| pending.text_only_fallback);
+                let report_rounds_exhausted = pending_completion_report
+                    .as_ref()
+                    .is_some_and(|pending| pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS)
+                    || pending_wait_report.as_ref().is_some_and(|pending| {
+                        pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
+                    });
+                let request_tools = if report_fallback || report_rounds_exhausted {
+                    Vec::new()
+                } else if pending_completion_report.is_some() || pending_wait_report.is_some() {
+                    report_tools(&available_tools)
+                } else {
+                    available_tools.clone()
+                };
                 let projection = loop {
                     match build_turn_local_projection_with_runtime_reminder(
                         &prompt_frame,
                         &completed_rounds,
-                        &available_tools,
+                        &request_tools,
                         &checkpoint_state,
                         checkpoint_request_id.clone(),
                         // Turn-local continuation projection covers the complete provider request.
@@ -1999,7 +2018,7 @@ impl TurnExecution<'_> {
                             let Some(reprojected_prompt) = effective_prompt.reproject_recent_turns(
                                 &runtime.inner.storage,
                                 next_budget,
-                                &available_tools,
+                                &request_tools,
                             ) else {
                                 recent_turns_budget = None;
                                 continue;
@@ -2161,25 +2180,6 @@ impl TurnExecution<'_> {
                     }
                 }
                 let request_build_started_at = chrono::Utc::now();
-                let report_fallback = pending_completion_report
-                    .as_ref()
-                    .is_some_and(|pending| pending.text_only_fallback)
-                    || pending_wait_report
-                        .as_ref()
-                        .is_some_and(|pending| pending.text_only_fallback);
-                let report_rounds_exhausted = pending_completion_report
-                    .as_ref()
-                    .is_some_and(|pending| pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS)
-                    || pending_wait_report.as_ref().is_some_and(|pending| {
-                        pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
-                    });
-                let continuation_tools = if report_fallback || report_rounds_exhausted {
-                    Vec::new()
-                } else if pending_completion_report.is_some() || pending_wait_report.is_some() {
-                    report_tools(&available_tools)
-                } else {
-                    available_tools.clone()
-                };
                 let continuation_web_search = if report_fallback || report_rounds_exhausted {
                     None
                 } else {
@@ -2189,7 +2189,7 @@ impl TurnExecution<'_> {
                     crate::provider::ContinuationScopeId::new(agent_id),
                     prompt_frame,
                     projection.conversation,
-                    continuation_tools,
+                    request_tools,
                     continuation_web_search,
                 );
                 record_turn_local_span(
