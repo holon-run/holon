@@ -5,7 +5,7 @@ const STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT: usize = 16;
 pub async fn enqueue_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<EnqueueRequest>,
+    ApiJson(request): ApiJson<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let agent_id = state.host.config().default_agent_id.clone();
@@ -24,7 +24,7 @@ pub async fn enqueue(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<EnqueueRequest>,
+    ApiJson(request): ApiJson<EnqueueRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let trace_context = trace_context_from_headers(&headers)?;
@@ -1163,7 +1163,7 @@ pub async fn briefs_batch_get(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<BatchGetBriefsRequest>,
+    ApiJson(request): ApiJson<BatchGetBriefsRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state
@@ -1268,7 +1268,7 @@ pub async fn transcript_batch_get(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<BatchGetTranscriptEntriesRequest>,
+    ApiJson(request): ApiJson<BatchGetTranscriptEntriesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state

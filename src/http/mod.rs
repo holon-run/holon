@@ -10,7 +10,9 @@ pub(crate) use std::{
 pub(crate) use anyhow::{anyhow, Result};
 pub(crate) use axum::{
     body::{Body, Bytes},
-    extract::{DefaultBodyLimit, MatchedPath, Path, Query, State},
+    extract::{
+        rejection::JsonRejection, DefaultBodyLimit, FromRequest, MatchedPath, Path, Query, State,
+    },
     http::{
         header::{
             ACCEPT, AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, COOKIE, ETAG, IF_NONE_MATCH,
@@ -286,6 +288,54 @@ impl HttpErrorEnvelope {
         envelope.context = descriptor.safe_context;
         envelope
     }
+}
+
+pub struct ApiJson<T>(pub(crate) T);
+
+impl<T, S> FromRequest<S> for ApiJson<T>
+where
+    T: serde::de::DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = (StatusCode, Json<Value>);
+
+    async fn from_request(
+        request: AxumRequest<Body>,
+        state: &S,
+    ) -> std::result::Result<Self, Self::Rejection> {
+        Json::<T>::from_request(request, state)
+            .await
+            .map(|Json(value)| Self(value))
+            .map_err(json_rejection_response)
+    }
+}
+
+fn json_rejection_response(rejection: JsonRejection) -> (StatusCode, Json<Value>) {
+    let status = rejection.status();
+    let detail = rejection.to_string();
+    let (code, error, include_detail) = match rejection {
+        JsonRejection::JsonDataError(_) | JsonRejection::JsonSyntaxError(_) => (
+            "invalid_json",
+            "request body must be valid JSON matching the expected shape",
+            true,
+        ),
+        JsonRejection::MissingJsonContentType(_) => (
+            "missing_json_content_type",
+            "request must use Content-Type: application/json",
+            false,
+        ),
+        JsonRejection::BytesRejection(_) => (
+            "request_body_rejected",
+            "request body could not be read",
+            false,
+        ),
+        _ => ("request_body_rejected", "request body was rejected", false),
+    };
+    let mut envelope = HttpErrorEnvelope::new(code, error);
+    if include_detail {
+        envelope.context.insert("detail".to_owned(), detail);
+    }
+    http_error(status, envelope)
 }
 
 pub(crate) const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
@@ -1717,6 +1767,52 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[tokio::test]
+    async fn json_rejections_use_machine_error_envelope() {
+        let (_home, host) = test_host();
+        let app = router(AppState::for_tcp(host));
+        let cases = [
+            (
+                "{",
+                Some("application/json"),
+                StatusCode::BAD_REQUEST,
+                "invalid_json",
+            ),
+            (
+                r#"{"credential":7}"#,
+                Some("application/json"),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_json",
+            ),
+            (
+                r#"{"credential":"value"}"#,
+                None,
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                "missing_json_content_type",
+            ),
+        ];
+
+        for (body, content_type, expected_status, expected_code) in cases {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/auth/session/exchange");
+            if let Some(content_type) = content_type {
+                request = request.header(header::CONTENT_TYPE, content_type);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::from(body)).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected_status);
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                    .unwrap();
+            assert_eq!(body["ok"], false);
+            assert_eq!(body["code"], expected_code);
+        }
     }
 
     async fn invoke_new_subagent(

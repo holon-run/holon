@@ -93,7 +93,7 @@ pub enum CreateJobRequest {
 pub async fn create_job(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<CreateJobRequest>,
+    ApiJson(request): ApiJson<CreateJobRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     match request {

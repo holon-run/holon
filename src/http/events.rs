@@ -90,7 +90,7 @@ pub async fn messages_batch_get(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<BatchGetMessagesRequest>,
+    ApiJson(request): ApiJson<BatchGetMessagesRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let storage = state

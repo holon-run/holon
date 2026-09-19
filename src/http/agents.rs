@@ -143,7 +143,7 @@ fn model_discovery_refresh_candidates(
 pub async fn search(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<SearchRequest>,
+    ApiJson(request): ApiJson<SearchRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
@@ -184,7 +184,7 @@ pub async fn search(
 pub async fn memory_get(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<MemoryGetRequest>,
+    ApiJson(request): ApiJson<MemoryGetRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;

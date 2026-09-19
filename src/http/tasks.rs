@@ -202,7 +202,7 @@ pub async fn task_input(
     Path((agent_id, task_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<TaskInputRequest>,
+    ApiJson(request): ApiJson<TaskInputRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
@@ -234,7 +234,7 @@ pub async fn task_stop(
     Path((agent_id, task_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<TaskStopRequest>,
+    ApiJson(request): ApiJson<TaskStopRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
@@ -283,7 +283,7 @@ pub async fn create_command_task(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<CreateCommandTaskRequest>,
+    ApiJson(request): ApiJson<CreateCommandTaskRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
@@ -339,7 +339,7 @@ pub async fn create_work_item(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<CreateWorkItemRequest>,
+    ApiJson(request): ApiJson<CreateWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
@@ -376,7 +376,7 @@ pub async fn pick_work_item(
     Path((agent_id, work_item_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<PickWorkItemRequest>,
+    ApiJson(request): ApiJson<PickWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
@@ -425,7 +425,7 @@ pub async fn update_work_item(
     Path((agent_id, work_item_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<UpdateWorkItemRequest>,
+    ApiJson(request): ApiJson<UpdateWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
@@ -502,7 +502,7 @@ pub async fn complete_work_item(
     Path((agent_id, work_item_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<CompleteWorkItemRequest>,
+    ApiJson(request): ApiJson<CompleteWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let report_text = request.report_text.trim();
@@ -674,7 +674,7 @@ pub async fn create_timer(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<CreateTimerRequest>,
+    ApiJson(request): ApiJson<CreateTimerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);
@@ -710,7 +710,7 @@ pub async fn cancel_timer(
     Path((agent_id, timer_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<CancelTimerRequest>,
+    ApiJson(request): ApiJson<CancelTimerRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let admission_context = control_admission_context(&state);

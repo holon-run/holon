@@ -25,7 +25,7 @@ pub async fn install_skill(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::InstallSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::InstallSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
@@ -63,7 +63,7 @@ pub async fn install_skill(
 pub async fn add_skill_to_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::AddSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::AddSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
@@ -83,7 +83,7 @@ pub async fn add_skill_to_catalog(
 pub async fn remove_skill_from_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::RemoveSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::RemoveSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
@@ -98,7 +98,7 @@ pub async fn remove_skill_from_catalog(
 pub async fn reconcile_skill_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::ReconcileSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::ReconcileSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
@@ -147,7 +147,7 @@ pub async fn refresh_skill_catalog(
 pub async fn update_skill_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::UpdateSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::UpdateSkillRequest>,
 ) -> Result<axum::response::Response, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     jobs::create_skill_update_job(state, request).await
@@ -156,7 +156,7 @@ pub async fn update_skill_catalog(
 pub async fn check_skill_catalog(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::CheckSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::CheckSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
@@ -173,7 +173,7 @@ pub async fn enable_skill(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::EnableSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::EnableSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
@@ -211,7 +211,7 @@ pub async fn uninstall_skill(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::UninstallSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::UninstallSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state
@@ -242,7 +242,7 @@ pub async fn disable_skill(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(request): Json<crate::types::DisableSkillRequest>,
+    ApiJson(request): ApiJson<crate::types::DisableSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     let runtime = state

@@ -2199,6 +2199,9 @@ pub async fn control_prompt_rejects_oversized_body() -> Result<()> {
         .send()
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["code"], "request_body_rejected");
     server.abort();
     Ok(())
 }
