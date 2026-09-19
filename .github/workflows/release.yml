@@ -328,14 +328,15 @@ jobs:
         run: |
           set -euo pipefail
           cat > release-notes.md <<EOF
-          This release restores crates.io publishing by limiting the cargo package to crate build inputs, after the v0.43.0 crate upload was rejected with 413 Payload Too Large for shipping monorepo-only assets, and streamlines Web GUI file previews with opt-in macOS Finder actions.
+          This release prioritizes foreground memory-index writes ahead of maintenance rebuild work, removes repeated identical idle scheduler decision audits to cut idle write volume, and keeps file references resolvable when multiple registered roots share one filesystem anchor.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
 
           ## Changes
 
-          - Streamline Web GUI file previews around content-first layout and add opt-in reveal-in-Finder support through a separate desktop API restricted to macOS and loopback listeners, with OpenAPI and CLI snapshot coverage ([#3089](https://github.com/holon-run/holon/pull/3089)).
-          - Limit the cargo package to crate build inputs so the crate tarball stays within the crates.io 10 MB upload limit; v0.43.0 remains published on GitHub Releases and ghcr.io, and crates.io publishing resumes with this release ([6e2fac2e](https://github.com/holon-run/holon/commit/6e2fac2e2a4ded6d597f8577d8503c1c166a0391)).
+          - Split the memory index writer coordinator into foreground and maintenance FIFO queues with strict foreground precedence for normal index mutations, classify rebuild scan, prune, and finalize transactions as maintenance work, and expose queue depth, wait, and timeout diagnostics with OpenMetrics ([#3094](https://github.com/holon-run/holon/pull/3094)).
+          - Deduplicate idle scheduler decision audits by a stable decision signature so alternating idle boundaries stop persisting repeated identical audits, cutting measured idle audit volume by 60% on a production replica ([#3091](https://github.com/holon-run/holon/pull/3091)).
+          - Deduplicate host-wide resolve file roots by filesystem anchor with canonical workspace priority so absolute-path references resolve when multiple root ids claim one directory, and degrade Web GUI resolve failures to the raw reference text with the failure detail kept in the tooltip ([#3090](https://github.com/holon-run/holon/pull/3090)).
 
 
           ## Install
