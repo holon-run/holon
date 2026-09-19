@@ -25,6 +25,7 @@ implementation and tests.
 - [Canonical Agent Create Contract](./agent-create-contract.md)
 - [Unified Agent Identity, Relations, And Message Delivery](./agent-identity-relations-and-message-delivery.md)
 - [Runtime Scheduler Contract](./runtime-scheduler-contract.md)
+- [Deterministic Scheduler Decision Hooks](./deterministic-scheduler-decision-hooks.md)
 - [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md)
 - [Scheduler–WorkItem Unified Execution Protocol](./scheduler-work-item-unified-execution-protocol.md)
 - [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)

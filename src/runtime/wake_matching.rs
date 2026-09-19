@@ -227,4 +227,90 @@ mod tests {
         assert_eq!(active.authorization, ResumeAuthorization::LivenessOnly);
         assert!(active.matched_waiting_reason);
     }
+
+    #[test]
+    fn waiting_reason_matching_matrix_is_fail_closed() {
+        let matching = [
+            (
+                WaitingReason::AwaitingOperatorInput,
+                ContinuationTriggerKind::OperatorInput,
+                false,
+                None,
+                false,
+            ),
+            (
+                WaitingReason::AwaitingTaskResult,
+                ContinuationTriggerKind::TaskResult,
+                true,
+                Some(TaskResultOutcome::Succeeded),
+                true,
+            ),
+            (
+                WaitingReason::AwaitingExternalChange,
+                ContinuationTriggerKind::ExternalEvent,
+                true,
+                None,
+                false,
+            ),
+            (
+                WaitingReason::AwaitingExternalChange,
+                ContinuationTriggerKind::SystemTick,
+                true,
+                None,
+                false,
+            ),
+            (
+                WaitingReason::AwaitingTimer,
+                ContinuationTriggerKind::TimerFire,
+                false,
+                None,
+                false,
+            ),
+        ];
+
+        for (reason, kind, contentful, task_result_outcome, exact_task_wait) in matching {
+            let matched = decision(
+                ClosureOutcome::Waiting,
+                Some(reason),
+                kind,
+                contentful,
+                task_result_outcome,
+                exact_task_wait,
+            );
+            assert_eq!(matched.authorization, ResumeAuthorization::ExpectedWait);
+            assert!(matched.model_reentry);
+            assert!(matched.matched_waiting_reason);
+        }
+
+        for (reason, kind) in [
+            (
+                WaitingReason::AwaitingOperatorInput,
+                ContinuationTriggerKind::TimerFire,
+            ),
+            (
+                WaitingReason::AwaitingTaskResult,
+                ContinuationTriggerKind::ExternalEvent,
+            ),
+            (
+                WaitingReason::AwaitingExternalChange,
+                ContinuationTriggerKind::TimerFire,
+            ),
+            (
+                WaitingReason::AwaitingTimer,
+                ContinuationTriggerKind::SystemTick,
+            ),
+        ] {
+            let unmatched = decision(
+                ClosureOutcome::Waiting,
+                Some(reason),
+                kind,
+                true,
+                None,
+                false,
+            );
+            assert_eq!(unmatched.authorization, ResumeAuthorization::LivenessOnly);
+            assert!(!unmatched.model_reentry);
+            assert!(!unmatched.matched_waiting_reason);
+        }
+    }
 }

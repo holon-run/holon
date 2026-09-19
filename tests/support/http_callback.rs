@@ -228,6 +228,69 @@ pub async fn callback_wake_hint_routes_through_wake_hint() -> Result<()> {
     Ok(())
 }
 
+pub async fn callback_capability_routes_only_to_owning_agent() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let default_runtime = host.default_runtime().await?;
+    host.create_named_agent("alpha", None).await?;
+    let alpha_runtime = host.get_operator_agent("alpha").await?;
+    let client = reqwest::Client::new();
+
+    wait_until(|| {
+        Ok(alpha_runtime
+            .storage()
+            .read_agent()?
+            .map(|agent| agent.status == AgentStatus::Asleep)
+            .unwrap_or(false))
+    })
+    .await?;
+
+    let capability = alpha_runtime
+        .create_external_trigger(
+            "wake alpha when PR changes".into(),
+            "github".into(),
+            ExternalTriggerScope::Agent,
+            CallbackDeliveryMode::WakeHint,
+            None,
+            None,
+        )
+        .await?;
+    let callback_path = callback_path(&capability.trigger_url);
+
+    let response = client
+        .post(format!("{base}{callback_path}"))
+        .json(&serde_json::json!({
+            "notification_type": "pr_changed",
+            "repo": "holon"
+        }))
+        .send()
+        .await?;
+    assert!(response.status().is_success());
+
+    wait_until(|| {
+        Ok(alpha_runtime
+            .storage()
+            .read_recent_events(100)?
+            .iter()
+            .any(|event| {
+                event.kind == "callback_delivered"
+                    && event.data["external_trigger_id"] == capability.external_trigger_id
+            }))
+    })
+    .await?;
+
+    assert!(!default_runtime
+        .storage()
+        .read_recent_events(100)?
+        .iter()
+        .any(|event| {
+            event.kind == "callback_delivered"
+                && event.data["external_trigger_id"] == capability.external_trigger_id
+        }));
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn callback_wake_hint_rejects_stopped_public_agent_without_side_effects() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
