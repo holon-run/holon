@@ -1353,6 +1353,10 @@ impl RuntimeHost {
 
     async fn run_daemon_runtime_db_retention(self) {
         let mut next_wal_checkpoint = tokio::time::Instant::now();
+        // Retention keeps its own deadline so the shorter WAL checkpoint
+        // cadence cannot silently raise the retention pass frequency above
+        // the configured interval.
+        let mut next_retention_pass = tokio::time::Instant::now();
         loop {
             if self.inner.daemon_retention_token.is_cancelled() {
                 break;
@@ -1378,7 +1382,11 @@ impl RuntimeHost {
                     continue;
                 }
             };
-            if policy.enabled {
+            let retention_enabled = policy.enabled;
+            let retention_round =
+                Duration::from_secs(policy.interval_hours.saturating_mul(60 * 60));
+            if retention_enabled && now >= next_retention_pass {
+                next_retention_pass = now + retention_round;
                 let db = self.inner.runtime_db.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     db.run_retention_pass(policy, chrono::Utc::now())
@@ -1409,15 +1417,14 @@ impl RuntimeHost {
                     }
                 }
             }
-            let interval_hours = self
-                .config()
-                .runtime_db_retention_policy()
-                .map(|policy| policy.interval_hours)
-                .unwrap_or(1);
-            let retention_round = Duration::from_secs(interval_hours.saturating_mul(60 * 60));
-            let wait = next_wal_checkpoint
-                .saturating_duration_since(tokio::time::Instant::now())
-                .min(retention_round);
+            // Sleep until the earlier pending deadline. While retention is
+            // disabled its deadline stays in the past and must not shrink the
+            // wait; policy reloads are still observed on every checkpoint wake.
+            let now = tokio::time::Instant::now();
+            let mut wait = next_wal_checkpoint.saturating_duration_since(now);
+            if retention_enabled {
+                wait = wait.min(next_retention_pass.saturating_duration_since(now));
+            }
             if self.wait_daemon_retention_round(wait).await {
                 break;
             }
