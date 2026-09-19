@@ -95,6 +95,7 @@ pub(crate) async fn execute(
     context: &ToolExecutionContext,
 ) -> Result<ToolResult> {
     let args = parse_wait_for_args(input)?;
+    validate_wait_for_args(&args)?;
     if args.delivery == WaitForDeliveryArg::Final && context.completion_report_candidate.is_none() {
         return Ok(ToolResult::deferred(
             NAME,
@@ -127,9 +128,9 @@ async fn settle_impl(
     args: WaitForArgs,
     prepare_only: bool,
 ) -> Result<ToolResult> {
+    validate_wait_for_args(&args)?;
     let reason = validate_non_empty(args.reason, NAME, "reason")?;
     let resource = optional_resource(args.resource);
-    validate_resource_for_wake(args.wake, resource.as_deref())?;
 
     let context = query_context(runtime).await?;
     let state = runtime.agent_state().await?;
@@ -297,6 +298,12 @@ fn optional_resource(resource: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+fn validate_wait_for_args(args: &WaitForArgs) -> Result<()> {
+    validate_non_empty(args.reason.clone(), NAME, "reason")?;
+    let resource = optional_resource(args.resource.clone());
+    validate_resource_for_wake(args.wake, resource.as_deref())
+}
+
 fn resolve_wait_work_item_id(
     wake: WaitForWakeArg,
     explicit_work_item_id: Option<String>,
@@ -399,6 +406,31 @@ mod tests {
                 Some("resource")
             );
         }
+    }
+
+    #[test]
+    fn wait_for_validates_final_wait_before_deferring() {
+        let args = WaitForArgs {
+            reason: "wait for timer".into(),
+            wake: WaitForWakeArg::Timer,
+            delivery: WaitForDeliveryArg::Final,
+            work_item_id: None,
+            resource: None,
+            recheck_after_ms: None,
+        };
+
+        let error = validate_wait_for_args(&args).unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        assert_eq!(
+            tool_error
+                .details
+                .as_ref()
+                .and_then(|value| value.get("field"))
+                .and_then(|value| value.as_str()),
+            Some("resource")
+        );
     }
 
     #[test]
