@@ -83,8 +83,15 @@ pub async fn create_command_task_route_rejects_legacy_kind_field() -> Result<()>
             .await?;
         assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
 
-        let body = response.text().await?;
-        assert!(body.contains("unknown field `kind`"));
+        let body: serde_json::Value = response.json().await?;
+        assert_eq!(body["code"], "invalid_json");
+        assert_eq!(
+            body["error"],
+            "request body must be valid JSON matching the expected shape"
+        );
+        assert!(body["context"]["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("unknown field `kind`")));
     }
 
     server.abort();
@@ -106,8 +113,15 @@ pub async fn create_task_route_rejects_unknown_prompt_field() -> Result<()> {
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
 
-    let body = response.text().await?;
-    assert!(body.contains("unknown field `prompt`"));
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["code"], "invalid_json");
+    assert_eq!(
+        body["error"],
+        "request body must be valid JSON matching the expected shape"
+    );
+    assert!(body["context"]["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("unknown field `prompt`")));
 
     server.abort();
     Ok(())
@@ -128,8 +142,15 @@ pub async fn create_command_task_route_rejects_continue_on_result_field() -> Res
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
 
-    let body = response.text().await?;
-    assert!(body.contains("unknown field `continue_on_result`"));
+    let body: serde_json::Value = response.json().await?;
+    assert_eq!(body["code"], "invalid_json");
+    assert_eq!(
+        body["error"],
+        "request body must be valid JSON matching the expected shape"
+    );
+    assert!(body["context"]["detail"]
+        .as_str()
+        .is_some_and(|detail| detail.contains("unknown field `continue_on_result`")));
 
     server.abort();
     Ok(())

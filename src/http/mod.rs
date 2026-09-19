@@ -312,21 +312,30 @@ where
 
 fn json_rejection_response(rejection: JsonRejection) -> (StatusCode, Json<Value>) {
     let status = rejection.status();
-    let (code, error) = match rejection {
+    let detail = rejection.to_string();
+    let (code, error, include_detail) = match rejection {
         JsonRejection::JsonDataError(_) | JsonRejection::JsonSyntaxError(_) => (
             "invalid_json",
             "request body must be valid JSON matching the expected shape",
+            true,
         ),
         JsonRejection::MissingJsonContentType(_) => (
             "missing_json_content_type",
             "request must use Content-Type: application/json",
+            false,
         ),
-        JsonRejection::BytesRejection(_) => {
-            ("request_body_rejected", "request body could not be read")
-        }
-        _ => ("request_body_rejected", "request body was rejected"),
+        JsonRejection::BytesRejection(_) => (
+            "request_body_rejected",
+            "request body could not be read",
+            false,
+        ),
+        _ => ("request_body_rejected", "request body was rejected", false),
     };
-    http_error(status, HttpErrorEnvelope::new(code, error))
+    let mut envelope = HttpErrorEnvelope::new(code, error);
+    if include_detail {
+        envelope.context.insert("detail".to_owned(), detail);
+    }
+    http_error(status, envelope)
 }
 
 pub(crate) const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
