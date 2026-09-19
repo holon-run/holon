@@ -234,7 +234,10 @@ pub fn map_response<I, C: Serialize>(
                     })?,
             )
             .map_err(|error| DecisionError::Serialization(error.to_string()))?;
-            (DecisionOutcome::Select { value }, probabilities.values().copied().reduce(f32::max))
+            (
+                DecisionOutcome::Select { value },
+                probabilities.get(choice).copied(),
+            )
         }
         JevAnswer::Score { score } => (
             DecisionOutcome::Abstain {
@@ -301,6 +304,29 @@ mod tests {
         .expect("mapping");
         assert!(matches!(result.outcome, DecisionOutcome::Select { .. }));
         assert_eq!(result.provenance.provider, "jev");
+    }
+
+    #[test]
+    fn maps_selected_choice_probability_to_confidence() {
+        let result = map_response(
+            JevResponse {
+                answers: BTreeMap::from([(
+                    "decision".into(),
+                    JevAnswer::Choice {
+                        choice: "candidate_0".into(),
+                        probabilities: BTreeMap::from([
+                            ("candidate_0".into(), 0.4),
+                            ("candidate_1".into(), 0.6),
+                        ]),
+                    },
+                )]),
+                provider_metadata: None,
+            },
+            &request(),
+            Duration::ZERO,
+        )
+        .expect("mapping");
+        assert_eq!(result.confidence, Some(0.4));
     }
 
     #[test]
