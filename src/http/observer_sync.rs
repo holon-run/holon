@@ -322,9 +322,9 @@ pub async fn agent_roster_snapshot(
         return http_error(
             StatusCode::SERVICE_UNAVAILABLE,
             HttpErrorEnvelope::new(
+                "capability_unavailable",
                 "the agents.roster-snapshot.v1 capability is not verified for this database",
             )
-            .code("capability_unavailable")
             .hint("see the handshake capabilities; route registration alone never serves this contract"),
         )
         .into_response();
@@ -347,11 +347,13 @@ pub async fn agent_roster_snapshot(
                 Err(_) => {
                     return Err(ProjectionFailure::from(http_error(
                         StatusCode::SERVICE_UNAVAILABLE,
-                        HttpErrorEnvelope::new(format!(
-                            "roster snapshot assembly exceeded the {} second budget",
-                            limits.timeout.as_secs(),
-                        ))
-                        .code("roster_snapshot_timeout")
+                        HttpErrorEnvelope::new(
+                            "roster_snapshot_timeout",
+                            format!(
+                                "roster snapshot assembly exceeded the {} second budget",
+                                limits.timeout.as_secs(),
+                            ),
+                        )
                         .retryable(true),
                     )));
                 }
@@ -360,9 +362,9 @@ pub async fn agent_roster_snapshot(
                 return Err(ProjectionFailure::from(http_error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     HttpErrorEnvelope::new(
+                        "roster_snapshot_too_large",
                         "roster snapshot exceeds the maximum Agent count for one response",
                     )
-                    .code("roster_snapshot_too_large")
                     .extension("agent_count", snapshot.agents.len())
                     .extension("max_agents", limits.max_agents),
                 )));
@@ -402,9 +404,9 @@ pub async fn agent_roster_snapshot(
                 return Err(ProjectionFailure::from(http_error(
                     StatusCode::PAYLOAD_TOO_LARGE,
                     HttpErrorEnvelope::new(
+                        "roster_snapshot_too_large",
                         "roster snapshot exceeds the maximum serialized response size",
                     )
-                    .code("roster_snapshot_too_large")
                     .extension("serialized_bytes", bytes.len())
                     .extension("max_serialized_bytes", limits.max_serialized_bytes),
                 )));
@@ -484,9 +486,9 @@ pub async fn agent_projection_snapshot(
         return http_error(
             StatusCode::SERVICE_UNAVAILABLE,
             HttpErrorEnvelope::new(
+                "capability_unavailable",
                 "the agents.projection-snapshot.v1 capability is not verified for this database",
             )
-            .code("capability_unavailable")
             .hint("see the handshake capabilities; route registration alone never serves this contract"),
         )
         .into_response();
@@ -514,11 +516,13 @@ pub async fn agent_projection_snapshot(
                     Err(_) => {
                         return Err(ProjectionFailure::from(http_error(
                             StatusCode::SERVICE_UNAVAILABLE,
-                            HttpErrorEnvelope::new(format!(
-                                "projection snapshot assembly exceeded the {} second budget",
-                                limits.timeout.as_secs(),
-                            ))
-                            .code("projection_snapshot_timeout")
+                            HttpErrorEnvelope::new(
+                                "projection_snapshot_timeout",
+                                format!(
+                                    "projection snapshot assembly exceeded the {} second budget",
+                                    limits.timeout.as_secs(),
+                                ),
+                            )
                             .retryable(true),
                         )));
                     }
@@ -528,8 +532,10 @@ pub async fn agent_projection_snapshot(
                     // not-found shape: no runtime, epoch, or scope facts.
                     return Err(ProjectionFailure::from(http_error(
                         StatusCode::NOT_FOUND,
-                        HttpErrorEnvelope::new("no accessible Agent for this request")
-                            .code("agent_not_found"),
+                        HttpErrorEnvelope::new(
+                            "agent_not_found",
+                            "no accessible Agent for this request",
+                        ),
                     )));
                 };
                 let visibility_scope_id = observer_visibility_scope(
@@ -597,9 +603,9 @@ pub async fn agent_projection_snapshot(
                     return Err(ProjectionFailure::from(http_error(
                         StatusCode::PAYLOAD_TOO_LARGE,
                         HttpErrorEnvelope::new(
+                            "projection_snapshot_too_large",
                             "projection snapshot exceeds the maximum serialized response size",
                         )
-                        .code("projection_snapshot_too_large")
                         .extension("serialized_bytes", bytes.len())
                         .extension("max_serialized_bytes", limits.max_serialized_bytes),
                     )));

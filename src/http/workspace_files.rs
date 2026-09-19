@@ -428,8 +428,10 @@ fn ensure_reference_length(value: &str) -> Result<(), (StatusCode, Json<Value>)>
     if value.len() > MAX_REFERENCE_LENGTH {
         return Err(http_error(
             StatusCode::BAD_REQUEST,
-            HttpErrorEnvelope::new("file reference exceeds maximum length")
-                .code("file_reference_too_long"),
+            HttpErrorEnvelope::new(
+                "file_reference_too_long",
+                "file reference exceeds maximum length",
+            ),
         ));
     }
     Ok(())
@@ -442,18 +444,18 @@ fn file_location_error_response(
         crate::system::FileLocationError::PathNotFound => not_found(error.to_string()),
         crate::system::FileLocationError::RootRemoved => http_error(
             StatusCode::GONE,
-            HttpErrorEnvelope::new(error.to_string()).code("file_root_removed"),
+            HttpErrorEnvelope::new("file_root_removed", error.to_string()),
         ),
         crate::system::FileLocationError::PathEscapesRoot => forbidden(error.to_string()),
         crate::system::FileLocationError::RootNotFound
         | crate::system::FileLocationError::InvalidWorkspaceUri
         | crate::system::FileLocationError::InvalidEncoding => http_error(
             StatusCode::BAD_REQUEST,
-            HttpErrorEnvelope::new(error.to_string()).code("invalid_file_reference"),
+            HttpErrorEnvelope::new("invalid_file_reference", error.to_string()),
         ),
         crate::system::FileLocationError::AmbiguousRoot => http_error(
             StatusCode::CONFLICT,
-            HttpErrorEnvelope::new(error.to_string()).code("ambiguous_file_root"),
+            HttpErrorEnvelope::new("ambiguous_file_root", error.to_string()),
         ),
     }
 }
@@ -487,10 +489,10 @@ pub(crate) async fn resolve_file_references(
     if request.references.len() > MAX_RESOLVE_REFERENCES {
         return Err(http_error(
             StatusCode::BAD_REQUEST,
-            HttpErrorEnvelope::new(format!(
-                "at most {MAX_RESOLVE_REFERENCES} file references may be resolved at once"
-            ))
-            .code("too_many_file_references")
+            HttpErrorEnvelope::new(
+                "too_many_file_references",
+                format!("at most {MAX_RESOLVE_REFERENCES} file references may be resolved at once"),
+            )
             .extension("maximum", MAX_RESOLVE_REFERENCES),
         ));
     }

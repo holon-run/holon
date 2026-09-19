@@ -721,10 +721,7 @@ fn component_schemas() -> Value {
     schemas.insert("JsonValue".into(), json!({
         "description": "Arbitrary JSON value. Used as a conservative baseline for routes whose DTO is not yet stabilized."
     }));
-    schemas.insert(
-        "ErrorResponse".into(),
-        component_schema::<HttpErrorEnvelope>(),
-    );
+    schemas.insert("ErrorResponse".into(), error_response_schema());
     schemas.insert(
         "HandshakeResponse".into(),
         component_schema_with_refs::<HandshakeResponse>(),
@@ -1382,6 +1379,17 @@ fn component_schema<T: JsonSchema>() -> Value {
     value
 }
 
+fn error_response_schema() -> Value {
+    let mut schema = component_schema_with_refs::<HttpErrorEnvelope>();
+    let object = schema
+        .as_object_mut()
+        .expect("HttpErrorEnvelope schema should be an object");
+    if object.get("additionalProperties") == Some(&Value::Bool(true)) {
+        object.remove("additionalProperties");
+    }
+    schema
+}
+
 fn component_schema_with_refs<T: JsonSchema>() -> Value {
     let schema = SchemaSettings::draft07()
         .into_generator()
@@ -1428,6 +1436,31 @@ mod tests {
             .flat_map(|path| path.as_object().into_iter().flat_map(|ops| ops.keys()))
             .count();
         assert!(operation_count >= 40, "expected baseline coverage");
+        let error_response = &api["components"]["schemas"]["ErrorResponse"];
+        let required_error_fields = error_response["required"]
+            .as_array()
+            .expect("ErrorResponse required fields");
+        for field in ["ok", "error", "code"] {
+            assert!(
+                required_error_fields
+                    .iter()
+                    .any(|required| required == field),
+                "ErrorResponse must require {field}"
+            );
+        }
+        assert_eq!(error_response["properties"]["code"]["type"], "string");
+        assert!(
+            error_response.get("additionalProperties").is_none(),
+            "implicit additional properties preserve extension compatibility without generating an invalid Kotlin map subclass"
+        );
+        assert_eq!(
+            error_response["properties"]["correlation"]["$ref"],
+            "#/components/schemas/RuntimeErrorContext"
+        );
+        assert_eq!(
+            error_response["properties"]["domain"]["anyOf"][0]["$ref"],
+            "#/components/schemas/RuntimeErrorDomain"
+        );
         assert!(paths["/api/events/stream"]["get"].is_object());
         assert!(paths["/api/agents/{agent_id}/events/stream"]["get"].is_object());
         let conversation_stream = &paths["/api/agents/{agent_id}/conversation/stream"]["get"];

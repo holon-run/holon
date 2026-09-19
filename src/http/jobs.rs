@@ -118,7 +118,7 @@ pub async fn job_status(
         Some(job) => Ok(Json(json!({ "ok": true, "job": job }))),
         None => Err(http_error(
             StatusCode::NOT_FOUND,
-            HttpErrorEnvelope::new(format!("job {job_id} was not found")).code("job_not_found"),
+            HttpErrorEnvelope::new("job_not_found", format!("job {job_id} was not found")),
         )),
     }
 }

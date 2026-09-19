@@ -27,6 +27,7 @@ const kotlinOutputUrl = new URL(
 const toolsDirectory = dirname(fileURLToPath(import.meta.url));
 const kotlinPackage = "run.holon.client.wire.generated.models";
 const kotlinRoots = [
+  "ErrorResponse",
   "HandshakeResponse",
   "AgentListResponse",
   "CurrentUserResponse",
