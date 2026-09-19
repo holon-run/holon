@@ -7,14 +7,27 @@ use decision_core::{
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::fmt;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenAiConfig {
     pub endpoint: String,
     pub model: String,
     pub api_key: Option<String>,
     pub timeout: Duration,
+}
+
+impl fmt::Debug for OpenAiConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("OpenAiConfig")
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 impl OpenAiConfig {
@@ -196,6 +209,16 @@ mod tests {
             normalize_endpoint("http://localhost:8000/v1/chat/completions"),
             "http://localhost:8000/v1/chat/completions"
         );
+    }
+
+    #[test]
+    fn redacts_api_key_in_debug_output() {
+        let debug = format!(
+            "{:?}",
+            OpenAiConfig::new("https://example.test", "model").with_api_key("secret")
+        );
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]

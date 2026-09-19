@@ -12,14 +12,27 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::fmt;
 use std::time::{Duration, Instant};
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct JevConfig {
     pub endpoint: String,
     pub model: String,
     pub api_key: Option<String>,
     pub timeout: Duration,
+}
+
+impl fmt::Debug for JevConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("JevConfig")
+            .field("endpoint", &self.endpoint)
+            .field("model", &self.model)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .field("timeout", &self.timeout)
+            .finish()
+    }
 }
 
 impl JevConfig {
@@ -208,10 +221,9 @@ pub fn map_response<I, C: Serialize>(
     request: &DecisionRequest<I, C>,
     elapsed: Duration,
 ) -> Result<DecisionResponse<Value>, DecisionError> {
-    let answer = response
-        .answers
-        .get("decision")
-        .ok_or_else(|| DecisionError::InvalidResponse("jev response has no decision answer".into()))?;
+    let answer = response.answers.get("decision").ok_or_else(|| {
+        DecisionError::InvalidResponse("jev response has no decision answer".into())
+    })?;
     let (outcome, confidence) = match answer {
         JevAnswer::Choice {
             choice,
@@ -223,16 +235,9 @@ pub fn map_response<I, C: Serialize>(
                 .ok_or_else(|| {
                     DecisionError::InvalidResponse(format!("jev returned unknown choice {choice}"))
                 })?;
-            let value = serde_json::to_value(
-                request
-                    .candidates
-                    .get(index)
-                    .ok_or_else(|| {
-                        DecisionError::InvalidResponse(format!(
-                            "jev returned out-of-range choice {choice}"
-                        ))
-                    })?,
-            )
+            let value = serde_json::to_value(request.candidates.get(index).ok_or_else(|| {
+                DecisionError::InvalidResponse(format!("jev returned out-of-range choice {choice}"))
+            })?)
             .map_err(|error| DecisionError::Serialization(error.to_string()))?;
             (
                 DecisionOutcome::Select { value },
@@ -247,7 +252,9 @@ pub fn map_response<I, C: Serialize>(
         ),
         JevAnswer::Boolean { probability } => (
             DecisionOutcome::Abstain {
-                reason: format!("jev returned boolean probability {probability} for a choice request"),
+                reason: format!(
+                    "jev returned boolean probability {probability} for a choice request"
+                ),
             },
             Some(*probability),
         ),
@@ -327,6 +334,16 @@ mod tests {
         )
         .expect("mapping");
         assert_eq!(result.confidence, Some(0.4));
+    }
+
+    #[test]
+    fn redacts_api_key_in_debug_output() {
+        let debug = format!(
+            "{:?}",
+            JevConfig::new("https://example.test").with_api_key("secret")
+        );
+        assert!(!debug.contains("secret"));
+        assert!(debug.contains("<redacted>"));
     }
 
     #[test]
