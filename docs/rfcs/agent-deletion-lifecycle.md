@@ -95,6 +95,39 @@ Normal supervised terminal cleanup never uses the archive-only compatibility
 path. Repairing already-deleted legacy residue remains an explicit operator or
 maintenance admission and is outside terminal-task cleanup.
 
+## Legacy Residue Maintenance Scan
+
+The daemon deletion coordinator also owns a bounded maintenance scan for
+upgrade residue. The scanner walks identities in stable `agent_id` order with
+a durable keyset cursor stored in runtime metadata. Each pass reads at most one
+bounded batch, advances the cursor even when a candidate is ambiguous, and
+yields before continuing. Reopening the runtime resumes after the persisted
+cursor; reaching the end clears it so a later safety sweep starts a new cycle.
+
+The scanner may create a job only for these proven shapes:
+
+1. an `Active` private parent-supervised ephemeral child whose resolved
+   canonical lineage, supervision, durability, lifecycle attachment, and
+   terminal one-shot child task all agree; this creates the normal `delete`
+   generation through the same terminal-child admission used by live task
+   settlement;
+2. a `Deleted` identity without a job; this creates `cleanup_repair`;
+3. a `Deleted` identity whose completed legacy job has `mode=delete`; this
+   replaces that old generation once with `cleanup_repair`, because legacy
+   completion is not proof that current outbox and shared-index phases ran.
+
+Existing `Pending`, `Running`, or `RetryableFailed` jobs remain coordinator
+owned and are never duplicated. A completed `cleanup_repair` generation is
+terminal and is not replaced on every scan.
+
+Missing or conflicting relations, task ownership, task kind, or lifecycle
+evidence never authorize deletion. The scanner emits a structured
+`legacy_deletion_repair_ambiguous` audit event keyed by the identity
+incarnation, revision, reason code, and observed facts, so unchanged ambiguity
+deduplicates across repeated scans. Names such as `tmp_child_*` are never
+evidence. Terminal `ActorInvocation` tasks with `retain`, including reusable
+`InvokeAgent(new_subagent)` children, remain active.
+
 ## Coordinator Ownership and Retry
 
 One daemon-owned coordinator is the only normal executor of deletion jobs.

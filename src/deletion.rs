@@ -16,6 +16,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
+use sha2::{Digest, Sha256};
 use tracing::{debug, info, warn};
 
 use crate::host::RuntimeHost;
@@ -27,6 +28,15 @@ const DELETION_BATCH_LIMIT: usize = 16;
 const DELETION_RETRY_BASE: Duration = Duration::from_millis(250);
 const DELETION_RETRY_CAP: Duration = Duration::from_secs(30);
 const DELETION_COORDINATOR_ERROR_DELAY: Duration = Duration::from_secs(1);
+pub(crate) const LEGACY_DELETION_REPAIR_BATCH_LIMIT: usize = 16;
+
+#[derive(Debug, Default)]
+pub(crate) struct LegacyDeletionRepairScanOutcome {
+    pub(crate) scanned: usize,
+    pub(crate) created: usize,
+    pub(crate) ambiguous: usize,
+    pub(crate) cursor: Option<String>,
+}
 
 impl RuntimeHost {
     /// Spawn the background deletion coordinator task.
@@ -53,6 +63,7 @@ impl RuntimeHost {
         let mut startup_recovery_complete = false;
         loop {
             let mut coordinator_failed = false;
+            let mut legacy_scan_has_more = false;
             if !startup_recovery_complete {
                 match self
                     .runtime_db()
@@ -72,6 +83,24 @@ impl RuntimeHost {
                 }
             }
             if startup_recovery_complete {
+                match self.scan_legacy_deletion_residue_batch().await {
+                    Ok(outcome) => {
+                        legacy_scan_has_more = outcome.cursor.is_some();
+                        if outcome.created > 0 || outcome.ambiguous > 0 {
+                            info!(
+                                scanned = outcome.scanned,
+                                created = outcome.created,
+                                ambiguous = outcome.ambiguous,
+                                cursor = outcome.cursor.as_deref().unwrap_or_default(),
+                                "legacy deletion residue scan completed"
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        coordinator_failed = true;
+                        warn!(error = %err, "legacy deletion residue scan failed");
+                    }
+                }
                 if let Err(err) = self.drain_due_deletions().await {
                     coordinator_failed = true;
                     warn!(error = %err, "deletion coordinator sweep failed");
@@ -79,6 +108,8 @@ impl RuntimeHost {
             }
             let sleep_for = if coordinator_failed {
                 DELETION_COORDINATOR_ERROR_DELAY
+            } else if legacy_scan_has_more {
+                Duration::ZERO
             } else {
                 match self.next_deletion_coordinator_delay() {
                     Ok(delay) => delay.min(DELETION_SWEEP_INTERVAL),
@@ -110,6 +141,312 @@ impl RuntimeHost {
         Ok((next_attempt_at - Utc::now())
             .to_std()
             .unwrap_or(Duration::ZERO))
+    }
+
+    pub(crate) async fn scan_legacy_deletion_residue_batch(
+        &self,
+    ) -> Result<LegacyDeletionRepairScanOutcome> {
+        let batch = self
+            .runtime_db()
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(LEGACY_DELETION_REPAIR_BATCH_LIMIT)?;
+        let mut outcome = LegacyDeletionRepairScanOutcome {
+            scanned: batch.identities.len(),
+            cursor: batch.cursor,
+            ..LegacyDeletionRepairScanOutcome::default()
+        };
+        for identity in batch.identities {
+            if identity.agent_id == self.config().default_agent_id {
+                continue;
+            }
+            let existing_job = self
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent(&identity.agent_id)?;
+            if existing_job.as_ref().is_some_and(|job| {
+                matches!(
+                    job.status,
+                    AgentDeletionStatus::Pending
+                        | AgentDeletionStatus::Running
+                        | AgentDeletionStatus::RetryableFailed
+                )
+            }) {
+                continue;
+            }
+            match identity.status {
+                AgentRegistryStatus::Deleted => {
+                    if existing_job.as_ref().is_some_and(|job| {
+                        job.status == AgentDeletionStatus::Completed
+                            && job.mode == AgentDeletionMode::CleanupRepair
+                    }) {
+                        continue;
+                    }
+                    let (updated_identity, _, created) = self
+                        .runtime_db()
+                        .agent_deletions()
+                        .begin(
+                            &identity.agent_id,
+                            identity.revision,
+                            "legacy_residue_scanner",
+                            false,
+                        )
+                        .with_context(|| {
+                            format!(
+                                "admitting cleanup repair for deleted agent {}",
+                                identity.agent_id
+                            )
+                        })?;
+                    self.cache_agent_identity(&updated_identity)?;
+                    outcome.created += usize::from(created);
+                }
+                AgentRegistryStatus::Deleting => {
+                    if existing_job.is_none()
+                        && self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "deleting_identity_without_job",
+                            serde_json::json!({}),
+                        )?
+                    {
+                        outcome.ambiguous += 1;
+                    }
+                }
+                AgentRegistryStatus::Active => {
+                    if identity.kind != AgentKind::Child
+                        || identity.visibility != AgentVisibility::Private
+                        || identity.ownership() != AgentOwnership::ParentSupervised
+                    {
+                        continue;
+                    }
+                    let Some(relations) = self
+                        .runtime_db()
+                        .agent_canonical_relations()
+                        .latest(&identity.agent_id)?
+                    else {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "canonical_relations_missing",
+                            serde_json::json!({
+                                "legacy_parent_agent_id": identity.parent_agent_id,
+                                "legacy_delegated_from_task_id": identity.delegated_from_task_id,
+                            }),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    };
+                    if relations.resolution != AgentCanonicalResolution::Resolved {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "canonical_relations_unresolved",
+                            serde_json::json!({
+                                "resolution": relations.resolution,
+                                "issues": relations.issues,
+                            }),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    }
+                    let Some(lineage) = relations.lineage.as_ref() else {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "canonical_lineage_missing",
+                            serde_json::json!({}),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    };
+                    let Some(supervision) = relations.supervision.as_ref() else {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "canonical_supervision_missing",
+                            serde_json::json!({}),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    };
+                    let Some(durability) = relations.durability.as_ref() else {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "canonical_durability_missing",
+                            serde_json::json!({}),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    };
+                    let Some(attachment) = relations.lifecycle_attachment.as_ref() else {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "canonical_lifecycle_attachment_missing",
+                            serde_json::json!({}),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    };
+                    if durability.durability != AgentCanonicalDurability::Ephemeral
+                        || attachment.attachment != AgentLifecycleAttachment::SupervisionAttached
+                    {
+                        continue;
+                    }
+                    if lineage.parent_agent_id != supervision.supervisor_agent_id
+                        || supervision.state != AgentSupervisionState::Active
+                    {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "canonical_parent_supervision_conflict",
+                            serde_json::json!({
+                                "lineage_parent_agent_id": lineage.parent_agent_id,
+                                "supervisor_agent_id": supervision.supervisor_agent_id,
+                                "supervision_state": supervision.state,
+                            }),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    }
+                    let Some(task_id) = supervision.delegated_from_task_id.as_deref() else {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "delegated_task_missing",
+                            serde_json::json!({
+                                "supervisor_agent_id": supervision.supervisor_agent_id,
+                            }),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    };
+                    let Some(task) = self.runtime_db().tasks().latest(task_id)? else {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "delegated_task_record_missing",
+                            serde_json::json!({
+                                "task_id": task_id,
+                                "supervisor_agent_id": supervision.supervisor_agent_id,
+                            }),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    };
+                    if task.agent_id != supervision.supervisor_agent_id {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "delegated_task_owner_conflict",
+                            serde_json::json!({
+                                "task_id": task.id,
+                                "task_owner_agent_id": task.agent_id,
+                                "supervisor_agent_id": supervision.supervisor_agent_id,
+                            }),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    }
+                    if task.kind == TaskKind::ActorInvocation {
+                        continue;
+                    }
+                    if !task.kind.is_child_agent() {
+                        if self.emit_legacy_deletion_ambiguity(
+                            &identity,
+                            "delegated_task_kind_conflict",
+                            serde_json::json!({
+                                "task_id": task.id,
+                                "task_kind": task.kind,
+                            }),
+                        )? {
+                            outcome.ambiguous += 1;
+                        }
+                        continue;
+                    }
+                    if !is_legacy_repair_terminal_task(&task) {
+                        continue;
+                    }
+                    if !legacy_task_deletes_child_on_terminal(&task) {
+                        continue;
+                    }
+                    match self
+                        .runtime_db()
+                        .agent_deletions()
+                        .begin_terminal_ephemeral_child(
+                            &identity.agent_id,
+                            &supervision.supervisor_agent_id,
+                            task_id,
+                            "legacy_residue_scanner",
+                        )
+                    {
+                        Ok((updated_identity, _, created)) => {
+                            self.cache_agent_identity(&updated_identity)?;
+                            if created {
+                                self.unload_runtime(&identity.agent_id).await;
+                                outcome.created += 1;
+                            }
+                        }
+                        Err(error)
+                            if crate::runtime_db::repositories::
+                                is_terminal_child_deletion_admission_rejected(&error) =>
+                        {
+                            if self.emit_legacy_deletion_ambiguity(
+                                &identity,
+                                "terminal_child_admission_rejected",
+                                serde_json::json!({
+                                    "task_id": task_id,
+                                    "error": error.to_string(),
+                                }),
+                            )? {
+                                outcome.ambiguous += 1;
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn emit_legacy_deletion_ambiguity(
+        &self,
+        identity: &AgentIdentityRecord,
+        reason_code: &str,
+        details: serde_json::Value,
+    ) -> Result<bool> {
+        let data = serde_json::json!({
+            "agent_id": identity.agent_id,
+            "identity_status": identity.status,
+            "identity_revision": identity.revision,
+            "incarnation": identity.incarnation,
+            "reason_code": reason_code,
+            "details": details,
+        });
+        let mut hasher = Sha256::new();
+        hasher.update(b"legacy_deletion_repair_ambiguity");
+        hasher.update([0]);
+        hasher.update(identity.agent_id.as_bytes());
+        hasher.update([0]);
+        hasher.update(identity.incarnation.to_le_bytes());
+        hasher.update(identity.revision.to_le_bytes());
+        hasher.update(reason_code.as_bytes());
+        hasher.update(serde_json::to_vec(&data)?);
+        let digest = format!("{:x}", hasher.finalize());
+        let mut event = AuditEvent::legacy("legacy_deletion_repair_ambiguous", data);
+        event.id = format!("event_{}", &digest[..15]);
+        event.created_at = identity.updated_at;
+        if self
+            .runtime_db()
+            .audit_events()
+            .has_event_by_id(&event.id)?
+        {
+            return Ok(false);
+        }
+        self.runtime_db()
+            .audit_events()
+            .append(Some(&identity.agent_id), &event)?;
+        Ok(true)
     }
 
     async fn drain_due_deletions(&self) -> Result<()> {
@@ -756,6 +1093,33 @@ impl RuntimeHost {
         // Fallback: remove directory directly.
         std::fs::remove_dir_all(path)
             .with_context(|| format!("removing worktree directory {}", path.display()))
+    }
+}
+
+fn is_legacy_repair_terminal_task(task: &TaskRecord) -> bool {
+    matches!(
+        task.status,
+        TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled
+            | TaskStatus::Interrupted
+    )
+}
+
+fn legacy_task_deletes_child_on_terminal(task: &TaskRecord) -> bool {
+    match task.recovery.as_ref() {
+        Some(TaskRecoverySpec::ChildAgentTask {
+            lifecycle_disposition,
+            ..
+        }) => *lifecycle_disposition == AgentLifecycleDisposition::DeleteOnTerminal,
+        Some(TaskRecoverySpec::SubagentTask { .. })
+        | Some(TaskRecoverySpec::WorktreeSubagentTask { .. })
+        | None
+            if task.kind.is_child_agent() =>
+        {
+            true
+        }
+        _ => false,
     }
 }
 

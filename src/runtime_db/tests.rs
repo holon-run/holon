@@ -5564,6 +5564,49 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn legacy_deletion_scan_cursor_is_bounded_fair_and_survives_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        for index in 0..25 {
+            let agent_id = format!("legacy-scan-{index:02}");
+            db.agent_identities()
+                .upsert(&agent_identity(&agent_id, 1))?;
+        }
+
+        let first = db.agent_identities().next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(first.identities.len(), 10);
+        assert_eq!(first.identities[0].agent_id, "legacy-scan-00");
+        assert_eq!(first.identities[9].agent_id, "legacy-scan-09");
+        assert_eq!(first.cursor.as_deref(), Some("legacy-scan-09"));
+        drop(db);
+
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let second = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(second.identities.len(), 10);
+        assert_eq!(second.identities[0].agent_id, "legacy-scan-10");
+        assert_eq!(second.identities[9].agent_id, "legacy-scan-19");
+        let third = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(third.identities.len(), 5);
+        assert_eq!(third.identities[0].agent_id, "legacy-scan-20");
+        assert_eq!(third.identities[4].agent_id, "legacy-scan-24");
+
+        let reset = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert!(reset.identities.is_empty());
+        assert!(reset.cursor.is_none());
+        let wrapped = reopened
+            .agent_identities()
+            .next_legacy_deletion_scan_batch(10)?;
+        assert_eq!(wrapped.identities[0].agent_id, "legacy-scan-00");
+        Ok(())
+    }
+
+    #[test]
     fn agent_deletion_begin_repairs_deleting_and_deleted_identities_without_jobs() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
