@@ -301,6 +301,14 @@ transition. Stopping does not satisfy that obligation or transfer lifecycle
 ownership. It must not infer deletion merely because an invocation task became
 terminal, and it must not use a second archive-only lifecycle.
 
+The persisted task recovery contract makes that choice explicit:
+`ActorInvocation`, including `InvokeAgent(new_subagent)`, uses `retain`, while
+the legacy one-shot `ChildAgentTask` uses `delete_on_terminal`. Only the latter
+may atomically admit a canonical deletion job with terminal task/result
+settlement, and only when the resolved lineage, supervision, durability, and
+lifecycle-attachment records match that parent task. A terminal notification
+without this disposition never implies deletion.
+
 The default delegated child is:
 
 ```text

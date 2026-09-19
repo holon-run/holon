@@ -25,11 +25,11 @@ use crate::{
             link_transition_brief_created_events_tx, upsert_agent_state_tx,
         },
         repositories::{
-            compare_and_set_queue_entry_tx, insert_new_work_item_tx, queue_entry_transition,
-            task_transition, try_claim_queued_message_tx, try_interject_queued_message_tx,
-            update_expected_work_item_tx, upsert_queue_entry_tx, upsert_task_tx,
-            upsert_turn_record_tx, upsert_wait_condition_tx, upsert_work_item_continuation_tx,
-            wait_condition_transition,
+            compare_and_set_queue_entry_tx, ensure_agent_deletion_tx, insert_new_work_item_tx,
+            queue_entry_transition, task_transition, try_claim_queued_message_tx,
+            try_interject_queued_message_tx, update_expected_work_item_tx, upsert_queue_entry_tx,
+            upsert_task_tx, upsert_turn_record_tx, upsert_wait_condition_tx,
+            upsert_work_item_continuation_tx, wait_condition_transition, AgentDeletionRequest,
         },
         RuntimeDb, RuntimeIndexChange, RuntimeStateTransitionConflict,
     },
@@ -369,6 +369,7 @@ pub(crate) struct ExecutionAuthorityFences {
 pub(crate) struct TaskTransitionCommand {
     pub agent_id: String,
     pub task: TaskRecord,
+    pub agent_deletion: Option<AgentDeletionRequest>,
     pub task_result_settlement:
         Option<crate::runtime_db::task_result_settlement::TaskResultSettlementRecord>,
     pub queue_entry: Option<QueueEntryRecord>,
@@ -2095,6 +2096,10 @@ impl RuntimeTransitionRepository<'_> {
                 };
             let task_applied = upsert_task_tx(tx, &command.task)?;
             let mut applied = task_applied;
+            if let Some(request) = command.agent_deletion.as_ref() {
+                let (_, _, created) = ensure_agent_deletion_tx(tx, request)?;
+                applied |= created;
+            }
             if let Some(settlement) = command.task_result_settlement.as_ref() {
                 applied |=
                     crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, settlement)?;
@@ -3316,7 +3321,9 @@ mod tests {
             SettleExecution, WaitReference, WorkItemExecutionRecord, WorkItemExecutionState,
             WorkItemOutcome,
         },
-        runtime_db::{RuntimeIndexChange, RuntimeIndexOperation},
+        runtime_db::{
+            repositories::AgentDeletionAdmission, RuntimeIndexChange, RuntimeIndexOperation,
+        },
         types::{
             AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
             AuthorityClass, BriefKind, CompletionReportRequirement, CompletionReportState,
@@ -3534,6 +3541,7 @@ mod tests {
                 agent_id: "agent-a".into(),
                 task: task("task-message-index", TaskStatus::Completed),
                 task_result_settlement: None,
+                agent_deletion: None,
                 queue_entry: None,
                 work_items: Vec::new(),
                 expected_wait_conditions: Vec::new(),
@@ -3568,6 +3576,203 @@ mod tests {
                 assert!(!db.transitions().commit_task(&command)?.applied);
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_ephemeral_child_deletion_is_atomic_and_idempotent() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let mut terminal_task = task("task-terminal-child", TaskStatus::Completed);
+        terminal_task.kind = TaskKind::ChildAgentTask;
+        terminal_task.detail = Some(serde_json::json!({
+            "child_agent_id": "worker-without-name-convention",
+        }));
+        let parent = AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        db.agent_identities().upsert(&parent)?;
+        let child = AgentIdentityRecord::new(
+            "worker-without-name-convention",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some("agent-a".into()),
+            Some(terminal_task.id.clone()),
+        )
+        .with_lineage_parent_agent_id(Some("agent-a".into()));
+        let relations = crate::runtime_db::agent_relations::supervised_creation_records(
+            &child,
+            "agent-a",
+            &terminal_task.id,
+            None,
+        );
+        db.agent_identities()
+            .create_with_relations(&child, &relations)?;
+
+        let command = |fault| TaskTransitionCommand {
+            agent_id: "agent-a".into(),
+            task: terminal_task.clone(),
+            agent_deletion: Some(AgentDeletionRequest {
+                agent_id: child.agent_id.clone(),
+                admission: AgentDeletionAdmission::TerminalEphemeralChild {
+                    parent_agent_id: "agent-a".into(),
+                    task_id: terminal_task.id.clone(),
+                },
+                requested_by: "parent_task_terminal".into(),
+                cascade_private_children: false,
+            }),
+            task_result_settlement: None,
+            queue_entry: None,
+            work_items: Vec::new(),
+            expected_wait_conditions: Vec::new(),
+            wait_conditions: Vec::new(),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+            notify_scheduler: false,
+            commit_on_idempotent: false,
+            fault,
+        };
+
+        db.transitions()
+            .commit_task(&command(Some(TransitionFaultPoint::AfterCanonicalWrites)))
+            .unwrap_err();
+        assert!(db.tasks().latest(&terminal_task.id)?.is_none());
+        assert_eq!(
+            db.agent_identities()
+                .latest(&child.agent_id)?
+                .expect("child identity")
+                .status,
+            crate::types::AgentRegistryStatus::Active
+        );
+        assert!(db
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)?
+            .is_none());
+
+        assert!(db.transitions().commit_task(&command(None))?.applied);
+        let first_job = db
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)?
+            .expect("terminal deletion job");
+        assert_eq!(first_job.mode, crate::types::AgentDeletionMode::Delete);
+        assert_eq!(
+            db.agent_identities()
+                .latest(&child.agent_id)?
+                .expect("deleting child identity")
+                .status,
+            crate::types::AgentRegistryStatus::Deleting
+        );
+        assert!(!db.transitions().commit_task(&command(None))?.applied);
+        assert_eq!(
+            db.agent_deletions().latest_for_agent(&child.agent_id)?,
+            Some(first_job.clone())
+        );
+
+        let (_, completed_job) = db.agent_deletions().finalize(&first_job)?;
+        assert!(!db.transitions().commit_task(&command(None))?.applied);
+        assert_eq!(
+            db.agent_deletions().latest_for_agent(&child.agent_id)?,
+            Some(completed_job)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_child_deletion_rejects_non_ephemeral_canonical_relations() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let mut terminal_task = task("task-retained-child", TaskStatus::Completed);
+        terminal_task.kind = TaskKind::ChildAgentTask;
+        terminal_task.detail = Some(serde_json::json!({
+            "child_agent_id": "retained-child",
+        }));
+        let parent = AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        db.agent_identities().upsert(&parent)?;
+        let child = AgentIdentityRecord::new(
+            "retained-child",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some("agent-a".into()),
+            Some(terminal_task.id.clone()),
+        )
+        .with_lineage_parent_agent_id(Some("agent-a".into()));
+        let mut relations = crate::runtime_db::agent_relations::supervised_creation_records(
+            &child,
+            "agent-a",
+            &terminal_task.id,
+            None,
+        );
+        relations
+            .durability
+            .as_mut()
+            .expect("canonical durability")
+            .durability = crate::types::AgentCanonicalDurability::Persistent;
+        db.agent_identities()
+            .create_with_relations(&child, &relations)?;
+
+        let command = TaskTransitionCommand {
+            agent_id: "agent-a".into(),
+            task: terminal_task.clone(),
+            agent_deletion: Some(AgentDeletionRequest {
+                agent_id: child.agent_id.clone(),
+                admission: AgentDeletionAdmission::TerminalEphemeralChild {
+                    parent_agent_id: "agent-a".into(),
+                    task_id: terminal_task.id.clone(),
+                },
+                requested_by: "parent_task_terminal".into(),
+                cascade_private_children: false,
+            }),
+            task_result_settlement: None,
+            queue_entry: None,
+            work_items: Vec::new(),
+            expected_wait_conditions: Vec::new(),
+            wait_conditions: Vec::new(),
+            agent_state: None,
+            message_evidence: Vec::new(),
+            audit_events: Vec::new(),
+            index_changes: Vec::new(),
+            notify_scheduler: false,
+            commit_on_idempotent: false,
+            fault: None,
+        };
+
+        let error = db
+            .transitions()
+            .commit_task(&command)
+            .expect_err("persistent child must not be deleted");
+        assert!(error
+            .to_string()
+            .contains("canonical relations are not resolved"));
+        assert!(db.tasks().latest(&terminal_task.id)?.is_none());
+        assert_eq!(
+            db.agent_identities()
+                .latest(&child.agent_id)?
+                .expect("retained child identity")
+                .status,
+            crate::types::AgentRegistryStatus::Active
+        );
+        assert!(db
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)?
+            .is_none());
         Ok(())
     }
 
@@ -5039,6 +5244,7 @@ mod tests {
             agent_id: "agent-a".into(),
             task: terminal.clone(),
             task_result_settlement: None,
+            agent_deletion: None,
             queue_entry: None,
             work_items: vec![WorkItemMutation::Update {
                 record: cleared.clone(),
@@ -5152,6 +5358,7 @@ mod tests {
                 agent_id: "agent-a".into(),
                 task: terminal,
                 task_result_settlement: None,
+                agent_deletion: None,
                 queue_entry: None,
                 work_items: vec![WorkItemMutation::Update {
                     record: cleared,

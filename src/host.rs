@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use tokio::{
@@ -466,6 +466,18 @@ pub(crate) struct ChildTaskSpawn {
     pub child_turn_baseline: u64,
     pub delivery_id: Option<String>,
     pub task_detail: Value,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("child task spawn failed after creating agent {child_agent_id}")]
+pub(crate) struct ChildTaskSpawnFailure {
+    child_agent_id: String,
+}
+
+impl ChildTaskSpawnFailure {
+    pub(crate) fn child_agent_id(&self) -> &str {
+        &self.child_agent_id
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4778,88 +4790,93 @@ impl RuntimeHost {
                 &parent_agent_home,
             )
             .await?;
-        let child_runtime = self.get_or_create_agent(&child_identity.agent_id).await?;
-        child_runtime
-            .inherit_from_parent_state(&parent_state)
-            .await?;
-        apply_spawn_model_resolution(&child_runtime, &model_resolution).await?;
-        let child_turn_baseline = child_runtime.agent_state().await?.turn_index;
-
-        let mut task_detail = json!({
-            "child_agent_id": child_identity.agent_id,
-            "child_turn_baseline": child_turn_baseline,
-            "child_kind": AgentKind::Child,
-            "child_visibility": AgentVisibility::Private,
-            "child_ownership": AgentOwnership::ParentSupervised,
-            "child_profile_preset": AgentProfilePreset::PrivateChild,
-            "wait_policy": task.wait_policy(),
-            "workspace_mode": if worktree { "worktree" } else { "inherit" },
-            "model_resolution": model_resolution,
-        });
-
-        if worktree {
-            let seed = parent_runtime
-                .prepare_managed_worktree_for_task(&task.id)
-                .await?;
-            parent_runtime
-                .storage()
-                .append_transcript_entry(&TranscriptEntry::new(
-                    parent_state.id.clone(),
-                    TranscriptEntryKind::SubagentPrompt,
-                    None,
-                    None,
-                    json!({
-                        "prompt": prompt,
-                        "authority_class": authority_class,
-                        "task_id": task.id,
-                        "workspace_root": seed.worktree_path,
-                    }),
-                ))?;
+        let child_agent_id = child_identity.agent_id.clone();
+        async {
+            let child_runtime = self.get_or_create_agent(&child_identity.agent_id).await?;
             child_runtime
-                .enter_worktree(
-                    seed.original_cwd.clone(),
-                    seed.original_branch.clone(),
-                    seed.worktree_path.clone(),
-                    seed.worktree_branch.clone(),
-                )
+                .inherit_from_parent_state(&parent_state)
                 .await?;
-            task_detail["worktree"] = json!({
-                "worktree_path": seed.worktree_path,
-                "worktree_branch": seed.worktree_branch,
+            apply_spawn_model_resolution(&child_runtime, &model_resolution).await?;
+            let child_turn_baseline = child_runtime.agent_state().await?.turn_index;
+
+            let mut task_detail = json!({
+                "child_agent_id": child_identity.agent_id,
+                "child_turn_baseline": child_turn_baseline,
+                "child_kind": AgentKind::Child,
+                "child_visibility": AgentVisibility::Private,
+                "child_ownership": AgentOwnership::ParentSupervised,
+                "child_profile_preset": AgentProfilePreset::PrivateChild,
+                "wait_policy": task.wait_policy(),
+                "workspace_mode": if worktree { "worktree" } else { "inherit" },
+                "model_resolution": model_resolution,
             });
+
+            if worktree {
+                let seed = parent_runtime
+                    .prepare_managed_worktree_for_task(&task.id)
+                    .await?;
+                parent_runtime
+                    .storage()
+                    .append_transcript_entry(&TranscriptEntry::new(
+                        parent_state.id.clone(),
+                        TranscriptEntryKind::SubagentPrompt,
+                        None,
+                        None,
+                        json!({
+                            "prompt": prompt,
+                            "authority_class": authority_class,
+                            "task_id": task.id,
+                            "workspace_root": seed.worktree_path,
+                        }),
+                    ))?;
+                child_runtime
+                    .enter_worktree(
+                        seed.original_cwd.clone(),
+                        seed.original_branch.clone(),
+                        seed.worktree_path.clone(),
+                        seed.worktree_branch.clone(),
+                    )
+                    .await?;
+                task_detail["worktree"] = json!({
+                    "worktree_path": seed.worktree_path,
+                    "worktree_branch": seed.worktree_branch,
+                });
+            }
+
+            let mut message = crate::types::MessageEnvelope::new(
+                child_identity.agent_id.clone(),
+                crate::types::MessageKind::InternalFollowup,
+                crate::types::MessageOrigin::Task {
+                    task_id: task.id.clone(),
+                },
+                authority_class.clone(),
+                crate::types::Priority::Normal,
+                crate::types::MessageBody::Text { text: prompt },
+            )
+            .with_admission(
+                crate::types::MessageDeliverySurface::RuntimeSystem,
+                crate::types::AdmissionContext::RuntimeOwned,
+            );
+            message.metadata = Some(json!({
+                "spawn_preset": AgentProfilePreset::PrivateChild,
+                "delegated_task_id": task.id,
+                "supervision_task_id": task.id,
+                "parent_agent_id": parent_state.id,
+                "child_agent_id": child_identity.agent_id,
+                "parent_supervised": true,
+                "delegated_authority_class": authority_class,
+            }));
+            child_runtime.enqueue(message).await?;
+
+            Ok::<ChildTaskSpawn, anyhow::Error>(ChildTaskSpawn {
+                child_agent_id: child_identity.agent_id,
+                child_turn_baseline,
+                delivery_id: None,
+                task_detail,
+            })
         }
-
-        let mut message = crate::types::MessageEnvelope::new(
-            child_identity.agent_id.clone(),
-            crate::types::MessageKind::InternalFollowup,
-            crate::types::MessageOrigin::Task {
-                task_id: task.id.clone(),
-            },
-            authority_class.clone(),
-            crate::types::Priority::Normal,
-            crate::types::MessageBody::Text { text: prompt },
-        )
-        .with_admission(
-            crate::types::MessageDeliverySurface::RuntimeSystem,
-            crate::types::AdmissionContext::RuntimeOwned,
-        );
-        message.metadata = Some(json!({
-            "spawn_preset": AgentProfilePreset::PrivateChild,
-            "delegated_task_id": task.id,
-            "supervision_task_id": task.id,
-            "parent_agent_id": parent_state.id,
-            "child_agent_id": child_identity.agent_id,
-            "parent_supervised": true,
-            "delegated_authority_class": authority_class,
-        }));
-        child_runtime.enqueue(message).await?;
-
-        Ok(ChildTaskSpawn {
-            child_agent_id: child_identity.agent_id,
-            child_turn_baseline,
-            delivery_id: None,
-            task_detail,
-        })
+        .await
+        .context(ChildTaskSpawnFailure { child_agent_id })
     }
 
     async fn deliver_agent_message(
@@ -5109,7 +5126,6 @@ impl RuntimeHost {
         child_agent_id: &str,
         child_turn_baseline: u64,
         worktree: bool,
-        cleanup_agent_on_terminal: bool,
     ) -> Result<ChildTaskTerminalResult> {
         let storage = self.agent_storage(child_agent_id)?;
         let identity = self
@@ -5119,9 +5135,6 @@ impl RuntimeHost {
             .completed_child_terminal_from_storage(&storage, &identity, child_turn_baseline)
             .await?
         {
-            if cleanup_agent_on_terminal {
-                self.archive_private_agent(child_agent_id).await?;
-            }
             return Ok(result);
         }
         let runtime = self.get_or_create_agent(child_agent_id).await?;
@@ -5238,9 +5251,6 @@ impl RuntimeHost {
             }
             let task_detail = Some(metadata);
 
-            if cleanup_agent_on_terminal {
-                self.archive_private_agent(child_agent_id).await?;
-            }
             return Ok(ChildTaskTerminalResult {
                 status,
                 text,
@@ -6262,6 +6272,21 @@ impl RuntimeHostBridge {
         self.host()?.agent_identity_record(agent_id)
     }
 
+    pub(crate) async fn activate_agent_deletion(&self, agent_id: &str) -> Result<()> {
+        let host = self.host()?;
+        let identity = host
+            .runtime_db()
+            .agent_identities()
+            .latest(agent_id)?
+            .ok_or_else(|| {
+                anyhow!("agent {agent_id} identity not found after deletion admission")
+            })?;
+        host.cache_agent_identity(&identity)?;
+        host.unload_runtime(agent_id).await;
+        host.notify_deletion_coordinator();
+        Ok(())
+    }
+
     pub(crate) async fn canonical_relations_for_agent(
         &self,
         agent_id: &str,
@@ -6412,7 +6437,6 @@ impl RuntimeHostBridge {
         delivery_id: Option<&str>,
         invocation_task_id: &str,
         worktree: bool,
-        cleanup_agent_on_terminal: bool,
     ) -> Result<ChildTaskTerminalResult> {
         if let Some(delivery_id) = delivery_id {
             return self
@@ -6426,12 +6450,7 @@ impl RuntimeHostBridge {
                 .await;
         }
         self.host()?
-            .await_child_terminal_result(
-                child_agent_id,
-                child_turn_baseline,
-                worktree,
-                cleanup_agent_on_terminal,
-            )
+            .await_child_terminal_result(child_agent_id, child_turn_baseline, worktree)
             .await
     }
 
@@ -6674,7 +6693,7 @@ mod tests {
         runtime::RuntimeHandle,
         runtime_db::RuntimeDb,
         storage::AppStorage,
-        system::WorkspaceProjectionKind,
+        system::{WorkspaceAccessMode, WorkspaceProjectionKind},
         types::{
             AgentDeletionMode, AgentDeletionPhase, AgentDeletionStatus, AgentKind,
             AgentMessageSendRequest, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
@@ -8271,6 +8290,12 @@ mod tests {
         assert_eq!(child_identity.status, AgentRegistryStatus::Active);
         assert_eq!(child_identity.durability, Some(AgentDurability::Ephemeral));
         assert!(host.agent_data_dir(&created.agent_id).exists());
+        assert!(host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&created.agent_id)
+            .unwrap()
+            .is_none());
 
         let reused = parent
             .agent_invocation_service()
@@ -8307,6 +8332,12 @@ mod tests {
             .expect("terminal invocation must not delete its target during restart convergence");
         assert_eq!(restarted_identity.status, AgentRegistryStatus::Active);
         assert!(restarted.agent_data_dir(&created.agent_id).exists());
+        assert!(restarted
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(&created.agent_id)
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -9110,6 +9141,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_child_spawn_failure_after_identity_creation_requests_deletion() {
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+        config.workspace_dir = home.path().join("non-git-workspace");
+        fs::create_dir_all(&config.workspace_dir).unwrap();
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let parent = host.default_runtime().await.unwrap();
+        let workspace = host
+            .ensure_workspace_entry(host.config().workspace_dir.clone())
+            .unwrap();
+        parent.attach_workspace(&workspace).await.unwrap();
+        parent
+            .enter_workspace(
+                &workspace,
+                WorkspaceProjectionKind::CanonicalRoot,
+                WorkspaceAccessMode::SharedRead,
+                Some(host.config().workspace_dir.clone()),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let task = parent
+            .schedule_child_agent_task(
+                "fail after child creation".into(),
+                "this prompt should never be delivered".into(),
+                AuthorityClass::OperatorInstruction,
+                ChildAgentWorkspaceMode::Worktree,
+            )
+            .await
+            .unwrap();
+        let terminal = wait_for_terminal_task(&parent, &task.id).await;
+        assert_eq!(terminal.status, TaskStatus::Failed);
+        let output = parent.task_output(&task.id, false, 0).await.unwrap();
+        let child_agent_id = terminal
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.get("child_agent_id"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| {
+                panic!(
+                    "failed spawn should persist the created child identity: detail={:?}, output={}",
+                    terminal.detail, output.task.output_preview
+                )
+            });
+
+        let deletion_job = host
+            .runtime_db()
+            .agent_deletions()
+            .latest_for_agent(child_agent_id)
+            .unwrap()
+            .expect("failed spawn should create a canonical deletion job");
+        assert_eq!(deletion_job.mode, AgentDeletionMode::Delete);
+        assert_eq!(deletion_job.requested_by, "parent_task_spawn_failed");
+        assert!(matches!(
+            host.agent_identity_record(child_agent_id)
+                .unwrap()
+                .expect("child identity should remain represented")
+                .status,
+            AgentRegistryStatus::Deleting | AgentRegistryStatus::Deleted
+        ));
+    }
+
+    #[tokio::test]
     async fn private_child_spawn_accepts_explicit_model_selection() {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();
@@ -9840,6 +9938,8 @@ mod tests {
                     prompt: "continue delegated child".into(),
                     authority_class: AuthorityClass::OperatorInstruction,
                     workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                    lifecycle_disposition:
+                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
                 }),
             })
             .unwrap();
@@ -9878,6 +9978,7 @@ mod tests {
 
         let restarted =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        restarted.spawn_daemon_deletion_coordinator();
         let runtime = restarted.default_runtime().await.unwrap();
         let runtime_task = tokio::spawn(runtime.clone().run());
 
@@ -9926,13 +10027,37 @@ mod tests {
                 && event.data.get("id").and_then(|value| value.as_str())
                     == Some("task-recover-child")
         }));
-        let child_identity = restarted
-            .agent_identity_record("child_recover")
-            .unwrap()
-            .expect("child identity should remain recorded");
-        assert_eq!(child_identity.status, AgentRegistryStatus::Deleted);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        let deletion_job = loop {
+            let child_identity = restarted
+                .agent_identity_record("child_recover")
+                .unwrap()
+                .expect("child identity should remain recorded");
+            let deletion_job = restarted
+                .runtime_db()
+                .agent_deletions()
+                .latest_for_agent("child_recover")
+                .unwrap()
+                .expect("terminal child cleanup should use a canonical deletion job");
+            if child_identity.status == AgentRegistryStatus::Deleted
+                && deletion_job.status == crate::types::AgentDeletionStatus::Completed
+            {
+                break deletion_job;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "timed out waiting for canonical terminal child deletion to complete"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(
+            deletion_job.status,
+            crate::types::AgentDeletionStatus::Completed
+        );
+        assert_eq!(deletion_job.mode, crate::types::AgentDeletionMode::Delete);
 
         runtime_task.abort();
+        restarted.shutdown_daemon_deletion_coordinator().await;
     }
 
     #[tokio::test]
@@ -9962,6 +10087,8 @@ mod tests {
                     prompt: "continue delegated child".into(),
                     authority_class: AuthorityClass::OperatorInstruction,
                     workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                    lifecycle_disposition:
+                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
                 }),
             })
             .unwrap();
@@ -10092,6 +10219,8 @@ mod tests {
                     prompt: "continue delegated child".into(),
                     authority_class: AuthorityClass::OperatorInstruction,
                     workspace_mode: crate::types::ChildAgentWorkspaceMode::Inherit,
+                    lifecycle_disposition:
+                        crate::types::AgentLifecycleDisposition::DeleteOnTerminal,
                 }),
             })
             .unwrap();

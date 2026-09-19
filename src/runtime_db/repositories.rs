@@ -8,7 +8,8 @@ use rusqlite::{params, params_from_iter, OptionalExtension, ToSql, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::runtime_db::agent_relations::{
-    transition_supervision_state_tx, upsert_canonical_record_set_tx,
+    canonical_relations_from_connection, transition_supervision_state_tx,
+    upsert_canonical_record_set_tx,
 };
 use crate::runtime_db::conversation::{
     assign_input_to_turn_tx, assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx,
@@ -24,6 +25,47 @@ use crate::runtime_db::{
     TASK_PAYLOAD_STRING_LIMIT,
 };
 use crate::types::*;
+
+#[derive(Debug, Clone)]
+pub(crate) enum AgentDeletionAdmission {
+    ExpectedRevision(u64),
+    TerminalEphemeralChild {
+        parent_agent_id: String,
+        task_id: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentDeletionRequest {
+    pub agent_id: String,
+    pub admission: AgentDeletionAdmission,
+    pub requested_by: String,
+    pub cascade_private_children: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("terminal child deletion admission rejected for agent {agent_id}: {reason}")]
+pub(crate) struct TerminalChildDeletionAdmissionRejected {
+    agent_id: String,
+    reason: String,
+}
+
+impl TerminalChildDeletionAdmissionRejected {
+    fn new(agent_id: &str, reason: impl Into<String>) -> Self {
+        Self {
+            agent_id: agent_id.to_string(),
+            reason: reason.into(),
+        }
+    }
+}
+
+pub(crate) fn is_terminal_child_deletion_admission_rejected(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<TerminalChildDeletionAdmissionRejected>()
+            .is_some()
+    })
+}
 
 impl WorkItemRepository<'_> {
     pub fn import_legacy(&self, records: Vec<WorkItemRecord>) -> Result<()> {
@@ -778,6 +820,202 @@ impl AgentBootstrapRepository<'_> {
     }
 }
 
+pub(crate) fn ensure_agent_deletion_tx(
+    tx: &Transaction<'_>,
+    request: &AgentDeletionRequest,
+) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
+    let agent_id = &request.agent_id;
+    let payload = tx
+        .query_row(
+            "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    let payload = match payload {
+        Some(payload) => payload,
+        None if matches!(
+            request.admission,
+            AgentDeletionAdmission::TerminalEphemeralChild { .. }
+        ) =>
+        {
+            return Err(TerminalChildDeletionAdmissionRejected::new(
+                agent_id,
+                "identity not found",
+            )
+            .into());
+        }
+        None => return Err(anyhow!("agent {agent_id} not found")),
+    };
+    let mut identity = decode_agent_identity_payload(&payload)?;
+
+    let existing_job = tx
+        .query_row(
+            "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
+            [agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| {
+            serde_json::from_str::<AgentDeletionJob>(&payload)
+                .context("decoding existing agent deletion job payload")
+        })
+        .transpose()?;
+
+    if identity.status != AgentRegistryStatus::Active {
+        transition_supervision_state_tx(
+            tx,
+            agent_id,
+            match identity.status {
+                AgentRegistryStatus::Active => unreachable!(),
+                AgentRegistryStatus::Deleting => AgentSupervisionState::CleanupRequired,
+                AgentRegistryStatus::Deleted => AgentSupervisionState::Closed,
+            },
+            identity.revision,
+            identity.updated_at,
+        )?;
+        if let Some(job) = existing_job.as_ref() {
+            if matches!(
+                request.admission,
+                AgentDeletionAdmission::TerminalEphemeralChild { .. }
+            ) {
+                return Ok((identity, job.clone(), false));
+            }
+            if identity.status != AgentRegistryStatus::Deleted
+                || job.status != AgentDeletionStatus::Completed
+                || job.mode == AgentDeletionMode::CleanupRepair
+            {
+                return Ok((identity, job.clone(), false));
+            }
+        }
+    }
+
+    let expected_identity_revision = match &request.admission {
+        AgentDeletionAdmission::ExpectedRevision(revision) => *revision,
+        AgentDeletionAdmission::TerminalEphemeralChild {
+            parent_agent_id,
+            task_id,
+        } => {
+            let reject = |reason| {
+                anyhow::Error::new(TerminalChildDeletionAdmissionRejected::new(
+                    agent_id, reason,
+                ))
+            };
+            if identity.status == AgentRegistryStatus::Deleted {
+                return Err(reject("identity is already deleted"));
+            }
+            if identity.kind != AgentKind::Child
+                || identity.visibility != AgentVisibility::Private
+                || identity.ownership() != AgentOwnership::ParentSupervised
+            {
+                return Err(reject("identity is not a private parent-supervised child"));
+            }
+            let relations = canonical_relations_from_connection(tx, agent_id)?
+                .ok_or_else(|| reject("canonical relation projection is missing"))?;
+            if relations.resolution != AgentCanonicalResolution::Resolved {
+                return Err(reject("canonical relations are not resolved"));
+            }
+            let lineage = relations
+                .lineage
+                .as_ref()
+                .ok_or_else(|| reject("canonical lineage is missing"))?;
+            let supervision = relations
+                .supervision
+                .as_ref()
+                .ok_or_else(|| reject("canonical supervision is missing"))?;
+            let durability = relations
+                .durability
+                .as_ref()
+                .ok_or_else(|| reject("canonical durability is missing"))?;
+            let lifecycle_attachment = relations
+                .lifecycle_attachment
+                .as_ref()
+                .ok_or_else(|| reject("canonical lifecycle attachment is missing"))?;
+            if lineage.parent_agent_id != *parent_agent_id
+                || supervision.supervisor_agent_id != *parent_agent_id
+                || supervision.delegated_from_task_id.as_deref() != Some(task_id.as_str())
+                || durability.durability != AgentCanonicalDurability::Ephemeral
+                || lifecycle_attachment.attachment != AgentLifecycleAttachment::SupervisionAttached
+            {
+                return Err(reject(&format!(
+                    "canonical relations do not attach the child to parent task {task_id}"
+                )));
+            }
+            identity.revision
+        }
+    };
+
+    if identity.revision != expected_identity_revision {
+        return Err(anyhow!(
+            "agent {agent_id} identity revision mismatch: expected {expected_identity_revision}, current {}",
+            identity.revision
+        ));
+    }
+
+    if let Some(job) = existing_job {
+        anyhow::ensure!(
+            identity.status == AgentRegistryStatus::Deleted
+                || job.status == AgentDeletionStatus::Completed,
+            "agent {agent_id} has a non-completed deletion job while its identity is active"
+        );
+        tx.execute(
+            "DELETE FROM agent_deletion_jobs WHERE agent_id = ?1",
+            params![agent_id],
+        )?;
+    }
+
+    let now = std::cmp::max(
+        Utc::now(),
+        identity.updated_at + chrono::Duration::nanoseconds(1),
+    );
+    let job = AgentDeletionJob {
+        deletion_id: crate::ids::agent_deletion_id(),
+        agent_id: agent_id.to_string(),
+        mode: if identity.status == AgentRegistryStatus::Deleted {
+            AgentDeletionMode::CleanupRepair
+        } else {
+            AgentDeletionMode::Delete
+        },
+        status: AgentDeletionStatus::Pending,
+        phase: if identity.status == AgentRegistryStatus::Deleted {
+            AgentDeletionPhase::Quiesce
+        } else {
+            AgentDeletionPhase::Fence
+        },
+        requested_by: request.requested_by.clone(),
+        expected_identity_revision,
+        cascade_private_children: request.cascade_private_children,
+        attempts: 0,
+        last_error: None,
+        next_attempt_at: None,
+        created_at: now,
+        updated_at: now,
+        completed_at: None,
+    };
+    if identity.status == AgentRegistryStatus::Active {
+        identity.status = AgentRegistryStatus::Deleting;
+        identity.revision = identity.revision.saturating_add(1);
+        identity.updated_at = now;
+        upsert_agent_identity_tx(tx, &identity)?;
+    }
+    transition_supervision_state_tx(
+        tx,
+        agent_id,
+        if identity.status == AgentRegistryStatus::Deleted {
+            AgentSupervisionState::Closed
+        } else {
+            AgentSupervisionState::CleanupRequired
+        },
+        identity.revision,
+        identity.updated_at,
+    )?;
+    insert_agent_deletion_job_tx(tx, &job)?;
+    crate::runtime_db::agent_message_delivery::cancel_active_deliveries_for_target_tx(
+        tx, agent_id,
+    )?;
+    Ok((identity, job, true))
+}
+
 impl AgentDeletionRepository<'_> {
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Option<AgentDeletionJob>> {
         let connection = self.db.connection()?;
@@ -802,122 +1040,15 @@ impl AgentDeletionRepository<'_> {
         cascade_private_children: bool,
     ) -> Result<(AgentIdentityRecord, AgentDeletionJob, bool)> {
         self.db.transaction(|tx| {
-            let payload = tx
-                .query_row(
-                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
-            let mut identity = decode_agent_identity_payload(&payload)?;
-
-            let existing_job = tx
-                .query_row(
-                    "SELECT payload_json FROM agent_deletion_jobs WHERE agent_id = ?1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| {
-                    serde_json::from_str::<AgentDeletionJob>(&payload)
-                        .context("decoding existing agent deletion job payload")
-                })
-                .transpose()?;
-
-            if identity.status != AgentRegistryStatus::Active {
-                transition_supervision_state_tx(
-                    tx,
-                    agent_id,
-                    match identity.status {
-                        AgentRegistryStatus::Active => unreachable!(),
-                        AgentRegistryStatus::Deleting => {
-                            AgentSupervisionState::CleanupRequired
-                        }
-                        AgentRegistryStatus::Deleted => AgentSupervisionState::Closed,
-                    },
-                    identity.revision,
-                    identity.updated_at,
-                )?;
-                if let Some(job) = existing_job.as_ref() {
-                    if identity.status != AgentRegistryStatus::Deleted
-                        || job.status != AgentDeletionStatus::Completed
-                        || job.mode == AgentDeletionMode::CleanupRepair
-                    {
-                        return Ok((identity, job.clone(), false));
-                    }
-                }
-            }
-
-            if identity.revision != expected_identity_revision {
-                return Err(anyhow!(
-                    "agent {agent_id} identity revision mismatch: expected {expected_identity_revision}, current {}",
-                    identity.revision
-                ));
-            }
-
-            if let Some(job) = existing_job {
-                anyhow::ensure!(
-                    identity.status == AgentRegistryStatus::Deleted
-                        || job.status == AgentDeletionStatus::Completed,
-                    "agent {agent_id} has a non-completed deletion job while its identity is active"
-                );
-                tx.execute(
-                    "DELETE FROM agent_deletion_jobs WHERE agent_id = ?1",
-                    params![agent_id],
-                )?;
-            }
-
-            let now = std::cmp::max(
-                Utc::now(),
-                identity.updated_at + chrono::Duration::nanoseconds(1),
-            );
-            let job = AgentDeletionJob {
-                deletion_id: crate::ids::agent_deletion_id(),
-                agent_id: agent_id.to_string(),
-                mode: if identity.status == AgentRegistryStatus::Deleted {
-                    AgentDeletionMode::CleanupRepair
-                } else {
-                    AgentDeletionMode::Delete
-                },
-                status: AgentDeletionStatus::Pending,
-                phase: if identity.status == AgentRegistryStatus::Deleted {
-                    AgentDeletionPhase::Quiesce
-                } else {
-                    AgentDeletionPhase::Fence
-                },
-                requested_by: requested_by.to_string(),
-                expected_identity_revision,
-                cascade_private_children,
-                attempts: 0,
-                last_error: None,
-                next_attempt_at: None,
-                created_at: now,
-                updated_at: now,
-                completed_at: None,
-            };
-            if identity.status == AgentRegistryStatus::Active {
-                identity.status = AgentRegistryStatus::Deleting;
-                identity.revision = identity.revision.saturating_add(1);
-                identity.updated_at = now;
-                upsert_agent_identity_tx(tx, &identity)?;
-            }
-            transition_supervision_state_tx(
+            ensure_agent_deletion_tx(
                 tx,
-                agent_id,
-                if identity.status == AgentRegistryStatus::Deleted {
-                    AgentSupervisionState::Closed
-                } else {
-                    AgentSupervisionState::CleanupRequired
+                &AgentDeletionRequest {
+                    agent_id: agent_id.to_string(),
+                    admission: AgentDeletionAdmission::ExpectedRevision(expected_identity_revision),
+                    requested_by: requested_by.to_string(),
+                    cascade_private_children,
                 },
-                identity.revision,
-                identity.updated_at,
-            )?;
-            insert_agent_deletion_job_tx(tx, &job)?;
-            crate::runtime_db::agent_message_delivery::cancel_active_deliveries_for_target_tx(
-                tx, agent_id,
-            )?;
-            Ok((identity, job, true))
+            )
         })
     }
 

@@ -9,7 +9,7 @@ order: 50
 This page defines the current contract for managed task execution: lifecycle,
 terminal re-entry, and supervision surfaces.
 
-> **Last verified:** 2026-05-25 against `src/types.rs` `TaskRecord`,
+> **Last verified:** 2026-09-19 against `src/types.rs` `TaskRecord`,
 > `TaskStatus`, `TaskKind`, `TaskHandle`, `TaskWaitPolicy`, and the tool
 > implementations in `src/tool/tools/{exec_command,task_list,task_status,
 > task_output,task_input,task_stop,invoke_agent}.rs`.
@@ -33,6 +33,21 @@ terminal re-entry, and supervision surfaces.
 | `SleepJob` | Internal sleep timer (not model-visible) |
 | `SubagentTask` | Legacy child agent kind (migrating to `ChildAgentTask`) |
 | `WorktreeSubagentTask` | Legacy worktree-isolated child agent (migrating) |
+
+## Child lifecycle disposition
+
+Parent-supervised task recovery records persist an
+`AgentLifecycleDisposition`:
+
+| Disposition | Terminal behavior |
+|-------------|-------------------|
+| `retain` | Persist the terminal task/result without deleting the child |
+| `delete_on_terminal` | Atomically persist the terminal task/result and admit the canonical deletion job |
+
+`ActorInvocation`, including `InvokeAgent(new_subagent)`, defaults to `retain`
+so the created actor remains reusable. Legacy and current `ChildAgentTask`
+records default to `delete_on_terminal`; deletion is admitted only for the
+resolved private, parent-supervised, ephemeral child owned by that task.
 
 ## Task lifecycle
 
