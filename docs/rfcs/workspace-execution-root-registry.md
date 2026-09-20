@@ -68,6 +68,13 @@ Lifecycle:
 - **Worktree cleanup**: `exit_worktree` marks `removed_at` (soft-delete).
 - **Resolution**: look up by `execution_root_id`; if `removed_at` is set →
   HTTP 410 Gone; if not found → 404 Not Found.
+- **Tombstone monotonicity**: ordinary root re-registration may update metadata,
+  but an existing `removed_at` tombstone is preserved by both lifecycle callers
+  and the database upsert boundary. The serialized payload and indexed
+  `removed_at` column are updated from the same effective record, so they cannot
+  disagree about whether the root is removed. Reactivation, if ever needed,
+  requires a separate explicit and auditable contract; `None` in a normal
+  upsert is not reactivation.
 
 The serialized payload may also carry worktree artifact metadata without
 changing the lookup columns:

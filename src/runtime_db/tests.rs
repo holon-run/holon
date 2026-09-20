@@ -7720,6 +7720,67 @@ CREATE TABLE working_memory_deltas (
     }
 
     #[test]
+    fn execution_root_entry_upsert_preserves_removed_tombstone() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        std::fs::create_dir_all(db_path.parent().unwrap())?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let repo = db.execution_root_entries();
+        let execution_root_id = "git_worktree_root:ws_tombstone:/tmp/wt";
+
+        repo.upsert(&ExecutionRootEntry {
+            execution_root_id: execution_root_id.into(),
+            workspace_id: "ws_tombstone".into(),
+            filesystem_path: PathBuf::from("/tmp/wt"),
+            root_kind: crate::system::WorkspaceProjectionKind::GitWorktreeRoot,
+            worktree: None,
+            created_at: Utc::now(),
+            removed_at: None,
+        })?;
+        assert!(repo.mark_removed(execution_root_id)?);
+
+        let removed = repo.get(execution_root_id)?.unwrap();
+        let removed_at = removed.removed_at.unwrap();
+        let connection = db.connection()?;
+        let mut stale_payload = serde_json::to_value(&removed)?;
+        stale_payload["removed_at"] = serde_json::Value::Null;
+        connection.execute(
+            "UPDATE execution_root_entries
+             SET payload_json = ?1
+             WHERE execution_root_id = ?2",
+            params![serde_json::to_string(&stale_payload)?, execution_root_id],
+        )?;
+
+        let mut reregistered = removed.clone();
+        reregistered.filesystem_path = PathBuf::from("/tmp/wt-reused");
+        reregistered.removed_at = None;
+        repo.upsert(&reregistered)?;
+
+        let fetched = repo.get(execution_root_id)?.unwrap();
+        assert_eq!(fetched.filesystem_path, PathBuf::from("/tmp/wt-reused"));
+        assert_eq!(fetched.removed_at, Some(removed_at));
+        assert_eq!(repo.latest_all()?, vec![fetched.clone()]);
+        assert!(repo.active_for_workspace("ws_tombstone")?.is_empty());
+
+        let (sql_removed_at, payload_json): (Option<String>, String) = connection.query_row(
+            "SELECT removed_at, payload_json FROM execution_root_entries
+             WHERE execution_root_id = ?1",
+            [execution_root_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let payload: ExecutionRootEntry = serde_json::from_str(&payload_json)?;
+        assert_eq!(
+            sql_removed_at
+                .as_deref()
+                .map(chrono::DateTime::parse_from_rfc3339)
+                .transpose()?
+                .map(|value| value.with_timezone(&Utc)),
+            payload.removed_at
+        );
+        assert_eq!(payload.removed_at, fetched.removed_at);
+        Ok(())
+    }
+
+    #[test]
     fn execution_root_entry_active_for_workspace() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         std::fs::create_dir_all(db_path.parent().unwrap())?;
