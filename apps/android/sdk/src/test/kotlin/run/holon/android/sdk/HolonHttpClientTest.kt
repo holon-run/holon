@@ -13,6 +13,11 @@ import kotlin.test.assertNull
 
 class HolonHttpClientTest {
     @Test
+    fun `default client uses the bounded total call timeout`() {
+        assertEquals(30_000, HolonHttpClient.defaultHttpClient().callTimeoutMillis)
+    }
+
+    @Test
     fun `base URL requires HTTPS except for loopback`() {
         assertEquals(
             "https://holon.example/api/",
