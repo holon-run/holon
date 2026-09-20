@@ -100,7 +100,7 @@ class HolonHttpClientTest {
             assertEquals("session-credential", store.value)
             val request = server.takeRequest()
             assertEquals("POST", request.method)
-            assertEquals("/auth/session/exchange", request.path)
+            assertEquals("/auth/session/exchange/native", request.path)
             assertEquals(
                 """{"credential":"bootstrap-token"}""",
                 request.body.readUtf8(),
@@ -146,7 +146,7 @@ class HolonHttpClientTest {
     }
 
     @Test
-    fun `logout prefers the explicit bearer provider over the stored session credential`() {
+    fun `logout prefers the stored session over the explicit bearer provider`() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_NO_CONTENT))
             val store = FakeSessionCredentialStore("stored-session")
@@ -159,7 +159,7 @@ class HolonHttpClientTest {
 
             client.logout()
 
-            assertEquals("Bearer bootstrap-token", server.takeRequest().getHeader("Authorization"))
+            assertEquals("Bearer stored-session", server.takeRequest().getHeader("Authorization"))
             assertNull(store.value)
         }
     }

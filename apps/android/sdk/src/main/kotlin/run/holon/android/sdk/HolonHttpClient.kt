@@ -13,8 +13,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import run.holon.client.wire.generated.models.AgentListEntry
 import run.holon.client.wire.generated.models.ErrorResponse
 import run.holon.client.wire.generated.models.HandshakeResponse
+import run.holon.client.wire.generated.models.NativeSessionResponse
 import run.holon.client.wire.generated.models.SessionExchangeRequest
-import run.holon.client.wire.generated.models.SessionResponse
 
 public fun interface BearerTokenProvider {
     public fun token(): String?
@@ -89,10 +89,10 @@ public class HolonHttpClient internal constructor(
         require(credential.isNotBlank()) { "Session exchange credential must not be blank" }
         val response =
             post(
-                path = "auth/session/exchange",
+                path = "auth/session/exchange/native",
                 body = SessionExchangeRequest(credential = credential),
                 bodySerializer = SessionExchangeRequest.serializer(),
-                responseSerializer = SessionResponse.serializer(),
+                responseSerializer = NativeSessionResponse.serializer(),
             )
         val session =
             SessionCredentials(
@@ -111,6 +111,7 @@ public class HolonHttpClient internal constructor(
         try {
             postNoContent(
                 path = "auth/session/logout",
+                preferStoredSession = true,
             )
         } finally {
             sessionCredentialStore?.clear()
@@ -185,12 +186,13 @@ public class HolonHttpClient internal constructor(
 
     private fun postNoContent(
         path: String,
+        preferStoredSession: Boolean = false,
     ) {
         try {
             val response =
                 httpClient
                     .newCall(
-                        authorizedRequest(path)
+                        authorizedRequest(path, preferStoredSession = preferStoredSession)
                             .post(ByteArray(0).toRequestBody(null))
                             .build(),
                     )
@@ -211,11 +213,16 @@ public class HolonHttpClient internal constructor(
 
     private fun authorizedRequest(
         path: String,
+        preferStoredSession: Boolean = false,
     ): Request.Builder {
         val requestBuilder = Request.Builder().url(endpoint(path))
         val storedSessionCredential = sessionCredentialStore?.read()?.takeIf(String::isNotBlank)
         val providerCredential = bearerTokenProvider.token()?.takeIf(String::isNotBlank)
-        (providerCredential ?: storedSessionCredential)
+        (if (preferStoredSession) {
+            storedSessionCredential ?: providerCredential
+        } else {
+            providerCredential ?: storedSessionCredential
+        })
             ?.let { token ->
                 requestBuilder.header("Authorization", "Bearer $token")
             }

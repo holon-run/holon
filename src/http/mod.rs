@@ -121,7 +121,9 @@ pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
-pub(crate) use auth::{CurrentUserResponse, SessionExchangeRequest, SessionResponse};
+pub(crate) use auth::{
+    CurrentUserResponse, NativeSessionResponse, SessionExchangeRequest, SessionResponse,
+};
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
     ConversationStreamMessage, ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,
@@ -686,6 +688,10 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/oidc/callback", get(auth::complete_oidc_login))
         .route("/auth/method", get(auth::auth_method))
         .route("/auth/session/exchange", post(auth::exchange_session))
+        .route(
+            "/auth/session/exchange/native",
+            post(auth::exchange_session_native),
+        )
         .route("/auth/session/me", get(auth::session_me))
         .route("/auth/session/logout", post(auth::logout))
         .route(

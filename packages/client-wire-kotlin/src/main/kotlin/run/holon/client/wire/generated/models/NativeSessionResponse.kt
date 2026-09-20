@@ -31,13 +31,17 @@ import kotlinx.serialization.Contextual
 /**
  *
  *
+ * @param credential
  * @param ok
  * @param userId
  * @param expiresAt
  */
 @Serializable
 
-data class SessionResponse (
+data class NativeSessionResponse (
+
+    @SerialName(value = "credential")
+    val credential: kotlin.String,
 
     @SerialName(value = "ok")
     val ok: kotlin.Boolean,

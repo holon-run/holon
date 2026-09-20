@@ -33,6 +33,7 @@ const kotlinRoots = [
   "CurrentUserResponse",
   "SessionExchangeRequest",
   "SessionResponse",
+  "NativeSessionResponse",
   "ControlPromptRequest",
   "EnqueueResponse",
 ];
