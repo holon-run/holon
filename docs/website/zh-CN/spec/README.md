@@ -20,6 +20,7 @@ order: 1
 | [概念](/zh-CN/concepts/) | 心智模型 | 用户、评估者 |
 | [参考](/zh-CN/reference/) | CLI、配置、控制平面快照 | 用户、集成方 |
 | **规格**（本节） | 当前运行时契约 | 维护者、贡献者 |
+| [维护者](/zh-CN/maintainers/) | 构建、测试和文档维护流程 | 维护者、贡献者 |
 | [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) | 设计记录和理由 | 维护者 |
 
 规格桥接用户文档和 RFC 设计历史之间的空隙。当 RFC 稳定为运行时行为后，
