@@ -660,7 +660,7 @@ Returns recent runtime trace activity and spans for latency diagnosis.
 
 **`POST /api/file-references/resolve`** — Batch resolve file references
 
-Resolves up to 200 file references (`workspace_uri`, `absolute_path`, or `relative_path` relative to a known base file) into canonical workspace file locations. Requires remote access authorization.
+Resolves up to 64 file references (`workspace_uri`, `absolute_path`, or `relative_path` relative to a known base file) into canonical workspace file locations. Requires remote access authorization.
 
 Request:
 

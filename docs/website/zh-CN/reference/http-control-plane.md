@@ -624,7 +624,7 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 
 **`POST /api/file-references/resolve`** — 批量解析文件引用
 
-批量将最多 200 个文件引用（`workspace_uri`、`absolute_path` 或相对于已知基准文件的 `relative_path`）解析为规范的工作区文件定位与元数据。需远程访问授权。
+批量将最多 64 个文件引用（`workspace_uri`、`absolute_path` 或相对于已知基准文件的 `relative_path`）解析为规范的工作区文件定位与元数据。需远程访问授权。
 
 请求体示例：
 
