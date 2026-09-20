@@ -1,6 +1,7 @@
 package run.holon.android.sdk
 
 import java.io.IOException
+import java.util.concurrent.TimeUnit
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import okhttp3.HttpUrl
@@ -74,31 +75,32 @@ public class HolonHttpClient internal constructor(
             requestBuilder.header("Authorization", "Bearer $token")
         }
 
-        val response =
-            try {
-                httpClient.newCall(requestBuilder.build()).execute()
-            } catch (error: IOException) {
-                throw HolonProtocolException("Holon request failed", error)
-            }
+        try {
+            val response = httpClient.newCall(requestBuilder.build()).execute()
+            response.use {
+                val body = it.body?.string().orEmpty()
+                if (!it.isSuccessful) {
+                    val apiError =
+                        runCatching {
+                            HolonWire.json.decodeFromString(ErrorResponse.serializer(), body)
+                        }.getOrNull()?.toHolonApiError()
+                    throw HolonHttpException(it.code, apiError)
+                }
 
-        response.use {
-            val body = it.body?.string().orEmpty()
-            if (!it.isSuccessful) {
-                val apiError =
-                    runCatching {
-                        HolonWire.json.decodeFromString(ErrorResponse.serializer(), body)
-                    }.getOrNull()?.toHolonApiError()
-                throw HolonHttpException(it.code, apiError)
+                return try {
+                    HolonWire.json.decodeFromString(serializer, body)
+                } catch (error: Exception) {
+                    throw HolonProtocolException(
+                        "Holon returned an invalid response for /$path",
+                        error,
+                    )
+                }
             }
-
-            return try {
-                HolonWire.json.decodeFromString(serializer, body)
-            } catch (error: Exception) {
-                throw HolonProtocolException(
-                    "Holon returned an invalid response for /$path",
-                    error,
-                )
+        } catch (error: IOException) {
+            if (error is HolonHttpException || error is HolonProtocolException) {
+                throw error
             }
+            throw HolonProtocolException("Holon request failed", error)
         }
     }
 
@@ -110,6 +112,7 @@ public class HolonHttpClient internal constructor(
     public companion object {
         private fun defaultHttpClient(): OkHttpClient =
             OkHttpClient.Builder()
+                .callTimeout(30, TimeUnit.SECONDS)
                 .followRedirects(false)
                 .followSslRedirects(false)
                 .build()
@@ -148,6 +151,7 @@ public class HolonHttpClient internal constructor(
                 octets.all { octet ->
                     octet.isNotEmpty() &&
                         octet.all(Char::isDigit) &&
+                        (octet.length == 1 || octet.first() != '0') &&
                         octet.toIntOrNull() in 0..255
                 }
         }

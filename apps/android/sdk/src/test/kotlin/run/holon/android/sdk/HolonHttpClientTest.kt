@@ -1,6 +1,8 @@
 package run.holon.android.sdk
 
 import java.net.HttpURLConnection
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Test
@@ -30,6 +32,9 @@ class HolonHttpClientTest {
         }
         assertFailsWith<IllegalArgumentException> {
             HolonHttpClient.normalizeBaseUrl("http://127.attacker.example:8787")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            HolonHttpClient.normalizeBaseUrl("http://127.001.0.1:8787")
         }
         assertFailsWith<IllegalArgumentException> {
             HolonHttpClient.normalizeBaseUrl("https://token@holon.example")
@@ -126,6 +131,30 @@ class HolonHttpClientTest {
                 assertEquals("Bearer test-token", server.takeRequest().getHeader("Authorization"))
                 assertEquals(0, redirectTarget.requestCount)
             }
+        }
+    }
+
+    @Test
+    fun `request call timeout is surfaced as a protocol error`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                MockResponse()
+                    .setBody("{}")
+                    .setBodyDelay(200, TimeUnit.MILLISECONDS),
+            )
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    bearerTokenProvider = BearerTokenProvider { null },
+                    httpClient =
+                        OkHttpClient.Builder()
+                            .callTimeout(20, TimeUnit.MILLISECONDS)
+                            .build(),
+                )
+
+            val error = assertFailsWith<HolonProtocolException> { client.listAgents() }
+
+            assertEquals("Holon request failed", error.message)
         }
     }
 
