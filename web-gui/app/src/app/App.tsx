@@ -609,64 +609,66 @@ export function App() {
             </button>
           </div>
           <input className="agent-filter" aria-label={t("rightPanel.filterAgents")} placeholder={t("rightPanel.filterAgents")} value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} />
-          {bootstrap.agents.length === 0 ? (
-            <div className="agent-list-state" role="status">
-              <strong>{loading ? t("status.syncing") : t("dashboard.noAgentsTitle")}</strong>
-              <span>{loading ? t("boot.body") : t("dashboard.startAgent")}</span>
-            </div>
-          ) : (
-            visibleAgents.filter((agent) => navCollapsed || `${agent.name ?? ""} ${agent.id}`.toLowerCase().includes(agentFilter.toLowerCase())).map((agent) => {
-              const status = deriveAgentDisplayStatus(agent, t);
-              const workSummary = agent.currentWork?.objective;
-              const secondaryText = workSummary || (agent.name && agent.name !== agent.id ? agent.id : undefined);
-              const unreadView = unreadBadgeView(
-                rosterActivityByAgentId[agent.id]?.unreadCount,
-                ledgerUnreadByAgentId[agent.id],
-              );
+          <div className="agent-list">
+            {bootstrap.agents.length === 0 ? (
+              <div className="agent-list-state" role="status">
+                <strong>{loading ? t("status.syncing") : t("dashboard.noAgentsTitle")}</strong>
+                <span>{loading ? t("boot.body") : t("dashboard.startAgent")}</span>
+              </div>
+            ) : (
+              visibleAgents.filter((agent) => navCollapsed || `${agent.name ?? ""} ${agent.id}`.toLowerCase().includes(agentFilter.toLowerCase())).map((agent) => {
+                const status = deriveAgentDisplayStatus(agent, t);
+                const workSummary = agent.currentWork?.objective;
+                const secondaryText = workSummary || (agent.name && agent.name !== agent.id ? agent.id : undefined);
+                const unreadView = unreadBadgeView(
+                  rosterActivityByAgentId[agent.id]?.unreadCount,
+                  ledgerUnreadByAgentId[agent.id],
+                );
 
-              return (
-                <div className="agent-list-entry" key={agent.id}>
-                  <button
-                    className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
-                    title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}${workSummary ? ` · ${workSummary}` : ""}`}
-                    type="button"
-                    onClick={() => navigateAgent(agent.id)}
-                  >
-                    <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
-                    <span className="agent-row-main">
-                      <span className="agent-row-title">
-                        <strong>{agent.name ?? agent.id}</strong>
+                return (
+                  <div className="agent-list-entry" key={agent.id}>
+                    <button
+                      className={`agent-row ${selectedAgentId === agent.id ? "is-selected" : ""} ${agent.lifecycle}`}
+                      title={`${agent.name ? `${agent.name} (${agent.id})` : agent.id} · ${agent.focusSummary} · ${status.title}${workSummary ? ` · ${workSummary}` : ""}`}
+                      type="button"
+                      onClick={() => navigateAgent(agent.id)}
+                    >
+                      <span className={`agent-badge ${agent.badgeTone ?? ""}`} style={agent.badgeHue != null && !agent.badgeTone ? ({ "--badge-hue": `${agent.badgeHue}` } as CSSProperties) : undefined}>{agent.badge}</span>
+                      <span className="agent-row-main">
+                        <span className="agent-row-title">
+                          <strong>{agent.name ?? agent.id}</strong>
+                        </span>
+                        {secondaryText ? (
+                          <span className="agent-row-meta" title={secondaryText}>
+                            <span>{workSummary ? truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH) : secondaryText}</span>
+                          </span>
+                        ) : null}
                       </span>
-                      {secondaryText ? (
-                        <span className="agent-row-meta" title={secondaryText}>
-                          <span>{workSummary ? truncateToWidth(workSummary, AGENT_ROW_SUMMARY_MAX_WIDTH) : secondaryText}</span>
+                      <span className="agent-row-indicators">
+                        {unreadView?.mode === "stale_sync_error" ? (
+                          <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
+                            !
+                          </span>
+                        ) : unreadView && unreadView.count > 0 ? (
+                          <span
+                            className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
+                            aria-label={unreadTitle(unreadView, t)}
+                            title={unreadTitle(unreadView, t)}
+                          >
+                            {formatUnreadBadge(unreadView.count, unreadView.mode === "truncated")}
+                          </span>
+                        ) : null}
+                        <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
+                          <StatusDotIcon tone={status.tone} />
                         </span>
-                      ) : null}
-                    </span>
-                    <span className="agent-row-indicators">
-                      {unreadView?.mode === "stale_sync_error" ? (
-                        <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
-                          !
-                        </span>
-                      ) : unreadView && unreadView.count > 0 ? (
-                        <span
-                          className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
-                          aria-label={unreadTitle(unreadView, t)}
-                          title={unreadTitle(unreadView, t)}
-                        >
-                          {formatUnreadBadge(unreadView.count, unreadView.mode === "truncated")}
-                        </span>
-                      ) : null}
-                      <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
-                        <StatusDotIcon tone={status.tone} />
                       </span>
-                    </span>
-                  </button>
-                  <AgentIdCopyButton agentId={agent.id} />
-                </div>
-              );
-            })
-          )}
+                    </button>
+                    <AgentIdCopyButton agentId={agent.id} />
+                  </div>
+                );
+              })
+            )}
+          </div>
         </section>
 
         <div className="sidebar-bottom">

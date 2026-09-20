@@ -7,7 +7,11 @@ test.beforeEach(async ({ page, context }, info) => {
   await context.addCookies([{ name: "holon_e2e_session", value: sessionFor(info, "mobile-layout"), domain: "127.0.0.1", path: "/" }]);
 });
 
-test("portrait phones open the full agent roster as a drawer", async ({ page }) => {
+test("portrait phones keep a long agent roster scrollable above the connection footer", async ({ page, request }, info) => {
+  const session = sessionFor(info, "mobile-layout");
+  await request.post(`/__e2e__/configure?session=${encodeURIComponent(session)}`, {
+    data: { visibleAgentIds: ["bootstrap-agent", ...Array.from({ length: 24 }, (_, index) => `mobile-agent-${index + 1}`)] },
+  });
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/agents/${agentId}/conversation`);
 
@@ -19,9 +23,42 @@ test("portrait phones open the full agent roster as a drawer", async ({ page }) 
   await expect(page.locator(".sidebar .agent-row-main").first()).toBeVisible();
   await expect(page.locator(".mobile-nav-scrim")).toBeVisible();
   await expect(page.locator(".sidebar .agent-row").first()).toBeVisible();
+  const agentList = await page.locator(".sidebar .agent-list").boundingBox();
+  const connectionStatus = await page.locator(".sidebar .connection-status").boundingBox();
+  expect(agentList).not.toBeNull();
+  expect(connectionStatus).not.toBeNull();
+  expect(agentList!.y + agentList!.height).toBeLessThanOrEqual(connectionStatus!.y + 1);
+  const scrollMetrics = await page.locator(".sidebar .agent-list").evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight);
+  const lastAgent = page.locator(".sidebar .agent-row").last();
+  await lastAgent.scrollIntoViewIfNeeded();
+  await expect(lastAgent).toBeInViewport();
   await page.mouse.click(380, 420);
   await expect(page.locator(".mobile-nav-scrim")).toHaveCount(0);
   await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
+});
+
+test("collapsed desktop navigation keeps a long agent roster scrollable", async ({ page, request }, info) => {
+  const session = sessionFor(info, "mobile-layout");
+  await request.post(`/__e2e__/configure?session=${encodeURIComponent(session)}`, {
+    data: { visibleAgentIds: ["bootstrap-agent", ...Array.from({ length: 24 }, (_, index) => `desktop-agent-${index + 1}`)] },
+  });
+  await page.setViewportSize({ width: 1024, height: 800 });
+  await page.goto(`/agents/${agentId}/conversation`);
+
+  await page.locator(".nav-collapse").click();
+  await expect(page.locator(".app-shell")).toHaveAttribute("data-nav-collapsed", "true");
+  const scrollMetrics = await page.locator(".sidebar .agent-list").evaluate((element) => ({
+    clientHeight: element.clientHeight,
+    scrollHeight: element.scrollHeight,
+  }));
+  expect(scrollMetrics.scrollHeight).toBeGreaterThan(scrollMetrics.clientHeight);
+  const lastAgent = page.locator(".sidebar .agent-row").last();
+  await lastAgent.scrollIntoViewIfNeeded();
+  await expect(lastAgent).toBeInViewport();
 });
 
 test("landscape phones keep the drawer usable and keep composer actions in view", async ({ page }) => {

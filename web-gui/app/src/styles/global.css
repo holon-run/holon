@@ -456,13 +456,22 @@ button {
 }
 
 .agent-switcher {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
-  align-content: start;
+  gap: 2px;
+  overflow: hidden;
+  padding-right: 2px;
+}
+
+.agent-list {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 2px;
+  scrollbar-gutter: stable;
 }
 
 .agent-badge {
@@ -721,7 +730,11 @@ button {
 
 .sidebar-bottom {
   position: relative;
+  flex: none;
   margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--line-strong) 62%, transparent);
+  background: var(--sidebar);
 }
 
 .session-logout {
@@ -7233,9 +7246,9 @@ code {
     position: fixed;
     inset: 0 auto 0 0;
     z-index: 80;
-    width: min(320px, 88vw);
+    width: min(360px, calc(100vw - 28px));
     height: 100dvh;
-    padding: max(10px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+    padding: max(8px, env(safe-area-inset-top)) 12px max(8px, env(safe-area-inset-bottom));
     border-right: 1px solid var(--line-strong);
     box-shadow: 18px 0 42px rgba(24, 34, 48, 0.16);
     transform: translateX(-105%);
@@ -7274,6 +7287,45 @@ code {
   .app-shell .sidebar .agent-row-indicators { display: flex; }
   .app-shell .sidebar .agent-row { padding-inline: 8px; }
   .app-shell .sidebar .agent-id-copy { display: grid; }
+
+  .app-shell .sidebar .sidebar-brand {
+    min-height: 44px;
+    margin-bottom: 8px;
+  }
+  .app-shell .sidebar .global-nav {
+    gap: 1px;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 52%, transparent);
+  }
+  .app-shell .sidebar .global-nav button {
+    min-height: 34px;
+    padding-inline: 10px;
+    font-size: 13px;
+  }
+  .app-shell .sidebar .side-heading { margin-bottom: 5px; }
+  .app-shell .sidebar .agent-filter {
+    width: calc(100% - 16px);
+    margin: 0 8px 7px;
+    padding-block: 8px;
+  }
+  .app-shell .sidebar .agent-list { padding-right: 2px; }
+  .app-shell .sidebar .agent-row {
+    min-height: 46px;
+    padding-block: 5px;
+  }
+  .app-shell .sidebar .agent-badge {
+    width: 34px;
+    height: 34px;
+  }
+  .app-shell .sidebar .sidebar-bottom {
+    margin-top: 8px;
+    padding-top: 7px;
+  }
+  .app-shell .sidebar .connection-status {
+    min-height: 48px;
+    padding-block: 5px;
+  }
 
   .topbar-primary {
     min-height: 52px;
@@ -7324,6 +7376,16 @@ code {
 }
 
 @media (orientation: landscape) and (max-height: 600px) and (max-width: 900px) {
+  .app-shell .sidebar {
+    width: min(400px, calc(100vw - 28px));
+  }
+  .app-shell .sidebar .sidebar-brand { min-height: 38px; }
+  .app-shell .sidebar .global-nav { margin-bottom: 6px; padding-bottom: 5px; }
+  .app-shell .sidebar .global-nav button { min-height: 30px; }
+  .app-shell .sidebar .agent-row { min-height: 42px; }
+  .app-shell .sidebar .agent-badge { width: 30px; height: 30px; }
+  .app-shell .sidebar .sidebar-bottom { margin-top: 5px; padding-top: 5px; }
+  .app-shell .sidebar .connection-status { min-height: 42px; }
   .topbar-primary { min-height: 44px; padding-block: 4px; }
   .message-list { padding-block: 8px 12px; }
   .conversation-timeline { gap: 22px; padding-block: 8px 16px; }
