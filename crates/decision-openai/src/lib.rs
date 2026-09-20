@@ -16,6 +16,7 @@ pub struct OpenAiConfig {
     pub model: String,
     pub api_key: Option<String>,
     pub timeout: Duration,
+    pub max_tokens: Option<u32>,
 }
 
 impl fmt::Debug for OpenAiConfig {
@@ -26,6 +27,7 @@ impl fmt::Debug for OpenAiConfig {
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
+            .field("max_tokens", &self.max_tokens)
             .finish()
     }
 }
@@ -37,6 +39,7 @@ impl OpenAiConfig {
             model: model.into(),
             api_key: None,
             timeout: Duration::from_secs(30),
+            max_tokens: None,
         }
     }
 
@@ -47,6 +50,11 @@ impl OpenAiConfig {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn with_max_tokens(mut self, max_tokens: u32) -> Self {
+        self.max_tokens = Some(max_tokens);
         self
     }
 }
@@ -99,8 +107,9 @@ impl DecisionProvider<Value, Value> for OpenAiProvider {
             "schema": request.schema,
             "schema_version": request.schema_version,
             "metadata": request.metadata,
+            "deadline_ms": request.deadline_ms,
         });
-        let body = json!({
+        let mut body = json!({
             "model": self.config.model,
             "temperature": 0,
             "response_format": { "type": "json_object" },
@@ -115,6 +124,9 @@ impl DecisionProvider<Value, Value> for OpenAiProvider {
                 }
             ]
         });
+        if let Some(max_tokens) = self.config.max_tokens {
+            body["max_tokens"] = json!(max_tokens);
+        }
 
         let timeout = context
             .remaining()
@@ -192,6 +204,8 @@ fn normalize_endpoint(endpoint: &str) -> String {
     let endpoint = endpoint.trim_end_matches('/');
     if endpoint.ends_with("/chat/completions") {
         endpoint.to_owned()
+    } else if endpoint.ends_with("/v1") {
+        format!("{endpoint}/chat/completions")
     } else {
         format!("{endpoint}/v1/chat/completions")
     }
@@ -213,6 +227,10 @@ mod tests {
         );
         assert_eq!(
             normalize_endpoint("http://localhost:8000/v1/chat/completions"),
+            "http://localhost:8000/v1/chat/completions"
+        );
+        assert_eq!(
+            normalize_endpoint("http://localhost:8000/v1"),
             "http://localhost:8000/v1/chat/completions"
         );
     }

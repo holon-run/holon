@@ -10,6 +10,13 @@ pub struct ConfigSchemaEntry {
     pub allowed_values: Vec<&'static str>,
 }
 
+fn ensure_decision_route(config: &mut HolonConfigFile) -> &mut DecisionRouteConfigFile {
+    config
+        .decision
+        .route
+        .get_or_insert_with(DecisionRouteConfigFile::default)
+}
+
 fn parse_optional_session_ttl(key: &str, raw_value: &str) -> Result<Option<u64>> {
     let value = raw_value.trim();
     if value.eq_ignore_ascii_case("null") || value == "0" {
@@ -523,6 +530,62 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "decision.enabled",
+            kind: "boolean",
+            description: "Enable the optional Decision provider integration. Disabled by default.",
+            default: json!(false),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "decision.route.endpoint",
+            kind: "string",
+            description: "OpenAI-compatible Decision route endpoint.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.route.model",
+            kind: "string",
+            description: "Model name used by the Decision route.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.route.credential_profile",
+            kind: "string",
+            description: "Credential profile used for the Decision route.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.timeout_ms",
+            kind: "positive_integer",
+            description: "Decision provider deadline in milliseconds.",
+            default: json!(1500),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.max_tokens",
+            kind: "positive_integer",
+            description: "Optional maximum output token count for Decision responses.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.concurrency",
+            kind: "positive_integer",
+            description: "Maximum concurrent Decision provider requests.",
+            default: json!(4),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.queue_capacity",
+            kind: "positive_integer",
+            description: "Maximum queued Decision provider requests.",
+            default: json!(32),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "tui.alternate_screen",
             kind: "enum",
             description: "Whether the TUI uses the terminal alternate screen buffer.",
@@ -989,6 +1052,46 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .incremental_vacuum_pages
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "decision.enabled" => Ok(json!(config.decision.enabled.unwrap_or(false))),
+        "decision.route.endpoint" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .map(|route| json!(route.endpoint))
+            .unwrap_or(Value::Null)),
+        "decision.route.model" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .map(|route| json!(route.model))
+            .unwrap_or(Value::Null)),
+        "decision.route.credential_profile" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.credential_profile.as_ref())
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "decision.timeout_ms" => Ok(config
+            .decision
+            .timeout_ms
+            .map(|value| json!(value))
+            .unwrap_or_else(|| json!(1500))),
+        "decision.max_tokens" => Ok(config
+            .decision
+            .max_tokens
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "decision.concurrency" => Ok(config
+            .decision
+            .concurrency
+            .map(|value| json!(value))
+            .unwrap_or_else(|| json!(4))),
+        "decision.queue_capacity" => Ok(config
+            .decision
+            .queue_capacity
+            .map(|value| json!(value))
+            .unwrap_or_else(|| json!(32))),
         "tui.alternate_screen" => Ok(config
             .tui
             .alternate_screen
@@ -1357,6 +1460,28 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             config.runtime.retention.incremental_vacuum_pages =
                 Some(parse_positive_u32_key(key, raw_value)?);
         }
+        "decision.enabled" => {
+            config.decision.enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "decision.route.endpoint" => ensure_decision_route(config).endpoint = raw_value.to_owned(),
+        "decision.route.model" => ensure_decision_route(config).model = raw_value.to_owned(),
+        "decision.route.credential_profile" => {
+            ensure_decision_route(config).credential_profile = Some(raw_value.to_owned())
+        }
+        "decision.timeout_ms" => {
+            config.decision.timeout_ms = Some(parse_positive_u64_key(key, raw_value)?)
+        }
+        "decision.max_tokens" => {
+            config.decision.max_tokens = Some(parse_positive_u32_key(key, raw_value)?)
+        }
+        "decision.concurrency" => {
+            config.decision.concurrency = Some(parse_positive_usize_key(key, raw_value)?)
+        }
+        "decision.queue_capacity" => {
+            config.decision.queue_capacity = Some(parse_positive_usize_key(key, raw_value)?)
+        }
         "tui.alternate_screen" => {
             config.tui.alternate_screen = Some(AltScreenMode::parse(raw_value)?);
         }
@@ -1669,6 +1794,26 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "runtime.retention.incremental_vacuum_pages" => {
             config.runtime.retention.incremental_vacuum_pages = None;
         }
+        "decision.enabled" => config.decision.enabled = None,
+        "decision.route.endpoint" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.endpoint.clear();
+            }
+        }
+        "decision.route.model" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.model.clear();
+            }
+        }
+        "decision.route.credential_profile" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.credential_profile = None;
+            }
+        }
+        "decision.timeout_ms" => config.decision.timeout_ms = None,
+        "decision.max_tokens" => config.decision.max_tokens = None,
+        "decision.concurrency" => config.decision.concurrency = None,
+        "decision.queue_capacity" => config.decision.queue_capacity = None,
         "tui.alternate_screen" => config.tui.alternate_screen = None,
         "web.fetch.enabled" => config.web.fetch.enabled = None,
         "web.fetch.max_chars" => config.web.fetch.max_chars = None,

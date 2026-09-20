@@ -68,6 +68,9 @@ impl OpenAiSemanticCandidateSelectionHook {
         );
         let mut provider_config =
             OpenAiConfig::new(route.endpoint.clone(), route.model.clone()).with_timeout(timeout);
+        if let Some(max_tokens) = configured.max_tokens {
+            provider_config = provider_config.with_max_tokens(max_tokens);
+        }
         if let Some(profile) = route.credential_profile.as_deref() {
             let store = crate::config::load_credential_store_at(
                 &crate::config::credential_store_path(&config.home_dir),
@@ -218,14 +221,15 @@ impl DecisionExecutor {
             ));
         }
         let _pending_guard = PendingGuard(Arc::clone(&self.pending));
-        let permit = tokio::time::timeout(self.timeout, self.concurrency.acquire())
+        let context = DecisionContext::with_timeout(self.timeout);
+        let remaining = context.remaining().ok_or(DecisionError::DeadlineExceeded)?;
+        let permit = tokio::time::timeout(remaining, self.concurrency.acquire())
             .await
             .map_err(|_| DecisionError::DeadlineExceeded)?
             .map_err(|_| DecisionError::Cancelled)?;
-        let context = DecisionContext::with_timeout(self.timeout);
         let cancellation = context.cancellation_token();
-        let result =
-            tokio::time::timeout(self.timeout, self.provider.decide(request, context)).await;
+        let remaining = context.remaining().ok_or(DecisionError::DeadlineExceeded)?;
+        let result = tokio::time::timeout(remaining, self.provider.decide(request, context)).await;
         drop(permit);
         match result {
             Ok(result) => result,

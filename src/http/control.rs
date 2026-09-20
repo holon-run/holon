@@ -473,6 +473,14 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "runtime.default_tool_output_tokens"
             | "runtime.max_tool_output_tokens"
             | "runtime.disable_provider_fallback"
+            | "decision.enabled"
+            | "decision.route.endpoint"
+            | "decision.route.model"
+            | "decision.route.credential_profile"
+            | "decision.timeout_ms"
+            | "decision.max_tokens"
+            | "decision.concurrency"
+            | "decision.queue_capacity"
     ) || key.starts_with("runtime.retention.")
         || key.starts_with("providers.")
         || key.starts_with("agent_templates.")
@@ -1349,6 +1357,8 @@ mod tests {
     fn runtime_mutable_config_keys_include_visual_model_defaults() {
         assert!(is_runtime_mutable_config_key("vision.default"));
         assert!(is_runtime_mutable_config_key("image_generation.default"));
+        assert!(is_runtime_mutable_config_key("decision.enabled"));
+        assert!(is_runtime_mutable_config_key("decision.route.endpoint"));
         assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
     }
 
