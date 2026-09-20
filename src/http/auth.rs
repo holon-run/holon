@@ -190,8 +190,7 @@ pub async fn exchange_session(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SessionExchangeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let (session, cookie) =
-        exchange_session_credential(State(state), ApiJson(request)).await?;
+    let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
     Ok((
         StatusCode::OK,
         [(
@@ -211,8 +210,7 @@ pub async fn exchange_session_native(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SessionExchangeRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    let (session, cookie) =
-        exchange_session_credential(State(state), ApiJson(request)).await?;
+    let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
     Ok((
         StatusCode::OK,
         [(
