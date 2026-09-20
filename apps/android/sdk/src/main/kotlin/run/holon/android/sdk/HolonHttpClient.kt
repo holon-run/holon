@@ -67,10 +67,7 @@ public class HolonHttpClient internal constructor(
 
     private val baseUrl: HttpUrl = normalizeBaseUrl(baseUrl)
     private val sseHttpClient: OkHttpClient =
-        httpClient
-            .newBuilder()
-            .callTimeout(0, TimeUnit.MILLISECONDS)
-            .build()
+        sseHttpClient(httpClient)
 
     public fun handshake(
         requiredCapabilities: Set<String> = emptySet(),
@@ -374,7 +371,7 @@ public class HolonHttpClient internal constructor(
                         )
                     try {
                         for (event in connection.events()) {
-                            lastEventId = event.id ?: event.eventSeq?.toString() ?: lastEventId
+                            lastEventId = event.id ?: lastEventId
                             if (deduplicator.accept(event)) {
                                 emitted = true
                                 yield(event)
@@ -576,9 +573,13 @@ public class HolonHttpClient internal constructor(
                 .build()
 
         internal fun defaultSseHttpClient(): OkHttpClient =
-            defaultHttpClient()
+            sseHttpClient(defaultHttpClient())
+
+        private fun sseHttpClient(httpClient: OkHttpClient): OkHttpClient =
+            httpClient
                 .newBuilder()
                 .callTimeout(0, TimeUnit.MILLISECONDS)
+                .readTimeout(45, TimeUnit.SECONDS)
                 .build()
 
         internal fun normalizeBaseUrl(value: String): HttpUrl {

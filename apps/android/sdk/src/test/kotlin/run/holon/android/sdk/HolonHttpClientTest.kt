@@ -20,7 +20,10 @@ class HolonHttpClientTest {
 
     @Test
     fun `default SSE client has no total call timeout`() {
-        assertEquals(0, HolonHttpClient.defaultSseHttpClient().callTimeoutMillis)
+        val client = HolonHttpClient.defaultSseHttpClient()
+
+        assertEquals(0, client.callTimeoutMillis)
+        assertEquals(45_000, client.readTimeoutMillis)
     }
 
     @Test
