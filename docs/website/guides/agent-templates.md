@@ -20,6 +20,7 @@ Common scenarios:
 - **Creating a synced reviewer agent** — `holon agent create reviewer --template code-reviewer`
 - **Working with office documents** — `holon agent create office --template office-assistant`
 - **Producing video deliverables** — `holon agent create video --template video-producer`
+- **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
 - **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
 - **One-shot tasks with a role** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -48,6 +49,24 @@ directly from upstream, alongside `sview`, `uxc`, and `agentinbox`.
 
 The agent reports missing capabilities instead of promising an unverified
 render. Start with supplied assets for the no-cloud production path.
+
+## Acceptance and quality
+
+`qa-engineer` owns acceptance after a change lands. It is not a license to
+add product features or to replace `code-reviewer`.
+
+- **Acceptance ownership is not extra unit tests.** Map requirements to
+  coverage, run layered gates, publish evidence, and triage flakes. Closing an
+  issue is not the same as verifying it.
+- **Project skill, not an official playbook.** The template does not ship an
+  `issue-verify` skill. On first verification the agent creates a
+  project-specific skill under `agent_home/skills/` and patches it from
+  practice. Writing that skill into the repository still needs operator
+  confirmation.
+- **Hard constraints.** No product-code edits by default, no merge by default,
+  no verification labels without a fix vehicle, and empty results are not a
+  pass. A project skill cannot override those rules. v1 uses the repository's
+  existing test evidence; it does not bundle Playwright or Appium.
 
 ## Template Naming
 

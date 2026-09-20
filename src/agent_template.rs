@@ -3502,6 +3502,7 @@ mod tests {
             "office-assistant",
             "server-ops",
             "video-producer",
+            "qa-engineer",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3615,6 +3616,29 @@ mod tests {
         assert!(video_agents_md.contains("`remotion-best-practices`"));
         assert!(video_agents_md.contains("does not bundle upstream skill files"));
         assert!(video_agents_md.contains("Before first Remotion use"));
+
+        let qa_template = syncable.join("qa-engineer");
+        assert_eq!(
+            local_template_skills(&qa_template),
+            vec![
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+            ]
+        );
+        let qa_agents_md = fs::read_to_string(qa_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(qa_agents_md.contains("do not replace `software-developer` or `code-reviewer`"));
+        assert!(qa_agents_md.contains("Never change product code by default"));
+        assert!(qa_agents_md.contains("prefer `agent_home/skills/`"));
+        assert!(qa_agents_md.contains("There is no official `issue-verify` skill"));
+        assert!(qa_agents_md.contains("cannot be overridden by a project skill"));
+        assert!(qa_agents_md.contains("no fix vehicle"));
+        assert!(qa_agents_md.contains("`verified`"));
+        assert!(qa_agents_md.contains("`needs-human-review`"));
+        assert!(qa_agents_md.contains("Do not take on `github-issue-solve`"));
+        assert!(!qa_agents_md.contains("tuptup"));
+        assert!(!qa_agents_md.contains("healthz"));
     }
 
     #[test]

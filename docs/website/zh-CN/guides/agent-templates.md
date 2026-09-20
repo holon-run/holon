@@ -19,6 +19,7 @@ Agent 会以一个通用的默认契约启动。
 - **创建可同步的评审 Agent** — `holon agent create reviewer --template code-reviewer`
 - **处理办公文档** — `holon agent create office --template office-assistant`
 - **制作视频成片** — `holon agent create video --template video-producer`
+- **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **运维服务器和服务** — `holon agent create ops --template server-ops`
 - **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
 - **带角色的一次性任务** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -40,6 +41,20 @@ Agent 会以一个通用的默认契约启动。
   后端。发布、购买及涉及权利的操作需要单独授权。
 
 Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无云制作流程从已有素材开始。
+
+## 验收与质量
+
+`qa-engineer` 负责变更落地后的验收。它不是补产品功能的许可，也不替代
+`code-reviewer`。
+
+- **验收所有权 ≠ 补单测。** 把需求映射到覆盖、跑分层门禁、给出证据、分诊 flake。
+  issue 关闭不等于已经验收。
+- **项目 skill，不是官方 playbook。** 模板不附带 `issue-verify` skill。首次验收时，
+  Agent 在 `agent_home/skills/` 为当前项目创建验收 skill，并按实践补丁式改进。
+  把 skill 写入仓库仍须操作者确认。
+- **硬约束。** 默认不改产品代码、不合并、无修复载体不打验证标签，空结果不算通过。
+  项目 skill 覆盖不了这些规则。v1 使用仓库既有测试证据，不捆绑 Playwright 或
+  Appium。
 
 ## 模板命名
 
