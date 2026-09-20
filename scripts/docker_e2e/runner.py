@@ -3523,15 +3523,31 @@ def recovered_retry_ticks(
     failed_ticks: list[dict[str, Any]],
     recovered_ticks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    failed_keys = {
-        tick["idempotency_key"]
-        for tick in failed_ticks
-        if tick["status"] in {"aborted", "interrupted"}
-    }
+    failed_generations: dict[str, int] = {}
+    for tick in failed_ticks:
+        if tick["status"] not in {"aborted", "interrupted"}:
+            continue
+        key = tick.get("idempotency_key")
+        if not isinstance(key, str) or ":generation:" not in key:
+            continue
+        identity, generation = key.rsplit(":generation:", 1)
+        if generation.isdigit():
+            failed_generations[identity] = max(
+                failed_generations.get(identity, -1),
+                int(generation),
+            )
+
     return [
         tick
         for tick in recovered_ticks
-        if tick["status"] == "processed" and tick["idempotency_key"] in failed_keys
+        if tick["status"] == "processed"
+        and isinstance(tick.get("idempotency_key"), str)
+        and ":generation:" in tick["idempotency_key"]
+        and tick["idempotency_key"].rsplit(":generation:", 1)[0]
+        in failed_generations
+        and tick["idempotency_key"].rsplit(":generation:", 1)[1].isdigit()
+        and int(tick["idempotency_key"].rsplit(":generation:", 1)[1])
+        > failed_generations[tick["idempotency_key"].rsplit(":generation:", 1)[0]]
     ]
 
 
@@ -3902,9 +3918,29 @@ def run_scheduler_provider_failure_retry_case(
         f"an aborted/interrupted attempt: failed={failed_ticks}, "
         f"recovered={recovered_ticks}",
     )
+    recovered_keys = {tick["idempotency_key"] for tick in processed_ticks}
+    failed_identities = {
+        key.rsplit(":generation:", 1)[0]
+        for key in failed_keys
+        if isinstance(key, str) and ":generation:" in key
+    }
     require(
-        {tick["idempotency_key"] for tick in recovered_ticks} == failed_keys,
-        f"provider recovery changed continue-active idempotency: {recovered_ticks}",
+        recovered_keys
+        and all(
+            isinstance(key, str)
+            and ":generation:" in key
+            and key.rsplit(":generation:", 1)[0] in failed_identities
+            and int(key.rsplit(":generation:", 1)[1])
+            > max(
+                int(failed_key.rsplit(":generation:", 1)[1])
+                for failed_key in failed_keys
+                if failed_key.rsplit(":generation:", 1)[0]
+                == key.rsplit(":generation:", 1)[0]
+            )
+            for key in recovered_keys
+        ),
+        f"provider recovery did not advance continue-active generation: "
+        f"failed={failed_ticks}, recovered={recovered_ticks}",
     )
     required, forbidden = phase_tools(case["phases"][0])
     harness.assert_tools(
