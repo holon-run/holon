@@ -30,6 +30,7 @@ class HolonHttpClientDaemonTest {
                 .redirectOutput(log.toFile())
                 .apply {
                     environment()["HOLON_HOME"] = home.toString()
+                    environment()["HOLON_MODEL"] = TEST_MODEL
                 }
                 .start()
 
@@ -115,5 +116,6 @@ class HolonHttpClientDaemonTest {
 
     private companion object {
         const val LISTENING_PREFIX = "Holon listening on "
+        const val TEST_MODEL = "openai/gpt-5.4"
     }
 }
