@@ -47,6 +47,8 @@ pub(crate) const TASK_RESULT_SETTLEMENT_OWNER_VERSION: i64 = 69;
 pub(crate) const TASK_RESULT_SETTLEMENT_OWNER_NAME: &str = "task_result_settlement_nullable_owner";
 pub(crate) const AGENT_DELETION_RETRY_DEADLINE_VERSION: i64 = 70;
 pub(crate) const AGENT_DELETION_RETRY_DEADLINE_NAME: &str = "agent_deletion_retry_deadline";
+pub(crate) const MEMORY_REBUILD_KEYSET_INDEXES_VERSION: i64 = 71;
+pub(crate) const MEMORY_REBUILD_KEYSET_INDEXES_NAME: &str = "memory_rebuild_keyset_indexes";
 pub(crate) const CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL: &str = r#"
 SELECT
   json_extract(
@@ -3680,6 +3682,11 @@ CREATE INDEX idx_agent_deletion_jobs_status_retry_created
   ON agent_deletion_jobs(status, next_attempt_at, created_at);
 "#,
     },
+    Migration {
+        version: MEMORY_REBUILD_KEYSET_INDEXES_VERSION,
+        name: MEMORY_REBUILD_KEYSET_INDEXES_NAME,
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -3996,6 +4003,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "agent_display_names" {
         ensure_agent_display_names_schema(transaction)?;
+    }
+    if migration.name == MEMORY_REBUILD_KEYSET_INDEXES_NAME {
+        migrate_memory_rebuild_keyset_indexes(transaction)?;
     }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -5872,6 +5882,43 @@ fn migrate_runtime_retention_created_at_indexes(connection: &Connection) -> Resu
             "CREATE INDEX IF NOT EXISTS idx_tool_executions_created
                ON tool_executions(created_at, evidence_id);",
         )?;
+    }
+    Ok(())
+}
+
+/// Add the keyset indexes the bounded memory index rebuild paginates with.
+///
+/// Every agent-scoped rebuild source pages one agent's rows by an evidence key
+/// while ordering by that same key. Without an `(agent column, key column)`
+/// prefix the planner can only filter on the agent column and then sorts each
+/// agent's entire backlog through a temporary b-tree *on every page*, so read
+/// work grows with the agent's row count instead of the page size. Only
+/// append-mostly evidence tables are indexed here; small or hot mutable tables
+/// would pay more in write churn than the rebuild saves.
+///
+/// Tables are guarded because the compatibility chain is applied to synthetic
+/// databases that predate them.
+fn migrate_memory_rebuild_keyset_indexes(connection: &Connection) -> Result<()> {
+    for (table, statement) in [
+        (
+            "messages",
+            "CREATE INDEX IF NOT EXISTS idx_messages_agent_evidence
+               ON messages(agent_id, evidence_id);",
+        ),
+        (
+            "tool_executions",
+            "CREATE INDEX IF NOT EXISTS idx_tool_executions_agent_evidence
+               ON tool_executions(agent_id, evidence_id);",
+        ),
+        (
+            "briefs",
+            "CREATE INDEX IF NOT EXISTS idx_briefs_agent_evidence
+               ON briefs(agent_id, evidence_id);",
+        ),
+    ] {
+        if table_exists_internal(connection, table)? {
+            connection.execute_batch(statement)?;
+        }
     }
     Ok(())
 }
