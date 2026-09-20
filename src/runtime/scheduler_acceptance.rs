@@ -226,6 +226,7 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 scheduler::SchedulerInput::IdleSignal(
                     scheduler::SchedulerIdleSignal::QueuedAvailable {
                         work_item: &work_item,
+                        work_item_generation: None,
                         duplicate: None,
                     },
                 ),
@@ -533,6 +534,7 @@ async fn seed_scheduler_waiting_work(
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: None,
         }),
     );
@@ -2024,6 +2026,7 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: None,
         }),
     );

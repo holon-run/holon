@@ -899,6 +899,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::ContinueActive {
             work_item: &work_item,
+            work_item_generation: None,
             suppressed_after_model_reentry_continuation: false,
             duplicate: None,
         }),
@@ -940,6 +941,7 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: None,
         }),
     );
@@ -1502,6 +1504,7 @@ fn decide_next_action_records_duplicate_tick_evidence() {
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: Some(
                 scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage("msg-1".into()),
             ),

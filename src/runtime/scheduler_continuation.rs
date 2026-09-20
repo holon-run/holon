@@ -186,7 +186,7 @@ impl RuntimeHandle {
         match trigger {
             Some(IdleTickTrigger::WorkQueueActive(active, generation)) => {
                 let duplicate = self
-                    .duplicate_continue_active_result_brief_id(&active)?
+                    .duplicate_continue_active_result_brief_id(&active, generation)?
                     .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief);
                 let decision = scheduler::decide_next_action(
                     &scheduler_projection,
@@ -194,6 +194,7 @@ impl RuntimeHandle {
                     scheduler::SchedulerInput::IdleSignal(
                         scheduler::SchedulerIdleSignal::ContinueActive {
                             work_item: &active,
+                            work_item_generation: generation,
                             suppressed_after_model_reentry_continuation: suppress_continue_active,
                             duplicate: duplicate.clone(),
                         },
@@ -237,7 +238,7 @@ impl RuntimeHandle {
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued, generation)) => {
                 let duplicate = self
-                    .duplicate_queued_available_message_id(&queued)?
+                    .duplicate_queued_available_message_id(&queued, generation)?
                     .map(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage);
                 let decision = scheduler::decide_next_action(
                     &scheduler_projection,
@@ -245,6 +246,7 @@ impl RuntimeHandle {
                     scheduler::SchedulerInput::IdleSignal(
                         scheduler::SchedulerIdleSignal::QueuedAvailable {
                             work_item: &queued,
+                            work_item_generation: generation,
                             duplicate: duplicate.clone(),
                         },
                     ),
@@ -503,9 +505,10 @@ impl RuntimeHandle {
     fn duplicate_queued_available_message_id(
         &self,
         work_item: &crate::types::WorkItemRecord,
+        generation: Option<u64>,
     ) -> Result<Option<String>> {
         if let Some((message_id, message_created_at)) = self.duplicate_work_queue_tick_message_id(
-            &scheduler::work_queue_tick_idempotency_key(work_item, "queued_available"),
+            &scheduler::work_queue_tick_idempotency_key(work_item, "queued_available", generation),
         )? {
             // Even when the idempotency key matches, a provider failure may have
             // left the WorkItem still runnable. Check whether any work signal
@@ -544,9 +547,10 @@ impl RuntimeHandle {
     fn duplicate_continue_active_result_brief_id(
         &self,
         work_item: &crate::types::WorkItemRecord,
+        generation: Option<u64>,
     ) -> Result<Option<String>> {
         if let Some((message_id, message_created_at)) = self.duplicate_work_queue_tick_message_id(
-            &scheduler::work_queue_tick_idempotency_key(work_item, "continue_active"),
+            &scheduler::work_queue_tick_idempotency_key(work_item, "continue_active", generation),
         )? {
             // Same rationale as duplicate_queued_available_message_id: a provider
             // failure during the active continuation turn must not permanently
@@ -834,7 +838,8 @@ impl RuntimeHandle {
         reason: &str,
         decision: Option<&scheduler::SchedulerDecision>,
     ) -> Result<()> {
-        let idempotency_key = scheduler::work_queue_tick_idempotency_key(work_item, reason);
+        let idempotency_key =
+            scheduler::work_queue_tick_idempotency_key(work_item, reason, work_item_generation);
         let mut message = MessageEnvelope::new(
             self.agent_id().await?,
             MessageKind::SystemTick,
@@ -1315,6 +1320,37 @@ mod tests {
                 state,
             },
         );
+        test_runtime
+            .runtime
+            .inner
+            .runtime_db
+            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+            .unwrap();
+    }
+
+    fn set_work_item_generation(test_runtime: &TestRuntime, work_item_id: &str, generation: u64) {
+        use crate::domain::execution_protocol::{ExecutionProtocolState, WorkItemExecutionState};
+
+        let mut execution = test_runtime
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap_or_else(|| ExecutionProtocolState::empty("default"));
+        let work_item = execution
+            .work_items
+            .get_mut(work_item_id)
+            .expect("test WorkItem execution exists");
+        let recovery_ref = match &work_item.state {
+            WorkItemExecutionState::Runnable { recovery_ref, .. } => recovery_ref.clone(),
+            state => panic!("expected runnable test WorkItem, got {state:?}"),
+        };
+        work_item.state = WorkItemExecutionState::Runnable {
+            generation,
+            recovery_ref,
+        };
         test_runtime
             .runtime
             .inner
@@ -2132,7 +2168,7 @@ mod tests {
 
         let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
         let idempotency_key =
-            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available");
+            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available", None);
         let mut existing_tick = MessageEnvelope::new(
             "default",
             MessageKind::SystemTick,
@@ -2208,7 +2244,7 @@ mod tests {
 
         let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
         let idempotency_key =
-            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available");
+            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available", None);
         let mut existing_tick = MessageEnvelope::new(
             "default",
             MessageKind::SystemTick,
@@ -2638,8 +2674,9 @@ mod tests {
         set_agent_idle(&test_runtime);
 
         let active = add_current_work_item(&test_runtime, "wi-active", "active-target");
+        set_work_item_generation(&test_runtime, &active.id, 2);
         let idempotency_key =
-            scheduler::work_queue_tick_idempotency_key(&active, "continue_active");
+            scheduler::work_queue_tick_idempotency_key(&active, "continue_active", Some(1));
         let mut existing_tick = MessageEnvelope::new(
             "default",
             MessageKind::SystemTick,
@@ -2660,7 +2697,8 @@ mod tests {
                 "idempotency_key": idempotency_key,
                 "reason": "continue_active",
                 "work_item_id": active.id.clone(),
-                "work_item_revision": active.revision
+                "work_item_revision": active.revision,
+                "work_item_generation": 1
             }
         }));
         test_runtime
@@ -2689,6 +2727,15 @@ mod tests {
         let ticks = get_emitted_system_ticks(&test_runtime);
         assert_eq!(ticks.len(), 1);
         assert_eq!(ticks[0].1["reason"].as_str(), Some("continue_active"));
+        assert_eq!(
+            ticks[0].1["work_item_generation"].as_u64(),
+            Some(2),
+            "a newer execution generation must not be suppressed by an older tick"
+        );
+        assert_eq!(
+            ticks[0].1["idempotency_key"].as_str(),
+            Some("work_queue:continue_active:wi-active:1:generation:2")
+        );
     }
 
     #[test]
