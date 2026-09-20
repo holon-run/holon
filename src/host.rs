@@ -1346,10 +1346,25 @@ impl RuntimeHost {
         }
     }
 
+    /// Cadence for best-effort WAL truncation on the maintenance daemon.
+    /// Bounds the wal-index high-water mark between autocheckpoint rounds
+    /// without blocking foreground readers or writers.
+    const RUNTIME_DB_WAL_CHECKPOINT_INTERVAL: Duration = Duration::from_secs(15 * 60);
+
     async fn run_daemon_runtime_db_retention(self) {
+        let mut next_wal_checkpoint = tokio::time::Instant::now();
+        // Retention keeps its own deadline so the shorter WAL checkpoint
+        // cadence cannot silently raise the retention pass frequency above
+        // the configured interval.
+        let mut next_retention_pass = tokio::time::Instant::now();
         loop {
             if self.inner.daemon_retention_token.is_cancelled() {
                 break;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= next_wal_checkpoint {
+                next_wal_checkpoint = now + Self::RUNTIME_DB_WAL_CHECKPOINT_INTERVAL;
+                self.run_runtime_db_wal_checkpoint().await;
             }
             let policy = match self.config().runtime_db_retention_policy() {
                 Ok(policy) => policy,
@@ -1367,7 +1382,11 @@ impl RuntimeHost {
                     continue;
                 }
             };
-            if policy.enabled {
+            let retention_enabled = policy.enabled;
+            let retention_round =
+                Duration::from_secs(policy.interval_hours.saturating_mul(60 * 60));
+            if retention_enabled && now >= next_retention_pass {
+                next_retention_pass = now + retention_round;
                 let db = self.inner.runtime_db.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     db.run_retention_pass(policy, chrono::Utc::now())
@@ -1398,18 +1417,50 @@ impl RuntimeHost {
                     }
                 }
             }
-            let interval_hours = self
-                .config()
-                .runtime_db_retention_policy()
-                .map(|policy| policy.interval_hours)
-                .unwrap_or(1);
-            if self
-                .wait_daemon_retention_round(Duration::from_secs(
-                    interval_hours.saturating_mul(60 * 60),
-                ))
-                .await
-            {
+            // Sleep until the earlier pending deadline. While retention is
+            // disabled its deadline stays in the past and must not shrink the
+            // wait; policy reloads are still observed on every checkpoint wake.
+            let now = tokio::time::Instant::now();
+            let mut wait = next_wal_checkpoint.saturating_duration_since(now);
+            if retention_enabled {
+                wait = wait.min(next_retention_pass.saturating_duration_since(now));
+            }
+            if self.wait_daemon_retention_round(wait).await {
                 break;
+            }
+        }
+    }
+
+    /// Best-effort WAL truncation on the maintenance daemon's schedule. This
+    /// daemon holds the fleet-wide maintenance lock, so exactly one process
+    /// checkpoints; a busy database retries on the next round.
+    async fn run_runtime_db_wal_checkpoint(&self) {
+        let db = self.inner.runtime_db.clone();
+        let result = tokio::task::spawn_blocking(move || db.run_wal_checkpoint_pass()).await;
+        match result {
+            Ok(Ok(report)) => {
+                crate::diagnostics::record_runtime_db_wal_checkpoint(&report);
+                if report.busy {
+                    tracing::debug!(
+                        wal_bytes = report.wal_bytes_before,
+                        "runtime db wal checkpoint deferred: database busy"
+                    );
+                } else {
+                    tracing::info!(
+                        wal_bytes_before = report.wal_bytes_before,
+                        wal_bytes_after = report.wal_bytes_after,
+                        log_frames = report.log_frames,
+                        checkpointed_frames = report.checkpointed_frames,
+                        elapsed_ms = report.elapsed_ms,
+                        "runtime db wal checkpoint pass completed"
+                    );
+                }
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "runtime db wal checkpoint pass failed");
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "runtime db wal checkpoint task failed");
             }
         }
     }

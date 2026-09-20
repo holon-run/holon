@@ -10543,6 +10543,64 @@
             },
             "type": "array"
           },
+          "runtime_db_wal": {
+            "default": {
+              "busy": false,
+              "checkpointed_frames": 0,
+              "elapsed_ms": 0,
+              "last_pass_at": null,
+              "log_frames": 0,
+              "wal_bytes_after": 0,
+              "wal_bytes_before": 0
+            },
+            "properties": {
+              "busy": {
+                "type": "boolean"
+              },
+              "checkpointed_frames": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "elapsed_ms": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "last_pass_at": {
+                "default": null,
+                "description": "RFC 3339 timestamp of the last maintenance checkpoint pass; `None`\n until the daemon completes its first round.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "log_frames": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "wal_bytes_after": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "wal_bytes_before": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "wal_bytes_before",
+              "wal_bytes_after",
+              "busy",
+              "log_frames",
+              "checkpointed_frames",
+              "elapsed_ms"
+            ],
+            "type": "object"
+          },
           "scheduler": {
             "items": {
               "properties": {

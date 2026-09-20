@@ -5386,6 +5386,36 @@ export interface components {
                 /** Format: uint64 */
                 total_ms: number;
             }[];
+            /**
+             * @default {
+             *       "busy": false,
+             *       "checkpointed_frames": 0,
+             *       "elapsed_ms": 0,
+             *       "last_pass_at": null,
+             *       "log_frames": 0,
+             *       "wal_bytes_after": 0,
+             *       "wal_bytes_before": 0
+             *     }
+             */
+            runtime_db_wal: {
+                busy: boolean;
+                /** Format: uint64 */
+                checkpointed_frames: number;
+                /** Format: uint64 */
+                elapsed_ms: number;
+                /**
+                 * @description RFC 3339 timestamp of the last maintenance checkpoint pass; `None`
+                 *      until the daemon completes its first round.
+                 * @default null
+                 */
+                last_pass_at: string | null;
+                /** Format: uint64 */
+                log_frames: number;
+                /** Format: uint64 */
+                wal_bytes_after: number;
+                /** Format: uint64 */
+                wal_bytes_before: number;
+            };
             scheduler: {
                 /** Format: double */
                 avg_bytes?: number | null;

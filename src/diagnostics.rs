@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -52,6 +52,10 @@ static OBJECT_QUERY_CACHE_MISS: MetricAccumulator =
 static DB_CONNECTION_OPEN: MetricAccumulator = MetricAccumulator::new("db.connection.open");
 static DB_SIDECAR_CONSISTENCY_SCAN: MetricAccumulator =
     MetricAccumulator::new("db.sidecar_consistency_scan");
+static RUNTIME_DB_WAL_CHECKPOINT: MetricAccumulator =
+    MetricAccumulator::new("runtime_db.wal_checkpoint.pass");
+static LAST_RUNTIME_DB_WAL_CHECKPOINT: Mutex<Option<RuntimeDbWalCheckpointDiagnostics>> =
+    Mutex::new(None);
 static MEMORY_INDEX_WRITER_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
 static MEMORY_INDEX_WRITER_MAX_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
 static MEMORY_INDEX_WRITER_FOREGROUND_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
@@ -209,6 +213,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub projection_gate: ProjectionGateDiagnosticsSnapshot,
     pub db: Vec<MetricSnapshot>,
     #[serde(default)]
+    pub runtime_db_wal: RuntimeDbWalCheckpointDiagnostics,
+    #[serde(default)]
     pub memory_index_writer: MemoryIndexWriterDiagnosticsSnapshot,
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
@@ -219,6 +225,20 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub diagnostics_writer: crate::diagnostics_store::DiagnosticsWriterStats,
     #[serde(default)]
     pub attribution: Vec<attribution::StageSnapshot>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+pub struct RuntimeDbWalCheckpointDiagnostics {
+    /// RFC 3339 timestamp of the last maintenance checkpoint pass; `None`
+    /// until the daemon completes its first round.
+    #[serde(default)]
+    pub last_pass_at: Option<String>,
+    pub wal_bytes_before: u64,
+    pub wal_bytes_after: u64,
+    pub busy: bool,
+    pub log_frames: u64,
+    pub checkpointed_frames: u64,
+    pub elapsed_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -590,6 +610,25 @@ pub fn record_runtime_db_sidecar_consistency_scan(elapsed: Duration) {
     DB_SIDECAR_CONSISTENCY_SCAN.record(elapsed, None);
 }
 
+pub fn record_runtime_db_wal_checkpoint(
+    report: &crate::runtime_db::retention::RuntimeDbWalCheckpointReport,
+) {
+    process_started_at();
+    RUNTIME_DB_WAL_CHECKPOINT.record(Duration::from_millis(report.elapsed_ms), None);
+    let snapshot = RuntimeDbWalCheckpointDiagnostics {
+        last_pass_at: Some(report.started_at.to_rfc3339()),
+        wal_bytes_before: report.wal_bytes_before,
+        wal_bytes_after: report.wal_bytes_after,
+        busy: report.busy,
+        log_frames: report.log_frames,
+        checkpointed_frames: report.checkpointed_frames,
+        elapsed_ms: report.elapsed_ms,
+    };
+    if let Ok(mut slot) = LAST_RUNTIME_DB_WAL_CHECKPOINT.lock() {
+        *slot = Some(snapshot);
+    }
+}
+
 pub fn record_scheduler_poll(outcome: &'static str, elapsed: Duration) {
     process_started_at();
     SCHEDULER_POLL_ALL.record(elapsed, None);
@@ -871,7 +910,13 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
         db: vec![
             DB_CONNECTION_OPEN.snapshot(false),
             DB_SIDECAR_CONSISTENCY_SCAN.snapshot(false),
+            RUNTIME_DB_WAL_CHECKPOINT.snapshot(false),
         ],
+        runtime_db_wal: LAST_RUNTIME_DB_WAL_CHECKPOINT
+            .lock()
+            .ok()
+            .and_then(|slot| slot.clone())
+            .unwrap_or_default(),
         memory_index_writer: MemoryIndexWriterDiagnosticsSnapshot {
             queue_depth: MEMORY_INDEX_WRITER_QUEUE_DEPTH.load(Ordering::Relaxed),
             max_queue_depth: MEMORY_INDEX_WRITER_MAX_QUEUE_DEPTH.load(Ordering::Relaxed),

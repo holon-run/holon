@@ -25,6 +25,14 @@ pub fn render(snapshot: &PerformanceDiagnosticsSnapshot) -> String {
         render_metric(&mut output, metric);
     }
 
+    if snapshot.runtime_db_wal.last_pass_at.is_some() {
+        gauge(
+            &mut output,
+            "holon_runtime_db_wal_bytes",
+            snapshot.runtime_db_wal.wal_bytes_after,
+        );
+    }
+
     let writer = &snapshot.memory_index_writer;
     gauge(
         &mut output,
