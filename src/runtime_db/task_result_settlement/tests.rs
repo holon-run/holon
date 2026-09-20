@@ -127,6 +127,49 @@ fn admitted_result_can_be_rebound_after_restart() {
 }
 
 #[test]
+fn mark_deferred_preserves_admission_state_on_recheck_rewrites() {
+    let (_dir, db) = runtime_db();
+    insert(&db, &pending_record(0));
+    let admitted = db
+        .task_result_settlements()
+        .admit_unsettled("agent-a", Some("work-a"), "activation-1", Utc::now())
+        .unwrap();
+    assert_eq!(admitted.len(), 1);
+
+    // The recovery loop re-defers due rows on every recheck interval. The
+    // narrowed defer UPDATE must leave admission columns untouched so a
+    // recheck rewrite cannot silently drop the record back to pending.
+    let now = Utc::now();
+    let deferred = db
+        .task_result_settlements()
+        .mark_deferred(
+            "message-00",
+            "owner_has_unresolved_wait",
+            now,
+            now + Duration::seconds(30),
+        )
+        .unwrap()
+        .expect("settlement row exists");
+    assert_eq!(deferred.state, TaskResultSettlementState::CallerAdmitted);
+    assert_eq!(deferred.activation_id.as_deref(), Some("activation-1"));
+    assert_eq!(
+        deferred.deferred_reason.as_deref(),
+        Some("owner_has_unresolved_wait")
+    );
+
+    let reread = db
+        .task_result_settlements()
+        .latest_for_message("message-00")
+        .unwrap()
+        .expect("settlement row exists");
+    assert_eq!(reread.state, TaskResultSettlementState::CallerAdmitted);
+    assert_eq!(reread.activation_id.as_deref(), Some("activation-1"));
+    assert_eq!(reread.admitted_at, admitted[0].admitted_at);
+    assert_eq!(reread.disposition, None);
+    assert_eq!(reread, deferred);
+}
+
+#[test]
 fn active_admission_is_not_stolen_by_another_activation() {
     let (_dir, db) = runtime_db();
     let record = pending_record(0);
