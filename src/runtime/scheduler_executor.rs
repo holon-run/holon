@@ -1538,6 +1538,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             });
         if let scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
             expected_work_item_revision,
+            expected_work_item_generation,
             ..
         } = &scenario
         {
@@ -1551,6 +1552,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,
                     reason: "canonical_autonomous_execution_revision_stale",
+                });
+            }
+            if expected_work_item_generation
+                .is_some_and(|generation| authoritative_work.generation() != generation)
+            {
+                return Ok(CanonicalClaimOutcome::RejectQueued {
+                    scenario_class,
+                    reason: "canonical_autonomous_execution_generation_stale",
                 });
             }
         }

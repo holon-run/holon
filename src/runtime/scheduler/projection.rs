@@ -280,6 +280,13 @@ impl SchedulerProjection {
     pub(crate) fn work_reactivation_work_item(
         &self,
     ) -> Option<(&WorkItemRecord, WorkReactivationMode)> {
+        self.work_reactivation_work_item_with_generation()
+            .map(|(item, reactivation_mode, _)| (item, reactivation_mode))
+    }
+
+    pub(crate) fn work_reactivation_work_item_with_generation(
+        &self,
+    ) -> Option<(&WorkItemRecord, WorkReactivationMode, Option<u64>)> {
         let selection = select_autonomous_continuation(self)?;
         resolve_autonomous_continuation_work_item(self, &selection)
     }

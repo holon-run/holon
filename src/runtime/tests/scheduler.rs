@@ -1154,7 +1154,7 @@ fn autonomous_selection_hook_can_choose_another_legal_candidate() {
     let selection =
         scheduler::select_autonomous_continuation_with_hook(&projection, Some(&SelectQueuedHook))
             .unwrap();
-    let (work_item, mode) =
+    let (work_item, mode, _) =
         scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
 
     assert_eq!(work_item.id, "work-queued");
@@ -1168,7 +1168,7 @@ fn autonomous_selection_bypasses_hook_for_zero_or_one_candidate() {
     let selection =
         scheduler::select_autonomous_continuation_with_hook(&projection, Some(&UnexpectedHook))
             .unwrap();
-    let (work_item, mode) =
+    let (work_item, mode, _) =
         scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
     assert_eq!(work_item.id, "work-current");
     assert_eq!(mode, WorkReactivationMode::ContinueActive);
@@ -1191,7 +1191,7 @@ fn autonomous_selection_unavailable_abstain_and_error_use_static_baseline() {
     for hook in hooks {
         let selection =
             scheduler::select_autonomous_continuation_with_hook(&projection, hook).unwrap();
-        let (work_item, mode) =
+        let (work_item, mode, _) =
             scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
         assert_eq!(work_item.id, "work-current");
         assert_eq!(mode, WorkReactivationMode::ContinueActive);
@@ -1207,7 +1207,7 @@ fn autonomous_selection_rejects_unknown_candidate_and_stale_proposal_snapshot() 
     for hook in hooks {
         let selection =
             scheduler::select_autonomous_continuation_with_hook(&projection, Some(hook)).unwrap();
-        let (work_item, mode) =
+        let (work_item, mode, _) =
             scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
         assert_eq!(work_item.id, "work-current");
         assert_eq!(mode, WorkReactivationMode::ContinueActive);
