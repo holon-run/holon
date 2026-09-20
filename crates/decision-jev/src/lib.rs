@@ -390,8 +390,7 @@ mod tests {
             );
             return;
         };
-        let provider = JevProvider::new(JevConfig::vercel_gateway(api_key))
-        .expect("provider");
+        let provider = JevProvider::new(JevConfig::vercel_gateway(api_key)).expect("provider");
         let result = provider
             .decide(request(), DecisionContext::default())
             .await
