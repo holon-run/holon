@@ -71,17 +71,9 @@ If you plan to modify or contribute to Holon itself:
 - Holon installed on `PATH` (Homebrew or direct binary; see the walkthrough below)
 - A model provider API key (Anthropic, OpenAI, or compatible)
 
-## Repository orientation (contributors)
+## Looking for contributor specifications?
 
-This is a short orientation for contributors. End users don't need to know the repository layout.
-
-- `src/` contains the Rust runtime implementation and executable entrypoints.
-- `tests/` contains Rust integration tests and shared support.
-- `docs/` contains runtime contracts, design records, and current architecture
-  notes.
-- `agent_templates/` contains remote-syncable agent templates.
-- `docs/website/` contains this mdorigin documentation site.
-
+If you are contributing to the Holon runtime engine or need internal lifecycle state machine contracts, consult the [Runtime specs](/spec/) and repository development guidelines.
 
 <!-- INDEX:START -->
 

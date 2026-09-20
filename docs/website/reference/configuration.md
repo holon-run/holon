@@ -3,6 +3,7 @@ title: Configuration
 summary: Holon configuration files, keys, credentials, environment variables, and diagnostics.
 order: 15
 ---
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.44.1. -->
 
 # Configuration Reference
 

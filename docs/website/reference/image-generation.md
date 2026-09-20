@@ -26,6 +26,8 @@ When an agent calls GenerateImage, the runtime:
 
 ## Parameters
 
+> **Tool schema reference:** For the complete machine-readable tool schema, input constraints, and return fields, see the [Model tool schema inventory](/reference/model-tool-schema-inventory.md) and [Tools spec](/spec/tools.md).
+
 | Parameter | Required | Description |
 |-----------|----------|-------------|
 | `prompt` | yes | Detailed image-generation prompt |

@@ -42,10 +42,14 @@ Agent（谁）
 - 你能看到每个输入*来自哪里*、可信度多高。
 - 你可以把工作委托给子 Agent 并监督它们的进度。
 
-这些概念背后的权威设计契约，见仓库的
-[RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) 和
-[实现决策](https://github.com/holon-run/holon/tree/main/docs/implementation-decisions/)（英文）。
-这些是面向维护者的文档；使用 Holon 不需要它们。
+## 本节的边界与受众
+
+概念部分面向使用和集成 Holon 的用户，阐述**稳定、可观察的心智模型与核心语义**。
+即使底层存储或调度实现重写，这些概念依然成立。
+
+- 具体的逐步操作指南，请查阅 [指南](/zh-CN/guides/)。
+- 精确的 CLI 选项、配置键与 HTTP 接口定义，请查阅 [参考](/zh-CN/reference/)。
+- 调度器内部状态机与维护者契约，请参阅 [运行时规格](/zh-CN/spec/)。
 
 <!-- INDEX:START -->
 
@@ -70,7 +74,7 @@ Agent（谁）
   <!-- mdorigin:index kind=article -->
 
 - [文档分层](./documentation-layers.md)
-  Holon 如何区分产品文档、当前契约参考和维护者设计记录。
+  Holon 如何区分快速开始、概念模型、操作指南、功能参考与维护者运行时规格。
   <!-- mdorigin:index kind=article -->
 
 - [外部触发器](./external-triggers.md)

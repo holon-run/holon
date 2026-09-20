@@ -66,15 +66,9 @@ Holon 提供三种与运行时交互的方式：
 - Holon 已安装并在 `PATH` 上（Homebrew 或直接下载二进制；分步说明见下方教程）
 - 一个模型提供商 API key（Anthropic、OpenAI 或兼容服务）
 
-## 仓库导览（贡献者）
+## 寻找内核贡献者规格？
 
-这是给贡献者的简短导览。最终用户不需要了解仓库布局。
-
-- `src/` 包含 Rust 运行时实现和可执行入口。
-- `tests/` 包含 Rust 集成测试和共享测试支持。
-- `docs/` 包含运行时契约、设计记录和当前架构笔记。
-- `agent_templates/` 包含可远程同步的 Agent 模板。
-- `docs/website/` 包含本 mdorigin 文档站。
+如果你正在参与 Holon 运行时内核开发或需要查看内部状态机契约，请参阅面向维护者的 [运行时规格](/zh-CN/spec/) 与仓库开发指南。
 
 <!-- INDEX:START -->
 

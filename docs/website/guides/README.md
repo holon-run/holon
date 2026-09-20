@@ -16,6 +16,9 @@ work that waits on something, coordinating more than one agent, driving Holon
 from code or a browser, working with external content, and fixing a task that
 stalls.
 
+Every guide follows the same shape: goal and context, prerequisites, steps, and
+how to confirm success.
+
 <!-- INDEX:START -->
 
 - [Run your first Holon task](./quick-examples.md)

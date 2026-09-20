@@ -13,7 +13,7 @@ public data class AgentSummary(
     val currentRunId: String?,
 )
 
-public fun AgentListEntry.toAgentSummary(): AgentSummary =
+internal fun AgentListEntry.toAgentSummary(): AgentSummary =
     AgentSummary(
         id = identity.agentId,
         displayName = identity.name ?: identity.agentId,

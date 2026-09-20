@@ -85,8 +85,4 @@ class SdkFoundationTest {
         assertEquals("scheduler_v2", error.domain)
     }
 
-    private fun fixture(name: String): String =
-        requireNotNull(javaClass.getResource("/$name")) {
-            "missing fixture: $name"
-        }.readText()
 }

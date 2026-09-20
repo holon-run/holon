@@ -11,6 +11,8 @@ order: 13
 
 委派背后有一套模型：谁能行动、权限覆盖到哪里、结果如何被信任。参见[多 Agent 协作](/zh-CN/concepts/multi-agent-collaboration.md)。
 
+监督者/子 Agent 的生命周期和任务句柄契约见[任务规格](/zh-CN/spec/tasks.md)。
+
 ## 调用风格
 
 ### 受监督子任务（Subagent）

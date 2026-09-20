@@ -13,6 +13,8 @@ handling what comes back.
 Delegation has a model behind it: who may act, how far authority reaches, and
 how results are trusted. See [Multi-agent collaboration](/concepts/multi-agent-collaboration.md).
 
+Supervisor/child lifecycle and task-handle contracts are in the [Tasks spec](/spec/tasks.md).
+
 ## Invocation Styles
 
 ### Supervised Child Subagent

@@ -6,6 +6,8 @@ order: 1
 
 # Runtime specs
 
+> **Maintainer notice:** This section contains internal runtime specifications, state transitions, and implementation contracts for developers contributing to the Holon core engine. For user guides and command references, see [Guides](/guides/) and [Reference](/reference/).
+
 Spec pages describe the **current runtime contract** — what the Holon runtime
 actually does today, verified against implementation and tests.
 

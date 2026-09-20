@@ -122,3 +122,8 @@ prometheus \
    ```
 
 OTLP 故障并不意味着本地 trace 搜索失败：按配置的抽样和保留策略，保留的 trace 仍留在独立的诊断数据库中。
+
+## 相关参考与概念
+
+- [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — `/api/control/runtime/metrics` 端点的权威规范。
+- [配置参考](/zh-CN/reference/configuration.md) — 完整的 observability 和 OTLP 配置项 schema。

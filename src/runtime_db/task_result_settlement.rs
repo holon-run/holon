@@ -336,7 +336,7 @@ impl TaskResultSettlementRepository<'_> {
                 record.deferred_at = Some(now);
                 record.next_recheck_at = Some(next_recheck_at);
                 record.updated_at = now;
-                update_tx(tx, &record)?;
+                defer_update_tx(tx, &record)?;
             }
             Ok(Some(record))
         })
@@ -544,6 +544,29 @@ fn update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Resul
             record.deferred_reason,
             record.deferred_at.map(timestamp),
             record.next_recheck_at.map(timestamp),
+            payload,
+        ],
+    )?;
+    Ok(())
+}
+
+/// Narrowed UPDATE for the deferred-recheck hot path. The recovery loop
+/// rewrites the same due rows every recheck interval; a full-column UPDATE
+/// touches `state`/`activation_id` and churns every index referencing them
+/// even though those values never change on deferral.
+fn defer_update_tx(tx: &Transaction<'_>, record: &TaskResultSettlementRecord) -> Result<()> {
+    let payload = serde_json::to_string(record)?;
+    tx.execute(
+        "UPDATE task_result_settlements
+         SET deferred_reason = ?2, deferred_at = ?3, next_recheck_at = ?4,
+             updated_at = ?5, payload_json = ?6
+         WHERE result_identity = ?1",
+        params![
+            record.result_identity,
+            record.deferred_reason,
+            record.deferred_at.map(timestamp),
+            record.next_recheck_at.map(timestamp),
+            timestamp(record.updated_at),
             payload,
         ],
     )?;

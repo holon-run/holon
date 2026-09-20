@@ -6,6 +6,8 @@ order: 30
 
 # Workspaces and execution environments
 
+> **Mental model & specification:** To understand workspace security and trust boundaries, see [Security and execution boundaries](/concepts/security-and-execution-boundaries.md). For internal execution root invariants and worktree lifecycle contracts, see [Workspace and execution spec](/spec/workspace-and-execution.md).
+
 A workspace is the execution root for an agent — where it reads files, runs
 commands, and applies patches. Every agent always has exactly one active
 workspace.

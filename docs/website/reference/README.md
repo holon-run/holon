@@ -7,17 +7,38 @@ order: 40
 # Reference
 
 Reference pages describe Holon's current public surface as it actually behaves —
-not as it is planned or promised. Some are verified against the compiled runtime
-(`holon --help`, `holon config schema`); others document a tool or feature
-surface and name their maintenance source. Refresh them when behavior changes.
+not as it is planned or promised. They are verified against the compiled runtime
+(`holon --help`, `holon config schema`, route inventory) where applicable, and
+pages that document a tool or feature name their maintenance source. They are
+the authoritative single source of truth for syntax and options.
+
+## What is covered
+
+- **Command-line interface:** Command tree, flags, parameters, and exit codes.
+- **Configuration:** Configuration files, schema validation, and environment variables.
+- **HTTP control plane:** REST endpoints, authentication tokens, and payload definitions.
+- **Models & tools:** Provider catalogs, model support, and built-in tool schemas.
+
+Tutorials and step-by-step instructions belong in [Guides](/guides/). Internal engine mechanics belong in [Runtime specs](/spec/).
 
 > **Stability note:** The runtime is pre-1.0. CLI shapes, config keys, and HTTP
 > endpoints may change without prior notice. Each reference page records the
 > version it was last regenerated against where applicable. See the repository
 > [RFC index](https://github.com/holon-run/holon/tree/main/docs/rfcs) for design direction and stability status.
 
-Machine-readable surfaces: the generated baseline
-[OpenAPI 3.1 schema](./openapi.json) describes the current HTTP control-plane.
+## Hand-written pages vs generated baselines
+
+Hand-written pages are verified against a runtime artifact and record the
+version they were last checked against. Generated pages and machine-readable
+baselines are refreshed from source instead of edited here.
+
+| Page | Source of truth | Refresh |
+|---|---|---|
+| `cli.md` | `holon --help` | regenerate when the command tree changes |
+| `configuration.md` | `holon config schema`, `holon config list` | re-verify when config keys change |
+| `http-control-plane.md` | Axum route tree, OpenAPI 3.1 schema (`openapi.json`) | re-verify when routes or payloads change |
+| `models.md` | generated from `src/model_catalog.rs` | `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`, then `python3 docs/website/.tools/sync-generated-pages.py` |
+| `*-inventory.md`, `*-inventory.json` | generated JSON baselines | `make snapshots-refresh`, then review the diff |
 
 <!-- INDEX:START -->
 

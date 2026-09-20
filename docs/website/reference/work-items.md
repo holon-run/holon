@@ -6,6 +6,8 @@ order: 38
 
 # Work items
 
+> **Mental model & specification:** To understand why work items exist and how they fit into Holon's design, see [Runtime model concepts](/concepts/runtime-model.md). For internal state machine transitions and scheduler contracts, see [Work items spec](/spec/work-items.md).
+
 Work items are Holon's durable unit of tracked work. Use them when an objective
 needs its own lifecycle, progress tracking, or cross-turn continuity.
 
