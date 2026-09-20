@@ -5,8 +5,8 @@ const CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT: usize = 512;
 
 #[derive(Debug, Clone)]
 enum IdleTickTrigger {
-    WorkQueueActive(crate::types::WorkItemRecord),
-    WorkQueueQueued(crate::types::WorkItemRecord),
+    WorkQueueActive(crate::types::WorkItemRecord, Option<u64>),
+    WorkQueueQueued(crate::types::WorkItemRecord, Option<u64>),
     BlockedRecheck(Vec<crate::types::WorkItemRecord>),
     WakeHint(PendingWakeHint),
 }
@@ -16,6 +16,7 @@ fn idle_tick_trigger_from_state(
     work_reactivation: Option<(
         crate::types::WorkItemRecord,
         crate::types::WorkReactivationMode,
+        Option<u64>,
     )>,
     due_rechecks: Vec<crate::types::WorkItemRecord>,
 ) -> Option<IdleTickTrigger> {
@@ -23,12 +24,12 @@ fn idle_tick_trigger_from_state(
         Some(IdleTickTrigger::WakeHint(pending))
     } else {
         work_reactivation
-            .map(|(work_item, mode)| match mode {
+            .map(|(work_item, mode, generation)| match mode {
                 crate::types::WorkReactivationMode::ContinueActive => {
-                    IdleTickTrigger::WorkQueueActive(work_item)
+                    IdleTickTrigger::WorkQueueActive(work_item, generation)
                 }
                 crate::types::WorkReactivationMode::ActivateQueued => {
-                    IdleTickTrigger::WorkQueueQueued(work_item)
+                    IdleTickTrigger::WorkQueueQueued(work_item, generation)
                 }
             })
             .or_else(|| {
@@ -147,15 +148,31 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
-        let work_reactivation = scheduler::select_autonomous_continuation_with_hook(
+        let selection = scheduler::select_autonomous_continuation_with_hook(
             &scheduler_projection,
             Some(self.inner.autonomous_continuation_hook.as_ref()),
-        )
-        .as_ref()
-        .and_then(|selection| {
-            scheduler::resolve_autonomous_continuation_work_item(&scheduler_projection, selection)
-        })
-        .map(|(work_item, mode)| (work_item.clone(), mode));
+        );
+        if let Some(selection) = selection.as_ref() {
+            if let Some(reason) = selection.fallback_reason() {
+                self.inner.storage.append_event(&AuditEvent::legacy(
+                    "autonomous_continuation_selection_fallback",
+                    serde_json::json!({
+                        "agent_id": self.agent_id().await?,
+                        "reason": reason.as_str(),
+                        "candidate_count": selection.candidate_count(),
+                    }),
+                ))?;
+            }
+        }
+        let work_reactivation = selection
+            .as_ref()
+            .and_then(|selection| {
+                scheduler::resolve_autonomous_continuation_work_item(
+                    &scheduler_projection,
+                    selection,
+                )
+            })
+            .map(|(work_item, mode, generation)| (work_item.clone(), mode, generation));
         let trigger = idle_tick_trigger_from_state(
             pending_wake_hint,
             work_reactivation,
@@ -167,7 +184,7 @@ impl RuntimeHandle {
             || self.take_continue_active_suppression().await;
 
         match trigger {
-            Some(IdleTickTrigger::WorkQueueActive(active)) => {
+            Some(IdleTickTrigger::WorkQueueActive(active, generation)) => {
                 let duplicate = self
                     .duplicate_continue_active_result_brief_id(&active)?
                     .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief);
@@ -208,12 +225,17 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                self.emit_system_tick_from_work_queue(&active, "continue_active", Some(&decision))
-                    .await?;
+                self.emit_system_tick_from_work_queue(
+                    &active,
+                    generation,
+                    "continue_active",
+                    Some(&decision),
+                )
+                .await?;
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
-            Some(IdleTickTrigger::WorkQueueQueued(queued)) => {
+            Some(IdleTickTrigger::WorkQueueQueued(queued, generation)) => {
                 let duplicate = self
                     .duplicate_queued_available_message_id(&queued)?
                     .map(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage);
@@ -253,8 +275,13 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                self.emit_system_tick_from_work_queue(&queued, "queued_available", Some(&decision))
-                    .await?;
+                self.emit_system_tick_from_work_queue(
+                    &queued,
+                    generation,
+                    "queued_available",
+                    Some(&decision),
+                )
+                .await?;
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
@@ -803,6 +830,7 @@ impl RuntimeHandle {
     pub(super) async fn emit_system_tick_from_work_queue(
         &self,
         work_item: &crate::types::WorkItemRecord,
+        work_item_generation: Option<u64>,
         reason: &str,
         decision: Option<&scheduler::SchedulerDecision>,
     ) -> Result<()> {
@@ -833,6 +861,7 @@ impl RuntimeHandle {
                 "idempotency_key": idempotency_key,
                 "work_item_id": work_item.id,
                 "work_item_revision": work_item.revision,
+                "work_item_generation": work_item_generation,
                 "objective": work_item.objective,
                 "state": work_item.state,
                 "runtime_switched_current_item": false

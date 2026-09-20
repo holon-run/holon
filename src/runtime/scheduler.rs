@@ -31,6 +31,7 @@ pub(crate) enum CanonicalActivationScenario {
     WorkItemAutonomousContinuation {
         work_item_id: String,
         expected_work_item_revision: u64,
+        expected_work_item_generation: Option<u64>,
     },
     ProviderRecovery {
         work_item_id: String,
@@ -62,6 +63,7 @@ pub(crate) enum CanonicalActivationCandidate {
     WorkItemAutonomousContinuation {
         work_item_id: String,
         expected_work_item_revision: u64,
+        expected_work_item_generation: Option<u64>,
     },
     ProviderRecovery {
         work_item_id: String,
@@ -727,6 +729,9 @@ pub(crate) fn canonical_activation_candidate(
             .and_then(|metadata| metadata.get("work_item_revision"))
             .and_then(serde_json::Value::as_u64)
             .filter(|revision| *revision > 0);
+        let expected_work_item_generation = metadata
+            .and_then(|metadata| metadata.get("work_item_generation"))
+            .and_then(serde_json::Value::as_u64);
         let reason = metadata
             .and_then(|metadata| metadata.get("reason"))
             .and_then(serde_json::Value::as_str);
@@ -735,17 +740,20 @@ pub(crate) fn canonical_activation_candidate(
                 message.work_item_id.as_deref(),
                 metadata_work_item_id,
                 expected_work_item_revision,
+                expected_work_item_generation,
                 reason,
             ) {
                 (
                     Some(bound_work_item_id),
                     Some(metadata_work_item_id),
                     Some(expected_work_item_revision),
+                    expected_work_item_generation,
                     Some("continue_active" | "queued_available"),
                 ) if bound_work_item_id == metadata_work_item_id => Some(
                     CanonicalActivationCandidate::WorkItemAutonomousContinuation {
                         work_item_id: bound_work_item_id.to_string(),
                         expected_work_item_revision,
+                        expected_work_item_generation,
                     },
                 ),
                 _ => None,
@@ -884,12 +892,14 @@ pub(crate) fn resolve_canonical_activation_scenario(
     if let CanonicalActivationCandidate::WorkItemAutonomousContinuation {
         work_item_id,
         expected_work_item_revision,
+        expected_work_item_generation,
     } = candidate
     {
         return Ok(Some(
             CanonicalActivationScenario::WorkItemAutonomousContinuation {
                 work_item_id,
                 expected_work_item_revision,
+                expected_work_item_generation,
             },
         ));
     }

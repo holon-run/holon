@@ -1788,7 +1788,7 @@ impl RuntimeHandle {
                 + chrono::Duration::milliseconds(i64::try_from(duration_ms).unwrap_or(i64::MAX))
         });
         if sleeping_until.is_none() && allow_runnable_work_override {
-            if let Some((work_item, reason)) = self.indefinite_sleep_runnable_work()? {
+            if let Some((work_item, generation, reason)) = self.indefinite_sleep_runnable_work()? {
                 let state = self.inner.agent.lock().await.state.clone();
                 let decision = super::scheduler::SchedulerDecision::new(
                     super::scheduler::SchedulerDecisionKind::EmitSystemTick,
@@ -1798,8 +1798,13 @@ impl RuntimeHandle {
                 .model_reentry(true)
                 .work_item_id(work_item.id.clone())
                 .evidence("lifecycle_sleep_overridden_by_runnable_work");
-                self.emit_system_tick_from_work_queue(&work_item, reason, Some(&decision))
-                    .await?;
+                self.emit_system_tick_from_work_queue(
+                    &work_item,
+                    generation,
+                    reason,
+                    Some(&decision),
+                )
+                .await?;
                 self.inner.storage.append_event(&AuditEvent::legacy(
                     "scheduler_posture_decision",
                     serde_json::json!({
@@ -1878,7 +1883,7 @@ impl RuntimeHandle {
 
     fn indefinite_sleep_runnable_work(
         &self,
-    ) -> Result<Option<(crate::types::WorkItemRecord, &'static str)>> {
+    ) -> Result<Option<(crate::types::WorkItemRecord, Option<u64>, &'static str)>> {
         let state = self
             .inner
             .storage
@@ -1886,10 +1891,11 @@ impl RuntimeHandle {
             .ok_or_else(|| anyhow!("agent state is missing for lifecycle sleep"))?;
         let projection = scheduler::SchedulerProjection::from_state(&self.inner.storage, &state)?;
         Ok(projection
-            .work_reactivation_work_item()
-            .map(|(work_item, mode)| {
+            .work_reactivation_work_item_with_generation()
+            .map(|(work_item, mode, generation)| {
                 (
                     work_item.clone(),
+                    generation,
                     match mode {
                         crate::types::WorkReactivationMode::ContinueActive => "continue_active",
                         crate::types::WorkReactivationMode::ActivateQueued => "queued_available",
