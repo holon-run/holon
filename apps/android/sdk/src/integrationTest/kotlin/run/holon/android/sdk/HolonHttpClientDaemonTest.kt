@@ -31,6 +31,9 @@ class HolonHttpClientDaemonTest {
                 .apply {
                     environment()["HOLON_HOME"] = home.toString()
                     environment()["HOLON_MODEL"] = TEST_MODEL
+                    // Startup validates provider availability; this test only
+                    // exercises HTTP handshake/roster and never calls a model.
+                    environment()["OPENAI_API_KEY"] = TEST_OPENAI_API_KEY
                 }
                 .start()
 
@@ -117,5 +120,6 @@ class HolonHttpClientDaemonTest {
     private companion object {
         const val LISTENING_PREFIX = "Holon listening on "
         const val TEST_MODEL = "openai/gpt-5.4"
+        const val TEST_OPENAI_API_KEY = "android-sdk-integration-test-key"
     }
 }
