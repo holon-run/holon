@@ -4,9 +4,15 @@
 
 [![Release](https://img.shields.io/github/v/release/holon-run/holon?sort=semver)](https://github.com/holon-run/holon/releases/latest)[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-Holon 是 **为 Agent 提供持续工作环境的本地工作台**。
+**让 Agent 持续把事情做完**
 
-Holon 本身不是 Agent，而是为多个 Agent 提供本地工作环境。Agent 负责理解目标并推进执行；Holon 把"工作"作为基本单位，负责保存状态、组织上下文、记录等待与唤醒，让跨会话、跨命令、跨人工确认或外部事件的任务能够在合适的时间恢复，并最终把结果交付给操作者。
+Holon 是一个面向持续工作的本地 Agent 工作台，不只是一次性提问的聊天界面。它把目标、计划、进度和等待条件保存为明确的 WorkItem，让工作可以跨会话、命令、人工输入和外部事件继续推进。
+
+当下一项条件满足时，Agent 会回到对应的工作和工作区继续执行，并把结果交付给你。
+
+适合那些不会在一次对话里结束的工作：终端断开后继续、等待命令结果、请求人工确认，或收到外部事件后再推进。
+
+Holon 本身不是 Agent，而是为多个 Agent 提供本地工作环境。Agent 负责理解目标并推进执行；Holon 把"工作"作为基本单位，负责保存状态、组织上下文、记录等待与唤醒，让任务能够在合适的时间恢复，并最终把结果交付给操作者。
 
 ## Holon 提供什么？
 
