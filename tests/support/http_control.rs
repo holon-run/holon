@@ -3672,13 +3672,13 @@ pub async fn control_prompt_local_credentials_keep_control_identity() -> Result<
         .map(|(_, value)| value.to_string())
         .expect("session cookie should carry a credential");
     let exchange_body: serde_json::Value = exchange.json().await?;
-    let session_credential = exchange_body["credential"]
-        .as_str()
-        .expect("session exchange should return a native credential");
-    assert_eq!(session_credential, session_cookie_credential);
+    assert!(
+        exchange_body.get("credential").is_none(),
+        "browser session exchange must not return a reusable credential"
+    );
 
     let mut message_ids = Vec::new();
-    for credential in [session_credential, "secret"] {
+    for credential in [session_cookie_credential.as_str(), "secret"] {
         let response = client
             .post(format!("{base}/api/control/agents/default/prompt"))
             .bearer_auth(credential)
