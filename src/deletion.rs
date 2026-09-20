@@ -967,31 +967,10 @@ impl RuntimeHost {
                 return Ok(());
             }
         };
-        let index_path = crate::memory::index::memory_index_path(&storage);
-        if !index_path.exists() {
-            return Ok(());
-        }
-        let connection = rusqlite::Connection::open(&index_path)
-            .with_context(|| format!("opening memory index at {}", index_path.display()))?;
-        let tx = connection.unchecked_transaction()?;
-        delete_agent_memory_index_projection(&tx, agent_id)?;
-        let _ = tx.execute(
-            "DELETE FROM memory_index_pending_sources WHERE agent_id = ?1",
-            [agent_id],
-        );
-        let _ = tx.execute(
-            "DELETE FROM memory_index_checkpoints WHERE agent_id = ?1",
-            [agent_id],
-        );
-        let _ = tx.execute(
-            "DELETE FROM memory_index_meta WHERE agent_id = ?1",
-            [agent_id],
-        );
-        let _ = tx.execute(
-            "DELETE FROM memory_index_cursors WHERE agent_id = ?1",
-            [agent_id],
-        );
-        tx.commit()?;
+        crate::memory::index::delete_agent_memory_index_projection(
+            &storage.shared_indexes_dir(),
+            agent_id,
+        )?;
         debug!(agent_id, "removed agent from memory index");
         Ok(())
     }
@@ -1149,11 +1128,44 @@ fn deletion_retry_delay(job: &AgentDeletionJob) -> Duration {
     Duration::from_millis(u64::try_from(base_millis + jitter).unwrap_or(u64::MAX))
 }
 
+/// Validate that an agent home path is safe to delete: it must be a real
+/// directory (not a symlink) that resolves inside the runtime agents root.
+/// Deletion fails closed so a tampered home cannot remove files outside the
+/// runtime data directory.
+fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()> {
+    let metadata = std::fs::symlink_metadata(data_dir)
+        .with_context(|| format!("inspecting agent home {}", data_dir.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "agent home {} is a symlink; refusing deletion",
+            data_dir.display()
+        );
+    }
+    if !metadata.is_dir() {
+        anyhow::bail!(
+            "agent home {} is not a directory; refusing deletion",
+            data_dir.display()
+        );
+    }
+    let canonical_home = std::fs::canonicalize(data_dir)
+        .with_context(|| format!("canonicalizing agent home {}", data_dir.display()))?;
+    let canonical_root = std::fs::canonicalize(agents_root)
+        .with_context(|| format!("canonicalizing agents root {}", agents_root.display()))?;
+    if !canonical_home.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "agent home {} resolves outside agents root {}; refusing deletion",
+            canonical_home.display(),
+            canonical_root.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn delete_agent_memory_index_projection(
     tx: &rusqlite::Transaction<'_>,
     agent_id: &str,
 ) -> Result<()> {
-    // These tables may be absent in an index created by an older runtime.
     let table_exists = |name: &str| -> Result<bool> {
         tx.query_row(
             "SELECT EXISTS(
@@ -1190,39 +1202,6 @@ fn delete_agent_memory_index_projection(
         "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
         [agent_id],
     )?;
-    Ok(())
-}
-
-/// Validate that an agent home path is safe to delete: it must be a real
-/// directory (not a symlink) that resolves inside the runtime agents root.
-/// Deletion fails closed so a tampered home cannot remove files outside the
-/// runtime data directory.
-fn ensure_deletable_agent_home(data_dir: &Path, agents_root: &Path) -> Result<()> {
-    let metadata = std::fs::symlink_metadata(data_dir)
-        .with_context(|| format!("inspecting agent home {}", data_dir.display()))?;
-    if metadata.file_type().is_symlink() {
-        anyhow::bail!(
-            "agent home {} is a symlink; refusing deletion",
-            data_dir.display()
-        );
-    }
-    if !metadata.is_dir() {
-        anyhow::bail!(
-            "agent home {} is not a directory; refusing deletion",
-            data_dir.display()
-        );
-    }
-    let canonical_home = std::fs::canonicalize(data_dir)
-        .with_context(|| format!("canonicalizing agent home {}", data_dir.display()))?;
-    let canonical_root = std::fs::canonicalize(agents_root)
-        .with_context(|| format!("canonicalizing agents root {}", agents_root.display()))?;
-    if !canonical_home.starts_with(&canonical_root) {
-        anyhow::bail!(
-            "agent home {} resolves outside agents root {}; refusing deletion",
-            canonical_home.display(),
-            canonical_root.display()
-        );
-    }
     Ok(())
 }
 

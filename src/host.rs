@@ -11395,7 +11395,10 @@ mod tests {
             .execute_deletion_job(job)
             .await
             .expect_err("index lock should schedule a retry");
-        assert!(error.to_string().contains("database is locked"));
+        assert!(
+            error.to_string().contains("exhausted retry deadline"),
+            "unexpected deletion error: {error:#}"
+        );
         let failed = host
             .runtime_db()
             .agent_deletions()

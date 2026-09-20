@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use crate::diagnostics;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum MemoryIndexWriteClass {
+pub(crate) enum MemoryIndexWriteClass {
     Foreground,
     Maintenance,
 }
@@ -34,13 +34,13 @@ struct WriteCoordinatorState {
 }
 
 #[derive(Debug)]
-pub(super) struct MemoryIndexWriteCoordinator {
+pub(crate) struct MemoryIndexWriteCoordinator {
     state: Mutex<WriteCoordinatorState>,
     available: Condvar,
     db_path_hash: String,
 }
 
-pub(super) struct MemoryIndexWriteTurn {
+pub(crate) struct MemoryIndexWriteTurn {
     coordinator: Arc<MemoryIndexWriteCoordinator>,
     ticket: u64,
     write_class: MemoryIndexWriteClass,
@@ -53,7 +53,7 @@ static MEMORY_INDEX_WRITE_COORDINATORS: OnceLock<
     Mutex<BTreeMap<PathBuf, Arc<MemoryIndexWriteCoordinator>>>,
 > = OnceLock::new();
 
-pub(super) fn memory_index_write_coordinator(
+pub(crate) fn memory_index_write_coordinator(
     path: &Path,
 ) -> Result<Arc<MemoryIndexWriteCoordinator>> {
     let key = memory_index_write_coordinator_key(path);
@@ -73,7 +73,7 @@ pub(super) fn memory_index_write_coordinator(
 }
 
 impl MemoryIndexWriteCoordinator {
-    pub(super) fn wait_turn_until(
+    pub(crate) fn wait_turn_until(
         self: &Arc<Self>,
         write_class: MemoryIndexWriteClass,
         operation: &'static str,

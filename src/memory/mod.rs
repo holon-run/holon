@@ -2,7 +2,7 @@ pub mod episode;
 pub mod index;
 pub(crate) mod refs;
 pub mod working;
-mod write_coordinator;
+pub(crate) mod write_coordinator;
 
 pub use episode::refresh_episode_memory;
 pub(crate) use index::ensure_memory_indexes_fresh;
