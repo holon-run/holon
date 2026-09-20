@@ -13,8 +13,8 @@ order: 50
 
 <!-- INDEX:START -->
 
-- [本地运行时](./local-runtime.md)
-  在本地运行和检查 Holon 的一套保守流程。
+- [本地运行 Holon](./local-runtime.md)
+  在本地构建、运行和检查 Holon 的一套保守流程。
   <!-- mdorigin:index kind=article -->
 
 - [文档工作流](./documentation-workflow.md)

@@ -136,5 +136,5 @@ privileges unless you add OS-level confinement.
 
 - [Trust boundaries](/concepts/trust-boundaries) — how trust classification works end-to-end
 - [Runtime model](/concepts/runtime-model) — execution environment and workspace binding
-- [Integration guide](/guides/automate-over-http) — HTTP control plane access
-- [Remote access](/guides/connect-remote-runtime) — serving Holon beyond localhost
+- [Automate Holon over HTTP](/guides/automate-over-http) — HTTP control plane access
+- [Connect to a remote Holon runtime](/guides/connect-remote-runtime) — serving Holon beyond localhost

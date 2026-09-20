@@ -141,6 +141,6 @@ Operator transport binding 等高级控制项见 [HTTP 控制平面参考](/zh-C
 
 ## 另请参阅
 
-- [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — 设计理念与核心概念
+- [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) — 设计目标与端点细节
 - [CLI 参考](/zh-CN/reference/cli.md) — 等价的命令行操作
 - [配置参考](/zh-CN/reference/configuration.md) — 服务端与运行时配置

@@ -167,8 +167,8 @@ For quick one-shot tasks that don't need durability, use `holon run` instead.
 
 ## See also
 
-- [Work items guide](/reference/work-items) — WorkItem lifecycle and best practices
-- [Multi-agent collaboration](/guides/delegate-work) — delegate work to child agents
+- [Work items reference](/reference/work-items) — fields, statuses, and lifecycle operations
+- [Delegate work to another agent](/guides/delegate-work) — hand part of the work to a child agent
 - [CLI reference](/reference/cli) — full command surface
-- [Runtime model](/concepts/runtime-model) — the concepts behind durability
-- [Integration guide](/guides/automate-over-http) — HTTP API for automation
+- [How Holon keeps work continuous](/concepts/context-continuity) — why the work survives
+- [Automate Holon over HTTP](/guides/automate-over-http) — drive Holon from code

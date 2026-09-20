@@ -151,30 +151,8 @@ When you run `holon solve`, these steps happen inside the runtime:
    | `summary.md` | Human-readable summary of what the agent did |
    | `run.json` | Full structured run response |
 
-## Full flag reference
-
-```
-holon solve <REF> [OPTIONS]
-```
-
-| Flag | Type | Default | Description |
-|------|------|---------|-------------|
-| `REF` (positional) | string | (required) | GitHub URL, `owner/repo#NN`, or `#NN` |
-| `--repo` | string | — | Repository for numeric-only refs (e.g. `holon-run/holon`) |
-| `--base` | string | `main` | Base branch for fix branches |
-| `--goal` | string | — | Override the agent's interpretation of the target |
-| `--role` | string | — | Additional role context passed to the agent |
-| `--agent` | string | `github-solve` | Agent ID to use or create |
-| `--template` | string | `github-solver` | Template for the agent |
-| `--model` | string | — | Override the configured model (sets `HOLON_MODEL`) |
-| `--max-turns` | integer | — | Maximum agent turns before forced stop |
-| `--authority-class` (alias `--trust`) | string | `operator-instruction` | Trust level for the run |
-| `--json` | flag | false | Print output as JSON instead of text |
-| `--home` | path | `~/.holon` | Holon home directory |
-| `--workspace` | path | — | Working directory for the agent |
-| `--cwd` | path | — | Current working directory for the agent |
-| `--input` | path | — | Directory for input context (overrides default) |
-| `--output` | path | — | Directory for output artifacts (overrides default) |
+Every flag, its type, and its default are in the
+[CLI reference](/reference/cli.md).
 
 ## Differences from holon run
 
@@ -269,7 +247,7 @@ point when you need arbitrary provider environment variables.
 
 ## See also
 
-- [Holon CLI reference](/reference/cli) — full command tree
+- [CLI reference](/reference/cli) — full command tree, including `holon solve` flags
 - [Configuration reference](/reference/configuration) — model and provider setup
-- [Integration guide](/guides/automate-over-http) — HTTP control plane access
-- [Multi-agent collaboration](/guides/delegate-work) — creating and invoking agents
+- [Automate Holon over HTTP](/guides/automate-over-http) — drive the same runs from code
+- [Delegate work to another agent](/guides/delegate-work) — hand work to a child agent

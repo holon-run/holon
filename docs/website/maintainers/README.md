@@ -14,8 +14,8 @@ For runtime contracts, see [Spec](/spec/). For the mental model, see
 
 <!-- INDEX:START -->
 
-- [Local runtime](./local-runtime.md)
-  A conservative workflow for running and inspecting Holon locally.
+- [Run Holon locally](./local-runtime.md)
+  A conservative workflow for building, running, and inspecting Holon locally.
   <!-- mdorigin:index kind=article -->
 
 - [Documentation workflow](./documentation-workflow.md)

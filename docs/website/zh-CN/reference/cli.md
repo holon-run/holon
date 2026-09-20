@@ -448,10 +448,24 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 
 ### `holon solve` 参数
 
-| 参数 | 说明 |
-|--------|-------------|
-| `--repo <REPO>` | 目标仓库 |
-| `--workspace <PATH>` | 工作区目录 |
+| 标志 | 类型 | 默认值 | 说明 |
+|------|------|---------|-------------|
+| `REF`（位置参数） | string | （必填） | GitHub URL、`owner/repo#NN` 或 `#NN` |
+| `--repo` | string | — | 数字引用的仓库 |
+| `--base` | string | `main` | 修复分支的基础分支 |
+| `--goal` | string | — | 覆盖 Agent 对目标的解读 |
+| `--role` | string | — | 传给 Agent 的额外角色上下文 |
+| `--agent` | string | `github-solve` | 要使用或创建的 Agent ID |
+| `--template` | string | `github-solver` | Agent 使用的模板 |
+| `--model` | string | — | 覆盖配置的模型 |
+| `--max-turns` | integer | — | 强制停止前的最大 Agent 轮次数 |
+| `--authority-class`（别名 `--trust`） | string | `operator-instruction` | 本次运行的信任级别 |
+| `--json` | flag | false | 以 JSON 而非文本打印输出 |
+| `--home` | path | `~/.holon` | Holon home 目录 |
+| `--workspace` | path | — | Agent 的工作目录 |
+| `--cwd` | path | — | Agent 的当前工作目录 |
+| `--input` | path | — | 输入上下文目录 |
+| `--output` | path | — | 输出产物目录 |
 
 ## 另见
 

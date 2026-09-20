@@ -158,8 +158,8 @@ holon agent status builder  # Agent 状态和近期活动
 
 ## 另见
 
-- [工作项指南](/zh-CN/reference/work-items) — 工作项生命周期和最佳实践
-- [多 Agent 协作](/zh-CN/guides/delegate-work) — 把工作委派给子 Agent
+- [工作项参考](/zh-CN/reference/work-items) — 字段、状态和生命周期操作
+- [委派工作给另一个 Agent](/zh-CN/guides/delegate-work) — 把一部分工作交给子 Agent
 - [CLI 参考](/zh-CN/reference/cli) — 完整命令面
-- [运行时模型](/zh-CN/concepts/runtime-model) — 持久性背后的概念
-- [集成指南](/zh-CN/guides/automate-over-http) — 用于自动化的 HTTP API
+- [Holon 如何保持工作连续](/zh-CN/concepts/context-continuity) — 工作为什么能持续
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http) — 用代码驱动 Holon

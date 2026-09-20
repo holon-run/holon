@@ -462,10 +462,24 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 
 ### `holon solve` options
 
-| Option | Description |
-|--------|-------------|
-| `--repo <REPO>` | Target repository |
-| `--workspace <PATH>` | Workspace directory |
+| Flag | Type | Default | Description |
+|------|------|---------|-------------|
+| `REF` (positional) | string | (required) | GitHub URL, `owner/repo#NN`, or `#NN` |
+| `--repo` | string | — | Repository for numeric-only refs |
+| `--base` | string | `main` | Base branch for fix branches |
+| `--goal` | string | — | Override the agent's reading of the target |
+| `--role` | string | — | Extra role context passed to the agent |
+| `--agent` | string | `github-solve` | Agent ID to use or create |
+| `--template` | string | `github-solver` | Template for the agent |
+| `--model` | string | — | Override the configured model |
+| `--max-turns` | integer | — | Maximum agent turns before a forced stop |
+| `--authority-class` (alias `--trust`) | string | `operator-instruction` | Trust level for the run |
+| `--json` | flag | false | Print JSON instead of text |
+| `--home` | path | `~/.holon` | Holon home directory |
+| `--workspace` | path | — | Working directory for the agent |
+| `--cwd` | path | — | Current working directory for the agent |
+| `--input` | path | — | Input context directory |
+| `--output` | path | — | Output artifacts directory |
 
 ## See Also
 

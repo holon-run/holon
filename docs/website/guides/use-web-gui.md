@@ -311,8 +311,8 @@ instead of blocking the request:
 
 ## See Also
 
-- [Quick Examples](/guides/quick-examples) — Try Holon in a few commands
-- [Remote Access](/guides/connect-remote-runtime) — Connect to a remote daemon
-- [Troubleshooting](/guides/troubleshooting) — Diagnose common issues
+- [Run your first Holon task](/guides/quick-examples) — try Holon in a few commands
+- [Connect to a remote Holon runtime](/guides/connect-remote-runtime) — use the GUI from another machine
+- [Troubleshoot a Holon task](/guides/troubleshooting) — diagnose common problems
 - [Configuration Reference](/reference/configuration) — CORS, ports, and
   control plane settings

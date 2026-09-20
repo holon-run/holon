@@ -45,19 +45,20 @@ Holon 提供三种与运行时交互的方式：
 
 如果你已经熟悉 Holon，或想直接深入细节：
 
-- **[快速示例](/zh-CN/guides/quick-examples)** — 单次执行与常见任务模式
-- **[持久 Agent 工作流](/zh-CN/guides/run-long-lived-task)** — 持久 Agent 工作的完整生命周期
+- **[运行你的第一个 Holon 任务](/zh-CN/guides/quick-examples)** — 单次执行与常见任务模式
+- **[运行长生命周期任务](/zh-CN/guides/run-long-lived-task)** — 会等待、能断线恢复并交付的工作
+- **[委派工作给另一个 Agent](/zh-CN/guides/delegate-work)** — 把边界清楚的任务交给子 Agent
+- **[通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http)** — 用代码驱动 Holon
 - **[概念](/zh-CN/concepts/)** — 深入内部机制前的心智模型
 - **[CLI 参考](/zh-CN/reference/cli.md)** — 完整命令面
-- **[故障排查](/zh-CN/guides/troubleshooting)** — 诊断常见安装问题
+- **[排查 Holon 任务问题](/zh-CN/guides/troubleshooting)** — 诊断常见安装与运行问题
 
 ## 贡献或开发？
 
 如果你打算修改 Holon 本身或为其做贡献：
 
-- **[本地运行时指南](/zh-CN/maintainers/local-runtime)** — 保守的开发工作流
+- **[本地运行 Holon](/zh-CN/maintainers/local-runtime)** — 保守的开发工作流
 - **[文档工作流](/zh-CN/maintainers/documentation-workflow)** — 如何构建和预览本站
-- **[集成指南](/zh-CN/guides/automate-over-http)** — 把 Holon 接入外部系统
 - 仓库 `docs/` 目录 — RFC、实现决策和架构笔记
 
 ## 环境要求

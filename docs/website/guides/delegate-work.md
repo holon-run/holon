@@ -146,9 +146,9 @@ The parent remains responsible for:
 
 ## See Also
 
-- [Runtime Model](/concepts/runtime-model.md) — Agent lifecycle and task
-  supervision
-- [Trust Boundaries](/concepts/trust-boundaries.md) — Why child output is
+- [Multi-agent collaboration](/concepts/multi-agent-collaboration.md) — roles,
+  boundaries, and trust
+- [Trust boundaries](/concepts/trust-boundaries.md) — why child output is
   evidence, not authority
-- [Work Items Guide](/reference/work-items.md) — Tracking objectives across
+- [Work items reference](/reference/work-items.md) — tracking objectives across
   agents

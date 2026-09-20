@@ -268,5 +268,5 @@ holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/api/control/runtim
 ## 另见
 
 - [配置参考](/zh-CN/reference/configuration.md) — 配置键与凭据管理
-- [快速示例](/zh-CN/guides/quick-examples.md) — 常见任务示例
-- [入门指南](/zh-CN/getting-started/first-agent.md) — 安装与配置教程
+- [运行你的第一个 Holon 任务](/zh-CN/guides/quick-examples.md) — 常见任务示例
+- [快速开始](/zh-CN/getting-started/first-agent.md) — 首次运行流程

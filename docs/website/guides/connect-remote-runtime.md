@@ -159,7 +159,7 @@ holon daemon stop
 
 ## See Also
 
-- [TUI Guide](/reference/tui.md) — Full TUI navigation and slash command reference
-- [HTTP Control Plane](/reference/http-control-plane.md) — API reference for programmatic access
-- [Troubleshooting](/guides/troubleshooting.md) — TUI connection issues
-- [Integration Guide](/guides/automate-over-http.md) — Programmatic integration patterns
+- [TUI reference](/reference/tui.md) — navigation, slash commands, and remote connect
+- [HTTP control plane](/reference/http-control-plane.md) — API reference for programmatic access
+- [Troubleshoot a Holon task](/guides/troubleshooting.md) — connection problems
+- [Automate Holon over HTTP](/guides/automate-over-http.md) — drive Holon from code

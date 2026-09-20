@@ -276,6 +276,6 @@ holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/api/control/runtim
 
 ## See Also
 
-- [Configuration Reference](/reference/configuration.md) — Configuration keys and credential management
-- [Quick Examples](/guides/quick-examples.md) — Common task examples
-- [Getting Started](/getting-started/first-agent.md) — Setup tutorial
+- [Configuration reference](/reference/configuration.md) — configuration keys and credentials
+- [Run your first Holon task](/guides/quick-examples.md) — common task examples
+- [Getting started](/getting-started/first-agent.md) — first-run walkthrough

@@ -135,6 +135,6 @@ order: 13
 
 ## 另见
 
-- [运行时模型](/zh-CN/concepts/runtime-model.md) — Agent 生命周期和任务监督
+- [多 Agent 协作](/zh-CN/concepts/multi-agent-collaboration.md) — 角色、边界和信任
 - [信任边界](/zh-CN/concepts/trust-boundaries.md) — 为什么子 Agent 的输出是证据，而不是权威
-- [工作项指南](/zh-CN/reference/work-items.md) — 跨 Agent 跟踪目标
+- [工作项参考](/zh-CN/reference/work-items.md) — 跨 Agent 跟踪目标

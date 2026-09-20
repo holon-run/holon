@@ -137,30 +137,7 @@ holon config models list
    | `summary.md` | Agent 所做工作的可读摘要 |
    | `run.json` | 完整的结构化运行响应 |
 
-## 完整标志参考
-
-```
-holon solve <REF> [OPTIONS]
-```
-
-| 标志 | 类型 | 默认值 | 说明 |
-|------|------|---------|-------------|
-| `REF`（位置参数） | string | （必填） | GitHub URL、`owner/repo#NN` 或 `#NN` |
-| `--repo` | string | — | 数字引用的仓库（例如 `holon-run/holon`） |
-| `--base` | string | `main` | 修复分支的基础分支 |
-| `--goal` | string | — | 覆盖 Agent 对目标的解读 |
-| `--role` | string | — | 传给 Agent 的额外角色上下文 |
-| `--agent` | string | `github-solve` | 要使用或创建的 Agent ID |
-| `--template` | string | `github-solver` | Agent 使用的模板 |
-| `--model` | string | — | 覆盖配置的模型（设置 `HOLON_MODEL`） |
-| `--max-turns` | integer | — | 强制停止前的最大 Agent 轮次数 |
-| `--authority-class`（别名 `--trust`） | string | `operator-instruction` | 本次运行的信任级别 |
-| `--json` | flag | false | 以 JSON 而非文本打印输出 |
-| `--home` | path | `~/.holon` | Holon home 目录 |
-| `--workspace` | path | — | Agent 的工作目录 |
-| `--cwd` | path | — | Agent 的当前工作目录 |
-| `--input` | path | — | 输入上下文目录（覆盖默认值） |
-| `--output` | path | — | 输出产物目录（覆盖默认值） |
+每个标志、类型和默认值见 [CLI 参考](/zh-CN/reference/cli.md)。
 
 ## 与 holon run 的区别
 
@@ -250,7 +227,7 @@ jobs:
 
 ## 另见
 
-- [Holon CLI 参考](/zh-CN/reference/cli)：完整命令树
+- [CLI 参考](/zh-CN/reference/cli)：完整命令树，包括 `holon solve` 参数
 - [配置参考](/zh-CN/reference/configuration)：模型和提供商设置
-- [集成指南](/zh-CN/guides/automate-over-http)：HTTP 控制平面访问
-- [多 Agent 协作](/zh-CN/guides/delegate-work)：创建和调用 Agent
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http)：用代码完成同样的运行
+- [委派工作给另一个 Agent](/zh-CN/guides/delegate-work)：把工作交给子 Agent

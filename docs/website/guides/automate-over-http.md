@@ -146,6 +146,6 @@ Advanced operator-side controls, including transport bindings, are collected in 
 
 ## See Also
 
-- [HTTP Control Plane Reference](/reference/http-control-plane.md) — Design philosophy and concepts
-- [CLI Reference](/reference/cli.md) — Command-line equivalent operations
-- [Configuration Reference](/reference/configuration.md) — Server and runtime configuration
+- [HTTP control plane reference](/reference/http-control-plane.md) — design goals and endpoint details
+- [CLI reference](/reference/cli.md) — the same operations from the command line
+- [Configuration reference](/reference/configuration.md) — server and runtime configuration

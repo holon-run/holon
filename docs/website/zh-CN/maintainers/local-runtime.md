@@ -1,10 +1,10 @@
 ---
-title: 本地运行时
-summary: 在本地运行和检查 Holon 的一套保守流程。
+title: 本地运行 Holon
+summary: 在本地构建、运行和检查 Holon 的一套保守流程。
 order: 10
 ---
 
-# 本地运行时
+# 本地运行 Holon
 
 当你想检查 Holon，又不假定每个接口都已稳定时，用这套流程。
 

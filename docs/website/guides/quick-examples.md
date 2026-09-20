@@ -219,8 +219,8 @@ holon run --agent my-builder --workspace-root /path/to/project "Build the projec
 
 ## See Also
 
-- [Getting Started](/getting-started/first-agent.md) — Full step-by-step tutorial
-- [Configuration Reference](/reference/configuration.md) — All config keys and credential management
-- [CLI Reference](/reference/cli.md) — Complete command-line reference
-- [Troubleshooting](/guides/troubleshooting.md) — Common issues and solutions
-- [Integration Guide](/guides/automate-over-http.md) — HTTP control plane integration
+- [Getting started](/getting-started/first-agent.md) — full first-run walkthrough
+- [Configuration reference](/reference/configuration.md) — configuration keys and credentials
+- [CLI reference](/reference/cli.md) — complete command-line reference
+- [Troubleshoot a Holon task](/guides/troubleshooting.md) — common problems and fixes
+- [Automate Holon over HTTP](/guides/automate-over-http.md) — drive Holon from code

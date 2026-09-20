@@ -1,10 +1,10 @@
 ---
-title: Local runtime
-summary: A conservative workflow for running and inspecting Holon locally.
+title: Run Holon locally
+summary: A conservative workflow for building, running, and inspecting Holon locally.
 order: 10
 ---
 
-# Local runtime
+# Run Holon locally
 
 Use this workflow when you want to inspect Holon without assuming that every
 interface is stable.

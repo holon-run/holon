@@ -50,19 +50,20 @@ gives you the full interactive experience. For one-shot runs, see the
 
 If you're already familiar with Holon or want to jump straight into specifics:
 
-- **[Quick examples](/guides/quick-examples)** — one-shot and common task patterns
-- **[Durable agent workflow](/guides/run-long-lived-task)** — the full lifecycle of durable agent work
+- **[Run your first Holon task](/guides/quick-examples)** — one-shot and common task patterns
+- **[Run a long-lived task](/guides/run-long-lived-task)** — work that waits, survives disconnects, and delivers
+- **[Delegate work to another agent](/guides/delegate-work)** — hand a scoped task to a child agent
+- **[Automate Holon over HTTP](/guides/automate-over-http)** — drive Holon from code
 - **[Concepts](/concepts/)** — the mental model before diving into internals
 - **[CLI reference](/reference/cli.md)** — full command surface
-- **[Troubleshooting](/guides/troubleshooting)** — diagnose common setup issues
+- **[Troubleshoot a Holon task](/guides/troubleshooting)** — diagnose common setup problems
 
 ## Contribute or develop?
 
 If you plan to modify or contribute to Holon itself:
 
-- **[Local runtime guide](/maintainers/local-runtime)** — conservative development workflow
+- **[Run Holon locally](/maintainers/local-runtime)** — conservative development workflow
 - **[Documentation workflow](/maintainers/documentation-workflow)** — how to build and preview this site
-- **[Integration guide](/guides/automate-over-http)** — wire Holon into external systems
 - Repository `docs/` directory — RFCs, implementation decisions, and architecture notes
 
 ## Requirements

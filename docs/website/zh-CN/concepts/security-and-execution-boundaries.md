@@ -121,5 +121,5 @@ Holon 按**来源（origin）**和**信任级别**对每个输入分类：
 
 - [信任边界](/zh-CN/concepts/trust-boundaries) — 信任分类端到端如何工作
 - [运行时模型](/zh-CN/concepts/runtime-model) — 执行环境与工作区绑定
-- [集成指南](/zh-CN/guides/automate-over-http) — HTTP 控制平面访问
-- [远程访问](/zh-CN/guides/connect-remote-runtime) — 在 localhost 之外提供 Holon 服务
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http) — HTTP 控制平面访问
+- [连接远程 Holon 运行时](/zh-CN/guides/connect-remote-runtime) — 在 localhost 之外提供 Holon 服务

@@ -146,7 +146,7 @@ holon daemon stop
 
 ## 另请参阅
 
-- [TUI 指南](/zh-CN/reference/tui.md) — 完整的 TUI 导航和斜杠命令参考
+- [TUI 参考](/zh-CN/reference/tui.md) — 导航、斜杠命令和远程连接
 - [HTTP 控制平面](/zh-CN/reference/http-control-plane.md) — 编程访问的 API 参考
-- [故障排查](/zh-CN/guides/troubleshooting.md) — TUI 连接问题
-- [集成指南](/zh-CN/guides/automate-over-http.md) — 编程集成模式
+- [排查 Holon 任务问题](/zh-CN/guides/troubleshooting.md) — 连接问题
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http.md) — 用代码驱动 Holon

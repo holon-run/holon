@@ -143,6 +143,6 @@ Agent 的 `CreateTimer`、`ListTimers`、`GetTimer`、`CancelTimer` 工具。创
 
 ## 另见
 
-- [集成指南](/zh-CN/guides/automate-over-http.md) — HTTP 控制平面端点参考
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http.md) — HTTP 控制平面端点参考
 - [运行时模型](/zh-CN/concepts/runtime-model.md) — 触发器如何融入 Agent 执行循环
 - [WaitFor 工具](/zh-CN/reference/model-tool-schema-inventory.md) — 与触发器搭配的 WaitFor 工具

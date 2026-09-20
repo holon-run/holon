@@ -215,8 +215,8 @@ holon run --agent my-builder --workspace-root /path/to/project "Build the projec
 
 ## 另见
 
-- [入门指南](/zh-CN/getting-started/first-agent.md) — 完整的分步教程
+- [快速开始](/zh-CN/getting-started/first-agent.md) — 完整的首次运行流程
 - [配置参考](/zh-CN/reference/configuration.md) — 所有配置项与凭据管理
 - [CLI 参考](/zh-CN/reference/cli.md) — 完整的命令行参考
-- [故障排查](/zh-CN/guides/troubleshooting.md) — 常见问题与解决办法
-- [集成指南](/zh-CN/guides/automate-over-http.md) — HTTP 控制平面集成
+- [排查 Holon 任务问题](/zh-CN/guides/troubleshooting.md) — 常见问题与解决办法
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http.md) — 用代码驱动 Holon

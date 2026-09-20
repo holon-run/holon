@@ -203,7 +203,7 @@ skill 安装这类长时间操作会作为可跟踪的任务运行，而不是�
 
 ## 另请参阅
 
-- [快速示例](/zh-CN/guides/quick-examples) — 用几条命令试用 Holon
-- [远程访问](/zh-CN/guides/connect-remote-runtime) — 连接远程 daemon
-- [故障排查](/zh-CN/guides/troubleshooting) — 诊断常见问题
+- [运行你的第一个 Holon 任务](/zh-CN/guides/quick-examples) — 用几条命令试用 Holon
+- [连接远程 Holon 运行时](/zh-CN/guides/connect-remote-runtime) — 从另一台机器使用 GUI
+- [排查 Holon 任务问题](/zh-CN/guides/troubleshooting) — 诊断常见问题
 - [配置参考](/zh-CN/reference/configuration) — CORS、端口和控制平面设置
