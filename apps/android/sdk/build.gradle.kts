@@ -51,6 +51,9 @@ tasks.register<Test>("integrationTest") {
     classpath = integrationTest.runtimeClasspath
     shouldRunAfter(tasks.test)
     useJUnit()
+    testLogging {
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
 
     val binaryPath =
         providers.gradleProperty("holonTestBinary").orNull
