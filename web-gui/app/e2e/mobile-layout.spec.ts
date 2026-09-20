@@ -19,6 +19,11 @@ test("portrait phones open the full agent roster as a drawer", async ({ page }) 
   await expect(page.locator(".sidebar .agent-row-main").first()).toBeVisible();
   await expect(page.locator(".mobile-nav-scrim")).toBeVisible();
   await expect(page.locator(".sidebar .agent-row").first()).toBeVisible();
+  const agentList = await page.locator(".sidebar .agent-list").boundingBox();
+  const connectionStatus = await page.locator(".sidebar .connection-status").boundingBox();
+  expect(agentList).not.toBeNull();
+  expect(connectionStatus).not.toBeNull();
+  expect(agentList!.y + agentList!.height).toBeLessThanOrEqual(connectionStatus!.y + 1);
   await page.mouse.click(380, 420);
   await expect(page.locator(".mobile-nav-scrim")).toHaveCount(0);
   await expect(page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).resolves.toBe(true);
