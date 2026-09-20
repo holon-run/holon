@@ -2,6 +2,31 @@ use super::super::*;
 use super::support::*;
 use crate::ingress::{WakeDisposition, WakeHint};
 
+struct SelectQueuedAutonomousContinuationHook;
+
+impl scheduler::SemanticCandidateSelectionHook for SelectQueuedAutonomousContinuationHook {
+    fn select_autonomous_continuation(
+        &self,
+        context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        let candidate = context
+            .candidates
+            .iter()
+            .find(|candidate| candidate.reactivation_mode == WorkReactivationMode::ActivateQueued)
+            .cloned()
+            .expect("queued candidate");
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Propose(
+            scheduler::AutonomousContinuationProposal {
+                snapshot_identity: context.snapshot_identity.clone(),
+                candidate,
+            },
+        ))
+    }
+}
+
 #[tokio::test]
 async fn runtime_emits_pending_wake_hint_as_system_tick_on_restart() {
     let dir = tempdir().unwrap();
@@ -282,6 +307,61 @@ async fn idle_tick_prefers_current_work_item_over_queued_work_item() {
                 .and_then(|value| value.get("work_item_id"))
                 .and_then(serde_json::Value::as_str)
                 == Some(active.id.as_str())
+    }));
+}
+
+#[tokio::test]
+async fn idle_tick_uses_runtime_autonomous_continuation_hook() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let active = WorkItemRecord::new(
+        "default",
+        "continue active runtime cleanup",
+        WorkItemState::Open,
+    );
+    let queued = WorkItemRecord::new("default", "queued runtime cleanup", WorkItemState::Open);
+    storage.append_work_item(&active).unwrap();
+    storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &active);
+    seed_runnable_work_execution(&storage, &queued);
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some(active.id.clone());
+    storage.write_agent(&agent).unwrap();
+
+    let mut runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("tick done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    runtime.set_autonomous_continuation_hook_for_test(Arc::new(
+        SelectQueuedAutonomousContinuationHook,
+    ));
+
+    assert!(runtime.maybe_emit_pending_system_tick(None).await.unwrap());
+
+    let messages = runtime.storage().read_recent_messages(10).unwrap();
+    assert!(messages.iter().any(|message| {
+        message.kind == MessageKind::SystemTick
+            && message
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("work_queue"))
+                .and_then(|value| value.get("reason"))
+                .and_then(serde_json::Value::as_str)
+                == Some("queued_available")
+            && message
+                .metadata
+                .as_ref()
+                .and_then(|value| value.get("work_queue"))
+                .and_then(|value| value.get("work_item_id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(queued.id.as_str())
     }));
 }
 

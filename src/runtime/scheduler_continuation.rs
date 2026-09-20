@@ -147,9 +147,15 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
-        let work_reactivation = scheduler_projection
-            .work_reactivation_work_item()
-            .map(|(work_item, mode)| (work_item.clone(), mode));
+        let work_reactivation = scheduler::select_autonomous_continuation_with_hook(
+            &scheduler_projection,
+            Some(self.inner.autonomous_continuation_hook.as_ref()),
+        )
+        .as_ref()
+        .and_then(|selection| {
+            scheduler::resolve_autonomous_continuation_work_item(&scheduler_projection, selection)
+        })
+        .map(|(work_item, mode)| (work_item.clone(), mode));
         let trigger = idle_tick_trigger_from_state(
             pending_wake_hint,
             work_reactivation,

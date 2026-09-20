@@ -151,6 +151,7 @@ impl CanonicalActivationCandidate {
 
 mod diagnostics;
 mod projection;
+mod semantic_selection;
 
 pub(crate) use diagnostics::{append_ambiguous_wait_advisory, append_scheduling_advisories};
 // Preserve the pre-split scheduler facade even when the current crate has no callers.
@@ -164,6 +165,16 @@ pub(crate) use diagnostics::{
 };
 use projection::CanonicalWorkExecutionState;
 pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerProjection};
+pub(crate) use semantic_selection::{
+    resolve_autonomous_continuation_work_item, select_autonomous_continuation,
+    select_autonomous_continuation_with_hook, SemanticCandidateSelectionHook,
+    StaticSemanticCandidateSelectionHook,
+};
+#[cfg(test)]
+pub(crate) use semantic_selection::{
+    AutonomousContinuationProposal, AutonomousContinuationSelectionContext,
+    SemanticCandidateSelectionHookError, SemanticCandidateSelectionHookResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SchedulerDecisionKind {

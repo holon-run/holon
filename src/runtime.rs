@@ -431,6 +431,7 @@ struct RuntimeInner {
     recovered_timers: Mutex<Option<Vec<TimerRecord>>>,
     bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
     bootstrap_notify: Notify,
+    autonomous_continuation_hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,
@@ -3364,6 +3365,16 @@ impl RuntimeHandle {
 
     pub fn storage(&self) -> &AppStorage {
         &self.inner.storage
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_autonomous_continuation_hook_for_test(
+        &mut self,
+        hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
+    ) {
+        Arc::get_mut(&mut self.inner)
+            .expect("test hook must be installed before cloning the runtime")
+            .autonomous_continuation_hook = hook;
     }
 
     #[cfg(test)]
