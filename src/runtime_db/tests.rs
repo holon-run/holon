@@ -1192,6 +1192,47 @@ mod tests {
     }
 
     #[test]
+    fn memory_rebuild_keyset_queries_seek_their_agent_index() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+
+        for (table, index) in [
+            ("messages", "idx_messages_agent_evidence"),
+            ("tool_executions", "idx_tool_executions_agent_evidence"),
+            ("briefs", "idx_briefs_agent_evidence"),
+        ] {
+            // Mirrors `runtime_payload_page` for an agent-scoped rebuild source:
+            // filter one agent, order by the evidence keyset, page by cursor.
+            let query_plan = {
+                let mut statement = connection.prepare(&format!(
+                    "EXPLAIN QUERY PLAN
+                     SELECT evidence_id, payload_json
+                     FROM {table}
+                     WHERE agent_id = 'agent-a' AND evidence_id > 'cursor'
+                     ORDER BY evidence_id
+                     LIMIT 32"
+                ))?;
+                let details = statement
+                    .query_map([], |row| row.get::<_, String>(3))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                details
+            };
+            assert!(
+                query_plan.iter().any(|detail| detail.contains(index)),
+                "rebuild page for {table} must seek its agent keyset index: {query_plan:?}"
+            );
+            assert!(
+                query_plan
+                    .iter()
+                    .all(|detail| !detail.contains("TEMP B-TREE")),
+                "rebuild page for {table} must not sort the agent backlog per page: {query_plan:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn release_baseline_failure_rolls_back_to_published_floor() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {
