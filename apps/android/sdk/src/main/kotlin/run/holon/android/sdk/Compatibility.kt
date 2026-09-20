@@ -29,7 +29,7 @@ public sealed interface CompatibilityResult {
     public data object RejectedHandshake : CompatibilityResult
 }
 
-public fun HandshakeResponse.checkCompatibility(
+internal fun HandshakeResponse.checkCompatibility(
     requiredCapabilities: Set<String> = emptySet(),
 ): CompatibilityResult {
     if (!ok) {

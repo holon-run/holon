@@ -136,6 +136,11 @@ jobs:
               - '.github/workflows/ci.yml'
             web:
               - 'apps/android/**'
+              - 'src/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
               - 'tests/fixtures/client-wire/**'
               - 'web-gui/**'
               - 'packages/client-wire-kotlin/**'
@@ -154,7 +159,7 @@ jobs:
   web:
     name: Web
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     needs: changes
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.web == 'true'
     steps:
@@ -169,6 +174,12 @@ jobs:
             web-gui/app/package-lock.json
             web-gui/openapi-tools/package-lock.json
             packages/conversation-sdk/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Set up Java
         uses: actions/setup-java@v4

@@ -1,4 +1,4 @@
-.PHONY: help web web-ci android-sdk-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 ANDROID_DIR := apps/android
 WEB_DIR := web-gui/app
@@ -42,9 +42,15 @@ web-ci: ## Test and build the web GUI with one clean dependency install
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
 	$(MAKE) transport-types-kotlin-check
 	$(MAKE) android-sdk-test
+	$(MAKE) android-sdk-integration-test
 
 android-sdk-test: ## Compile and test the Android SDK foundation against generated wire models
 	$(GRADLE) --no-daemon -p $(ANDROID_DIR) :sdk:test
+
+android-sdk-integration-test: ## Test the Android SDK HTTP client against a real Holon daemon
+	cargo build --bin holon
+	$(GRADLE) --no-daemon -p $(ANDROID_DIR) :sdk:integrationTest \
+		-PholonTestBinary=$(abspath target/debug/holon)
 
 conversation-sdk-ci: ## Test the TypeScript conversation SDK against the real Rust HTTP/SSE server
 	@bash -c 'set -e; \
