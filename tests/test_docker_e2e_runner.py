@@ -235,7 +235,10 @@ class DockerE2ERunnerTests(unittest.TestCase):
                             "metadata": {
                                 "work_queue": {
                                     "reason": "continue_active",
-                                    "idempotency_key": "work_queue:continue_active:work-1:1",
+                                    "idempotency_key": (
+                                        "work_queue:continue_active:work-1:1:"
+                                        "generation:1"
+                                    ),
                                 }
                             }
                         }
@@ -271,14 +274,16 @@ class DockerE2ERunnerTests(unittest.TestCase):
             [
                 {
                     "message_id": "message-1",
-                    "idempotency_key": "work_queue:continue_active:work-1:1",
+                    "idempotency_key": (
+                        "work_queue:continue_active:work-1:1:generation:1"
+                    ),
                     "status": "aborted",
                 }
             ],
         )
 
     def test_recovered_retry_ticks_accepts_existing_interrupted_tick(self) -> None:
-        key = "work_queue:continue_active:work-1:1"
+        key = "work_queue:continue_active:work-1:1:generation:1"
         failed = [
             {
                 "message_id": "message-1",
@@ -309,14 +314,18 @@ class DockerE2ERunnerTests(unittest.TestCase):
         failed = [
             {
                 "message_id": "message-1",
-                "idempotency_key": "work_queue:continue_active:work-1:1",
+                "idempotency_key": (
+                    "work_queue:continue_active:work-1:1:generation:1"
+                ),
                 "status": "aborted",
             }
         ]
         recovered = [
             {
                 "message_id": "message-2",
-                "idempotency_key": "work_queue:continue_active:work-1:2",
+                "idempotency_key": (
+                    "work_queue:continue_active:work-1:2:generation:2"
+                ),
                 "status": "processed",
             }
         ]

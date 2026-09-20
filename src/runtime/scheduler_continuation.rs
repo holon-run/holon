@@ -2142,7 +2142,7 @@ mod tests {
         let first_ticks = get_emitted_system_ticks(&test_runtime);
         assert_eq!(
             first_ticks[0].1["idempotency_key"].as_str(),
-            Some("work_queue:queued_available:wi-queued:1")
+            Some("work_queue:queued_available:wi-queued:1:generation:1")
         );
 
         let mut updated = queued.clone();
@@ -2157,7 +2157,7 @@ mod tests {
         assert_eq!(ticks.len(), 2);
         assert_eq!(
             ticks[1].1["idempotency_key"].as_str(),
-            Some("work_queue:queued_available:wi-queued:2")
+            Some("work_queue:queued_available:wi-queued:2:generation:1")
         );
     }
 
@@ -2168,7 +2168,7 @@ mod tests {
 
         let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
         let idempotency_key =
-            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available", None);
+            scheduler::work_queue_tick_idempotency_key(&queued, "queued_available", Some(1));
         let mut existing_tick = MessageEnvelope::new(
             "default",
             MessageKind::SystemTick,
@@ -2233,7 +2233,7 @@ mod tests {
         assert_eq!(ticks.len(), 1);
         assert_eq!(
             ticks[0].1["idempotency_key"].as_str(),
-            Some("work_queue:queued_available:wi-queued:1")
+            Some("work_queue:queued_available:wi-queued:1:generation:1")
         );
     }
 

@@ -3847,8 +3847,18 @@ def run_scheduler_provider_failure_retry_case(
     )
     failed_keys = {tick["idempotency_key"] for tick in failed_ticks}
     require(
-        len(failed_keys) == 1 and None not in failed_keys,
-        f"failed continue-active ticks lost stable idempotency: {failed_ticks}",
+        failed_keys
+        and None not in failed_keys
+        and all(
+            isinstance(key, str)
+            and key.startswith(
+                f"work_queue:continue_active:{work_item_id}:"
+            )
+            and ":generation:" in key
+            for key in failed_keys
+        ),
+        "failed continue-active ticks lost generation-aware idempotency: "
+        f"{failed_ticks}",
     )
 
     harness.stop()
