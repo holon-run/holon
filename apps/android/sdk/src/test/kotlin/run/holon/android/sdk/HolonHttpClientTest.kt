@@ -5,6 +5,7 @@ import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -15,6 +16,11 @@ class HolonHttpClientTest {
     @Test
     fun `default client uses the bounded total call timeout`() {
         assertEquals(30_000, HolonHttpClient.defaultHttpClient().callTimeoutMillis)
+    }
+
+    @Test
+    fun `default SSE client has no total call timeout`() {
+        assertEquals(0, HolonHttpClient.defaultSseHttpClient().callTimeoutMillis)
     }
 
     @Test
@@ -241,6 +247,137 @@ class HolonHttpClientTest {
             assertEquals(HttpURLConnection.HTTP_BAD_GATEWAY, error.statusCode)
             assertNull(error.apiError)
             assertEquals("Holon request failed with HTTP 502", error.message)
+        }
+    }
+
+    @Test
+    fun `artifact keeps the server byte size for multibyte content`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """{"artifact_index":2,"size":4,"content":"éé"}""",
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val artifact = client.artifact("main", "tool-1", 2)
+
+            assertEquals(2, artifact.artifactIndex)
+            assertEquals(4, artifact.size)
+            assertEquals("éé", artifact.content)
+        }
+    }
+
+    @Test
+    fun `artifact rejects responses missing required fields`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("""{"artifact_index":2,"content":"ok"}"""))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val error = assertFailsWith<HolonProtocolException> {
+                client.artifact("main", "tool-1", 2)
+            }
+
+            assertEquals("Holon artifact response is missing size", error.message)
+        }
+    }
+
+    @Test
+    fun `artifact rejects a mismatched response index`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("""{"artifact_index":3,"size":2,"content":"ok"}"""))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val error = assertFailsWith<HolonProtocolException> {
+                client.artifact("main", "tool-1", 2)
+            }
+
+            assertEquals(
+                "Holon artifact response index 3 does not match requested index 2",
+                error.message,
+            )
+        }
+    }
+
+    @Test
+    fun `artifact rejects negative sizes and out of range indexes`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("""{"artifact_index":2,"size":-1,"content":"ok"}"""))
+            server.enqueue(
+                jsonResponse(
+                    """{"artifact_index":4294967298,"size":2,"content":"ok"}""",
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            assertEquals(
+                "Holon artifact response size must be non-negative",
+                assertFailsWith<HolonProtocolException> {
+                    client.artifact("main", "tool-1", 2)
+                }.message,
+            )
+            assertEquals(
+                "Holon artifact response is missing artifact_index",
+                assertFailsWith<HolonProtocolException> {
+                    client.artifact("main", "tool-1", 2)
+                }.message,
+            )
+        }
+    }
+
+    @Test
+    fun `reconnecting conversation stream retries connection failures`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Content-Type", "text/event-stream")
+                    .setBody("id: event-1\ndata: {\"event_seq\":1}\n\n"),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val events =
+                client
+                    .reconnectingConversationStream(
+                        agentId = "main",
+                        policy =
+                            SseReconnectPolicy(
+                                maxAttempts = 1,
+                                initialDelayMillis = 0,
+                                maxDelayMillis = 0,
+                            ),
+                    ).toList()
+
+            assertEquals(listOf("event-1"), events.map { it.id })
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test
+    fun `reconnecting conversation stream does not retry HTTP errors`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    fixture("error-v1.json"),
+                    HttpURLConnection.HTTP_UNAUTHORIZED,
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            assertFailsWith<HolonHttpException> {
+                client
+                    .reconnectingConversationStream(
+                        agentId = "main",
+                        policy =
+                            SseReconnectPolicy(
+                                maxAttempts = 2,
+                                initialDelayMillis = 0,
+                                maxDelayMillis = 0,
+                            ),
+                    ).toList()
+            }
+
+            assertEquals(1, server.requestCount)
         }
     }
 
