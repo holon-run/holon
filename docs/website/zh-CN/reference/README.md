@@ -7,7 +7,8 @@ order: 40
 # 参考
 
 参考页面描述 Holon 当前公开接口的实际行为——而不是计划或承诺中的行为。
-它们基于编译产物（`holon --help`、`holon config schema`、路由清单）核对验证，是语法、参数与接口的权威事实来源。
+适用时基于编译产物（`holon --help`、`holon config schema`、路由清单）核对；
+描述某个工具或功能接口的页面会标出来源。它们是语法、参数与接口的权威事实来源。
 
 ## 涵盖内容
 
@@ -74,6 +75,42 @@ order: 40
 
 - [运行时状态枚举清单](./runtime-status-enum-inventory.md)
   稳定序列化运行时生命周期和状态枚举的机器可读基线。
+  <!-- mdorigin:index kind=article -->
+
+- [Workspace 与执行环境](./workspaces.md)
+  workspace、执行根和 worktree 的绑定、切换与隔离契约。
+  <!-- mdorigin:index kind=article -->
+
+- [Agent 模板](./agent-templates.md)
+  模板目录、选择规则，以及初始化 Agent 所用的 AGENTS.md、template.toml 和 skills.toml schema。
+  <!-- mdorigin:index kind=article -->
+
+- [Skills](./skills.md)
+  Skill 来源、skills.toml schema，以及安装、启用、更新和校验 skill 的 CLI 命令。
+  <!-- mdorigin:index kind=article -->
+
+- [TUI](./tui.md)
+  终端 UI 参考：斜杠命令、快捷键、面板和连接控制。
+  <!-- mdorigin:index kind=article -->
+
+- [工作项](./work-items.md)
+  工作项字段、状态、生命周期操作，以及操作它们的 CLI 和 HTTP 接口。
+  <!-- mdorigin:index kind=article -->
+
+- [可观测性](./observability.md)
+  Trace 导出、受保护的指标端点，以及 OTLP、OpenMetrics、仪表盘和告警的配置。
+  <!-- mdorigin:index kind=article -->
+
+- [Web 工具](./web-tools.md)
+  WebFetch 和 WebSearch 的参数、提取模式、搜索提供商、截断和来源处理。
+  <!-- mdorigin:index kind=article -->
+
+- [图像观察](./view-image.md)
+  图像观察工具的输入、视觉模型选择、响应元数据和兼容性限制。
+  <!-- mdorigin:index kind=article -->
+
+- [图像生成](./image-generation.md)
+  图像生成工具的参数、支持的模型、输出尺寸和格式，以及错误行为。
   <!-- mdorigin:index kind=article -->
 
 - [支持的模型](./models.md)

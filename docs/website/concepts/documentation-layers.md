@@ -64,11 +64,12 @@ internal runtime specifications.
 - **Audience:** Contributors and maintainers working on Holon's codebase.
 - **Rule:** Spec pages are normative specifications, not user documentation. User-facing navigation de-emphasizes spec pages so beginners are not confused by internal mechanics.
 
-## Supporting maintainer layers (Outside website)
+## Supporting maintainer layers
 
 - **`docs/rfcs/` (Design RFCs):** Canonical design rationale and architectural debates behind major capabilities.
 - **`docs/implementation-decisions/` (ADRs):** Lightweight records explaining why a specific technical choice was made when multiple viable options existed.
 - **`docs/archive/`:** Preserved historical notes that are no longer active specifications.
+- **`docs/website/maintainers/` (Maintainer workflows):** Build, test, and documentation workflows for people changing Holon itself.
 
 ## Cross-layer links
 

@@ -145,5 +145,5 @@ Agent 每次执行都遵循这个模式：
 - [记忆系统](/zh-CN/concepts/memory.md) — Holon 如何在轮次之间保持连续性
 - [信任边界](/zh-CN/concepts/trust-boundaries.md) — Holon 如何分类并执行信任
 - [CLI 参考](/zh-CN/reference/cli.md) — 全部 CLI 命令
-- [集成指南](/zh-CN/guides/integration.md) — HTTP 控制平面 API
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http.md) — HTTP 控制平面 API
 - [快速开始](/zh-CN/getting-started/first-agent.md) — 上手教程

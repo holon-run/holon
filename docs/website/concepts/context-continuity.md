@@ -132,6 +132,19 @@ implementation details. The visible contract is that Holon preserves continuity
 through typed runtime evidence rather than by treating the chat transcript as
 the only source of memory.
 
+## How Holon keeps work continuous
+
+Continuity is why an agent can stop and later pick the work back up. Three things
+stay with the runtime rather than with your client:
+
+- The **agent** keeps its identity, its guidance, and its memory.
+- The **objective** stays tracked as a work item, with its plan and progress.
+- The **execution** keeps running as a task even after the client disconnects.
+
+When you reconnect, you see the current state, not a replay. When the work
+finishes, the result arrives as a brief. You do not have to keep a terminal open
+for the work to continue.
+
 ## See Also
 
 - [Runtime Model](/concepts/runtime-model.md) — Agents, work items, tasks, and wakeups

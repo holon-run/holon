@@ -1,14 +1,16 @@
 ---
-title: Quick examples
-summary: Common Holon tasks you can try after completing the Getting Started guide.
-order: 15
+title: Run your first Holon task
+summary: Start Holon, run one task end to end, and confirm the result.
+order: 10
 ---
 
-# Quick Examples
+# Run your first Holon task
 
-A cookbook of common tasks and command recipes for daily development.
-
-> If you are setting up Holon for the first time, follow the end-to-end [Getting started walkthrough](/getting-started/) first to complete installation and initial onboarding.
+Start here when Holon is installed and you want one task to reach a result. Pick
+the example that matches what you are doing; each one is short and
+self-contained. If you have not installed Holon yet, do
+[Getting started](/getting-started/) first. Exact flags and configuration live
+in [Reference](/reference/).
 
 ## 1. One-Shot Question
 
@@ -130,7 +132,7 @@ holon tui --no-alt-screen
 
 In the TUI, type `/` to open the slash command menu. Use `/model` to
 switch models, `/agent` to manage agents, and `/help` to see all commands.
-See the [TUI guide](/guides/tui) for the full slash command reference.
+See the [TUI guide](/reference/tui) for the full slash command reference.
 
 ## 6. Start the HTTP Server
 
@@ -217,8 +219,8 @@ holon run --agent my-builder --workspace-root /path/to/project "Build the projec
 
 ## See Also
 
-- [Getting Started](/getting-started/first-agent.md) — Full step-by-step tutorial
-- [Configuration Reference](/reference/configuration.md) — All config keys and credential management
-- [CLI Reference](/reference/cli.md) — Complete command-line reference
-- [Troubleshooting](/guides/troubleshooting.md) — Common issues and solutions
-- [Integration Guide](/guides/integration.md) — HTTP control plane integration
+- [Getting started](/getting-started/first-agent.md) — full first-run walkthrough
+- [Configuration reference](/reference/configuration.md) — configuration keys and credentials
+- [CLI reference](/reference/cli.md) — complete command-line reference
+- [Troubleshoot a Holon task](/guides/troubleshooting.md) — common problems and fixes
+- [Automate Holon over HTTP](/guides/automate-over-http.md) — drive Holon from code

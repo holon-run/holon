@@ -389,7 +389,7 @@ OTLP trace 导出是可选的，默认关闭。控制 API 运行时，OpenMetric
 | `runtime.observability.otlp.timeout_ms` | positive integer | `5000` | 每个请求的导出超时 |
 
 OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告警和故障排查示例见
-[运行时可观测性指南](/zh-CN/guides/observability)。
+[运行时可观测性指南](/zh-CN/reference/observability)。
 
 ## Web 抓取/搜索设置
 

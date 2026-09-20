@@ -23,6 +23,7 @@ how the runtime behaves.
 | [Concepts](/concepts/) | Mental model | Users, evaluators |
 | [Reference](/reference/) | CLI, config, control-plane snapshots | Users, integrators |
 | **Specs** (here) | Current runtime contracts | Maintainers, contributors |
+| [Maintainers](/maintainers/) | Build, test, and documentation workflows | Maintainers, contributors |
 | [RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) | Design records and rationale | Maintainers |
 
 Specs bridge the gap between user-facing docs and RFC design history. When an

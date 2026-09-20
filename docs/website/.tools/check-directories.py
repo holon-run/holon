@@ -9,7 +9,7 @@ import sys
 from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent.parent
-SECTIONS = ("getting-started", "concepts", "guides", "reference", "spec")
+SECTIONS = ("getting-started", "concepts", "guides", "reference", "spec", "maintainers")
 START = "<!-- INDEX:START -->"
 END = "<!-- INDEX:END -->"
 LINK = re.compile(r"\[[^\]\n]+\]\(([^)\s]+)\)")
@@ -60,7 +60,10 @@ def main():
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
-    print("Documentation directories: 10 pages have a single, non-duplicated catalog.")
+    print(
+        f"Documentation directories: {len(SECTIONS) * 2} pages have a single, "
+        "non-duplicated catalog."
+    )
     return 0
 
 

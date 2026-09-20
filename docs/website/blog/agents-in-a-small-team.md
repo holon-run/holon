@@ -150,7 +150,7 @@ Holon provides long-lived agents and [WorkItems](./why-work-items) for this divi
 
 Investigation and acceptance are the first two cases we have explored. Later, I would also like to write about code review, product analysis, and how developers deliver a complete feature across platforms.
 
-If you also want to begin with a shared team runtime, see the [Remote access and service deployment guide](../guides/remote-access.md) (in English) to learn how members can connect to the same Holon service; then use the [WorkItem guide](../guides/work-items.md) to organize work requiring ongoing follow-up. Choosing one recurring team task with clear handoff boundaries makes it easier to test whether this collaboration is useful than assigning a full set of agent roles at the start.
+If you also want to begin with a shared team runtime, see the [Remote access and service deployment guide](../guides/connect-remote-runtime.md) (in English) to learn how members can connect to the same Holon service; then use the [WorkItem guide](../reference/work-items.md) to organize work requiring ongoing follow-up. Choosing one recurring team task with clear handoff boundaries makes it easier to test whether this collaboration is useful than assigning a full set of agent roles at the start.
 
 ---
 

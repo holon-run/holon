@@ -1,12 +1,13 @@
 ---
-title: 故障排查
-summary: 常见 Holon 问题的解决方案，涵盖 daemon、配置、模型和 TUI 问题。
+title: 排查 Holon 任务问题
+summary: 把卡住、失败或无输出的任务定位到一个明确的下一步。
 order: 30
 ---
 
-# 故障排查
+# 排查 Holon 任务问题
 
-常见 Holon 问题的解决方案。
+任务卡住通常就那么几种。按你遇到的现象往下走，做检查，再进入下一步。运行时字段
+和端点见[参考](/zh-CN/reference/)。
 
 ## Daemon 问题
 
@@ -267,5 +268,5 @@ holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/api/control/runtim
 ## 另见
 
 - [配置参考](/zh-CN/reference/configuration.md) — 配置键与凭据管理
-- [快速示例](/zh-CN/guides/quick-examples.md) — 常见任务示例
-- [入门指南](/zh-CN/getting-started/first-agent.md) — 安装与配置教程
+- [运行你的第一个 Holon 任务](/zh-CN/guides/quick-examples.md) — 常见任务示例
+- [快速开始](/zh-CN/getting-started/first-agent.md) — 首次运行流程

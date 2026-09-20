@@ -80,7 +80,7 @@ The rest of the file defines the workflow:
 
 Skills provide the specific review methods: `code-review` defines evidence, finding categories, and verification coverage; `github-review` handles GitHub context collection, deduplication, and review publication. `ghx` and `sview` support platform operations and source reading; `agentinbox` and `uxc` handle event integration.
 
-Add your project requirements; you do not need to write a review prompt from scratch. To adjust general responsibilities or replace Skills, see the [Agent template guide](../guides/agent-templates.md).
+Add your project requirements; you do not need to write a review prompt from scratch. To adjust general responsibilities or replace Skills, see the [Agent template guide](../reference/agent-templates.md).
 
 ## Confirm responsibilities and merge permissions before starting
 

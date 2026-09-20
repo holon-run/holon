@@ -1,12 +1,14 @@
 ---
-title: Troubleshooting
-summary: Solutions for common Holon issues covering daemon, configuration, model, and TUI problems.
+title: Troubleshoot a Holon task
+summary: Work through a stalled, failing, or silent task to a concrete next step.
 order: 30
 ---
 
-# Troubleshooting
+# Troubleshoot a Holon task
 
-Solutions for common Holon issues.
+A task can stall in a few predictable ways. Work through the symptom you have,
+apply the check, and move on. Runtime fields and endpoints are in
+[Reference](/reference/).
 
 ## Daemon Issues
 
@@ -274,6 +276,6 @@ holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/api/control/runtim
 
 ## See Also
 
-- [Configuration Reference](/reference/configuration.md) — Configuration keys and credential management
-- [Quick Examples](/guides/quick-examples.md) — Common task examples
-- [Getting Started](/getting-started/first-agent.md) — Setup tutorial
+- [Configuration reference](/reference/configuration.md) — configuration keys and credentials
+- [Run your first Holon task](/guides/quick-examples.md) — common task examples
+- [Getting started](/getting-started/first-agent.md) — first-run walkthrough

@@ -47,7 +47,7 @@ holon onboard
 交互式引导配置 Provider 凭据。也可以在启动 daemon 后通过 Web GUI 的
 **Settings** 页面配置 Provider。详见
 [Configuration Reference](docs/website/reference/configuration.md) 和
-[Web GUI 指南](docs/website/guides/web-gui.md)。
+[Web GUI 指南](docs/website/guides/use-web-gui.md)。
 
 ### 3. 启动 daemon
 
@@ -68,7 +68,7 @@ holon tui
 打开 <http://localhost:7878>，创建 Agent 并通过聊天界面工作，
 内置文件浏览器、任务跟踪等功能。
 
-更多：[TUI 指南](docs/website/guides/tui.md) · [Web GUI 指南](docs/website/guides/web-gui.md) · [首个 Agent](docs/website/getting-started/first-agent.md)
+更多：[TUI 指南](docs/website/reference/tui.md) · [Web GUI 指南](docs/website/guides/use-web-gui.md) · [首个 Agent](docs/website/getting-started/first-agent.md)
 
 ## 安装
 

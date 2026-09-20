@@ -161,5 +161,5 @@ Each agent turn follows this pattern:
 - [Trust Boundaries](/concepts/trust-boundaries.md) — How Holon classifies and
   enforces trust
 - [CLI Reference](/reference/cli.md) — All CLI commands
-- [Integration Guide](/guides/integration.md) — HTTP control plane API
+- [Automate Holon over HTTP](/guides/automate-over-http.md) — HTTP control plane API
 - [Getting Started](/getting-started/first-agent.md) — Hands-on tutorial

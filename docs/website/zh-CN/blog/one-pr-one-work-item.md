@@ -80,7 +80,7 @@ AGENTS.md:
 
 审阅的具体方法由 Skills 提供：`code-review` 规定证据、问题分类和验证范围，`github-review` 负责 GitHub 上的上下文收集、去重与审阅发布。`ghx`、`sview` 辅助平台操作和源码阅读，`agentinbox`、`uxc` 负责事件接入。
 
-你只需补充项目要求，不用从头写审阅提示词。要调整通用职责或替换 Skills，可以参考[Agent 模板指南](../../guides/agent-templates.md)。
+你只需补充项目要求，不用从头写审阅提示词。要调整通用职责或替换 Skills，可以参考[Agent 模板指南](../../reference/agent-templates.md)。
 
 ## 开始前确认职责与合并权限
 

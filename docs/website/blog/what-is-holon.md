@@ -98,7 +98,7 @@ Each agent has its own AgentHome to keep its responsibilities, memory, and mater
 
 Role agreements also differ from project rules. The reviewer's review responsibilities belong in its own AgentHome; how a repository builds and runs tests stays in the corresponding workspace. This lets it reuse its review methods in another project while following that project's specific requirements.
 
-You can start from a template when creating a role. Reusable methods can become Skills, such as review steps, documentation checks, or log investigation. If you temporarily need an independent second look, you can delegate to a child agent and end that assignment after receiving the results, without maintaining a long-term role for every small task. For configuration, see the [Agent templates](/guides/agent-templates) and [Skills](/guides/skills) guides (in English).
+You can start from a template when creating a role. Reusable methods can become Skills, such as review steps, documentation checks, or log investigation. If you temporarily need an independent second look, you can delegate to a child agent and end that assignment after receiving the results, without maintaining a long-term role for every small task. For configuration, see the [Agent templates](/reference/agent-templates) and [Skills](/reference/skills) references (in English).
 
 ### Keep unfinished work and continue when conditions allow
 
@@ -114,9 +114,9 @@ WorkItem does not guarantee infinite context or lossless recovery. Its records n
 
 Agents can directly use the repositories, shell, and toolchain on the machine running Holon. After connecting to an existing project, an agent follows project rules to edit files and run tests. After drafting documentation, it can build the site to check pages. You receive actual workspace changes and verification results that you can continue to edit, review, or commit.
 
-One agent can bind multiple workspaces and switch between them. For example, adding an interface may require first changing the server, then updating the SDK, and finally adjusting the application that uses it. A development agent can work toward the same objective through each repository's changes and verification. Each project's code, build methods, and guidance files stay in its own directory. When changes need isolation, it can also create a separate Git worktree for the corresponding repository. See the [workspace guide](/guides/workspaces) (in English) for details.
+One agent can bind multiple workspaces and switch between them. For example, adding an interface may require first changing the server, then updating the SDK, and finally adjusting the application that uses it. A development agent can work toward the same objective through each repository's changes and verification. Each project's code, build methods, and guidance files stay in its own directory. When changes need isolation, it can also create a separate Git worktree for the corresponding repository. See the [workspace reference](/reference/workspaces) (in English) for details.
 
-Models and image tools can be configured for the work, for example to prepare illustrations for documentation or read page screenshots for inspection. When using remote models, requests still go to the corresponding services, so choose models and the material you send according to the project's data requirements. See the [model reference](/reference/models), [image understanding](/guides/view-image), and [image generation](/guides/image-generation) guides (in English) for supported capabilities and required credentials.
+Models and image tools can be configured for the work, for example to prepare illustrations for documentation or read page screenshots for inspection. When using remote models, requests still go to the corresponding services, so choose models and the material you send according to the project's data requirements. See the [model reference](/reference/models), [image understanding](/reference/view-image), and [image generation](/reference/image-generation) reference pages (in English) for supported capabilities and required credentials.
 
 ## Teams share responsibilities and work results
 

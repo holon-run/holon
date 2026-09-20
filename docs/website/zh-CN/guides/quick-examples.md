@@ -1,14 +1,14 @@
 ---
-title: 快速示例
-summary: 完成入门指南后可以尝试的常见 Holon 任务。
-order: 15
+title: 运行你的第一个 Holon 任务
+summary: 启动 Holon，完整跑通一个任务并确认结果。
+order: 10
 ---
 
-# 快速示例
+# 运行你的第一个 Holon 任务
 
-日常开发中常见任务与高频命令模式的实操速查手册（Cookbook）。
-
-> 如果你是第一次接触 Holon，建议先按照 [快速开始教程](/zh-CN/getting-started/) 完成安装与初始化配置。
+装好 Holon 之后，从这里开始跑通一个任务。挑一个和你手头事情相符的例子，每个都
+很短、可以独立运行。如果还没安装，先看[快速开始](/zh-CN/getting-started/)。
+精确参数和配置见[参考](/zh-CN/reference/)。
 
 ## 1. 单次提问
 
@@ -128,7 +128,7 @@ holon tui --connect http://your-server:8787 --token-profile my-profile
 holon tui --no-alt-screen
 ```
 
-在 TUI 中输入 `/` 打开斜杠命令菜单。用 `/model` 切换模型，用 `/agent` 管理 Agent，用 `/help` 查看所有命令。完整的斜杠命令参考见 [TUI 指南](/zh-CN/guides/tui)。
+在 TUI 中输入 `/` 打开斜杠命令菜单。用 `/model` 切换模型，用 `/agent` 管理 Agent，用 `/help` 查看所有命令。完整的斜杠命令参考见 [TUI 指南](/zh-CN/reference/tui)。
 
 ## 6. 启动 HTTP 服务器
 
@@ -215,8 +215,8 @@ holon run --agent my-builder --workspace-root /path/to/project "Build the projec
 
 ## 另见
 
-- [入门指南](/zh-CN/getting-started/first-agent.md) — 完整的分步教程
+- [快速开始](/zh-CN/getting-started/first-agent.md) — 完整的首次运行流程
 - [配置参考](/zh-CN/reference/configuration.md) — 所有配置项与凭据管理
 - [CLI 参考](/zh-CN/reference/cli.md) — 完整的命令行参考
-- [故障排查](/zh-CN/guides/troubleshooting.md) — 常见问题与解决办法
-- [集成指南](/zh-CN/guides/integration.md) — HTTP 控制平面集成
+- [排查 Holon 任务问题](/zh-CN/guides/troubleshooting.md) — 常见问题与解决办法
+- [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http.md) — 用代码驱动 Holon

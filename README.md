@@ -47,7 +47,7 @@ holon onboard
 This walks through provider credential setup interactively. You can also
 configure providers through the Web GUI **Settings** page after starting the
 daemon. See [Configuration Reference](docs/website/reference/configuration.md)
-and [Web GUI guide](docs/website/guides/web-gui.md) for more.
+and [Web GUI guide](docs/website/guides/use-web-gui.md) for more.
 
 ### 3. Start the daemon
 
@@ -68,7 +68,7 @@ Select an agent and start working. Agents keep running after you disconnect.
 Open <http://localhost:7878>. Create an agent and work through a chat interface
 with built-in file browser, task tracking, and more.
 
-For more: [TUI guide](docs/website/guides/tui.md) · [Web GUI guide](docs/website/guides/web-gui.md) · [First agent](docs/website/getting-started/first-agent.md)
+For more: [TUI guide](docs/website/reference/tui.md) · [Web GUI guide](docs/website/guides/use-web-gui.md) · [First agent](docs/website/getting-started/first-agent.md)
 
 ## Install
 

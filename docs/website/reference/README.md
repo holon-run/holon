@@ -7,9 +7,10 @@ order: 40
 # Reference
 
 Reference pages describe Holon's current public surface as it actually behaves —
-not as it is planned or promised. They are verified against the compiled
-runtime (`holon --help`, `holon config schema`, route inventory) and are the
-authoritative single source of truth for syntax and options.
+not as it is planned or promised. They are verified against the compiled runtime
+(`holon --help`, `holon config schema`, route inventory) where applicable, and
+pages that document a tool or feature name their maintenance source. They are
+the authoritative single source of truth for syntax and options.
 
 ## What is covered
 
@@ -75,6 +76,42 @@ baselines are refreshed from source instead of edited here.
 
 - [Runtime status enum inventory](./runtime-status-enum-inventory.md)
   Machine-readable baseline for stable serialized runtime lifecycle and status enums.
+  <!-- mdorigin:index kind=article -->
+
+- [Workspaces and execution environments](./workspaces.md)
+  Workspace, execution root, and worktree binding, switching, and isolation contracts.
+  <!-- mdorigin:index kind=article -->
+
+- [Agent templates](./agent-templates.md)
+  Template catalog, selection rules, and the AGENTS.md, template.toml, and skills.toml schema used to initialize agents.
+  <!-- mdorigin:index kind=article -->
+
+- [Skills](./skills.md)
+  Skill sources, skills.toml schema, and the CLI commands that install, enable, update, and verify skills.
+  <!-- mdorigin:index kind=article -->
+
+- [TUI](./tui.md)
+  Terminal UI reference — slash commands, keyboard shortcuts, panels, and connection controls.
+  <!-- mdorigin:index kind=article -->
+
+- [Work items](./work-items.md)
+  Work item fields, statuses, lifecycle operations, and the CLI and HTTP surfaces that act on them.
+  <!-- mdorigin:index kind=article -->
+
+- [Observability](./observability.md)
+  Trace export, protected metrics endpoints, and configuration for OTLP, OpenMetrics, dashboards, and alerts.
+  <!-- mdorigin:index kind=article -->
+
+- [Web tools](./web-tools.md)
+  WebFetch and WebSearch parameters, extract modes, search providers, truncation, and source handling.
+  <!-- mdorigin:index kind=article -->
+
+- [Image observation](./view-image.md)
+  Image observation tool inputs, vision model selection, response metadata, and compatibility limits.
+  <!-- mdorigin:index kind=article -->
+
+- [Image generation](./image-generation.md)
+  Image generation tool parameters, supported models, output sizes and formats, and error behavior.
   <!-- mdorigin:index kind=article -->
 
 - [Supported Models](./models.md)

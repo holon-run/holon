@@ -849,3 +849,38 @@ curl -X POST http://127.0.0.1:7878/api/webhooks/generic/main \
 # Stream agent events
 curl -N http://127.0.0.1:7878/api/agents/main/events/stream
 ```
+
+## Operator Transport Bindings
+
+For persistent integration channels, register an operator transport binding:
+
+```bash
+curl -X POST http://localhost:8787/api/control/agents/my-agent/operator-bindings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transport": "http_callback",
+    "operator_actor_id": "slack-bot-01",
+    "default_route_id": "slack-channel-general",
+    "delivery_callback_url": "https://my-service.example.com/holon-delivery",
+    "delivery_auth": {
+      "kind": "bearer",
+      "bearer_token": "my-delivery-token"
+    },
+    "capabilities": {
+      "text": true,
+      "markdown": true
+    }
+  }'
+```
+
+Once bound, use the operator ingress endpoint to relay messages:
+
+```bash
+curl -X POST http://localhost:8787/api/control/agents/my-agent/operator-ingress \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "User asked: can you explain the build error?",
+    "actor_id": "slack-bot-01",
+    "binding_id": "binding-abc"
+  }'
+```

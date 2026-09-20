@@ -164,6 +164,6 @@ must wait for that timer.
 
 ## See also
 
-- [Integration guide](/guides/integration.md) — HTTP control plane endpoint reference
+- [Automate Holon over HTTP](/guides/automate-over-http.md) — HTTP control plane endpoint reference
 - [Runtime model](/concepts/runtime-model.md) — How triggers fit into the agent execution loop
 - [WaitFor tool](/reference/model-tool-schema-inventory.md) — The WaitFor tool that pairs with triggers
