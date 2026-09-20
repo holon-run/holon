@@ -430,7 +430,12 @@ jobs:
           cargo test --manifest-path crates/decision-openai/Cargo.toml --locked
 
       - name: Package check
-        run: cargo publish --dry-run --locked
+        run: |
+          if grep -q 'decision-core = {.*path = "crates/decision-core"' Cargo.toml; then
+            echo "::notice::Skipping crates.io package dry-run because holon depends on unpublished local decision crates."
+          else
+            cargo publish --dry-run --locked
+          fi
 
       - name: Check generated snapshots
         run: make snapshots-check
