@@ -47,11 +47,15 @@ out, and the state disappears. Holon is different because:
 - You can see *where* each input came from and how much to trust it.
 - You can delegate work to child agents and supervise their progress.
 
-For the canonical design contracts behind these concepts, see the repository
-[RFCs](https://github.com/holon-run/holon/tree/main/docs/rfcs) and
-[implementation
-decisions](https://github.com/holon-run/holon/tree/main/docs/implementation-decisions/).
-These are maintainer-facing documents; you do not need them to use Holon.
+## Boundaries of this section
+
+The Concepts section is written for Holon users and integrators. It explains
+**durable, observable semantics** that remain true even if internal engine
+implementations change.
+
+- For step-by-step task workflows, see [Guides](/guides/).
+- For exact CLI flags, configuration schemas, and API parameters, see [Reference](/reference/).
+- For internal scheduler invariants and contributor contracts, see [Runtime specs](/spec/).
 
 <!-- INDEX:START -->
 
@@ -68,7 +72,7 @@ These are maintainer-facing documents; you do not need them to use Holon.
   <!-- mdorigin:index kind=article -->
 
 - [Documentation layers](./documentation-layers.md)
-  How Holon separates product docs, current-contract reference, and maintainer design records.
+  How Holon separates getting started, concepts, guides, reference, and maintainer runtime specs.
   <!-- mdorigin:index kind=article -->
 
 - [Trust boundaries](./trust-boundaries.md)

@@ -6,10 +6,12 @@ order: 35
 
 # 多 Agent 协作
 
+> **心智模型与规格契约：** 理解多 Agent 协同在系统架构中的心智模型，请查阅 [运行时模型](/zh-CN/concepts/runtime-model.md)；查阅父子任务监督与生命周期契约，请参阅维护者专属的 [任务规格](/zh-CN/spec/tasks.md)。
+
 Holon 支持创建可寻址的 Agent，并调用私有的受监督子 Agent，用来完成并行工作、
 委托和专门的子任务。
 
-## 概念
+## 协作原语概览
 
 ### Agent 操作
 

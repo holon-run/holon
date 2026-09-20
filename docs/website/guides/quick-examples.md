@@ -6,7 +6,9 @@ order: 15
 
 # Quick Examples
 
-Common Holon tasks you can try after completing the [Getting Started guide](/getting-started/first-agent.md).
+A cookbook of common tasks and command recipes for daily development.
+
+> If you are setting up Holon for the first time, follow the end-to-end [Getting started walkthrough](/getting-started/) first to complete installation and initial onboarding.
 
 ## 1. One-Shot Question
 

@@ -3,6 +3,7 @@ title: CLI exit codes
 summary: Exit-code and stream-routing contract for Holon's command-line interface.
 order: 13
 ---
+<!-- maintenance: hand-written; keep in sync with the top-level error renderer in `src/main.rs`. Last reviewed against v0.44.1. -->
 
 # CLI exit codes
 

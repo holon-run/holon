@@ -7,7 +7,16 @@ order: 40
 # 参考
 
 参考页面描述 Holon 当前公开接口的实际行为——而不是计划或承诺中的行为。
-它们基于编译产物（`holon --help`、`holon config schema`）验证，行为变化时应随之刷新。
+它们基于编译产物（`holon --help`、`holon config schema`、路由清单）核对验证，是语法、参数与接口的权威事实来源。
+
+## 涵盖内容
+
+- **命令行接口 (CLI)：** 完整命令树、选项参数与状态退出码。
+- **配置项规范：** 配置文件格式、配置键校验与环境变量映射。
+- **HTTP 控制面：** RESTful API 端点、认证令牌机制与请求响应 Schema。
+- **模型编目与内置工具：** Provider 模型支持列表与内置工具契约。
+
+分步任务操作教程请查阅 [指南](/zh-CN/guides/)；内部调度器与状态机契约请查阅 [运行时规格](/zh-CN/spec/)。
 
 > **稳定性说明：** 运行时处于 1.0 之前。CLI 形态、配置键和 HTTP 端点可能不经通知即变更。
 > 各参考页面在适用处记录了最后一次重新生成时对应的版本。设计方向和稳定性状态见仓库
@@ -16,7 +25,18 @@ order: 40
 > 本节页面均已译为中文。数据快照（`openapi.json`、`*-inventory.json`）和由源码生成的
 > `models.md` 正文保持英文，随英文版同步。
 
-机器可读接口：[OpenAPI 3.1 schema](/reference/openapi.json) 描述当前 HTTP 控制平面。
+## 手写页面与生成基线
+
+手写页面基于某个运行时产物核对，并记录最后一次核对的版本。生成页面和机器可读基线
+由源码刷新，不在此手工编辑。
+
+| 页面 | 事实来源 | 刷新方式 |
+|---|---|---|
+| `cli.md` | `holon --help` | 命令树变化时重新生成 |
+| `configuration.md` | `holon config schema`、`holon config list` | 配置键变化时重新核对 |
+| `http-control-plane.md` | Axum 路由树、OpenAPI 3.1 schema（`openapi.json`） | 路由或载荷变化时重新核对 |
+| `models.md` | 由 `src/model_catalog.rs` 生成 | `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`，再执行 `python3 docs/website/.tools/sync-generated-pages.py` |
+| `*-inventory.md`、`*-inventory.json` | 生成的 JSON 基线 | `make snapshots-refresh`，然后审查差异 |
 
 <!-- INDEX:START -->
 

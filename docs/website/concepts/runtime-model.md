@@ -55,27 +55,13 @@ Work item lifecycle:
                 +--- [Needs input] <-- [Blocked]
 ```
 
-When a work item is completed, the runtime promotes the agent's completion
-text as a **completion report**. The pattern is:
-
-1. Agent writes the operator-facing summary as assistant text
-2. Agent calls `CompleteWorkItem` in the same turn
-3. Runtime promotes the preceding text as the canonical completion report
-
-Completion reports are stored as part of the work item record. They are
-visible through `GetWorkItem` and `ListWorkItems`, and indexed by
-`MemorySearch` for future recall. This makes it possible to ask "what did we
-conclude on that issue?" without re-reading the full transcript.
-
-Completion reports replace free-form manual summaries. They are tied to the
-work item lifecycle, not to a requirement that the model turn must end. A
-`CompleteWorkItem` call is the lifecycle boundary for that work item: the
-runtime captures the associated report and completes the item. If there is no
-follow-up action, the runtime can stop without asking the model to repeat the
-same report as a second final brief. If the turn contains further assistant
-output, tool calls, or additional WorkItem completions, those continuation
-actions belong to the same turn and do not overwrite the already-promoted
-completion report.
+When a work item finishes, it records an operator-facing **completion report**.
+This report captures the final conclusions, key deliverables, and verification
+evidence. Completion reports become durable records indexed into memory,
+allowing users and agents to instantly recall "what did we decide and deliver
+on that objective?" without re-reading lengthy conversation transcripts.
+For exact tool invocation protocols and scheduler settlement contracts, see
+the maintainer-facing [Work items spec](/spec/work-items.md).
 
 ### Tasks
 

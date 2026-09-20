@@ -3,6 +3,7 @@ title: CLI 稳定性策略
 summary: Holon 命令行接口与机器可读输出契约的支持策略。
 order: 12
 ---
+<!-- maintenance: hand-written policy page; review when CLI stability levels or change policy change. Last reviewed against v0.44.1. -->
 
 # CLI 稳定性策略
 

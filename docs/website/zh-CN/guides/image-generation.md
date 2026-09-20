@@ -21,6 +21,8 @@ Agent 调用 GenerateImage 时，运行时会：
 
 ## 参数
 
+> **工具契约参考：** 机器可读的完整工具 JSON Schema、输入约束与返回字段详表，请查阅 [模型工具清单](/zh-CN/reference/model-tool-schema-inventory.md) 与 [工具规格](/zh-CN/spec/tools.md)。
+
 | 参数 | 必填 | 说明 |
 |-----------|----------|-------------|
 | `prompt` | 是 | 详细的图像生成提示词 |

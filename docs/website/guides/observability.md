@@ -149,3 +149,8 @@ Use this order:
 An OTLP failure does not imply that local trace search failed: retained traces
 remain in the independent diagnostics database according to the configured
 sampling and retention policy.
+
+## Related reference & concepts
+
+- [HTTP control plane reference](/reference/http-control-plane.md) — exact `/api/control/runtime/metrics` specification and headers.
+- [Configuration reference](/reference/configuration.md) — complete observability and OTLP configuration schema.
