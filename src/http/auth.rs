@@ -7,13 +7,14 @@ pub struct OidcCallbackQuery {
     pub code: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionExchangeRequest {
     pub credential: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct SessionResponse {
+    credential: String,
     ok: bool,
     expires_at: Option<chrono::DateTime<Utc>>,
     user_id: String,
@@ -183,6 +184,7 @@ pub async fn exchange_session(
                 .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
         )],
         Json(SessionResponse {
+            credential: session.credential,
             ok: true,
             expires_at: session.record.expires_at,
             user_id: session.record.user_id,

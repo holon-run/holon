@@ -121,7 +121,7 @@ pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
-pub(crate) use auth::CurrentUserResponse;
+pub(crate) use auth::{CurrentUserResponse, SessionExchangeRequest, SessionResponse};
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
     ConversationStreamMessage, ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,

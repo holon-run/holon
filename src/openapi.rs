@@ -17,6 +17,7 @@ use crate::{
         DesktopCapabilities, EnqueueResponse, HandshakeResponse, HttpErrorEnvelope,
         MemoryGetRequest, ModelConfigMigrationRequest, PickWorkItemRequest, PickWorkItemResponse,
         ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
+        SessionExchangeRequest, SessionResponse,
         RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
         SearchRequest, SearchResponse, UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
@@ -182,6 +183,7 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/auth/codex/device/start", "startCodexDeviceLogin", "auth", "Start Codex device login", "Request an OpenAI Codex device code and start a background job that persists the OAuth credential profile after user authorization.", None, AuthKind::Control),
     route("post", "/auth/{provider}/device/start", "startOAuthDeviceLogin", "auth", "Start OAuth device login", "Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex and xai.", None, AuthKind::Control),
     route("get", "/auth/method", "authMethod", "auth", "Authentication method", "Return the configured authentication mode used by the Web login page.", None, AuthKind::None),
+    route_with_response("post", "/auth/session/exchange", "sessionExchange", "auth", "Exchange session credential", "Exchange a static or bootstrap credential for a revocable session credential and browser session cookie.", Some("SessionExchangeRequest"), "SessionResponse", AuthKind::None),
     route_with_response("get", "/auth/session/me", "sessionMe", "auth", "Current session user", "Return the identity behind the current session: the authenticated OIDC user, or the stable local control identity for static-token deployments.", None, "CurrentUserResponse", AuthKind::None),
     route("post", "/control/runtime/shutdown", "runtimeShutdown", "runtime", "Runtime shutdown", "Request graceful runtime shutdown.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/debug-prompt", "debugPrompt", "control", "Debug prompt", "Render a diagnostic prompt preview.", Some("DebugPromptRequest"), AuthKind::Control),
@@ -733,6 +735,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "CurrentUserResponse".into(),
         component_schema_with_refs::<CurrentUserResponse>(),
+    );
+    schemas.insert(
+        "SessionExchangeRequest".into(),
+        component_schema_with_refs::<SessionExchangeRequest>(),
+    );
+    schemas.insert(
+        "SessionResponse".into(),
+        component_schema_with_refs::<SessionResponse>(),
     );
     schemas.insert(
         "ControlPromptRequest".into(),
