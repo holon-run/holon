@@ -110,7 +110,7 @@ public class HolonHttpClient internal constructor(
         }
 
     public companion object {
-        private fun defaultHttpClient(): OkHttpClient =
+        internal fun defaultHttpClient(): OkHttpClient =
             OkHttpClient.Builder()
                 .callTimeout(30, TimeUnit.SECONDS)
                 .followRedirects(false)
