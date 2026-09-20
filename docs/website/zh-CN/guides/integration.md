@@ -1,6 +1,6 @@
 ---
 title: 集成指南
-summary: 通过 curl 示例和端点参考，以编程方式访问 Holon 的 HTTP 控制平面。
+summary: 通过 HTTP 控制平面以编程方式将外部系统集成到 Holon 的分步操作指南。
 order: 25
 ---
 
@@ -27,72 +27,11 @@ holon serve --port 8787 --token "your-secret-token"
 - **Content-Type：** `application/json`
 - **认证：** 设置 `--token` 后，在 `Authorization` 头中携带 Bearer token
 
-## 核心端点
+> **权威参考：** 完整 API 端点清单、请求/响应 Schema 与状态码定义，请查阅 [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md) 与机器可读的 [OpenAPI 3.1 规格](/reference/openapi.json)。
 
-### Agent 管理
+## 端到端集成工作流
 
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `GET` | `/api/agents/list` | 列出带元数据的活跃 Agent 条目 |
-| `POST` | `/api/control/agents/:agent_id/create` | 创建新 Agent |
-| `GET` | `/api/agents/:agent_id/status` | 获取 Agent 状态与生命周期 |
-| `GET` | `/api/agents/:agent_id/state` | 获取轻量级 Agent 状态引导数据 |
-
-### 消息
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/agents/:agent_id/enqueue` | 向 Agent 入队一条消息 |
-| `POST` | `/api/control/agents/:agent_id/prompt` | 发送 operator 提示词 |
-| `POST` | `/api/control/agents/:agent_id/wake` | 唤醒休眠中的 Agent |
-| `POST` | `/api/control/agents/:agent_id/control` | 发送控制指令 |
-
-### 任务与工作项
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/control/agents/:agent_id/tasks` | 创建命令任务 |
-| `POST` | `/api/control/agents/:agent_id/work-items` | 创建工作项 |
-| `POST` | `/api/control/agents/:agent_id/work-items/:work_item_id/pick` | 选定当前工作项 |
-| `PATCH` | `/api/control/agents/:agent_id/work-items/:work_item_id` | 更新工作项 |
-| `POST` | `/api/control/agents/:agent_id/work-items/:work_item_id/complete` | 完成工作项 |
-| `GET` | `/api/agents/:agent_id/tasks` | 列出 Agent 任务 |
-| `GET` | `/api/agents/:agent_id/briefs` | 获取近期简报/上下文 |
-| `GET` | `/api/agents/:agent_id/transcript` | 获取 Agent 对话记录 |
-| `GET` | `/api/agents/:agent_id/events` | 获取 Agent 事件流 |
-
-### Workspace 与 Skills
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/control/agents/:agent_id/workspace/attach` | 挂载 workspace |
-| `POST` | `/api/control/agents/:agent_id/workspace/detach` | 卸载 workspace |
-| `GET` | `/api/agents/:agent_id/skills` | 列出 Agent 已启用的 skills |
-| `POST` | `/api/control/agents/:agent_id/skills/enable` | 为 Agent 启用 skill |
-| `POST` | `/api/control/agents/:agent_id/skills/disable` | 为 Agent 禁用 skill |
-| `GET` | `/api/skills/catalog` | 列出 Skill Library 目录 |
-| `POST` | `/api/skills/catalog/add` | 向库中添加 skill |
-| `POST` | `/api/skills/catalog/remove` | 从库中移除 skill |
-| `POST` | `/api/skills/catalog/reconcile` | 按 lock 文件对账库内容 |
-
-### 回调与 Webhook
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/callbacks/enqueue/:callback_token` | 携带载荷的外部回调 |
-| `POST` | `/api/callbacks/wake/:callback_token` | 外部唤醒触发器 |
-| `POST` | `/api/webhooks/generic/:agent_id` | 通用 webhook 入口 |
-
-### 运行时控制
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `GET` | `/api/control/runtime/status` | 运行时健康状态 |
-| `POST` | `/api/control/runtime/shutdown` | 优雅关闭 |
-
-## 示例
-
-### 向 Agent 发送消息
+### 1. 向 Agent 发送任务请求
 
 ```bash
 curl -X POST http://localhost:8787/api/agents/my-agent/enqueue \

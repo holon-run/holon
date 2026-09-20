@@ -6,10 +6,12 @@ order: 35
 
 # Multi-Agent Collaboration
 
+> **Mental model & specification:** To understand how multi-agent actors fit into the broader architecture, see [Runtime model](/concepts/runtime-model.md). For supervisor-child lifecycle contracts and task handles, see [Tasks spec](/spec/tasks.md).
+
 Holon supports creating addressable agents and invoking private supervised
 agents for parallel work, delegation, and specialized subtasks.
 
-## Concepts
+## Overview of Collaboration Primitives
 
 ### Agent operations
 

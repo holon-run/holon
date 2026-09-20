@@ -6,6 +6,8 @@ order: 17
 
 # Workspace
 
+> **心智模型与规格契约：** 理解工作区的安全隔离与信任边界，请查阅 [安全与执行边界](/zh-CN/concepts/security-and-execution-boundaries.md)；查阅执行根绑定与 worktree 内部契约，请参阅维护者专属的 [工作区与执行规格](/zh-CN/spec/workspace-and-execution.md)。
+
 Workspace 是 Agent 的执行根目录，Agent 在这里读文件、跑命令、应用补丁。每个
 Agent 始终只有一个活动 workspace。
 

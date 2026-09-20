@@ -9,7 +9,17 @@ order: 30
 Find a guide for the work you want to do: try Holon, use the Web GUI,
 automate GitHub tasks, operate the runtime, or coordinate agents.
 
-Each entry below describes its workflow. New guides appear here automatically.
+## Structure and boundaries
+
+Guides are task-oriented (How-to) documents answering *"How do I accomplish X?"*. Each guide follows a standard structure:
+1. **Goal & context:** What the guide accomplishes.
+2. **Prerequisites:** Required environment, keys, or permissions.
+3. **Step-by-step instructions:** Minimal reproducible commands and workflows.
+4. **Verification & troubleshooting:** How to confirm success and resolve common issues.
+
+Guides keep code snippets focused on the task. For exhaustive option dictionaries and full endpoint schemas, see [Reference](/reference/). For foundational mental models, see [Concepts](/concepts/).
+
+Each entry below describes its workflow:
 
 <!-- INDEX:START -->
 
@@ -50,7 +60,7 @@ Each entry below describes its workflow. New guides appear here automatically.
   <!-- mdorigin:index kind=article -->
 
 - [Integration guide](./integration.md)
-  Programmatic access to Holon's HTTP control plane with curl examples and endpoint reference.
+  Step-by-step how-to guide for integrating external systems with Holon via the HTTP control plane.
   <!-- mdorigin:index kind=article -->
 
 - [Web GUI](./web-gui.md)

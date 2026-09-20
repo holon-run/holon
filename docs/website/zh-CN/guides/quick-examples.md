@@ -6,7 +6,9 @@ order: 15
 
 # 快速示例
 
-完成[入门指南](/zh-CN/getting-started/first-agent.md)后，可以试试这些常见的 Holon 任务。
+日常开发中常见任务与高频命令模式的实操速查手册（Cookbook）。
+
+> 如果你是第一次接触 Holon，建议先按照 [快速开始教程](/zh-CN/getting-started/) 完成安装与初始化配置。
 
 ## 1. 单次提问
 
