@@ -180,6 +180,71 @@ pub fn memory_index_path(storage: &AppStorage) -> PathBuf {
     storage.shared_indexes_dir().join(INDEX_FILENAME)
 }
 
+pub(crate) fn delete_agent_memory_index_projection(
+    shared_indexes_dir: &Path,
+    agent_id: &str,
+) -> Result<()> {
+    let index_path = shared_indexes_dir.join(INDEX_FILENAME);
+    if !index_path.exists() {
+        return Ok(());
+    }
+    let index = MemoryIndex::open_shared(shared_indexes_dir)?;
+    index.run_maintenance_write_transaction("memory_index.delete_agent", |transaction| {
+        let table_exists = |name: &str| -> Result<bool> {
+            transaction
+                .query_row(
+                    "SELECT EXISTS(
+                         SELECT 1 FROM sqlite_master
+                         WHERE type = 'table' AND name = ?1
+                     )",
+                    [name],
+                    |row| row.get::<_, bool>(0),
+                )
+                .map_err(Into::into)
+        };
+        if table_exists("memory_documents_fts")? {
+            transaction.execute(
+                "DELETE FROM memory_documents_fts
+                 WHERE document_key IN (
+                    SELECT document_key FROM memory_documents WHERE agent_id = ?1
+                 )",
+                [agent_id],
+            )?;
+        }
+        if table_exists("memory_documents_fts_rows")? {
+            transaction.execute(
+                "DELETE FROM memory_documents_fts_rows
+                 WHERE document_key IN (
+                    SELECT document_key FROM memory_documents WHERE agent_id = ?1
+                 )",
+                [agent_id],
+            )?;
+        }
+        transaction.execute(
+            "DELETE FROM memory_documents WHERE agent_id = ?1",
+            [agent_id],
+        )?;
+        transaction.execute(
+            "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
+            [agent_id],
+        )?;
+        for table in [
+            "memory_index_pending_sources",
+            "memory_index_checkpoints",
+            "memory_index_meta",
+            "memory_index_cursors",
+        ] {
+            if table_exists(table)? {
+                transaction.execute(
+                    &format!("DELETE FROM {table} WHERE agent_id = ?1"),
+                    [agent_id],
+                )?;
+            }
+        }
+        Ok(())
+    })
+}
+
 fn legacy_memory_index_path(storage: &AppStorage) -> PathBuf {
     storage.shared_indexes_dir().join(LEGACY_INDEX_FILENAME)
 }
@@ -1242,6 +1307,10 @@ impl MemoryIndex {
                 document_key TEXT NOT NULL,
                 PRIMARY KEY (agent_id, generation, document_key)
             );
+                CREATE INDEX IF NOT EXISTS idx_memory_documents_agent
+                    ON memory_documents(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_memory_index_source_state_agent
+                    ON memory_index_source_state(agent_id);
                 CREATE INDEX IF NOT EXISTS idx_memory_index_rebuild_seen_agent_generation
                     ON memory_index_rebuild_seen(agent_id, generation);
                 "#,
@@ -4759,6 +4828,35 @@ mod tests {
             |row| row.get(0),
         )?;
         assert_eq!(mapped_count, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn memory_index_agent_cleanup_queries_use_agent_indexes() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+
+        for (table, index_name) in [
+            ("memory_documents", "idx_memory_documents_agent"),
+            (
+                "memory_index_source_state",
+                "idx_memory_index_source_state_agent",
+            ),
+        ] {
+            let details = index
+                .connection
+                .prepare(&format!(
+                    "EXPLAIN QUERY PLAN DELETE FROM {table} WHERE agent_id = 'default'"
+                ))?
+                .query_map([], |row| row.get::<_, String>(3))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert!(
+                details.iter().any(|detail| detail.contains(index_name)),
+                "{table} cleanup should use {index_name}, got {details:?}"
+            );
+        }
+
         Ok(())
     }
 
