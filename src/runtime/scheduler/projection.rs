@@ -4,6 +4,7 @@ use super::*;
 pub(crate) struct SchedulerProjection {
     /// Captured once per scheduling decision and included in derived equality.
     pub(super) now: DateTime<Utc>,
+    pub(super) agent_id: String,
     pub status: AgentStatus,
     pub queue_len: usize,
     pub has_interrupted_replay: bool,
@@ -30,8 +31,13 @@ pub(crate) struct SchedulerProjection {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum CanonicalWorkExecutionState {
-    Runnable { source_revision: u64 },
-    Waiting { wait_id: String },
+    Runnable {
+        source_revision: u64,
+        generation: u64,
+    },
+    Waiting {
+        wait_id: String,
+    },
     Other,
 }
 
@@ -190,9 +196,10 @@ impl SchedulerProjection {
                         .iter()
                         .map(|(work_item_id, record)| {
                             let state = match &record.state {
-                                WorkItemExecutionState::Runnable { .. } => {
+                                WorkItemExecutionState::Runnable { generation, .. } => {
                                     CanonicalWorkExecutionState::Runnable {
                                         source_revision: record.source_revision,
+                                        generation: *generation,
                                     }
                                 }
                                 WorkItemExecutionState::Waiting { wait, .. } => {
@@ -232,6 +239,7 @@ impl SchedulerProjection {
             .count();
         Ok(Self {
             now,
+            agent_id: snapshot.id.clone(),
             status: snapshot.status.clone(),
             queue_len,
             has_interrupted_replay,
@@ -272,30 +280,59 @@ impl SchedulerProjection {
     pub(crate) fn work_reactivation_work_item(
         &self,
     ) -> Option<(&WorkItemRecord, WorkReactivationMode)> {
-        self.current_work_item
-            .as_ref()
-            .filter(|_| {
-                self.current_work_item_scheduling_state == Some(WorkItemSchedulingState::Runnable)
-            })
-            .filter(|item| self.execution_authorizes_autonomous(item))
-            .map(|item| (item, WorkReactivationMode::ContinueActive))
-            .or_else(|| {
-                self.queued_runnable_work_items
-                    .iter()
-                    .find(|item| self.execution_authorizes_autonomous(item))
-                    .map(|item| (item, WorkReactivationMode::ActivateQueued))
-            })
+        let selection = select_autonomous_continuation(self)?;
+        resolve_autonomous_continuation_work_item(self, &selection)
     }
 
-    fn execution_authorizes_autonomous(&self, work_item: &WorkItemRecord) -> bool {
+    pub(super) fn execution_authorizes_autonomous(&self, work_item: &WorkItemRecord) -> bool {
         // None means the legacy engine opted out of canonical execution authority.
         self.canonical_work_states.as_ref().is_none_or(|states| {
             matches!(
                 states.get(&work_item.id),
-                Some(CanonicalWorkExecutionState::Runnable { source_revision })
+                Some(CanonicalWorkExecutionState::Runnable {
+                    source_revision,
+                    ..
+                })
                     if *source_revision == work_item.revision
             )
         })
+    }
+
+    pub(super) fn autonomous_execution_generation(
+        &self,
+        work_item: &WorkItemRecord,
+    ) -> Option<u64> {
+        match self
+            .canonical_work_states
+            .as_ref()
+            .and_then(|states| states.get(&work_item.id))
+        {
+            Some(CanonicalWorkExecutionState::Runnable {
+                source_revision,
+                generation,
+            }) if *source_revision == work_item.revision => Some(*generation),
+            _ => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_autonomous_execution_generation_for_test(
+        &mut self,
+        work_item_id: &str,
+        generation: u64,
+    ) -> bool {
+        let Some(CanonicalWorkExecutionState::Runnable {
+            generation: current,
+            ..
+        }) = self
+            .canonical_work_states
+            .as_mut()
+            .and_then(|states| states.get_mut(work_item_id))
+        else {
+            return false;
+        };
+        *current = generation;
+        true
     }
 
     pub(crate) fn current_work_item_waits_for_operator(&self) -> bool {

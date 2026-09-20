@@ -1023,6 +1023,222 @@ fn work_reactivation_uses_stable_fifo_order_for_queued_candidates() {
     );
 }
 
+fn autonomous_selection_projection() -> scheduler::SchedulerProjection {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-current".into());
+
+    let mut current = WorkItemRecord::new("default", "current work", WorkItemState::Open);
+    current.id = "work-current".into();
+    current.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&current).unwrap();
+    seed_runnable_work_execution(&storage, &current);
+
+    let mut queued = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    queued.id = "work-queued".into();
+    queued.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &queued);
+    storage.write_agent(&agent).unwrap();
+
+    scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap()
+}
+
+struct SelectQueuedHook;
+
+impl scheduler::SemanticCandidateSelectionHook for SelectQueuedHook {
+    fn select_autonomous_continuation(
+        &self,
+        context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Propose(
+            scheduler::AutonomousContinuationProposal {
+                snapshot_identity: context.snapshot_identity.clone(),
+                candidate: context.candidates[1].clone(),
+            },
+        ))
+    }
+}
+
+struct AbstainHook;
+
+impl scheduler::SemanticCandidateSelectionHook for AbstainHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Abstain)
+    }
+}
+
+struct ErrorHook;
+
+impl scheduler::SemanticCandidateSelectionHook for ErrorHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Err(scheduler::SemanticCandidateSelectionHookError)
+    }
+}
+
+struct UnknownCandidateHook;
+
+impl scheduler::SemanticCandidateSelectionHook for UnknownCandidateHook {
+    fn select_autonomous_continuation(
+        &self,
+        context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        let mut candidate = context.candidates[1].clone();
+        candidate.work_item_id = "work-unknown".into();
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Propose(
+            scheduler::AutonomousContinuationProposal {
+                snapshot_identity: context.snapshot_identity.clone(),
+                candidate,
+            },
+        ))
+    }
+}
+
+struct StaleSnapshotHook;
+
+impl scheduler::SemanticCandidateSelectionHook for StaleSnapshotHook {
+    fn select_autonomous_continuation(
+        &self,
+        context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        let mut snapshot_identity = context.snapshot_identity.clone();
+        snapshot_identity.queue_len += 1;
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Propose(
+            scheduler::AutonomousContinuationProposal {
+                snapshot_identity,
+                candidate: context.candidates[1].clone(),
+            },
+        ))
+    }
+}
+
+struct UnexpectedHook;
+
+impl scheduler::SemanticCandidateSelectionHook for UnexpectedHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        panic!("semantic selection must be bypassed for zero or one candidate")
+    }
+}
+
+#[test]
+fn autonomous_selection_hook_can_choose_another_legal_candidate() {
+    let projection = autonomous_selection_projection();
+    let selection =
+        scheduler::select_autonomous_continuation_with_hook(&projection, Some(&SelectQueuedHook))
+            .unwrap();
+    let (work_item, mode) =
+        scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+
+    assert_eq!(work_item.id, "work-queued");
+    assert_eq!(mode, WorkReactivationMode::ActivateQueued);
+}
+
+#[test]
+fn autonomous_selection_bypasses_hook_for_zero_or_one_candidate() {
+    let mut projection = autonomous_selection_projection();
+    projection.queued_runnable_work_items.clear();
+    let selection =
+        scheduler::select_autonomous_continuation_with_hook(&projection, Some(&UnexpectedHook))
+            .unwrap();
+    let (work_item, mode) =
+        scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+    assert_eq!(work_item.id, "work-current");
+    assert_eq!(mode, WorkReactivationMode::ContinueActive);
+
+    projection.current_work_item = None;
+    projection.current_work_item_scheduling_state = None;
+    assert!(scheduler::select_autonomous_continuation_with_hook(
+        &projection,
+        Some(&UnexpectedHook)
+    )
+    .is_none());
+}
+
+#[test]
+fn autonomous_selection_unavailable_abstain_and_error_use_static_baseline() {
+    let projection = autonomous_selection_projection();
+    let hooks: [Option<&dyn scheduler::SemanticCandidateSelectionHook>; 3] =
+        [None, Some(&AbstainHook), Some(&ErrorHook)];
+
+    for hook in hooks {
+        let selection =
+            scheduler::select_autonomous_continuation_with_hook(&projection, hook).unwrap();
+        let (work_item, mode) =
+            scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+        assert_eq!(work_item.id, "work-current");
+        assert_eq!(mode, WorkReactivationMode::ContinueActive);
+    }
+}
+
+#[test]
+fn autonomous_selection_rejects_unknown_candidate_and_stale_proposal_snapshot() {
+    let projection = autonomous_selection_projection();
+    let hooks: [&dyn scheduler::SemanticCandidateSelectionHook; 2] =
+        [&UnknownCandidateHook, &StaleSnapshotHook];
+
+    for hook in hooks {
+        let selection =
+            scheduler::select_autonomous_continuation_with_hook(&projection, Some(hook)).unwrap();
+        let (work_item, mode) =
+            scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+        assert_eq!(work_item.id, "work-current");
+        assert_eq!(mode, WorkReactivationMode::ContinueActive);
+    }
+}
+
+#[test]
+fn autonomous_selection_rejects_stale_runtime_snapshot_and_revision() {
+    let projection = autonomous_selection_projection();
+    let selection = scheduler::select_autonomous_continuation(&projection).unwrap();
+
+    let mut stale_snapshot = projection.clone();
+    stale_snapshot.active_run_id = Some("run-stale".into());
+    assert!(
+        scheduler::resolve_autonomous_continuation_work_item(&stale_snapshot, &selection).is_none()
+    );
+
+    let mut stale_revision = projection.clone();
+    stale_revision.current_work_item.as_mut().unwrap().revision += 1;
+    assert!(
+        scheduler::resolve_autonomous_continuation_work_item(&stale_revision, &selection).is_none()
+    );
+
+    let mut stale_generation = projection.clone();
+    assert!(stale_generation.set_autonomous_execution_generation_for_test("work-current", u64::MAX));
+    assert!(
+        scheduler::resolve_autonomous_continuation_work_item(&stale_generation, &selection)
+            .is_none()
+    );
+}
+
 #[test]
 fn background_work_item_task_does_not_block_runnable_work() {
     let dir = tempdir().unwrap();
