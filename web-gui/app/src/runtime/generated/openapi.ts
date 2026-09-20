@@ -701,6 +701,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/session/exchange": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange session credential
+         * @description Exchange a static or bootstrap credential for a revocable session credential and browser session cookie.
+         */
+        post: operations["sessionExchange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/session/exchange/native": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange native session credential
+         * @description Exchange a static or bootstrap credential for a revocable session credential and native session response.
+         */
+        post: operations["sessionExchangeNative"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/session/me": {
         parameters: {
             query?: never;
@@ -5030,6 +5070,14 @@ export interface components {
             /** @default false */
             write: boolean;
         };
+        /** NativeSessionResponse */
+        NativeSessionResponse: {
+            credential: string;
+            /** Format: date-time */
+            expires_at?: string | null;
+            ok: boolean;
+            user_id: string;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         OperatorIngressRequest: {
             [key: string]: unknown;
@@ -6333,6 +6381,17 @@ export interface components {
                 updated_at: string;
                 workspace_id?: string | null;
             }[];
+        };
+        /** SessionExchangeRequest */
+        SessionExchangeRequest: {
+            credential: string;
+        };
+        /** SessionResponse */
+        SessionResponse: {
+            /** Format: date-time */
+            expires_at?: string | null;
+            ok: boolean;
+            user_id: string;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         SetAgentModelRequest: {
@@ -8648,6 +8707,90 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    sessionExchange: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionExchangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    sessionExchangeNative: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SessionExchangeRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NativeSessionResponse"];
                 };
             };
             /** @description Client error JSON response. */

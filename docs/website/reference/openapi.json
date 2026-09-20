@@ -9706,6 +9706,33 @@
         "title": "ModelConfigMigrationRequest",
         "type": "object"
       },
+      "NativeSessionResponse": {
+        "properties": {
+          "credential": {
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "credential",
+          "ok",
+          "user_id"
+        ],
+        "title": "NativeSessionResponse",
+        "type": "object"
+      },
       "OperatorIngressRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -13843,6 +13870,41 @@
           "index_status"
         ],
         "title": "SearchResponse",
+        "type": "object"
+      },
+      "SessionExchangeRequest": {
+        "properties": {
+          "credential": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "credential"
+        ],
+        "title": "SessionExchangeRequest",
+        "type": "object"
+      },
+      "SessionResponse": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "user_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "user_id"
+        ],
+        "title": "SessionResponse",
         "type": "object"
       },
       "SetAgentModelRequest": {
@@ -19591,6 +19653,112 @@
           }
         },
         "summary": "Authentication method",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/session/exchange": {
+      "post": {
+        "description": "Exchange a static or bootstrap credential for a revocable session credential and browser session cookie.",
+        "operationId": "sessionExchange",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionExchangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "summary": "Exchange session credential",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/session/exchange/native": {
+      "post": {
+        "description": "Exchange a static or bootstrap credential for a revocable session credential and native session response.",
+        "operationId": "sessionExchangeNative",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionExchangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeSessionResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "summary": "Exchange native session credential",
         "tags": [
           "auth"
         ]

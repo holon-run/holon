@@ -1482,6 +1482,20 @@
   },
   {
     "method": "post",
+    "path": "/api/auth/session/exchange/native",
+    "handler": "exchange_session_native",
+    "operation_id": "sessionExchangeNative",
+    "tag": "auth",
+    "parameters": [],
+    "request_schema": "SessionExchangeRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": []
+  },
+  {
+    "method": "post",
     "path": "/api/auth/{provider}/device/start",
     "handler": "start_oauth_device_login",
     "operation_id": "startOAuthDeviceLogin",

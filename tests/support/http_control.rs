@@ -3661,7 +3661,7 @@ pub async fn control_prompt_local_credentials_keep_control_identity() -> Result<
         .send()
         .await?;
     assert_eq!(exchange.status(), reqwest::StatusCode::OK);
-    let session_credential = exchange
+    let session_cookie_credential = exchange
         .headers()
         .get(reqwest::header::SET_COOKIE)
         .and_then(|value| value.to_str().ok())
@@ -3671,9 +3671,14 @@ pub async fn control_prompt_local_credentials_keep_control_identity() -> Result<
         .and_then(|pair| pair.split_once('='))
         .map(|(_, value)| value.to_string())
         .expect("session cookie should carry a credential");
+    let exchange_body: serde_json::Value = exchange.json().await?;
+    assert!(
+        exchange_body.get("credential").is_none(),
+        "browser session exchange must not return a reusable credential"
+    );
 
     let mut message_ids = Vec::new();
-    for credential in [session_credential.as_str(), "secret"] {
+    for credential in [session_cookie_credential.as_str(), "secret"] {
         let response = client
             .post(format!("{base}/api/control/agents/default/prompt"))
             .bearer_auth(credential)

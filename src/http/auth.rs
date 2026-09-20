@@ -7,13 +7,21 @@ pub struct OidcCallbackQuery {
     pub code: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct SessionExchangeRequest {
     pub credential: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 pub struct SessionResponse {
+    ok: bool,
+    expires_at: Option<chrono::DateTime<Utc>>,
+    user_id: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct NativeSessionResponse {
+    credential: String,
     ok: bool,
     expires_at: Option<chrono::DateTime<Utc>>,
     user_id: String,
@@ -124,10 +132,10 @@ pub async fn complete_oidc_login(
     ))
 }
 
-pub async fn exchange_session(
+async fn exchange_session_credential(
     State(state): State<Arc<AppState>>,
     ApiJson(request): ApiJson<SessionExchangeRequest>,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<(crate::oidc::IssuedSession, String), (StatusCode, Json<Value>)> {
     if request.credential.trim().is_empty() {
         return Err(bad_request("credential must not be empty"));
     }
@@ -175,6 +183,14 @@ pub async fn exchange_session(
         .map_err(error_response)?
     };
     let cookie = session_cookie(&state, &session.credential);
+    Ok((session, cookie))
+}
+
+pub async fn exchange_session(
+    State(state): State<Arc<AppState>>,
+    ApiJson(request): ApiJson<SessionExchangeRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
     Ok((
         StatusCode::OK,
         [(
@@ -183,6 +199,27 @@ pub async fn exchange_session(
                 .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
         )],
         Json(SessionResponse {
+            ok: true,
+            expires_at: session.record.expires_at,
+            user_id: session.record.user_id,
+        }),
+    ))
+}
+
+pub async fn exchange_session_native(
+    State(state): State<Arc<AppState>>,
+    ApiJson(request): ApiJson<SessionExchangeRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let (session, cookie) = exchange_session_credential(State(state), ApiJson(request)).await?;
+    Ok((
+        StatusCode::OK,
+        [(
+            SET_COOKIE,
+            HeaderValue::from_str(&cookie)
+                .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
+        )],
+        Json(NativeSessionResponse {
+            credential: session.credential,
             ok: true,
             expires_at: session.record.expires_at,
             user_id: session.record.user_id,

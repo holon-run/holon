@@ -82,6 +82,135 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `session exchange decodes and persists the native credential`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse(fixture("session-response-v1.json")))
+            val store = FakeSessionCredentialStore()
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = store,
+                )
+
+            val session = client.exchangeSession("bootstrap-token")
+
+            assertEquals("session-credential", session.credential)
+            assertEquals("local-static-token", session.userId)
+            assertEquals("2030-01-01T00:00:00Z", session.expiresAt)
+            assertEquals("session-credential", store.value)
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/auth/session/exchange/native", request.path)
+            assertEquals(
+                """{"credential":"bootstrap-token"}""",
+                request.body.readUtf8(),
+            )
+        }
+    }
+
+    @Test
+    fun `stored session credential is used as bearer fallback`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse(fixture("agent-list-v1.json")))
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = FakeSessionCredentialStore("stored-session"),
+                )
+
+            client.listAgents()
+
+            assertEquals("Bearer stored-session", server.takeRequest().getHeader("Authorization"))
+        }
+    }
+
+    @Test
+    fun `logout revokes the session and clears the store`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_NO_CONTENT))
+            val store = FakeSessionCredentialStore("stored-session")
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = store,
+                )
+
+            client.logout()
+
+            assertNull(store.value)
+            val request = server.takeRequest()
+            assertEquals("POST", request.method)
+            assertEquals("/auth/session/logout", request.path)
+            assertEquals("Bearer stored-session", request.getHeader("Authorization"))
+        }
+    }
+
+    @Test
+    fun `logout prefers the stored session over the explicit bearer provider`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_NO_CONTENT))
+            val store = FakeSessionCredentialStore("stored-session")
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    bearerTokenProvider = BearerTokenProvider { "bootstrap-token" },
+                    sessionCredentialStore = store,
+                )
+
+            client.logout()
+
+            assertEquals("Bearer stored-session", server.takeRequest().getHeader("Authorization"))
+            assertNull(store.value)
+        }
+    }
+
+    @Test
+    fun `logout clears the store when remote revocation fails`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    fixture("error-v1.json"),
+                    HttpURLConnection.HTTP_INTERNAL_ERROR,
+                ),
+            )
+            val store = FakeSessionCredentialStore("stored-session")
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = store,
+                )
+
+            assertFailsWith<HolonHttpException> { client.logout() }
+
+            assertNull(store.value)
+            assertEquals("Bearer stored-session", server.takeRequest().getHeader("Authorization"))
+        }
+    }
+
+    @Test
+    fun `unauthorized response clears the stored session credential`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    fixture("error-v1.json"),
+                    HttpURLConnection.HTTP_UNAUTHORIZED,
+                ),
+            )
+            val store = FakeSessionCredentialStore("expired-session")
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = store,
+                )
+
+            assertFailsWith<HolonHttpException> { client.listAgents() }
+
+            assertNull(store.value)
+            assertEquals("Bearer expired-session", server.takeRequest().getHeader("Authorization"))
+        }
+    }
+
+    @Test
     fun `machine error is exposed without leaking an undecodable body`() {
         MockWebServer().use { server ->
             server.enqueue(
@@ -155,6 +284,7 @@ class HolonHttpClientTest {
                         OkHttpClient.Builder()
                             .callTimeout(20, TimeUnit.MILLISECONDS)
                             .build(),
+                        sessionCredentialStore = null,
                 )
 
             val error = assertFailsWith<HolonProtocolException> { client.listAgents() }
@@ -171,4 +301,18 @@ class HolonHttpClientTest {
             .setResponseCode(status)
             .setHeader("Content-Type", "application/json")
             .setBody(body)
+
+    private class FakeSessionCredentialStore(initialValue: String? = null) : SessionCredentialStore {
+        var value: String? = initialValue
+
+        override fun read(): String? = value
+
+        override fun write(credential: String) {
+            value = credential
+        }
+
+        override fun clear() {
+            value = null
+        }
+    }
 }
