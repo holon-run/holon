@@ -11,7 +11,7 @@ public data class HolonApiError(
     val context: Map<String, String>,
 )
 
-public fun ErrorResponse.toHolonApiError(): HolonApiError =
+internal fun ErrorResponse.toHolonApiError(): HolonApiError =
     HolonApiError(
         code = code,
         message = error,
