@@ -46,7 +46,7 @@ Holon 提供三种与运行时交互的方式：
 如果你已经熟悉 Holon，或想直接深入细节：
 
 - **[快速示例](/zh-CN/guides/quick-examples)** — 单次执行与常见任务模式
-- **[持久 Agent 工作流](/zh-CN/guides/durable-agent-workflow)** — 持久 Agent 工作的完整生命周期
+- **[持久 Agent 工作流](/zh-CN/guides/run-long-lived-task)** — 持久 Agent 工作的完整生命周期
 - **[概念](/zh-CN/concepts/)** — 深入内部机制前的心智模型
 - **[CLI 参考](/zh-CN/reference/cli.md)** — 完整命令面
 - **[故障排查](/zh-CN/guides/troubleshooting)** — 诊断常见安装问题
@@ -55,9 +55,9 @@ Holon 提供三种与运行时交互的方式：
 
 如果你打算修改 Holon 本身或为其做贡献：
 
-- **[本地运行时指南](/zh-CN/guides/local-runtime)** — 保守的开发工作流
-- **[文档工作流](/zh-CN/guides/documentation-workflow)** — 如何构建和预览本站
-- **[集成指南](/zh-CN/guides/integration)** — 把 Holon 接入外部系统
+- **[本地运行时指南](/zh-CN/maintainers/local-runtime)** — 保守的开发工作流
+- **[文档工作流](/zh-CN/maintainers/documentation-workflow)** — 如何构建和预览本站
+- **[集成指南](/zh-CN/guides/automate-over-http)** — 把 Holon 接入外部系统
 - 仓库 `docs/` 目录 — RFC、实现决策和架构笔记
 
 ## 环境要求

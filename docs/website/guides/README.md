@@ -18,80 +18,56 @@ stalls.
 
 <!-- INDEX:START -->
 
-- [Durable agent workflow](./durable-agent-workflow.md)
-  The end-to-end durable agent story: create an agent, start long-running work, survive disconnects, wait for events, and deliver final briefs.
+- [Run your first Holon task](./quick-examples.md)
+  Start Holon, run one task end to end, and confirm the result.
   <!-- mdorigin:index kind=article -->
 
-- [holon solve](./solve.md)
-  Use holon solve to automate GitHub issues and pull requests in headless mode.
+- [Run a GitHub task with holon solve](./run-github-task.md)
+  Take an issue or pull request from input to a finished task, then check the result.
   <!-- mdorigin:index kind=article -->
 
-- [Local runtime](./local-runtime.md)
-  A conservative workflow for running and inspecting Holon locally.
+- [Run a long-lived task](./run-long-lived-task.md)
+  Start work that waits, check progress, survive disconnects, and collect the final brief.
   <!-- mdorigin:index kind=article -->
 
-- [TUI guide](./tui.md)
-  Interactive terminal UI for Holon — navigation, slash commands, event log, model selection, and remote connection.
+- [Delegate work to another agent](./delegate-work.md)
+  Hand a scoped task to a child agent, wait for the result, and handle what comes back.
   <!-- mdorigin:index kind=article -->
 
-- [Quick examples](./quick-examples.md)
-  Common Holon tasks you can try after completing the Getting Started guide.
+- [Automate Holon over HTTP](./automate-over-http.md)
+  Authenticate, submit work, follow status, and read results from code.
   <!-- mdorigin:index kind=article -->
 
-- [Workspaces](./workspaces.md)
-  Workspace lifecycle — attach, exit, detach, worktree isolation, and how workspaces differ from shell directories.
+- [Connect to a remote Holon runtime](./connect-remote-runtime.md)
+  Reach a runtime running on another machine and verify the connection.
   <!-- mdorigin:index kind=article -->
 
-- [Agent templates](./agent-templates.md)
-  What agent templates are, how to sync or install them, how to use --template, and how to create custom templates.
+- [Use the Web GUI](./use-web-gui.md)
+  Drive agents, work items, and skills from the browser.
   <!-- mdorigin:index kind=article -->
 
-- [Documentation workflow](./documentation-workflow.md)
-  How to edit and build the mdorigin-powered Holon website.
+- [Create an agent from a template](./create-agent.md)
+  Pick a template, create an agent, and confirm it can take a task.
   <!-- mdorigin:index kind=article -->
 
-- [Remote access](./remote-access.md)
-  Remote daemon access — tunnel, tailnet, LAN modes, token management, and connecting from a remote TUI.
+- [Add a skill to an agent](./use-skills.md)
+  Find a skill, install it to the library, enable it for an agent, and confirm it is active.
   <!-- mdorigin:index kind=article -->
 
-- [Integration guide](./integration.md)
-  Programmatic access to Holon's HTTP control plane with curl examples and endpoint reference.
+- [Fetch and search web content](./use-web-tools.md)
+  Choose between search and fetch, then read the result without trusting it blindly.
   <!-- mdorigin:index kind=article -->
 
-- [Web GUI](./web-gui.md)
-  Use Holon's embedded web interface to manage agents, monitor runtime state, and configure settings from a browser.
+- [Generate an image](./generate-image.md)
+  Write a prompt, generate an image, and find the result on disk.
   <!-- mdorigin:index kind=article -->
 
-- [Troubleshooting](./troubleshooting.md)
-  Solutions for common Holon issues covering daemon, configuration, model, and TUI problems.
+- [Inspect an image with a vision tool](./inspect-image.md)
+  Point a vision model at a local image and read back what it sees.
   <!-- mdorigin:index kind=article -->
 
-- [Runtime observability](./observability.md)
-  Export Holon traces with OTLP, scrape protected OpenMetrics, and install baseline dashboards and alerts.
-  <!-- mdorigin:index kind=article -->
-
-- [Multi-agent collaboration](./multi-agent.md)
-  Creating and invoking agents, supervision contracts, and workspace modes for parallel work.
-  <!-- mdorigin:index kind=article -->
-
-- [Skills guide](./skills.md)
-  Reusable SKILL.md workflows, skill locations, and how to develop custom skills.
-  <!-- mdorigin:index kind=article -->
-
-- [WebFetch and WebSearch guide](./webfetch-websearch.md)
-  Agent tools for fetching web pages and searching the web — tool reference, extract modes, search providers, and usage patterns.
-  <!-- mdorigin:index kind=article -->
-
-- [Work items guide](./work-items.md)
-  Durable objective tracking with work items, plans, todo lists, and lifecycle management.
-  <!-- mdorigin:index kind=article -->
-
-- [ViewImage guide](./view-image.md)
-  Agent tool for inspecting local images through vision models — model selection, visual observation, durable metadata, and caching.
-  <!-- mdorigin:index kind=article -->
-
-- [Image Generation guide](./image-generation.md)
-  Agent tool for generating images from text prompts — model selection, size and format options, and output management.
+- [Troubleshoot a Holon task](./troubleshooting.md)
+  Work through a stalled, failing, or silent task to a concrete next step.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -231,6 +231,6 @@ surface and let shared workspaces accumulate knowledge across multiple agents.
 - [Context Continuity](/concepts/context-continuity.md) — How Holon keeps context coherent without replaying the entire transcript
 - [Runtime Model](/concepts/runtime-model.md) — Agents, work items, and the execution loop
 - [Documentation Layers](/concepts/documentation-layers.md) — How memory fits into Holon's documentation architecture
-- [Agent Templates](/guides/agent-templates.md) — How templates initialize agent role contracts
+- [Agent Templates](/reference/agent-templates.md) — How templates initialize agent role contracts
 - RFC: [Long-Lived Context Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/long-lived-context-memory.md)
 - RFC: [Agent and Workspace Memory](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-and-workspace-memory.md)

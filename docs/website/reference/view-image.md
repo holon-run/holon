@@ -4,7 +4,7 @@ summary: Image observation tool inputs, vision model selection, response metadat
 order: 44
 ---
 
-# ViewImage Guide
+# Image observation
 
 `ViewImage` lets Holon agents inspect local image files through a vision
 model. The agent provides an image path and a prompt describing what to

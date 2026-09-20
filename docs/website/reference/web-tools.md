@@ -4,7 +4,7 @@ summary: WebFetch and WebSearch parameters, extract modes, search providers, tru
 order: 42
 ---
 
-# WebFetch and WebSearch Guide
+# Web tools
 
 Holon agents have two built-in web tools that enable them to retrieve and
 search the public web. These tools are part of the `Web` capability family and
@@ -225,5 +225,5 @@ configuration schema.
 ## See also
 
 - [Model tool schema inventory](/reference/model-tool-schema-inventory.md) — tool registration and stability
-- [Integration guide](/guides/integration.md) — HTTP control plane and webhooks
+- [Integration guide](/guides/automate-over-http.md) — HTTP control plane and webhooks
 - [Configuration reference](/reference/configuration.md) — web policy settings

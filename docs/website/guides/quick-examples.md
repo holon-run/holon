@@ -132,7 +132,7 @@ holon tui --no-alt-screen
 
 In the TUI, type `/` to open the slash command menu. Use `/model` to
 switch models, `/agent` to manage agents, and `/help` to see all commands.
-See the [TUI guide](/guides/tui) for the full slash command reference.
+See the [TUI guide](/reference/tui) for the full slash command reference.
 
 ## 6. Start the HTTP Server
 
@@ -223,4 +223,4 @@ holon run --agent my-builder --workspace-root /path/to/project "Build the projec
 - [Configuration Reference](/reference/configuration.md) — All config keys and credential management
 - [CLI Reference](/reference/cli.md) — Complete command-line reference
 - [Troubleshooting](/guides/troubleshooting.md) — Common issues and solutions
-- [Integration Guide](/guides/integration.md) — HTTP control plane integration
+- [Integration Guide](/guides/automate-over-http.md) — HTTP control plane integration

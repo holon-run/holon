@@ -201,4 +201,7 @@ Choose a task that needs follow-up. Define the outcome and when to ask for your 
 - [Reference](./reference/)
   <!-- mdorigin:index kind=directory -->
 
+- [Maintainers](./maintainers/)
+  <!-- mdorigin:index kind=directory -->
+
 <!-- INDEX:END -->

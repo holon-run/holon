@@ -150,5 +150,5 @@ The parent remains responsible for:
   supervision
 - [Trust Boundaries](/concepts/trust-boundaries.md) — Why child output is
   evidence, not authority
-- [Work Items Guide](/guides/work-items.md) — Tracking objectives across
+- [Work Items Guide](/reference/work-items.md) — Tracking objectives across
   agents

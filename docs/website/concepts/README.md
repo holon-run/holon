@@ -67,6 +67,10 @@ These are maintainer-facing documents; you do not need them to use Holon.
   How Holon's memory layers preserve continuity across turns — work items, work refs, episodes, durable ledger, and indexed search.
   <!-- mdorigin:index kind=article -->
 
+- [Multi-agent collaboration](./multi-agent-collaboration.md)
+  Roles, boundaries, and trust when one agent delegates work to another.
+  <!-- mdorigin:index kind=article -->
+
 - [Documentation layers](./documentation-layers.md)
   How Holon separates product docs, current-contract reference, and maintainer design records.
   <!-- mdorigin:index kind=article -->

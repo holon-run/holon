@@ -4,7 +4,7 @@ summary: Work item fields, statuses, lifecycle operations, and the CLI and HTTP 
 order: 38
 ---
 
-# Work Items Guide
+# Work items
 
 Work items are Holon's durable unit of tracked work. Use them when an objective
 needs its own lifecycle, progress tracking, or cross-turn continuity.
@@ -161,5 +161,5 @@ update or switch the work item before doing high-commitment work.
 - [Runtime Model](/concepts/runtime-model.md) — Work items in the runtime
   lifecycle
 - [Quick Examples](/guides/quick-examples.md) — Common command patterns
-- [Multi-Agent Collaboration](/guides/multi-agent.md) — Delegated work and task
+- [Multi-Agent Collaboration](/guides/delegate-work.md) — Delegated work and task
   supervision

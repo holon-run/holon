@@ -4,7 +4,7 @@ summary: Image generation tool parameters, supported models, output sizes and fo
 order: 46
 ---
 
-# Image Generation Guide
+# Image generation
 
 `GenerateImage` lets Holon agents create images from text prompts using a
 configured image-generation model. The runtime saves generated images to
@@ -157,4 +157,4 @@ holon config get image_generation.default
 - [Model tool schema inventory](/reference/model-tool-schema-inventory.md) — tool registration and stability
 - [Models reference](/reference/models.md) — supported providers and image generation availability
 - [Configuration reference](/reference/configuration.md) — `image_generation.default` and provider setup
-- [Web GUI guide](/guides/web-gui.md) — image generation settings in the browser
+- [Web GUI guide](/guides/use-web-gui.md) — image generation settings in the browser

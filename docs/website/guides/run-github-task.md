@@ -271,5 +271,5 @@ point when you need arbitrary provider environment variables.
 
 - [Holon CLI reference](/reference/cli) — full command tree
 - [Configuration reference](/reference/configuration) — model and provider setup
-- [Integration guide](/guides/integration) — HTTP control plane access
-- [Multi-agent collaboration](/guides/multi-agent) — creating and invoking agents
+- [Integration guide](/guides/automate-over-http) — HTTP control plane access
+- [Multi-agent collaboration](/guides/delegate-work) — creating and invoking agents

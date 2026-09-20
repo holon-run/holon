@@ -298,7 +298,7 @@ Now that you have your first agent running:
 
 - **Explore concepts**: Read [Runtime model](/concepts/runtime-model.md) and [Trust boundaries](/concepts/trust-boundaries.md)
 - **Try examples**: See [Quick examples](/guides/quick-examples.md) for common tasks
-- **Build integrations**: Check the [Integration guide](/guides/integration.md)
+- **Build integrations**: Check the [Integration guide](/guides/automate-over-http.md)
 - **Reference documentation**: See [CLI reference](/reference/cli.md), [HTTP control plane](/reference/http-control-plane.md), and [Configuration reference](/reference/configuration.md)
 
 ## Troubleshooting

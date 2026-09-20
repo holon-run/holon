@@ -112,6 +112,6 @@ operator instructions.
 
 - [Runtime Model](/concepts/runtime-model.md) — Agent, task, and work item
   lifecycle
-- [Integration Guide](/guides/integration.md) — How origin and trust appear in
+- [Integration Guide](/guides/automate-over-http.md) — How origin and trust appear in
   the HTTP API
 - [CLI Reference](/reference/cli.md) — The `--trust` flag on `holon run`

@@ -96,7 +96,7 @@ Available at `/templates`:
   the template manifest, pre-installed skills, and source provenance.
 
 For CLI-based template management, see
-[Agent Templates Guide](/guides/agent-templates.md).
+[Agent Templates Guide](/reference/agent-templates.md).
 
 ### Skill Management
 
@@ -130,7 +130,7 @@ update jobs run as background tasks (see [Job API](#job-monitoring)).
 Skill catalog updates also run as jobs, with progress tracked in the job
 list.
 
-For CLI-based skill management, see [Skills Guide](/guides/skills.md).
+For CLI-based skill management, see [Skills Guide](/reference/skills.md).
 
 ### Workspace File Browser
 
@@ -253,7 +253,7 @@ http://<daemon-host>:7878/
 ```
 
 Configure CORS if accessing from a different origin. See
-[Remote Access](/guides/remote-access) and
+[Remote Access](/guides/connect-remote-runtime) and
 [Configuration](/reference/configuration) for details.
 
 ## Embedded vs Development Build
@@ -312,7 +312,7 @@ instead of blocking the request:
 ## See Also
 
 - [Quick Examples](/guides/quick-examples) — Try Holon in a few commands
-- [Remote Access](/guides/remote-access) — Connect to a remote daemon
+- [Remote Access](/guides/connect-remote-runtime) — Connect to a remote daemon
 - [Troubleshooting](/guides/troubleshooting) — Diagnose common issues
 - [Configuration Reference](/reference/configuration) — CORS, ports, and
   control plane settings

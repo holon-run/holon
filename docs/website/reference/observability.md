@@ -4,7 +4,7 @@ summary: Trace export, protected metrics endpoints, and configuration for OTLP, 
 order: 40
 ---
 
-# Runtime observability
+# Observability
 
 Holon keeps its tracing and performance hot paths bounded:
 

@@ -137,4 +137,4 @@ order: 13
 
 - [运行时模型](/zh-CN/concepts/runtime-model.md) — Agent 生命周期和任务监督
 - [信任边界](/zh-CN/concepts/trust-boundaries.md) — 为什么子 Agent 的输出是证据，而不是权威
-- [工作项指南](/zh-CN/guides/work-items.md) — 跨 Agent 跟踪目标
+- [工作项指南](/zh-CN/reference/work-items.md) — 跨 Agent 跟踪目标

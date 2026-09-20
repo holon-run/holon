@@ -231,4 +231,4 @@ holon agent create my-agent --template https://github.com/owner/repo/tree/main/t
 | 示例 | “你是一名评审者” | “这样评审一个 PR” |
 
 模板常常包含 skill 引用，好让新 Agent 一开始就有合适的工具。skill 的细节见
-[Skills 指南](/zh-CN/guides/skills)。
+[Skills 指南](/zh-CN/reference/skills)。

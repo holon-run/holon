@@ -201,4 +201,7 @@ holon daemon start
 - [参考](./reference/)
   <!-- mdorigin:index kind=directory -->
 
+- [维护者](./maintainers/)
+  <!-- mdorigin:index kind=directory -->
+
 <!-- INDEX:END -->

@@ -4,7 +4,7 @@ summary: Trace 导出、受保护的指标端点，以及 OTLP、OpenMetrics、�
 order: 40
 ---
 
-# 运行时可观测性
+# 可观测性
 
 Holon 让链路追踪和性能热路径保持有界：
 

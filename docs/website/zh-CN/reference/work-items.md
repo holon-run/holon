@@ -4,7 +4,7 @@ summary: 工作项字段、状态、生命周期操作，以及操作它们的 C
 order: 38
 ---
 
-# 工作项指南
+# 工作项
 
 工作项是 Holon 跟踪工作时使用的持久单元。当一个目标需要自己的生命周期、
 进度跟踪或跨轮次连续性时，就使用工作项。
@@ -154,4 +154,4 @@ Agent 可以在多个工作项之间切换焦点，但通常同一时间只维�
 
 - [运行时模型](/zh-CN/concepts/runtime-model.md) — 运行时生命周期中的工作项
 - [快速示例](/zh-CN/guides/quick-examples.md) — 常见命令模式
-- [多 Agent 协作](/zh-CN/guides/multi-agent.md) — 委派工作和任务监督
+- [多 Agent 协作](/zh-CN/guides/delegate-work.md) — 委派工作和任务监督

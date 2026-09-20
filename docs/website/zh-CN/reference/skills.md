@@ -4,7 +4,7 @@ summary: Skill 来源、skills.toml schema，以及安装、启用、更新和�
 order: 34
 ---
 
-# Skills 指南
+# Skills
 
 Skill 是可复用的本地工作流。一个 skill 以一个 `SKILL.md` 文件为根，描述一种
 可重复的任务模式，Agent 需要时可以加载。
@@ -296,8 +296,8 @@ HTTP 控制平面把 library 操作和 Agent 操作分开：
 
 ## 另见
 
-- [多 Agent 协作](/zh-CN/guides/multi-agent.md) — 把工作委托给子 Agent
-- [工作项指南](/zh-CN/guides/work-items.md) — 跟踪持久目标
-- [Web GUI](/zh-CN/guides/web-gui.md) — 在浏览器里管理 skill
-- [TUI 指南](/zh-CN/guides/tui.md) — 在终端里管理 skill
+- [多 Agent 协作](/zh-CN/guides/delegate-work.md) — 把工作委托给子 Agent
+- [工作项指南](/zh-CN/reference/work-items.md) — 跟踪持久目标
+- [Web GUI](/zh-CN/guides/use-web-gui.md) — 在浏览器里管理 skill
+- [TUI 指南](/zh-CN/reference/tui.md) — 在终端里管理 skill
 - [运行时模型](/zh-CN/concepts/runtime-model.md) — skill 如何融入 Agent 的运行循环

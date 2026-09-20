@@ -150,7 +150,7 @@ Holon 为这种分工提供了长期 Agent 和 [WorkItem](./why-work-items)：�
 
 故障调查和验收，是我们最先展开的两个案例。后续我还想写写代码审阅、产品分析，以及开发者怎样跨端推进一个完整功能。
 
-如果你也想从团队共享的运行环境开始，可以参考[远程访问与服务部署指南](/zh-CN/guides/remote-access.md)，了解如何让成员连接同一个 Holon 服务；再用 [WorkItem 指南](/zh-CN/guides/work-items.md)组织需要持续跟进的工作。先选一件团队里反复发生、交接边界清楚的事，比一开始就安排一整套 Agent 岗位更容易检验这种协作是否有用。
+如果你也想从团队共享的运行环境开始，可以参考[远程访问与服务部署指南](/zh-CN/guides/connect-remote-runtime.md)，了解如何让成员连接同一个 Holon 服务；再用 [WorkItem 指南](/zh-CN/reference/work-items.md)组织需要持续跟进的工作。先选一件团队里反复发生、交接边界清楚的事，比一开始就安排一整套 Agent 岗位更容易检验这种协作是否有用。
 
 ---
 

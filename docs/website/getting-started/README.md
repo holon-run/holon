@@ -51,7 +51,7 @@ gives you the full interactive experience. For one-shot runs, see the
 If you're already familiar with Holon or want to jump straight into specifics:
 
 - **[Quick examples](/guides/quick-examples)** — one-shot and common task patterns
-- **[Durable agent workflow](/guides/durable-agent-workflow)** — the full lifecycle of durable agent work
+- **[Durable agent workflow](/guides/run-long-lived-task)** — the full lifecycle of durable agent work
 - **[Concepts](/concepts/)** — the mental model before diving into internals
 - **[CLI reference](/reference/cli.md)** — full command surface
 - **[Troubleshooting](/guides/troubleshooting)** — diagnose common setup issues
@@ -60,9 +60,9 @@ If you're already familiar with Holon or want to jump straight into specifics:
 
 If you plan to modify or contribute to Holon itself:
 
-- **[Local runtime guide](/guides/local-runtime)** — conservative development workflow
-- **[Documentation workflow](/guides/documentation-workflow)** — how to build and preview this site
-- **[Integration guide](/guides/integration)** — wire Holon into external systems
+- **[Local runtime guide](/maintainers/local-runtime)** — conservative development workflow
+- **[Documentation workflow](/maintainers/documentation-workflow)** — how to build and preview this site
+- **[Integration guide](/guides/automate-over-http)** — wire Holon into external systems
 - Repository `docs/` directory — RFCs, implementation decisions, and architecture notes
 
 ## Requirements

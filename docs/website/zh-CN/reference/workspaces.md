@@ -4,7 +4,7 @@ summary: workspace、执行根和 worktree 的绑定、切换与隔离契约。
 order: 30
 ---
 
-# Workspace
+# Workspace 与执行环境
 
 Workspace 是 Agent 的执行根目录，Agent 在这里读文件、跑命令、应用补丁。每个
 Agent 始终只有一个活动 workspace。
@@ -112,4 +112,4 @@ CreateWorktree {
 
 - [运行时模型](/zh-CN/concepts/runtime-model.md) — 运行时中的 workspace 生命周期
 - [CLI 参考](/zh-CN/reference/cli.md) — 全部 workspace 命令
-- [Agent 模板](/zh-CN/guides/agent-templates.md) — 模板如何初始化 Agent home
+- [Agent 模板](/zh-CN/reference/agent-templates.md) — 模板如何初始化 Agent home

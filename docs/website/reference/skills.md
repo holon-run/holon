@@ -4,7 +4,7 @@ summary: Skill sources, skills.toml schema, and the CLI commands that install, e
 order: 34
 ---
 
-# Skills Guide
+# Skills
 
 Skills are reusable local workflows. A skill is rooted at a `SKILL.md` file and
 describes a repeatable task pattern that an agent can load when needed.
@@ -307,10 +307,10 @@ These are different layers:
 
 ## See Also
 
-- [Multi-Agent Collaboration](/guides/multi-agent.md) — Delegating work to
+- [Multi-Agent Collaboration](/guides/delegate-work.md) — Delegating work to
   child agents
-- [Work Items Guide](/guides/work-items.md) — Tracking durable objectives
-- [Web GUI](/guides/web-gui.md) — Skill management in the browser
-- [TUI Guide](/guides/tui.md) — Skill management in the terminal
+- [Work Items Guide](/reference/work-items.md) — Tracking durable objectives
+- [Web GUI](/guides/use-web-gui.md) — Skill management in the browser
+- [TUI Guide](/reference/tui.md) — Skill management in the terminal
 - [Runtime Model](/concepts/runtime-model.md) — How skills fit into the agent
   operating loop

@@ -61,6 +61,10 @@ Agent（谁）
   Holon 的记忆分层如何跨轮次保持连续性——工作项、work refs、片段、持久账本和索引搜索。
   <!-- mdorigin:index kind=article -->
 
+- [多 Agent 协作](./multi-agent-collaboration.md)
+  一个 Agent 把工作委派给另一个 Agent 时的角色、边界和信任。
+  <!-- mdorigin:index kind=article -->
+
 - [信任边界](./trust-boundaries.md)
   Holon 如何对来源、信任和优先级分类，让长期 Agent 保持安全。
   <!-- mdorigin:index kind=article -->

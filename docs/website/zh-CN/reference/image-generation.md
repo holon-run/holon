@@ -4,7 +4,7 @@ summary: 图像生成工具的参数、支持的模型、输出尺寸和格式�
 order: 46
 ---
 
-# 图像生成指南
+# 图像生成
 
 `GenerateImage` 让 Holon Agent 用配置的图像生成模型从文本提示词创建图片。运行时把生成的
 图片保存到 `agent_home/media/generated`，并返回持久化的 workspace URI。
@@ -141,4 +141,4 @@ holon config get image_generation.default
 - [模型工具 schema 清册](/zh-CN/reference/model-tool-schema-inventory.md)：工具注册与稳定性
 - [模型参考](/zh-CN/reference/models.md)：支持的提供商和图像生成可用性
 - [配置参考](/zh-CN/reference/configuration.md)：`image_generation.default` 和提供商设置
-- [Web GUI 指南](/zh-CN/guides/web-gui.md)：浏览器中的图像生成设置
+- [Web GUI 指南](/zh-CN/guides/use-web-gui.md)：浏览器中的图像生成设置

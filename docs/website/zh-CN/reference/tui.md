@@ -4,7 +4,7 @@ summary: 终端 UI 参考：斜杠命令、快捷键、面板和连接控制。
 order: 36
 ---
 
-# TUI 指南
+# TUI
 
 Holon 的终端 UI（`holon tui`）是日常工作的主要交互界面。它运行在你的终端里，支持 Agent 切换、模型选择、事件查看和远程 daemon 连接。
 

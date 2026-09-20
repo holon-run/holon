@@ -207,6 +207,6 @@ Holon 按身份作用域区分记忆：
 - [上下文连续性](/zh-CN/concepts/context-continuity.md) — Holon 如何在不重放整份对话记录的前提下保持上下文连贯
 - [运行时模型](/zh-CN/concepts/runtime-model.md) — Agent、工作项和执行循环
 - [文档分层](/zh-CN/concepts/documentation-layers.md) — 记忆在 Holon 文档架构中的位置
-- [Agent 模板](/zh-CN/guides/agent-templates.md) — 模板如何初始化 Agent 角色契约
+- [Agent 模板](/zh-CN/reference/agent-templates.md) — 模板如何初始化 Agent 角色契约
 - RFC：[长期上下文记忆](https://github.com/holon-run/holon/blob/main/docs/rfcs/long-lived-context-memory.md)
 - RFC：[Agent 与工作区记忆](https://github.com/holon-run/holon/blob/main/docs/rfcs/agent-and-workspace-memory.md)

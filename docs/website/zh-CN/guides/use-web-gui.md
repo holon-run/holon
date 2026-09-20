@@ -67,7 +67,7 @@ Web GUI 由编译进 `holon` 二进制的内嵌资源提供。默认 CORS 配置
 - **远程来源** — 查看和管理已配置的远程模板来源（GitHub 仓库）。daemon 启动时会从这些来源同步模板。
 - **模板详情** — 点击模板查看完整元数据，包括模板 manifest、预装 skills 和来源。
 
-命令行管理模板见 [Agent 模板指南](/zh-CN/guides/agent-templates.md)。
+命令行管理模板见 [Agent 模板指南](/zh-CN/reference/agent-templates.md)。
 
 ### Skill 管理
 
@@ -85,7 +85,7 @@ Skill 管理页面位于 Web GUI 的 `/skills`。daemon 运行内嵌 GUI 时，�
 
 Skills 页面还支持**更新**已安装的 skill。远程来源中发布了新版本的 skill 会显示更新按钮，点击后会创建一个拉取最新版本的目录更新任务。任务完成后就地显示成功或错误反馈，更新任务同样以后台任务运行（见 [Job API](#job-monitoring)）。Skill 目录更新也作为任务运行。
 
-命令行管理 skill 见 [Skills 指南](/zh-CN/guides/skills.md)。
+命令行管理 skill 见 [Skills 指南](/zh-CN/reference/skills.md)。
 
 ### Workspace 文件浏览器
 
@@ -157,7 +157,7 @@ Web GUI 兼容 Holon 的远程访问模式。daemon 配置为远程访问（tunn
 http://<daemon-host>:7878/
 ```
 
-从不同来源访问时需要配置 CORS。详见[远程访问](/zh-CN/guides/remote-access)和[配置](/zh-CN/reference/configuration)。
+从不同来源访问时需要配置 CORS。详见[远程访问](/zh-CN/guides/connect-remote-runtime)和[配置](/zh-CN/reference/configuration)。
 
 ## 内嵌构建与开发构建
 
@@ -204,6 +204,6 @@ skill 安装这类长时间操作会作为可跟踪的任务运行，而不是�
 ## 另请参阅
 
 - [快速示例](/zh-CN/guides/quick-examples) — 用几条命令试用 Holon
-- [远程访问](/zh-CN/guides/remote-access) — 连接远程 daemon
+- [远程访问](/zh-CN/guides/connect-remote-runtime) — 连接远程 daemon
 - [故障排查](/zh-CN/guides/troubleshooting) — 诊断常见问题
 - [配置参考](/zh-CN/reference/configuration) — CORS、端口和控制平面设置

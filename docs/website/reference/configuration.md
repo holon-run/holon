@@ -409,7 +409,7 @@ control API is running.
 | `runtime.observability.otlp.timeout_ms` | positive integer | `5000` | Per-request export timeout |
 
 OTLP settings take effect when the daemon starts. See the
-[runtime observability guide](/guides/observability) for Collector,
+[runtime observability guide](/reference/observability) for Collector,
 Prometheus, Grafana, alerting, and troubleshooting examples.
 
 ## Web Fetch/Search Settings

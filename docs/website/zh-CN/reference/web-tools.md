@@ -4,7 +4,7 @@ summary: WebFetch 和 WebSearch 的参数、提取模式、搜索提供商、截
 order: 42
 ---
 
-# WebFetch 和 WebSearch 指南
+# Web 工具
 
 Holon Agent 内置两个网络工具，用于检索和搜索公开网络。它们属于 `Web` 能力族，默认对
 每个 Agent 可用。
@@ -205,5 +205,5 @@ holon config set web.search.enabled false
 ## 另见
 
 - [模型工具 schema 清册](/zh-CN/reference/model-tool-schema-inventory.md)：工具注册与稳定性
-- [集成指南](/zh-CN/guides/integration.md)：HTTP 控制平面和 webhook
+- [集成指南](/zh-CN/guides/automate-over-http.md)：HTTP 控制平面和 webhook
 - [配置参考](/zh-CN/reference/configuration.md)：网络策略设置

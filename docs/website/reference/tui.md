@@ -4,7 +4,7 @@ summary: Terminal UI reference — slash commands, keyboard shortcuts, panels, a
 order: 36
 ---
 
-# TUI Guide
+# TUI
 
 Holon's terminal UI (`holon tui`) is the primary interactive interface for
 day-to-day work. It runs inside your terminal and supports agent switching,

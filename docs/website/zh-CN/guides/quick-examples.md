@@ -128,7 +128,7 @@ holon tui --connect http://your-server:8787 --token-profile my-profile
 holon tui --no-alt-screen
 ```
 
-在 TUI 中输入 `/` 打开斜杠命令菜单。用 `/model` 切换模型，用 `/agent` 管理 Agent，用 `/help` 查看所有命令。完整的斜杠命令参考见 [TUI 指南](/zh-CN/guides/tui)。
+在 TUI 中输入 `/` 打开斜杠命令菜单。用 `/model` 切换模型，用 `/agent` 管理 Agent，用 `/help` 查看所有命令。完整的斜杠命令参考见 [TUI 指南](/zh-CN/reference/tui)。
 
 ## 6. 启动 HTTP 服务器
 
@@ -219,4 +219,4 @@ holon run --agent my-builder --workspace-root /path/to/project "Build the projec
 - [配置参考](/zh-CN/reference/configuration.md) — 所有配置项与凭据管理
 - [CLI 参考](/zh-CN/reference/cli.md) — 完整的命令行参考
 - [故障排查](/zh-CN/guides/troubleshooting.md) — 常见问题与解决办法
-- [集成指南](/zh-CN/guides/integration.md) — HTTP 控制平面集成
+- [集成指南](/zh-CN/guides/automate-over-http.md) — HTTP 控制平面集成

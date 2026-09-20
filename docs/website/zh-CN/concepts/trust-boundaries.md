@@ -101,5 +101,5 @@ Holon 把信任边界显式保留下来，因为长期 Agent 会从多个面收�
 ## 另见
 
 - [运行时模型](/zh-CN/concepts/runtime-model.md) — Agent、任务和工作项生命周期
-- [集成指南](/zh-CN/guides/integration.md) — 来源和信任在 HTTP API 中如何呈现
+- [集成指南](/zh-CN/guides/automate-over-http.md) — 来源和信任在 HTTP API 中如何呈现
 - [CLI 参考](/zh-CN/reference/cli.md) — `holon run` 的 `--trust` 标志

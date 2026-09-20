@@ -27,6 +27,10 @@ concepts without overwhelming readers with RFC detail.
 | Guides | Task-oriented workflows grouped by user job |
 | Reference | Current-contract CLI, config, and control-plane snapshots |
 
+Maintainer-facing website pages live outside these user sections:
+`docs/website/spec/` holds runtime contracts, and `docs/website/maintainers/`
+holds build, test, and documentation workflows.
+
 **Rule:** Website pages should explain *what* and *how*, not *why the design
 works that way*. Link to RFCs for design rationale.
 

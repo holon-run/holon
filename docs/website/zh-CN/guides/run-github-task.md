@@ -252,5 +252,5 @@ jobs:
 
 - [Holon CLI 参考](/zh-CN/reference/cli)：完整命令树
 - [配置参考](/zh-CN/reference/configuration)：模型和提供商设置
-- [集成指南](/zh-CN/guides/integration)：HTTP 控制平面访问
-- [多 Agent 协作](/zh-CN/guides/multi-agent)：创建和调用 Agent
+- [集成指南](/zh-CN/guides/automate-over-http)：HTTP 控制平面访问
+- [多 Agent 协作](/zh-CN/guides/delegate-work)：创建和调用 Agent

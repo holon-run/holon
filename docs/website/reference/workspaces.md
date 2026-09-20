@@ -4,7 +4,7 @@ summary: Workspace, execution root, and worktree binding, switching, and isolati
 order: 30
 ---
 
-# Workspaces
+# Workspaces and execution environments
 
 A workspace is the execution root for an agent — where it reads files, runs
 commands, and applies patches. Every agent always has exactly one active
@@ -116,4 +116,4 @@ activate it, and `workspace exit` to return to agent home.
 
 - [Runtime Model](/concepts/runtime-model.md) — Workspace lifecycle in the runtime
 - [CLI Reference](/reference/cli.md) — All workspace commands
-- [Agent Templates](/guides/agent-templates.md) — How templates initialize agent homes
+- [Agent Templates](/reference/agent-templates.md) — How templates initialize agent homes
