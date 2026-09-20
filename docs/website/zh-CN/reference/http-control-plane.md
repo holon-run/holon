@@ -808,3 +808,38 @@ curl -X POST http://127.0.0.1:7878/api/webhooks/generic/main \
 # 流式获取 agent 事件
 curl -N http://127.0.0.1:7878/api/agents/main/events/stream
 ```
+
+## Operator transport binding
+
+持久集成渠道可以注册 operator transport binding：
+
+```bash
+curl -X POST http://localhost:8787/api/control/agents/my-agent/operator-bindings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "transport": "http_callback",
+    "operator_actor_id": "slack-bot-01",
+    "default_route_id": "slack-channel-general",
+    "delivery_callback_url": "https://my-service.example.com/holon-delivery",
+    "delivery_auth": {
+      "kind": "bearer",
+      "bearer_token": "my-delivery-token"
+    },
+    "capabilities": {
+      "text": true,
+      "markdown": true
+    }
+  }'
+```
+
+绑定后，用 operator ingress 端点转发消息：
+
+```bash
+curl -X POST http://localhost:8787/api/control/agents/my-agent/operator-ingress \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "User asked: can you explain the build error?",
+    "actor_id": "slack-bot-01",
+    "binding_id": "binding-abc"
+  }'
+```

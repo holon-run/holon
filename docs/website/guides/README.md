@@ -1,15 +1,20 @@
 ---
 title: Guides
-summary: Task-oriented guides for using, operating, and integrating Holon.
+summary: Task-oriented how-to guides for using, operating, and integrating Holon.
 order: 30
 ---
 
 # Guides
 
-Find a guide for the work you want to do: try Holon, use the Web GUI,
-automate GitHub tasks, operate the runtime, or coordinate agents.
+Each guide answers one question: *how do I get this done?* They run from start
+to finish and stay close to the task. Exact commands, flags, fields, and
+endpoints live in [Reference](/reference/); the supporting mental model lives in
+[Concepts](/concepts/).
 
-Each entry below describes its workflow. New guides appear here automatically.
+The list below is grouped by the job in hand: getting a first result, running
+work that waits on something, coordinating more than one agent, driving Holon
+from code or a browser, working with external content, and fixing a task that
+stalls.
 
 <!-- INDEX:START -->
 

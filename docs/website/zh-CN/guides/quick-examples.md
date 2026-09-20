@@ -1,12 +1,14 @@
 ---
-title: 快速示例
-summary: 完成入门指南后可以尝试的常见 Holon 任务。
-order: 15
+title: 运行你的第一个 Holon 任务
+summary: 启动 Holon，完整跑通一个任务并确认结果。
+order: 10
 ---
 
-# 快速示例
+# 运行你的第一个 Holon 任务
 
-完成[入门指南](/zh-CN/getting-started/first-agent.md)后，可以试试这些常见的 Holon 任务。
+装好 Holon 之后，从这里开始跑通一个任务。挑一个和你手头事情相符的例子，每个都
+很短、可以独立运行。如果还没安装，先看[快速开始](/zh-CN/getting-started/)。
+精确参数和配置见[参考](/zh-CN/reference/)。
 
 ## 1. 单次提问
 

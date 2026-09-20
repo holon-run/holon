@@ -1,12 +1,12 @@
 ---
-title: 远程访问
-summary: 远程 daemon 访问——tunnel、tailnet、LAN 模式、token 管理，以及从远程 TUI 连接。
-order: 22
+title: 连接远程 Holon 运行时
+summary: 连接另一台机器上的运行时并验证连接可用。
+order: 15
 ---
 
-# 远程访问
+# 连接远程 Holon 运行时
 
-Holon 可以作为远程 daemon 运行，也可以从另一台机器的 TUI 或 API 客户端连过去。这是团队共享 Agent、无头部署和远程开发工作流的基础。
+在一台机器上运行 Holon，从另一台机器使用它——团队共享服务器、无头主机，或远程开发机。本页帮你选访问方式、建立连接，并确认连接可用。
 
 ## 访问模式
 

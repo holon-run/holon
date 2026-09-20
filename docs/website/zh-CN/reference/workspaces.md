@@ -1,7 +1,7 @@
 ---
-title: Workspace
-summary: Workspace 生命周期——附加、退出、分离、worktree 隔离，以及 workspace 与 shell 目录的区别。
-order: 17
+title: Workspace 与执行环境
+summary: workspace、执行根和 worktree 的绑定、切换与隔离契约。
+order: 30
 ---
 
 # Workspace

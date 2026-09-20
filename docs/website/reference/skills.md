@@ -1,7 +1,7 @@
 ---
-title: Skills guide
-summary: Reusable SKILL.md workflows, skill locations, and how to develop custom skills.
-order: 40
+title: Skills
+summary: Skill sources, skills.toml schema, and the CLI commands that install, enable, update, and verify skills.
+order: 34
 ---
 
 # Skills Guide

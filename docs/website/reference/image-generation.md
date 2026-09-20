@@ -1,7 +1,7 @@
 ---
-title: Image Generation guide
-summary: Agent tool for generating images from text prompts — model selection, size and format options, and output management.
-order: 47
+title: Image generation
+summary: Image generation tool parameters, supported models, output sizes and formats, and error behavior.
+order: 46
 ---
 
 # Image Generation Guide

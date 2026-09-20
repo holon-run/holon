@@ -1,7 +1,7 @@
 ---
-title: Work items guide
-summary: Durable objective tracking with work items, plans, todo lists, and lifecycle management.
-order: 45
+title: Work items
+summary: Work item fields, statuses, lifecycle operations, and the CLI and HTTP surfaces that act on them.
+order: 38
 ---
 
 # Work Items Guide

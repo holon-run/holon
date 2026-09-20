@@ -1,15 +1,18 @@
 ---
-title: holon solve
-summary: Use holon solve to automate GitHub issues and pull requests in headless mode.
-order: 8
+title: Run a GitHub task with holon solve
+summary: Take an issue or pull request from input to a finished task, then check the result.
+order: 11
 ---
 
-# holon solve
+# Run a GitHub task with holon solve
 
-`holon solve` is the headless command for automating GitHub issues and pull
-requests. Give it a target and it runs an agent that collects context, implements
-a fix, reviews a PR, or publishes a comment — then writes structured output
-artifacts you can consume in scripts or CI.
+`holon solve` turns a GitHub issue or pull request into a finished task. Point it
+at a target and it runs an agent that gathers context, makes the change, reviews
+the pull request, or posts a comment, then writes structured output a script or
+CI job can read.
+
+The flag catalog lives in the [CLI reference](/reference/cli.md); this page
+covers the runs you will actually make.
 
 ## When to use solve
 

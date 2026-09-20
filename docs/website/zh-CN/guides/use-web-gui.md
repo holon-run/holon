@@ -1,12 +1,13 @@
 ---
-title: Web GUI
-summary: 使用 Holon 内置的 Web 界面，在浏览器中管理 Agent、监控运行时状态并配置设置。
-order: 25
+title: 使用 Web GUI
+summary: 在浏览器里驱动 Agent、Work Item 和 Skill。
+order: 16
 ---
 
-# Web GUI
+# 使用 Web GUI
 
-Holon 内置了一个由 daemon 直接提供的 Web GUI。无需单独构建或部署前端——启动 daemon，打开浏览器即可。
+Web GUI 就装在 daemon 里：启动 daemon，打开浏览器，就可以不碰终端地操作 Agent、
+工作项、Skill 和文件。本页讲第一次使用和几个主要界面。
 
 ## 快速开始
 

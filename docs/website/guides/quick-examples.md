@@ -1,12 +1,16 @@
 ---
-title: Quick examples
-summary: Common Holon tasks you can try after completing the Getting Started guide.
-order: 15
+title: Run your first Holon task
+summary: Start Holon, run one task end to end, and confirm the result.
+order: 10
 ---
 
-# Quick Examples
+# Run your first Holon task
 
-Common Holon tasks you can try after completing the [Getting Started guide](/getting-started/first-agent.md).
+Start here when Holon is installed and you want one task to reach a result. Pick
+the example that matches what you are doing; each one is short and
+self-contained. If you have not installed Holon yet, do
+[Getting started](/getting-started/) first. Exact flags and configuration live
+in [Reference](/reference/).
 
 ## 1. One-Shot Question
 

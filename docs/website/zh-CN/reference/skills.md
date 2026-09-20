@@ -1,7 +1,7 @@
 ---
-title: Skills 指南
-summary: 可复用的 SKILL.md 工作流、skill 位置，以及如何开发自定义 skill。
-order: 40
+title: Skills
+summary: Skill 来源、skills.toml schema，以及安装、启用、更新和校验 skill 的 CLI 命令。
+order: 34
 ---
 
 # Skills 指南

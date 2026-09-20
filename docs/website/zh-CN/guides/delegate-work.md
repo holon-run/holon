@@ -1,51 +1,15 @@
 ---
-title: 多 Agent 协作
-summary: 创建和调用 Agent、监督契约，以及用于并行工作的 workspace 模式。
-order: 35
+title: 委派工作给另一个 Agent
+summary: 把边界清楚的任务交给子 Agent，等待结果并处理返回内容。
+order: 13
 ---
 
-# 多 Agent 协作
+# 委派工作给另一个 Agent
 
-Holon 支持创建可寻址的 Agent，并调用私有的受监督子 Agent，用来完成并行工作、
-委托和专门的子任务。
+当一件事可以拆出干净的一部分时，把它交给另一个 Agent，自己继续往下走。本页讲
+怎么选择调用方式、怎么等结果，以及拿到返回内容后怎么处理。
 
-## 概念
-
-### Agent 操作
-
-| 工具 / 操作 | 返回值 | 适用场景 |
-|------------|--------|----------|
-| `CreateAgent` | `agent_id` | 创建独立、持久、自属的 Agent 身份（可指定 template、显示名称与引导消息） |
-| `InvokeAgent`（新建子 Agent） | `agent_id` + `task_handle` | 运行由父级监督的子任务，具备结果导向生命周期与可选 worktree 隔离 |
-| `InvokeAgent`（已有 Agent） | `agent_id` + `task_handle` | 同级调用（Peer Invocation）：向已有授权 Agent 发送消息并等待其下一条持久回复 |
-| `SendAgentMessage` | 投递回执 | 向已有授权 Agent 发送异步持久消息，不创建任务等待句柄 |
-| `GetAgent` | Agent 摘要 | 读取 Agent 平面状态（身份、显示名称、生命周期、活跃焦点、等待状态与子级血统） |
-
-### Agent 标识与显示名称
-
-- **永久 Agent ID**：规范标识符（如 `reviewer`、`builder`）是持久且不可更改的。
-- **显示名称（Display Name）**：自属的公开 Agent 可拥有人类可读的显示名称，可通过 CLI（`holon agent rename <id> --name <name>`）或 HTTP API（`PATCH /api/control/agents/:id/name`）修改。默认 Agent 不可重命名。
-- **Incarnation（化身代际）**：跟踪 Agent 生命周期重置与运行时重载代际的持久序列号。
-
-### Workspace 模式
-
-| 模式 | 说明 |
-|------|------|
-| `inherit`（默认） | 子 Agent 共用父 Agent 的 workspace |
-| `worktree` | 子 Agent 获得独立 worktree，用于安全实验 |
-
-### 任务句柄监督
-
-调用 `InvokeAgent` 时，调用方会拿到一个带 `task_id` 的 `task_handle`。
-
-对于**新建子 Agent**（`kind: "new_subagent"`），句柄代表由父级监督的子任务，会产生最终交付结果。可以用它做这些事：
-
-- **TaskStatus** — 查看生命周期、等待状态和元数据
-- **TaskOutput** — 读取有界输出，或等待完成
-- **TaskInput** — 向子 Agent 发送后续输入
-- **TaskStop** — 显式停止子 Agent
-
-对于**已有 Agent**（`kind: "existing_agent"`），句柄等待目标 Agent 发出的第一条后续持久消息。满足等待条件但不是父子生命周期包含边界。
+委派背后有一套模型：谁能行动、权限覆盖到哪里、结果如何被信任。参见[多 Agent 协作](/zh-CN/concepts/multi-agent-collaboration.md)。
 
 ## 调用风格
 

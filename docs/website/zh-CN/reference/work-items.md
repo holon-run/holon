@@ -1,7 +1,7 @@
 ---
-title: 工作项指南
-summary: 用工作项、计划、todo 清单和生命周期管理来跟踪持久目标。
-order: 45
+title: 工作项
+summary: 工作项字段、状态、生命周期操作，以及操作它们的 CLI 和 HTTP 接口。
+order: 38
 ---
 
 # 工作项指南

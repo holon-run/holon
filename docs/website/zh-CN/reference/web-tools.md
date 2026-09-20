@@ -1,7 +1,7 @@
 ---
-title: WebFetch 和 WebSearch 指南
-summary: 用于抓取网页和搜索网络的 Agent 工具：工具参考、提取模式、搜索提供商和使用模式。
-order: 45
+title: Web 工具
+summary: WebFetch 和 WebSearch 的参数、提取模式、搜索提供商、截断和来源处理。
+order: 42
 ---
 
 # WebFetch 和 WebSearch 指南

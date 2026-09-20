@@ -1,7 +1,7 @@
 ---
-title: TUI guide
-summary: Interactive terminal UI for Holon — navigation, slash commands, event log, model selection, and remote connection.
-order: 12
+title: TUI
+summary: Terminal UI reference — slash commands, keyboard shortcuts, panels, and connection controls.
+order: 36
 ---
 
 # TUI Guide

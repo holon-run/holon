@@ -1,7 +1,7 @@
 ---
-title: ViewImage guide
-summary: Agent tool for inspecting local images through vision models — model selection, visual observation, durable metadata, and caching.
-order: 46
+title: Image observation
+summary: Image observation tool inputs, vision model selection, response metadata, and compatibility limits.
+order: 44
 ---
 
 # ViewImage Guide

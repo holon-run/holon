@@ -1,7 +1,7 @@
 ---
 title: Agent 模板
-summary: Agent 模板是什么、如何同步或安装、如何使用 --template，以及如何创建自定义模板。
-order: 18
+summary: 模板目录、选择规则，以及初始化 Agent 所用的 AGENTS.md、template.toml 和 skills.toml schema。
+order: 32
 ---
 
 # Agent 模板

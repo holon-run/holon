@@ -1,51 +1,17 @@
 ---
-title: Multi-agent collaboration
-summary: Creating and invoking agents, supervision contracts, and workspace modes for parallel work.
-order: 35
+title: Delegate work to another agent
+summary: Hand a scoped task to a child agent, wait for the result, and handle what comes back.
+order: 13
 ---
 
-# Multi-Agent Collaboration
+# Delegate work to another agent
 
-Holon supports creating addressable agents and invoking private supervised
-agents for parallel work, delegation, and specialized subtasks.
+When a piece of work is separable, hand it to another agent and keep going. This
+guide covers choosing how to invoke that agent, waiting for the result, and
+handling what comes back.
 
-## Concepts
-
-### Agent operations
-
-| Tool / Operation | Return value | When to use |
-|------------------|--------------|-------------|
-| `CreateAgent` | `agent_id` | Create an independent, persistent, self-owned agent identity with an optional template, display name, and bootstrap message |
-| `InvokeAgent` (new subagent) | `agent_id` + `task_handle` | Run a parent-supervised child task with result-bearing lifecycle and optional worktree isolation |
-| `InvokeAgent` (existing agent) | `agent_id` + `task_handle` | Peer invocation: send a message to an existing authorized agent and wait for its next durable response |
-| `SendAgentMessage` | delivery receipt | Send an asynchronous durable message to an existing authorized agent without creating a task wait handle |
-| `GetAgent` | agent summary | Read agent-plane state (identity, display name, lifecycle, active work focus, waiting state, and child lineage) |
-
-### Agent Identity & Display Names
-
-- **Permanent Agent ID**: The canonical identifier (e.g. `reviewer`, `builder`) is permanent and cannot be changed.
-- **Display Name**: Self-owned public agents can have a human-readable display name, updated via CLI (`holon agent rename <id> --name <name>`) or HTTP API (`PATCH /api/control/agents/:id/name`). The default agent cannot be renamed.
-- **Incarnation**: A durable sequence tracking lifecycle resets and runtime reload generations for an agent.
-
-### Workspace Modes
-
-| Mode | Description |
-|------|-------------|
-| `inherit` (default) | Child shares the parent's workspace |
-| `worktree` | Child gets an isolated worktree for safe experimentation |
-
-### Task Handle Supervision
-
-When calling `InvokeAgent`, the caller receives a `task_handle` with a `task_id`.
-
-For **new subagents** (`kind: "new_subagent"`), the handle represents a supervised child task that produces a final completion result. Use this to:
-
-- **TaskStatus** — Inspect lifecycle, waiting state, and metadata
-- **TaskOutput** — Read bounded output or wait for completion
-- **TaskInput** — Send follow-up input to the child
-- **TaskStop** — Stop the child agent explicitly
-
-For **existing agents** (`kind: "existing_agent"`), the handle waits for the first subsequent durable message emitted by the target agent. It satisfies the wait condition but is not a parent-child lifecycle containment boundary.
+Delegation has a model behind it: who may act, how far authority reaches, and
+how results are trusted. See [Multi-agent collaboration](/concepts/multi-agent-collaboration.md).
 
 ## Invocation Styles
 

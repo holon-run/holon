@@ -1,12 +1,14 @@
 ---
-title: Troubleshooting
-summary: Solutions for common Holon issues covering daemon, configuration, model, and TUI problems.
+title: Troubleshoot a Holon task
+summary: Work through a stalled, failing, or silent task to a concrete next step.
 order: 30
 ---
 
-# Troubleshooting
+# Troubleshoot a Holon task
 
-Solutions for common Holon issues.
+A task can stall in a few predictable ways. Work through the symptom you have,
+apply the check, and move on. Runtime fields and endpoints are in
+[Reference](/reference/).
 
 ## Daemon Issues
 

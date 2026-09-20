@@ -1,7 +1,7 @@
 ---
-title: TUI 指南
-summary: Holon 的交互式终端 UI —— 导航、斜杠命令、事件日志、模型选择与远程连接。
-order: 12
+title: TUI
+summary: 终端 UI 参考：斜杠命令、快捷键、面板和连接控制。
+order: 36
 ---
 
 # TUI 指南

@@ -1,14 +1,14 @@
 ---
-title: Remote access
-summary: Remote daemon access — tunnel, tailnet, LAN modes, token management, and connecting from a remote TUI.
-order: 22
+title: Connect to a remote Holon runtime
+summary: Reach a runtime running on another machine and verify the connection.
+order: 15
 ---
 
-# Remote Access
+# Connect to a remote Holon runtime
 
-Holon supports running as a remote daemon and connecting from a TUI or API
-client on another machine. This is the foundation for team-shared agents,
-headless deployment, and remote development workflows.
+Run Holon on one machine and use it from another — a shared team server, a
+headless box, or a remote dev host. This guide picks an access mode, connects,
+and confirms the connection works.
 
 ## Access Modes
 

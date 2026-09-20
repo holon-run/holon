@@ -1,14 +1,16 @@
 ---
-title: holon solve
-summary: 用 holon solve 在无头模式下自动处理 GitHub issue 和 pull request。
-order: 8
+title: 使用 holon solve 执行 GitHub 任务
+summary: 从 issue 或 PR 输入到任务完成，再检查结果。
+order: 11
 ---
 
-# holon solve
+# 使用 holon solve 执行 GitHub 任务
 
-`holon solve` 是用于自动处理 GitHub issue 和 pull request 的无头命令。给它一个目标，
-它会运行一个 Agent 来收集上下文、实现修复、审查 PR 或发表评论，然后把结构化输出写入
-产物目录，供脚本或 CI 使用。
+`holon solve` 把一个 GitHub issue 或 pull request 变成一件完成的任务。给它一个
+目标，它会运行 Agent 收集上下文、做出改动、审查 PR 或发表评论，然后把结构化输出
+写到脚本或 CI 能读取的位置。
+
+完整参数见 [CLI 参考](/zh-CN/reference/cli.md)；本页讲你会实际用到的几种运行方式。
 
 ## 何时使用 solve
 

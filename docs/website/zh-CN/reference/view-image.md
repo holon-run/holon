@@ -1,7 +1,7 @@
 ---
-title: ViewImage 指南
-summary: 通过视觉模型检查本地图片的 Agent 工具：模型选择、视觉观察、持久元数据和缓存。
-order: 46
+title: 图像观察
+summary: 图像观察工具的输入、视觉模型选择、响应元数据和兼容性限制。
+order: 44
 ---
 
 # ViewImage 指南

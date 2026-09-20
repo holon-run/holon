@@ -1,7 +1,7 @@
 ---
-title: Runtime observability
-summary: Export Holon traces with OTLP, scrape protected OpenMetrics, and install baseline dashboards and alerts.
-order: 31
+title: Observability
+summary: Trace export, protected metrics endpoints, and configuration for OTLP, OpenMetrics, dashboards, and alerts.
+order: 40
 ---
 
 # Runtime observability

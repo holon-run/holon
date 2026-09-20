@@ -1,7 +1,7 @@
 ---
-title: 运行时可观测性
-summary: 用 OTLP 导出 Holon trace，抓取受保护的 OpenMetrics，并安装基线仪表盘与告警。
-order: 31
+title: 可观测性
+summary: Trace 导出、受保护的指标端点，以及 OTLP、OpenMetrics、仪表盘和告警的配置。
+order: 40
 ---
 
 # 运行时可观测性

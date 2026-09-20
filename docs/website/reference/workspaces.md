@@ -1,7 +1,7 @@
 ---
-title: Workspaces
-summary: Workspace lifecycle — attach, exit, detach, worktree isolation, and how workspaces differ from shell directories.
-order: 17
+title: Workspaces and execution environments
+summary: Workspace, execution root, and worktree binding, switching, and isolation contracts.
+order: 30
 ---
 
 # Workspaces

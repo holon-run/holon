@@ -1,7 +1,7 @@
 ---
 title: Agent templates
-summary: What agent templates are, how to sync or install them, how to use --template, and how to create custom templates.
-order: 18
+summary: Template catalog, selection rules, and the AGENTS.md, template.toml, and skills.toml schema used to initialize agents.
+order: 32
 ---
 
 # Agent Templates

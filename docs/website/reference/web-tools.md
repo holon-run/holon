@@ -1,7 +1,7 @@
 ---
-title: WebFetch and WebSearch guide
-summary: Agent tools for fetching web pages and searching the web — tool reference, extract modes, search providers, and usage patterns.
-order: 45
+title: Web tools
+summary: WebFetch and WebSearch parameters, extract modes, search providers, truncation, and source handling.
+order: 42
 ---
 
 # WebFetch and WebSearch Guide

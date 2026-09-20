@@ -1,12 +1,13 @@
 ---
-title: 集成指南
-summary: 通过 curl 示例和端点参考，以编程方式访问 Holon 的 HTTP 控制平面。
-order: 25
+title: 通过 HTTP 自动化 Holon
+summary: 从代码里完成认证、提交工作、跟踪状态并读取结果。
+order: 14
 ---
 
-# 集成指南
+# 通过 HTTP 自动化 Holon
 
-Holon 提供 HTTP 控制平面用于编程访问。用 `holon serve` 启动服务端，就能通过类 REST 的 API 操作 Agent、任务和工作项。所有路由都挂在 `/api` 前缀下。
+Holon 的 HTTP 控制平面让脚本或服务在不打开 TUI 的情况下驱动 Agent、任务和工作项。
+本页启动服务端、完成认证，并走通一个请求到结果。所有路由都在 `/api` 前缀下。
 
 ## 启动服务端
 
@@ -27,68 +28,7 @@ holon serve --port 8787 --token "your-secret-token"
 - **Content-Type：** `application/json`
 - **认证：** 设置 `--token` 后，在 `Authorization` 头中携带 Bearer token
 
-## 核心端点
-
-### Agent 管理
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `GET` | `/api/agents/list` | 列出带元数据的活跃 Agent 条目 |
-| `POST` | `/api/control/agents/:agent_id/create` | 创建新 Agent |
-| `GET` | `/api/agents/:agent_id/status` | 获取 Agent 状态与生命周期 |
-| `GET` | `/api/agents/:agent_id/state` | 获取轻量级 Agent 状态引导数据 |
-
-### 消息
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/agents/:agent_id/enqueue` | 向 Agent 入队一条消息 |
-| `POST` | `/api/control/agents/:agent_id/prompt` | 发送 operator 提示词 |
-| `POST` | `/api/control/agents/:agent_id/wake` | 唤醒休眠中的 Agent |
-| `POST` | `/api/control/agents/:agent_id/control` | 发送控制指令 |
-
-### 任务与工作项
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/control/agents/:agent_id/tasks` | 创建命令任务 |
-| `POST` | `/api/control/agents/:agent_id/work-items` | 创建工作项 |
-| `POST` | `/api/control/agents/:agent_id/work-items/:work_item_id/pick` | 选定当前工作项 |
-| `PATCH` | `/api/control/agents/:agent_id/work-items/:work_item_id` | 更新工作项 |
-| `POST` | `/api/control/agents/:agent_id/work-items/:work_item_id/complete` | 完成工作项 |
-| `GET` | `/api/agents/:agent_id/tasks` | 列出 Agent 任务 |
-| `GET` | `/api/agents/:agent_id/briefs` | 获取近期简报/上下文 |
-| `GET` | `/api/agents/:agent_id/transcript` | 获取 Agent 对话记录 |
-| `GET` | `/api/agents/:agent_id/events` | 获取 Agent 事件流 |
-
-### Workspace 与 Skills
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/control/agents/:agent_id/workspace/attach` | 挂载 workspace |
-| `POST` | `/api/control/agents/:agent_id/workspace/detach` | 卸载 workspace |
-| `GET` | `/api/agents/:agent_id/skills` | 列出 Agent 已启用的 skills |
-| `POST` | `/api/control/agents/:agent_id/skills/enable` | 为 Agent 启用 skill |
-| `POST` | `/api/control/agents/:agent_id/skills/disable` | 为 Agent 禁用 skill |
-| `GET` | `/api/skills/catalog` | 列出 Skill Library 目录 |
-| `POST` | `/api/skills/catalog/add` | 向库中添加 skill |
-| `POST` | `/api/skills/catalog/remove` | 从库中移除 skill |
-| `POST` | `/api/skills/catalog/reconcile` | 按 lock 文件对账库内容 |
-
-### 回调与 Webhook
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `POST` | `/api/callbacks/enqueue/:callback_token` | 携带载荷的外部回调 |
-| `POST` | `/api/callbacks/wake/:callback_token` | 外部唤醒触发器 |
-| `POST` | `/api/webhooks/generic/:agent_id` | 通用 webhook 入口 |
-
-### 运行时控制
-
-| 方法 | 路径 | 说明 |
-|--------|------|-------------|
-| `GET` | `/api/control/runtime/status` | 运行时健康状态 |
-| `POST` | `/api/control/runtime/shutdown` | 优雅关闭 |
+完整的端点列表、请求体和认证要求见 [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md)。先在那里找到路由，再回到本页看流程。
 
 ## 示例
 
@@ -195,54 +135,9 @@ curl http://localhost:8787/api/agents/my-agent/tasks
 curl "http://localhost:8787/api/agents/my-agent/transcript?limit=50"
 ```
 
-## 信任与来源
+每个请求都带有来源和信任级别，运行时不会把它们混在一起。分类方式见[信任边界](/zh-CN/concepts/trust-boundaries.md)。
 
-每条入站消息都带一个 `origin`，用于标注来源。运行时据此执行信任边界：
-
-- `operator` — 通过可信渠道接入的人类 operator
-- `channel` — 外部集成渠道
-- `webhook` — 第三方 webhook
-- `callback` — 运行时投递的外部触发器回调
-- `timer` — 定时器触发
-- `system` — 运行时内部子系统
-- `task` — 子任务完成
-
-消息还携带 `priority`（`interject`、`next`、`normal`、`background`）和信任级别元数据。
-
-## Operator transport binding
-
-持久集成渠道可以注册 operator transport binding：
-
-```bash
-curl -X POST http://localhost:8787/api/control/agents/my-agent/operator-bindings \
-  -H "Content-Type: application/json" \
-  -d '{
-    "transport": "http_callback",
-    "operator_actor_id": "slack-bot-01",
-    "default_route_id": "slack-channel-general",
-    "delivery_callback_url": "https://my-service.example.com/holon-delivery",
-    "delivery_auth": {
-      "kind": "bearer",
-      "bearer_token": "my-delivery-token"
-    },
-    "capabilities": {
-      "text": true,
-      "markdown": true
-    }
-  }'
-```
-
-绑定后，用 operator ingress 端点转发消息：
-
-```bash
-curl -X POST http://localhost:8787/api/control/agents/my-agent/operator-ingress \
-  -H "Content-Type: application/json" \
-  -d '{
-    "text": "User asked: can you explain the build error?",
-    "actor_id": "slack-bot-01",
-    "binding_id": "binding-abc"
-  }'
-```
+Operator transport binding 等高级控制项见 [HTTP 控制平面参考](/zh-CN/reference/http-control-plane.md)。
 
 ## 另请参阅
 

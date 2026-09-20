@@ -1,31 +1,18 @@
 ---
-title: Durable agent workflow
-summary: "The end-to-end durable agent story: create an agent, start long-running work, survive disconnects, wait for events, and deliver final briefs."
-order: 5
+title: Run a long-lived task
+summary: Start work that waits, check progress, survive disconnects, and collect the final brief.
+order: 12
 ---
 
-# Durable agent workflow
+# Run a long-lived task
 
-Holon's defining difference from one-shot CLI tools is **durability**: agents
-keep working across terminal sessions, survive disconnects, wait for external
-events, and resume when conditions are met. This guide walks through the full
-lifecycle.
+Some work should outlive your terminal: a build that runs for an hour, a pull
+request waiting on review, a task waiting for an external event. This guide runs
+that kind of work from start to final brief.
 
-## What makes it durable?
-
-A Holon agent session persists these things independently of any client
-connection:
-
-- **Agent identity and home** — each agent owns `~/.holon/agents/<name>/`
-  with its own `AGENTS.md`, skills, and long-lived memory
-- **Work queue** — WorkItems, queued messages, and blocked/waiting state
-- **Task lifecycle** — running commands and child-agent delegations continue
-  after the client disconnects
-- **Sleep/wake state** — agents sleep when idle and wake on events or operator
-  input
-
-The daemon keeps the runtime alive. Clients (TUI, HTTP, CLI one-shots) connect,
-submit work, inspect progress, and disconnect — the work keeps running.
+Holon keeps the work alive on the daemon, not on your connection. Why that
+holds is in [Context continuity](/concepts/context-continuity.md); this page
+stays on the steps.
 
 ## The workflow end-to-end
 

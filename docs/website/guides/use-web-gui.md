@@ -1,13 +1,14 @@
 ---
-title: Web GUI
-summary: Use Holon's embedded web interface to manage agents, monitor runtime state, and configure settings from a browser.
-order: 25
+title: Use the Web GUI
+summary: Drive agents, work items, and skills from the browser.
+order: 16
 ---
 
-# Web GUI
+# Use the Web GUI
 
-Holon includes an embedded web GUI served directly from the daemon. No separate
-frontend build or deployment is needed — start the daemon and open a browser.
+The Web GUI ships inside the daemon: start it, open a browser, and work with
+agents, work items, skills, and files without the terminal. This page covers the
+first session and the main screens.
 
 ## Quick Start
 
