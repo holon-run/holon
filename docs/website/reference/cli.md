@@ -1,9 +1,9 @@
 ---
 title: CLI reference
-summary: Holon's command-line interface — verified against holon --help (v0.40.0).
+summary: Holon's command-line interface — verified against holon --help (v0.44.1).
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.40.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.44.1. -->
 
 # CLI Reference
 
@@ -15,8 +15,8 @@ For scripting guidance, stability levels, and support policy, see
 
 ## Command Tree
 
-```
-holon (v0.40.0)
+```text
+holon (v0.44.1)
 ├── context      Show the declared caller context
 ├── commands     Show machine-readable CLI command metadata
 ├── serve        Start HTTP control plane server
@@ -126,6 +126,7 @@ holon (v0.40.0)
 │   │   ├── audit    Audit runtime database invariants
 │   │   ├── retention Run retention cleanup on old database records
 │   │   ├── compact  Compact the runtime database
+│   │   ├── wait-final-brief-publication Prepare or apply a repair for WaitFor final brief publication linkage
 │   │   ├── turn-settlement Audit or apply a fingerprint-fenced historical Turn settlement repair
 │   │   └── conversation-input-assignment-rollback Preflight or rollback v66 repair marker
 │   ├── scheduler-recovery  Inspect/apply scheduler recovery
@@ -220,6 +221,40 @@ holon models-dev refresh         # fetch upstream and regenerate the artifact
 `refresh` and `validate` target the repository's checked-in `models.dev/`
 files and are intended for Holon development and release automation. See
 [Supported Models](./models.md) for the runtime model catalog.
+
+### Memory index management
+
+Manage the local vector/full-text memory search index for agents and workspaces:
+
+```bash
+holon memory-index rebuild                      # submit a full rebuild to background indexer
+holon memory-index rebuild --agent <AGENT>      # rebuild index for a specific agent
+holon memory-index rebuild --workspace <WS>     # rebuild index for a specific workspace
+holon memory-index rebuild --offline            # run directly without submitting to daemon
+```
+
+### Debug utilities
+
+Holon provides operational and diagnostic subcommands under `holon debug` for inspecting runtime metrics, traces, and database health:
+
+```bash
+# Performance, latency, and traces
+holon debug latency
+holon debug performance
+holon debug trace <trace_id>
+
+# Runtime database audit, compact, and repair
+holon debug runtime-db audit
+holon debug runtime-db compact
+holon debug runtime-db retention
+holon debug runtime-db agent-relations
+holon debug runtime-db wait-final-brief-publication --dry-run
+holon debug runtime-db turn-settlement
+
+# Scheduler diagnostic inspection
+holon debug scheduler-recovery
+holon debug scheduler-fixture
+```
 
 ### Daemon management
 

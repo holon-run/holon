@@ -73,3 +73,13 @@ These are actual GUI captures with synthetic data, not live runtime work records
 
 Keep the older `holon-tour-review-work.webp`, `holon-tour-agents.webp`, and their
 versioned demo fixture available for reuse; the product articles no longer use them.
+
+<!-- INDEX:START -->
+
+- [lite-paper](./lite-paper/)
+  <!-- mdorigin:index kind=directory -->
+
+- [observability](./observability/)
+  <!-- mdorigin:index kind=directory -->
+
+<!-- INDEX:END -->

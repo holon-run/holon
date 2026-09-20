@@ -135,7 +135,11 @@ WorkItems flow through scheduling states that the scheduler consumes:
   decides whether the agent truly becomes `Asleep` or continues with queued
   work.
 - `WaitFor` records explicit wait state and then yields the turn. It is the
-  model-facing path for task, external, and operator waits.
+  model-facing path for task, external, and operator waits. Every call chooses
+  either `delivery=final` (publishing an assistant brief before waiting) or
+  `delivery=silent` (settling the wait without an extra round). Wait registration,
+  delivery, turn terminal, and queue terminal are committed together atomically,
+  and task-result waits resolve strictly from the task's captured owner.
 - `StayIdle` means the agent is already asleep and the scheduler has nothing
   to do; this is distinct from `Sleep` (the initial transition).
 - `EmitSystemTick` injects an internal follow-up message to re-enter the model

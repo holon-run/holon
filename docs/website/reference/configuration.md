@@ -462,6 +462,29 @@ Configure automatic retention cleanup for SQLite runtime events, transcripts, an
 | `runtime.retention.tool_executions_min_rows` | positive integer | `15000` | Minimum tool execution rows retained globally. |
 | `runtime.retention.incremental_vacuum_pages` | positive integer | `256` | Maximum pages requested from SQLite incremental vacuum after a retention pass. |
 
+## Command Task Output Safety
+
+Configure on-disk output limits, execution quotas, and filesystem free-space
+waterlines for background command tasks:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `runtime.command_task_output_retention_bytes` | integer bytes | `8388608` (8 MiB) | Maximum combined stdout/stderr bytes retained on disk per command task. Overflow preserves a bounded head and tail with an explicit truncation marker. Minimum 4096 bytes. |
+| `runtime.command_task_output_quota_bytes` | integer bytes | `67108864` (64 MiB) | Hard execution quota for total emitted bytes across stdout and stderr. Exceeding this quota terminates the command task with an execution failure. Must be $\ge$ retention limit. |
+| `runtime.command_task_min_free_disk_bytes` | integer bytes | `536870912` (512 MiB) | Minimum required free disk space on the task artifact filesystem. If free space drops below this limit, the task terminates to protect the host. |
+| `runtime.command_task_min_free_disk_percent` | integer (0-100) | `5` | Minimum free disk space percentage (0–100) on the task artifact filesystem. |
+
+### Environment Variables
+
+Each command task setting can also be overridden via environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `HOLON_COMMAND_TASK_OUTPUT_RETENTION_BYTES` | Override `runtime.command_task_output_retention_bytes` |
+| `HOLON_COMMAND_TASK_OUTPUT_QUOTA_BYTES` | Override `runtime.command_task_output_quota_bytes` |
+| `HOLON_COMMAND_TASK_MIN_FREE_DISK_BYTES` | Override `runtime.command_task_min_free_disk_bytes` |
+| `HOLON_COMMAND_TASK_MIN_FREE_DISK_PERCENT` | Override `runtime.command_task_min_free_disk_percent` |
+
 ## Agent Template Remote Sources
 
 Configure remote Git repositories that Holon syncs to populate the agent

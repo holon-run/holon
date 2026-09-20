@@ -22,7 +22,7 @@ Machine-readable surfaces: the generated baseline
 <!-- INDEX:START -->
 
 - [CLI reference](./cli.md)
-  Holon's command-line interface — verified against holon --help (v0.40.0).
+  Holon's command-line interface — verified against holon --help (v0.44.1).
   <!-- mdorigin:index kind=article -->
 
 - [CLI contract inventory](./cli-contract-inventory.md)

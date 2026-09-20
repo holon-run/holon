@@ -440,6 +440,28 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `runtime.retention.tool_executions_min_rows` | positive integer | `15000` | 全局保留的最小工具执行行数。 |
 | `runtime.retention.incremental_vacuum_pages` | positive integer | `256` | 保留清理后向 SQLite 增量 vacuum 请求的最大页数。 |
 
+## 命令任务输出安全
+
+为后台命令任务配置磁盘输出上限、执行配额以及文件系统剩余空间水位：
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `runtime.command_task_output_retention_bytes` | integer bytes | `8388608` (8 MiB) | 单个命令任务在磁盘上保留的最大 stdout/stderr 合并字节数。超出后保留有界的头部和尾部，并插入显式截断标记。最小 4096 字节。 |
+| `runtime.command_task_output_quota_bytes` | integer bytes | `67108864` (64 MiB) | 命令任务 stdout/stderr 累计输出的总字节数硬性执行配额。超出此配额将终止该命令任务以防失控。必须 $\ge$ 保留字节数。 |
+| `runtime.command_task_min_free_disk_bytes` | integer bytes | `536870912` (512 MiB) | 任务产物文件系统所需保留的最小磁盘空闲字节数。低于此限制时任务终止以保护宿主磁盘。 |
+| `runtime.command_task_min_free_disk_percent` | integer (0-100) | `5` | 任务产物文件系统所需保留的最小磁盘空闲百分比（0–100）。 |
+
+### 环境变量
+
+每个命令任务输出安全配置均可通过环境变量覆盖：
+
+| 环境变量 | 说明 |
+|----------|------|
+| `HOLON_COMMAND_TASK_OUTPUT_RETENTION_BYTES` | 覆盖 `runtime.command_task_output_retention_bytes` |
+| `HOLON_COMMAND_TASK_OUTPUT_QUOTA_BYTES` | 覆盖 `runtime.command_task_output_quota_bytes` |
+| `HOLON_COMMAND_TASK_MIN_FREE_DISK_BYTES` | 覆盖 `runtime.command_task_min_free_disk_bytes` |
+| `HOLON_COMMAND_TASK_MIN_FREE_DISK_PERCENT` | 覆盖 `runtime.command_task_min_free_disk_percent` |
+
 ## Agent 模板远程源
 
 配置 Holon 同步以填充 Agent 模板目录的远程 Git 仓库：

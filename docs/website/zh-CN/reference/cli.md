@@ -1,9 +1,9 @@
 ---
 title: CLI 参考
-summary: Holon 命令行界面——基于 holon --help 验证（v0.40.0）。
+summary: Holon 命令行界面——基于 holon --help 验证（v0.44.1）。
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.40.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.44.1. -->
 
 # CLI 参考
 
@@ -15,8 +15,8 @@ Holon 的命令行界面。所有命令都接受 `--help`，用于查看详细�
 
 ## 命令树
 
-```
-holon (v0.40.0)
+```text
+holon (v0.44.1)
 ├── context      显示本次 CLI 调用的声明式调用方上下文
 ├── commands     显示机器可读的 CLI 命令元数据
 ├── serve        启动 HTTP 控制平面服务
@@ -126,6 +126,8 @@ holon (v0.40.0)
 │   │   ├── audit    审计运行时数据库不变式
 │   │   ├── retention 对历史数据库记录执行保留清理
 │   │   ├── compact  压缩运行时数据库
+│   │   ├── wait-final-brief-publication 准备或应用 WaitFor final 简报关联修复
+│   │   ├── turn-settlement 审计或应用针对历史终端 Turn 结算的指纹隔离修复
 │   │   └── conversation-input-assignment-rollback 预检或回滚 v66 修复标记
 │   ├── scheduler-recovery  查看/应用调度器恢复
 │   └── scheduler-fixture 生成调度器夹具数据
@@ -211,6 +213,40 @@ holon models-dev refresh         # 拉取上游并重新生成产物
 
 `refresh` 和 `validate` 面向仓库中检入的 `models.dev/` 文件，供 Holon 开发和
 发布自动化使用。运行时模型目录见[支持的模型](/zh-CN/reference/models.md)。
+
+### 记忆索引管理
+
+管理面向 Agent 和工作区的本地向量与全文检索记忆索引：
+
+```bash
+holon memory-index rebuild                      # 向后台索引器提交全量重建任务
+holon memory-index rebuild --agent <AGENT>      # 重建指定 Agent 的记忆索引
+holon memory-index rebuild --workspace <WS>     # 重建指定工作区的记忆索引
+holon memory-index rebuild --offline            # 离线直接执行，无需提交至 daemon
+```
+
+### 调试与运维工具
+
+Holon 在 `holon debug` 下提供一系列用于检查运行时指标、Trace 追踪与数据库健康状态的运维子命令：
+
+```bash
+# 性能、延迟与 Trace 诊断
+holon debug latency
+holon debug performance
+holon debug trace <trace_id>
+
+# 运行时数据库审计、压缩与修复
+holon debug runtime-db audit
+holon debug runtime-db compact
+holon debug runtime-db retention
+holon debug runtime-db agent-relations
+holon debug runtime-db wait-final-brief-publication --dry-run
+holon debug runtime-db turn-settlement
+
+# 调度器状态诊断与恢复
+holon debug scheduler-recovery
+holon debug scheduler-fixture
+```
 
 ### Daemon 管理
 
