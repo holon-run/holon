@@ -581,9 +581,13 @@ The adapter prompt should instruct the model to:
 The primary model remains the agent brain. The vision adapter is a sensor.
 
 Provider response validation must keep the observation identity fields
-(`type`, `schema`, and non-empty `summary`) strict. Auxiliary observation fields
-are best-effort sensor data and must not invalidate an otherwise usable
-observation solely because a provider ignored its strict response schema.
+(`type` and non-empty `summary`) strict. The `schema` label is compatibility
+metadata supplied by the provider: missing, unknown, or older labels must not
+invalidate an otherwise usable observation whose structure is valid. Holon
+normalizes accepted observations to its canonical `visual_observation.v1`
+schema. Auxiliary observation fields are best-effort sensor data and must not
+invalidate an otherwise usable observation solely because a provider ignored
+its strict response schema.
 Holon normalizes arrays directly, wraps single objects, converts meaningful
 strings into text-bearing entries, and ignores null, boolean, numeric, or
 otherwise unusable auxiliary values. `uncertainties` similarly accepts a

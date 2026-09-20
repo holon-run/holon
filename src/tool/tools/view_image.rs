@@ -1,5 +1,6 @@
 use std::{
     fs::{self, File},
+    future::Future,
     io::Read,
     path::Path,
 };
@@ -28,6 +29,8 @@ use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 pub(crate) const NAME: &str = crate::tool::names::VIEW_IMAGE;
 const VISUAL_OBSERVATION_SCHEMA: &str = "visual_observation.v1";
 const VIEW_IMAGE_OBSERVATION_GENERATION_POLICY: &str = "openai-compatible-image-input.v1";
+const VIEW_IMAGE_VALIDATION_RETRY_PROMPT: &str = "The previous vision adapter response failed local validation. Return exactly one JSON object with type \"visual_observation\", a non-empty string summary, an optional uncertainties array of strings, and optional ocr, elements, relations, issues, and external_sources arrays. Do not include markdown or prose.";
+const VIEW_IMAGE_RESPONSE_PREVIEW_MAX_CHARS: usize = 512;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 
@@ -83,17 +86,54 @@ pub(crate) async fn execute(
     if vision_selection.selected_mode == ViewImageSelectedMode::Unavailable {
         return Err(vision_adapter_unavailable(vision_selection));
     }
-    let raw_observation = runtime
-        .generate_view_image_observation(&prompt, &visual_reference.mime, &image.bytes)
-        .await
-        .map_err(|error| vision_observation_failed(&vision_selection, error))?;
-    let observation = parse_visual_observation(
-        &raw_observation,
-        &visual_reference,
+    let generation_runtime = runtime.clone();
+    let generation_media_type = visual_reference.mime.clone();
+    let generation_bytes = image.bytes;
+    let observation = generate_and_parse_view_image_observation(
         &prompt,
+        &visual_reference,
         &vision_selection,
+        move |request_prompt| {
+            let runtime = generation_runtime.clone();
+            let media_type = generation_media_type.clone();
+            let bytes = generation_bytes.clone();
+            async move {
+                runtime
+                    .generate_view_image_observation(&request_prompt, &media_type, &bytes)
+                    .await
+            }
+        },
     )
-    .map_err(|error| vision_observation_failed(&vision_selection, error))?;
+    .await
+    .map_err(|failure| match failure {
+        ViewImageObservationGenerationError::Provider {
+            initial_validation_error: None,
+            error,
+            ..
+        } => vision_observation_failed(&vision_selection, error),
+        ViewImageObservationGenerationError::Provider {
+            initial_validation_error: Some(first_validation_error),
+            initial_response_preview,
+            error,
+        } => vision_observation_failed_after_validation_retry(
+            &vision_selection,
+            &first_validation_error,
+            initial_response_preview.as_deref().unwrap_or(""),
+            error,
+        ),
+        ViewImageObservationGenerationError::Validation {
+            first_raw,
+            second_raw,
+            first_error,
+            second_error,
+        } => vision_observation_validation_failed(
+            &vision_selection,
+            &first_raw,
+            &second_raw,
+            &first_error,
+            second_error,
+        ),
+    })?;
     runtime
         .cache_view_image_observation(cache_key, observation.clone())
         .await;
@@ -259,6 +299,7 @@ fn vision_observation_failed(
         format!("ViewImage could not generate a visual observation: {error}"),
     )
     .with_details(json!({
+        "failure_stage": "provider_generation",
         "selected_mode": selection.selected_mode,
         "selection_reason": selection.selection_reason,
         "vision_provider": selection.vision_provider,
@@ -267,6 +308,143 @@ fn vision_observation_failed(
     }))
     .with_recovery_hint("configure an OpenAI-compatible vision model with valid credentials, or retry after provider failures are resolved")
     .into()
+}
+
+fn vision_observation_failed_after_validation_retry(
+    selection: &ViewImageVisionSelection,
+    first_validation_error: &anyhow::Error,
+    initial_response_preview: &str,
+    error: anyhow::Error,
+) -> anyhow::Error {
+    ToolError::new(
+        "vision_observation_failed",
+        format!(
+            "ViewImage could not generate a visual observation after a response correction retry: {error}"
+        ),
+    )
+    .with_details(json!({
+        "failure_stage": "provider_generation",
+        "selected_mode": selection.selected_mode,
+        "selection_reason": selection.selection_reason,
+        "vision_provider": selection.vision_provider,
+        "vision_model": selection.vision_model,
+        "error": error.to_string(),
+        "initial_validation_error": first_validation_error.to_string(),
+        "initial_response_preview": initial_response_preview,
+    }))
+    .with_recovery_hint(
+        "check the configured vision provider or model credentials and retry after provider failures are resolved",
+    )
+    .into()
+}
+
+fn vision_observation_validation_failed(
+    selection: &ViewImageVisionSelection,
+    first_raw: &str,
+    second_raw: &str,
+    first_error: &anyhow::Error,
+    second_error: anyhow::Error,
+) -> anyhow::Error {
+    ToolError::new(
+        "vision_observation_failed",
+        format!(
+            "ViewImage received invalid visual observations after one correction retry: {second_error}"
+        ),
+    )
+    .with_details(json!({
+        "failure_stage": "response_validation",
+        "selected_mode": selection.selected_mode,
+        "selection_reason": selection.selection_reason,
+        "vision_provider": selection.vision_provider,
+        "vision_model": selection.vision_model,
+        "retry_attempted": true,
+        "initial_validation_error": first_error.to_string(),
+        "final_validation_error": second_error.to_string(),
+        "initial_response_preview": bounded_response_preview(first_raw),
+        "final_response_preview": bounded_response_preview(second_raw),
+    }))
+    .with_recovery_hint(
+        "the vision endpoint returned an incompatible response twice; inspect the selected model's JSON compatibility or configure another vision model",
+    )
+    .into()
+}
+
+#[derive(Debug)]
+enum ViewImageObservationGenerationError {
+    Provider {
+        initial_validation_error: Option<anyhow::Error>,
+        initial_response_preview: Option<String>,
+        error: anyhow::Error,
+    },
+    Validation {
+        first_raw: String,
+        second_raw: String,
+        first_error: anyhow::Error,
+        second_error: anyhow::Error,
+    },
+}
+
+async fn generate_and_parse_view_image_observation<F, Fut>(
+    prompt: &str,
+    visual_reference: &ViewImageVisualReference,
+    selection: &ViewImageVisionSelection,
+    mut generate: F,
+) -> Result<ViewImageObservation, ViewImageObservationGenerationError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<String>>,
+{
+    let first_raw = generate(prompt.to_string()).await.map_err(|error| {
+        ViewImageObservationGenerationError::Provider {
+            initial_validation_error: None,
+            initial_response_preview: None,
+            error,
+        }
+    })?;
+    let first_observation =
+        parse_visual_observation(&first_raw, visual_reference, prompt, selection);
+    match first_observation {
+        Ok(observation) => Ok(observation),
+        Err(first_error) => {
+            let retry_prompt = format!("{prompt}\n\n{VIEW_IMAGE_VALIDATION_RETRY_PROMPT}");
+            let second_raw = match generate(retry_prompt).await {
+                Ok(raw) => raw,
+                Err(error) => {
+                    return Err(ViewImageObservationGenerationError::Provider {
+                        initial_validation_error: Some(first_error),
+                        initial_response_preview: Some(bounded_response_preview(&first_raw)),
+                        error,
+                    });
+                }
+            };
+            parse_visual_observation(&second_raw, visual_reference, prompt, selection).map_err(
+                |second_error| ViewImageObservationGenerationError::Validation {
+                    first_raw,
+                    second_raw,
+                    first_error,
+                    second_error,
+                },
+            )
+        }
+    }
+}
+
+fn bounded_response_preview(raw: &str) -> String {
+    let mut preview: String = raw
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .take(VIEW_IMAGE_RESPONSE_PREVIEW_MAX_CHARS)
+        .collect();
+    if raw.chars().count() > VIEW_IMAGE_RESPONSE_PREVIEW_MAX_CHARS {
+        preview.push('…');
+    }
+    preview
 }
 
 fn observation_cache_key(
@@ -294,11 +472,6 @@ fn parse_visual_observation(
     if object.get("type").and_then(Value::as_str) != Some("visual_observation") {
         return Err(anyhow!(
             "vision adapter response `type` must be visual_observation"
-        ));
-    }
-    if object.get("schema").and_then(Value::as_str) != Some(VISUAL_OBSERVATION_SCHEMA) {
-        return Err(anyhow!(
-            "vision adapter response `schema` must be {VISUAL_OBSERVATION_SCHEMA}"
         ));
     }
     let summary = object
@@ -863,20 +1036,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_schema_incompatible_visual_observation() {
-        let error = parse_visual_observation(
+    fn normalizes_missing_or_unknown_schema_from_visual_observation() {
+        let missing_schema = parse_visual_observation(
+            r#"{"type":"visual_observation","summary":"x"}"#,
+            &test_visual_reference(),
+            "Describe the image.",
+            &test_vision_selection(),
+        )
+        .unwrap();
+        let unknown_schema = parse_visual_observation(
             r#"{"type":"visual_observation","schema":"visual_observation.v2","summary":"x"}"#,
             &test_visual_reference(),
             "Describe the image.",
             &test_vision_selection(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("visual_observation.v1"));
+        assert_eq!(missing_schema.schema, VISUAL_OBSERVATION_SCHEMA);
+        assert_eq!(unknown_schema.schema, VISUAL_OBSERVATION_SCHEMA);
     }
 
     #[test]
-    fn rejects_missing_visual_observation_type_or_schema() {
+    fn rejects_missing_visual_observation_type_but_accepts_missing_schema() {
         let error = parse_visual_observation(
             r#"{"schema":"visual_observation.v1","summary":"x"}"#,
             &test_visual_reference(),
@@ -887,15 +1068,170 @@ mod tests {
 
         assert!(error.to_string().contains("`type`"));
 
-        let error = parse_visual_observation(
+        let observation = parse_visual_observation(
             r#"{"type":"visual_observation","summary":"x"}"#,
             &test_visual_reference(),
             "Describe the image.",
             &test_vision_selection(),
         )
+        .unwrap();
+
+        assert_eq!(observation.schema, VISUAL_OBSERVATION_SCHEMA);
+    }
+
+    #[test]
+    fn bounds_response_preview_and_removes_control_characters() {
+        let preview = bounded_response_preview(&format!(
+            "a\n{}",
+            "x".repeat(VIEW_IMAGE_RESPONSE_PREVIEW_MAX_CHARS)
+        ));
+
+        assert!(!preview.contains('\n'));
+        assert!(preview.ends_with('…'));
+        assert!(preview.chars().count() <= VIEW_IMAGE_RESPONSE_PREVIEW_MAX_CHARS + 1);
+    }
+
+    #[tokio::test]
+    async fn retries_once_after_response_validation_failure() {
+        let mut prompts = Vec::new();
+        let mut responses = vec![
+            "not valid visual observation".to_string(),
+            r#"{"type":"visual_observation","summary":"A chart is visible."}"#.to_string(),
+        ];
+
+        let observation = generate_and_parse_view_image_observation(
+            "Describe the image.",
+            &test_visual_reference(),
+            &test_vision_selection(),
+            |request_prompt| {
+                prompts.push(request_prompt);
+                let response = responses.remove(0);
+                async move { Ok(response) }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(prompts.len(), 2);
+        assert_eq!(prompts[0], "Describe the image.");
+        assert!(prompts[1].contains(VIEW_IMAGE_VALIDATION_RETRY_PROMPT));
+        assert!(!prompts[1].contains("not valid visual observation"));
+        assert_eq!(observation.summary, "A chart is visible.");
+        assert_eq!(observation.schema, VISUAL_OBSERVATION_SCHEMA);
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_provider_failure() {
+        let mut call_count = 0;
+
+        let error = generate_and_parse_view_image_observation(
+            "Describe the image.",
+            &test_visual_reference(),
+            &test_vision_selection(),
+            |_request_prompt| {
+                call_count += 1;
+                async { Err(anyhow!("provider unavailable")) }
+            },
+        )
+        .await
         .unwrap_err();
 
-        assert!(error.to_string().contains("`schema`"));
+        assert_eq!(call_count, 1);
+        assert!(matches!(
+            error,
+            ViewImageObservationGenerationError::Provider {
+                initial_validation_error: None,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn classifies_provider_failure_during_correction_retry() {
+        let mut call_count = 0;
+
+        let error = generate_and_parse_view_image_observation(
+            "Describe the image.",
+            &test_visual_reference(),
+            &test_vision_selection(),
+            |_request_prompt| {
+                call_count += 1;
+                let response = if call_count == 1 {
+                    Ok("not valid visual observation".to_string())
+                } else {
+                    Err(anyhow!("provider unavailable on retry"))
+                };
+                async move { response }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(call_count, 2);
+        let ViewImageObservationGenerationError::Provider {
+            initial_validation_error,
+            initial_response_preview,
+            error,
+        } = error
+        else {
+            panic!(
+                "expected the correction retry provider failure to be classified as provider error"
+            );
+        };
+        assert_eq!(
+            initial_validation_error
+                .expect("initial response should fail validation")
+                .to_string(),
+            "vision adapter response did not contain JSON"
+        );
+        assert_eq!(
+            initial_response_preview.as_deref(),
+            Some("not valid visual observation")
+        );
+        assert_eq!(error.to_string(), "provider unavailable on retry");
+
+        let tool_error = ToolError::from_anyhow(&vision_observation_failed_after_validation_retry(
+            &test_vision_selection(),
+            &anyhow!("initial response was invalid"),
+            "not valid visual observation",
+            anyhow!("provider unavailable on retry"),
+        ));
+        assert_eq!(tool_error.kind, "vision_observation_failed");
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["failure_stage"],
+            "provider_generation"
+        );
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["initial_validation_error"],
+            "initial response was invalid"
+        );
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["initial_response_preview"],
+            "not valid visual observation"
+        );
+    }
+
+    #[tokio::test]
+    async fn stops_after_one_correction_retry() {
+        let mut call_count = 0;
+
+        let error = generate_and_parse_view_image_observation(
+            "Describe the image.",
+            &test_visual_reference(),
+            &test_vision_selection(),
+            |_request_prompt| {
+                call_count += 1;
+                async { Ok("still not valid visual observation".to_string()) }
+            },
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(call_count, 2);
+        assert!(matches!(
+            error,
+            ViewImageObservationGenerationError::Validation { .. }
+        ));
     }
 
     #[test]
