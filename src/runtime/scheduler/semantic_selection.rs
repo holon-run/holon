@@ -55,6 +55,27 @@ pub(crate) enum SemanticCandidateSelectionHookResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SemanticCandidateSelectionHookError;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AutonomousContinuationFallbackReason {
+    HookUnavailable,
+    HookError,
+    Abstain,
+    InvalidProposal,
+    StaleSnapshot,
+}
+
+impl AutonomousContinuationFallbackReason {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::HookUnavailable => "hook_unavailable",
+            Self::HookError => "hook_error",
+            Self::Abstain => "abstain",
+            Self::InvalidProposal => "invalid_proposal",
+            Self::StaleSnapshot => "stale_snapshot",
+        }
+    }
+}
+
 pub(crate) trait SemanticCandidateSelectionHook: Send + Sync {
     fn select_autonomous_continuation(
         &self,
@@ -82,6 +103,17 @@ impl SemanticCandidateSelectionHook for StaticSemanticCandidateSelectionHook {
 pub(crate) struct AutonomousContinuationSelection {
     snapshot_identity: AutonomousContinuationSnapshotIdentity,
     candidate: AutonomousContinuationCandidate,
+    fallback_reason: Option<AutonomousContinuationFallbackReason>,
+}
+
+impl AutonomousContinuationSelection {
+    pub(crate) fn fallback_reason(&self) -> Option<AutonomousContinuationFallbackReason> {
+        self.fallback_reason
+    }
+
+    pub(crate) fn candidate_count(&self) -> usize {
+        self.snapshot_identity.candidates.len()
+    }
 }
 
 fn legal_autonomous_continuation_candidates(
@@ -151,32 +183,52 @@ pub(crate) fn select_autonomous_continuation_with_hook(
     hook: Option<&dyn SemanticCandidateSelectionHook>,
 ) -> Option<AutonomousContinuationSelection> {
     let context = autonomous_continuation_context(projection)?;
-    let candidate = if context.candidates.len() == 1 {
-        context.baseline.clone()
+    let (candidate, fallback_reason) = if context.candidates.len() == 1 {
+        (context.baseline.clone(), None)
     } else {
-        hook.and_then(|hook| hook.select_autonomous_continuation(&context).ok())
-            .and_then(|result| match result {
-                SemanticCandidateSelectionHookResult::Propose(proposal)
-                    if proposal.snapshot_identity == context.snapshot_identity
-                        && context.candidates.contains(&proposal.candidate) =>
-                {
-                    Some(proposal.candidate)
+        match hook {
+            None => (
+                context.baseline.clone(),
+                Some(AutonomousContinuationFallbackReason::HookUnavailable),
+            ),
+            Some(hook) => match hook.select_autonomous_continuation(&context) {
+                Ok(SemanticCandidateSelectionHookResult::Propose(proposal)) => {
+                    if proposal.snapshot_identity != context.snapshot_identity {
+                        (
+                            context.baseline.clone(),
+                            Some(AutonomousContinuationFallbackReason::StaleSnapshot),
+                        )
+                    } else if !context.candidates.contains(&proposal.candidate) {
+                        (
+                            context.baseline.clone(),
+                            Some(AutonomousContinuationFallbackReason::InvalidProposal),
+                        )
+                    } else {
+                        (proposal.candidate, None)
+                    }
                 }
-                SemanticCandidateSelectionHookResult::Propose(_)
-                | SemanticCandidateSelectionHookResult::Abstain => None,
-            })
-            .unwrap_or_else(|| context.baseline.clone())
+                Ok(SemanticCandidateSelectionHookResult::Abstain) => (
+                    context.baseline.clone(),
+                    Some(AutonomousContinuationFallbackReason::Abstain),
+                ),
+                Err(_) => (
+                    context.baseline.clone(),
+                    Some(AutonomousContinuationFallbackReason::HookError),
+                ),
+            },
+        }
     };
     Some(AutonomousContinuationSelection {
         snapshot_identity: context.snapshot_identity,
         candidate,
+        fallback_reason,
     })
 }
 
 pub(crate) fn resolve_autonomous_continuation_work_item<'a>(
     projection: &'a SchedulerProjection,
     selection: &AutonomousContinuationSelection,
-) -> Option<(&'a WorkItemRecord, WorkReactivationMode)> {
+) -> Option<(&'a WorkItemRecord, WorkReactivationMode, Option<u64>)> {
     let current_snapshot = autonomous_continuation_context(projection)?.snapshot_identity;
     if current_snapshot != selection.snapshot_identity {
         return None;
@@ -189,7 +241,13 @@ pub(crate) fn resolve_autonomous_continuation_work_item<'a>(
                 work_item.id == selection.candidate.work_item_id
                     && work_item.revision == selection.candidate.work_item_revision
             })
-            .map(|work_item| (work_item, WorkReactivationMode::ContinueActive)),
+            .map(|work_item| {
+                (
+                    work_item,
+                    WorkReactivationMode::ContinueActive,
+                    selection.candidate.work_item_generation,
+                )
+            }),
         WorkReactivationMode::ActivateQueued => projection
             .queued_runnable_work_items
             .iter()
@@ -197,6 +255,12 @@ pub(crate) fn resolve_autonomous_continuation_work_item<'a>(
                 work_item.id == selection.candidate.work_item_id
                     && work_item.revision == selection.candidate.work_item_revision
             })
-            .map(|work_item| (work_item, WorkReactivationMode::ActivateQueued)),
+            .map(|work_item| {
+                (
+                    work_item,
+                    WorkReactivationMode::ActivateQueued,
+                    selection.candidate.work_item_generation,
+                )
+            }),
     }
 }

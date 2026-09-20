@@ -226,6 +226,7 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                 scheduler::SchedulerInput::IdleSignal(
                     scheduler::SchedulerIdleSignal::QueuedAvailable {
                         work_item: &work_item,
+                        work_item_generation: None,
                         duplicate: None,
                     },
                 ),
@@ -242,6 +243,7 @@ async fn seed_scheduler_claim_admission_restart_fixture(
             runtime
                 .emit_system_tick_from_work_queue(
                     &work_item,
+                    None,
                     "queued_available",
                     Some(&decision),
                 )
@@ -532,6 +534,7 @@ async fn seed_scheduler_waiting_work(
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: None,
         }),
     );
@@ -545,7 +548,7 @@ async fn seed_scheduler_waiting_work(
         ));
     }
     runtime
-        .emit_system_tick_from_work_queue(&work_item, "queued_available", Some(&decision))
+        .emit_system_tick_from_work_queue(&work_item, None, "queued_available", Some(&decision))
         .await?;
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(runtime)
         .poll()
@@ -2023,6 +2026,7 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: None,
         }),
     );
@@ -2036,7 +2040,7 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
         ));
     }
     runtime
-        .emit_system_tick_from_work_queue(&work_item, "queued_available", Some(&decision))
+        .emit_system_tick_from_work_queue(&work_item, None, "queued_available", Some(&decision))
         .await?;
     let scheduled = match scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()

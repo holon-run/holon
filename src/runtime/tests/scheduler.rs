@@ -899,6 +899,7 @@ fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts()
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::ContinueActive {
             work_item: &work_item,
+            work_item_generation: None,
             suppressed_after_model_reentry_continuation: false,
             duplicate: None,
         }),
@@ -940,6 +941,7 @@ fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: None,
         }),
     );
@@ -1154,7 +1156,7 @@ fn autonomous_selection_hook_can_choose_another_legal_candidate() {
     let selection =
         scheduler::select_autonomous_continuation_with_hook(&projection, Some(&SelectQueuedHook))
             .unwrap();
-    let (work_item, mode) =
+    let (work_item, mode, _) =
         scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
 
     assert_eq!(work_item.id, "work-queued");
@@ -1168,7 +1170,7 @@ fn autonomous_selection_bypasses_hook_for_zero_or_one_candidate() {
     let selection =
         scheduler::select_autonomous_continuation_with_hook(&projection, Some(&UnexpectedHook))
             .unwrap();
-    let (work_item, mode) =
+    let (work_item, mode, _) =
         scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
     assert_eq!(work_item.id, "work-current");
     assert_eq!(mode, WorkReactivationMode::ContinueActive);
@@ -1191,7 +1193,7 @@ fn autonomous_selection_unavailable_abstain_and_error_use_static_baseline() {
     for hook in hooks {
         let selection =
             scheduler::select_autonomous_continuation_with_hook(&projection, hook).unwrap();
-        let (work_item, mode) =
+        let (work_item, mode, _) =
             scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
         assert_eq!(work_item.id, "work-current");
         assert_eq!(mode, WorkReactivationMode::ContinueActive);
@@ -1207,7 +1209,7 @@ fn autonomous_selection_rejects_unknown_candidate_and_stale_proposal_snapshot() 
     for hook in hooks {
         let selection =
             scheduler::select_autonomous_continuation_with_hook(&projection, Some(hook)).unwrap();
-        let (work_item, mode) =
+        let (work_item, mode, _) =
             scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
         assert_eq!(work_item.id, "work-current");
         assert_eq!(mode, WorkReactivationMode::ContinueActive);
@@ -1502,6 +1504,7 @@ fn decide_next_action_records_duplicate_tick_evidence() {
         scheduler::SchedulerBoundary::IdleTick,
         scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
             work_item: &work_item,
+            work_item_generation: None,
             duplicate: Some(
                 scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage("msg-1".into()),
             ),

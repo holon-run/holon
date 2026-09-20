@@ -31,6 +31,7 @@ pub(crate) enum CanonicalActivationScenario {
     WorkItemAutonomousContinuation {
         work_item_id: String,
         expected_work_item_revision: u64,
+        expected_work_item_generation: Option<u64>,
     },
     ProviderRecovery {
         work_item_id: String,
@@ -62,6 +63,7 @@ pub(crate) enum CanonicalActivationCandidate {
     WorkItemAutonomousContinuation {
         work_item_id: String,
         expected_work_item_revision: u64,
+        expected_work_item_generation: Option<u64>,
     },
     ProviderRecovery {
         work_item_id: String,
@@ -276,11 +278,13 @@ pub(crate) enum SchedulerDuplicateEvidence {
 pub(crate) enum SchedulerIdleSignal<'a> {
     ContinueActive {
         work_item: &'a WorkItemRecord,
+        work_item_generation: Option<u64>,
         suppressed_after_model_reentry_continuation: bool,
         duplicate: Option<SchedulerDuplicateEvidence>,
     },
     QueuedAvailable {
         work_item: &'a WorkItemRecord,
+        work_item_generation: Option<u64>,
         duplicate: Option<SchedulerDuplicateEvidence>,
     },
     WakeHint {
@@ -423,6 +427,7 @@ fn decide_idle_signal_action(
         }
         SchedulerIdleSignal::ContinueActive {
             work_item,
+            work_item_generation,
             suppressed_after_model_reentry_continuation,
             duplicate,
         } => {
@@ -462,11 +467,16 @@ fn decide_idle_signal_action(
                 .evidence("work_item_runnable")
                 .evidence(format!(
                     "idempotency_key={}",
-                    work_queue_tick_idempotency_key(work_item, "continue_active")
+                    work_queue_tick_idempotency_key(
+                        work_item,
+                        "continue_active",
+                        work_item_generation,
+                    )
                 ))
         }
         SchedulerIdleSignal::QueuedAvailable {
             work_item,
+            work_item_generation,
             duplicate,
         } => {
             if let Some(decision) = wait_decision_for_projection(projection) {
@@ -494,7 +504,11 @@ fn decide_idle_signal_action(
                 .evidence("work_item_runnable")
                 .evidence(format!(
                     "idempotency_key={}",
-                    work_queue_tick_idempotency_key(work_item, "queued_available")
+                    work_queue_tick_idempotency_key(
+                        work_item,
+                        "queued_available",
+                        work_item_generation,
+                    )
                 ))
         }
     }
@@ -727,6 +741,9 @@ pub(crate) fn canonical_activation_candidate(
             .and_then(|metadata| metadata.get("work_item_revision"))
             .and_then(serde_json::Value::as_u64)
             .filter(|revision| *revision > 0);
+        let expected_work_item_generation = metadata
+            .and_then(|metadata| metadata.get("work_item_generation"))
+            .and_then(serde_json::Value::as_u64);
         let reason = metadata
             .and_then(|metadata| metadata.get("reason"))
             .and_then(serde_json::Value::as_str);
@@ -735,17 +752,20 @@ pub(crate) fn canonical_activation_candidate(
                 message.work_item_id.as_deref(),
                 metadata_work_item_id,
                 expected_work_item_revision,
+                expected_work_item_generation,
                 reason,
             ) {
                 (
                     Some(bound_work_item_id),
                     Some(metadata_work_item_id),
                     Some(expected_work_item_revision),
+                    expected_work_item_generation,
                     Some("continue_active" | "queued_available"),
                 ) if bound_work_item_id == metadata_work_item_id => Some(
                     CanonicalActivationCandidate::WorkItemAutonomousContinuation {
                         work_item_id: bound_work_item_id.to_string(),
                         expected_work_item_revision,
+                        expected_work_item_generation,
                     },
                 ),
                 _ => None,
@@ -884,12 +904,14 @@ pub(crate) fn resolve_canonical_activation_scenario(
     if let CanonicalActivationCandidate::WorkItemAutonomousContinuation {
         work_item_id,
         expected_work_item_revision,
+        expected_work_item_generation,
     } = candidate
     {
         return Ok(Some(
             CanonicalActivationScenario::WorkItemAutonomousContinuation {
                 work_item_id,
                 expected_work_item_revision,
+                expected_work_item_generation,
             },
         ));
     }
@@ -1458,11 +1480,21 @@ pub(crate) fn is_operator_interjection_message(message: &MessageEnvelope) -> boo
     )
 }
 
-pub(crate) fn work_queue_tick_idempotency_key(work_item: &WorkItemRecord, reason: &str) -> String {
-    format!(
-        "work_queue:{}:{}:{}",
-        reason, work_item.id, work_item.revision
-    )
+pub(crate) fn work_queue_tick_idempotency_key(
+    work_item: &WorkItemRecord,
+    reason: &str,
+    generation: Option<u64>,
+) -> String {
+    match generation {
+        Some(generation) => format!(
+            "work_queue:{}:{}:{}:generation:{}",
+            reason, work_item.id, work_item.revision, generation
+        ),
+        None => format!(
+            "work_queue:{}:{}:{}",
+            reason, work_item.id, work_item.revision
+        ),
+    }
 }
 
 pub(crate) fn wake_hint_idempotency_key(pending: &PendingWakeHint) -> String {
