@@ -1507,7 +1507,9 @@ impl RuntimeHandle {
                 .as_ref()
                 .map(|entry| entry.created_at)
                 .unwrap_or_else(chrono::Utc::now),
-            removed_at: None,
+            removed_at: existing_execution_root
+                .as_ref()
+                .and_then(|entry| entry.removed_at),
         }) {
             tracing::warn!(
                 execution_root_id,
@@ -1688,7 +1690,9 @@ impl RuntimeHandle {
                 .as_ref()
                 .map(|entry| entry.created_at)
                 .unwrap_or_else(chrono::Utc::now),
-            removed_at: None,
+            removed_at: existing_execution_root
+                .as_ref()
+                .and_then(|entry| entry.removed_at),
         }) {
             tracing::warn!(
                 execution_root_id,

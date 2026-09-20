@@ -400,8 +400,28 @@ pub(crate) fn upsert_execution_root_entry_tx(
     tx: &Transaction<'_>,
     record: &ExecutionRootEntry,
 ) -> Result<()> {
-    let payload_json = serde_json::to_string(record)?;
-    let root_kind = enum_string(&record.root_kind)?;
+    let existing_removed_at = tx
+        .query_row(
+            "SELECT removed_at FROM execution_root_entries
+             WHERE execution_root_id = ?1",
+            [&record.execution_root_id],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten()
+        .map(|value| {
+            DateTime::parse_from_rfc3339(&value)
+                .with_context(|| format!("parsing execution root removed_at timestamp: {value}"))
+                .map(|value| value.with_timezone(&Utc))
+        })
+        .transpose()?;
+
+    // Tombstones are monotonic. A normal re-registration may update metadata,
+    // but it must not implicitly reactivate a removed execution root.
+    let mut effective_record = record.clone();
+    effective_record.removed_at = existing_removed_at.or(record.removed_at);
+    let payload_json = serde_json::to_string(&effective_record)?;
+    let root_kind = enum_string(&effective_record.root_kind)?;
     tx.execute(
         "INSERT INTO execution_root_entries (
             execution_root_id, workspace_id, filesystem_path, root_kind,
@@ -415,12 +435,12 @@ pub(crate) fn upsert_execution_root_entry_tx(
             removed_at = excluded.removed_at,
             payload_json = excluded.payload_json",
         params![
-            record.execution_root_id,
-            record.workspace_id,
-            record.filesystem_path.display().to_string(),
+            effective_record.execution_root_id,
+            effective_record.workspace_id,
+            effective_record.filesystem_path.display().to_string(),
             root_kind,
-            timestamp(record.created_at),
-            record.removed_at.map(timestamp),
+            timestamp(effective_record.created_at),
+            effective_record.removed_at.map(timestamp),
             payload_json,
         ],
     )?;
