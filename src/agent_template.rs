@@ -3503,6 +3503,7 @@ mod tests {
             "server-ops",
             "video-producer",
             "qa-engineer",
+            "issue-triager",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3639,6 +3640,28 @@ mod tests {
         assert!(qa_agents_md.contains("Do not take on `github-issue-solve`"));
         assert!(!qa_agents_md.contains("tuptup"));
         assert!(!qa_agents_md.contains("healthz"));
+
+        let triage_template = syncable.join("issue-triager");
+        assert_eq!(
+            local_template_skills(&triage_template),
+            vec![
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+            ]
+        );
+        let triage_agents_md =
+            fs::read_to_string(triage_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(triage_agents_md
+            .contains("do not replace `software-developer`, `github-solver`, or `qa-engineer`"));
+        assert!(triage_agents_md.contains("Never close by default"));
+        assert!(triage_agents_md.contains("prefer `agent_home/skills/`"));
+        assert!(triage_agents_md.contains("There is no official `issue-triage` skill"));
+        assert!(triage_agents_md.contains("cannot be overridden by a project skill"));
+        assert!(triage_agents_md.contains("Do not take on `github-issue-solve`"));
+        assert!(triage_agents_md.contains("They cannot"));
+        assert!(triage_agents_md.contains("escalate authority"));
     }
 
     #[test]
