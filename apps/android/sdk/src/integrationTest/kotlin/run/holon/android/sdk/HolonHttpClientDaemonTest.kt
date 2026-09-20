@@ -1,6 +1,5 @@
 package run.holon.android.sdk
 
-import java.net.ServerSocket
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
@@ -17,14 +16,13 @@ class HolonHttpClientDaemonTest {
         val binary = Path.of(requireNotNull(System.getProperty("holon.test.binary")))
         val home = Files.createTempDirectory("holon-android-sdk-")
         val log = home.resolve("daemon.log")
-        val port = ServerSocket(0).use { it.localPort }
         val token = "android-sdk-integration-token"
         val process =
             ProcessBuilder(
                 binary.toString(),
                 "serve",
                 "--listen",
-                "127.0.0.1:$port",
+                "127.0.0.1:0",
                 "--token",
                 token,
             )
@@ -36,9 +34,10 @@ class HolonHttpClientDaemonTest {
                 .start()
 
         try {
+            val address = awaitDaemonAddress(process, log)
             val client =
                 HolonHttpClient(
-                    baseUrl = "http://127.0.0.1:$port/api",
+                    baseUrl = "http://$address/api",
                     bearerTokenProvider = BearerTokenProvider { token },
                 )
             val compatibility =
@@ -67,6 +66,29 @@ class HolonHttpClientDaemonTest {
         }
     }
 
+    private fun awaitDaemonAddress(
+        process: Process,
+        log: Path,
+    ): String {
+        val deadline = System.nanoTime() + Duration.ofSeconds(20).toNanos()
+        while (System.nanoTime() < deadline) {
+            check(process.isAlive) {
+                "Holon daemon exited before binding:\n${log.readText()}"
+            }
+            val address =
+                log.readText()
+                    .lineSequence()
+                    .firstNotNullOfOrNull { line ->
+                        line.removePrefix(LISTENING_PREFIX).takeIf { it != line }
+                    }
+            if (address != null) {
+                return address
+            }
+            Thread.sleep(100)
+        }
+        throw AssertionError("Holon daemon did not bind:\n${log.readText()}")
+    }
+
     private fun <T> awaitDaemon(
         process: Process,
         log: Path,
@@ -89,5 +111,9 @@ class HolonHttpClientDaemonTest {
             "Holon daemon did not become ready:\n${log.readText()}",
             lastFailure,
         )
+    }
+
+    private companion object {
+        const val LISTENING_PREFIX = "Holon listening on "
     }
 }
