@@ -156,6 +156,8 @@ fn mark_deferred_preserves_admission_state_on_recheck_rewrites() {
         deferred.deferred_reason.as_deref(),
         Some("owner_has_unresolved_wait")
     );
+    assert_eq!(deferred.deferred_at, Some(now));
+    assert_eq!(deferred.next_recheck_at, Some(now + Duration::seconds(30)));
 
     let reread = db
         .task_result_settlements()
@@ -166,6 +168,12 @@ fn mark_deferred_preserves_admission_state_on_recheck_rewrites() {
     assert_eq!(reread.activation_id.as_deref(), Some("activation-1"));
     assert_eq!(reread.admitted_at, admitted[0].admitted_at);
     assert_eq!(reread.disposition, None);
+    assert_eq!(
+        reread.deferred_reason.as_deref(),
+        Some("owner_has_unresolved_wait")
+    );
+    assert_eq!(reread.deferred_at, Some(now));
+    assert_eq!(reread.next_recheck_at, Some(now + Duration::seconds(30)));
     assert_eq!(reread, deferred);
 }
 
