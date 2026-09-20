@@ -61,6 +61,8 @@ Select an agent from the Dashboard to open its conversation page:
   stream to inspect request/response payloads, timing, and metadata.
   Tool result panels show structured output alongside raw data, making
   it easier to debug agent behavior.
+- **Real-time SSE streaming** — connects to `/api/agents/:id/events/stream` for live token streaming, streaming reasoning thoughts, active tool execution indicators, and immediate brief updates.
+- **Waiting & scheduler indicators** — clearly displays explicit wait states when agents invoke `WaitFor` (waiting on background tasks, external callbacks, or operator input), including delivery modes (`final` vs `silent`).
 
 ### Search
 
@@ -197,6 +199,7 @@ Configure Holon from the browser:
   (`image_generation.default`) directly from the Settings page. The
   model selector shows only models that support image generation
   capability.
+- **Control plane & bearer token** — configure and store Bearer authentication tokens directly in the UI when connecting to remote or authenticated Holon instances.
 - **Runtime configuration** — view the current execution environment,
   attached workspaces, and policy snapshot.
 

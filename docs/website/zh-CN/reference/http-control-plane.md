@@ -612,6 +612,84 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 
 优雅地关闭运行时和 daemon。
 
+**`GET /api/control/runtime/metrics`** — 性能诊断快照
+
+以标准 OpenMetrics 文本格式（`application/openmetrics-text; version=1.0.0; charset=utf-8`）返回运行时性能指标。适用于 Prometheus 抓取和运维监控。
+
+**`GET /api/control/runtime/traces`** — 近期链路摘要
+
+返回近期运行时 Trace 活动和 Span 摘要，便于延迟诊断。
+
+### 工作区与桌面集成
+
+**`POST /api/file-references/resolve`** — 批量解析文件引用
+
+批量将最多 64 个文件引用（`workspace_uri`、`absolute_path` 或相对于已知基准文件的 `relative_path`）解析为规范的工作区文件定位与元数据。需远程访问授权。
+
+请求体示例：
+
+```json
+{
+  "references": [
+    {
+      "type": "workspace_uri",
+      "workspace_uri": "workspace://ws_f375c191f64f3dd/src/main.rs"
+    },
+    {
+      "type": "absolute_path",
+      "absolute_path": "/home/user/project/README.md"
+    }
+  ]
+}
+```
+
+响应体示例：
+
+```json
+{
+  "results": [
+    {
+      "status": "resolved",
+      "location": {
+        "workspace_id": "ws_f375c191f64f3dd",
+        "execution_root_id": "root_c8010df5",
+        "path": "src/main.rs",
+        "absolute_path": "/home/user/project/src/main.rs",
+        "kind": "file",
+        "root_kind": "canonical"
+      }
+    },
+    {
+      "status": "unresolved",
+      "reason": "unknown_workspace",
+      "message": "workspace not found"
+    }
+  ]
+}
+```
+
+**`GET /api/desktop/capabilities`** — 桌面集成能力查询
+
+返回当前连接是否支持桌面集成（如 macOS Finder 定位展示）。需服务端显式开启 `--desktop-integration`，运行在 macOS 上，且通过同源环回地址（loopback）直连访问。
+
+```json
+{
+  "reveal_in_finder": true
+}
+```
+
+**`POST /api/desktop/reveal`** — 在桌面文件管理器中展示文件
+
+调用系统原生能力在 macOS Finder 中高亮选定文件或目录。必须在启用桌面集成、环回连接校验通过且目标路径严格受限于注册的工作区执行根内时才允许执行。
+
+```json
+{
+  "workspace_id": "ws_f375c191f64f3dd",
+  "execution_root_id": "root_c8010df5",
+  "path": "src/main.rs"
+}
+```
+
 ### Webhook 与回调
 
 **`POST /api/webhooks/generic/:agent_id`** — 通用 webhook

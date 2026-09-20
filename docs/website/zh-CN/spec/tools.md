@@ -177,6 +177,19 @@ Holon 严格区分工具的**启动输入**与**结果元数据**：
 `ExecCommand` 结果带有额外字段：`disposition`、`exit_status`、
 `initial_output_preview`，以及 `task_handle`（在提升为 command_task 时）。
 
+## WaitFor 交付模式与等待所有权
+
+`WaitFor` 记录显式等待状态并让出当前轮次。每次调用必须显式指定交付模式：
+
+- **`delivery=final`**：当前轮次在进入等待前必须发布非空的面向操作者最终简报。运行时提交等待条件并等待模型生成最终文本，模型在该轮只能回复最终文本，不能再调用工具。
+- **`delivery=silent`**：无需操作者可见简报；运行时直接结算等待状态，不再启动额外的模型轮次。
+
+**核心契约：**
+
+- **必填参数**：`reason`（非空说明）、`wake`（`task_result`、`operator_input`、`external`、`timer` 或 `system`）以及 `delivery`（`final` 或 `silent`）。
+- **原子结算**：运行时将交付模式、等待注册、工具证据、轮次终态与队列终态合并在同一个原子事务中提交。陈旧的任务、执行绑定、WorkItem 版本、唤醒或插话无法发布过期的等待报告。
+- **任务结果等待所有权**：对于 `wake=task_result`，等待的所有权严格解析自任务创建时捕获的所有者。切换 WorkItem 焦点（通过 `PickWorkItem` 或 `CreateWorkItem`）绝不会迁移后台任务或绕过其捕获的所有权边界。
+
 ## 已知缺口
 
 - 工具描述文本在 Rust 源码中手工维护；没有自动化校验时，描述与实际行为可能漂移。

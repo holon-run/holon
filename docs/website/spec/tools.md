@@ -199,6 +199,30 @@ rendered as a human-readable receipt:
 `ExecCommand` results carry additional fields: `disposition`, `exit_status`,
 `initial_output_preview`, and `task_handle` (when promoted to command_task).
 
+## WaitFor delivery modes and wait ownership
+
+`WaitFor` records explicit wait state and yields the turn. Every invocation must
+explicitly choose a delivery mode:
+
+- **`delivery=final`**: The turn must publish a non-empty operator-facing
+  assistant final brief before waiting. The runtime commits the wait condition,
+  and the assistant responds with final text only without further tool calls.
+- **`delivery=silent`**: No operator-facing brief is needed; the runtime settles
+  the wait directly without an extra model round.
+
+**Key contracts:**
+
+- **Required parameters**: `reason` (non-empty explanation), `wake` (`task_result`,
+  `operator_input`, `external`, `timer`, or `system`), and `delivery` (`final` or `silent`).
+- **Atomic settlement**: The runtime commits the chosen delivery mode, wait
+  registration, tool evidence, turn terminal, and queue terminal together in one
+  atomic transaction. A stale task, execution binding, WorkItem revision, wake,
+  or interjection cannot publish an obsolete waiting report.
+- **Task-result wait ownership**: For `wake=task_result`, wait ownership resolves
+  strictly from the task's captured owner. Switching WorkItem focus (via
+  `PickWorkItem` or `CreateWorkItem`) never migrates a task or bypasses its
+  captured ownership boundary.
+
 ## Known gaps
 
 - Tool description text is hand-maintained in Rust source; drift between

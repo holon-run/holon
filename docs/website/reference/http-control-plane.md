@@ -648,6 +648,84 @@ keys return `rejected` with a reason.
 
 Shuts down the runtime and daemon gracefully.
 
+**`GET /api/control/runtime/metrics`** — Performance diagnostics snapshot
+
+Returns runtime performance metrics in standard OpenMetrics text format (`application/openmetrics-text; version=1.0.0; charset=utf-8`). Useful for Prometheus and operational monitoring.
+
+**`GET /api/control/runtime/traces`** — Recent trace summaries
+
+Returns recent runtime trace activity and spans for latency diagnosis.
+
+### Workspace & Desktop integration
+
+**`POST /api/file-references/resolve`** — Batch resolve file references
+
+Resolves up to 64 file references (`workspace_uri`, `absolute_path`, or `relative_path` relative to a known base file) into canonical workspace file locations. Requires remote access authorization.
+
+Request:
+
+```json
+{
+  "references": [
+    {
+      "type": "workspace_uri",
+      "workspace_uri": "workspace://ws_f375c191f64f3dd/src/main.rs"
+    },
+    {
+      "type": "absolute_path",
+      "absolute_path": "/home/user/project/README.md"
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "results": [
+    {
+      "status": "resolved",
+      "location": {
+        "workspace_id": "ws_f375c191f64f3dd",
+        "execution_root_id": "root_c8010df5",
+        "path": "src/main.rs",
+        "absolute_path": "/home/user/project/src/main.rs",
+        "kind": "file",
+        "root_kind": "canonical"
+      }
+    },
+    {
+      "status": "unresolved",
+      "reason": "unknown_workspace",
+      "message": "workspace not found"
+    }
+  ]
+}
+```
+
+**`GET /api/desktop/capabilities`** — Desktop integration capabilities
+
+Returns whether desktop integration (such as macOS Finder reveal) is available on the current connection. This requires `--desktop-integration` enabled, running on macOS, and accessed directly over loopback with matching origin.
+
+```json
+{
+  "reveal_in_finder": true
+}
+```
+
+**`POST /api/desktop/reveal`** — Reveal file in desktop file manager
+
+Opens macOS Finder highlighting the specified file or directory. Denied unless desktop integration is enabled, loopback connection verified, and the path stays strictly within the registered workspace execution root.
+
+```json
+{
+  "workspace_id": "ws_f375c191f64f3dd",
+  "execution_root_id": "root_c8010df5",
+  "path": "src/main.rs"
+}
+```
+
 ### Webhooks & callbacks
 
 **`POST /api/webhooks/generic/:agent_id`** — Generic webhook

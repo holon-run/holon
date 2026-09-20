@@ -123,6 +123,44 @@ filesystem with the agent user's permissions. Key constraints:
 - The `execution_environment` summary in model context describes the current
   policy snapshot as a transparency contract, not a hard sandbox guarantee.
 
+## File references and output delivery contract
+
+Holon defines an explicit contract for output delivery and cross-surface file
+references:
+
+### Self-contained output delivery
+
+Agent delivery is brief-centric. Final briefs and assistant messages must be
+self-contained: an operator should understand outcomes, verification status,
+risks, and required actions without digging into intermediate tool logs or
+opening referenced files. File references serve as entry points to supporting
+artifacts, not substitutes for the result summary itself.
+
+### Surface-specific file reference formats
+
+The appropriate reference form depends on the output surface where it appears:
+
+- **Project Markdown (same execution root)**: Use document-relative paths
+  (e.g., `./sub/doc.md` or `../sibling.md`).
+- **Local records crossing roots**: Use confirmed execution-host absolute paths
+  (e.g., `/home/user/...`).
+- **Briefs and assistant Markdown**: Use confirmed execution-host absolute paths
+  for Markdown links and inline code paths. Do not invent machine-specific paths
+  when location metadata is unconfirmed.
+- **Public channels or shared documentation**: Prefer portable relative paths
+  or published URLs; avoid leaking machine-specific host paths.
+- **Legacy `workspace://` URIs**: Supported for backward compatibility across
+  resolvers and Web GUI previews (`workspace://<workspace_id>/<path>?root=<execution_root_id>`),
+  but deprecated as the default format for newly generated agent output.
+
+### Location resolution
+
+The runtime exposes `POST /api/file-references/resolve` to resolve absolute paths,
+legacy workspace URIs, and relative paths (with explicit `base_file`) against
+registered workspaces and execution roots. It deduplicates file roots by filesystem
+anchor with canonical workspace priority so references remain unambiguous across
+worktrees.
+
 ## Known gaps
 
 - Runtime task-owned worktree cleanup and agent-owned explicit cleanup still
