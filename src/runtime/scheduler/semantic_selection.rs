@@ -1,11 +1,21 @@
 use super::*;
+use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct AutonomousContinuationCandidate {
     pub(crate) work_item_id: String,
     pub(crate) work_item_revision: u64,
     pub(crate) work_item_generation: Option<u64>,
     pub(crate) reactivation_mode: WorkReactivationMode,
+}
+
+#[async_trait]
+pub(crate) trait AsyncSemanticCandidateSelectionHook: Send + Sync {
+    async fn select_autonomous_continuation(
+        &self,
+        context: &AutonomousContinuationSelectionContext,
+    ) -> Result<SemanticCandidateSelectionHookResult, SemanticCandidateSelectionHookError>;
 }
 
 impl AutonomousContinuationCandidate {
@@ -192,6 +202,53 @@ pub(crate) fn select_autonomous_continuation_with_hook(
                 Some(AutonomousContinuationFallbackReason::HookUnavailable),
             ),
             Some(hook) => match hook.select_autonomous_continuation(&context) {
+                Ok(SemanticCandidateSelectionHookResult::Propose(proposal)) => {
+                    if proposal.snapshot_identity != context.snapshot_identity {
+                        (
+                            context.baseline.clone(),
+                            Some(AutonomousContinuationFallbackReason::StaleSnapshot),
+                        )
+                    } else if !context.candidates.contains(&proposal.candidate) {
+                        (
+                            context.baseline.clone(),
+                            Some(AutonomousContinuationFallbackReason::InvalidProposal),
+                        )
+                    } else {
+                        (proposal.candidate, None)
+                    }
+                }
+                Ok(SemanticCandidateSelectionHookResult::Abstain) => (
+                    context.baseline.clone(),
+                    Some(AutonomousContinuationFallbackReason::Abstain),
+                ),
+                Err(_) => (
+                    context.baseline.clone(),
+                    Some(AutonomousContinuationFallbackReason::HookError),
+                ),
+            },
+        }
+    };
+    Some(AutonomousContinuationSelection {
+        snapshot_identity: context.snapshot_identity,
+        candidate,
+        fallback_reason,
+    })
+}
+
+pub(crate) async fn select_autonomous_continuation_with_async_hook(
+    projection: &SchedulerProjection,
+    hook: Option<&dyn AsyncSemanticCandidateSelectionHook>,
+) -> Option<AutonomousContinuationSelection> {
+    let context = autonomous_continuation_context(projection)?;
+    let (candidate, fallback_reason) = if context.candidates.len() == 1 {
+        (context.baseline.clone(), None)
+    } else {
+        match hook {
+            None => (
+                context.baseline.clone(),
+                Some(AutonomousContinuationFallbackReason::HookUnavailable),
+            ),
+            Some(hook) => match hook.select_autonomous_continuation(&context).await {
                 Ok(SemanticCandidateSelectionHookResult::Propose(proposal)) => {
                     if proposal.snapshot_identity != context.snapshot_identity {
                         (

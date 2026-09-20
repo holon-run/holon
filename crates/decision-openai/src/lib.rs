@@ -128,7 +128,13 @@ impl DecisionProvider<Value, Value> for OpenAiProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|error| DecisionError::Transport(error.to_string()))?;
+            .map_err(|error| {
+                if error.is_timeout() {
+                    DecisionError::DeadlineExceeded
+                } else {
+                    DecisionError::Transport(error.to_string())
+                }
+            })?;
         context.check()?;
         let status = response.status();
         let response_body = response

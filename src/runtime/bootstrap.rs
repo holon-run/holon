@@ -387,6 +387,16 @@ impl RuntimeHandle {
         event_bus: Option<EventBus>,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
+        let autonomous_continuation_decision_hook = provider_reconfig
+            .as_ref()
+            .map(|reconfig| {
+                super::decision_openai::OpenAiSemanticCandidateSelectionHook::from_app_config(
+                    &reconfig.config,
+                )
+            })
+            .transpose()?
+            .flatten()
+            .map(|hook| Arc::new(hook) as Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>);
         let x_search_config = provider_reconfig
             .as_ref()
             .map(|reconfig| crate::config::XSearchRuntimeConfig::from_app_config(&reconfig.config))
@@ -491,6 +501,7 @@ impl RuntimeHandle {
                 autonomous_continuation_hook: Arc::new(
                     scheduler::StaticSemanticCandidateSelectionHook,
                 ),
+                autonomous_continuation_decision_hook,
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),

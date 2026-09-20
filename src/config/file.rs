@@ -14,6 +14,8 @@ pub struct HolonConfigFile {
     pub providers: ProvidersConfigFile,
     #[serde(default, skip_serializing_if = "RuntimeConfigFile::is_empty")]
     pub runtime: RuntimeConfigFile,
+    #[serde(default, skip_serializing_if = "DecisionConfigFile::is_empty")]
+    pub decision: DecisionConfigFile,
     #[serde(default, skip_serializing_if = "VisionConfigFile::is_empty")]
     pub vision: VisionConfigFile,
     #[serde(default, skip_serializing_if = "ImageGenerationConfigFile::is_empty")]
@@ -26,6 +28,30 @@ pub struct HolonConfigFile {
     pub x_search: XSearchConfigFile,
     #[serde(default, skip_serializing_if = "AgentTemplatesConfigFile::is_empty")]
     pub agent_templates: AgentTemplatesConfigFile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DecisionConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<DecisionRouteConfigFile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub concurrency: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_capacity: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DecisionRouteConfigFile {
+    pub endpoint: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -586,6 +612,17 @@ impl RuntimeConfigFile {
             && self.retention.is_empty()
             && self.diagnostics.is_empty()
             && self.observability.is_empty()
+    }
+}
+
+impl DecisionConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.route.is_none()
+            && self.timeout_ms.is_none()
+            && self.max_tokens.is_none()
+            && self.concurrency.is_none()
+            && self.queue_capacity.is_none()
     }
 }
 

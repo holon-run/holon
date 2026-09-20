@@ -148,10 +148,19 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
-        let selection = scheduler::select_autonomous_continuation_with_hook(
-            &scheduler_projection,
-            Some(self.inner.autonomous_continuation_hook.as_ref()),
-        );
+        let selection =
+            if let Some(hook) = self.inner.autonomous_continuation_decision_hook.as_deref() {
+                scheduler::select_autonomous_continuation_with_async_hook(
+                    &scheduler_projection,
+                    Some(hook),
+                )
+                .await
+            } else {
+                scheduler::select_autonomous_continuation_with_hook(
+                    &scheduler_projection,
+                    Some(self.inner.autonomous_continuation_hook.as_ref()),
+                )
+            };
         if let Some(selection) = selection.as_ref() {
             if let Some(reason) = selection.fallback_reason() {
                 self.inner.storage.append_event(&AuditEvent::legacy(
