@@ -29,7 +29,7 @@ use crate::tool::helpers::{parse_tool_args, validate_non_empty};
 pub(crate) const NAME: &str = crate::tool::names::VIEW_IMAGE;
 const VISUAL_OBSERVATION_SCHEMA: &str = "visual_observation.v1";
 const VIEW_IMAGE_OBSERVATION_GENERATION_POLICY: &str = "openai-compatible-image-input.v1";
-const VIEW_IMAGE_VALIDATION_RETRY_PROMPT: &str = "The previous vision adapter response failed local validation. Return exactly one JSON object with type \"visual_observation\", a non-empty string summary, an uncertainties array of strings, and optional ocr, elements, relations, issues, and external_sources arrays. Do not include markdown or prose.";
+const VIEW_IMAGE_VALIDATION_RETRY_PROMPT: &str = "The previous vision adapter response failed local validation. Return exactly one JSON object with type \"visual_observation\", a non-empty string summary, an optional uncertainties array of strings, and optional ocr, elements, relations, issues, and external_sources arrays. Do not include markdown or prose.";
 const VIEW_IMAGE_RESPONSE_PREVIEW_MAX_CHARS: usize = 512;
 pub(crate) const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
@@ -88,7 +88,7 @@ pub(crate) async fn execute(
     }
     let generation_runtime = runtime.clone();
     let generation_media_type = visual_reference.mime.clone();
-    let generation_bytes = image.bytes.clone();
+    let generation_bytes = image.bytes;
     let observation = generate_and_parse_view_image_observation(
         &prompt,
         &visual_reference,
@@ -109,13 +109,16 @@ pub(crate) async fn execute(
         ViewImageObservationGenerationError::Provider {
             initial_validation_error: None,
             error,
+            ..
         } => vision_observation_failed(&vision_selection, error),
         ViewImageObservationGenerationError::Provider {
             initial_validation_error: Some(first_validation_error),
+            initial_response_preview,
             error,
         } => vision_observation_failed_after_validation_retry(
             &vision_selection,
             &first_validation_error,
+            initial_response_preview.as_deref().unwrap_or(""),
             error,
         ),
         ViewImageObservationGenerationError::Validation {
@@ -310,6 +313,7 @@ fn vision_observation_failed(
 fn vision_observation_failed_after_validation_retry(
     selection: &ViewImageVisionSelection,
     first_validation_error: &anyhow::Error,
+    initial_response_preview: &str,
     error: anyhow::Error,
 ) -> anyhow::Error {
     ToolError::new(
@@ -326,6 +330,7 @@ fn vision_observation_failed_after_validation_retry(
         "vision_model": selection.vision_model,
         "error": error.to_string(),
         "initial_validation_error": first_validation_error.to_string(),
+        "initial_response_preview": initial_response_preview,
     }))
     .with_recovery_hint(
         "check the configured vision provider or model credentials and retry after provider failures are resolved",
@@ -368,6 +373,7 @@ fn vision_observation_validation_failed(
 enum ViewImageObservationGenerationError {
     Provider {
         initial_validation_error: Option<anyhow::Error>,
+        initial_response_preview: Option<String>,
         error: anyhow::Error,
     },
     Validation {
@@ -391,6 +397,7 @@ where
     let first_raw = generate(prompt.to_string()).await.map_err(|error| {
         ViewImageObservationGenerationError::Provider {
             initial_validation_error: None,
+            initial_response_preview: None,
             error,
         }
     })?;
@@ -405,6 +412,7 @@ where
                 Err(error) => {
                     return Err(ViewImageObservationGenerationError::Provider {
                         initial_validation_error: Some(first_error),
+                        initial_response_preview: Some(bounded_response_preview(&first_raw)),
                         error,
                     });
                 }
@@ -1162,6 +1170,7 @@ mod tests {
         assert_eq!(call_count, 2);
         let ViewImageObservationGenerationError::Provider {
             initial_validation_error,
+            initial_response_preview,
             error,
         } = error
         else {
@@ -1175,11 +1184,16 @@ mod tests {
                 .to_string(),
             "vision adapter response did not contain JSON"
         );
+        assert_eq!(
+            initial_response_preview.as_deref(),
+            Some("not valid visual observation")
+        );
         assert_eq!(error.to_string(), "provider unavailable on retry");
 
         let tool_error = ToolError::from_anyhow(&vision_observation_failed_after_validation_retry(
             &test_vision_selection(),
             &anyhow!("initial response was invalid"),
+            "not valid visual observation",
             anyhow!("provider unavailable on retry"),
         ));
         assert_eq!(tool_error.kind, "vision_observation_failed");
@@ -1190,6 +1204,10 @@ mod tests {
         assert_eq!(
             tool_error.details.as_ref().unwrap()["initial_validation_error"],
             "initial response was invalid"
+        );
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["initial_response_preview"],
+            "not valid visual observation"
         );
     }
 
