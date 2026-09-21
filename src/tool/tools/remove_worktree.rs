@@ -42,6 +42,21 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     })
 }
 
+fn validate_path_selector(path: PathBuf) -> Result<PathBuf> {
+    if !path.try_exists()? || !path.is_dir() {
+        return Err(invalid_tool_input(
+            NAME,
+            format!(
+                "worktree path is not an existing directory: {}",
+                path.display()
+            ),
+            json!({ "path": path }),
+            "provide an existing directory inside a registered worktree",
+        ));
+    }
+    Ok(path)
+}
+
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,
@@ -63,7 +78,10 @@ pub(crate) async fn execute(
             "provide exactly one of `execution_root_id` or `path`",
         ));
     }
-    let path = path.map(PathBuf::from);
+    let path = path
+        .map(PathBuf::from)
+        .map(validate_path_selector)
+        .transpose()?;
     let branch_policy = match args.branch_policy.unwrap_or(WorktreeBranchPolicyArgs::Keep) {
         WorktreeBranchPolicyArgs::Keep => WorktreeBranchPolicy::Keep,
         WorktreeBranchPolicyArgs::DeleteIfMerged => WorktreeBranchPolicy::DeleteIfMerged,
@@ -95,4 +113,21 @@ pub(crate) async fn execute(
         _ => unreachable!("selector count was validated above"),
     };
     serialize_success(NAME, &removal)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_path_selector;
+
+    #[test]
+    fn path_selector_requires_an_existing_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("file");
+        std::fs::write(&file, "content").unwrap();
+        let missing = temp.path().join("missing");
+
+        assert!(validate_path_selector(temp.path().to_path_buf()).is_ok());
+        assert!(validate_path_selector(file).is_err());
+        assert!(validate_path_selector(missing).is_err());
+    }
 }
