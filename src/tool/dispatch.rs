@@ -435,6 +435,12 @@ mod tests {
             .get("commentary")
             .is_none());
 
+        let generate_image = specs
+            .iter()
+            .find(|spec| spec.name == "GenerateImage")
+            .expect("GenerateImage should be present");
+        assert!(!generate_image.description.contains("workspace://"));
+
         let update_work_item = specs
             .iter()
             .find(|spec| spec.name == "UpdateWorkItem")
