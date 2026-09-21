@@ -3411,6 +3411,22 @@ impl RuntimeHandle {
                 .as_ref()
                 .is_some_and(|record| record.state == WorkItemState::Open)
             && record.state == WorkItemState::Open;
+        // A yield records a continuation only when the pick also suspends the
+        // current WorkItem. An execution-bound current WorkItem keeps its
+        // activation, so a pick away from it is a terminal focus transition:
+        // nothing suspends the current WorkItem and no return path exists.
+        // Writing a continuation frame there would leave an active frame whose
+        // suspended WorkItem is not paused-yielded, and resolving that frame
+        // when the new focus later completes would fail the exact-yield fence.
+        let terminal_transition = yield_current
+            && state
+                .current_execution_binding
+                .as_ref()
+                .is_some_and(|binding| {
+                    binding.activation_id.is_some()
+                        && binding.work_item_id.as_deref() == current_id.as_deref()
+                });
+        let records_continuation = yield_current && !terminal_transition;
         if yield_current {
             if let Some(existing) = self
                 .inner
@@ -3423,22 +3439,24 @@ impl RuntimeHandle {
                     existing.id
                 ));
             }
-            if let Some(previous) = previous.as_ref() {
-                let frame = WorkItemContinuationFrame::new_on_completed(
-                    agent_id.clone(),
-                    previous.id.clone(),
-                    record.id.clone(),
-                    state.current_turn_id.clone(),
-                );
-                continuation_created = Some(continuation_summary(&frame, "pick_work_item"));
-                audit_events.push(AuditEvent::legacy(
-                    "work_item_continuation_created",
-                    serde_json::json!({
-                        "agent_id": agent_id,
-                        "continuation": continuation_summary(&frame, "pick_work_item"),
-                    }),
-                ));
-                continuation_records.push(frame);
+            if records_continuation {
+                if let Some(previous) = previous.as_ref() {
+                    let frame = WorkItemContinuationFrame::new_on_completed(
+                        agent_id.clone(),
+                        previous.id.clone(),
+                        record.id.clone(),
+                        state.current_turn_id.clone(),
+                    );
+                    continuation_created = Some(continuation_summary(&frame, "pick_work_item"));
+                    audit_events.push(AuditEvent::legacy(
+                        "work_item_continuation_created",
+                        serde_json::json!({
+                            "agent_id": agent_id,
+                            "continuation": continuation_summary(&frame, "pick_work_item"),
+                        }),
+                    ));
+                    continuation_records.push(frame);
+                }
             }
         } else if switching
             && previous_readiness == Some(WorkItemReadiness::Runnable)
@@ -3452,7 +3470,7 @@ impl RuntimeHandle {
         }
         let switch_kind = if !switching {
             "same_work_item"
-        } else if continuation_created.is_some() {
+        } else if yield_current {
             "yield_current"
         } else if continuation_resolved.is_some() {
             "explicit_yield_return"
@@ -3462,14 +3480,6 @@ impl RuntimeHandle {
             "explicit_focus_pick"
         }
         .to_string();
-        let terminal_transition = yield_current
-            && state
-                .current_execution_binding
-                .as_ref()
-                .is_some_and(|binding| {
-                    binding.activation_id.is_some()
-                        && binding.work_item_id.as_deref() == current_id.as_deref()
-                });
         let current_focus_mode = if current_readiness == WorkItemReadiness::Runnable {
             "runnable"
         } else {

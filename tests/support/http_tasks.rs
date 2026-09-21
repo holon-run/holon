@@ -661,6 +661,24 @@ pub async fn create_work_item_route_rejects_empty_objective_with_bad_request() -
     Ok(())
 }
 
+/// Assert that a control-plane mutation recorded its request audit event with
+/// the trust the caller supplied. The runtime's autonomous scheduler runs
+/// concurrently with these routes and appends its own events, so each mutation
+/// is checked while its event is still inside the recent window instead of once
+/// at the end of the test, where unrelated events can push it out.
+fn assert_control_audit_event(runtime: &holon::runtime::RuntimeHandle, kind: &str) {
+    let events = runtime
+        .storage()
+        .read_recent_events(200)
+        .expect("read recent events");
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == kind && event.data["provided_trust"] == "integration_signal"),
+        "expected a recent {kind} audit event carrying the provided trust"
+    );
+}
+
 pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let client = reqwest::Client::new();
@@ -697,6 +715,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
         pick["transition"]["reason"],
         "HTTP client selected next work"
     );
+    assert_control_audit_event(&runtime, "work_item_pick_requested");
 
     let update: serde_json::Value = client
         .patch(format!(
@@ -724,6 +743,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     assert_eq!(update["blocked_by"], "waiting on review");
     assert!(update["recheck_at"].is_string());
     assert_eq!(update["todo_list"].as_array().expect("todo array").len(), 2);
+    assert_control_audit_event(&runtime, "work_item_update_requested");
 
     let complete_response = client
         .post(format!(
@@ -745,6 +765,7 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     assert_eq!(complete["id"], second.id);
     assert_eq!(complete["state"], "completed");
     assert!(complete.get("blocked_by").is_none());
+    assert_control_audit_event(&runtime, "work_item_complete_requested");
 
     let legacy = runtime
         .create_work_item("legacy completing item".into(), None, None, Vec::new())
@@ -769,22 +790,6 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     assert_eq!(legacy_complete["id"], legacy.id);
     assert_eq!(legacy_complete["state"], "completed");
     assert!(legacy_complete["result_brief_id"].is_string());
-
-    wait_until(|| {
-        let events = runtime.storage().read_recent_events(200)?;
-        Ok([
-            "work_item_pick_requested",
-            "work_item_update_requested",
-            "work_item_complete_requested",
-        ]
-        .into_iter()
-        .all(|kind| {
-            events.iter().any(|event| {
-                event.kind == kind && event.data["provided_trust"] == "integration_signal"
-            })
-        }))
-    })
-    .await?;
 
     server.abort();
     Ok(())

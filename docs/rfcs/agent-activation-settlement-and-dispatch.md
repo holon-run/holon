@@ -655,6 +655,12 @@ terminal targeted yield. It ends the current Turn and activation. The target
 becomes durable focus but may execute only in a later activation; no target
 tool, task, or mutation may run under the source activation.
 
+A terminal targeted yield records no continuation frame. The source WorkItem
+keeps its running activation instead of pausing as a yielded parent, so there is
+no return path to resume; writing a frame anyway would leave an active frame
+whose suspended WorkItem is not paused-yielded, and resolving it would fail the
+exact-yield fence when the target later completes.
+
 All terminal tools lower into the same runtime settlement command:
 
 - `WaitFor`;

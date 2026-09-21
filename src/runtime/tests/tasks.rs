@@ -484,7 +484,7 @@ async fn pick_second_runnable_work_item_yields_current() {
 }
 
 #[tokio::test]
-async fn execution_bound_pick_yields_without_rebinding_current_turn() {
+async fn execution_bound_pick_keeps_ownership_without_recording_a_return_path() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -529,6 +529,18 @@ async fn execution_bound_pick_yields_without_rebinding_current_turn() {
 
     assert_eq!(picked.transition.switch_kind, "yield_current");
     assert!(picked.transition.terminal_transition);
+    assert!(
+        picked.continuation_created.is_none(),
+        "a terminal focus transition records no return path"
+    );
+    assert!(
+        runtime
+            .storage()
+            .latest_work_item_continuations()
+            .unwrap()
+            .is_empty(),
+        "a terminal focus transition creates no continuation frame"
+    );
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
         state.current_work_item_id.as_deref(),
@@ -545,6 +557,75 @@ async fn execution_bound_pick_yields_without_rebinding_current_turn() {
             .and_then(|binding| binding.work_item_id.as_deref()),
         Some(first.id.as_str())
     );
+}
+
+/// Regression for the control-plane flake tracked by #3020. An execution-bound
+/// pick used to record a continuation frame without suspending the current
+/// WorkItem, so completing the new focus failed to resume a WorkItem that was
+/// never paused-yielded with `continuation resume requires the exact yielded
+/// WorkItem state`.
+#[tokio::test]
+async fn execution_bound_pick_then_control_completion_succeeds() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let first = runtime
+        .create_work_item("first execution owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let second = runtime
+        .create_work_item("control completion target".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(first.id.clone()).await.unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.current_turn_id = Some("turn-terminal-pick".into());
+        guard.state.current_turn_work_item_id = Some(first.id.clone());
+        guard.state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
+            activation_id: Some("activation-terminal-pick".into()),
+            admission_provenance: None,
+            source_message_id: "message-terminal-pick".into(),
+            turn_id: "turn-terminal-pick".into(),
+            owner: None,
+            work_item_id: Some(first.id.clone()),
+            claimed_work_revision: Some(first.revision),
+        });
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let picked = runtime
+        .pick_work_item_with_reason(second.id.clone(), None)
+        .await
+        .unwrap();
+    assert!(picked.transition.terminal_transition);
+
+    let completed = runtime
+        .complete_work_item_with_report(
+            second.id.clone(),
+            crate::runtime::WorkItemCompletionAuthority::Control,
+            "Completed through the control plane.".into(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(completed.into_record().state, WorkItemState::Completed);
 }
 
 #[tokio::test]
