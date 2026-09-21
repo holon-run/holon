@@ -548,18 +548,20 @@ mod tests {
             Some(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n123456"),
             Duration::ZERO,
         );
-        let provider =
-            JevProvider::new(JevConfig::new(endpoint).with_max_response_bytes(5)).expect("provider");
+        let provider = JevProvider::new(JevConfig::new(endpoint).with_max_response_bytes(5))
+            .expect("provider");
         let result = provider.decide(request(), DecisionContext::new()).await;
         assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
     }
 
     #[tokio::test]
     async fn rejects_response_exceeding_incremental_limit_without_content_length() {
-        let endpoint =
-            test_server(Some(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n123456"), Duration::ZERO);
-        let provider =
-            JevProvider::new(JevConfig::new(endpoint).with_max_response_bytes(5)).expect("provider");
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n123456"),
+            Duration::ZERO,
+        );
+        let provider = JevProvider::new(JevConfig::new(endpoint).with_max_response_bytes(5))
+            .expect("provider");
         let result = provider.decide(request(), DecisionContext::new()).await;
         assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
     }
@@ -591,7 +593,10 @@ mod tests {
         )
         .expect("provider");
         let result = provider
-            .decide(request(), DecisionContext::with_timeout(Duration::from_millis(30)))
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_millis(30)),
+            )
             .await;
         assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
     }
@@ -603,10 +608,9 @@ mod tests {
             &[b"xx"],
             Duration::from_millis(400),
         );
-        let provider = JevProvider::new(
-            JevConfig::new(endpoint).with_timeout(Duration::from_millis(100)),
-        )
-        .expect("provider");
+        let provider =
+            JevProvider::new(JevConfig::new(endpoint).with_timeout(Duration::from_millis(100)))
+                .expect("provider");
         let result = provider.decide(request(), DecisionContext::new()).await;
         assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
     }
@@ -618,10 +622,9 @@ mod tests {
             &[b"xx", b"xx", b"xx", b"xx"],
             Duration::from_millis(8),
         );
-        let provider = JevProvider::new(
-            JevConfig::new(endpoint).with_timeout(Duration::from_secs(5)),
-        )
-        .expect("provider");
+        let provider =
+            JevProvider::new(JevConfig::new(endpoint).with_timeout(Duration::from_secs(5)))
+                .expect("provider");
         let result = provider
             .decide(
                 request(),
