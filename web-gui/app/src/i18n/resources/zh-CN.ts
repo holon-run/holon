@@ -664,6 +664,8 @@ const zh: Record<string, any> = {
     decisionConfigUnavailable: "Decision 配置不可用",
     enableDecisionProvider: "启用 Decision provider",
     decisionEnableHint: "启用该 provider 需要同时填写 endpoint 和 model；任一为空时配置更新会被拒绝而不写入 config.json。",
+    decisionRouteProvider: "路由 provider",
+    decisionRouteProviderHint: "选择 endpoint 使用的协议。默认是 OpenAI-compatible；Jev native 使用 Jev decision 协议。",
     decisionEndpoint: "Endpoint",
     decisionModel: "模型",
     decisionModelHint: "自由文本。填写该 endpoint 提供的任意模型，包括 JEV 专用 decision 模型；通用模型目录不会列出它。",

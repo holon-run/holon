@@ -663,6 +663,8 @@ const en = {
     decisionConfigUnavailable: "Decision config unavailable",
     enableDecisionProvider: "Enable Decision provider",
     decisionEnableHint: "Enabling the provider requires both an endpoint and a model; the config update is rejected while either is empty.",
+    decisionRouteProvider: "Route provider",
+    decisionRouteProviderHint: "Choose the wire protocol used by the endpoint. OpenAI-compatible is the default; Jev native uses the Jev decision protocol.",
     decisionEndpoint: "Endpoint",
     decisionModel: "Model",
     decisionModelHint: "Free text. Enter any model the endpoint serves, including a JEV-specific decision model; the shared model catalog does not list it.",

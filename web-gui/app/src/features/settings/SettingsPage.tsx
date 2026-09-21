@@ -95,15 +95,20 @@ export function buildImageGenerationConfigUpdates(imageGenDefault: string): Arra
 }
 
 export function buildDecisionConfigUpdates(
+  provider: string,
   enabled: boolean,
   endpoint: string,
   model: string,
   credentialProfile: string,
 ): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const trimmedProvider = provider.trim();
   const trimmedEndpoint = endpoint.trim();
   const trimmedModel = model.trim();
   const trimmedCredentialProfile = credentialProfile.trim();
   return [
+    trimmedProvider
+      ? { key: "decision.route.provider", value: trimmedProvider }
+      : { key: "decision.route.provider", unset: true },
     enabled ? { key: "decision.enabled", value: true } : { key: "decision.enabled", unset: true },
     trimmedEndpoint
       ? { key: "decision.route.endpoint", value: trimmedEndpoint }
@@ -270,6 +275,7 @@ export function SettingsPage({
   const [visionDefault, setVisionDefault] = useState("");
   const [imageGenDefault, setImageGenDefault] = useState("");
   const [decisionEnabled, setDecisionEnabled] = useState(false);
+  const [decisionProvider, setDecisionProvider] = useState("openai");
   const [decisionEndpoint, setDecisionEndpoint] = useState("");
   const [decisionModel, setDecisionModel] = useState("");
   const [decisionCredentialProfile, setDecisionCredentialProfile] = useState("");
@@ -374,6 +380,7 @@ export function SettingsPage({
     setVisionDefault(surface.visionDefault ?? "");
     setImageGenDefault(surface.imageGenerationDefault ?? "");
     setDecisionEnabled(surface.decision?.enabled ?? false);
+    setDecisionProvider(surface.decision?.provider ?? "openai");
     setDecisionEndpoint(surface.decision?.endpoint ?? "");
     setDecisionModel(surface.decision?.model ?? "");
     setDecisionCredentialProfile(surface.decision?.credentialProfile ?? "");
@@ -633,7 +640,7 @@ export function SettingsPage({
   async function saveDecisionConfig() {
     setDecisionSaveMessage(undefined);
     const result = await onUpdateRuntimeConfig(
-      buildDecisionConfigUpdates(decisionEnabled, decisionEndpoint, decisionModel, decisionCredentialProfile),
+      buildDecisionConfigUpdates(decisionProvider, decisionEnabled, decisionEndpoint, decisionModel, decisionCredentialProfile),
     );
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
@@ -1150,6 +1157,14 @@ export function SettingsPage({
                   <span>{t("settings.enableDecisionProvider")}</span>
                 </label>
                 <p className="settings-hint">{t("settings.decisionEnableHint")}</p>
+                <label>
+                  <span>{t("settings.decisionRouteProvider")}</span>
+                  <select value={decisionProvider} onChange={(event) => setDecisionProvider(event.target.value)}>
+                    <option value="openai">OpenAI-compatible</option>
+                    <option value="jev">Jev native</option>
+                  </select>
+                </label>
+                <p className="settings-hint">{t("settings.decisionRouteProviderHint")}</p>
                 <label>
                   <span>{t("settings.decisionEndpoint")}</span>
                   <input

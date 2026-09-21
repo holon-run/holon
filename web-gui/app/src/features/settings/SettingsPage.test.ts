@@ -153,7 +153,8 @@ describe("buildImageGenerationConfigUpdates", () => {
 
 describe("buildDecisionConfigUpdates", () => {
   it("persists enabled Decision provider routing fields", () => {
-    expect(buildDecisionConfigUpdates(true, " https://jev.example.test/v1 ", " jev-decision-1 ", " jev:default ")).toEqual([
+    expect(buildDecisionConfigUpdates("jev", true, " https://jev.example.test/v1 ", " jev-decision-1 ", " jev:default ")).toEqual([
+      { key: "decision.route.provider", value: "jev" },
       { key: "decision.enabled", value: true },
       { key: "decision.route.endpoint", value: "https://jev.example.test/v1" },
       { key: "decision.route.model", value: "jev-decision-1" },
@@ -162,7 +163,8 @@ describe("buildDecisionConfigUpdates", () => {
   });
 
   it("unsets every Decision key when disabled and left empty", () => {
-    expect(buildDecisionConfigUpdates(false, "  ", "", "   ")).toEqual([
+    expect(buildDecisionConfigUpdates("", false, "  ", "", "   ")).toEqual([
+      { key: "decision.route.provider", unset: true },
       { key: "decision.enabled", unset: true },
       { key: "decision.route.endpoint", unset: true },
       { key: "decision.route.model", unset: true },
@@ -171,7 +173,8 @@ describe("buildDecisionConfigUpdates", () => {
   });
 
   it("keeps a JEV model name as free text without catalog rewrite", () => {
-    expect(buildDecisionConfigUpdates(true, "https://jev.example.test/v1", "jev/decision-pro", "")).toEqual([
+    expect(buildDecisionConfigUpdates("jev", true, "https://jev.example.test/v1", "jev/decision-pro", "")).toEqual([
+      { key: "decision.route.provider", value: "jev" },
       { key: "decision.enabled", value: true },
       { key: "decision.route.endpoint", value: "https://jev.example.test/v1" },
       { key: "decision.route.model", value: "jev/decision-pro" },

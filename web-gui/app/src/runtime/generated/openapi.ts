@@ -5935,7 +5935,8 @@ export interface components {
                  *       "credential_profile": null,
                  *       "enabled": false,
                  *       "endpoint": null,
-                 *       "model": null
+                 *       "model": null,
+                 *       "provider": null
                  *     }
                  */
                 decision: {
@@ -5943,6 +5944,7 @@ export interface components {
                     enabled: boolean;
                     endpoint?: string | null;
                     model?: string | null;
+                    provider?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
@@ -6074,7 +6076,8 @@ export interface components {
                  *       "credential_profile": null,
                  *       "enabled": false,
                  *       "endpoint": null,
-                 *       "model": null
+                 *       "model": null,
+                 *       "provider": null
                  *     }
                  */
                 decision: {
@@ -6082,6 +6085,7 @@ export interface components {
                     enabled: boolean;
                     endpoint?: string | null;
                     model?: string | null;
+                    provider?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;

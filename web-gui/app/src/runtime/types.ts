@@ -444,6 +444,7 @@ export interface RuntimeConfigSurface {
 
 export interface RuntimeDecisionSurface {
   enabled: boolean;
+  provider?: string;
   endpoint?: string;
   model?: string;
   credentialProfile?: string;
