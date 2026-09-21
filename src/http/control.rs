@@ -438,6 +438,12 @@ fn validate_runtime_config_candidate(
 ) -> Result<()> {
     let credentials = load_credential_store_at(&credential_store_path(&config.home_dir))?;
     crate::web::materialize_web_config(&candidate.web, &credentials)?;
+    // Reject incomplete decision routes here: an invalid persisted route aborts
+    // every later config reload and blocks runtime spawn on restart.
+    crate::runtime::decision_openai::validate_decision_route_config(
+        &candidate.decision,
+        &config.home_dir,
+    )?;
     Ok(())
 }
 

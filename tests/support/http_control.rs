@@ -3182,6 +3182,76 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         Some("command")
     );
 
+    let incomplete_decision_response = client
+        .patch(format!("http://{addr}/api/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "decision.enabled", "value": true }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(incomplete_decision_response.status().is_success());
+    let incomplete_decision_payload: serde_json::Value =
+        incomplete_decision_response.json().await?;
+    assert_eq!(incomplete_decision_payload["changed"], false);
+    assert_eq!(
+        incomplete_decision_payload["results"][0]["effect"],
+        "rejected"
+    );
+    assert!(
+        incomplete_decision_payload["results"][0]["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("decision.enabled requires decision.route"),
+        "unexpected incomplete decision config reason: {incomplete_decision_payload}"
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert_eq!(persisted.decision.enabled, None);
+
+    let valid_decision_response = client
+        .patch(format!("http://{addr}/api/control/runtime/config"))
+        .bearer_auth("secret")
+        .json(&serde_json::json!({
+            "updates": [
+                { "key": "decision.route.endpoint", "value": "http://127.0.0.1:9/v1" },
+                { "key": "decision.route.model", "value": "jev-decision" },
+                { "key": "decision.enabled", "value": true }
+            ]
+        }))
+        .send()
+        .await?;
+    assert!(
+        valid_decision_response.status().is_success(),
+        "valid decision update failed: {:?}",
+        valid_decision_response.text().await?
+    );
+    let valid_decision_payload: serde_json::Value = valid_decision_response.json().await?;
+    assert_eq!(valid_decision_payload["changed"], true);
+    assert_eq!(
+        valid_decision_payload["results"][0]["effect"],
+        "accepted_reload_scheduled"
+    );
+    let reloaded_decision_payload =
+        wait_for_runtime_config_reload(&client, addr, &valid_decision_payload).await?;
+    assert_eq!(
+        reloaded_decision_payload["runtime_surface"]["decision"]["enabled"],
+        true
+    );
+
+    let persisted = load_persisted_config_at(&config.config_file_path)?;
+    assert_eq!(persisted.decision.enabled, Some(true));
+    assert_eq!(
+        persisted
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.model.as_deref()),
+        Some("jev-decision")
+    );
+
     server.abort();
     Ok(())
 }

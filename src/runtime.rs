@@ -6,7 +6,7 @@ mod clock;
 mod closure;
 mod command_task;
 mod continuation;
-mod decision_openai;
+pub(crate) mod decision_openai;
 mod delivery;
 mod failure;
 mod first_run_intro;

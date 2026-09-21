@@ -48,10 +48,21 @@ reads and writes the same four `decision.*` keys through
 `/runtime/config/update`. The GUI keeps `model` as free text: a Decision route
 may target an OpenAI-compatible endpoint or a JEV-specific decision model that
 the shared model catalog does not list. The GUI does not enumerate or validate
-remote model lists. The GUI never fills in defaults: enabling the provider
-without an endpoint or model makes the existing runtime route loading fail with
-an explicit `requires ... decision.route.endpoint/model` error instead of being
-silently rewritten.
+remote model lists. The GUI never fills in defaults.
+
+The runtime rejects an incomplete Decision route before persisting it:
+`/runtime/config/update` validates the candidate config through the same
+`decision.enabled` → `decision.route.endpoint`/`decision.route.model`
+construction the runtime hook uses, so a batch that would enable the provider
+without a usable route is reported as rejected with the explicit
+`requires ... decision.route.endpoint/model` reason and nothing is written to
+`config.json`.
+
+Persisting such a route would otherwise be worse than a route-loading error:
+`reload_config` constructs the Decision hook before the config snapshot swap,
+so an invalid persisted route fails every later reload for all agents and
+settings, and the next daemon restart cannot spawn the reconfigurable agent
+runtime until `config.json` is edited by hand.
 
 ## Request and response contract
 
