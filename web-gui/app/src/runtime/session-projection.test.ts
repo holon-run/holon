@@ -34,6 +34,7 @@ function currentEvent(
     ...event(eventSeq, type, payload),
     payload_schema: payloadSchema,
     payload_schema_version: 1,
+    projection_effect: "display_invalidation",
   };
 }
 

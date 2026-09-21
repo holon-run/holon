@@ -1,5 +1,7 @@
 import type { components } from "./generated/openapi";
 
+export const RUNTIME_EVENT_CONTRACT_VERSION = 3;
+
 export type SessionEventEnvelope = Partial<components["schemas"]["StreamEventEnvelope"]>;
 
 export function canApplySessionEvent(event: SessionEventEnvelope): boolean {
