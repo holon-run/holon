@@ -1090,7 +1090,7 @@ impl scheduler::SemanticCandidateSelectionHook for ErrorHook {
         scheduler::SemanticCandidateSelectionHookResult,
         scheduler::SemanticCandidateSelectionHookError,
     > {
-        Err(scheduler::SemanticCandidateSelectionHookError)
+        Err(scheduler::SemanticCandidateSelectionHookError::unknown())
     }
 }
 

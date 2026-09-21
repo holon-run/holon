@@ -3,7 +3,8 @@ use super::scheduler::SemanticCandidateSelectionHook;
 use super::scheduler::{
     AsyncSemanticCandidateSelectionHook, AutonomousContinuationCandidate,
     AutonomousContinuationProposal, AutonomousContinuationSelectionContext,
-    SemanticCandidateSelectionHookError, SemanticCandidateSelectionHookResult,
+    SemanticCandidateSelectionHookError, SemanticCandidateSelectionHookErrorKind,
+    SemanticCandidateSelectionHookResult,
 };
 use async_trait::async_trait;
 use decision_core::{
@@ -129,7 +130,7 @@ impl OpenAiSemanticCandidateSelectionHook {
             .iter()
             .map(serde_json::to_value)
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| SemanticCandidateSelectionHookError)?;
+            .map_err(|_| SemanticCandidateSelectionHookError::unknown())?;
         let mut metadata = BTreeMap::new();
         metadata.insert("integration".into(), "holon-runtime".into());
         metadata.insert("selection_policy".into(), "bounded_candidate_only".into());
@@ -160,7 +161,9 @@ fn response_to_hook_result(
 ) -> Result<SemanticCandidateSelectionHookResult, SemanticCandidateSelectionHookError> {
     response
         .validate(SCHEMA_VERSION)
-        .map_err(|_| SemanticCandidateSelectionHookError)?;
+        .map_err(|_| SemanticCandidateSelectionHookError {
+            kind: SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+        })?;
     let value = match response.outcome {
         DecisionOutcome::Select { value } => value,
         DecisionOutcome::Fallback { .. }
@@ -168,13 +171,35 @@ fn response_to_hook_result(
         | DecisionOutcome::Rank { .. } => return Ok(SemanticCandidateSelectionHookResult::Abstain),
     };
     let candidate: AutonomousContinuationCandidate =
-        serde_json::from_value(value).map_err(|_| SemanticCandidateSelectionHookError)?;
+        serde_json::from_value(value).map_err(|_| SemanticCandidateSelectionHookError {
+            kind: SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+        })?;
     Ok(SemanticCandidateSelectionHookResult::Propose(
         AutonomousContinuationProposal {
             snapshot_identity: context.snapshot_identity.clone(),
             candidate,
         },
     ))
+}
+
+fn map_decision_error(error: DecisionError) -> SemanticCandidateSelectionHookError {
+    let kind = match error {
+        DecisionError::Cancelled => SemanticCandidateSelectionHookErrorKind::Cancelled,
+        DecisionError::DeadlineExceeded => SemanticCandidateSelectionHookErrorKind::Timeout,
+        DecisionError::ResourceExhausted(_) => {
+            SemanticCandidateSelectionHookErrorKind::ResourceExhausted
+        }
+        DecisionError::InvalidResponse(_) | DecisionError::Serialization(_) => {
+            SemanticCandidateSelectionHookErrorKind::MalformedResponse
+        }
+        DecisionError::InvalidRequest(_) => {
+            SemanticCandidateSelectionHookErrorKind::MalformedResponse
+        }
+        DecisionError::Provider(_) | DecisionError::Transport(_) => {
+            SemanticCandidateSelectionHookErrorKind::ProviderError
+        }
+    };
+    SemanticCandidateSelectionHookError { kind }
 }
 
 #[async_trait]
@@ -187,7 +212,7 @@ impl AsyncSemanticCandidateSelectionHook for OpenAiSemanticCandidateSelectionHoo
             .executor
             .decide(self.request(context)?)
             .await
-            .map_err(|_| SemanticCandidateSelectionHookError)?;
+            .map_err(map_decision_error)?;
         response_to_hook_result(response, context)
     }
 }
@@ -272,18 +297,16 @@ impl SemanticCandidateSelectionHook for OpenAiSemanticCandidateSelectionHook {
                 tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
-                    .map_err(|_| SemanticCandidateSelectionHookError)?
+                    .map_err(|_| SemanticCandidateSelectionHookError::unknown())?
                     .block_on(async {
-                        let response = executor
-                            .decide(request)
-                            .await
-                            .map_err(|_| SemanticCandidateSelectionHookError)?;
+                        let response =
+                            executor.decide(request).await.map_err(map_decision_error)?;
                         response_to_hook_result(response, &context)
                     })
             })
-            .map_err(|_| SemanticCandidateSelectionHookError)?
+            .map_err(|_| SemanticCandidateSelectionHookError::unknown())?
             .join()
-            .map_err(|_| SemanticCandidateSelectionHookError)?
+            .map_err(|_| SemanticCandidateSelectionHookError::unknown())?
     }
 }
 

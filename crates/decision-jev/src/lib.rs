@@ -21,6 +21,8 @@ pub struct JevConfig {
     pub model: String,
     pub api_key: Option<String>,
     pub timeout: Duration,
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
 }
 
 impl fmt::Debug for JevConfig {
@@ -31,6 +33,8 @@ impl fmt::Debug for JevConfig {
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
+            .field("max_request_bytes", &self.max_request_bytes)
+            .field("max_response_bytes", &self.max_response_bytes)
             .finish()
     }
 }
@@ -42,6 +46,8 @@ impl JevConfig {
             model: "typesafe-ai/jev".into(),
             api_key: None,
             timeout: Duration::from_secs(30),
+            max_request_bytes: 256 * 1024,
+            max_response_bytes: 512 * 1024,
         }
     }
 
@@ -63,6 +69,16 @@ impl JevConfig {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn with_max_request_bytes(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
+    }
+
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes;
         self
     }
 }
@@ -119,26 +135,32 @@ impl DecisionProvider<Value, Value> for JevProvider {
             headers.insert(AUTHORIZATION, value);
         }
 
-        let response = self
-            .client
-            .post(&self.config.endpoint)
-            .headers(headers)
-            .timeout(
-                context
-                    .remaining()
-                    .map(|remaining| remaining.min(self.config.timeout))
-                    .unwrap_or(self.config.timeout),
-            )
-            .json(&JevRequest::from_request(&request)?)
-            .send()
-            .await
-            .map_err(|error| DecisionError::Transport(error.to_string()))?;
+        let wire_request = JevRequest::from_request(&request)?;
+        let body = serde_json::to_vec(&wire_request)
+            .map_err(|error| DecisionError::Serialization(error.to_string()))?;
+        if body.len() > self.config.max_request_bytes {
+            return Err(DecisionError::ResourceExhausted(format!(
+                "request body exceeds {} bytes",
+                self.config.max_request_bytes
+            )));
+        }
+        let response = send_with_context(
+            self.client
+                .post(&self.config.endpoint)
+                .headers(headers)
+                .timeout(
+                    context
+                        .remaining()
+                        .map(|remaining| remaining.min(self.config.timeout))
+                        .unwrap_or(self.config.timeout),
+                )
+                .body(body),
+            &context,
+        )
+        .await?;
         context.check()?;
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|error| DecisionError::Transport(error.to_string()))?;
+        let body = read_bounded(response, &context, self.config.max_response_bytes).await?;
         if !status.is_success() {
             return Err(DecisionError::Provider(format!(
                 "jev endpoint returned {status}: {}",
@@ -273,6 +295,66 @@ pub fn map_response<I, C: Serialize>(
         },
         elapsed_ms: Some(elapsed.as_millis() as u64),
     })
+}
+
+async fn send_with_context(
+    request: reqwest::RequestBuilder,
+    context: &DecisionContext,
+) -> Result<reqwest::Response, DecisionError> {
+    let send = request.send();
+    tokio::pin!(send);
+    loop {
+        tokio::select! {
+            result = &mut send => {
+                return result.map_err(|error| {
+                    if error.is_timeout() {
+                        DecisionError::DeadlineExceeded
+                    } else if context.is_cancelled() {
+                        DecisionError::Cancelled
+                    } else {
+                        DecisionError::Transport(error.to_string())
+                    }
+                });
+            }
+            _ = tokio::time::sleep(Duration::from_millis(10)) => context.check()?,
+        }
+    }
+}
+
+async fn read_bounded(
+    mut response: reqwest::Response,
+    context: &DecisionContext,
+    max_bytes: usize,
+) -> Result<String, DecisionError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(DecisionError::ResourceExhausted(format!(
+            "response body exceeds {max_bytes} bytes"
+        )));
+    }
+    let mut body = Vec::new();
+    loop {
+        let chunk = response.chunk();
+        tokio::pin!(chunk);
+        let chunk = tokio::select! {
+            result = &mut chunk => result,
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                context.check()?;
+                continue;
+            }
+        }
+        .map_err(|error| DecisionError::Transport(error.to_string()))?;
+        let Some(chunk) = chunk else { break };
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(DecisionError::ResourceExhausted(format!(
+                "response body exceeds {max_bytes} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|error| DecisionError::Serialization(error.to_string()))
 }
 
 #[cfg(test)]
