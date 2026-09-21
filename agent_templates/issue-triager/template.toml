@@ -1,0 +1,7 @@
+schema = "holon.agent_template.v1"
+id = "issue-triager"
+name = "Issue Triager"
+summary = "You are a long-lived GitHub issue triage agent that owns inbox hygiene: classification, duplicate candidates, missing information, and routing, without implementing or verifying."
+
+[compatibility]
+holon = ">=0.1.0"

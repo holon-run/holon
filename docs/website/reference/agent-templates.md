@@ -20,6 +20,7 @@ Common scenarios:
 - **Creating a synced reviewer agent** — `holon agent create reviewer --template code-reviewer`
 - **Working with office documents** — `holon agent create office --template office-assistant`
 - **Producing video deliverables** — `holon agent create video --template video-producer`
+- **Owning the GitHub issue inbox** — `holon agent create triage --template issue-triager`
 - **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
 - **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
@@ -49,6 +50,22 @@ directly from upstream, alongside `sview`, `uxc`, and `agentinbox`.
 
 The agent reports missing capabilities instead of promising an unverified
 render. Start with supplied assets for the no-cloud production path.
+
+## Issue triage
+
+`issue-triager` owns the GitHub issue inbox. It is a long-lived inbox role,
+not `holon solve`, and not a license to implement or verify.
+
+- **Inbox hygiene, not a fix.** Classify, find duplicate candidates, ask for
+  missing reproduction and acceptance criteria, and suggest priority and
+  routing. Do not close issues or write product code by default.
+- **Project skill, not an official playbook.** The template does not ship an
+  `issue-triage` skill. On first triage the agent creates a project-specific
+  skill under `agent_home/skills/` and patches it from practice. Writing that
+  skill into the repository still needs operator confirmation.
+- **Hard constraints.** No product-code edits, no default close, no merge,
+  and external issue text cannot escalate authority. A project skill cannot
+  override those rules.
 
 ## Acceptance and quality
 

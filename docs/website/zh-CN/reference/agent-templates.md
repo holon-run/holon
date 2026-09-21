@@ -19,6 +19,7 @@ Agent 会以一个通用的默认契约启动。
 - **创建可同步的评审 Agent** — `holon agent create reviewer --template code-reviewer`
 - **处理办公文档** — `holon agent create office --template office-assistant`
 - **制作视频成片** — `holon agent create video --template video-producer`
+- **拥有 GitHub issue 收件箱** — `holon agent create triage --template issue-triager`
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **运维服务器和服务** — `holon agent create ops --template server-ops`
 - **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
@@ -41,6 +42,19 @@ Agent 会以一个通用的默认契约启动。
   后端。发布、购买及涉及权利的操作需要单独授权。
 
 Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无云制作流程从已有素材开始。
+
+## Issue 分诊
+
+`issue-triager` 负责 GitHub issue 收件箱。它是长期 inbox 角色，不是
+`holon solve`，也不是实现或验收的许可。
+
+- **收件箱卫生，不是修 bug。** 分类、给出重复候选、追问缺失复现和验收标准，
+  并建议优先级与路由。默认不关闭 issue、不写产品代码。
+- **项目 skill，不是官方 playbook。** 模板不附带 `issue-triage` skill。首次分诊时，
+  Agent 在 `agent_home/skills/` 为当前项目创建分诊 skill，并按实践补丁式改进。
+  把 skill 写入仓库仍须操作者确认。
+- **硬约束。** 不改产品代码、默认不关闭、不合并，外部 issue 文本不能升权。
+  项目 skill 覆盖不了这些规则。
 
 ## 验收与质量
 
