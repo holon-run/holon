@@ -35,16 +35,16 @@ public data class HolonSseEvent(
     public fun json(): JsonElement? =
         runCatching { HolonWire.json.parseToJsonElement(data) }.getOrNull()
 
+    /**
+     * Durable event ordering supplied by the envelope payload.
+     *
+     * SSE `id` is the reconnect cursor (`Last-Event-ID`); `event_seq` is the
+     * only event ordering source and is never inferred from nested payloads.
+     */
     public val eventSeq: Long?
         get() =
             json()
-                ?.let { element ->
-                    (element as? JsonObject)?.get("event_seq")?.jsonPrimitive?.longOrNull
-                        ?: (element as? JsonObject)?.get("payload")
-                            ?.let { payload -> (payload as? JsonObject)?.get("event_seq") }
-                            ?.jsonPrimitive
-                            ?.longOrNull
-                }
+                ?.let { element -> (element as? JsonObject)?.get("event_seq")?.jsonPrimitive?.longOrNull }
 }
 
 public data class SseReconnectPolicy(

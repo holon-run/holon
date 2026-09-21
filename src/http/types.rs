@@ -333,6 +333,9 @@ impl From<EventPageOrder> for EventLogPageOrder {
 pub(crate) struct EventsPageResponse {
     pub(crate) events: Vec<StreamEventEnvelope>,
     pub(crate) event_log_epoch: String,
+    /// Stream-level envelope contract version for every event in this page.
+    /// Per-event `contract_version` was removed; this is its single source.
+    pub(crate) contract_version: u32,
     pub(crate) oldest_seq: Option<u64>,
     pub(crate) newest_seq: Option<u64>,
     pub(crate) cursor_seq: Option<u64>,
@@ -381,47 +384,26 @@ pub struct BatchGetTranscriptEntriesResponse {
     pub missing_entry_ids: Vec<String>,
 }
 
-#[derive(Debug, Default, Serialize, JsonSchema)]
-pub(crate) struct EventReplayProvenance {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) origin: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) authority_class: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) delivery_surface: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) admission_context: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) transport: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) source: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) reply_route: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) message_id: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) task_id: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) work_item_id: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) correlation_id: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) causation_id: Option<Value>,
-}
-
+/// One event on the public event surface. The `payload` object is the only
+/// data source: correlation ids such as `message_id`, `task_id`,
+/// `work_item_id`, `correlation_id`, and `causation_id` live in the payload
+/// itself and are no longer duplicated into an envelope `provenance` object.
 #[derive(Debug, Serialize, JsonSchema)]
 pub(crate) struct StreamEventEnvelope {
     pub(crate) id: String,
     pub(crate) event_seq: u64,
     pub(crate) event_log_epoch: String,
-    pub(crate) contract_version: u32,
     pub(crate) ts: chrono::DateTime<Utc>,
     pub(crate) agent_id: String,
     #[serde(rename = "type")]
     pub(crate) event_type: String,
-    pub(crate) payload_schema: String,
-    pub(crate) payload_schema_version: u32,
-    pub(crate) provenance: EventReplayProvenance,
+    /// Registry payload schema. Present only on typed events; legacy audit
+    /// events are schema-less and carry their data as-is. The envelope
+    /// contract version is declared per stream, not per event.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) payload_schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) payload_schema_version: Option<u32>,
     pub(crate) payload: Value,
     /// Additive classification derived from the runtime event registry.
     /// Present only while `events.projection-effect.v1` is advertised.

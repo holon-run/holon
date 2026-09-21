@@ -892,22 +892,16 @@ describe("timeline events state", () => {
 
 describe("runtime event epoch", () => {
   it("preserves typed contract metadata when rebuilding gap backfill events", () => {
-    const provenance = {
-      source: "runtime",
-      correlation_id: "correlation-1",
-    };
     const event = streamEventFromBackfill(
       {
         id: "evt-1",
         event_seq: 7,
         event_log_epoch: "",
-        contract_version: 2,
         ts: "2026-07-16T00:00:00Z",
         agent_id: "page-agent",
         type: "brief_created",
         payload_schema: "holon.runtime_event.brief_created",
         payload_schema_version: 1,
-        provenance,
         payload: { brief_id: "brief-1" },
       },
       "subscribed-agent",
@@ -917,10 +911,8 @@ describe("runtime event epoch", () => {
     expect(event).toMatchObject({
       event_log_epoch: "epoch-1",
       agent_id: "subscribed-agent",
-      contract_version: 2,
       payload_schema: "holon.runtime_event.brief_created",
       payload_schema_version: 1,
-      provenance,
     });
   });
 });

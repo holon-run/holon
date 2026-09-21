@@ -51,17 +51,26 @@ pub async fn events(
             stream_event_envelope(&agent_id, &event_log_epoch, event, emit_projection_effect)
         })
         .collect();
-    Ok(Json(EventsPageResponse {
-        events,
-        event_log_epoch,
-        oldest_seq,
-        newest_seq,
-        cursor_seq,
-        has_older: page.has_older,
-        has_newer: page.has_newer,
-        order,
-        limit,
-    }))
+    Ok((
+        [(
+            axum::http::HeaderName::from_static(
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+            ),
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
+        )],
+        Json(EventsPageResponse {
+            events,
+            event_log_epoch,
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+            oldest_seq,
+            newest_seq,
+            cursor_seq,
+            has_older: page.has_older,
+            has_newer: page.has_newer,
+            order,
+            limit,
+        }),
+    ))
 }
 
 pub async fn message(
@@ -196,7 +205,15 @@ pub async fn events_stream(
     let keep_alive = KeepAlive::new()
         .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
         .text("heartbeat");
-    Ok(Sse::new(stream).keep_alive(keep_alive))
+    Ok((
+        [(
+            axum::http::HeaderName::from_static(
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+            ),
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
+        )],
+        Sse::new(stream).keep_alive(keep_alive),
+    ))
 }
 
 pub async fn global_events_stream(
@@ -206,7 +223,6 @@ pub async fn global_events_stream(
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
-    let emit_projection_effect = projection_effect_emission_enabled(&state);
     let mut rx = state.host.subscribe_events();
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     tokio::spawn(async move {
@@ -216,15 +232,13 @@ pub async fn global_events_stream(
                     let Some(agent_id) = published.agent_id.as_deref() else {
                         continue;
                     };
-                    if send_stream_event(
-                        &tx,
-                        agent_id,
-                        &published.event.event_log_epoch,
-                        &published.event,
-                        emit_projection_effect,
-                    )
-                    .await
-                    .is_err()
+                    let payload = serde_json::json!({ "agent_id": agent_id }).to_string();
+                    if tx
+                        .send(Ok(Event::default()
+                            .event("agent_roster_hint")
+                            .data(payload)))
+                        .await
+                        .is_err()
                     {
                         break;
                     }
@@ -241,7 +255,15 @@ pub async fn global_events_stream(
     let keep_alive = KeepAlive::new()
         .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
         .text("heartbeat");
-    Ok(Sse::new(stream).keep_alive(keep_alive))
+    Ok((
+        [(
+            axum::http::HeaderName::from_static(
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+            ),
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
+        )],
+        Sse::new(stream).keep_alive(keep_alive),
+    ))
 }
 
 fn initial_buffered_events(
@@ -286,6 +308,8 @@ fn stream_event_envelope(
     event: &AuditEvent,
     emit_projection_effect: bool,
 ) -> StreamEventEnvelope {
+    let legacy =
+        crate::runtime_event::is_legacy_event_shape(&event.payload_schema, event.contract_version);
     StreamEventEnvelope {
         id: event.id.clone(),
         event_seq: event.event_seq,
@@ -294,14 +318,13 @@ fn stream_event_envelope(
         } else {
             event.event_log_epoch.clone()
         },
-        contract_version: event.contract_version,
         ts: event.created_at,
         agent_id: agent_id.to_string(),
         event_type: event.kind.clone(),
-        payload_schema: event.payload_schema.clone(),
-        payload_schema_version: event.payload_schema_version,
-        provenance: event_replay_provenance(&event.data),
-        payload: event.data.clone(),
+        // Schema-less legacy events omit constant envelope metadata.
+        payload_schema: (!legacy).then(|| event.payload_schema.clone()),
+        payload_schema_version: (!legacy).then_some(event.payload_schema_version),
+        payload: public_event_payload(&event.data),
         projection_effect: emit_projection_effect.then(|| {
             crate::runtime_event::projection_effect_of(
                 &event.kind,
@@ -311,6 +334,28 @@ fn stream_event_envelope(
             )
         }),
     }
+}
+
+/// Keep provider diagnostics available in the durable audit record while
+/// keeping them out of the default public event contract.
+fn public_event_payload(payload: &Value) -> Value {
+    let Value::Object(object) = payload else {
+        return payload.clone();
+    };
+    let mut public = object.clone();
+    for key in [
+        "prompt_cache_key",
+        "context_fingerprint",
+        "compression_epoch",
+        "provider_request_id",
+        "provider_message_id",
+        "provider_request_diagnostics",
+        "provider_attempt_timeline",
+        "only_sleep_tools",
+    ] {
+        public.remove(key);
+    }
+    Value::Object(public)
 }
 
 /// Whether event pages and SSE should emit the additive `projection_effect`
@@ -364,27 +409,6 @@ fn event_fallback_summary(event: &AuditEvent) -> String {
         .filter(|summary| !summary.trim().is_empty())
         .unwrap_or(event.kind.as_str())
         .to_string()
-}
-
-fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
-    EventReplayProvenance {
-        origin: clone_payload_field(payload, "origin"),
-        authority_class: clone_payload_field(payload, "authority_class"),
-        delivery_surface: clone_payload_field(payload, "delivery_surface"),
-        admission_context: clone_payload_field(payload, "admission_context"),
-        transport: clone_payload_field(payload, "transport"),
-        source: clone_payload_field(payload, "source"),
-        reply_route: clone_payload_field(payload, "reply_route"),
-        message_id: clone_payload_field(payload, "message_id"),
-        task_id: clone_payload_field(payload, "task_id"),
-        work_item_id: clone_payload_field(payload, "work_item_id"),
-        correlation_id: clone_payload_field(payload, "correlation_id"),
-        causation_id: clone_payload_field(payload, "causation_id"),
-    }
-}
-
-fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
-    payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
 fn event_seq_not_found(

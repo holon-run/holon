@@ -3324,8 +3324,8 @@ pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
         .get("access-control-allow-origin")
         .is_none());
 
-    // Actual responses expose the ETag header so cross-origin conversation
-    // clients can run conditional revalidation instead of degrading to full 200s.
+    // Actual responses expose the ETag and event contract headers so
+    // cross-origin clients can revalidate and decode streams without degrading.
     let exposed = client
         .get(format!("http://{addr}/api/control/runtime/status"))
         .header("origin", "http://localhost:5173")
@@ -3336,7 +3336,7 @@ pub async fn cors_preflight_allows_default_localhost_origins() -> Result<()> {
             .headers()
             .get("access-control-expose-headers")
             .and_then(|value| value.to_str().ok()),
-        Some("etag")
+        Some("etag,x-holon-event-contract-version")
     );
 
     server.abort();

@@ -920,8 +920,19 @@ impl TuiApp {
                 return;
             }
             projection.set_event_log_epoch(&page.event_log_epoch);
-            let added =
-                projection.prepend_event_history_page(page.events, page.oldest_seq, page.has_older);
+            if page.contract_version != crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION {
+                self.status_line = format!(
+                    "Older event load rejected: unsupported contract version {}",
+                    page.contract_version
+                );
+                return;
+            }
+            let added = projection.prepend_event_history_page_with_contract_version(
+                page.events,
+                page.oldest_seq,
+                page.has_older,
+                page.contract_version,
+            );
             (added, projection.history_has_older)
         };
         if added > 0 {

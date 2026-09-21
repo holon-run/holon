@@ -109,7 +109,6 @@ export const ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS = 6;
 const GLOBAL_BACKFILL_MAX_PAGES = 10;
 const GLOBAL_BACKFILL_CONCURRENCY = 4;
 /** Low-rate safety net: full roster reconciliation at most this often. */
-const ROSTER_RECONCILIATION_INTERVAL_MS = 5 * 60_000;
 
 /**
  * Fresh sessions never seed catch-up further behind the authoritative roster
@@ -145,7 +144,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   private rosterIdentity: RosterDiscoveryIdentity | undefined;
   private rosterRetryTimer: number | undefined;
   private rosterRetryAttempt = 0;
-  private lastRosterAppliedAt = 0;
 
   constructor(private readonly dependencies: GlobalSyncCoordinatorDependencies<State>) {}
 
@@ -171,10 +169,10 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         if (!this.dependencies.isCurrentClientRequest(request)) return;
         this.scheduleStaleWatchdog(get, set);
       },
-      onEvent: (event) => {
+      onRosterHint: (agentId) => {
         if (!this.dependencies.isCurrentClientRequest(request)) return;
         this.scheduleStaleWatchdog(get, set);
-        this.dispatch(get, set, event);
+        this.noteRosterHint(get, set, agentId);
       },
       onClose: () => {
         if (this.dependencies.isCurrentClientRequest(request)) {
@@ -349,7 +347,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
           { previousIdentity: this.rosterIdentity, request },
         );
         this.rosterIdentity = identity;
-        this.lastRosterAppliedAt = Date.now();
         for (const agentId of omittedAgentIds) {
           this.unregister(agentId);
         }
@@ -457,10 +454,9 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   }
 
   /**
-   * Live envelopes are roster hints. Events for agents outside the roster
-   * trigger one immediate (coalesced) refresh; events for known agents
-   * only allow the low-rate full-reconciliation safety net, because a
-   * deletion may emit no stream event at all.
+   * Live envelopes are roster hints. Refresh the authoritative roster and
+   * replay the hinted agent's event page so the global stream remains a
+   * membership signal without becoming a second event transport.
    */
   private noteRosterHint(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string | undefined): void {
     if (!this.globalEventStream) return;
@@ -469,15 +465,28 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       return;
     }
     const known = agentId != null && this.subscribedAgents.has(agentId);
-    if (known && Date.now() - this.lastRosterAppliedAt < ROSTER_RECONCILIATION_INTERVAL_MS) {
-      return;
-    }
-    void this.refreshRosterInner(
+    const request = this.dependencies.captureClientRequest();
+    const refresh = this.refreshRosterInner(
       get,
       set,
-      this.dependencies.captureClientRequest(),
+      request,
       known ? "safety_reconciliation" : "unknown_agent_hint",
     );
+    if (known && agentId) {
+      void refresh.then(() => {
+        if (
+          this.dependencies.isCurrentClientRequest(request)
+          && this.subscribedAgents.has(agentId)
+        ) {
+          void this.recoverRegisteredAgent(
+            get,
+            set,
+            agentId,
+            request,
+          );
+        }
+      });
+    }
   }
 
   retryAgentSync(get: () => State, set: GlobalSyncStoreSet<State>, agentId: string): void {
@@ -589,7 +598,6 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.rosterDirty = false;
     this.rosterIdentity = undefined;
     this.rosterRetryAttempt = 0;
-    this.lastRosterAppliedAt = 0;
     this.rosterEventWindows.clear();
     // Stored cursors stay in sessionStorage; identity + epoch checks decide
     // whether they are still valid after the client re-discovers the daemon.

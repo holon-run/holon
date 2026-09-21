@@ -17,8 +17,8 @@ import {
 
 function summarySnapshot(throughSeq = 10): ConversationSummaryResponse {
   return {
-    schema_version: 1,
-    query_version: 1,
+    schema_version: 2,
+    query_version: 2,
     runtime_id: "runtime-a",
     event_log_epoch: "epoch-a",
     visibility_scope_id: "scope-a",

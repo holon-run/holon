@@ -15,6 +15,37 @@ const OBSERVER_SYNC_CAPABILITIES = [
   "briefs.atomic-created-event.v1",
 ];
 
+function listEntry(agentId: string): Record<string, unknown> {
+  return {
+    identity: {
+      agent_id: agentId,
+      visibility: "public",
+      ownership: "self_owned",
+      profile_preset: "public_named",
+    },
+    status: "awake_idle",
+    pending: 0,
+  };
+}
+
+function rosterSnapshot(
+  agentIds: string[],
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    contract_version: 1,
+    runtime_id: "rt-1",
+    event_log_epoch: "epoch-1",
+    visibility_scope_id: "vis-1",
+    agents: agentIds.map((agentId) => ({
+      agent: listEntry(agentId),
+      event_window: { event_head_seq: 5, oldest_retained_seq: 0 },
+      latest_brief: null,
+    })),
+    ...overrides,
+  };
+}
+
 class MemoryStorage implements Storage {
   private readonly items = new Map<string, string>();
 
@@ -90,7 +121,7 @@ describe("global event stream recovery", () => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      if (url.pathname.endsWith("/agents/snapshot")) return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
+      if (url.pathname.endsWith("/agents/snapshot")) return Promise.resolve(jsonResponse(rosterSnapshot(["agent-a"])));
       if (url.pathname.endsWith("/projection-snapshot")) return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
       if (url.pathname.endsWith("/events/stream")) {
         return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
@@ -99,7 +130,10 @@ describe("global event stream recovery", () => {
           },
         }), {
           status: 200,
-          headers: { "content-type": "text/event-stream" },
+          headers: {
+            "content-type": "text/event-stream",
+            "x-holon-event-contract-version": "3",
+          },
         }));
       }
       if (url.pathname.endsWith("/agents/agent-a/events")) return backfill;
@@ -146,6 +180,7 @@ describe("global event stream recovery", () => {
     expect(eventRequest?.searchParams.get("after_seq")).toBe("1");
 
     resolveBackfill(jsonResponse({
+      contract_version: 3,
       events: [2, 3, 4, 5].map((eventSeq) => ({
         id: `event-${eventSeq}`,
         event_seq: eventSeq,
@@ -185,7 +220,7 @@ describe("global event stream recovery", () => {
       const url = new URL(String(input), "http://localhost");
       if (url.pathname.endsWith("/handshake")) return Promise.resolve(jsonResponse({}));
       if (url.pathname.endsWith("/agents/list")) return Promise.resolve(jsonResponse([]));
-      if (url.pathname.endsWith("/agents/snapshot")) return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
+      if (url.pathname.endsWith("/agents/snapshot")) return Promise.resolve(jsonResponse(rosterSnapshot(["agent-a"])));
       if (url.pathname.endsWith("/projection-snapshot")) return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
       if (url.pathname.endsWith("/events/stream")) {
         return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
@@ -194,7 +229,10 @@ describe("global event stream recovery", () => {
           },
         }), {
           status: 200,
-          headers: { "content-type": "text/event-stream" },
+          headers: {
+            "content-type": "text/event-stream",
+            "x-holon-event-contract-version": "3",
+          },
         }));
       }
       if (url.pathname.endsWith("/agents/agent-a/events")) {
@@ -321,6 +359,7 @@ describe("authoritative discovery cutover", () => {
 
   function emptyEventsPage(agentId: string): Record<string, unknown> {
     return {
+      contract_version: 3,
       events: [],
       event_log_epoch: "epoch-1",
       has_older: false,
@@ -333,6 +372,7 @@ describe("authoritative discovery cutover", () => {
 
   function baselinePage(agentId: string): Record<string, unknown> {
     return {
+      contract_version: 3,
       events: [{
         id: `event-${agentId}-1`,
         event_seq: 1,
@@ -367,7 +407,10 @@ describe("authoritative discovery cutover", () => {
       },
     }), {
       status: 200,
-      headers: { "content-type": "text/event-stream" },
+      headers: {
+        "content-type": "text/event-stream",
+        "x-holon-event-contract-version": "3",
+      },
     });
   }
 
@@ -485,15 +528,7 @@ describe("authoritative discovery cutover", () => {
     // An event for an agent outside the roster lands while the snapshot
     // request is still in flight: it must coalesce into one extra refresh.
     streamController!.enqueue(new TextEncoder().encode(
-      `data: ${JSON.stringify({
-        id: "event-c-1",
-        event_seq: 1,
-        event_log_epoch: "epoch-1",
-        ts: "2026-08-10T00:00:00Z",
-        agent_id: "agent-c",
-        type: "agent_state_changed",
-        payload: {},
-      })}\n\n`,
+      `event: agent_roster_hint\ndata: ${JSON.stringify({ agent_id: "agent-c" })}\n\n`,
     ));
     releaseFirst!(jsonResponse(rosterSnapshot(["agent-a"])));
 
@@ -976,9 +1011,15 @@ throw new Error(`Unexpected request: ${url}`);
 });
 
 function jsonResponse(body: unknown): Response {
+  const isEventPage = body && typeof body === "object"
+    && "events" in body
+    && Array.isArray(body.events);
   return new Response(JSON.stringify(body), {
     status: 200,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(isEventPage ? { "x-holon-event-contract-version": "3" } : {}),
+    },
   });
 }
 

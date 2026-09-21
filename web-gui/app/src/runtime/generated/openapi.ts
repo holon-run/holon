@@ -210,7 +210,7 @@ export interface paths {
         };
         /**
          * Agent event page
-         * @description Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level-filtered page changes presentation only and is never proof of raw continuity.
+         * @description Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level-filtered page changes presentation only and is never proof of raw continuity. The page declares the envelope contract version once as a top-level contract_version field; envelopes carry payload_schema only for typed events and no longer repeat contract_version, payload_schema_version, or provenance.
          */
         get: operations["agentEvents"];
         put?: never;
@@ -230,7 +230,7 @@ export interface paths {
         };
         /**
          * Agent event stream
-         * @description Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens, carrying event_log_epoch, oldest_retained_seq, and event_head_seq from one committed read view so clients can distinguish a retained-prefix gap from an epoch change. Envelopes carry the additive projection_effect field while events.projection-effect.v1 is advertised. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.
+         * @description Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens, carrying event_log_epoch, oldest_retained_seq, and event_head_seq from one committed read view so clients can distinguish a retained-prefix gap from an epoch change. Envelopes carry the additive projection_effect field while events.projection-effect.v1 is advertised. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter, StreamEventEnvelope.projection, StreamEventEnvelope.contract_version, and StreamEventEnvelope.provenance have been removed; the envelope contract version is declared once by the x-holon-event-contract-version response header, and payload_schema is present only on typed events.
          */
         get: operations["agentEventsStream"];
         put?: never;
@@ -1901,8 +1901,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Global event stream
-         * @description Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor. If the receiver lags, the server closes the stream; clients must backfill each agent from its last contiguous event_seq before reconnecting.
+         * Global roster hint stream
+         * @description Return Server-Sent Events carrying only agent_roster_hint discovery records with an agent_id. This live stream has no cursor and never carries agent event payloads; recoverable events are delivered only by the per-agent stream. Clients use each hint to refresh the authoritative roster and backfill the agent stream.
          */
         get: operations["eventsStream"];
         put?: never;
@@ -4313,7 +4313,6 @@ export interface components {
             type: "batch_begin";
             visibility_scope_id: string;
         } | {
-            event_log_epoch: string;
             input: {
                 /** @description Operator display name snapshotted in the canonical message origin. */
                 actor_display_name?: string | null;
@@ -4329,17 +4328,13 @@ export interface components {
             };
             /** @constant */
             type: "operator_upsert";
-            visibility_scope_id: string;
         } | {
-            event_log_epoch: string;
             message_id: string;
             /** Format: uint64 */
             revision: number;
             /** @constant */
             type: "operator_remove";
-            visibility_scope_id: string;
         } | {
-            event_log_epoch: string;
             turn: {
                 attention?: ({
                     /** @constant */
@@ -4447,7 +4442,6 @@ export interface components {
             };
             /** @constant */
             type: "turn_summary_upsert";
-            visibility_scope_id: string;
         } | {
             activity: {
                 id: string;
@@ -4510,19 +4504,15 @@ export interface components {
                 revision: number;
                 summary: string;
             };
-            event_log_epoch: string;
             turn_id: string;
             /** @constant */
             type: "activity_upsert";
-            visibility_scope_id: string;
         } | {
             /** Format: uint64 */
             detail_revision: number;
-            event_log_epoch: string;
             turn_id: string;
             /** @constant */
             type: "detail_invalidated";
-            visibility_scope_id: string;
         } | {
             batch_id: string;
             checkpoint: string;
@@ -4884,40 +4874,35 @@ export interface components {
         };
         /** EventsPageResponse */
         EventsPageResponse: {
+            /**
+             * Format: uint32
+             * @description Stream-level envelope contract version for every event in this page.
+             *      Per-event `contract_version` was removed; this is its single source.
+             */
+            contract_version: number;
             /** Format: uint64 */
             cursor_seq?: number | null;
             event_log_epoch: string;
             events: {
                 agent_id: string;
-                /** Format: uint32 */
-                contract_version: number;
                 event_log_epoch: string;
                 /** Format: uint64 */
                 event_seq: number;
                 id: string;
                 payload: unknown;
-                payload_schema: string;
+                /**
+                 * @description Registry payload schema. Present only on typed events; legacy audit
+                 *      events are schema-less and carry their data as-is. The envelope
+                 *      contract version is declared per stream, not per event.
+                 */
+                payload_schema?: string | null;
                 /** Format: uint32 */
-                payload_schema_version: number;
+                payload_schema_version?: number | null;
                 /**
                  * @description Additive classification derived from the runtime event registry.
                  *      Present only while `events.projection-effect.v1` is advertised.
                  */
                 projection_effect?: ("none" | "display_invalidation") | null;
-                provenance: {
-                    admission_context?: unknown;
-                    authority_class?: unknown;
-                    causation_id?: unknown;
-                    correlation_id?: unknown;
-                    delivery_surface?: unknown;
-                    message_id?: unknown;
-                    origin?: unknown;
-                    reply_route?: unknown;
-                    source?: unknown;
-                    task_id?: unknown;
-                    transport?: unknown;
-                    work_item_id?: unknown;
-                };
                 /** Format: date-time */
                 ts: string;
                 type: string;
@@ -6489,38 +6474,33 @@ export interface components {
             updated_at: string;
             workspace_id: string;
         };
-        /** StreamEventEnvelope */
+        /**
+         * StreamEventEnvelope
+         * @description One event on the public event surface. The `payload` object is the only
+         *      data source: correlation ids such as `message_id`, `task_id`,
+         *      `work_item_id`, `correlation_id`, and `causation_id` live in the payload
+         *      itself and are no longer duplicated into an envelope `provenance` object.
+         */
         StreamEventEnvelope: {
             agent_id: string;
-            /** Format: uint32 */
-            contract_version: number;
             event_log_epoch: string;
             /** Format: uint64 */
             event_seq: number;
             id: string;
             payload: unknown;
-            payload_schema: string;
+            /**
+             * @description Registry payload schema. Present only on typed events; legacy audit
+             *      events are schema-less and carry their data as-is. The envelope
+             *      contract version is declared per stream, not per event.
+             */
+            payload_schema?: string | null;
             /** Format: uint32 */
-            payload_schema_version: number;
+            payload_schema_version?: number | null;
             /**
              * @description Additive classification derived from the runtime event registry.
              *      Present only while `events.projection-effect.v1` is advertised.
              */
             projection_effect?: ("none" | "display_invalidation") | null;
-            provenance: {
-                admission_context?: unknown;
-                authority_class?: unknown;
-                causation_id?: unknown;
-                correlation_id?: unknown;
-                delivery_surface?: unknown;
-                message_id?: unknown;
-                origin?: unknown;
-                reply_route?: unknown;
-                source?: unknown;
-                task_id?: unknown;
-                transport?: unknown;
-                work_item_id?: unknown;
-            };
             /** Format: date-time */
             ts: string;
             type: string;

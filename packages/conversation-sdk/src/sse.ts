@@ -190,7 +190,6 @@ export class ConversationBatchAssembler {
         `${message.type} must not carry an SSE id`,
       );
     }
-    this.#validateScope(pending.begin, message);
     pending.mutations.push(message);
     return null;
   }
@@ -201,24 +200,6 @@ export class ConversationBatchAssembler {
 
   get hasIncompleteBatch(): boolean {
     return this.#pending !== null;
-  }
-
-  #validateScope(
-    begin: BatchBeginMessage,
-    message: ConversationMutationMessage,
-  ): void {
-    if (message.event_log_epoch !== begin.event_log_epoch) {
-      throw new ConversationDecodeError(
-        "$stream.data.event_log_epoch",
-        "mutation epoch does not match batch_begin",
-      );
-    }
-    if (message.visibility_scope_id !== begin.visibility_scope_id) {
-      throw new ConversationDecodeError(
-        "$stream.data.visibility_scope_id",
-        "mutation visibility scope does not match batch_begin",
-      );
-    }
   }
 
   #validateCheckpoint(

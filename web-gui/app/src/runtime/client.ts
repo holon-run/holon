@@ -249,6 +249,7 @@ type EventEnvelopeDto = StreamEventEnvelopeDto;
 
 function emptyEventPage(): EventPageResponseDto {
   return {
+    contract_version: 3,
     events: [],
     event_log_epoch: "",
     has_older: false,
@@ -265,9 +266,17 @@ export interface AgentEventStreamSubscription {
 export interface AgentEventStreamOptions {
   afterSeq?: number;
   limit?: number;
-  onOpen?: () => void;
+  onOpen?: (contractVersion: number) => void;
   onActivity?: () => void;
   onEvent: (event: StreamEventEnvelopeDto) => void;
+  onClose?: () => void;
+  onError?: (error: Error) => void;
+}
+
+export interface GlobalEventStreamOptions {
+  onOpen?: (contractVersion: number) => void;
+  onActivity?: () => void;
+  onRosterHint: (agentId: string) => void;
   onClose?: () => void;
   onError?: (error: Error) => void;
 }
@@ -1334,7 +1343,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       if (!baseUrl) return undefined;
       return streamAgentEvents(baseUrl, fetchImpl, requestHeaders, agentId, options);
     },
-    streamGlobalEvents(options: AgentEventStreamOptions): AgentEventStreamSubscription | undefined {
+    streamGlobalEvents(options: GlobalEventStreamOptions): AgentEventStreamSubscription | undefined {
       if (!baseUrl) return undefined;
       return streamGlobalEvents(baseUrl, fetchImpl, requestHeaders, options);
     },
@@ -1656,12 +1665,14 @@ async function fetchAgentEvents(
   if (options.displayLevel) query.set("max_level", options.displayLevel);
   const queryString = query.toString();
   const path = `/agents/${encodeURIComponent(agentId)}/events${queryString ? `?${queryString}` : ""}`;
-  const { value: response, responseBytes } = await getJsonWithResponseBytes<EventPageResponseDto>(
+  const { value: response, responseBytes, responseHeaders } = await getJsonWithResponseBytes<EventPageResponseDto>(
     fetchImpl,
     baseUrl,
     path,
     { headers, timeoutMs: HYDRATION_READ_TIMEOUT_MS },
   );
+  const pageContractVersion = responseHeaders.get(EVENT_CONTRACT_VERSION_HEADER);
+  validateEventContractVersion(pageContractVersion, "event page");
   return {
     ...response,
     responseBytes,
@@ -1676,7 +1687,7 @@ async function getJsonWithResponseBytes<T>(
   baseUrl: string,
   path: string,
   options: { timeoutMs?: number; headers?: Record<string, string> } = {},
-): Promise<{ value: T; responseBytes: number }> {
+): Promise<{ value: T; responseBytes: number; responseHeaders: Headers }> {
   const controller = new AbortController();
   const timeout = globalThis.setTimeout(
     () => controller.abort(),
@@ -1693,6 +1704,7 @@ async function getJsonWithResponseBytes<T>(
   return {
     value: JSON.parse(new TextDecoder().decode(body)) as T,
     responseBytes: body.byteLength,
+    responseHeaders: response.headers,
   };
 }
 
@@ -1831,11 +1843,14 @@ function streamGlobalEvents(
   baseUrl: string,
   fetchImpl: typeof fetch,
   headers: Record<string, string>,
-  options: AgentEventStreamOptions,
+  options: GlobalEventStreamOptions,
 ): AgentEventStreamSubscription {
   const controller = new AbortController();
   const path = "/events/stream";
-  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, options);
+  void readEventStream(fetchImpl, `${baseUrl}${path}`, headers, controller.signal, {
+    ...options,
+    rosterOnly: true,
+  });
   return {
     close: () => controller.abort(),
   };
@@ -1846,7 +1861,7 @@ async function readEventStream(
   url: string,
   headers: Record<string, string>,
   signal: AbortSignal,
-  options: AgentEventStreamOptions,
+  options: EventStreamReadOptions,
 ): Promise<void> {
   try {
     const response = await fetchImpl(url, {
@@ -1860,7 +1875,8 @@ async function readEventStream(
       throw new Error("event stream response body is not readable");
     }
 
-    options.onOpen?.();
+    const contractVersion = parseEventContractVersion(response.headers);
+    options.onOpen?.(contractVersion);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1874,8 +1890,13 @@ async function readEventStream(
       buffer = frames.remaining;
       for (const frame of frames.frames) {
         options.onActivity?.();
-        const event = parseSseEventFrame(frame);
-        if (event) options.onEvent(event);
+        if (options.rosterOnly) {
+          const agentId = parseRosterHintFrame(frame);
+          if (agentId) options.onRosterHint?.(agentId);
+        } else {
+          const event = parseSseEventFrame(frame);
+          if (event) options.onEvent?.(event);
+        }
       }
     }
     if (!signal.aborted) {
@@ -1887,6 +1908,12 @@ async function readEventStream(
     }
   }
 }
+
+type EventStreamReadOptions = Omit<AgentEventStreamOptions, "onEvent"> & {
+  onEvent?: (event: StreamEventEnvelopeDto) => void;
+  onRosterHint?: (agentId: string) => void;
+  rosterOnly?: boolean;
+};
 
 function takeSseFrames(buffer: string): { frames: string[]; remaining: string } {
   const frames: string[] = [];
@@ -1916,6 +1943,21 @@ function parseSseEventFrame(frame: string): StreamEventEnvelopeDto | undefined {
   return decodeStreamEventEnvelope(JSON.parse(dataLines.join("\n")));
 }
 
+function parseRosterHintFrame(frame: string): string | undefined {
+  let eventName = "";
+  const dataLines: string[] = [];
+  for (const line of frame.split(/\r?\n/)) {
+    if (line.startsWith(":")) continue;
+    if (line.startsWith("event:")) {
+      eventName = line.slice("event:".length).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice("data:".length).trimStart());
+    }
+  }
+  if (eventName !== "agent_roster_hint" || dataLines.length === 0) return undefined;
+  return stringValue(asRecord(JSON.parse(dataLines.join("\n")))?.agent_id);
+}
+
 function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | undefined {
   const record = asRecord(value);
   if (!record) return undefined;
@@ -1924,21 +1966,46 @@ function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | und
   const timestamp = stringValue(record.ts);
   const agentId = stringValue(record.agent_id);
   const eventType = stringValue(record.type);
+  const projectionEffect = record.projection_effect;
   if (!id || eventSeq == null || !timestamp || !agentId || !eventType) return undefined;
   return {
     id,
     event_seq: eventSeq,
     event_log_epoch: stringValue(record.event_log_epoch) ?? "",
-    contract_version: typeof record.contract_version === "number" ? record.contract_version : 1,
     ts: timestamp,
     agent_id: agentId,
     type: eventType,
-    payload_schema: stringValue(record.payload_schema) ?? "holon.runtime_event.legacy",
-    payload_schema_version:
-      typeof record.payload_schema_version === "number" ? record.payload_schema_version : 1,
-    provenance: record.provenance ?? {},
     payload: record.payload,
+    ...(typeof record.payload_schema === "string"
+      ? { payload_schema: record.payload_schema }
+      : {}),
+    ...(typeof record.payload_schema_version === "number"
+      ? { payload_schema_version: record.payload_schema_version }
+      : {}),
+    ...(projectionEffect === "none" || projectionEffect === "display_invalidation"
+      ? { projection_effect: projectionEffect }
+      : {}),
+    ...(record.provenance != null ? { provenance: record.provenance } : {}),
   };
+}
+
+const EVENT_CONTRACT_VERSION_HEADER = "x-holon-event-contract-version";
+const CURRENT_EVENT_CONTRACT_VERSION = 3;
+
+function parseEventContractVersion(headers: Headers): number {
+  const raw = headers.get(EVENT_CONTRACT_VERSION_HEADER);
+  const version = raw == null ? Number.NaN : Number(raw);
+  return validateEventContractVersion(version, "event stream");
+}
+
+function validateEventContractVersion(value: unknown, source: string): number {
+  const version = typeof value === "number" ? value : Number(value);
+  if (!Number.isInteger(version) || version !== CURRENT_EVENT_CONTRACT_VERSION) {
+    throw new Error(
+      `unsupported ${source} contract version: ${value ?? "missing"}`,
+    );
+  }
+  return version;
 }
 
 async function fetchRuntimeBootstrap(

@@ -959,7 +959,10 @@ fn api_cors_layer(config: &ApiCorsConfigFile) -> CorsLayer {
         .allow_origin(allow_origin)
         // Conditional conversation revalidation reads the ETag header; without
         // exposing it, cross-origin clients silently degrade to full 200s.
-        .expose_headers([ETAG])
+        .expose_headers([
+            ETAG,
+            HeaderName::from_static(crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER),
+        ])
         .allow_methods(methods)
         .allow_headers(headers)
         .max_age(Duration::from_secs(config.max_age_seconds()));

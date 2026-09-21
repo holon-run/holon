@@ -115,30 +115,20 @@ pub(crate) enum ConversationStreamMessage {
         through_seq: u64,
     },
     OperatorUpsert {
-        event_log_epoch: String,
-        visibility_scope_id: String,
         input: PendingInput,
     },
     OperatorRemove {
-        event_log_epoch: String,
-        visibility_scope_id: String,
         message_id: String,
         revision: u64,
     },
     TurnSummaryUpsert {
-        event_log_epoch: String,
-        visibility_scope_id: String,
         turn: ConversationTurnSummary,
     },
     ActivityUpsert {
-        event_log_epoch: String,
-        visibility_scope_id: String,
         turn_id: String,
         activity: ConversationActivity,
     },
     DetailInvalidated {
-        event_log_epoch: String,
-        visibility_scope_id: String,
         turn_id: String,
         detail_revision: u64,
     },
@@ -433,42 +423,25 @@ async fn send_change_batch_with_timeout(
     for change in batch.changes {
         let message = match change {
             ConversationChange::OperatorUpsert { input } => {
-                ConversationStreamMessage::OperatorUpsert {
-                    event_log_epoch: batch.event_log_epoch.clone(),
-                    visibility_scope_id: batch.visibility_scope_id.clone(),
-                    input,
-                }
+                ConversationStreamMessage::OperatorUpsert { input }
             }
             ConversationChange::OperatorRemove {
                 message_id,
                 revision,
             } => ConversationStreamMessage::OperatorRemove {
-                event_log_epoch: batch.event_log_epoch.clone(),
-                visibility_scope_id: batch.visibility_scope_id.clone(),
                 message_id,
                 revision,
             },
             ConversationChange::TurnSummaryUpsert { turn } => {
-                ConversationStreamMessage::TurnSummaryUpsert {
-                    event_log_epoch: batch.event_log_epoch.clone(),
-                    visibility_scope_id: batch.visibility_scope_id.clone(),
-                    turn,
-                }
+                ConversationStreamMessage::TurnSummaryUpsert { turn }
             }
             ConversationChange::ActivityUpsert { turn_id, activity } => {
-                ConversationStreamMessage::ActivityUpsert {
-                    event_log_epoch: batch.event_log_epoch.clone(),
-                    visibility_scope_id: batch.visibility_scope_id.clone(),
-                    turn_id,
-                    activity,
-                }
+                ConversationStreamMessage::ActivityUpsert { turn_id, activity }
             }
             ConversationChange::DetailInvalidated {
                 turn_id,
                 detail_revision,
             } => ConversationStreamMessage::DetailInvalidated {
-                event_log_epoch: batch.event_log_epoch.clone(),
-                visibility_scope_id: batch.visibility_scope_id.clone(),
                 turn_id,
                 detail_revision,
             },

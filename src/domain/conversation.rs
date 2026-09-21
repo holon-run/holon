@@ -11,8 +11,8 @@ use crate::types::{
     ContinuationTriggerKind, MessageKind, TurnNoBriefReason, TurnTerminalKind, TurnTriggerSummary,
 };
 
-pub const CONVERSATION_SCHEMA_VERSION: u32 = 1;
-pub const CONVERSATION_QUERY_VERSION: u32 = 1;
+pub const CONVERSATION_SCHEMA_VERSION: u32 = 2;
+pub const CONVERSATION_QUERY_VERSION: u32 = 2;
 
 /// Canonical operator input attached to a turn, for summary-level rendering
 /// without loading turn activity detail. Bounded per turn by the read model.
@@ -723,8 +723,8 @@ mod tests {
         assert_eq!(
             codec.decode::<StreamCursor>(&encoded, &other),
             Err(CursorDecodeError::SchemaVersionMismatch {
-                expected: 2,
-                actual: 1
+                expected: 3,
+                actual: 2
             })
         );
 
@@ -733,8 +733,8 @@ mod tests {
         assert_eq!(
             codec.decode::<StreamCursor>(&encoded, &other),
             Err(CursorDecodeError::QueryVersionMismatch {
-                expected: 2,
-                actual: 1
+                expected: 3,
+                actual: 2
             })
         );
 

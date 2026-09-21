@@ -3229,28 +3229,33 @@ fn offline_event_page(
     let event_log_epoch = runtime_db.event_log_epoch()?;
     let envelopes = events
         .into_iter()
-        .map(|event| holon::client::StreamEventEnvelope {
-            projection_effect: None,
-            id: event.id,
-            event_seq: event.event_seq,
-            event_log_epoch: Some(if event.event_log_epoch.is_empty() {
-                event_log_epoch.clone()
-            } else {
-                event.event_log_epoch
-            }),
-            contract_version: event.contract_version,
-            ts: event.created_at,
-            agent_id: agent_id.to_string(),
-            event_type: event.kind,
-            payload_schema: event.payload_schema,
-            payload_schema_version: event.payload_schema_version,
-            provenance: Some(event_replay_provenance(&event.data)),
-            payload: event.data,
+        .map(|event| {
+            let legacy = holon::runtime_event::is_legacy_event_shape(
+                &event.payload_schema,
+                event.contract_version,
+            );
+            holon::client::StreamEventEnvelope {
+                projection_effect: None,
+                id: event.id,
+                event_seq: event.event_seq,
+                event_log_epoch: Some(if event.event_log_epoch.is_empty() {
+                    event_log_epoch.clone()
+                } else {
+                    event.event_log_epoch
+                }),
+                ts: event.created_at,
+                agent_id: agent_id.to_string(),
+                event_type: event.kind,
+                payload_schema: (!legacy).then(|| event.payload_schema.clone()),
+                payload_schema_version: (!legacy).then_some(event.payload_schema_version),
+                payload: event.data,
+            }
         })
         .collect();
     Ok(holon::client::EventPageResponse {
         events: envelopes,
         event_log_epoch,
+        contract_version: holon::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         oldest_seq,
         newest_seq,
         cursor_seq: runtime_db.audit_events().latest_event_seq(Some(agent_id))?,
@@ -3259,35 +3264,6 @@ fn offline_event_page(
         order: order.to_string(),
         limit,
     })
-}
-
-fn event_replay_provenance(payload: &serde_json::Value) -> serde_json::Value {
-    let fields = [
-        "origin",
-        "authority_class",
-        "delivery_surface",
-        "admission_context",
-        "transport",
-        "source",
-        "reply_route",
-        "message_id",
-        "task_id",
-        "work_item_id",
-        "correlation_id",
-        "causation_id",
-    ];
-    serde_json::Value::Object(
-        fields
-            .into_iter()
-            .filter_map(|field| {
-                payload
-                    .get(field)
-                    .filter(|value| !value.is_null())
-                    .cloned()
-                    .map(|value| (field.to_string(), value))
-            })
-            .collect(),
-    )
 }
 
 async fn handle_debug_command(config: AppConfig, command: DebugCommands) -> Result<()> {

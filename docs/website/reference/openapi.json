@@ -6871,9 +6871,6 @@
           },
           {
             "properties": {
-              "event_log_epoch": {
-                "type": "string"
-              },
               "input": {
                 "properties": {
                   "actor_display_name": {
@@ -6930,24 +6927,16 @@
               "type": {
                 "const": "operator_upsert",
                 "type": "string"
-              },
-              "visibility_scope_id": {
-                "type": "string"
               }
             },
             "required": [
               "type",
-              "event_log_epoch",
-              "visibility_scope_id",
               "input"
             ],
             "type": "object"
           },
           {
             "properties": {
-              "event_log_epoch": {
-                "type": "string"
-              },
               "message_id": {
                 "type": "string"
               },
@@ -6959,15 +6948,10 @@
               "type": {
                 "const": "operator_remove",
                 "type": "string"
-              },
-              "visibility_scope_id": {
-                "type": "string"
               }
             },
             "required": [
               "type",
-              "event_log_epoch",
-              "visibility_scope_id",
               "message_id",
               "revision"
             ],
@@ -6975,9 +6959,6 @@
           },
           {
             "properties": {
-              "event_log_epoch": {
-                "type": "string"
-              },
               "turn": {
                 "properties": {
                   "attention": {
@@ -7427,15 +7408,10 @@
               "type": {
                 "const": "turn_summary_upsert",
                 "type": "string"
-              },
-              "visibility_scope_id": {
-                "type": "string"
               }
             },
             "required": [
               "type",
-              "event_log_epoch",
-              "visibility_scope_id",
               "turn"
             ],
             "type": "object"
@@ -7666,24 +7642,16 @@
                   }
                 ]
               },
-              "event_log_epoch": {
-                "type": "string"
-              },
               "turn_id": {
                 "type": "string"
               },
               "type": {
                 "const": "activity_upsert",
                 "type": "string"
-              },
-              "visibility_scope_id": {
-                "type": "string"
               }
             },
             "required": [
               "type",
-              "event_log_epoch",
-              "visibility_scope_id",
               "turn_id",
               "activity"
             ],
@@ -7696,24 +7664,16 @@
                 "minimum": 0,
                 "type": "integer"
               },
-              "event_log_epoch": {
-                "type": "string"
-              },
               "turn_id": {
                 "type": "string"
               },
               "type": {
                 "const": "detail_invalidated",
                 "type": "string"
-              },
-              "visibility_scope_id": {
-                "type": "string"
               }
             },
             "required": [
               "type",
-              "event_log_epoch",
-              "visibility_scope_id",
               "turn_id",
               "detail_revision"
             ],
@@ -9092,6 +9052,12 @@
       },
       "EventsPageResponse": {
         "properties": {
+          "contract_version": {
+            "description": "Stream-level envelope contract version for every event in this page.\n Per-event `contract_version` was removed; this is its single source.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
           "cursor_seq": {
             "format": "uint64",
             "minimum": 0,
@@ -9105,14 +9071,10 @@
           },
           "events": {
             "items": {
+              "description": "One event on the public event surface. The `payload` object is the only\n data source: correlation ids such as `message_id`, `task_id`,\n `work_item_id`, `correlation_id`, and `causation_id` live in the payload\n itself and are no longer duplicated into an envelope `provenance` object.",
               "properties": {
                 "agent_id": {
                   "type": "string"
-                },
-                "contract_version": {
-                  "format": "uint32",
-                  "minimum": 0,
-                  "type": "integer"
                 },
                 "event_log_epoch": {
                   "type": "string"
@@ -9127,12 +9089,19 @@
                 },
                 "payload": true,
                 "payload_schema": {
-                  "type": "string"
+                  "description": "Registry payload schema. Present only on typed events; legacy audit\n events are schema-less and carry their data as-is. The envelope\n contract version is declared per stream, not per event.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "payload_schema_version": {
                   "format": "uint32",
                   "minimum": 0,
-                  "type": "integer"
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
                 },
                 "projection_effect": {
                   "anyOf": [
@@ -9157,23 +9126,6 @@
                   ],
                   "description": "Additive classification derived from the runtime event registry.\n Present only while `events.projection-effect.v1` is advertised."
                 },
-                "provenance": {
-                  "properties": {
-                    "admission_context": true,
-                    "authority_class": true,
-                    "causation_id": true,
-                    "correlation_id": true,
-                    "delivery_surface": true,
-                    "message_id": true,
-                    "origin": true,
-                    "reply_route": true,
-                    "source": true,
-                    "task_id": true,
-                    "transport": true,
-                    "work_item_id": true
-                  },
-                  "type": "object"
-                },
                 "ts": {
                   "format": "date-time",
                   "type": "string"
@@ -9186,13 +9138,9 @@
                 "id",
                 "event_seq",
                 "event_log_epoch",
-                "contract_version",
                 "ts",
                 "agent_id",
                 "type",
-                "payload_schema",
-                "payload_schema_version",
-                "provenance",
                 "payload"
               ],
               "type": "object"
@@ -9237,6 +9185,7 @@
         "required": [
           "events",
           "event_log_epoch",
+          "contract_version",
           "has_older",
           "has_newer",
           "order",
@@ -14263,14 +14212,10 @@
         "type": "object"
       },
       "StreamEventEnvelope": {
+        "description": "One event on the public event surface. The `payload` object is the only\n data source: correlation ids such as `message_id`, `task_id`,\n `work_item_id`, `correlation_id`, and `causation_id` live in the payload\n itself and are no longer duplicated into an envelope `provenance` object.",
         "properties": {
           "agent_id": {
             "type": "string"
-          },
-          "contract_version": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
           },
           "event_log_epoch": {
             "type": "string"
@@ -14285,12 +14230,19 @@
           },
           "payload": true,
           "payload_schema": {
-            "type": "string"
+            "description": "Registry payload schema. Present only on typed events; legacy audit\n events are schema-less and carry their data as-is. The envelope\n contract version is declared per stream, not per event.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "payload_schema_version": {
             "format": "uint32",
             "minimum": 0,
-            "type": "integer"
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "projection_effect": {
             "anyOf": [
@@ -14315,23 +14267,6 @@
             ],
             "description": "Additive classification derived from the runtime event registry.\n Present only while `events.projection-effect.v1` is advertised."
           },
-          "provenance": {
-            "properties": {
-              "admission_context": true,
-              "authority_class": true,
-              "causation_id": true,
-              "correlation_id": true,
-              "delivery_surface": true,
-              "message_id": true,
-              "origin": true,
-              "reply_route": true,
-              "source": true,
-              "task_id": true,
-              "transport": true,
-              "work_item_id": true
-            },
-            "type": "object"
-          },
           "ts": {
             "format": "date-time",
             "type": "string"
@@ -14344,13 +14279,9 @@
           "id",
           "event_seq",
           "event_log_epoch",
-          "contract_version",
           "ts",
           "agent_id",
           "type",
-          "payload_schema",
-          "payload_schema_version",
-          "provenance",
           "payload"
         ],
         "title": "StreamEventEnvelope",
@@ -18190,7 +18121,7 @@
     },
     "/api/agents/{agent_id}/events": {
       "get": {
-        "description": "Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level-filtered page changes presentation only and is never proof of raw continuity.",
+        "description": "Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level-filtered page changes presentation only and is never proof of raw continuity. The page declares the envelope contract version once as a top-level contract_version field; envelopes carry payload_schema only for typed events and no longer repeat contract_version, payload_schema_version, or provenance.",
         "operationId": "agentEvents",
         "parameters": [
           {
@@ -18248,7 +18179,7 @@
     },
     "/api/agents/{agent_id}/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens, carrying event_log_epoch, oldest_retained_seq, and event_head_seq from one committed read view so clients can distinguish a retained-prefix gap from an epoch change. Envelopes carry the additive projection_effect field while events.projection-effect.v1 is advertised. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter and StreamEventEnvelope.projection field have been removed.",
+        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data. Query parameters: after_seq, limit. SSE id is event_seq; SSE event is the audit event kind; missing replay cursors return cursor_not_found before the stream opens, carrying event_log_epoch, oldest_retained_seq, and event_head_seq from one committed read view so clients can distinguish a retained-prefix gap from an epoch change. Envelopes carry the additive projection_effect field while events.projection-effect.v1 is advertised. If the receiver lags, the server closes the stream so clients can backfill after the last contiguous SSE id before reconnecting. Breaking change: the projection query parameter, StreamEventEnvelope.projection, StreamEventEnvelope.contract_version, and StreamEventEnvelope.provenance have been removed; the envelope contract version is declared once by the x-holon-event-contract-version response header, and payload_schema is present only on typed events.",
         "operationId": "agentEventsStream",
         "parameters": [
           {
@@ -23556,7 +23487,7 @@
     },
     "/api/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor. If the receiver lags, the server closes the stream; clients must backfill each agent from its last contiguous event_seq before reconnecting.",
+        "description": "Return Server-Sent Events carrying only agent_roster_hint discovery records with an agent_id. This live stream has no cursor and never carries agent event payloads; recoverable events are delivered only by the per-agent stream. Clients use each hint to refresh the authoritative roster and backfill the agent stream.",
         "operationId": "eventsStream",
         "parameters": [],
         "responses": {
@@ -23586,7 +23517,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Global event stream",
+        "summary": "Global roster hint stream",
         "tags": [
           "events"
         ]

@@ -389,12 +389,20 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
     assert!(replayed.data["event_log_epoch"]
         .as_str()
         .is_some_and(|epoch| epoch.starts_with("epoch_")));
-    assert_eq!(replayed.data["contract_version"].as_u64(), Some(1));
+    // Schema-less legacy events carry no constant per-event envelope metadata;
+    // the envelope contract version is declared once per stream instead.
+    assert!(replayed.data.get("contract_version").is_none());
+    assert!(replayed.data.get("payload_schema").is_none());
+    assert!(replayed.data.get("payload_schema_version").is_none());
+    let declared_contract_version = stream
+        .headers()
+        .get(holon::runtime_event::EVENT_CONTRACT_VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     assert_eq!(
-        replayed.data["payload_schema"].as_str(),
-        Some("holon.runtime_event.legacy")
+        declared_contract_version,
+        Some(holon::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string())
     );
-    assert_eq!(replayed.data["payload_schema_version"].as_u64(), Some(1));
 
     server.abort();
     Ok(())
@@ -422,7 +430,7 @@ pub async fn events_stream_receives_live_events_without_polling_replay() -> Resu
     Ok(())
 }
 
-pub async fn global_events_stream_receives_live_agent_events() -> Result<()> {
+pub async fn global_events_stream_receives_roster_hints_without_event_payloads() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -436,13 +444,10 @@ pub async fn global_events_stream_receives_live_agent_events() -> Result<()> {
         serde_json::json!({ "global": true }),
     ))?;
 
-    let event = next_sse_event_kind(&mut stream, "global_live_test_event").await?;
+    let event = next_sse_event_kind(&mut stream, "agent_roster_hint").await?;
     assert_eq!(event.data["agent_id"], "default");
-    assert_eq!(
-        event.data["event_seq"].as_u64(),
-        Some(event._id.parse::<u64>()?)
-    );
-    assert_eq!(event.data["payload"]["global"], true);
+    assert!(event._id.is_empty());
+    assert_eq!(event.data.as_object().map(|data| data.len()), Some(1));
 
     server.abort();
     Ok(())
@@ -482,7 +487,7 @@ pub async fn global_events_stream_closes_on_lag_and_recovers_per_agent() -> Resu
     Ok(())
 }
 
-pub async fn events_route_preserves_replay_provenance() -> Result<()> {
+pub async fn events_route_keeps_correlation_facts_in_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -511,15 +516,18 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     let replayed = next_sse_event_kind(&mut stream, "message_admitted").await?;
     assert_eq!(replayed.event, "message_admitted");
     assert_eq!(replayed.data["type"], "message_admitted");
-    assert_eq!(replayed.data["provenance"]["origin"]["kind"], "operator");
+    // Correlation facts live in the payload; the envelope no longer duplicates
+    // them into a `provenance` object.
+    assert_eq!(replayed.data["payload"]["origin"]["kind"], "operator");
     assert_eq!(
-        replayed.data["provenance"]["authority_class"],
+        replayed.data["payload"]["authority_class"],
         "operator_instruction"
     );
     assert_eq!(
-        replayed.data["provenance"]["delivery_surface"],
+        replayed.data["payload"]["delivery_surface"],
         "http_control_prompt"
     );
+    assert!(replayed.data.get("provenance").is_none());
     assert!(replayed.data.get("projection").is_none());
 
     server.abort();
@@ -959,7 +967,15 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
             "has_text": true,
             "has_tool_calls": true,
             "raw_text": "full assistant text included in operator replay",
-            "provider_trace": { "detail": "debug-info" }
+            "provider_trace": { "detail": "debug-info" },
+            "prompt_cache_key": "internal-cache-key",
+            "context_fingerprint": "internal-context",
+            "compression_epoch": 4,
+            "provider_request_id": "internal-request",
+            "provider_message_id": "internal-message",
+            "provider_request_diagnostics": { "debug": true },
+            "provider_attempt_timeline": [{ "model": "internal" }],
+            "only_sleep_tools": true
         }),
     ))?;
 
@@ -997,6 +1013,21 @@ pub async fn events_stream_includes_assistant_round_payload() -> Result<()> {
         "full assistant text included in operator replay"
     );
     assert!(replayed.data["payload"].get("provider_trace").is_some());
+    for key in [
+        "prompt_cache_key",
+        "context_fingerprint",
+        "compression_epoch",
+        "provider_request_id",
+        "provider_message_id",
+        "provider_request_diagnostics",
+        "provider_attempt_timeline",
+        "only_sleep_tools",
+    ] {
+        assert!(
+            replayed.data["payload"].get(key).is_none(),
+            "provider diagnostic {key} must not be exposed on the public stream"
+        );
+    }
 
     server.abort();
     Ok(())

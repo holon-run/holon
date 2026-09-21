@@ -854,7 +854,7 @@ test("incompatible cached snapshots fall back to a plain network bootstrap", asy
   const client = fakeClient({ hub });
   const snapshotCache = {
     async load() {
-      return { etag: "etag-9", summary: summary({ schema_version: 2 }) };
+      return { etag: "etag-9", summary: summary({ schema_version: 1 }) };
     },
     async store() {},
   };

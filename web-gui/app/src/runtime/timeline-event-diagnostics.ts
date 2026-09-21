@@ -136,7 +136,6 @@ function timelineEventSearchText(event: SessionEventEnvelope): string {
     event.type,
     event.payload_schema,
     summarizeTimelineEvent(event),
-    JSON.stringify(event.provenance ?? {}),
   ].join(" ").toLocaleLowerCase();
 }
 

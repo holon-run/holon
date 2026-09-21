@@ -16,12 +16,10 @@ function event(overrides: Partial<SessionEventEnvelope> = {}): SessionEventEnvel
     event_seq: 1,
     event_log_epoch: "epoch-a",
     agent_id: "agent-a",
-    contract_version: 1,
     ts: "2026-07-23T00:00:00Z",
     type: "provider_request_started",
     payload_schema: "holon.runtime_event.legacy",
     payload_schema_version: 1,
-    provenance: {},
     payload: {},
     ...overrides,
   };
@@ -85,7 +83,6 @@ describe("timeline event diagnostics", () => {
     expect(diagnoseTimelineEvent(accepted, projection, []).disposition).toBe("hidden");
     expect(diagnoseTimelineEvent(event({ event_seq: 2, id: "event-2" }), projection, []).disposition).toBe("unhandled");
     expect(diagnoseTimelineEvent(event({
-      contract_version: 3,
       payload_schema: "unsupported",
     }), projection, []).disposition).toBe("rejected");
   });

@@ -447,10 +447,8 @@ function eventIdentityFingerprint(event: ProjectionEvent): string {
     id: event.id,
     ts: event.ts,
     type: event.type,
-    contract_version: event.contract_version,
     payload_schema: event.payload_schema,
     payload_schema_version: event.payload_schema_version,
-    provenance: event.provenance,
     payload: event.payload,
   });
 }
