@@ -28,6 +28,7 @@ public data class HolonArtifact(
 )
 
 public data class HolonSseEvent(
+    public val event: String = "message",
     public val id: String? = null,
     public val data: String,
 ) {

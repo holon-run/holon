@@ -11,7 +11,7 @@ import {
 } from "./session-reducer";
 
 describe("reduceAgentSessionTimeline", () => {
-  it("projects opaque future events without a client-side schema registry", () => {
+  it("does not project opaque future events without registry metadata", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
@@ -31,8 +31,7 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline).toHaveLength(1);
-    expect(timeline[0]?.body).toBe("must not project");
+    expect(timeline).toHaveLength(0);
   });
 
   it("projects operator input events into the timeline", () => {

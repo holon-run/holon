@@ -15,6 +15,7 @@ public object HolonSseParser {
 
     internal fun parse(source: BufferedSource): Sequence<HolonSseEvent> =
         sequence {
+            var event = ""
             var id: String? = null
             val data = mutableListOf<String>()
 
@@ -26,9 +27,11 @@ public object HolonSseParser {
                 }
                 val result =
                     HolonSseEvent(
+                        event = event.ifEmpty { "message" },
                         id = id,
                         data = data.joinToString("\n"),
                     )
+                event = ""
                 id = null
                 data.clear()
                 return result
@@ -50,6 +53,7 @@ public object HolonSseParser {
                     value = value.substring(1)
                 }
                 when (field) {
+                    "event" -> event = value
                     "id" -> id = value
                     "data" -> data += value
                 }

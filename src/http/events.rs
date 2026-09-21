@@ -51,18 +51,26 @@ pub async fn events(
             stream_event_envelope(&agent_id, &event_log_epoch, event, emit_projection_effect)
         })
         .collect();
-    Ok(Json(EventsPageResponse {
-        events,
-        event_log_epoch,
-        contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-        oldest_seq,
-        newest_seq,
-        cursor_seq,
-        has_older: page.has_older,
-        has_newer: page.has_newer,
-        order,
-        limit,
-    }))
+    Ok((
+        [(
+            axum::http::HeaderName::from_static(
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+            ),
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
+        )],
+        Json(EventsPageResponse {
+            events,
+            event_log_epoch,
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+            oldest_seq,
+            newest_seq,
+            cursor_seq,
+            has_older: page.has_older,
+            has_newer: page.has_newer,
+            order,
+            limit,
+        }),
+    ))
 }
 
 pub async fn message(

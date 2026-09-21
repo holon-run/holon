@@ -275,9 +275,24 @@ impl TuiProjection {
 
     pub(crate) fn prepend_event_history_page(
         &mut self,
+        events: Vec<StreamEventEnvelope>,
+        oldest_cursor: Option<u64>,
+        has_older: bool,
+    ) -> usize {
+        self.prepend_event_history_page_with_contract_version(
+            events,
+            oldest_cursor,
+            has_older,
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+        )
+    }
+
+    pub(crate) fn prepend_event_history_page_with_contract_version(
+        &mut self,
         mut events: Vec<StreamEventEnvelope>,
         oldest_cursor: Option<u64>,
         has_older: bool,
+        contract_version: u32,
     ) -> usize {
         self.adopt_event_log_epoch(event_log_epoch(&events));
         self.history_paging_active = true;
@@ -321,7 +336,12 @@ impl TuiProjection {
             {
                 continue;
             }
-            prepended.push(self.projection_event_record_from_envelope(envelope));
+            prepended.push(
+                self.projection_event_record_from_envelope_with_contract_version(
+                    envelope,
+                    contract_version,
+                ),
+            );
         }
         let capped = prepended.len() > available;
         if capped {
@@ -761,8 +781,19 @@ impl TuiProjection {
         &self,
         envelope: StreamEventEnvelope,
     ) -> ProjectionEventRecord {
+        self.projection_event_record_from_envelope_with_contract_version(
+            envelope,
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+        )
+    }
+
+    fn projection_event_record_from_envelope_with_contract_version(
+        &self,
+        envelope: StreamEventEnvelope,
+        contract_version: u32,
+    ) -> ProjectionEventRecord {
         let event = AgentStreamEvent {
-            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+            contract_version,
             id: envelope.id.clone(),
             event: envelope.event_type.clone(),
             data: envelope,

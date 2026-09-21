@@ -1154,7 +1154,7 @@ impl LocalClient {
             unreachable!("decode_or_error returns Ok only for successful responses");
         }
         Ok(LocalEventStream {
-            contract_version: event_contract_version_from_headers(response.headers()),
+            contract_version: event_contract_version_from_headers(response.headers())?,
             transport: EventStreamTransport::Http(response),
             frame_buffer: Vec::new(),
             idle_timeout: self.network.stream_idle_timeout,
@@ -1783,18 +1783,38 @@ async fn read_unix_response_head(
     Ok(ParsedHttpResponseHead {
         status_code,
         chunked,
-        contract_version: contract_version
-            .unwrap_or(crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION),
+        contract_version: validate_event_contract_version(contract_version.ok_or_else(|| {
+            anyhow!(
+                "event stream response is missing {}",
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER
+            )
+        })?)?,
         body,
     })
 }
 
-fn event_contract_version_from_headers(headers: &reqwest::header::HeaderMap) -> u32 {
-    headers
+fn event_contract_version_from_headers(headers: &reqwest::header::HeaderMap) -> Result<u32> {
+    let version = headers
         .get(crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.trim().parse::<u32>().ok())
-        .unwrap_or(crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION)
+        .ok_or_else(|| {
+            anyhow!(
+                "event stream response has missing or malformed {}",
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER
+            )
+        })?;
+    validate_event_contract_version(version)
+}
+
+fn validate_event_contract_version(version: u32) -> Result<u32> {
+    if version != crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION {
+        return Err(anyhow!(
+            "unsupported event contract version {version}; expected {}",
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION
+        ));
+    }
+    Ok(version)
 }
 
 fn decode_or_error(status_code: u16, body: Vec<u8>, path: &str) -> Result<Vec<u8>> {
