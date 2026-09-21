@@ -5148,7 +5148,7 @@
       "stability": "stable"
     },
     {
-      "description": "Safely remove a registered linked Git worktree. The runtime refuses arbitrary\npaths, canonical roots, dirty or locked worktrees, and roots occupied by\nanother agent/task. An active target requires return_to. Branch deletion is\noptional and only occurs when merge ancestry is proven.\n",
+      "description": "Safely remove a registered linked Git worktree. Provide exactly one of\n`execution_root_id` or `path`; paths must resolve to a unique registered\nworktree in an attached workspace. The runtime refuses arbitrary paths,\ncanonical roots, dirty or locked worktrees, and roots occupied by another\nagent/task. An active target requires `return_to`, which may be `canonical`,\n`agent_home`, an execution-root ID, an attached canonical path, or a registered\nworktree path. Branch deletion is optional and only occurs when merge ancestry\nis proven.\n",
       "family": "authority_expanding",
       "freeform_grammar": null,
       "input_schema": {
@@ -5166,9 +5166,18 @@
             ]
           },
           "execution_root_id": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "merged_into": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "path": {
             "type": [
               "string",
               "null"
@@ -5181,9 +5190,7 @@
             ]
           }
         },
-        "required": [
-          "execution_root_id"
-        ],
+        "required": [],
         "type": "object"
       },
       "name": "RemoveWorktree",

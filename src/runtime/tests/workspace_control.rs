@@ -330,6 +330,45 @@ async fn remove_worktree_retains_dirty_then_removes_clean_without_deleting_branc
 }
 
 #[tokio::test]
+async fn remove_worktree_resolves_registered_path_selector() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let created = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/remove-by-path",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Reuse,
+        )
+        .await
+        .unwrap();
+    let execution_root_id = created.execution_root_id.unwrap();
+    let worktree_path = created.worktree_path.unwrap();
+
+    let removed = runtime
+        .remove_registered_worktree_selector(
+            None,
+            Some(&worktree_path),
+            None,
+            WorktreeBranchPolicy::Keep,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(removed.execution_root_id, execution_root_id);
+    assert!(removed.removed);
+    assert!(!worktree_path.exists());
+}
+
+#[tokio::test]
 async fn remove_worktree_keeps_branch_when_merge_reachability_check_fails() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
     let repo = init_git_repo();
@@ -423,6 +462,55 @@ async fn active_dirty_remove_preflight_does_not_switch_workspace() {
             .unwrap()
             .execution_root_id,
         execution_root_id
+    );
+}
+
+#[tokio::test]
+async fn active_remove_accepts_canonical_path_as_return_to() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let created = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/return-to-path",
+            "main",
+            None,
+            true,
+            ExistingWorktreePolicy::Reuse,
+        )
+        .await
+        .unwrap();
+    let execution_root_id = created.execution_root_id.unwrap();
+    let worktree_path = created.worktree_path.unwrap();
+
+    let removed = runtime
+        .remove_registered_worktree_selector(
+            Some(&execution_root_id),
+            None,
+            Some(repo.path().to_str().unwrap()),
+            WorktreeBranchPolicy::Keep,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert!(removed.removed);
+    assert!(removed.switched);
+    assert!(!worktree_path.exists());
+    assert_eq!(
+        runtime
+            .agent_state()
+            .await
+            .unwrap()
+            .active_workspace_entry
+            .unwrap()
+            .workspace_id,
+        workspace.workspace_id
     );
 }
 
