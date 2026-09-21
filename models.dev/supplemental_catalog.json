@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "f18a8b4960dc9d69c9bf1aa9c8ec6c18e199622a050efaa344f8b65f23575db2",
-  "adapter_version": "0.40.0 (5cdfa3d)",
+  "upstream_revision": "0b8f08a9c83d301f8e28fc901d63f87f18824065187096b801274e72fb7ba3db",
+  "adapter_version": "0.44.1 (ab261d4)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -53,6 +53,56 @@
         "medium",
         "high",
         "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "bigmodel/glm-5.3-flashx",
+      "display_name": "GLM-5.3-FlashX",
+      "description": "High-speed GLM-5.3-Flash serving option for coding and agent workflows",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "dashscope/kimi-k3",
+      "display_name": "Kimi K3",
+      "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 1048576,
+      "max_output_tokens_upper_limit": 1048576,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
         "max"
       ],
       "source": "models_dev_supplement"
@@ -371,6 +421,32 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "none",
+        "high",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "mistral/zai-glm-5-3",
+      "display_name": "GLM-5.3",
+      "description": "Flagship GLM model for long-horizon coding, agents, and complex project delivery",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
         "high",
         "max"
       ],
@@ -649,6 +725,31 @@
       "source": "models_dev_supplement"
     },
     {
+      "model_ref": "volcengine/glm-5-3-flash-260828",
+      "display_name": "GLM-5.3-Flash",
+      "description": "Native multimodal GLM model for efficient coding and long-horizon agent tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
       "model_ref": "xai/grok-4.6",
       "display_name": "Grok 4.6",
       "description": "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects",
@@ -692,6 +793,31 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "zai/glm-5.3-flashx",
+      "display_name": "GLM-5.3-FlashX",
+      "description": "High-speed GLM-5.3-Flash serving option for coding and agent workflows",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
       "source": "models_dev_supplement"
     }
   ]
