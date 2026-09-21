@@ -178,7 +178,7 @@ pub(crate) use semantic_selection::{
 pub(crate) use semantic_selection::{
     AutonomousContinuationCandidate, AutonomousContinuationProposal,
     AutonomousContinuationSelectionContext, SemanticCandidateSelectionHookError,
-    SemanticCandidateSelectionHookResult,
+    SemanticCandidateSelectionHookErrorKind, SemanticCandidateSelectionHookResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

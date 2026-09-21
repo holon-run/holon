@@ -63,12 +63,37 @@ pub(crate) enum SemanticCandidateSelectionHookResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SemanticCandidateSelectionHookError;
+pub(crate) enum SemanticCandidateSelectionHookErrorKind {
+    Unknown,
+    Timeout,
+    Cancelled,
+    ResourceExhausted,
+    ProviderError,
+    MalformedResponse,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SemanticCandidateSelectionHookError {
+    pub(crate) kind: SemanticCandidateSelectionHookErrorKind,
+}
+
+impl SemanticCandidateSelectionHookError {
+    pub(crate) const fn unknown() -> Self {
+        Self {
+            kind: SemanticCandidateSelectionHookErrorKind::Unknown,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AutonomousContinuationFallbackReason {
     HookUnavailable,
     HookError,
+    Timeout,
+    Cancelled,
+    ResourceExhausted,
+    ProviderError,
+    MalformedResponse,
     Abstain,
     InvalidProposal,
     StaleSnapshot,
@@ -79,6 +104,11 @@ impl AutonomousContinuationFallbackReason {
         match self {
             Self::HookUnavailable => "hook_unavailable",
             Self::HookError => "hook_error",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+            Self::ResourceExhausted => "resource_exhausted",
+            Self::ProviderError => "provider_error",
+            Self::MalformedResponse => "malformed_response",
             Self::Abstain => "abstain",
             Self::InvalidProposal => "invalid_proposal",
             Self::StaleSnapshot => "stale_snapshot",
@@ -221,9 +251,9 @@ pub(crate) fn select_autonomous_continuation_with_hook(
                     context.baseline.clone(),
                     Some(AutonomousContinuationFallbackReason::Abstain),
                 ),
-                Err(_) => (
+                Err(error) => (
                     context.baseline.clone(),
-                    Some(AutonomousContinuationFallbackReason::HookError),
+                    Some(fallback_reason_for_hook_error(error.kind)),
                 ),
             },
         }
@@ -268,9 +298,9 @@ pub(crate) async fn select_autonomous_continuation_with_async_hook(
                     context.baseline.clone(),
                     Some(AutonomousContinuationFallbackReason::Abstain),
                 ),
-                Err(_) => (
+                Err(error) => (
                     context.baseline.clone(),
-                    Some(AutonomousContinuationFallbackReason::HookError),
+                    Some(fallback_reason_for_hook_error(error.kind)),
                 ),
             },
         }
@@ -280,6 +310,78 @@ pub(crate) async fn select_autonomous_continuation_with_async_hook(
         candidate,
         fallback_reason,
     })
+}
+
+fn fallback_reason_for_hook_error(
+    kind: SemanticCandidateSelectionHookErrorKind,
+) -> AutonomousContinuationFallbackReason {
+    match kind {
+        SemanticCandidateSelectionHookErrorKind::Unknown => {
+            AutonomousContinuationFallbackReason::HookError
+        }
+        SemanticCandidateSelectionHookErrorKind::Timeout => {
+            AutonomousContinuationFallbackReason::Timeout
+        }
+        SemanticCandidateSelectionHookErrorKind::Cancelled => {
+            AutonomousContinuationFallbackReason::Cancelled
+        }
+        SemanticCandidateSelectionHookErrorKind::ResourceExhausted => {
+            AutonomousContinuationFallbackReason::ResourceExhausted
+        }
+        SemanticCandidateSelectionHookErrorKind::ProviderError => {
+            AutonomousContinuationFallbackReason::ProviderError
+        }
+        SemanticCandidateSelectionHookErrorKind::MalformedResponse => {
+            AutonomousContinuationFallbackReason::MalformedResponse
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_hook_error_kinds_to_stable_fallback_reasons() {
+        let cases = [
+            (
+                SemanticCandidateSelectionHookErrorKind::Unknown,
+                AutonomousContinuationFallbackReason::HookError,
+                "hook_error",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::Timeout,
+                AutonomousContinuationFallbackReason::Timeout,
+                "timeout",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::Cancelled,
+                AutonomousContinuationFallbackReason::Cancelled,
+                "cancelled",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::ResourceExhausted,
+                AutonomousContinuationFallbackReason::ResourceExhausted,
+                "resource_exhausted",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::ProviderError,
+                AutonomousContinuationFallbackReason::ProviderError,
+                "provider_error",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+                AutonomousContinuationFallbackReason::MalformedResponse,
+                "malformed_response",
+            ),
+        ];
+
+        for (kind, expected, audit_label) in cases {
+            let reason = fallback_reason_for_hook_error(kind);
+            assert_eq!(reason, expected);
+            assert_eq!(reason.as_str(), audit_label);
+        }
+    }
 }
 
 pub(crate) fn resolve_autonomous_continuation_work_item<'a>(

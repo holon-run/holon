@@ -21,6 +21,8 @@ pub struct JevConfig {
     pub model: String,
     pub api_key: Option<String>,
     pub timeout: Duration,
+    pub max_request_bytes: usize,
+    pub max_response_bytes: usize,
 }
 
 impl fmt::Debug for JevConfig {
@@ -31,6 +33,8 @@ impl fmt::Debug for JevConfig {
             .field("model", &self.model)
             .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
             .field("timeout", &self.timeout)
+            .field("max_request_bytes", &self.max_request_bytes)
+            .field("max_response_bytes", &self.max_response_bytes)
             .finish()
     }
 }
@@ -42,6 +46,8 @@ impl JevConfig {
             model: "typesafe-ai/jev".into(),
             api_key: None,
             timeout: Duration::from_secs(30),
+            max_request_bytes: 256 * 1024,
+            max_response_bytes: 512 * 1024,
         }
     }
 
@@ -63,6 +69,16 @@ impl JevConfig {
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn with_max_request_bytes(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
+    }
+
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes;
         self
     }
 }
@@ -119,26 +135,35 @@ impl DecisionProvider<Value, Value> for JevProvider {
             headers.insert(AUTHORIZATION, value);
         }
 
-        let response = self
-            .client
-            .post(&self.config.endpoint)
-            .headers(headers)
-            .timeout(
-                context
-                    .remaining()
-                    .map(|remaining| remaining.min(self.config.timeout))
-                    .unwrap_or(self.config.timeout),
-            )
-            .json(&JevRequest::from_request(&request)?)
-            .send()
-            .await
-            .map_err(|error| DecisionError::Transport(error.to_string()))?;
+        let wire_request = JevRequest::from_request(&request)?;
+        let body = serde_json::to_vec(&wire_request)
+            .map_err(|error| DecisionError::Serialization(error.to_string()))?;
+        if body.len() > self.config.max_request_bytes {
+            return Err(DecisionError::ResourceExhausted(format!(
+                "request body exceeds {} bytes",
+                self.config.max_request_bytes
+            )));
+        }
+        let response = send_with_context(
+            self.client
+                .post(&self.config.endpoint)
+                .headers(headers)
+                .timeout(
+                    context
+                        .remaining()
+                        .map(|remaining| remaining.min(self.config.timeout))
+                        .unwrap_or(self.config.timeout),
+                )
+                .body(body),
+            &context,
+        )
+        .await?;
         context.check()?;
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|error| DecisionError::Transport(error.to_string()))?;
+        let body = read_bounded(response, &context, self.config.max_response_bytes).await?;
+        // Buffered chunks can complete the read without the polling timer
+        // firing, so re-check the context before treating this as a success.
+        context.check()?;
         if !status.is_success() {
             return Err(DecisionError::Provider(format!(
                 "jev endpoint returned {status}: {}",
@@ -275,10 +300,120 @@ pub fn map_response<I, C: Serialize>(
     })
 }
 
+async fn send_with_context(
+    request: reqwest::RequestBuilder,
+    context: &DecisionContext,
+) -> Result<reqwest::Response, DecisionError> {
+    let send = request.send();
+    tokio::pin!(send);
+    loop {
+        tokio::select! {
+            result = &mut send => {
+                return result.map_err(|error| {
+                    if error.is_timeout() {
+                        DecisionError::DeadlineExceeded
+                    } else if context.is_cancelled() {
+                        DecisionError::Cancelled
+                    } else {
+                        DecisionError::Transport(error.to_string())
+                    }
+                });
+            }
+            _ = tokio::time::sleep(Duration::from_millis(10)) => context.check()?,
+        }
+    }
+}
+
+fn map_request_error(error: reqwest::Error, context: &DecisionContext) -> DecisionError {
+    if error.is_timeout() {
+        DecisionError::DeadlineExceeded
+    } else if context.is_cancelled() {
+        DecisionError::Cancelled
+    } else {
+        DecisionError::Transport(error.to_string())
+    }
+}
+
+async fn read_bounded(
+    mut response: reqwest::Response,
+    context: &DecisionContext,
+    max_bytes: usize,
+) -> Result<String, DecisionError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(DecisionError::ResourceExhausted(format!(
+            "response body exceeds {max_bytes} bytes"
+        )));
+    }
+    let mut body = Vec::new();
+    loop {
+        let chunk = response.chunk();
+        tokio::pin!(chunk);
+        let chunk = tokio::select! {
+            result = &mut chunk => result,
+            _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                context.check()?;
+                continue;
+            }
+        }
+        .map_err(|error| map_request_error(error, context))?;
+        let Some(chunk) = chunk else { break };
+        if body.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(DecisionError::ResourceExhausted(format!(
+                "response body exceeds {max_bytes} bytes"
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    String::from_utf8(body).map_err(|error| DecisionError::Serialization(error.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap;
+    use decision_core::DecisionProvider;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    fn test_server(response: Option<&'static [u8]>, delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            thread::sleep(delay);
+            if let Some(response) = response {
+                stream.write_all(response).expect("response");
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn drip_test_server(
+        head: &'static [u8],
+        chunks: &'static [&'static [u8]],
+        gap: Duration,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream.write_all(head).expect("head");
+            for chunk in chunks {
+                thread::sleep(gap);
+                stream.write_all(chunk).expect("chunk");
+            }
+        });
+        format!("http://{address}")
+    }
 
     fn request() -> DecisionRequest<Value, Value> {
         DecisionRequest {
@@ -396,5 +531,106 @@ mod tests {
             .await
             .expect("Jev response");
         assert!(matches!(result.outcome, DecisionOutcome::Select { .. }));
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_request_before_http_call() {
+        let provider =
+            JevProvider::new(JevConfig::new("http://127.0.0.1:1").with_max_request_bytes(1))
+                .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_response_exceeding_content_length_limit() {
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n123456"),
+            Duration::ZERO,
+        );
+        let provider = JevProvider::new(JevConfig::new(endpoint).with_max_response_bytes(5))
+            .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_response_exceeding_incremental_limit_without_content_length() {
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n123456"),
+            Duration::ZERO,
+        );
+        let provider = JevProvider::new(JevConfig::new(endpoint).with_max_response_bytes(5))
+            .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn propagates_cancellation_and_deadline_to_http_request() {
+        let provider = JevProvider::new(
+            JevConfig::new(test_server(None, Duration::from_millis(250)))
+                .with_timeout(Duration::from_secs(2)),
+        )
+        .expect("provider");
+        let context = DecisionContext::new();
+        let cancellation = context.cancellation_token();
+        let task = tokio::spawn({
+            let provider = provider.clone();
+            let context = context.clone();
+            async move { provider.decide(request(), context).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancellation.cancel();
+        assert!(matches!(
+            task.await.expect("cancel task"),
+            Err(DecisionError::Cancelled)
+        ));
+
+        let provider = JevProvider::new(
+            JevConfig::new(test_server(None, Duration::from_millis(250)))
+                .with_timeout(Duration::from_secs(2)),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_millis(30)),
+            )
+            .await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
+    }
+
+    #[tokio::test]
+    async fn classifies_body_read_timeout_as_deadline_exceeded() {
+        let endpoint = drip_test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            &[b"xx"],
+            Duration::from_millis(400),
+        );
+        let provider =
+            JevProvider::new(JevConfig::new(endpoint).with_timeout(Duration::from_millis(100)))
+                .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
+    }
+
+    #[tokio::test]
+    async fn deadline_expiring_during_bounded_body_read_is_not_reported_as_success() {
+        let endpoint = drip_test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n",
+            &[b"xx", b"xx", b"xx", b"xx"],
+            Duration::from_millis(8),
+        );
+        let provider =
+            JevProvider::new(JevConfig::new(endpoint).with_timeout(Duration::from_secs(5)))
+                .expect("provider");
+        let result = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_millis(20)),
+            )
+            .await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
     }
 }

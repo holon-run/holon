@@ -172,6 +172,8 @@ pub enum DecisionError {
     Transport(String),
     #[error("serialization error: {0}")]
     Serialization(String),
+    #[error("decision resource exhausted: {0}")]
+    ResourceExhausted(String),
     #[error("decision was cancelled")]
     Cancelled,
     #[error("decision deadline exceeded")]
@@ -227,6 +229,10 @@ impl DecisionContext {
 
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancellation.is_cancelled()
     }
 
     pub fn remaining(&self) -> Option<Duration> {
