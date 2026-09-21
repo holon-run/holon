@@ -939,7 +939,7 @@ fn build_system_sections(
         section(
             "file_reference_contract",
             PromptStability::Stable,
-            "For file references in Holon briefs or assistant Markdown, prefer a confirmed execution-host absolute path. Create a Markdown link or image only when the runtime supplied and confirmed the target location metadata; never infer, concatenate, normalize, or guess a link target from a workspace id, work item id, agent-home path, worktree path, or local path. This applies equally to a WorkItem `plan.md`, an agent-home file, and a file in a linked worktree. If no confirmed absolute path is available, output only the literal path in backticks. Do not turn a local path into a URL or construct `https://local/...`, `http://local/...`, or `/work-items/...` references.".to_string(),
+            "For file references in Holon briefs or assistant Markdown, prefer a confirmed execution-host absolute path. Create a Markdown link or image only when the runtime supplied and confirmed the target location metadata; never infer, concatenate, normalize, or guess a link target from a workspace id, work item id, agent-home path, worktree path, or local path. This applies equally to a WorkItem `plan.md`, an agent-home file, and a file in a linked worktree. If a runtime supplies an existing `workspace://` locator, reproduce it exactly as returned, including any opaque `?root=` selector; never construct one yourself. If no confirmed absolute path is available, output only the literal path in backticks. Do not turn a local path into a URL or construct `https://local/...`, `http://local/...`, or `/work-items/...` references.".to_string(),
         ),
         section(
             "exploration_discipline",
@@ -2031,6 +2031,8 @@ mod tests {
         assert!(section
             .content
             .contains("runtime supplied and confirmed the target location metadata"));
+        assert!(section.content.contains("reproduce it exactly as returned"));
+        assert!(section.content.contains("opaque `?root=` selector"));
         assert!(section
             .content
             .contains("only the literal path in backticks"));

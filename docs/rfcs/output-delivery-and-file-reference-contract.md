@@ -210,9 +210,12 @@ Reporting guidance:
   form;
 - remain independent of the concrete path syntax.
 
-Workspace guidance adopts the location matrix while retaining historical
-`workspace://` compatibility instructions. The prompt change may merge in
-parallel with #3033, subject to the release gate below.
+Workspace guidance adopts the location matrix without carrying historical
+`workspace://` construction instructions. The file-reference contract above
+still requires consumers to reproduce a runtime-supplied locator exactly,
+including its opaque execution-root selector; the prompt does not authorize
+constructing such locators. The prompt change may merge in parallel with
+#3033, subject to the release gate below.
 
 ## Release Acceptance Gate
 
