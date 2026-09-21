@@ -7,6 +7,7 @@ issue:
   - 3031
   - 3032
   - 3033
+  - 3152
 ---
 
 # RFC: Output Delivery and File Reference Contract
@@ -30,9 +31,21 @@ The correct file reference depends on where the reference is written:
 - public or portable output prefers a portable relative path or a confirmed
   published URL and does not expose machine-specific paths by default.
 
-Historical `workspace://` references remain supported by consumers, but they
-are not the intended default for newly generated output after the prompt phase
-lands.
+## File Reference Generation Rules
+
+For Holon briefs and assistant Markdown, file references follow these rules:
+
+1. Generate a Markdown link or image only when the runtime supplied and
+   confirmed the target location metadata. Do not infer, concatenate, or guess
+   a target from a workspace id, WorkItem id, agent-home path, worktree path,
+   or local path.
+2. If no confirmed absolute path is available, emit only the literal path in
+   backticks.
+3. Never turn a local path into a URL or construct `https://local/...`,
+   `http://local/...`, `workspace://...`, or `/work-items/...` references.
+
+These rules cover WorkItem `plan.md` files, agent-home files, and files in
+linked worktrees.
 
 ## Status And Rollout
 
@@ -197,9 +210,12 @@ Reporting guidance:
   form;
 - remain independent of the concrete path syntax.
 
-Workspace guidance adopts the location matrix while retaining historical
-`workspace://` compatibility instructions. The prompt change may merge in
-parallel with #3033, subject to the release gate below.
+Workspace guidance adopts the location matrix without carrying historical
+`workspace://` construction instructions. The file-reference contract above
+still requires consumers to reproduce a runtime-supplied locator exactly,
+including its opaque execution-root selector; the prompt does not authorize
+constructing such locators. The prompt change may merge in parallel with
+#3033, subject to the release gate below.
 
 ## Release Acceptance Gate
 

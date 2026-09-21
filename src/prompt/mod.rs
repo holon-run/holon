@@ -937,6 +937,11 @@ fn build_system_sections(
             "Prefer durable action over narration. Use progress text only to orient the operator when the next action would otherwise be opaque, especially before file mutation, long-running commands, or strategy changes. Before tool calls, use at most 1-2 short sentences that state the immediate action and why it is useful now; do not include full reasoning, historical recap, hypothesis trees, or broad status reports. After reads, searches, or tool failures, summarize only when material state changed or the next action would otherwise be unclear, and keep it to confirmed facts plus the next bounded action. Do not restate known context, prior reports, or details already expressed by code, diffs, tool output, logs, WorkItems, plans, or tests. Avoid replaying plans or logs, but do not omit material outcomes, plan changes, or decisions from the final brief. Holon's operator-facing delivery is brief-centric: intermediate assistant progress may be hidden, compressed, or treated as transient. This does not relax `response_language`: every operator-visible assistant message, including transient progress text, must follow the operator's response language. Put information the operator must know in the final delivery text, and when completing a WorkItem, in the same-round assistant completion report that is promoted as the WorkItem result brief. Do not leave decisions, caveats, verification status, blockers, or required operator action only in intermediate progress text. File entry points supplement rather than replace a self-contained result summary. When referencing deliverable files, use descriptive Markdown links backed by confirmed location metadata, preserving the source execution root for worktree artifacts. Follow surface-specific guidance rather than assuming one reference form fits project documents, local records, Holon brief/assistant text, and public channels. Do not invent workspace IDs, root IDs, local paths, or URLs; make only the necessary targeted query for missing location metadata, and if an access link still cannot be confirmed, state the limitation instead of expanding access solely to create a link. After updating a plan, briefly explain what changed, whether it has been implemented, and whether operator confirmation is required; include a descriptive plan link when its access location is confirmed. When the task is satisfied and relevant verification is known, deliver the result instead of continuing low-value exploration. Final delivery should be concise and user-facing. Lead with the most important conclusion, outcome, or summary. Put required operator action, blockers, failed checks, and verification status near the top when they affect the next decision. Put explanations, evidence, implementation details, and process context after the main result. Structure final responses so that tail truncation preserves the key result. For simple answers, use 1-3 sentences. For small code or config changes, use 2-5 sentences or up to 3 bullets. For medium changes, use up to 6 bullets. Prefer no more than 10 lines by default, and exceed these limits only when the operator asks for detail or complexity, safety, or accuracy requires it. Mention changed behavior or relevant files only when useful. Do not include full diffs, large code blocks, before/after dumps, long command logs, or complete process replay; avoid fixed templates, boilerplate, and weak endings such as only saying done.".to_string(),
         ),
         section(
+            "file_reference_contract",
+            PromptStability::Stable,
+            "For file references in Holon briefs or assistant Markdown, prefer a confirmed execution-host absolute path. Create a Markdown link or image only when the runtime supplied and confirmed the target location metadata; never infer, concatenate, normalize, or guess a link target from a workspace id, work item id, agent-home path, worktree path, or local path. This applies equally to a WorkItem `plan.md`, an agent-home file, and a file in a linked worktree. If a runtime supplies an existing `workspace://` locator, reproduce it exactly as returned, including any opaque `?root=` selector; never construct one yourself. If no confirmed absolute path is available, output only the literal path in backticks. Do not turn a local path into a URL or construct `https://local/...`, `http://local/...`, or `/work-items/...` references.".to_string(),
+        ),
+        section(
             "exploration_discipline",
             PromptStability::Stable,
             "Exploration must reduce uncertainty toward the operator's goal. Prefer bounded questions over broad scans. After related read or search commands, decide whether you can act, conclude, ask for clarification, or need one more specific fact. If continuing exploration, name the specific missing fact and the next bounded command or query. Do not continue broad exploration just because more files or references are available. Do not repeat the same read command or nearby one-line slice after the useful context is already present; use a targeted refresh only for diagnostics, suspected external edits, formatter/script changes, or other concrete changed-state questions.".to_string(),
@@ -1998,6 +2003,45 @@ mod tests {
         assert!(!sections
             .iter()
             .any(|section| section.name == "long_task_delivery"));
+    }
+
+    #[test]
+    fn system_prompt_includes_file_reference_contract() {
+        let sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+            ToolPromptContext::default(),
+        );
+        let section = sections
+            .iter()
+            .find(|section| section.name == "file_reference_contract")
+            .expect("file reference contract section");
+
+        assert!(section
+            .content
+            .contains("confirmed execution-host absolute path"));
+        assert!(section.content.contains("WorkItem `plan.md`"));
+        assert!(section.content.contains("agent-home file"));
+        assert!(section.content.contains("linked worktree"));
+        assert!(section
+            .content
+            .contains("runtime supplied and confirmed the target location metadata"));
+        assert!(section.content.contains("reproduce it exactly as returned"));
+        assert!(section.content.contains("opaque `?root=` selector"));
+        assert!(section
+            .content
+            .contains("only the literal path in backticks"));
+        assert!(section.content.contains("https://local/..."));
+        assert!(section.content.contains("http://local/..."));
+        assert!(!section.content.contains("workspace://..."));
+        assert!(section.content.contains("/work-items/..."));
+        assert!(!section.content.contains("Historical"));
+        assert!(!section.content.contains("compatibility resolver"));
     }
 
     #[test]

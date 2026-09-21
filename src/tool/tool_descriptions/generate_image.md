@@ -1,7 +1,7 @@
 Generate one image from a text prompt using a configured image-generation model.
 
 The runtime saves the generated image under `agent_home/media/generated` and returns
-a `workspace://...` URI plus metadata. Do not request multiple images in one call;
+an image reference plus metadata. Do not request multiple images in one call;
 call this tool multiple times when distinct images are needed.
 
 Inputs:
