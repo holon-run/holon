@@ -34,6 +34,7 @@ import {
 import type { LedgerDurability } from "./errors";
 import {
   classifyEnvelope,
+  SUPPORTED_ENVELOPE_CONTRACT_VERSION,
   type ClassifiedEnvelope,
 } from "./classification";
 import { remoteScopeKeyParts, type LedgerRemoteScopeKey } from "./keys";
@@ -329,6 +330,7 @@ export class LedgerIngestionPipeline {
   async ingest(
     scope: LedgerScopeKey,
     envelopes: Array<Record<string, unknown>>,
+    contractVersion = SUPPORTED_ENVELOPE_CONTRACT_VERSION,
   ): Promise<LedgerIngestionStatus> {
     const tracker = await this.ensureTracker(scope);
     if (!(await this.ensureExactHandle())) {
@@ -336,7 +338,7 @@ export class LedgerIngestionPipeline {
     }
     const ledger = this.ledger!;
     const classified = envelopes
-      .map((envelope) => ({ envelope, classified: classifyEnvelope(envelope) }))
+      .map((envelope) => ({ envelope, classified: classifyEnvelope(envelope, contractVersion) }))
       .sort((a, b) => a.classified.eventSeq - b.classified.eventSeq);
     if (classified.length === 0) return this.statusFor(scope, tracker);
 
@@ -1111,14 +1113,16 @@ export class LedgerIngestionPipeline {
     envelope: unknown;
     classification: { projectionEffect: "none" | "display_invalidation"; envelopeContractVersion?: number };
   }): ReturnType<typeof classifyEnvelope> {
-    return classifyEnvelope({
+    return classifyEnvelope(
+      {
       ...(typeof event.envelope === "object" && event.envelope !== null
         ? (event.envelope as Record<string, unknown>)
         : {}),
       event_seq: event.eventSeq,
       projection_effect: event.classification.projectionEffect,
-      contract_version: event.classification.envelopeContractVersion,
-    });
+      },
+      event.classification.envelopeContractVersion,
+    );
   }
 
   private advanceContiguity(tracker: ScopeTracker, newSeqs: number[]): number {

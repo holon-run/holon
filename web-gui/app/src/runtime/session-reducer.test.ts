@@ -11,14 +11,13 @@ import {
 } from "./session-reducer";
 
 describe("reduceAgentSessionTimeline", () => {
-  it("preserves unknown current schemas outside the domain projection", () => {
+  it("projects opaque future events without a client-side schema registry", () => {
     const timeline = reduceAgentSessionTimeline({
       events: {
         events: [
           {
             id: "event-unknown-schema",
             event_seq: 1,
-            contract_version: 3,
             payload_schema: "holon.runtime_event.future_message",
             payload_schema_version: 1,
             ts: "2026-07-16T10:00:00Z",
@@ -32,7 +31,8 @@ describe("reduceAgentSessionTimeline", () => {
       },
     });
 
-    expect(timeline).toEqual([]);
+    expect(timeline).toHaveLength(1);
+    expect(timeline[0]?.body).toBe("must not project");
   });
 
   it("projects operator input events into the timeline", () => {

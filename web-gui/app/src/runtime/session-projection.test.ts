@@ -32,7 +32,6 @@ function currentEvent(
 ): ProjectionEvent {
   return {
     ...event(eventSeq, type, payload),
-    contract_version: 3,
     payload_schema: payloadSchema,
     payload_schema_version: 1,
   };

@@ -55,8 +55,8 @@ test("assembles a complete batch and exposes only its checkpoint", () => {
   const begin = {
     type: "batch_begin",
     batch_id: "conversation:10:11",
-    schema_version: 1,
-    query_version: 1,
+    schema_version: 2,
+    query_version: 2,
     runtime_id: "runtime-a",
     event_log_epoch: "epoch-a",
     visibility_scope_id: "scope-a",
@@ -96,8 +96,8 @@ test("never exposes partial batches and rejects mismatched checkpoint ids", () =
   const begin = {
     type: "batch_begin",
     batch_id: "conversation:10:11",
-    schema_version: 1,
-    query_version: 1,
+    schema_version: 2,
+    query_version: 2,
     runtime_id: "runtime-a",
     event_log_epoch: "epoch-a",
     visibility_scope_id: "scope-a",

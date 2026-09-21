@@ -439,16 +439,6 @@ function assertBatchScope(
       "stream batch scope does not match the bootstrapped conversation",
     );
   }
-  for (const mutation of batch.mutations) {
-    if (
-      mutation.event_log_epoch !== scope.event_log_epoch ||
-      mutation.visibility_scope_id !== scope.visibility_scope_id
-    ) {
-      throw new ConversationStaleResponseError(
-        "stream mutation scope does not match the bootstrapped conversation",
-      );
-    }
-  }
 }
 
 function assertBatchFraming(batch: ConversationStreamBatch): void {

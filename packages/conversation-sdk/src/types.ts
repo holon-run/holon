@@ -9,8 +9,8 @@ export type ConversationDetailCursor = OpaqueToken<"conversation-detail-cursor">
 export type ConversationCheckpoint = OpaqueToken<"conversation-checkpoint">;
 
 export const CONVERSATION_CAPABILITY = "agents.conversation-read.v1";
-export const CONVERSATION_SCHEMA_VERSION = 1;
-export const CONVERSATION_QUERY_VERSION = 1;
+export const CONVERSATION_SCHEMA_VERSION = 2;
+export const CONVERSATION_QUERY_VERSION = 2;
 export const HOLON_CONTROL_PROTOCOL_NAME = "holon-control";
 export const HOLON_CONTROL_PROTOCOL_VERSION = 1;
 
@@ -262,38 +262,28 @@ export interface BatchBeginMessage {
 
 export interface OperatorUpsertMessage {
   readonly type: "operator_upsert";
-  readonly event_log_epoch: string;
-  readonly visibility_scope_id: string;
   readonly input: PendingInput;
 }
 
 export interface OperatorRemoveMessage {
   readonly type: "operator_remove";
-  readonly event_log_epoch: string;
-  readonly visibility_scope_id: string;
   readonly message_id: string;
   readonly revision: number;
 }
 
 export interface TurnSummaryUpsertMessage {
   readonly type: "turn_summary_upsert";
-  readonly event_log_epoch: string;
-  readonly visibility_scope_id: string;
   readonly turn: ConversationTurnSummary;
 }
 
 export interface ActivityUpsertMessage {
   readonly type: "activity_upsert";
-  readonly event_log_epoch: string;
-  readonly visibility_scope_id: string;
   readonly turn_id: string;
   readonly activity: ConversationActivity;
 }
 
 export interface DetailInvalidatedMessage {
   readonly type: "detail_invalidated";
-  readonly event_log_epoch: string;
-  readonly visibility_scope_id: string;
   readonly turn_id: string;
   readonly detail_revision: number;
 }

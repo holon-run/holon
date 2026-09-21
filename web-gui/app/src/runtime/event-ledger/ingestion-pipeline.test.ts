@@ -422,20 +422,20 @@ describe("ledger ingestion pipeline", () => {
     expect(status.blockedByEventSeq).toBeUndefined();
   });
 
-  it("blocks readiness on unknown envelope contract versions", async () => {
+  it("blocks readiness on an unknown stream contract version", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 
     const status = await pipeline.ingest(scope, [
       envelope(1),
-      envelope(2, { contract_version: 99 }),
+      envelope(2),
       envelope(3),
-    ]);
+    ], 99);
 
     expect(status.ingestedThroughSeq).toBe(3);
-    expect(status.projectionReadyThroughSeq).toBe(1);
-    expect(status.blockedByEventSeq).toBe(2);
+    expect(status.projectionReadyThroughSeq).toBeUndefined();
+    expect(status.blockedByEventSeq).toBe(1);
     expect(status.blockedReason).toBe("unknown_envelope_version");
   });
 

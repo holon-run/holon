@@ -1125,7 +1125,9 @@ describe("createRuntimeClient", () => {
       const url = String(input);
       seen.push(url);
       if (url.endsWith("/agents/agent%2Fone/events?after_seq=739&limit=80&order=asc&max_level=info")) {
-        return Response.json(responseBody);
+        return Response.json(responseBody, {
+          headers: { "x-holon-event-contract-version": "3" },
+        });
       }
       return new Response("not found", { status: 404 });
     };
@@ -1149,9 +1151,6 @@ describe("createRuntimeClient", () => {
           expect.objectContaining({
             event_seq: 740,
             event_log_epoch: "",
-            contract_version: 1,
-            payload_schema: "holon.runtime_event.legacy",
-            payload_schema_version: 1,
           }),
         ],
         cursor_seq: 819,
@@ -1460,6 +1459,8 @@ describe("createRuntimeClient", () => {
             },
           ],
           has_older: false,
+        }, {
+          headers: { "x-holon-event-contract-version": "3" },
         });
       }
       if (url.endsWith("/agents/agent-one/work-items?limit=50")) {

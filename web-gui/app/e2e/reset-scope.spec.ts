@@ -73,12 +73,10 @@ function envelope(
     id: `${agentId}-${eventLogEpoch}-event-${eventSeq}`,
     event_seq: eventSeq,
     event_log_epoch: eventLogEpoch,
-    contract_version: 2,
     ts: `2026-08-25T00:00:${String(eventSeq).padStart(2, "0")}Z`,
     agent_id: agentId,
     type,
     payload_schema: `holon.runtime_event.${type}`,
-    payload_schema_version: 1,
     payload,
   };
 }

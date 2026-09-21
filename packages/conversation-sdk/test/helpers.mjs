@@ -50,8 +50,8 @@ export function activity(
 
 export function summary(overrides = {}) {
   return {
-    schema_version: 1,
-    query_version: 1,
+    schema_version: 2,
+    query_version: 2,
     runtime_id: "runtime-a",
     event_log_epoch: "epoch-a",
     visibility_scope_id: "scope-a",
@@ -71,8 +71,8 @@ export function summary(overrides = {}) {
 export function detail(overrides = {}) {
   const selectedTurn = overrides.turn ?? turn("turn-10", 10);
   return {
-    schema_version: 1,
-    query_version: 1,
+    schema_version: 2,
+    query_version: 2,
     runtime_id: "runtime-a",
     event_log_epoch: "epoch-a",
     visibility_scope_id: "scope-a",
@@ -103,8 +103,8 @@ export function batch({
     begin: {
       type: "batch_begin",
       batch_id: batchId,
-      schema_version: 1,
-      query_version: 1,
+      schema_version: 2,
+      query_version: 2,
       runtime_id: "runtime-a",
       event_log_epoch: "epoch-a",
       visibility_scope_id: "scope-a",

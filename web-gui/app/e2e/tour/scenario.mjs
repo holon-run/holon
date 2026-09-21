@@ -93,8 +93,8 @@ export function seedTour(session) {
     session.briefsById.set(brief.id, brief);
     session.eventsByAgentId.set(id, [{
       id: `demo-${id}-event`, event_seq: 1, event_log_epoch: session.eventLogEpoch,
-      contract_version: 2, ts: timestamp, agent_id: id, type: "brief_created",
-      payload_schema: "holon.runtime_event.brief_created", payload_schema_version: 1,
+      ts: timestamp, agent_id: id, type: "brief_created",
+      payload_schema: "holon.runtime_event.brief_created",
       payload: { brief_id: brief.id },
     }]);
   }

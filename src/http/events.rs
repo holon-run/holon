@@ -215,7 +215,6 @@ pub async fn global_events_stream(
     if state.require_control_token {
         authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     }
-    let emit_projection_effect = projection_effect_emission_enabled(&state);
     let mut rx = state.host.subscribe_events();
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Event, std::convert::Infallible>>(32);
     tokio::spawn(async move {
@@ -225,15 +224,13 @@ pub async fn global_events_stream(
                     let Some(agent_id) = published.agent_id.as_deref() else {
                         continue;
                     };
-                    if send_stream_event(
-                        &tx,
-                        agent_id,
-                        &published.event.event_log_epoch,
-                        &published.event,
-                        emit_projection_effect,
-                    )
-                    .await
-                    .is_err()
+                    let payload = serde_json::json!({ "agent_id": agent_id }).to_string();
+                    if tx
+                        .send(Ok(Event::default()
+                            .event("agent_roster_hint")
+                            .data(payload)))
+                        .await
+                        .is_err()
                     {
                         break;
                     }
@@ -319,7 +316,7 @@ fn stream_event_envelope(
         // Schema-less legacy events omit constant envelope metadata.
         payload_schema: (!legacy).then(|| event.payload_schema.clone()),
         payload_schema_version: (!legacy).then_some(event.payload_schema_version),
-        payload: event.data.clone(),
+        payload: public_event_payload(&event.data),
         projection_effect: emit_projection_effect.then(|| {
             crate::runtime_event::projection_effect_of(
                 &event.kind,
@@ -329,6 +326,28 @@ fn stream_event_envelope(
             )
         }),
     }
+}
+
+/// Keep provider diagnostics available in the durable audit record while
+/// keeping them out of the default public event contract.
+fn public_event_payload(payload: &Value) -> Value {
+    let Value::Object(object) = payload else {
+        return payload.clone();
+    };
+    let mut public = object.clone();
+    for key in [
+        "prompt_cache_key",
+        "context_fingerprint",
+        "compression_epoch",
+        "provider_request_id",
+        "provider_message_id",
+        "provider_request_diagnostics",
+        "provider_attempt_timeline",
+        "only_sleep_tools",
+    ] {
+        public.remove(key);
+    }
+    Value::Object(public)
 }
 
 /// Whether event pages and SSE should emit the additive `projection_effect`

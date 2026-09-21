@@ -171,10 +171,10 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         if (!this.dependencies.isCurrentClientRequest(request)) return;
         this.scheduleStaleWatchdog(get, set);
       },
-      onEvent: (event) => {
+      onRosterHint: (agentId) => {
         if (!this.dependencies.isCurrentClientRequest(request)) return;
         this.scheduleStaleWatchdog(get, set);
-        this.dispatch(get, set, event);
+        this.noteRosterHint(get, set, agentId);
       },
       onClose: () => {
         if (this.dependencies.isCurrentClientRequest(request)) {

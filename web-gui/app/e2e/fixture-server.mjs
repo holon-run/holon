@@ -10,6 +10,8 @@ if (!Number.isInteger(requestedPort) || requestedPort <= 0) {
 }
 
 const sessions = new Map();
+const EVENT_CONTRACT_VERSION = "3";
+const EVENT_CONTRACT_VERSION_HEADER = "x-holon-event-contract-version";
 
 const vite = await createViteServer({
   appType: "spa",
@@ -74,10 +76,11 @@ async function requestBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-function json(res, body, status = 200) {
+function json(res, body, status = 200, extraHeaders = {}) {
   res.writeHead(status, {
     "Cache-Control": "no-store",
     "Content-Type": "application/json",
+    ...extraHeaders,
   });
   res.end(JSON.stringify(body));
 }
@@ -87,6 +90,7 @@ function openEventStream(req, res, clients) {
     "Cache-Control": "no-cache",
     "Connection": "keep-alive",
     "Content-Type": "text/event-stream",
+    [EVENT_CONTRACT_VERSION_HEADER]: EVENT_CONTRACT_VERSION,
   });
   res.write(": connected\n\n");
   clients.add(res);
@@ -215,6 +219,7 @@ function eventPage(session, agentId, url) {
   return {
     events,
     event_log_epoch: session.eventLogEpoch,
+    contract_version: Number(EVENT_CONTRACT_VERSION),
     has_older: false,
     has_newer: false,
     order,
@@ -427,12 +432,10 @@ async function handleControl(req, res, url) {
       id: "e2e-event-1",
       event_seq: 1,
       event_log_epoch: "e2e-epoch",
-      contract_version: 1,
       ts: "2026-08-25T00:00:00Z",
       agent_id: "e2e-agent",
       type: "agent_state_changed",
       payload_schema: "holon.runtime_event.legacy",
-      payload_schema_version: 1,
       payload: {},
     };
     const events = session.eventsByAgentId.get("e2e-agent") ?? [];
@@ -528,7 +531,12 @@ async function handleApi(req, res, url) {
   }
   const eventsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/events$/);
   if (eventsMatch) {
-    json(res, eventPage(session, decodeURIComponent(eventsMatch[1]), url));
+    json(
+      res,
+      eventPage(session, decodeURIComponent(eventsMatch[1]), url),
+      200,
+      { [EVENT_CONTRACT_VERSION_HEADER]: EVENT_CONTRACT_VERSION },
+    );
     return true;
   }
   const conversationMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/conversation$/);

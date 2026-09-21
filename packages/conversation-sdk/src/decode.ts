@@ -584,26 +584,22 @@ export function decodeConversationStreamMessage(
     case "operator_upsert":
       return {
         type,
-        ...decodeStreamScope(source, path),
         input: decodePendingInput(source.input, `${path}.input`),
       };
     case "operator_remove":
       return {
         type,
-        ...decodeStreamScope(source, path),
         message_id: nonEmptyString(source.message_id, `${path}.message_id`),
         revision: safeInteger(source.revision, `${path}.revision`),
       };
     case "turn_summary_upsert":
       return {
         type,
-        ...decodeStreamScope(source, path),
         turn: decodeTurnSummary(source.turn, `${path}.turn`),
       };
     case "activity_upsert":
       return {
         type,
-        ...decodeStreamScope(source, path),
         turn_id: nonEmptyString(source.turn_id, `${path}.turn_id`),
         activity: decodeConversationActivity(
           source.activity,
@@ -613,7 +609,6 @@ export function decodeConversationStreamMessage(
     case "detail_invalidated":
       return {
         type,
-        ...decodeStreamScope(source, path),
         turn_id: nonEmptyString(source.turn_id, `${path}.turn_id`),
         detail_revision: safeInteger(
           source.detail_revision,

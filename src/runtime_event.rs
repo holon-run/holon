@@ -67,6 +67,20 @@ pub const ALL_RUNTIME_EVENT_KINDS: &[RuntimeEventKind] = &[
     RuntimeEventKind::SchedulerDiagnostic,
 ];
 
+/// Wire names in the public typed-event matrix. Events outside this set stay
+/// on the opaque legacy boundary until they have a stable payload contract.
+pub const PUBLIC_TYPED_RUNTIME_EVENT_WIRE_NAMES: &[&str] = &[
+    "message_enqueued",
+    "message_processing_started",
+    "brief_created",
+    "task_created",
+    "task_status_updated",
+    "task_result_received",
+    "work_item_written",
+    "agent_state_changed",
+    "scheduler_diagnostic",
+];
+
 pub fn legacy_contract_version() -> u32 {
     LEGACY_RUNTIME_EVENT_CONTRACT_VERSION
 }
@@ -444,6 +458,28 @@ mod tests {
                 Some(*kind)
             );
         }
+    }
+
+    #[test]
+    fn registry_matches_the_public_typed_event_matrix() {
+        let registry_names: HashSet<_> = runtime_event_registry()
+            .iter()
+            .map(|entry| entry.wire_name)
+            .collect();
+        let matrix_names: HashSet<_> = PUBLIC_TYPED_RUNTIME_EVENT_WIRE_NAMES
+            .iter()
+            .copied()
+            .collect();
+
+        assert_eq!(
+            registry_names, matrix_names,
+            "the server registry and public typed-event matrix must stay in sync"
+        );
+        assert_eq!(
+            PUBLIC_TYPED_RUNTIME_EVENT_WIRE_NAMES.len(),
+            registry_names.len(),
+            "the public typed-event matrix must not contain duplicate wire names"
+        );
     }
 
     #[test]

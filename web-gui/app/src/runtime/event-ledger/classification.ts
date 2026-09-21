@@ -74,7 +74,6 @@ export interface ClassifiedEnvelope {
 
 interface EnvelopeLike {
   event_seq?: number | null;
-  contract_version?: number | null;
   projection_effect?: EnvelopeProjectionEffect | null;
   type?: string | null;
   payload?: unknown;
@@ -83,26 +82,22 @@ interface EnvelopeLike {
 /**
  * Classify one raw event envelope for ingestion.
  *
- * When the server does not advertise `projection_effect` yet (pre-S2-cutover
- * remotes), classification falls back to the conservative local registry:
- * every known event type invalidates display except the explicitly
- * effect-less diagnostic family. An unrecognized event type with no
- * `projection_effect` is conservatively treated as display-affecting.
+ * When `projection_effect` is absent, the envelope is conservatively treated
+ * as display-affecting. The client does not maintain a second event registry.
  */
-export function classifyEnvelope(envelope: EnvelopeLike): ClassifiedEnvelope {
+export function classifyEnvelope(
+  envelope: EnvelopeLike,
+  contractVersion = SUPPORTED_ENVELOPE_CONTRACT_VERSION,
+): ClassifiedEnvelope {
   const eventSeq = envelope.event_seq;
   if (typeof eventSeq !== "number" || !Number.isFinite(eventSeq)) {
     throw new Error("cannot classify envelope without a finite event_seq");
   }
-  const contractVersion = envelope.contract_version ?? 1;
   const blocksReadiness = contractVersion > SUPPORTED_ENVELOPE_CONTRACT_VERSION;
-  const advertised = envelope.projection_effect ?? null;
   const effect: EnvelopeProjectionEffect =
-    advertised ?? localFallbackEffect(envelope.type ?? "");
+    envelope.projection_effect ?? "display_invalidation";
 
   const reference = effect === "display_invalidation" ? referenceForEnvelope(envelope) : null;
-  const tombstone =
-    effect === "display_invalidation" ? tombstoneForEnvelope(envelope) : null;
   return {
     eventSeq,
     classification: {
@@ -111,8 +106,8 @@ export function classifyEnvelope(envelope: EnvelopeLike): ClassifiedEnvelope {
     },
     blocksReadiness,
     reference,
-    tombstone,
-    selfContained: effect === "display_invalidation" && reference === null && tombstone === null,
+    tombstone: null,
+    selfContained: effect === "display_invalidation" && reference === null,
   };
 }
 
@@ -155,32 +150,6 @@ function revisionField(
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.length > 0) return value;
   return undefined;
-}
-
-/**
- * Delete mapping. No wire delete event exists yet; the tombstone completion
- * path is exercised through pipeline APIs and becomes live when the server
- * contract adds deletion events.
- */
-function tombstoneForEnvelope(
-  envelope: EnvelopeLike,
-): EnvelopeRecordTombstone | null {
-  const payload = asRecord(envelope.payload);
-  const eventType = envelope.type ?? "";
-  if (eventType !== "canonical_record_deleted") return null;
-  const recordKind = stringField(payload, "record_kind") as LedgerRecordKind | undefined;
-  const recordId = stringField(payload, "record_id");
-  if (!recordKind || !recordId) return null;
-  if (recordKind !== "message" && recordKind !== "brief" && recordKind !== "transcript_entry") {
-    return null;
-  }
-  return { recordKind, recordId };
-}
-
-/** Conservative pre-S2 fallback: diagnostics are inert, everything else displays. */
-function localFallbackEffect(eventType: string): EnvelopeProjectionEffect {
-  if (eventType === "scheduler_diagnostic") return "none";
-  return "display_invalidation";
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
