@@ -138,6 +138,7 @@ pub struct RuntimeConfigSurface {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeDecisionSurface {
     pub enabled: bool,
+    pub provider: Option<String>,
     pub endpoint: Option<String>,
     pub model: Option<String>,
     pub credential_profile: Option<String>,
@@ -148,6 +149,7 @@ impl RuntimeDecisionSurface {
         let route = config.route.as_ref();
         Self {
             enabled: config.enabled.unwrap_or(false),
+            provider: route.and_then(|route| route.provider.clone()),
             endpoint: route.and_then(|route| route.endpoint.clone()),
             model: route.and_then(|route| route.model.clone()),
             credential_profile: route.and_then(|route| route.credential_profile.clone()),

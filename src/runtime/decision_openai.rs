@@ -11,6 +11,7 @@ use decision_core::{
     DecisionContext, DecisionError, DecisionOutcome, DecisionProvider, DecisionRequest,
     DecisionResponse,
 };
+use decision_jev::{JevConfig, JevProvider};
 use decision_openai::{OpenAiConfig, OpenAiProvider};
 use serde_json::{json, Value};
 use std::{
@@ -34,10 +35,27 @@ pub(crate) struct OpenAiSemanticCandidateSelectionHook {
 }
 
 pub(crate) struct ResolvedDecisionRoute {
-    provider_config: OpenAiConfig,
+    provider: DecisionProviderKind,
     timeout: Duration,
     concurrency: usize,
     queue_capacity: usize,
+}
+
+enum DecisionProviderKind {
+    OpenAi(OpenAiConfig),
+    Jev(JevConfig),
+}
+
+type DecisionProviderObject =
+    dyn DecisionProvider<Value, Value, Output = Value> + Send + Sync + 'static;
+
+fn build_provider(
+    provider: DecisionProviderKind,
+) -> Result<Box<DecisionProviderObject>, DecisionError> {
+    match provider {
+        DecisionProviderKind::OpenAi(config) => Ok(Box::new(OpenAiProvider::new(config)?)),
+        DecisionProviderKind::Jev(config) => Ok(Box::new(JevProvider::new(config)?)),
+    }
 }
 
 /// Resolves the configured decision route into validated provider settings.
@@ -68,17 +86,30 @@ pub(crate) fn resolve_decision_route(
         !endpoint.trim().is_empty() && !model.trim().is_empty(),
         "decision.route endpoint and model must not be empty"
     );
+    let provider = route
+        .provider
+        .as_deref()
+        .unwrap_or("openai")
+        .trim()
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        matches!(provider.as_str(), "openai" | "jev"),
+        "decision.route.provider must be one of: openai, jev"
+    );
     let timeout = Duration::from_millis(
         configured
             .timeout_ms
             .unwrap_or(DEFAULT_DECISION_TIMEOUT.as_millis() as u64)
             .max(1),
     );
-    let mut provider_config =
+    let mut openai_config =
         OpenAiConfig::new(endpoint.to_owned(), model.to_owned()).with_timeout(timeout);
     if let Some(max_tokens) = configured.max_tokens {
-        provider_config = provider_config.with_max_tokens(max_tokens);
+        openai_config = openai_config.with_max_tokens(max_tokens);
     }
+    let mut jev_config = JevConfig::new(endpoint.to_owned())
+        .with_model(model.to_owned())
+        .with_timeout(timeout);
     if let Some(profile) = route.credential_profile.as_deref() {
         let store = crate::config::load_credential_store_at(
             &crate::config::credential_store_path(home_dir),
@@ -94,10 +125,15 @@ pub(crate) fn resolve_decision_route(
             ),
             "decision credential profile {profile} must contain an API key or bearer token"
         );
-        provider_config = provider_config.with_api_key(credential.material.clone());
+        openai_config = openai_config.with_api_key(credential.material.clone());
+        jev_config = jev_config.with_api_key(credential.material.clone());
     }
     Ok(Some(ResolvedDecisionRoute {
-        provider_config,
+        provider: if provider == "jev" {
+            DecisionProviderKind::Jev(jev_config)
+        } else {
+            DecisionProviderKind::OpenAi(openai_config)
+        },
         timeout,
         concurrency: configured
             .concurrency
@@ -116,7 +152,7 @@ pub(crate) fn validate_decision_route_config(
     home_dir: &std::path::Path,
 ) -> anyhow::Result<()> {
     if let Some(route) = resolve_decision_route(configured, home_dir)? {
-        OpenAiProvider::new(route.provider_config)?;
+        build_provider(route.provider)?;
     }
     Ok(())
 }
@@ -126,7 +162,7 @@ impl OpenAiSemanticCandidateSelectionHook {
     pub(crate) fn new(config: OpenAiConfig) -> Result<Self, DecisionError> {
         Ok(Self {
             executor: DecisionExecutor::new(
-                OpenAiProvider::new(config)?,
+                build_provider(DecisionProviderKind::OpenAi(config))?,
                 DEFAULT_DECISION_TIMEOUT,
                 DEFAULT_DECISION_CONCURRENCY,
                 DEFAULT_DECISION_QUEUE_CAPACITY,
@@ -143,7 +179,7 @@ impl OpenAiSemanticCandidateSelectionHook {
         };
         Ok(Some(Self {
             executor: DecisionExecutor::new(
-                OpenAiProvider::new(route.provider_config)?,
+                build_provider(route.provider)?,
                 route.timeout,
                 route.concurrency,
                 route.queue_capacity,
@@ -256,7 +292,7 @@ impl AsyncSemanticCandidateSelectionHook for OpenAiSemanticCandidateSelectionHoo
 
 #[derive(Clone)]
 struct DecisionExecutor {
-    provider: Arc<OpenAiProvider>,
+    provider: Arc<DecisionProviderObject>,
     timeout: Duration,
     concurrency: Arc<Semaphore>,
     pending: Arc<AtomicUsize>,
@@ -265,13 +301,13 @@ struct DecisionExecutor {
 
 impl DecisionExecutor {
     fn new(
-        provider: OpenAiProvider,
+        provider: Box<DecisionProviderObject>,
         timeout: Duration,
         concurrency: usize,
         queue_capacity: usize,
     ) -> Self {
         Self {
-            provider: Arc::new(provider),
+            provider: Arc::from(provider),
             timeout,
             concurrency: Arc::new(Semaphore::new(concurrency)),
             pending: Arc::new(AtomicUsize::new(0)),
@@ -541,7 +577,7 @@ mod tests {
             OpenAiConfig::new(endpoint, "mock-model").with_timeout(Duration::from_secs(1)),
         )
         .expect("provider");
-        let executor = DecisionExecutor::new(provider, Duration::from_millis(20), 1, 1);
+        let executor = DecisionExecutor::new(Box::new(provider), Duration::from_millis(20), 1, 1);
         let request = DecisionRequest {
             request_id: "deadline-test".into(),
             input: json!({}),
@@ -565,6 +601,7 @@ mod tests {
         crate::config::DecisionConfigFile {
             enabled: Some(true),
             route: Some(crate::config::DecisionRouteConfigFile {
+                provider: None,
                 endpoint: Some(endpoint.into()),
                 model: Some(model.into()),
                 credential_profile: None,
@@ -605,5 +642,26 @@ mod tests {
             home,
         )
         .expect("complete route validates");
+    }
+
+    #[test]
+    fn decision_jev_route_uses_native_provider_factory() {
+        let home = std::path::Path::new("/nonexistent-holon-test-home");
+        let config = crate::config::DecisionConfigFile {
+            enabled: Some(true),
+            route: Some(crate::config::DecisionRouteConfigFile {
+                provider: Some("jev".into()),
+                endpoint: Some("http://127.0.0.1:9/v1".into()),
+                model: Some("jev-decision".into()),
+                credential_profile: None,
+            }),
+            ..Default::default()
+        };
+
+        let route = resolve_decision_route(&config, home)
+            .expect("Jev route should resolve")
+            .expect("enabled route should be present");
+        assert!(matches!(route.provider, DecisionProviderKind::Jev(_)));
+        validate_decision_route_config(&config, home).expect("Jev route should validate");
     }
 }

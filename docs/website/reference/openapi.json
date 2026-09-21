@@ -12297,7 +12297,8 @@
                   "credential_profile": null,
                   "enabled": false,
                   "endpoint": null,
-                  "model": null
+                  "model": null,
+                  "provider": null
                 },
                 "properties": {
                   "credential_profile": {
@@ -12316,6 +12317,12 @@
                     ]
                   },
                   "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "provider": {
                     "type": [
                       "string",
                       "null"
@@ -12826,7 +12833,8 @@
                   "credential_profile": null,
                   "enabled": false,
                   "endpoint": null,
-                  "model": null
+                  "model": null,
+                  "provider": null
                 },
                 "properties": {
                   "credential_profile": {
@@ -12845,6 +12853,12 @@
                     ]
                   },
                   "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "provider": {
                     "type": [
                       "string",
                       "null"

@@ -26,6 +26,7 @@ Decision configuration is independent from the ordinary agent model route:
 decision:
   enabled: false
   route:
+    provider: openai # or jev for the native typed Jev wire provider
     endpoint: https://decision.example/v1
     model: bounded-selector
     credential_profile: decision-api
@@ -36,15 +37,17 @@ decision:
 ```
 
 `decision.enabled: true` requires a non-empty `decision.route.endpoint` and
-`decision.route.model`. Credentials are referenced by profile and are never
-serialized into the Decision configuration or included in request metadata.
-The Decision route is never inherited from the ordinary agent model route.
+`decision.route.model`. `decision.route.provider` accepts `openai` (the
+backward-compatible default) or `jev`, which uses the native typed Jev wire
+provider. Credentials are referenced by profile and are never serialized into
+the Decision configuration or included in request metadata. The Decision route
+is never inherited from the ordinary agent model route.
 
 ## Web GUI settings
 
-`RuntimeConfigSurface` reports the current Decision route (`enabled`,
+`RuntimeConfigSurface` reports the current Decision route (`enabled`, `provider`,
 `endpoint`, `model`, `credential_profile`), and the Web GUI settings page
-reads and writes the same four `decision.*` keys through
+reads and writes the same five `decision.*` keys through
 `/runtime/config/update`. The GUI keeps `model` as free text: a Decision route
 may target an OpenAI-compatible endpoint or a JEV-specific decision model that
 the shared model catalog does not list. The GUI does not enumerate or validate
