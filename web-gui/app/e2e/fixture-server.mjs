@@ -260,6 +260,11 @@ function writeEvent(streams, envelope) {
   for (const stream of streams) stream.write(frame);
 }
 
+function writeRosterHint(streams, agentId) {
+  const frame = `event: agent_roster_hint\ndata: ${JSON.stringify({ agent_id: agentId })}\n\n`;
+  for (const stream of streams) stream.write(frame);
+}
+
 async function handleControl(req, res, url) {
   if (url.pathname === "/__e2e__/health") {
     json(res, { ok: true });
@@ -318,12 +323,12 @@ async function handleControl(req, res, url) {
     const scope = { event_log_epoch: session.eventLogEpoch, visibility_scope_id: session.visibilityScopeId };
     const batchId = `batch-${data.head}`;
     const changes = [
-      { type: "batch_begin", batch_id: batchId, schema_version: 1, query_version: 1,
+      { type: "batch_begin", batch_id: batchId, schema_version: 2, query_version: 2,
         runtime_id: session.runtimeId, ...scope, from_seq: previous?.head ?? 0, through_seq: data.head },
-      ...data.turns.map((turn) => ({ type: "turn_summary_upsert", ...scope, turn })),
+      ...data.turns.map((turn) => ({ type: "turn_summary_upsert", turn })),
       ...Object.entries(data.invalidateOnly ? {} : data.activitiesByTurnId).flatMap(([turn_id, activities]) =>
-        activities.map((activity) => ({ type: "activity_upsert", ...scope, turn_id, activity }))),
-      ...data.turns.map((turn) => ({ type: "detail_invalidated", ...scope, turn_id: turn.turn_id, detail_revision: data.head })),
+        activities.map((activity) => ({ type: "activity_upsert", turn_id, activity }))),
+      ...data.turns.map((turn) => ({ type: "detail_invalidated", turn_id: turn.turn_id, detail_revision: data.head })),
       { type: "checkpoint", batch_id: batchId, ...scope, through_seq: data.head, checkpoint: `conv-${data.head}` },
     ];
     for (const stream of session.conversationStreams) {
@@ -413,7 +418,12 @@ async function handleControl(req, res, url) {
     ) {
       session.currentRunIdByAgentId.delete(envelope.agent_id);
     }
-    if (body.broadcast !== false) writeEvent(session.globalStreams, envelope);
+    if (body.broadcast !== false) {
+      // Global SSE carries only roster hints; the agent stream remains the
+      // live event channel for subscribers that already opened this agent.
+      writeEvent(session.agentStreams, envelope);
+      writeRosterHint(session.globalStreams, envelope.agent_id);
+    }
     json(res, { appended: true });
     return true;
   }
@@ -441,7 +451,7 @@ async function handleControl(req, res, url) {
     const events = session.eventsByAgentId.get("e2e-agent") ?? [];
     events.push(envelope);
     session.eventsByAgentId.set("e2e-agent", events);
-    writeEvent(globalStreams, envelope);
+    writeRosterHint(globalStreams, envelope.agent_id);
     json(res, { emitted: true });
     return true;
   }
@@ -549,8 +559,8 @@ async function handleApi(req, res, url) {
     const data = session.conversationData.get(agentId);
     const head = data?.head ?? eventHead(session, agentId);
     json(res, {
-      schema_version: 1,
-      query_version: 1,
+      schema_version: 2,
+      query_version: 2,
       runtime_id: session.runtimeId,
       event_log_epoch: session.eventLogEpoch,
       visibility_scope_id: session.visibilityScopeId,
@@ -573,7 +583,7 @@ async function handleApi(req, res, url) {
     const turn = data?.turns.find((turn) => turn.turn_id === turnId);
     if (!turn) { json(res, { error: "turn missing" }, 404); return true; }
     json(res, {
-      schema_version: 1, query_version: 1, runtime_id: session.runtimeId,
+      schema_version: 2, query_version: 2, runtime_id: session.runtimeId,
       event_log_epoch: session.eventLogEpoch, visibility_scope_id: session.visibilityScopeId,
       snapshot_through_seq: data.head, event_head_seq: data.head, oldest_retained_seq: 0,
       snapshot_cursor: `conv-snap:${activityMatch[1]}:${data.head}`,

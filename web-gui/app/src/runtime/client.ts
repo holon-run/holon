@@ -1958,6 +1958,7 @@ function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | und
   const timestamp = stringValue(record.ts);
   const agentId = stringValue(record.agent_id);
   const eventType = stringValue(record.type);
+  const projectionEffect = record.projection_effect;
   if (!id || eventSeq == null || !timestamp || !agentId || !eventType) return undefined;
   return {
     id,
@@ -1972,6 +1973,9 @@ function decodeStreamEventEnvelope(value: unknown): StreamEventEnvelopeDto | und
       : {}),
     ...(typeof record.payload_schema_version === "number"
       ? { payload_schema_version: record.payload_schema_version }
+      : {}),
+    ...(projectionEffect === "none" || projectionEffect === "display_invalidation"
+      ? { projection_effect: projectionEffect }
       : {}),
     ...(record.provenance != null ? { provenance: record.provenance } : {}),
   };

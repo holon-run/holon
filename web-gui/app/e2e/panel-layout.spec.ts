@@ -208,6 +208,7 @@ test("work item details prioritize results and keep technical fields and plan na
     id: "work-written", event_seq: 1, event_log_epoch: "e2e-epoch",
     ts: "2026-09-16T01:00:00Z", agent_id: "bootstrap-agent", type: "work_item_written",
     payload_schema: "holon.runtime_event.work_item_written",
+    projection_effect: "display_invalidation",
     payload: { work_item: { id: work.id, objective: work.objective, state: work.state, revision: work.revision }, work_item_id: work.id },
   } } });
   await page.reload();

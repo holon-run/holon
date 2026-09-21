@@ -62,6 +62,7 @@ function envelope(
     agent_id: agentId,
     type,
     payload_schema: `holon.runtime_event.${type}`,
+    projection_effect: "display_invalidation",
     payload,
   };
 }

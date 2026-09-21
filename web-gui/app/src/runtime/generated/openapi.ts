@@ -1901,8 +1901,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Global event stream
-         * @description Return Server-Sent Events carrying raw StreamEventEnvelope JSON data for all public agents. This live stream uses the in-memory event watcher and does not provide historical replay or a global cursor. If the receiver lags, the server closes the stream; clients must backfill each agent from its last contiguous event_seq before reconnecting. The envelope contract version is declared once by the x-holon-event-contract-version response header; individual envelopes do not repeat it and no longer carry a provenance object.
+         * Global roster hint stream
+         * @description Return Server-Sent Events carrying only agent_roster_hint discovery records with an agent_id. This live stream has no cursor and never carries agent event payloads; recoverable events are delivered only by the per-agent stream. Clients use each hint to refresh the authoritative roster and backfill the agent stream.
          */
         get: operations["eventsStream"];
         put?: never;
@@ -4313,7 +4313,6 @@ export interface components {
             type: "batch_begin";
             visibility_scope_id: string;
         } | {
-            event_log_epoch: string;
             input: {
                 /** @description Operator display name snapshotted in the canonical message origin. */
                 actor_display_name?: string | null;
@@ -4329,17 +4328,13 @@ export interface components {
             };
             /** @constant */
             type: "operator_upsert";
-            visibility_scope_id: string;
         } | {
-            event_log_epoch: string;
             message_id: string;
             /** Format: uint64 */
             revision: number;
             /** @constant */
             type: "operator_remove";
-            visibility_scope_id: string;
         } | {
-            event_log_epoch: string;
             turn: {
                 attention?: ({
                     /** @constant */
@@ -4447,7 +4442,6 @@ export interface components {
             };
             /** @constant */
             type: "turn_summary_upsert";
-            visibility_scope_id: string;
         } | {
             activity: {
                 id: string;
@@ -4510,19 +4504,15 @@ export interface components {
                 revision: number;
                 summary: string;
             };
-            event_log_epoch: string;
             turn_id: string;
             /** @constant */
             type: "activity_upsert";
-            visibility_scope_id: string;
         } | {
             /** Format: uint64 */
             detail_revision: number;
-            event_log_epoch: string;
             turn_id: string;
             /** @constant */
             type: "detail_invalidated";
-            visibility_scope_id: string;
         } | {
             batch_id: string;
             checkpoint: string;
