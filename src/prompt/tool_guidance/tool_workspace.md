@@ -11,18 +11,6 @@ For new references, a leading `/` means an execution-host absolute path, never a
 
 Use only confirmed location metadata. Do not invent, normalize, or substitute a path, and do not fall back from a missing or removed worktree file to a canonical file with the same relative name. A filesystem path identifies a location; it is not a published URL, browser-local path, access credential, permanent content identity, or content snapshot. If no suitable entry point is confirmed, state the delivery location and access limitation in prose.
 
-`workspace://<workspace_id>/<relative/path>` remains Holon's historical Markdown/file-reference locator for files inside an attached workspace, including agent-home workspace ids such as `agent_home:<agent_id>`. Treat it as a local workspace reference, not a remote URL. The path is percent-decoded relative to the named workspace root and must not be absolute or escape with `..`. Preserve this form and its root selector when consuming existing content or tool-returned locator data, but do not choose it as the default for new assistant-authored file links and do not make the model assemble workspace or execution-root IDs.
-
-Historical workspace references for a git worktree may include an optional
-`?root=<execution_root_id>` query parameter:
-`workspace://<workspace_id>/<path>?root=<execution_root_id>`.
-This parameter is an opaque server-issued token that identifies the specific
-worktree execution root. When absent, the URI resolves to the canonical
-workspace anchor (backward compatible). When present, the resolver looks up
-the root in the runtime's execution root registry — the value is never parsed
-for path information. Preserve it exactly when consuming or reproducing an
-existing locator.
-
 Use `GetWorkspaceState` before acting when workspace identity, retained
 worktrees, or occupancy is uncertain. Use `AttachWorkspace` only to add a new
 workspace binding; it does not switch.

@@ -952,10 +952,7 @@ mod tests {
             .content
             .contains("not a global prohibition against explicit filesystem targets"));
         assert!(section.content.contains("agent_home"));
-        assert!(section
-            .content
-            .contains("`workspace://<workspace_id>/<relative/path>`"));
-        assert!(section.content.contains("not a remote URL"));
+        assert!(!section.content.contains("workspace://"));
         assert!(section.content.contains("same physical execution root"));
         assert!(section
             .content
@@ -969,21 +966,9 @@ mod tests {
         assert!(section
             .content
             .contains("public channel, shared document, or publishable project documentation"));
-        assert!(section
-            .content
-            .contains("historical Markdown/file-reference locator"));
-        assert!(section
-            .content
-            .contains("do not choose it as the default for new assistant-authored file links"));
-        assert!(section
-            .content
-            .contains("Preserve this form and its root selector when consuming existing content"));
         assert!(!section
             .content
             .contains("[View report](workspace://<workspace_id>/reports/result.md)"));
-        assert!(section
-            .content
-            .contains("must not be absolute or escape with `..`"));
         assert!(section
             .content
             .contains("Shell `cd` affects only that shell command"));
