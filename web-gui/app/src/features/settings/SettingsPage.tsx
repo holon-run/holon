@@ -94,6 +94,29 @@ export function buildImageGenerationConfigUpdates(imageGenDefault: string): Arra
   return [trimmed ? { key: "image_generation.default", value: trimmed } : { key: "image_generation.default", unset: true }];
 }
 
+export function buildDecisionConfigUpdates(
+  enabled: boolean,
+  endpoint: string,
+  model: string,
+  credentialProfile: string,
+): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const trimmedEndpoint = endpoint.trim();
+  const trimmedModel = model.trim();
+  const trimmedCredentialProfile = credentialProfile.trim();
+  return [
+    enabled ? { key: "decision.enabled", value: true } : { key: "decision.enabled", unset: true },
+    trimmedEndpoint
+      ? { key: "decision.route.endpoint", value: trimmedEndpoint }
+      : { key: "decision.route.endpoint", unset: true },
+    trimmedModel
+      ? { key: "decision.route.model", value: trimmedModel }
+      : { key: "decision.route.model", unset: true },
+    trimmedCredentialProfile
+      ? { key: "decision.route.credential_profile", value: trimmedCredentialProfile }
+      : { key: "decision.route.credential_profile", unset: true },
+  ];
+}
+
 export function reorderModelFallbacks(
   models: string[],
   fromIndex: number,
@@ -174,12 +197,13 @@ export function buildStandardSearchProviderDefinitions(
     .sort((left, right) => right.capabilities.defaultPriority - left.capabilities.defaultPriority);
 }
 
-type SettingsTabKey = "general" | "models" | "vision" | "search" | "advanced";
+type SettingsTabKey = "general" | "models" | "vision" | "decision" | "search" | "advanced";
 
 const settingsTabs: Array<{ key: SettingsTabKey; labelKey: string; descriptionKey: string }> = [
   { key: "general", labelKey: "settings.tabGeneral", descriptionKey: "settings.tabGeneralDesc" },
   { key: "models", labelKey: "settings.tabModels", descriptionKey: "settings.tabModelsDesc" },
   { key: "vision", labelKey: "settings.tabVision", descriptionKey: "settings.tabVisionDesc" },
+  { key: "decision", labelKey: "settings.tabDecision", descriptionKey: "settings.tabDecisionDesc" },
   { key: "search", labelKey: "settings.tabSearch", descriptionKey: "settings.tabSearchDesc" },
   { key: "advanced", labelKey: "settings.tabAdvanced", descriptionKey: "settings.tabAdvancedDesc" },
 ];
@@ -245,6 +269,10 @@ export function SettingsPage({
   const draggedIndexRef = useRef<number | null>(null);
   const [visionDefault, setVisionDefault] = useState("");
   const [imageGenDefault, setImageGenDefault] = useState("");
+  const [decisionEnabled, setDecisionEnabled] = useState(false);
+  const [decisionEndpoint, setDecisionEndpoint] = useState("");
+  const [decisionModel, setDecisionModel] = useState("");
+  const [decisionCredentialProfile, setDecisionCredentialProfile] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
   const [disableProviderFallback, setDisableProviderFallback] = useState(false);
@@ -271,6 +299,7 @@ export function SettingsPage({
   const [searchProviderSaveMessage, setSearchProviderSaveMessage] = useState<string | undefined>();
   const [visionSaveMessage, setVisionSaveMessage] = useState<string | undefined>();
   const [imageGenSaveMessage, setImageGenSaveMessage] = useState<string | undefined>();
+  const [decisionSaveMessage, setDecisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
   const [activeTab, setActiveTab] = useState<SettingsTabKey>("models");
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
@@ -344,6 +373,10 @@ export function SettingsPage({
     setModelFallbacks(surface.modelFallbacks ?? []);
     setVisionDefault(surface.visionDefault ?? "");
     setImageGenDefault(surface.imageGenerationDefault ?? "");
+    setDecisionEnabled(surface.decision?.enabled ?? false);
+    setDecisionEndpoint(surface.decision?.endpoint ?? "");
+    setDecisionModel(surface.decision?.model ?? "");
+    setDecisionCredentialProfile(surface.decision?.credentialProfile ?? "");
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
     setDisableProviderFallback(surface.disableProviderFallback);
@@ -594,6 +627,22 @@ export function SettingsPage({
         : result.changed
           ? "Saved image generation default to config.json. Configuration reload scheduled."
           : "No image generation config changes were persisted.",
+    );
+  }
+
+  async function saveDecisionConfig() {
+    setDecisionSaveMessage(undefined);
+    const result = await onUpdateRuntimeConfig(
+      buildDecisionConfigUpdates(decisionEnabled, decisionEndpoint, decisionModel, decisionCredentialProfile),
+    );
+    if (!result) return;
+    const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
+    setDecisionSaveMessage(
+      rejected.length
+        ? t("settings.decisionRejected", { count: rejected.length })
+        : result.changed
+          ? t("settings.decisionSaved")
+          : t("settings.decisionNoChanges"),
     );
   }
 
@@ -1070,6 +1119,74 @@ export function SettingsPage({
                     <StatusChip className="settings-status available" tone="success" iconOnly title={t("settings.autoDiscovery")} />
                   )}
                   {imageGenSaveMessage ? <span>{imageGenSaveMessage}</span> : null}
+                </div>
+              </form>
+            )}
+          </Card>
+
+          {/* ── Decision provider ── */}
+          <Card className="settings-card settings-primary-card" hidden={activeTab !== "decision"}>
+            <div className="settings-card-head">
+              <div>
+                <span className="eyebrow">{t("settings.runtimeDefaults")}</span>
+                <h2>{t("settings.decisionProvider")}</h2>
+              </div>
+            </div>
+            {!surface ? (
+              <div className="settings-callout">
+                <strong>{t("settings.decisionConfigUnavailable")}</strong>
+                <span>{t("settings.refreshRuntimeHint")}</span>
+              </div>
+            ) : (
+              <form
+                className="settings-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void saveDecisionConfig();
+                }}
+              >
+                <label className="settings-checkbox">
+                  <input type="checkbox" checked={decisionEnabled} onChange={(event) => setDecisionEnabled(event.target.checked)} />
+                  <span>{t("settings.enableDecisionProvider")}</span>
+                </label>
+                <p className="settings-hint">{t("settings.decisionEnableHint")}</p>
+                <label>
+                  <span>{t("settings.decisionEndpoint")}</span>
+                  <input
+                    value={decisionEndpoint}
+                    onChange={(event) => setDecisionEndpoint(event.target.value)}
+                    placeholder="https://jev.example.com/v1"
+                  />
+                </label>
+                <label>
+                  <span>{t("settings.decisionModel")}</span>
+                  <input
+                    value={decisionModel}
+                    onChange={(event) => setDecisionModel(event.target.value)}
+                    placeholder="jev-decision-1"
+                  />
+                </label>
+                <p className="settings-hint">{t("settings.decisionModelHint")}</p>
+                <label>
+                  <span>{t("settings.decisionCredentialProfile")}</span>
+                  <input
+                    value={decisionCredentialProfile}
+                    onChange={(event) => setDecisionCredentialProfile(event.target.value)}
+                    placeholder="jev:default"
+                  />
+                </label>
+                <p className="settings-hint">{t("settings.decisionCredentialHint")}</p>
+                <div className="settings-actions">
+                  <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
+                    {runtimeConfigSaving ? t("settings.saving") : t("settings.saveDecision")}
+                  </Button>
+                  <StatusChip
+                    className={`settings-status ${decisionEnabled ? "available" : "unavailable"}`}
+                    tone={decisionEnabled ? "success" : "warning"}
+                    iconOnly
+                    title={decisionEnabled ? t("settings.decisionEnabledChip") : t("settings.decisionDisabledChip")}
+                  />
+                  {decisionSaveMessage ? <span>{decisionSaveMessage}</span> : null}
                 </div>
               </form>
             )}

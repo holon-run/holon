@@ -3172,6 +3172,7 @@ mod tests {
             model_fallbacks: Vec::new(),
             vision_default: None,
             image_generation_default: None,
+            decision: Default::default(),
             model_catalog: Vec::new(),
             unknown_model_fallback_configured: false,
             runtime_max_output_tokens: 8192,

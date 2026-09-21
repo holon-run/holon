@@ -361,6 +361,55 @@ describe("createRuntimeClient", () => {
     });
   });
 
+  it("projects the Decision provider surface from runtime config", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        Response.json({
+          ok: true,
+          config_file_path: "/tmp/config.json",
+          runtime_surface: {
+            decision: {
+              enabled: true,
+              endpoint: "https://jev.example.test/v1",
+              model: "jev-decision-1",
+              credential_profile: "jev:default",
+            },
+          },
+        })) as typeof fetch,
+    });
+
+    await expect(client.getRuntimeConfig()).resolves.toMatchObject({
+      surface: {
+        decision: {
+          enabled: true,
+          endpoint: "https://jev.example.test/v1",
+          model: "jev-decision-1",
+          credentialProfile: "jev:default",
+        },
+      },
+    });
+  });
+
+  it("defaults an absent Decision provider surface to disabled", async () => {
+    const client = createRuntimeClient({
+      mode: "remote",
+      baseUrl: "http://example.test:7878",
+      fetchImpl: (async () =>
+        Response.json({ ok: true, config_file_path: "/tmp/config.json", runtime_surface: {} })) as typeof fetch,
+    });
+
+    const config = await client.getRuntimeConfig();
+
+    expect(config.surface?.decision).toEqual({
+      enabled: false,
+      endpoint: undefined,
+      model: undefined,
+      credentialProfile: undefined,
+    });
+  });
+
   it("uses the explicit refresh endpoint when refreshing the model catalog", async () => {
     const seen: Array<{ url: string; method: string; body: unknown }> = [];
     const client = createRuntimeClient({

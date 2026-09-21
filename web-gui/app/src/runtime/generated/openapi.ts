@@ -5930,6 +5930,20 @@ export interface components {
                 command_task_output_quota_bytes: number;
                 /** Format: uint64 */
                 command_task_output_retention_bytes: number;
+                /**
+                 * @default {
+                 *       "credential_profile": null,
+                 *       "enabled": false,
+                 *       "endpoint": null,
+                 *       "model": null
+                 *     }
+                 */
+                decision: {
+                    credential_profile?: string | null;
+                    enabled: boolean;
+                    endpoint?: string | null;
+                    model?: string | null;
+                };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
                 disable_provider_fallback: boolean;
@@ -6055,6 +6069,20 @@ export interface components {
                 command_task_output_quota_bytes: number;
                 /** Format: uint64 */
                 command_task_output_retention_bytes: number;
+                /**
+                 * @default {
+                 *       "credential_profile": null,
+                 *       "enabled": false,
+                 *       "endpoint": null,
+                 *       "model": null
+                 *     }
+                 */
+                decision: {
+                    credential_profile?: string | null;
+                    enabled: boolean;
+                    endpoint?: string | null;
+                    model?: string | null;
+                };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
                 disable_provider_fallback: boolean;

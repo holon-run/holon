@@ -32,6 +32,94 @@ pub(crate) struct OpenAiSemanticCandidateSelectionHook {
     executor: DecisionExecutor,
 }
 
+pub(crate) struct ResolvedDecisionRoute {
+    provider_config: OpenAiConfig,
+    timeout: Duration,
+    concurrency: usize,
+    queue_capacity: usize,
+}
+
+/// Resolves the configured decision route into validated provider settings.
+///
+/// Returns `Ok(None)` when the decision provider is disabled. Runtime hook
+/// construction and HTTP config-candidate validation both go through this
+/// function so an incomplete route is rejected before it can be persisted.
+pub(crate) fn resolve_decision_route(
+    configured: &crate::config::DecisionConfigFile,
+    home_dir: &std::path::Path,
+) -> anyhow::Result<Option<ResolvedDecisionRoute>> {
+    if !configured.enabled.unwrap_or(false) {
+        return Ok(None);
+    }
+    let route = configured
+        .route
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("decision.enabled requires decision.route"))?;
+    let endpoint = route
+        .endpoint
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("decision.route.endpoint is required"))?;
+    let model = route
+        .model
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("decision.route.model is required"))?;
+    anyhow::ensure!(
+        !endpoint.trim().is_empty() && !model.trim().is_empty(),
+        "decision.route endpoint and model must not be empty"
+    );
+    let timeout = Duration::from_millis(
+        configured
+            .timeout_ms
+            .unwrap_or(DEFAULT_DECISION_TIMEOUT.as_millis() as u64)
+            .max(1),
+    );
+    let mut provider_config =
+        OpenAiConfig::new(endpoint.to_owned(), model.to_owned()).with_timeout(timeout);
+    if let Some(max_tokens) = configured.max_tokens {
+        provider_config = provider_config.with_max_tokens(max_tokens);
+    }
+    if let Some(profile) = route.credential_profile.as_deref() {
+        let store = crate::config::load_credential_store_at(
+            &crate::config::credential_store_path(home_dir),
+        )?;
+        let credential = store
+            .profiles
+            .get(profile)
+            .ok_or_else(|| anyhow::anyhow!("decision credential profile {profile} not found"))?;
+        anyhow::ensure!(
+            matches!(
+                credential.kind,
+                crate::config::CredentialKind::ApiKey | crate::config::CredentialKind::BearerToken
+            ),
+            "decision credential profile {profile} must contain an API key or bearer token"
+        );
+        provider_config = provider_config.with_api_key(credential.material.clone());
+    }
+    Ok(Some(ResolvedDecisionRoute {
+        provider_config,
+        timeout,
+        concurrency: configured
+            .concurrency
+            .unwrap_or(DEFAULT_DECISION_CONCURRENCY)
+            .max(1),
+        queue_capacity: configured
+            .queue_capacity
+            .unwrap_or(DEFAULT_DECISION_QUEUE_CAPACITY),
+    }))
+}
+
+/// Validates the decision route the same way runtime construction does, without
+/// keeping the resulting hook.
+pub(crate) fn validate_decision_route_config(
+    configured: &crate::config::DecisionConfigFile,
+    home_dir: &std::path::Path,
+) -> anyhow::Result<()> {
+    if let Some(route) = resolve_decision_route(configured, home_dir)? {
+        OpenAiProvider::new(route.provider_config)?;
+    }
+    Ok(())
+}
+
 impl OpenAiSemanticCandidateSelectionHook {
     #[cfg(test)]
     pub(crate) fn new(config: OpenAiConfig) -> Result<Self, DecisionError> {
@@ -48,65 +136,16 @@ impl OpenAiSemanticCandidateSelectionHook {
     pub(crate) fn from_app_config(
         config: &crate::config::AppConfig,
     ) -> anyhow::Result<Option<Self>> {
-        let configured = &config.stored_config.decision;
-        if !configured.enabled.unwrap_or(false) {
+        let Some(route) = resolve_decision_route(&config.stored_config.decision, &config.home_dir)?
+        else {
             return Ok(None);
-        }
-        let route = configured
-            .route
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("decision.enabled requires decision.route"))?;
-        let endpoint = route
-            .endpoint
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("decision.route.endpoint is required"))?;
-        let model = route
-            .model
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("decision.route.model is required"))?;
-        anyhow::ensure!(
-            !endpoint.trim().is_empty() && !model.trim().is_empty(),
-            "decision.route endpoint and model must not be empty"
-        );
-        let timeout = Duration::from_millis(
-            configured
-                .timeout_ms
-                .unwrap_or(DEFAULT_DECISION_TIMEOUT.as_millis() as u64)
-                .max(1),
-        );
-        let mut provider_config =
-            OpenAiConfig::new(endpoint.to_owned(), model.to_owned()).with_timeout(timeout);
-        if let Some(max_tokens) = configured.max_tokens {
-            provider_config = provider_config.with_max_tokens(max_tokens);
-        }
-        if let Some(profile) = route.credential_profile.as_deref() {
-            let store = crate::config::load_credential_store_at(
-                &crate::config::credential_store_path(&config.home_dir),
-            )?;
-            let credential = store.profiles.get(profile).ok_or_else(|| {
-                anyhow::anyhow!("decision credential profile {profile} not found")
-            })?;
-            anyhow::ensure!(
-                matches!(
-                    credential.kind,
-                    crate::config::CredentialKind::ApiKey
-                        | crate::config::CredentialKind::BearerToken
-                ),
-                "decision credential profile {profile} must contain an API key or bearer token"
-            );
-            provider_config = provider_config.with_api_key(credential.material.clone());
-        }
+        };
         Ok(Some(Self {
             executor: DecisionExecutor::new(
-                OpenAiProvider::new(provider_config)?,
-                timeout,
-                configured
-                    .concurrency
-                    .unwrap_or(DEFAULT_DECISION_CONCURRENCY)
-                    .max(1),
-                configured
-                    .queue_capacity
-                    .unwrap_or(DEFAULT_DECISION_QUEUE_CAPACITY),
+                OpenAiProvider::new(route.provider_config)?,
+                route.timeout,
+                route.concurrency,
+                route.queue_capacity,
             ),
         }))
     }
@@ -458,5 +497,51 @@ mod tests {
 
         assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
         server.join().expect("server");
+    }
+
+    fn decision_route(endpoint: &str, model: &str) -> crate::config::DecisionConfigFile {
+        crate::config::DecisionConfigFile {
+            enabled: Some(true),
+            route: Some(crate::config::DecisionRouteConfigFile {
+                endpoint: Some(endpoint.into()),
+                model: Some(model.into()),
+                credential_profile: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn decision_route_validation_matches_runtime_construction() {
+        let home = std::path::Path::new("/nonexistent-holon-test-home");
+
+        assert!(
+            resolve_decision_route(&crate::config::DecisionConfigFile::default(), home)
+                .expect("disabled route resolves")
+                .is_none()
+        );
+
+        let enabled_without_route = crate::config::DecisionConfigFile {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let error = resolve_decision_route(&enabled_without_route, home)
+            .err()
+            .expect("enabled without route must be rejected");
+        assert!(error.to_string().contains("decision.route"));
+
+        assert!(
+            resolve_decision_route(&decision_route("   ", "jev-decision"), home)
+                .err()
+                .expect("blank endpoint must be rejected")
+                .to_string()
+                .contains("must not be empty")
+        );
+
+        validate_decision_route_config(
+            &decision_route("http://127.0.0.1:9/v1", "jev-decision"),
+            home,
+        )
+        .expect("complete route validates");
     }
 }

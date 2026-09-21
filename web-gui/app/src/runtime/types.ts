@@ -430,6 +430,7 @@ export interface RuntimeConfigSurface {
   modelFallbacks: string[];
   visionDefault?: string;
   imageGenerationDefault?: string;
+  decision: RuntimeDecisionSurface;
   modelCatalog: string[];
   unknownModelFallbackConfigured: boolean;
   defaultToolOutputTokens: number;
@@ -439,6 +440,13 @@ export interface RuntimeConfigSurface {
   webSearch?: RuntimeWebSearchSummary;
   availableSearchProviderKinds: RuntimeWebSearchProviderKindSummary[];
   webSearchProviders: RuntimeWebSearchProviderSummary[];
+}
+
+export interface RuntimeDecisionSurface {
+  enabled: boolean;
+  endpoint?: string;
+  model?: string;
+  credentialProfile?: string;
 }
 
 export interface RuntimeWebSearchSummary {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildDecisionConfigUpdates,
   buildImageGenerationConfigUpdates,
   buildSearchProviderConfigUpdates,
   buildStandardSearchProviderDefinitions,
@@ -147,6 +148,35 @@ describe("buildImageGenerationConfigUpdates", () => {
 
   it("unsets image generation default when left empty for auto-selection", () => {
     expect(buildImageGenerationConfigUpdates("   ")).toEqual([{ key: "image_generation.default", unset: true }]);
+  });
+});
+
+describe("buildDecisionConfigUpdates", () => {
+  it("persists enabled Decision provider routing fields", () => {
+    expect(buildDecisionConfigUpdates(true, " https://jev.example.test/v1 ", " jev-decision-1 ", " jev:default ")).toEqual([
+      { key: "decision.enabled", value: true },
+      { key: "decision.route.endpoint", value: "https://jev.example.test/v1" },
+      { key: "decision.route.model", value: "jev-decision-1" },
+      { key: "decision.route.credential_profile", value: "jev:default" },
+    ]);
+  });
+
+  it("unsets every Decision key when disabled and left empty", () => {
+    expect(buildDecisionConfigUpdates(false, "  ", "", "   ")).toEqual([
+      { key: "decision.enabled", unset: true },
+      { key: "decision.route.endpoint", unset: true },
+      { key: "decision.route.model", unset: true },
+      { key: "decision.route.credential_profile", unset: true },
+    ]);
+  });
+
+  it("keeps a JEV model name as free text without catalog rewrite", () => {
+    expect(buildDecisionConfigUpdates(true, "https://jev.example.test/v1", "jev/decision-pro", "")).toEqual([
+      { key: "decision.enabled", value: true },
+      { key: "decision.route.endpoint", value: "https://jev.example.test/v1" },
+      { key: "decision.route.model", value: "jev/decision-pro" },
+      { key: "decision.route.credential_profile", unset: true },
+    ]);
   });
 });
 
