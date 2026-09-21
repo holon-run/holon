@@ -675,6 +675,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "decision-jev"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "decision-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "decision-openai"
 version = "0.1.0"
 dependencies = [
@@ -1237,6 +1249,7 @@ dependencies = [
  "clap",
  "crossterm",
  "decision-core",
+ "decision-jev",
  "decision-openai",
  "encoding_rs",
  "flate2",

@@ -740,6 +740,7 @@ fn runtime_config_surface_reports_decision_provider_settings() {
     let mut config = test_config();
     config.stored_config.decision.enabled = Some(true);
     config.stored_config.decision.route = Some(crate::config::DecisionRouteConfigFile {
+        provider: None,
         endpoint: Some("https://jev.example.test/v1".into()),
         model: Some("jev-decision-1".into()),
         credential_profile: Some("jev:default".into()),

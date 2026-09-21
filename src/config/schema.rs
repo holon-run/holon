@@ -537,6 +537,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
+            key: "decision.route.provider",
+            kind: "string",
+            description: "Decision provider implementation: openai or jev.",
+            default: json!("openai"),
+            allowed_values: vec!["openai", "jev"],
+        },
+        ConfigSchemaEntry {
             key: "decision.route.endpoint",
             kind: "string",
             description: "OpenAI-compatible Decision route endpoint.",
@@ -1053,6 +1060,13 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
         "decision.enabled" => Ok(json!(config.decision.enabled.unwrap_or(false))),
+        "decision.route.provider" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.provider.clone())
+            .unwrap_or_else(|| "openai".into())
+            .into()),
         "decision.route.endpoint" => Ok(config
             .decision
             .route
@@ -1467,6 +1481,14 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
+        "decision.route.provider" => {
+            let provider = raw_value.trim();
+            anyhow::ensure!(
+                matches!(provider, "openai" | "jev"),
+                "{key} must be one of: openai, jev"
+            );
+            ensure_decision_route(config).provider = Some(provider.to_owned());
+        }
         "decision.route.endpoint" => {
             ensure_decision_route(config).endpoint = Some(raw_value.to_owned())
         }
@@ -1799,6 +1821,17 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             config.runtime.retention.incremental_vacuum_pages = None;
         }
         "decision.enabled" => config.decision.enabled = None,
+        "decision.route.provider" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.provider = None;
+                if route.endpoint.is_none()
+                    && route.model.is_none()
+                    && route.credential_profile.is_none()
+                {
+                    config.decision.route = None;
+                }
+            }
+        }
         "decision.route.endpoint" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.endpoint = None;
