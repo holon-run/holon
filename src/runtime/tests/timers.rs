@@ -756,3 +756,109 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
     assert_eq!(wake_again.message_id, wake.message_id);
     assert_eq!(recovered_again.agent_state().await.unwrap().pending, 1);
 }
+
+#[tokio::test(start_paused = true)]
+async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let now = clock.now();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let timer = TimerRecord {
+        id: "timer-restored".into(),
+        agent_id: "default".into(),
+        created_at: now,
+        duration_ms: 10_000,
+        interval_ms: Some(10_000),
+        repeat: true,
+        status: TimerStatus::Active,
+        summary: Some("restored timer".into()),
+        next_fire_at: Some(now + chrono::Duration::seconds(10)),
+        last_fired_at: Some(now),
+        fire_count: 1,
+    };
+    storage.append_timer(&timer).unwrap();
+    let message = MessageEnvelope {
+        metadata: Some(serde_json::json!({ "timer_id": timer.id })),
+        ..MessageEnvelope::new(
+            "default",
+            MessageKind::TimerTick,
+            MessageOrigin::Timer {
+                timer_id: timer.id.clone(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "restored timer tick".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::TimerScheduler,
+            AdmissionContext::RuntimeOwned,
+        )
+    };
+    storage.append_message(&message).unwrap();
+    storage
+        .append_queue_entry(&QueueEntryRecord {
+            message_id: message.id.clone(),
+            agent_id: "default".into(),
+            priority: Priority::Next,
+            status: QueueEntryStatus::Queued,
+            created_at: message.created_at,
+            updated_at: message.created_at,
+        })
+        .unwrap();
+
+    let make_runtime = || {
+        RuntimeHandle::new_with_clock(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("timer done")),
+            "default".into(),
+            context_config(),
+            clock.clone(),
+        )
+        .unwrap()
+    };
+
+    // First bootstrap records the pending wake for the queued timer message.
+    let runtime = make_runtime();
+    let wake = runtime
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(wake.message_id, message.id);
+
+    // A claim incorporates the wake; a daemon restart then restores the claimed
+    // message to the queue while the wake row for the same (timer, message)
+    // pair is still stored.
+    runtime
+        .inner
+        .runtime_db
+        .connection()
+        .unwrap()
+        .execute(
+            "UPDATE timer_wakes SET status = 'incorporated', incorporated_at = ?2
+             WHERE timer_id = ?1 AND message_id = ?3",
+            rusqlite::params![timer.id, now.to_rfc3339(), message.id],
+        )
+        .unwrap();
+
+    // Recovery must be idempotent instead of failing the whole bootstrap with a
+    // timer_wakes primary-key conflict.
+    let recovered = make_runtime();
+    let wake = recovered
+        .inner
+        .runtime_db
+        .timers()
+        .pending_wake(&timer.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(wake.message_id, message.id);
+    assert_eq!(recovered.agent_state().await.unwrap().pending, 1);
+}

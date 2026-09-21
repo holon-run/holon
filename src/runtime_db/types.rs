@@ -56,6 +56,7 @@ pub struct TimerCancelResult {
 pub struct TimerWakeRecoveryResult {
     pub retained_wakes: usize,
     pub created_wakes: usize,
+    pub reactivated_wakes: usize,
     pub invalidated_wakes: usize,
     pub dropped_message_ids: Vec<String>,
 }
