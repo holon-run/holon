@@ -280,6 +280,67 @@ impl RuntimeHandle {
         })
     }
 
+    async fn resolve_attached_workspace_path(
+        &self,
+        path: &Path,
+        state: &AgentState,
+    ) -> Result<(
+        WorkspaceEntry,
+        crate::system::workspace::WorkspacePathDiscovery,
+    )> {
+        let discovery = crate::system::workspace::discover_workspace_path(path)?;
+        let workspace = self
+            .inner
+            .storage
+            .latest_workspace_entries()?
+            .into_iter()
+            .find(|entry| {
+                entry.workspace_anchor == discovery.workspace_anchor
+                    && state
+                        .attached_workspaces
+                        .iter()
+                        .any(|attached| attached == &entry.workspace_id)
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "workspace for `{}` is not attached; attach canonical root `{}` first",
+                    path.display(),
+                    discovery.workspace_anchor.display()
+                )
+            })?;
+        Ok((workspace, discovery))
+    }
+
+    async fn resolve_registered_execution_root_path(
+        &self,
+        path: &Path,
+        state: &AgentState,
+    ) -> Result<ExecutionRootEntry> {
+        let (workspace, discovery) = self.resolve_attached_workspace_path(path, state).await?;
+        let candidates = self
+            .inner
+            .runtime_db
+            .execution_root_entries()
+            .active_for_workspace(&workspace.workspace_id)?
+            .into_iter()
+            .filter(|entry| {
+                entry.root_kind == discovery.projection_kind
+                    && entry.filesystem_path == discovery.execution_root
+            })
+            .collect::<Vec<_>>();
+        match candidates.as_slice() {
+            [entry] => Ok(entry.clone()),
+            [] => Err(anyhow!(
+                "path `{}` does not identify a registered execution root",
+                path.display()
+            )),
+            _ => Err(anyhow!(
+                "path `{}` identifies multiple registered execution roots",
+                path.display()
+            )),
+        }
+    }
+
     pub(crate) async fn switch_workspace_target(
         &self,
         target: WorkspaceSwitchTarget,
@@ -355,32 +416,25 @@ impl RuntimeHandle {
                     )
                 }
                 WorkspaceSwitchTarget::Path(path) => {
-                    let discovery = crate::system::workspace::discover_workspace_path(&path)?;
-                    let workspace = self
+                    let (workspace, discovery) =
+                        self.resolve_attached_workspace_path(&path, &state).await?;
+                    let selected_root_id = self
                         .inner
-                        .storage
-                        .latest_workspace_entries()?
+                        .runtime_db
+                        .execution_root_entries()
+                        .active_for_workspace(&workspace.workspace_id)?
                         .into_iter()
                         .find(|entry| {
-                            entry.workspace_anchor == discovery.workspace_anchor
-                                && state
-                                    .attached_workspaces
-                                    .iter()
-                                    .any(|attached| attached == &entry.workspace_id)
+                            entry.root_kind == discovery.projection_kind
+                                && entry.filesystem_path == discovery.execution_root
                         })
-                        .ok_or_else(|| {
-                            anyhow!(
-                            "workspace for `{}` is not attached; attach canonical root `{}` first",
-                            path.display(),
-                            discovery.workspace_anchor.display()
-                        )
-                        })?;
+                        .map(|entry| entry.execution_root_id);
                     (
                         workspace,
                         discovery.execution_root,
                         discovery.projection_kind,
                         discovery.cwd,
-                        None,
+                        selected_root_id,
                     )
                 }
             };
@@ -749,18 +803,58 @@ impl RuntimeHandle {
         branch_policy: WorktreeBranchPolicy,
         merged_into: Option<&str>,
     ) -> Result<RemoveWorktreeResult> {
+        self.remove_registered_worktree_selector(
+            Some(execution_root_id),
+            None,
+            return_to,
+            branch_policy,
+            merged_into,
+        )
+        .await
+    }
+
+    pub(crate) async fn remove_registered_worktree_selector(
+        &self,
+        execution_root_id: Option<&str>,
+        path: Option<&Path>,
+        return_to: Option<&str>,
+        branch_policy: WorktreeBranchPolicy,
+        merged_into: Option<&str>,
+    ) -> Result<RemoveWorktreeResult> {
+        let state = self.agent_state().await?;
+        let resolved_execution_root_id = match (execution_root_id, path) {
+            (Some(execution_root_id), None) => execution_root_id.to_string(),
+            (None, Some(path)) => {
+                self.resolve_registered_execution_root_path(path, &state)
+                    .await?
+                    .execution_root_id
+            }
+            (Some(_), Some(_)) => {
+                return Err(anyhow!(
+                    "exactly one of `execution_root_id` or `path` must be provided"
+                ));
+            }
+            (None, None) => {
+                return Err(anyhow!(
+                    "one of `execution_root_id` or `path` must be provided"
+                ));
+            }
+        };
+
         let mut entry = self
             .inner
             .runtime_db
             .execution_root_entries()
-            .get(execution_root_id)?
-            .ok_or_else(|| anyhow!("execution root `{execution_root_id}` was not found"))?;
+            .get(&resolved_execution_root_id)?
+            .ok_or_else(|| {
+                anyhow!("execution root `{resolved_execution_root_id}` was not found")
+            })?;
         if entry.root_kind != WorkspaceProjectionKind::GitWorktreeRoot {
             return Err(anyhow!("canonical workspace roots cannot be removed"));
         }
         if entry.removed_at.is_some() {
             return Ok(RemoveWorktreeResult {
-                execution_root_id: execution_root_id.into(),
+                execution_root_id: resolved_execution_root_id.clone(),
                 disposition: "already_removed".into(),
                 switched: false,
                 removed: false,
@@ -783,7 +877,6 @@ impl RuntimeHandle {
             .workspace_entry_for_use(&entry.workspace_id)
             .await?
             .ok_or_else(|| anyhow!("workspace `{}` was not found", entry.workspace_id))?;
-        let state = self.agent_state().await?;
         let worktree_metadata = entry
             .worktree
             .as_ref()
@@ -796,27 +889,61 @@ impl RuntimeHandle {
                 && worktree_metadata.registered_by_agent_id.as_deref() == Some(state.id.as_str()));
         if !authorized {
             return Err(anyhow!(
-                "agent `{}` is not authorized to remove execution root `{execution_root_id}`",
+                "agent `{}` is not authorized to remove execution root `{resolved_execution_root_id}`",
                 state.id
             ));
         }
         let active_target = state
             .active_workspace_entry
             .as_ref()
-            .is_some_and(|active| active.execution_root_id == execution_root_id);
+            .is_some_and(|active| active.execution_root_id == resolved_execution_root_id);
         let return_target = if active_target {
             let return_to =
                 return_to.ok_or_else(|| anyhow!("active worktree requires `return_to`"))?;
-            if return_to == execution_root_id {
+            if return_to == resolved_execution_root_id {
                 return Err(anyhow!("return_to must select a different execution root"));
             }
-            Some(match return_to {
+            let target = match return_to {
                 "canonical" => WorkspaceSwitchTarget::WorkspaceId(entry.workspace_id.clone()),
                 "agent_home" => WorkspaceSwitchTarget::WorkspaceId(AGENT_HOME_WORKSPACE_ID.into()),
-                execution_root_id => {
-                    WorkspaceSwitchTarget::ExecutionRootId(execution_root_id.to_string())
+                return_to => {
+                    let is_registered_id = self
+                        .inner
+                        .runtime_db
+                        .execution_root_entries()
+                        .get(return_to)?
+                        .is_some();
+                    if is_registered_id {
+                        WorkspaceSwitchTarget::ExecutionRootId(return_to.to_string())
+                    } else {
+                        let (return_workspace, discovery) = self
+                            .resolve_attached_workspace_path(Path::new(return_to), &state)
+                            .await?;
+                        match discovery.projection_kind {
+                            WorkspaceProjectionKind::CanonicalRoot => {
+                                WorkspaceSwitchTarget::WorkspaceId(return_workspace.workspace_id)
+                            }
+                            WorkspaceProjectionKind::GitWorktreeRoot => {
+                                let return_entry = self
+                                    .resolve_registered_execution_root_path(
+                                        Path::new(return_to),
+                                        &state,
+                                    )
+                                    .await?;
+                                if return_entry.execution_root_id == resolved_execution_root_id {
+                                    return Err(anyhow!(
+                                        "return_to must select a different execution root"
+                                    ));
+                                }
+                                WorkspaceSwitchTarget::ExecutionRootId(
+                                    return_entry.execution_root_id,
+                                )
+                            }
+                        }
+                    }
                 }
-            })
+            };
+            Some(target)
         } else {
             None
         };
@@ -836,7 +963,7 @@ impl RuntimeHandle {
         let blocking_holders = occupancies
             .into_iter()
             .filter(|record| {
-                record.execution_root_id == execution_root_id
+                record.execution_root_id == resolved_execution_root_id
                     && record.released_at.is_none()
                     && Some(record.occupancy_id.as_str()) != active_occupancy_id
             })
@@ -907,12 +1034,12 @@ impl RuntimeHandle {
             self.append_audit_event(
                 "worktree_cleanup_retained",
                 serde_json::json!({
-                    "execution_root_id": execution_root_id,
+                    "execution_root_id": &resolved_execution_root_id,
                     "changed_files": changed_files,
                 }),
             )?;
             return Ok(RemoveWorktreeResult {
-                execution_root_id: execution_root_id.into(),
+                execution_root_id: resolved_execution_root_id.clone(),
                 disposition: "retained_dirty".into(),
                 switched: false,
                 removed: false,
@@ -968,7 +1095,7 @@ impl RuntimeHandle {
         let _cleanup_lease = match self.inner.host_bridge.as_ref() {
             Some(bridge) => Some(
                 bridge
-                    .acquire_workspace_cleanup_lease(execution_root_id)
+                    .acquire_workspace_cleanup_lease(&resolved_execution_root_id)
                     .await?,
             ),
             None => None,
@@ -996,7 +1123,7 @@ impl RuntimeHandle {
                 .execution_root_entries()
                 .upsert(&entry)?;
             return Ok(RemoveWorktreeResult {
-                execution_root_id: execution_root_id.into(),
+                execution_root_id: resolved_execution_root_id.clone(),
                 disposition: "failed".into(),
                 switched,
                 removed: false,
@@ -1013,7 +1140,7 @@ impl RuntimeHandle {
         self.inner
             .runtime_db
             .execution_root_entries()
-            .mark_removed(execution_root_id)?;
+            .mark_removed(&resolved_execution_root_id)?;
         let mut branch_deleted = false;
         if branch_policy == WorktreeBranchPolicy::DeleteIfMerged && branch_retained_reason.is_none()
         {
@@ -1032,7 +1159,7 @@ impl RuntimeHandle {
                     .await?;
                 if !delete.success {
                     return Ok(RemoveWorktreeResult {
-                        execution_root_id: execution_root_id.into(),
+                        execution_root_id: resolved_execution_root_id.clone(),
                         disposition: "removed_branch_retained".into(),
                         switched,
                         removed: true,
@@ -1053,7 +1180,7 @@ impl RuntimeHandle {
         self.append_audit_event(
             "worktree_cleanup_removed",
             serde_json::json!({
-                "execution_root_id": execution_root_id,
+                "execution_root_id": &resolved_execution_root_id,
                 "branch": branch,
                 "branch_deleted": branch_deleted,
                 "branch_retained_reason": branch_retained_reason,
@@ -1061,7 +1188,7 @@ impl RuntimeHandle {
         )?;
         let branch_retained = branch_retained_reason.is_some();
         Ok(RemoveWorktreeResult {
-            execution_root_id: execution_root_id.into(),
+            execution_root_id: resolved_execution_root_id,
             disposition: if branch_retained {
                 "removed_branch_retained".into()
             } else {
