@@ -19,10 +19,11 @@ Local packaging:
 make macos-menu-package
 ```
 
-Pull requests that change the macOS menu app, its packaging scripts, the
-bundled Rust runtime, or the embedded web GUI run the `macos-app` CI job on
-`macos-latest`. That job builds and tests the app and produces an unsigned DMG;
-documentation-only or Linux-only changes do not schedule it.
+Pull requests that change the macOS menu app or its packaging scripts run the
+`macos-app` CI job on `macos-latest`, which builds and tests the app and
+produces an unsigned DMG. Pull requests that change Rust code run the lighter
+`Rust darwin check` job (`cargo check` for both aarch64 and x86_64 targets);
+documentation-only or Linux-only changes schedule neither.
 
 The script always verifies the bundle and emits `Holon-<version>.dmg` plus a
 SHA-256 file. Local notarization may use `MACOS_NOTARY_PROFILE`. GitHub Actions

@@ -41,6 +41,7 @@ on:
       - ".dockerignore"
       - "Cargo.toml"
       - "Cargo.lock"
+      - "crates/**"
       - "Dockerfile"
       - "src/**"
       - "tests/**"
@@ -96,6 +97,7 @@ jobs:
       conversation_sdk: ${{ steps.filter.outputs.conversation_sdk }}
       web: ${{ steps.filter.outputs.web }}
       macos_app: ${{ steps.filter.outputs.macos_app }}
+      macos_rust_check: ${{ steps.filter.outputs.macos_rust_check }}
     steps:
       - uses: actions/checkout@v4
       - uses: dorny/paths-filter@v3
@@ -149,12 +151,16 @@ jobs:
             macos_app:
               - '.github/workflows/ci.yml'
               - 'apps/macos/**'
+              - 'scripts/create-macos-dmg.sh'
               - 'scripts/package-macos-menu-app.sh'
               - 'scripts/verify-macos-menu-app.sh'
+            macos_rust_check:
+              - '.github/workflows/ci.yml'
+              - 'src/**'
+              - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
-              - 'src/**'
 
   web:
     name: Web
@@ -222,6 +228,45 @@ jobs:
 
       - name: Test conversation SDK protocol
         run: make conversation-sdk-ci
+
+  macos-rust-check:
+    name: Rust darwin check
+    runs-on: macos-latest
+    timeout-minutes: 20
+    needs: changes
+    # PR-level darwin compile gate: `cargo check` both macOS targets so Rust
+    # changes catch darwin-only breakage without paying for the full menu app
+    # build. Main pushes skip it (PRs and nightly/dispatch sweeps cover it).
+    if: needs.changes.outputs.full_sweep == 'true' || (github.event_name == 'pull_request' && needs.changes.outputs.macos_rust_check == 'true')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install both macOS Rust targets
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Restore Rust build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          prefix-key: v1-rust
+          key: ci-macos-check
+          workspaces: |
+            . -> target/macos-aarch64
+            . -> target/macos-x86_64
+          cache-bin: false
+          save-if: ${{ (github.event_name == 'push' || github.event_name == 'schedule') && github.ref == 'refs/heads/main' }}
+
+      - name: Check Apple Silicon Holon runtime
+        env:
+          CARGO_TARGET_DIR: target/macos-aarch64
+        run: cargo check --locked --target aarch64-apple-darwin
+
+      - name: Check Intel Holon runtime
+        env:
+          CARGO_TARGET_DIR: target/macos-x86_64
+        run: cargo check --locked --target x86_64-apple-darwin
 
   macos-app:
     name: Build macOS menu app
@@ -783,6 +828,7 @@ jobs:
       - changes
       - web
       - macos-app
+      - macos-rust-check
       - docker
       - rust
       - rust-test
