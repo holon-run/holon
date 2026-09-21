@@ -666,6 +666,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "decision-core"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "decision-openai"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "decision-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1215,6 +1235,8 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "decision-core",
+ "decision-openai",
  "encoding_rs",
  "flate2",
  "fs2",

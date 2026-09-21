@@ -6,6 +6,7 @@ mod clock;
 mod closure;
 mod command_task;
 mod continuation;
+mod decision_openai;
 mod delivery;
 mod failure;
 mod first_run_intro;
@@ -432,6 +433,8 @@ struct RuntimeInner {
     bootstrap_result: StdMutex<Option<std::result::Result<(), String>>>,
     bootstrap_notify: Notify,
     autonomous_continuation_hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
+    autonomous_continuation_decision_hook:
+        RwLock<Option<Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,

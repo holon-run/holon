@@ -167,15 +167,18 @@ pub(crate) use diagnostics::{
 };
 use projection::CanonicalWorkExecutionState;
 pub(crate) use projection::{SchedulerAgentSnapshot, SchedulerProjection};
+#[cfg(test)]
+pub(crate) use semantic_selection::AutonomousContinuationSnapshotIdentity;
 pub(crate) use semantic_selection::{
     resolve_autonomous_continuation_work_item, select_autonomous_continuation,
-    select_autonomous_continuation_with_hook, SemanticCandidateSelectionHook,
+    select_autonomous_continuation_with_async_hook, select_autonomous_continuation_with_hook,
+    AsyncSemanticCandidateSelectionHook, SemanticCandidateSelectionHook,
     StaticSemanticCandidateSelectionHook,
 };
-#[cfg(test)]
 pub(crate) use semantic_selection::{
-    AutonomousContinuationProposal, AutonomousContinuationSelectionContext,
-    SemanticCandidateSelectionHookError, SemanticCandidateSelectionHookResult,
+    AutonomousContinuationCandidate, AutonomousContinuationProposal,
+    AutonomousContinuationSelectionContext, SemanticCandidateSelectionHookError,
+    SemanticCandidateSelectionHookResult,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

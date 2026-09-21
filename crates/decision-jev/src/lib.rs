@@ -378,12 +378,19 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires AI_GATEWAY_API_KEY and makes a live Vercel Gateway request"]
     async fn calls_jev_through_vercel_gateway() {
-        let provider = JevProvider::new(JevConfig::vercel_gateway(
-            std::env::var("AI_GATEWAY_API_KEY").expect("AI_GATEWAY_API_KEY"),
-        ))
-        .expect("provider");
+        let Some(api_key) = std::env::var("HOLON_LIVE_DECISION_JEV_VERCEL_API_KEY")
+            .or_else(|_| std::env::var("AI_GATEWAY_API_KEY"))
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            eprintln!(
+                "skipping live decision-jev test: HOLON_LIVE_DECISION_JEV_VERCEL_API_KEY or \
+                 AI_GATEWAY_API_KEY is not configured"
+            );
+            return;
+        };
+        let provider = JevProvider::new(JevConfig::vercel_gateway(api_key)).expect("provider");
         let result = provider
             .decide(request(), DecisionContext::default())
             .await

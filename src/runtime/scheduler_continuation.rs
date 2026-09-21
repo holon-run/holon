@@ -113,7 +113,7 @@ impl RuntimeHandle {
                 scheduler_executor::StaleRunProjectionBoundary::PendingSystemTick,
             )
             .await?;
-        let (scheduler_snapshot, queue_len, pending_wake_hint) = {
+        let (scheduler_snapshot, queue_len, mut pending_wake_hint) = {
             let guard = self.inner.agent.lock().await;
             let eligible = matches!(
                 guard.state.status,
@@ -140,7 +140,7 @@ impl RuntimeHandle {
             .inner
             .storage
             .due_blocked_work_item_rechecks(scheduler_snapshot.id(), self.now())?;
-        let scheduler_projection =
+        let mut scheduler_projection =
             scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue_at(
                 &self.inner.storage,
                 &scheduler_snapshot,
@@ -148,10 +148,47 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
-        let selection = scheduler::select_autonomous_continuation_with_hook(
-            &scheduler_projection,
-            Some(self.inner.autonomous_continuation_hook.as_ref()),
-        );
+        let async_hook = self
+            .inner
+            .autonomous_continuation_decision_hook
+            .read()
+            .await
+            .clone();
+        let used_async_hook = async_hook.is_some();
+        let selection = if pending_wake_hint.is_some() {
+            None
+        } else if let Some(hook) = async_hook.as_deref() {
+            scheduler::select_autonomous_continuation_with_async_hook(
+                &scheduler_projection,
+                Some(hook),
+            )
+            .await
+        } else {
+            scheduler::select_autonomous_continuation_with_hook(
+                &scheduler_projection,
+                Some(self.inner.autonomous_continuation_hook.as_ref()),
+            )
+        };
+        if used_async_hook {
+            let (fresh_snapshot, fresh_queue_len, fresh_pending_wake_hint) = {
+                let guard = self.inner.agent.lock().await;
+                (
+                    scheduler::SchedulerAgentSnapshot::from_state(&guard.state),
+                    guard.queue.len(),
+                    guard.state.pending_wake_hint.clone(),
+                )
+            };
+            pending_wake_hint = fresh_pending_wake_hint;
+            let fresh_work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
+            scheduler_projection =
+                scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue_at(
+                    &self.inner.storage,
+                    &fresh_snapshot,
+                    fresh_queue_len,
+                    fresh_work_queue_projection,
+                    self.now(),
+                )?;
+        }
         if let Some(selection) = selection.as_ref() {
             if let Some(reason) = selection.fallback_reason() {
                 self.inner.storage.append_event(&AuditEvent::legacy(

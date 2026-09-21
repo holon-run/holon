@@ -38,6 +38,8 @@ arc-swap = "1.7"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 crossterm = "0.28"
+decision-core = { version = "0.1.0", path = "crates/decision-core" }
+decision-openai = { version = "0.1.0", path = "crates/decision-openai" }
 encoding_rs = "0.8"
 fs2 = "0.4"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
