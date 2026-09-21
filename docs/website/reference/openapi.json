@@ -12292,6 +12292,41 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "decision": {
+                "default": {
+                  "credential_profile": null,
+                  "enabled": false,
+                  "endpoint": null,
+                  "model": null
+                },
+                "properties": {
+                  "credential_profile": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "endpoint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "type": "object"
+              },
               "default_tool_output_tokens": {
                 "format": "uint32",
                 "minimum": 0,
@@ -12785,6 +12820,41 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "decision": {
+                "default": {
+                  "credential_profile": null,
+                  "enabled": false,
+                  "endpoint": null,
+                  "model": null
+                },
+                "properties": {
+                  "credential_profile": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  },
+                  "endpoint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "enabled"
+                ],
+                "type": "object"
               },
               "default_tool_output_tokens": {
                 "format": "uint32",
