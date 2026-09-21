@@ -115,6 +115,8 @@ pub struct RuntimeConfigSurface {
     pub model_fallbacks: Vec<String>,
     pub vision_default: Option<String>,
     pub image_generation_default: Option<String>,
+    #[serde(default)]
+    pub decision: RuntimeDecisionSurface,
     pub model_catalog: Vec<String>,
     pub unknown_model_fallback_configured: bool,
     pub runtime_max_output_tokens: u32,
@@ -131,6 +133,26 @@ pub struct RuntimeConfigSurface {
     #[serde(default)]
     pub available_search_provider_kinds: Vec<RuntimeWebSearchProviderKindSummary>,
     pub web_search_providers: Vec<RuntimeWebSearchProviderSummary>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeDecisionSurface {
+    pub enabled: bool,
+    pub endpoint: Option<String>,
+    pub model: Option<String>,
+    pub credential_profile: Option<String>,
+}
+
+impl RuntimeDecisionSurface {
+    pub fn from_config(config: &crate::config::DecisionConfigFile) -> Self {
+        let route = config.route.as_ref();
+        Self {
+            enabled: config.enabled.unwrap_or(false),
+            endpoint: route.and_then(|route| route.endpoint.clone()),
+            model: route.and_then(|route| route.model.clone()),
+            credential_profile: route.and_then(|route| route.credential_profile.clone()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -195,6 +217,7 @@ impl RuntimeConfigSurface {
                 .image_generation_model
                 .as_ref()
                 .map(|value| value.as_string()),
+            decision: RuntimeDecisionSurface::from_config(&config.stored_config.decision),
             model_catalog,
             unknown_model_fallback_configured: config.validated_unknown_model_fallback.is_some(),
             runtime_max_output_tokens: config.runtime_max_output_tokens,

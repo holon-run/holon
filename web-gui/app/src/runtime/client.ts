@@ -395,6 +395,7 @@ interface RuntimeConfigSurfaceDto {
   model_fallbacks?: string[];
   vision_default?: string | null;
   image_generation_default?: string | null;
+  decision?: RuntimeDecisionSurfaceDto;
   model_catalog?: string[];
   unknown_model_fallback_configured?: boolean;
   runtime_max_output_tokens?: number;
@@ -405,6 +406,13 @@ interface RuntimeConfigSurfaceDto {
   web_search?: RuntimeWebSearchSummaryDto;
   available_search_provider_kinds?: RuntimeWebSearchProviderKindSummaryDto[];
   web_search_providers?: RuntimeWebSearchProviderSummaryDto[];
+}
+
+interface RuntimeDecisionSurfaceDto {
+  enabled?: boolean;
+  endpoint?: string | null;
+  model?: string | null;
+  credential_profile?: string | null;
 }
 
 interface RuntimeProviderSummaryDto {
@@ -2279,6 +2287,12 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
     modelFallbacks: surface.model_fallbacks ?? [],
     visionDefault: surface.vision_default ?? undefined,
     imageGenerationDefault: surface.image_generation_default ?? undefined,
+    decision: {
+      enabled: surface.decision?.enabled ?? false,
+      endpoint: surface.decision?.endpoint ?? undefined,
+      model: surface.decision?.model ?? undefined,
+      credentialProfile: surface.decision?.credential_profile ?? undefined,
+    },
     modelCatalog: surface.model_catalog ?? [],
     unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,
     defaultToolOutputTokens: surface.default_tool_output_tokens ?? 0,

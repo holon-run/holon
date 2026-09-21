@@ -40,6 +40,19 @@ decision:
 serialized into the Decision configuration or included in request metadata.
 The Decision route is never inherited from the ordinary agent model route.
 
+## Web GUI settings
+
+`RuntimeConfigSurface` reports the current Decision route (`enabled`,
+`endpoint`, `model`, `credential_profile`), and the Web GUI settings page
+reads and writes the same four `decision.*` keys through
+`/runtime/config/update`. The GUI keeps `model` as free text: a Decision route
+may target an OpenAI-compatible endpoint or a JEV-specific decision model that
+the shared model catalog does not list. The GUI does not enumerate or validate
+remote model lists. The GUI never fills in defaults: enabling the provider
+without an endpoint or model makes the existing runtime route loading fail with
+an explicit `requires ... decision.route.endpoint/model` error instead of being
+silently rewritten.
+
 ## Request and response contract
 
 The runtime sends a versioned request with:

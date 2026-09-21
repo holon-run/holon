@@ -735,6 +735,40 @@ fn runtime_config_surface_reports_credential_free_providers_as_ready() {
     assert!(ollama.credential_configured);
 }
 
+#[test]
+fn runtime_config_surface_reports_decision_provider_settings() {
+    let mut config = test_config();
+    config.stored_config.decision.enabled = Some(true);
+    config.stored_config.decision.route = Some(crate::config::DecisionRouteConfigFile {
+        endpoint: Some("https://jev.example.test/v1".into()),
+        model: Some("jev-decision-1".into()),
+        credential_profile: Some("jev:default".into()),
+    });
+
+    let surface = RuntimeConfigSurface::new(&config);
+
+    assert!(surface.decision.enabled);
+    assert_eq!(
+        surface.decision.endpoint.as_deref(),
+        Some("https://jev.example.test/v1")
+    );
+    assert_eq!(surface.decision.model.as_deref(), Some("jev-decision-1"));
+    assert_eq!(
+        surface.decision.credential_profile.as_deref(),
+        Some("jev:default")
+    );
+}
+
+#[test]
+fn runtime_config_surface_defaults_decision_provider_to_disabled() {
+    let surface = RuntimeConfigSurface::new(&test_config());
+
+    assert!(!surface.decision.enabled);
+    assert_eq!(surface.decision.endpoint, None);
+    assert_eq!(surface.decision.model, None);
+    assert_eq!(surface.decision.credential_profile, None);
+}
+
 #[tokio::test]
 async fn runtime_activity_summary_reports_idle_runtime() {
     let config = test_config();
