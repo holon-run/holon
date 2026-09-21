@@ -1223,6 +1223,7 @@ fn prepare_runtime_storage(
         .normalize_wakes_for_recovery(&agent_id)?;
     if timer_wake_recovery.retained_wakes > 0
         || timer_wake_recovery.created_wakes > 0
+        || timer_wake_recovery.reactivated_wakes > 0
         || timer_wake_recovery.invalidated_wakes > 0
         || !timer_wake_recovery.dropped_message_ids.is_empty()
     {
@@ -1232,6 +1233,7 @@ fn prepare_runtime_storage(
                 "agent_id": agent_id,
                 "retained_wakes": timer_wake_recovery.retained_wakes,
                 "created_wakes": timer_wake_recovery.created_wakes,
+                "reactivated_wakes": timer_wake_recovery.reactivated_wakes,
                 "invalidated_wakes": timer_wake_recovery.invalidated_wakes,
                 "dropped_message_ids": timer_wake_recovery.dropped_message_ids,
             }),

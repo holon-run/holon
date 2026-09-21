@@ -2822,6 +2822,21 @@ impl TimerRepository<'_> {
                             .unwrap_or_else(|| {
                                 timer.as_ref().map_or(1, |timer| timer.fire_count.max(1))
                             });
+                        // A wake row for this exact pair may already exist when a claimed
+                        // message was restored to the queue after a restart. Reactivate it
+                        // instead of inserting a duplicate row for the composite primary key.
+                        let now = timestamp(Utc::now());
+                        let reactivated = tx.execute(
+                            "UPDATE timer_wakes
+                             SET status = 'pending', fire_count = ?3, updated_at = ?4,
+                                 incorporated_at = NULL, cancelled_at = NULL
+                             WHERE timer_id = ?1 AND message_id = ?2 AND status != 'pending'",
+                            params![timer_id, message.id, fire_count as i64, now],
+                        )?;
+                        if reactivated > 0 {
+                            result.reactivated_wakes += reactivated;
+                            continue;
+                        }
                         let created_at = timestamp(entry.created_at);
                         tx.execute(
                             "INSERT INTO timer_wakes
