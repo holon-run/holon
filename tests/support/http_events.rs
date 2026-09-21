@@ -389,12 +389,20 @@ pub async fn events_stream_supports_cursor_and_rfc3339_ts() -> Result<()> {
     assert!(replayed.data["event_log_epoch"]
         .as_str()
         .is_some_and(|epoch| epoch.starts_with("epoch_")));
-    assert_eq!(replayed.data["contract_version"].as_u64(), Some(1));
+    // Schema-less legacy events carry no constant per-event envelope metadata;
+    // the envelope contract version is declared once per stream instead.
+    assert!(replayed.data.get("contract_version").is_none());
+    assert!(replayed.data.get("payload_schema").is_none());
+    assert!(replayed.data.get("payload_schema_version").is_none());
+    let declared_contract_version = stream
+        .headers()
+        .get(holon::runtime_event::EVENT_CONTRACT_VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     assert_eq!(
-        replayed.data["payload_schema"].as_str(),
-        Some("holon.runtime_event.legacy")
+        declared_contract_version,
+        Some(holon::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string())
     );
-    assert_eq!(replayed.data["payload_schema_version"].as_u64(), Some(1));
 
     server.abort();
     Ok(())
@@ -482,7 +490,7 @@ pub async fn global_events_stream_closes_on_lag_and_recovers_per_agent() -> Resu
     Ok(())
 }
 
-pub async fn events_route_preserves_replay_provenance() -> Result<()> {
+pub async fn events_route_keeps_correlation_facts_in_payload() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -511,15 +519,18 @@ pub async fn events_route_preserves_replay_provenance() -> Result<()> {
     let replayed = next_sse_event_kind(&mut stream, "message_admitted").await?;
     assert_eq!(replayed.event, "message_admitted");
     assert_eq!(replayed.data["type"], "message_admitted");
-    assert_eq!(replayed.data["provenance"]["origin"]["kind"], "operator");
+    // Correlation facts live in the payload; the envelope no longer duplicates
+    // them into a `provenance` object.
+    assert_eq!(replayed.data["payload"]["origin"]["kind"], "operator");
     assert_eq!(
-        replayed.data["provenance"]["authority_class"],
+        replayed.data["payload"]["authority_class"],
         "operator_instruction"
     );
     assert_eq!(
-        replayed.data["provenance"]["delivery_surface"],
+        replayed.data["payload"]["delivery_surface"],
         "http_control_prompt"
     );
+    assert!(replayed.data.get("provenance").is_none());
     assert!(replayed.data.get("projection").is_none());
 
     server.abort();

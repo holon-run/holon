@@ -174,6 +174,8 @@ pub struct EventPageResponse {
     pub events: Vec<StreamEventEnvelope>,
     #[serde(default)]
     pub event_log_epoch: String,
+    #[serde(default)]
+    pub contract_version: u32,
     pub oldest_seq: Option<u64>,
     pub newest_seq: Option<u64>,
     #[serde(default)]
@@ -190,18 +192,15 @@ pub struct StreamEventEnvelope {
     pub event_seq: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_log_epoch: Option<String>,
-    #[serde(default = "crate::runtime_event::legacy_contract_version")]
-    pub contract_version: u32,
     pub ts: chrono::DateTime<Utc>,
     pub agent_id: String,
     #[serde(rename = "type")]
     pub event_type: String,
-    #[serde(default = "crate::runtime_event::legacy_payload_schema")]
-    pub payload_schema: String,
-    #[serde(default = "crate::runtime_event::legacy_payload_schema_version")]
-    pub payload_schema_version: u32,
+    /// Registry payload schema; absent on schema-less legacy events.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provenance: Option<Value>,
+    pub payload_schema: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_schema_version: Option<u32>,
     pub payload: Value,
     /// Additive classification emitted while `events.projection-effect.v1`
     /// is advertised; absent on older envelopes.
@@ -214,12 +213,16 @@ pub struct AgentStreamEvent {
     pub id: String,
     pub event: String,
     pub data: StreamEventEnvelope,
+    /// Envelope contract version declared once per stream by the server
+    /// (`x-holon-event-contract-version`), not per event.
+    pub contract_version: u32,
 }
 
 pub struct LocalEventStream {
     transport: EventStreamTransport,
     frame_buffer: Vec<u8>,
     idle_timeout: Duration,
+    contract_version: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -292,6 +295,8 @@ struct UnixEventStream {
     stream: tokio::net::UnixStream,
     body_buffer: Vec<u8>,
     chunked: bool,
+    /// Stream-level envelope contract version read from the response headers.
+    contract_version: u32,
     current_chunk_size: Option<usize>,
     eof: bool,
 }
@@ -997,10 +1002,12 @@ impl LocalClient {
                 Ok(result) => result,
                 Err(_) => Err(anyhow!("timed out opening event stream {}", path)),
             }?;
+            let contract_version = stream.contract_version;
             return Ok(LocalEventStream {
                 transport: EventStreamTransport::Unix(stream),
                 frame_buffer: Vec::new(),
                 idle_timeout: self.network.stream_idle_timeout,
+                contract_version,
             });
         }
 
@@ -1147,6 +1154,7 @@ impl LocalClient {
             unreachable!("decode_or_error returns Ok only for successful responses");
         }
         Ok(LocalEventStream {
+            contract_version: event_contract_version_from_headers(response.headers()),
             transport: EventStreamTransport::Http(response),
             frame_buffer: Vec::new(),
             idle_timeout: self.network.stream_idle_timeout,
@@ -1317,6 +1325,7 @@ impl LocalClient {
             stream,
             body_buffer: response.body,
             chunked: response.chunked,
+            contract_version: response.contract_version,
             current_chunk_size: None,
             eof: false,
         })
@@ -1414,7 +1423,7 @@ impl LocalEventStream {
     pub async fn next_event(&mut self) -> Result<AgentStreamEvent> {
         loop {
             while let Some(frame) = take_next_sse_frame(&mut self.frame_buffer)? {
-                if let Some(event) = parse_sse_frame(&frame)? {
+                if let Some(event) = parse_sse_frame(&frame, self.contract_version)? {
                     return Ok(event);
                 }
             }
@@ -1551,6 +1560,7 @@ struct ParsedHttpResponse {
 struct ParsedHttpResponseHead {
     status_code: u16,
     chunked: bool,
+    contract_version: u32,
     body: Vec<u8>,
 }
 
@@ -1684,7 +1694,7 @@ fn take_next_sse_frame(buffer: &mut Vec<u8>) -> Result<Option<Vec<u8>>> {
     Ok(Some(frame))
 }
 
-fn parse_sse_frame(frame: &[u8]) -> Result<Option<AgentStreamEvent>> {
+fn parse_sse_frame(frame: &[u8], contract_version: u32) -> Result<Option<AgentStreamEvent>> {
     let text = std::str::from_utf8(frame).context("malformed sse frame: non-utf8 payload")?;
     let mut id = String::new();
     let mut event = String::new();
@@ -1710,7 +1720,12 @@ fn parse_sse_frame(frame: &[u8]) -> Result<Option<AgentStreamEvent>> {
 
     let data: StreamEventEnvelope = serde_json::from_str(&data_lines.join("\n"))
         .context("failed to decode SSE event payload as JSON")?;
-    Ok(Some(AgentStreamEvent { id, event, data }))
+    Ok(Some(AgentStreamEvent {
+        id,
+        event,
+        data,
+        contract_version,
+    }))
 }
 
 #[cfg(unix)]
@@ -1752,16 +1767,34 @@ async fn read_unix_response_head(
         .ok_or_else(|| anyhow!("malformed HTTP response: missing status code"))?
         .parse::<u16>()
         .context("malformed HTTP response: invalid status code")?;
-    let chunked = lines.any(|line| {
+    let mut chunked = false;
+    let mut contract_version = None;
+    for line in lines {
         let lower = line.to_ascii_lowercase();
-        lower.starts_with("transfer-encoding:") && lower.contains("chunked")
-    });
+        if lower.starts_with("transfer-encoding:") && lower.contains("chunked") {
+            chunked = true;
+        } else if let Some(value) =
+            lower.strip_prefix(crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER)
+        {
+            contract_version = value.trim_start_matches(':').trim().parse::<u32>().ok();
+        }
+    }
 
     Ok(ParsedHttpResponseHead {
         status_code,
         chunked,
+        contract_version: contract_version
+            .unwrap_or(crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION),
         body,
     })
+}
+
+fn event_contract_version_from_headers(headers: &reqwest::header::HeaderMap) -> u32 {
+    headers
+        .get(crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .unwrap_or(crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION)
 }
 
 fn decode_or_error(status_code: u16, body: Vec<u8>, path: &str) -> Result<Vec<u8>> {
@@ -2056,6 +2089,7 @@ mod tests {
             transport: EventStreamTransport::Http(response),
             frame_buffer: Vec::new(),
             idle_timeout: Duration::from_millis(25),
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         };
 
         let err = stream.next_event().await.unwrap_err().to_string();
@@ -2111,9 +2145,8 @@ mod tests {
         let event = StreamEventEnvelope {
             projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
-            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-            payload_schema_version: 1,
+            payload_schema: None,
+            payload_schema_version: None,
             id: "evt-1".into(),
             event_seq: 1,
             ts: chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
@@ -2121,7 +2154,6 @@ mod tests {
                 .with_timezone(&chrono::Utc),
             agent_id: "agent-1".into(),
             event_type: "agent_message".into(),
-            provenance: None,
             payload: serde_json::json!({"body": "hello"}),
         };
         let event_frame = format!(
@@ -2140,6 +2172,7 @@ mod tests {
             transport: EventStreamTransport::Http(response),
             frame_buffer: Vec::new(),
             idle_timeout: Duration::from_millis(50),
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         };
 
         let received = stream.next_event().await.unwrap();
@@ -2198,7 +2231,9 @@ mod tests {
     #[test]
     fn parse_sse_frame_ignores_comments_and_multiline_data() {
         let frame = b": heartbeat\nid: 1\nevent: message_admitted\ndata: {\"id\":\"evt_123\",\ndata: \"event_seq\":1,\ndata: \"ts\":\"2026-04-19T08:00:00Z\",\ndata: \"agent_id\":\"default\",\ndata: \"type\":\"message_admitted\",\ndata: \"payload\":{}}\n";
-        let parsed = parse_sse_frame(frame).unwrap().unwrap();
+        let parsed = parse_sse_frame(frame, crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION)
+            .unwrap()
+            .unwrap();
         assert_eq!(parsed.id, "1");
         assert_eq!(parsed.event, "message_admitted");
         assert_eq!(parsed.data.event_type, "message_admitted");

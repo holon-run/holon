@@ -121,21 +121,22 @@ fn audit_to_stream_event(
     event_seq: u64,
     agent_id: &str,
 ) -> AgentStreamEvent {
+    let legacy =
+        crate::runtime_event::is_legacy_event_shape(&event.payload_schema, event.contract_version);
     AgentStreamEvent {
+        contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         id: event.id.clone(),
         event: event.kind.clone(),
         data: StreamEventEnvelope {
             projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
-            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-            payload_schema_version: 1,
+            payload_schema: (!legacy).then(|| event.payload_schema.clone()),
+            payload_schema_version: (!legacy).then_some(event.payload_schema_version),
             id: event.id.clone(),
             event_seq,
             ts: event.created_at,
             agent_id: agent_id.into(),
             event_type: event.kind.clone(),
-            provenance: None,
             payload: event.data.clone(),
         },
     }

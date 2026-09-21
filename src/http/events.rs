@@ -54,6 +54,7 @@ pub async fn events(
     Ok(Json(EventsPageResponse {
         events,
         event_log_epoch,
+        contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         oldest_seq,
         newest_seq,
         cursor_seq,
@@ -196,7 +197,15 @@ pub async fn events_stream(
     let keep_alive = KeepAlive::new()
         .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
         .text("heartbeat");
-    Ok(Sse::new(stream).keep_alive(keep_alive))
+    Ok((
+        [(
+            axum::http::HeaderName::from_static(
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+            ),
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
+        )],
+        Sse::new(stream).keep_alive(keep_alive),
+    ))
 }
 
 pub async fn global_events_stream(
@@ -241,7 +250,15 @@ pub async fn global_events_stream(
     let keep_alive = KeepAlive::new()
         .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
         .text("heartbeat");
-    Ok(Sse::new(stream).keep_alive(keep_alive))
+    Ok((
+        [(
+            axum::http::HeaderName::from_static(
+                crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
+            ),
+            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
+        )],
+        Sse::new(stream).keep_alive(keep_alive),
+    ))
 }
 
 fn initial_buffered_events(
@@ -286,6 +303,8 @@ fn stream_event_envelope(
     event: &AuditEvent,
     emit_projection_effect: bool,
 ) -> StreamEventEnvelope {
+    let legacy =
+        crate::runtime_event::is_legacy_event_shape(&event.payload_schema, event.contract_version);
     StreamEventEnvelope {
         id: event.id.clone(),
         event_seq: event.event_seq,
@@ -294,13 +313,12 @@ fn stream_event_envelope(
         } else {
             event.event_log_epoch.clone()
         },
-        contract_version: event.contract_version,
         ts: event.created_at,
         agent_id: agent_id.to_string(),
         event_type: event.kind.clone(),
-        payload_schema: event.payload_schema.clone(),
-        payload_schema_version: event.payload_schema_version,
-        provenance: event_replay_provenance(&event.data),
+        // Schema-less legacy events omit constant envelope metadata.
+        payload_schema: (!legacy).then(|| event.payload_schema.clone()),
+        payload_schema_version: (!legacy).then_some(event.payload_schema_version),
         payload: event.data.clone(),
         projection_effect: emit_projection_effect.then(|| {
             crate::runtime_event::projection_effect_of(
@@ -364,27 +382,6 @@ fn event_fallback_summary(event: &AuditEvent) -> String {
         .filter(|summary| !summary.trim().is_empty())
         .unwrap_or(event.kind.as_str())
         .to_string()
-}
-
-fn event_replay_provenance(payload: &Value) -> EventReplayProvenance {
-    EventReplayProvenance {
-        origin: clone_payload_field(payload, "origin"),
-        authority_class: clone_payload_field(payload, "authority_class"),
-        delivery_surface: clone_payload_field(payload, "delivery_surface"),
-        admission_context: clone_payload_field(payload, "admission_context"),
-        transport: clone_payload_field(payload, "transport"),
-        source: clone_payload_field(payload, "source"),
-        reply_route: clone_payload_field(payload, "reply_route"),
-        message_id: clone_payload_field(payload, "message_id"),
-        task_id: clone_payload_field(payload, "task_id"),
-        work_item_id: clone_payload_field(payload, "work_item_id"),
-        correlation_id: clone_payload_field(payload, "correlation_id"),
-        causation_id: clone_payload_field(payload, "causation_id"),
-    }
-}
-
-fn clone_payload_field(payload: &Value, field: &str) -> Option<Value> {
-    payload.get(field).filter(|value| !value.is_null()).cloned()
 }
 
 fn event_seq_not_found(

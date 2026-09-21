@@ -12,6 +12,11 @@ pub const RUNTIME_EVENT_CONTRACT_VERSION: u32 = 3;
 pub const LEGACY_RUNTIME_EVENT_CONTRACT_VERSION: u32 = 1;
 pub const LEGACY_PAYLOAD_SCHEMA: &str = "holon.runtime_event.legacy";
 
+/// Response header that declares the envelope contract version of an event
+/// stream. The version is declared once per stream; individual envelopes no
+/// longer repeat it.
+pub const EVENT_CONTRACT_VERSION_HEADER: &str = "x-holon-event-contract-version";
+
 /// Additive `StreamEventEnvelope` classification published by event pages
 /// and SSE once `events.projection-effect.v1` is enabled. The runtime event
 /// registry is the source of truth; legacy or otherwise unclassified events

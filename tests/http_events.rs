@@ -19,7 +19,7 @@ http_async_tests!(
     global_events_stream_receives_live_agent_events,
     events_stream_closes_on_lag_and_recovers_from_contiguous_cursor,
     global_events_stream_closes_on_lag_and_recovers_per_agent,
-    events_route_preserves_replay_provenance,
+    events_route_keeps_correlation_facts_in_payload,
     events_route_payload_includes_full_fields,
     events_route_max_level_filters_with_bounded_visible_pages,
     events_stream_includes_tool_payload,

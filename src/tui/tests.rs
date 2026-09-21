@@ -536,20 +536,19 @@ fn apply_brief_event(app: &mut TuiApp, brief: BriefRecord) {
     });
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: event_id.clone(),
             event: "brief_created".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: event_id,
                 event_seq: 0,
                 ts: brief.created_at,
                 agent_id: brief.agent_id.clone(),
                 event_type: "brief_created".into(),
-                provenance: None,
                 payload: serde_json::to_value(brief).unwrap(),
             },
         },
@@ -564,20 +563,19 @@ fn apply_event(app: &mut TuiApp, event_type: &str, payload: serde_json::Value) {
         .get_or_insert_with(|| TuiProjection::from_snapshot(sample_snapshot("default", "evt-0")));
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: event_id.clone(),
             event: event_type.into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: event_id,
                 event_seq: 0,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: event_type.into(),
-                provenance: None,
                 payload,
             },
         },
@@ -627,15 +625,13 @@ fn collect_chat_items_does_not_write_presentation_debug_log() {
     let events_tail = vec![StreamEventEnvelope {
         projection_effect: None,
         event_log_epoch: Some("epoch-test".into()),
-        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-        payload_schema_version: 1,
+        payload_schema: None,
+        payload_schema_version: None,
         id: "evt-assistant".into(),
         event_seq: 1,
         ts: Utc::now(),
         agent_id: "default".into(),
         event_type: "assistant_round_recorded".into(),
-        provenance: None,
         payload: json!({ "round": 1, "text_preview": "history progress" }),
     }];
     let mut projection = TuiProjection::from_snapshot(snapshot);
@@ -966,6 +962,7 @@ fn build_chat_text_includes_structured_operator_messages() {
     let operator_event = operator_message_event_envelope("m1", 0, "default", "Fix the failing CI");
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: operator_event.id.clone(),
             event: operator_event.event_type.clone(),
             data: operator_event,
@@ -1125,6 +1122,7 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
     );
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: resume_event.id.clone(),
             event: resume_event.event_type.clone(),
             data: StreamEventEnvelope { ts, ..resume_event },
@@ -1164,6 +1162,7 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
     ] {
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: event.id.clone(),
                 event: event.event_type.clone(),
                 data: StreamEventEnvelope { ts, ..event },
@@ -1192,19 +1191,18 @@ fn build_chat_text_groups_agent_cells_by_turn_index() {
     let brief_event = StreamEventEnvelope {
         projection_effect: None,
         event_log_epoch: Some("epoch-test".into()),
-        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-        payload_schema_version: 1,
+        payload_schema: None,
+        payload_schema_version: None,
         id: "evt-brief".into(),
         event_seq: 4,
         ts,
         agent_id: "holon-pm".into(),
         event_type: "brief_created".into(),
-        provenance: None,
         payload: serde_json::to_value(brief).unwrap(),
     };
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: brief_event.id.clone(),
             event: brief_event.event_type.clone(),
             data: brief_event,
@@ -2924,20 +2922,19 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-work".into(),
             event: "work_item_written".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-work".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "work_item_written".into(),
-                provenance: None,
                 payload: json!({
                     "action": "created",
                     "record": {
@@ -2958,20 +2955,19 @@ fn chat_text_shows_active_assistant_preview_without_durable_system_event() {
     );
     projection.apply_stream_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-assistant".into(),
             event: "assistant_round_recorded".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-assistant".into(),
                 event_seq: 3,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "assistant_round_recorded".into(),
-                provenance: None,
                 payload: json!({ "round": 1, "text_preview": "hidden assistant partial" }),
             },
         },
@@ -3004,20 +3000,19 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
     let mut projection = TuiProjection::from_snapshot(snapshot);
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test tui"
@@ -3028,20 +3023,19 @@ fn chat_display_mode_debug_shows_debug_events_and_keeps_working_row() {
     );
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-state".into(),
             event: "agent_state_changed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-state".into(),
                 event_seq: 3,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "agent_state_changed".into(),
-                provenance: None,
                 payload: json!({ "status": "AwakeRunning" }),
             },
         },
@@ -3079,20 +3073,19 @@ fn chat_display_mode_info_shows_hidden_stream_activity_in_working_body() {
     let mut projection = TuiProjection::from_snapshot(snapshot);
     projection.apply_stream_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test tui"
@@ -3126,20 +3119,19 @@ fn chat_display_mode_info_suppresses_successful_work_item_tool_activity() {
     let mut projection = TuiProjection::from_snapshot(snapshot);
     projection.apply_stream_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-work-item-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-work-item-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "UpdateWorkItem",
                     "status": "success",
@@ -3175,20 +3167,19 @@ fn chat_display_mode_info_uses_rendered_list_work_items_activity() {
     let mut projection = TuiProjection::from_snapshot(snapshot);
     projection.apply_stream_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-list-work-items".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-list-work-items".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ListWorkItems",
                     "status": "success",
@@ -3238,20 +3229,19 @@ fn chat_display_mode_verbose_keeps_working_marker_without_activity_body() {
     let mut projection = TuiProjection::from_snapshot(snapshot);
     projection.apply_stream_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test tui"
@@ -3285,20 +3275,19 @@ fn chat_text_omits_task_system_events() {
     );
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
     projection.apply_event(AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-task".into(),
             event: "task_result_received".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
-            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-            payload_schema_version: 1,
+            payload_schema: None,
+            payload_schema_version: None,
                 id: "evt-task".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "task_result_received".into(),
-                provenance: None,
                 payload: json!({
                     "id": "task-1",
                     "agent_id": "default",
@@ -3343,20 +3332,19 @@ fn chat_text_keeps_active_activity_after_brief_event() {
     let mut projection = TuiProjection::from_snapshot(snapshot);
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test tui"
@@ -3367,20 +3355,19 @@ fn chat_text_keeps_active_activity_after_brief_event() {
     );
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-brief".into(),
             event: "brief_created".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-brief".into(),
                 event_seq: 3,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "brief_created".into(),
-                provenance: None,
                 payload: json!({
                     "id": "brief-1",
                     "agent_id": "default",
@@ -3427,20 +3414,19 @@ fn chat_text_keeps_active_action_after_snapshot_refresh() {
     let mut refreshed_projection = TuiProjection::from_snapshot(snapshot);
     refreshed_projection.apply_stream_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test tui"
@@ -3473,20 +3459,19 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     previous_projection.agent.agent.status = AgentStatus::AwakeRunning;
     previous_projection.apply_stream_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-a-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-a-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "agent-a".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test agent-a"
@@ -3509,15 +3494,13 @@ fn chat_text_uses_selected_agent_events_tail_after_switch() {
     let events_tail = vec![StreamEventEnvelope {
         projection_effect: None,
         event_log_epoch: Some("epoch-test".into()),
-        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-        payload_schema_version: 1,
+        payload_schema: None,
+        payload_schema_version: None,
         id: "evt-b-tool".into(),
         event_seq: 0,
         ts: Utc::now(),
         agent_id: "agent-b".into(),
         event_type: "tool_executed".into(),
-        provenance: None,
         payload: json!({
             "tool_name": "ExecCommand",
             "exec_command_cmd": "cargo test agent-b"
@@ -3553,20 +3536,19 @@ fn chat_text_does_not_show_stale_activity_when_agent_is_idle() {
     let mut projection = TuiProjection::from_snapshot(snapshot);
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test stale"
@@ -3644,20 +3626,19 @@ fn active_activity_timestamp_does_not_sort_before_tail_history() {
     projection.agent.agent.status = AgentStatus::AwakeRunning;
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-tool".into(),
             event: "tool_executed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-tool".into(),
                 event_seq: 2,
                 ts,
                 agent_id: "default".into(),
                 event_type: "tool_executed".into(),
-                provenance: None,
                 payload: json!({
                     "tool_name": "ExecCommand",
                     "exec_command_cmd": "cargo test tui"
@@ -3700,6 +3681,7 @@ fn chat_keeps_distinct_operator_messages_with_same_timestamp_and_body() {
         envelope.ts = ts;
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: envelope.id.clone(),
                 event: envelope.event_type.clone(),
                 data: envelope,
@@ -3808,6 +3790,7 @@ fn collect_chat_items_orders_equal_timestamps_deterministically() {
     operator_event.ts = ts;
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: operator_event.id.clone(),
             event: operator_event.event_type.clone(),
             data: operator_event,
@@ -3960,6 +3943,7 @@ fn chat_deduplicates_replayed_projected_work_item_events() {
     for _ in 0..2 {
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: event.id.clone(),
                 event: event.event_type.clone(),
                 data: event.clone(),
@@ -3995,6 +3979,7 @@ fn chat_deduplicates_replayed_projected_tool_events() {
     for _ in 0..2 {
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: event.id.clone(),
                 event: event.event_type.clone(),
                 data: event.clone(),
@@ -4031,6 +4016,7 @@ fn chat_keeps_distinct_projected_tool_events_with_same_body() {
         let event = tool_executed_event_envelope(id, event_seq, "default", "GetAgent");
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: event.id.clone(),
                 event: event.event_type.clone(),
                 data: event,
@@ -4066,6 +4052,7 @@ fn chat_deduplicates_bootstrap_event_when_stream_replays_it() {
     projection.replace_event_window(vec![event.clone()], Some(42));
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: event.id.clone(),
             event: event.event_type.clone(),
             data: event,
@@ -4098,6 +4085,7 @@ fn projection_deduplicates_stream_events_using_outer_id_fallback() {
     for _ in 0..2 {
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: "sse-event-1".into(),
                 event: envelope.event_type.clone(),
                 data: envelope.clone(),
@@ -4452,20 +4440,19 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
     projection.apply_event(
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-old".into(),
             event: "provider_round_completed".into(),
             data: StreamEventEnvelope {
                 projection_effect: None,
                 event_log_epoch: Some("epoch-test".into()),
-                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                payload_schema_version: 1,
+                payload_schema: None,
+                payload_schema_version: None,
                 id: "evt-old".into(),
                 event_seq: 2,
                 ts: Utc::now(),
                 agent_id: "default".into(),
                 event_type: "provider_round_completed".into(),
-                provenance: None,
                 payload: json!({"round": 1, "stop_reason": "end_turn"}),
             },
         },
@@ -4480,20 +4467,19 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
     if let Some(projection) = app.projection.as_mut() {
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: "evt-new".into(),
                 event: "provider_round_completed".into(),
                 data: StreamEventEnvelope {
                     projection_effect: None,
                     event_log_epoch: Some("epoch-test".into()),
-                    contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                    payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                    payload_schema_version: 1,
+                    payload_schema: None,
+                    payload_schema_version: None,
                     id: "evt-new".into(),
                     event_seq: 3,
                     ts: Utc::now(),
                     agent_id: "default".into(),
                     event_type: "provider_round_completed".into(),
-                    provenance: None,
                     payload: json!({"round": 2, "stop_reason": "end_turn"}),
                 },
             },
@@ -4861,20 +4847,19 @@ fn stale_projection_event_schedules_refresh() {
     let tx = app.runtime_tx.clone();
 
     tx.send(TuiRuntimeMessage::Event(AgentStreamEvent {
+        contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         id: "evt-stale".into(),
         event: "callback_delivered".into(),
         data: StreamEventEnvelope {
             projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
-            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-            payload_schema_version: 1,
+            payload_schema: None,
+            payload_schema_version: None,
             id: "evt-stale".into(),
             event_seq: 2,
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: "callback_delivered".into(),
-            provenance: None,
             payload: json!({
                 "external_trigger_id": "cb-2",
                 "agent_id": "default"
@@ -5154,15 +5139,13 @@ fn pipeline_event_envelope(
     StreamEventEnvelope {
         projection_effect: None,
         event_log_epoch: Some("epoch-test".into()),
-        contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-        payload_schema_version: 1,
+        payload_schema: None,
+        payload_schema_version: None,
         id: id.into(),
         event_seq,
         ts: Utc::now(),
         agent_id: agent_id.into(),
         event_type: event_type.into(),
-        provenance: None,
         payload,
     }
 }
@@ -5176,6 +5159,7 @@ fn pipeline_event(
     payload: serde_json::Value,
 ) -> AgentStreamEvent {
     AgentStreamEvent {
+        contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         id: id.into(),
         event: kind.into(),
         data: pipeline_event_envelope(id, event_seq, agent_id, kind, payload),

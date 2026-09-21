@@ -427,7 +427,7 @@ impl TuiProjection {
         self.cursor = Some(event.data.event_seq);
         self.prune_event_fingerprints();
 
-        if !can_apply_runtime_event(&event.data) {
+        if !can_apply_runtime_event(&event) {
             return;
         }
         match event.data.event_type.as_str() {
@@ -762,6 +762,7 @@ impl TuiProjection {
         envelope: StreamEventEnvelope,
     ) -> ProjectionEventRecord {
         let event = AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: envelope.id.clone(),
             event: envelope.event_type.clone(),
             data: envelope,
@@ -1726,28 +1727,31 @@ fn event_content_fingerprint(event: &StreamEventEnvelope) -> String {
         "id": event.id,
         "ts": event.ts,
         "type": event.event_type,
-        "contract_version": event.contract_version,
         "payload_schema": event.payload_schema,
         "payload_schema_version": event.payload_schema_version,
-        "provenance": event.provenance,
         "payload": event.payload,
     }))
     .expect("runtime event envelope fingerprint must serialize")
 }
 
-fn can_apply_runtime_event(event: &StreamEventEnvelope) -> bool {
+fn can_apply_runtime_event(event: &AgentStreamEvent) -> bool {
     if event.contract_version < RUNTIME_EVENT_CONTRACT_VERSION {
         return true;
     }
     if event.contract_version != RUNTIME_EVENT_CONTRACT_VERSION {
         return false;
     }
-    let Some(kind) = RuntimeEventKind::from_wire_name(&event.event_type) else {
+    let envelope = &event.data;
+    let Some(payload_schema) = envelope.payload_schema.as_deref() else {
+        // Schema-less legacy events carry no registry metadata to validate.
+        return true;
+    };
+    let Some(kind) = RuntimeEventKind::from_wire_name(&envelope.event_type) else {
         return false;
     };
     let descriptor = kind.descriptor();
-    event.payload_schema == descriptor.payload_schema
-        && event.payload_schema_version == descriptor.payload_schema_version
+    payload_schema == descriptor.payload_schema
+        && envelope.payload_schema_version == Some(descriptor.payload_schema_version)
 }
 
 fn summarize_event(event: &AgentStreamEvent) -> String {
@@ -2037,15 +2041,13 @@ mod tests {
         let events_tail = vec![StreamEventEnvelope {
             projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
-            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-            payload_schema_version: 1,
+            payload_schema: None,
+            payload_schema_version: None,
             id: "evt-tail-1".into(),
             event_seq: 0,
             ts: Utc::now(),
             agent_id: "default".into(),
             event_type: "assistant_round_recorded".into(),
-            provenance: None,
             payload: json!({
                 "stop_reason": "tool_use",
                 "tool_names": ["ExecCommand"],
@@ -2315,8 +2317,7 @@ mod tests {
                 "worktree_active": false
             }),
         );
-        event.data.contract_version = crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
-        event.data.payload_schema = "holon.runtime_event.future_agent_state".into();
+        event.data.payload_schema = Some("holon.runtime_event.future_agent_state".into());
 
         projection.apply_event(event, &test_log_writer());
 
@@ -2358,6 +2359,7 @@ mod tests {
 
         projection.apply_event(
             AgentStreamEvent {
+                contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                 id: "evt-live".into(),
                 event: "assistant_round_recorded".into(),
                 data: sample_event_envelope("evt-live", EVENT_LOG_LIMIT as u64 + 1),
@@ -2905,21 +2907,19 @@ mod tests {
         for index in 0..callback_count {
             projection.apply_event(
                 AgentStreamEvent {
+                    contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                     id: format!("evt-callback-{index}"),
                     event: "callback_delivered".into(),
                     data: StreamEventEnvelope {
                         projection_effect: None,
                         event_log_epoch: Some("epoch-test".into()),
-                        contract_version:
-                            crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                        payload_schema_version: 1,
+                        payload_schema: None,
+                        payload_schema_version: None,
                         id: format!("evt-callback-{index}"),
                         event_seq: (index + 3) as u64,
                         ts: Utc::now(),
                         agent_id: "default".into(),
                         event_type: "callback_delivered".into(),
-                        provenance: None,
                         payload: json!({
                             "waiting_intent_id": format!("wait-{index}"),
                             "source": "github"
@@ -2988,21 +2988,19 @@ mod tests {
         for index in 0..=EVENT_LOG_LIMIT {
             projection.apply_event(
                 AgentStreamEvent {
+                    contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
                     id: format!("evt-debug-{index}"),
                     event: "provider_round_completed".into(),
                     data: StreamEventEnvelope {
                         projection_effect: None,
                         event_log_epoch: Some("epoch-test".into()),
-                        contract_version:
-                            crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-                        payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-                        payload_schema_version: 1,
+                        payload_schema: None,
+                        payload_schema_version: None,
                         id: format!("evt-debug-{index}"),
                         event_seq: (index + 2) as u64,
                         ts: Utc::now(),
                         agent_id: "default".into(),
                         event_type: "provider_round_completed".into(),
-                        provenance: None,
                         payload: json!({ "text_preview": format!("partial-{index}") }),
                     },
                 },
@@ -3582,6 +3580,7 @@ mod tests {
     fn sample_event_with_id(id: &str, kind: &str, payload: Value) -> AgentStreamEvent {
         let event_seq = NEXT_SAMPLE_EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
         AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: id.to_string(),
             event: kind.to_string(),
             data: sample_event_envelope_with_payload(id, event_seq, kind, payload),
@@ -3606,16 +3605,14 @@ mod tests {
         StreamEventEnvelope {
             projection_effect: None,
             event_log_epoch: Some("epoch-test".into()),
-            contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
-            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.into(),
-            payload_schema_version: 1,
+            payload_schema: None,
+            payload_schema_version: None,
             id: id.into(),
             event_seq,
             ts: chrono::DateTime::<Utc>::from_timestamp(event_seq as i64, 0)
                 .expect("sample event sequence must produce a valid timestamp"),
             agent_id: "default".into(),
             event_type: kind.into(),
-            provenance: None,
             payload,
         }
     }
