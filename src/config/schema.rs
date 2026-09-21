@@ -1057,13 +1057,15 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .decision
             .route
             .as_ref()
-            .map(|route| json!(route.endpoint))
+            .and_then(|route| route.endpoint.as_deref())
+            .map(|endpoint| json!(endpoint))
             .unwrap_or(Value::Null)),
         "decision.route.model" => Ok(config
             .decision
             .route
             .as_ref()
-            .map(|route| json!(route.model))
+            .and_then(|route| route.model.as_deref())
+            .map(|model| json!(model))
             .unwrap_or(Value::Null)),
         "decision.route.credential_profile" => Ok(config
             .decision
@@ -1465,8 +1467,10 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
             );
         }
-        "decision.route.endpoint" => ensure_decision_route(config).endpoint = raw_value.to_owned(),
-        "decision.route.model" => ensure_decision_route(config).model = raw_value.to_owned(),
+        "decision.route.endpoint" => {
+            ensure_decision_route(config).endpoint = Some(raw_value.to_owned())
+        }
+        "decision.route.model" => ensure_decision_route(config).model = Some(raw_value.to_owned()),
         "decision.route.credential_profile" => {
             ensure_decision_route(config).credential_profile = Some(raw_value.to_owned())
         }
@@ -1797,12 +1801,18 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.enabled" => config.decision.enabled = None,
         "decision.route.endpoint" => {
             if let Some(route) = config.decision.route.as_mut() {
-                route.endpoint.clear();
+                route.endpoint = None;
+                if route.model.is_none() && route.credential_profile.is_none() {
+                    config.decision.route = None;
+                }
             }
         }
         "decision.route.model" => {
             if let Some(route) = config.decision.route.as_mut() {
-                route.model.clear();
+                route.model = None;
+                if route.endpoint.is_none() && route.credential_profile.is_none() {
+                    config.decision.route = None;
+                }
             }
         }
         "decision.route.credential_profile" => {

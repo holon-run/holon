@@ -148,10 +148,16 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
-        let used_async_hook = self.inner.autonomous_continuation_decision_hook.is_some();
+        let async_hook = self
+            .inner
+            .autonomous_continuation_decision_hook
+            .read()
+            .await
+            .clone();
+        let used_async_hook = async_hook.is_some();
         let selection = if pending_wake_hint.is_some() {
             None
-        } else if let Some(hook) = self.inner.autonomous_continuation_decision_hook.as_deref() {
+        } else if let Some(hook) = async_hook.as_deref() {
             scheduler::select_autonomous_continuation_with_async_hook(
                 &scheduler_projection,
                 Some(hook),
@@ -173,12 +179,13 @@ impl RuntimeHandle {
                 )
             };
             pending_wake_hint = fresh_pending_wake_hint;
+            let fresh_work_queue_projection = self.inner.storage.work_queue_prompt_projection()?;
             scheduler_projection =
                 scheduler::SchedulerProjection::from_snapshot_with_queue_len_and_work_queue_at(
                     &self.inner.storage,
                     &fresh_snapshot,
                     fresh_queue_len,
-                    work_queue_projection.clone(),
+                    fresh_work_queue_projection,
                     self.now(),
                 )?;
         }

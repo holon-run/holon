@@ -56,8 +56,16 @@ impl OpenAiSemanticCandidateSelectionHook {
             .route
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("decision.enabled requires decision.route"))?;
+        let endpoint = route
+            .endpoint
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("decision.route.endpoint is required"))?;
+        let model = route
+            .model
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("decision.route.model is required"))?;
         anyhow::ensure!(
-            !route.endpoint.trim().is_empty() && !route.model.trim().is_empty(),
+            !endpoint.trim().is_empty() && !model.trim().is_empty(),
             "decision.route endpoint and model must not be empty"
         );
         let timeout = Duration::from_millis(
@@ -67,7 +75,7 @@ impl OpenAiSemanticCandidateSelectionHook {
                 .max(1),
         );
         let mut provider_config =
-            OpenAiConfig::new(route.endpoint.clone(), route.model.clone()).with_timeout(timeout);
+            OpenAiConfig::new(endpoint.to_owned(), model.to_owned()).with_timeout(timeout);
         if let Some(max_tokens) = configured.max_tokens {
             provider_config = provider_config.with_max_tokens(max_tokens);
         }

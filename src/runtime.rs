@@ -434,7 +434,7 @@ struct RuntimeInner {
     bootstrap_notify: Notify,
     autonomous_continuation_hook: Arc<dyn scheduler::SemanticCandidateSelectionHook>,
     autonomous_continuation_decision_hook:
-        Option<Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>>,
+        RwLock<Option<Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>>>,
     suppress_next_continue_active_tick: Mutex<bool>,
     shutdown_requested: AtomicBool,
     transition_faults: StdMutex<std::collections::VecDeque<TransitionFaultPoint>>,

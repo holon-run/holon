@@ -501,7 +501,9 @@ impl RuntimeHandle {
                 autonomous_continuation_hook: Arc::new(
                     scheduler::StaticSemanticCandidateSelectionHook,
                 ),
-                autonomous_continuation_decision_hook,
+                autonomous_continuation_decision_hook: RwLock::new(
+                    autonomous_continuation_decision_hook,
+                ),
                 suppress_next_continue_active_tick: Mutex::new(false),
                 shutdown_requested: AtomicBool::new(false),
                 transition_faults: StdMutex::new(std::collections::VecDeque::new()),
@@ -690,8 +692,24 @@ impl RuntimeHandle {
         let mut config = config.clone();
         config.user_home_dir = self.inner.config_snapshot.load().user_home_dir.clone();
         let new_snapshot = Arc::new(ConfigSnapshot::from_config(&config)?);
+        let decision_hook = new_snapshot
+            .provider_reconfig
+            .as_ref()
+            .map(|reconfig| {
+                super::decision_openai::OpenAiSemanticCandidateSelectionHook::from_app_config(
+                    &reconfig.config,
+                )
+            })
+            .transpose()?
+            .flatten()
+            .map(|hook| Arc::new(hook) as Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>);
         // Atomically swap the snapshot.
         self.inner.config_snapshot.store(new_snapshot);
+        *self
+            .inner
+            .autonomous_continuation_decision_hook
+            .write()
+            .await = decision_hook;
         // Rebuild provider + context_config for current state.
         // If this runtime has no provider_reconfig (static provider), skip.
         let snap = self.inner.config_snapshot.load();

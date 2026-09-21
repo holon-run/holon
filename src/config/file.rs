@@ -48,8 +48,10 @@ pub struct DecisionConfigFile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DecisionRouteConfigFile {
-    pub endpoint: String,
-    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_profile: Option<String>,
 }
