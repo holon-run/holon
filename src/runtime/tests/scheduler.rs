@@ -1094,6 +1094,22 @@ impl scheduler::SemanticCandidateSelectionHook for ErrorHook {
     }
 }
 
+struct TypedErrorHook {
+    kind: scheduler::SemanticCandidateSelectionHookErrorKind,
+}
+
+impl scheduler::SemanticCandidateSelectionHook for TypedErrorHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Err(scheduler::SemanticCandidateSelectionHookError { kind: self.kind })
+    }
+}
+
 struct UnknownCandidateHook;
 
 impl scheduler::SemanticCandidateSelectionHook for UnknownCandidateHook {
@@ -1195,6 +1211,49 @@ fn autonomous_selection_unavailable_abstain_and_error_use_static_baseline() {
             scheduler::select_autonomous_continuation_with_hook(&projection, hook).unwrap();
         let (work_item, mode, _) =
             scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+        assert_eq!(work_item.id, "work-current");
+        assert_eq!(mode, WorkReactivationMode::ContinueActive);
+    }
+}
+
+#[test]
+fn autonomous_selection_preserves_typed_provider_failure_fallback_audit_reasons() {
+    let projection = autonomous_selection_projection();
+    let cases = [
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::Timeout,
+            "timeout",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::Cancelled,
+            "cancelled",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::ResourceExhausted,
+            "resource_exhausted",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::ProviderError,
+            "provider_error",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+            "malformed_response",
+        ),
+    ];
+
+    for (kind, expected_reason) in cases {
+        let hook = TypedErrorHook { kind };
+        let selection =
+            scheduler::select_autonomous_continuation_with_hook(&projection, Some(&hook))
+                .expect("selection");
+        assert_eq!(
+            selection.fallback_reason().map(|reason| reason.as_str()),
+            Some(expected_reason)
+        );
+        let (work_item, mode, _) =
+            scheduler::resolve_autonomous_continuation_work_item(&projection, &selection)
+                .expect("baseline work item");
         assert_eq!(work_item.id, "work-current");
         assert_eq!(mode, WorkReactivationMode::ContinueActive);
     }

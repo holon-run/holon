@@ -337,6 +337,53 @@ fn fallback_reason_for_hook_error(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_hook_error_kinds_to_stable_fallback_reasons() {
+        let cases = [
+            (
+                SemanticCandidateSelectionHookErrorKind::Unknown,
+                AutonomousContinuationFallbackReason::HookError,
+                "hook_error",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::Timeout,
+                AutonomousContinuationFallbackReason::Timeout,
+                "timeout",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::Cancelled,
+                AutonomousContinuationFallbackReason::Cancelled,
+                "cancelled",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::ResourceExhausted,
+                AutonomousContinuationFallbackReason::ResourceExhausted,
+                "resource_exhausted",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::ProviderError,
+                AutonomousContinuationFallbackReason::ProviderError,
+                "provider_error",
+            ),
+            (
+                SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+                AutonomousContinuationFallbackReason::MalformedResponse,
+                "malformed_response",
+            ),
+        ];
+
+        for (kind, expected, audit_label) in cases {
+            let reason = fallback_reason_for_hook_error(kind);
+            assert_eq!(reason, expected);
+            assert_eq!(reason.as_str(), audit_label);
+        }
+    }
+}
+
 pub(crate) fn resolve_autonomous_continuation_work_item<'a>(
     projection: &'a SchedulerProjection,
     selection: &AutonomousContinuationSelection,

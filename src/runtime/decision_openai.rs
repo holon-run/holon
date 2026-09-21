@@ -192,9 +192,7 @@ fn map_decision_error(error: DecisionError) -> SemanticCandidateSelectionHookErr
         DecisionError::InvalidResponse(_) | DecisionError::Serialization(_) => {
             SemanticCandidateSelectionHookErrorKind::MalformedResponse
         }
-        DecisionError::InvalidRequest(_) => {
-            SemanticCandidateSelectionHookErrorKind::MalformedResponse
-        }
+        DecisionError::InvalidRequest(_) => SemanticCandidateSelectionHookErrorKind::Unknown,
         DecisionError::Provider(_) | DecisionError::Transport(_) => {
             SemanticCandidateSelectionHookErrorKind::ProviderError
         }
@@ -249,7 +247,7 @@ impl DecisionExecutor {
         let pending = self.pending.fetch_add(1, Ordering::AcqRel);
         if pending >= self.queue_capacity {
             self.pending.fetch_sub(1, Ordering::AcqRel);
-            return Err(DecisionError::Provider(
+            return Err(DecisionError::ResourceExhausted(
                 "decision executor queue is full".into(),
             ));
         }
@@ -351,6 +349,47 @@ mod tests {
             },
             baseline: candidates[0].clone(),
             candidates,
+        }
+    }
+
+    #[test]
+    fn maps_provider_failures_to_stable_hook_error_kinds() {
+        let cases = [
+            (
+                DecisionError::Cancelled,
+                SemanticCandidateSelectionHookErrorKind::Cancelled,
+            ),
+            (
+                DecisionError::DeadlineExceeded,
+                SemanticCandidateSelectionHookErrorKind::Timeout,
+            ),
+            (
+                DecisionError::ResourceExhausted("response".into()),
+                SemanticCandidateSelectionHookErrorKind::ResourceExhausted,
+            ),
+            (
+                DecisionError::InvalidResponse("json".into()),
+                SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+            ),
+            (
+                DecisionError::Serialization("json".into()),
+                SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+            ),
+            (
+                DecisionError::InvalidRequest("request".into()),
+                SemanticCandidateSelectionHookErrorKind::Unknown,
+            ),
+            (
+                DecisionError::Provider("503".into()),
+                SemanticCandidateSelectionHookErrorKind::ProviderError,
+            ),
+            (
+                DecisionError::Transport("connection".into()),
+                SemanticCandidateSelectionHookErrorKind::ProviderError,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(map_decision_error(error).kind, expected);
         }
     }
 

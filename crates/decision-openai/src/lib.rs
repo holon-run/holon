@@ -169,6 +169,9 @@ impl DecisionProvider<Value, Value> for OpenAiProvider {
         let status = response.status();
         let response_body =
             read_bounded(response, &context, self.config.max_response_bytes).await?;
+        // Buffered chunks can complete the read without the polling timer
+        // firing, so re-check the context before treating this as a success.
+        context.check()?;
         if !status.is_success() {
             return Err(DecisionError::Provider(format!(
                 "openai-compatible endpoint returned {status}: {}",
@@ -255,6 +258,16 @@ async fn send_with_context(
     }
 }
 
+fn map_request_error(error: reqwest::Error, context: &DecisionContext) -> DecisionError {
+    if error.is_timeout() {
+        DecisionError::DeadlineExceeded
+    } else if context.is_cancelled() {
+        DecisionError::Cancelled
+    } else {
+        DecisionError::Transport(error.to_string())
+    }
+}
+
 async fn read_bounded(
     mut response: reqwest::Response,
     context: &DecisionContext,
@@ -279,7 +292,7 @@ async fn read_bounded(
                 continue;
             }
         }
-        .map_err(|error| DecisionError::Transport(error.to_string()))?;
+        .map_err(|error| map_request_error(error, context))?;
         let Some(chunk) = chunk else { break };
         if body.len().saturating_add(chunk.len()) > max_bytes {
             return Err(DecisionError::ResourceExhausted(format!(
@@ -294,6 +307,59 @@ async fn read_bounded(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use decision_core::{DecisionContext, DecisionProvider};
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
+
+    fn request() -> DecisionRequest<Value, Value> {
+        DecisionRequest {
+            request_id: "req-1".into(),
+            input: serde_json::json!({"text":"hello"}),
+            candidates: vec![serde_json::json!("greeting")],
+            schema: "classification".into(),
+            schema_version: "1".into(),
+            metadata: Default::default(),
+            deadline_ms: None,
+        }
+    }
+
+    fn test_server(response: Option<&'static [u8]>, delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            thread::sleep(delay);
+            if let Some(response) = response {
+                stream.write_all(response).expect("response");
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn drip_test_server(
+        head: &'static [u8],
+        chunks: &'static [&'static [u8]],
+        gap: Duration,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream.write_all(head).expect("head");
+            for chunk in chunks {
+                thread::sleep(gap);
+                stream.write_all(chunk).expect("chunk");
+            }
+        });
+        format!("http://{address}")
+    }
 
     #[test]
     fn endpoint_normalization_supports_local_servers() {
@@ -334,5 +400,111 @@ mod tests {
             parse_content(body).expect("content"),
             r#"{"schema_version":"1"}"#
         );
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_request_before_http_call() {
+        let provider = OpenAiProvider::new(
+            OpenAiConfig::new("http://127.0.0.1:1", "test").with_max_request_bytes(1),
+        )
+        .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_response_exceeding_content_length_limit() {
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n123456"),
+            Duration::ZERO,
+        );
+        let provider =
+            OpenAiProvider::new(OpenAiConfig::new(endpoint, "test").with_max_response_bytes(5))
+                .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_response_exceeding_incremental_limit_without_content_length() {
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n123456"),
+            Duration::ZERO,
+        );
+        let provider =
+            OpenAiProvider::new(OpenAiConfig::new(endpoint, "test").with_max_response_bytes(5))
+                .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn propagates_cancellation_and_deadline_to_http_request() {
+        let provider = OpenAiProvider::new(
+            OpenAiConfig::new(test_server(None, Duration::from_millis(250)), "test")
+                .with_timeout(Duration::from_secs(2)),
+        )
+        .expect("provider");
+        let context = DecisionContext::new();
+        let cancellation = context.cancellation_token();
+        let task = tokio::spawn({
+            let provider = provider.clone();
+            let context = context.clone();
+            async move { provider.decide(request(), context).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancellation.cancel();
+        assert!(matches!(
+            task.await.expect("cancel task"),
+            Err(DecisionError::Cancelled)
+        ));
+
+        let provider = OpenAiProvider::new(
+            OpenAiConfig::new(test_server(None, Duration::from_millis(250)), "test")
+                .with_timeout(Duration::from_secs(2)),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_millis(30)),
+            )
+            .await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
+    }
+
+    #[tokio::test]
+    async fn classifies_body_read_timeout_as_deadline_exceeded() {
+        let endpoint = drip_test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            &[b"xx"],
+            Duration::from_millis(400),
+        );
+        let provider = OpenAiProvider::new(
+            OpenAiConfig::new(endpoint, "test").with_timeout(Duration::from_millis(100)),
+        )
+        .expect("provider");
+        let result = provider.decide(request(), DecisionContext::new()).await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
+    }
+
+    #[tokio::test]
+    async fn deadline_expiring_during_bounded_body_read_is_not_reported_as_success() {
+        let endpoint = drip_test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n",
+            &[b"xx", b"xx", b"xx", b"xx"],
+            Duration::from_millis(8),
+        );
+        let provider = OpenAiProvider::new(
+            OpenAiConfig::new(endpoint, "test").with_timeout(Duration::from_secs(5)),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(
+                request(),
+                DecisionContext::with_timeout(Duration::from_millis(20)),
+            )
+            .await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
     }
 }
