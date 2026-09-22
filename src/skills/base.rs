@@ -19,6 +19,8 @@ use crate::types::{
 };
 
 const SKILL_ENTRYPOINT: &str = "SKILL.md";
+const REPO_ROOT_SKILL_PATH: &str = ".";
+const ROOT_SKILL_COMPANION_DIRS: &[&str] = &["scripts", "references", "assets", "tests"];
 const INSTALL_METADATA_FILENAME: &str = ".holon-skill-install.json";
 pub const REMOTE_SKILL_INSTALL_TIMEOUT_SECONDS: u64 = 120;
 pub(crate) const SKILL_ROOT_SUFFIXES: [&str; 4] = [
@@ -683,6 +685,17 @@ impl RemoteSkillSource {
             }
             skill_path = parts.get(4..).unwrap_or(&[]).join("/");
         }
+        if skill_path == REPO_ROOT_SKILL_PATH {
+            let skill_name = skill.map(str::to_string).unwrap_or_else(|| repo.clone());
+            validate_skill_name(&skill_name)?;
+            return Ok(Self {
+                owner,
+                repo,
+                reference,
+                path: REPO_ROOT_SKILL_PATH.to_string(),
+                skill_name,
+            });
+        }
         if let Some(skill) = skill {
             validate_skill_name(skill)?;
             if skill_path.is_empty() {
@@ -767,7 +780,11 @@ fn finalize_remote_skill_download(
     destination: &Path,
     package: &str,
 ) -> Result<()> {
-    download_github_directory(client, source, skill_path, tmp)?;
+    if is_repo_root_skill_path(skill_path) {
+        download_github_root_skill(client, source, tmp, package)?;
+    } else {
+        download_github_directory(client, source, skill_path, tmp)?;
+    }
     if !tmp.join(SKILL_ENTRYPOINT).is_file() {
         bail!(
             "remote skill '{}' did not contain {} at {}",
@@ -1098,19 +1115,9 @@ fn discover_skills_via_tree(
         if entry.kind != "blob" {
             continue;
         }
-        let Some(dir) = entry.path.strip_suffix("/SKILL.md") else {
-            continue;
-        };
-        if !prefix.is_empty() && !dir.starts_with(&prefix) {
-            continue;
+        if let Some(skill) = remote_skill_from_tree_blob(&entry.path, &prefix, repo) {
+            skills.push(skill);
         }
-        let Some(name) = dir.rsplit('/').next() else {
-            continue;
-        };
-        if validate_skill_name(name).is_err() {
-            continue;
-        }
-        skills.push((name.to_string(), dir.to_string()));
     }
     Ok(skills)
 }
@@ -1137,6 +1144,81 @@ fn github_auth_headers() -> HeaderMap {
         }
     }
     headers
+}
+
+fn is_repo_root_skill_path(path: &str) -> bool {
+    path == REPO_ROOT_SKILL_PATH
+}
+
+fn is_root_skill_companion_dir(name: &str) -> bool {
+    ROOT_SKILL_COMPANION_DIRS.contains(&name)
+}
+
+fn remote_skill_from_tree_blob(path: &str, prefix: &str, repo: &str) -> Option<(String, String)> {
+    if path == SKILL_ENTRYPOINT {
+        if prefix.is_empty() && validate_skill_name(repo).is_ok() {
+            return Some((repo.to_string(), REPO_ROOT_SKILL_PATH.to_string()));
+        }
+        return None;
+    }
+    let dir = path.strip_suffix("/SKILL.md")?;
+    if !prefix.is_empty() && !dir.starts_with(prefix) {
+        return None;
+    }
+    let name = dir.rsplit('/').next()?;
+    if validate_skill_name(name).is_err() {
+        return None;
+    }
+    Some((name.to_string(), dir.to_string()))
+}
+
+fn download_github_root_skill(
+    client: &reqwest::blocking::Client,
+    source: &RemoteSkillSource,
+    destination: &Path,
+    package: &str,
+) -> Result<()> {
+    let url = github_contents_url_parts(&source.owner, &source.repo, &source.reference, "");
+    let response = remote_skill_request(client.get(&url).send(), package, || {
+        format!("failed to fetch remote skill directory {url}")
+    })?;
+    if !response.status().is_success() {
+        return Err(RemoteSkillInstallFailed {
+            package: package.to_string(),
+            status: Some(response.status().as_u16().into()),
+            stdout: String::new(),
+            stderr: response.text().unwrap_or_default(),
+        }
+        .into());
+    }
+    let entries: Vec<GithubContentEntry> = response
+        .json()
+        .with_context(|| format!("failed to parse GitHub contents response for {url}"))?;
+    let mut found_skill_md = false;
+    for entry in entries {
+        validate_skill_archive_entry(&entry.name)?;
+        match entry.kind.as_str() {
+            "file" if entry.name == SKILL_ENTRYPOINT => {
+                download_github_file(client, package, &entry, destination)?;
+                found_skill_md = true;
+            }
+            "dir" if is_root_skill_companion_dir(&entry.name) => {
+                let child = destination.join(&entry.name);
+                fs::create_dir_all(&child)
+                    .with_context(|| format!("failed to create {}", child.display()))?;
+                download_github_directory(client, source, &entry.path, &child)?;
+            }
+            _ => {}
+        }
+    }
+    if !found_skill_md {
+        bail!(
+            "remote skill '{}' did not contain {} at repository root",
+            package,
+            SKILL_ENTRYPOINT
+        );
+    }
+    Ok(())
 }
 
 fn download_github_directory(
@@ -1172,26 +1254,36 @@ fn download_github_directory(
                 download_github_directory(client, source, &entry.path, &child)?;
             }
             "file" => {
-                let download_url = entry.download_url.ok_or_else(|| {
-                    anyhow::anyhow!("GitHub file {} has no download URL", entry.path)
-                })?;
-                validate_github_download_url(&download_url)?;
-                let response =
-                    remote_skill_request(client.get(&download_url).send(), &package, || {
-                        format!("failed to download {download_url}")
-                    })?;
-                let response = remote_skill_request(response.error_for_status(), &package, || {
-                    format!("GitHub file download failed for {download_url}")
-                })?;
-                let bytes = remote_skill_request(response.bytes(), &package, || {
-                    format!("failed to read {download_url}")
-                })?;
-                fs::write(&child, bytes)
-                    .with_context(|| format!("failed to write {}", child.display()))?;
+                download_github_file(client, &package, &entry, destination)?;
             }
             _ => {}
         }
     }
+    Ok(())
+}
+
+fn download_github_file(
+    client: &reqwest::blocking::Client,
+    package: &str,
+    entry: &GithubContentEntry,
+    destination_dir: &Path,
+) -> Result<()> {
+    let download_url = entry
+        .download_url
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("GitHub file {} has no download URL", entry.path))?;
+    validate_github_download_url(download_url)?;
+    let response = remote_skill_request(client.get(download_url).send(), package, || {
+        format!("failed to download {download_url}")
+    })?;
+    let response = remote_skill_request(response.error_for_status(), package, || {
+        format!("GitHub file download failed for {download_url}")
+    })?;
+    let bytes = remote_skill_request(response.bytes(), package, || {
+        format!("failed to read {download_url}")
+    })?;
+    let child = destination_dir.join(&entry.name);
+    fs::write(&child, bytes).with_context(|| format!("failed to write {}", child.display()))?;
     Ok(())
 }
 
@@ -1235,12 +1327,18 @@ fn github_contents_url_parts(
     reference: &str,
     remote_path: &str,
 ) -> String {
+    let reference = utf8_percent_encode(reference, NON_ALPHANUMERIC);
+    if remote_path.is_empty() {
+        return format!(
+            "https://api.github.com/repos/{}/{}/contents?ref={}",
+            owner, repo, reference
+        );
+    }
     let encoded_path = remote_path
         .split('/')
         .map(|part| utf8_percent_encode(part, NON_ALPHANUMERIC).to_string())
         .collect::<Vec<_>>()
         .join("/");
-    let reference = utf8_percent_encode(reference, NON_ALPHANUMERIC);
     format!(
         "https://api.github.com/repos/{}/{}/contents/{}?ref={}",
         owner, repo, encoded_path, reference
@@ -3627,6 +3725,62 @@ mod tests {
         assert_eq!(source.reference, "");
         assert_eq!(source.path, "skills/pr-review");
         assert_eq!(source.skill_name, "pr-review");
+    }
+
+    #[test]
+    fn remote_skill_source_parses_repo_root_skill_tree_url() {
+        let source =
+            RemoteSkillSource::parse("https://github.com/blader/humanizer/tree/HEAD/.", None)
+                .unwrap();
+
+        assert_eq!(
+            source,
+            RemoteSkillSource {
+                owner: "blader".into(),
+                repo: "humanizer".into(),
+                reference: "HEAD".into(),
+                path: ".".into(),
+                skill_name: "humanizer".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn remote_skill_from_tree_blob_discovers_root_skill_md() {
+        assert_eq!(
+            remote_skill_from_tree_blob("SKILL.md", "", "humanizer"),
+            Some(("humanizer".into(), ".".into()))
+        );
+        assert_eq!(
+            remote_skill_from_tree_blob("skills/ghx/SKILL.md", "", "holon"),
+            Some(("ghx".into(), "skills/ghx".into()))
+        );
+        assert_eq!(
+            remote_skill_from_tree_blob("SKILL.md", "skills/", "humanizer"),
+            None
+        );
+    }
+
+    #[test]
+    fn root_skill_companion_dirs_are_named_skill_resources() {
+        assert!(is_root_skill_companion_dir("scripts"));
+        assert!(is_root_skill_companion_dir("references"));
+        assert!(!is_root_skill_companion_dir("agents"));
+        assert!(!is_root_skill_companion_dir(".github"));
+        assert!(is_repo_root_skill_path("."));
+        assert!(!is_repo_root_skill_path("skills/ghx"));
+    }
+
+    #[test]
+    fn github_contents_url_parts_lists_repo_root_without_trailing_slash() {
+        assert_eq!(
+            github_contents_url_parts("blader", "humanizer", "HEAD", ""),
+            "https://api.github.com/repos/blader/humanizer/contents?ref=HEAD"
+        );
+        assert_eq!(
+            github_contents_url_parts("holon-run", "holon", "main", "skills/ghx"),
+            "https://api.github.com/repos/holon-run/holon/contents/skills/ghx?ref=main"
+        );
     }
 
     #[test]

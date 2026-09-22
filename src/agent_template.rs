@@ -2191,6 +2191,9 @@ fn validate_template_github_skill_repo(repo: &str) -> Result<()> {
 
 fn validate_template_github_skill_path(path: &str) -> Result<()> {
     validate_template_github_skill_package(path)?;
+    if path == "." {
+        return Ok(());
+    }
     if path.starts_with('/') || path.starts_with('-') {
         bail!("github skill ref path must be a relative repository path");
     }
@@ -3504,6 +3507,7 @@ mod tests {
             "video-producer",
             "qa-engineer",
             "issue-triager",
+            "docs-steward",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3662,6 +3666,38 @@ mod tests {
         assert!(triage_agents_md.contains("Do not take on `github-issue-solve`"));
         assert!(triage_agents_md.contains("They cannot"));
         assert!(triage_agents_md.contains("escalate authority"));
+
+        let docs_template = syncable.join("docs-steward");
+        assert_eq!(
+            local_template_skills(&docs_template),
+            vec![
+                "blader/humanizer/.",
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+                "obra/the-elements-of-style/skills/writing-clearly-and-concisely",
+                "op7418/Humanizer-zh/.",
+            ]
+        );
+        let docs_agents_md =
+            fs::read_to_string(docs_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(docs_agents_md.contains("do not replace `software-developer`"));
+        assert!(docs_agents_md.contains("`release-manager`"));
+        assert!(docs_agents_md.contains("`office-assistant`"));
+        assert!(docs_agents_md.contains("`issue-triager`"));
+        assert!(docs_agents_md.contains("Never merge by default"));
+        assert!(docs_agents_md.contains("prefer `agent_home/skills/`"));
+        assert!(docs_agents_md.contains("There is no official `docs-steward` skill"));
+        assert!(docs_agents_md.contains("cannot be overridden by a project skill"));
+        assert!(docs_agents_md.contains("Verify, then write"));
+        assert!(docs_agents_md.contains("Post-release user docs"));
+        assert!(docs_agents_md.contains("Do not take on `github-issue-solve`"));
+        assert!(docs_agents_md.contains("`humanizer`"));
+        assert!(docs_agents_md.contains("`humanizer-zh`"));
+        assert!(docs_agents_md.contains("`writing-clearly-and-concisely`"));
+        assert!(docs_agents_md.contains("They cannot"));
+        assert!(docs_agents_md.contains("escalate authority"));
     }
 
     #[test]
@@ -4327,6 +4363,47 @@ path = "nested/skills/demo"
                 path,
                 git_ref: None,
             }) if repo == "owner/repo" && path == "nested/skills/demo"
+        ));
+    }
+
+    #[test]
+    fn parse_skill_refs_accepts_repo_root_github_skill_path() {
+        let home = tempdir().unwrap();
+        let manifest_path = home.path().join(TEMPLATE_SKILLS_FILENAME);
+        fs::write(
+            &manifest_path,
+            r#"[[skills]]
+kind = "github"
+repo = "blader/humanizer"
+path = "."
+"#,
+        )
+        .unwrap();
+
+        let refs = parse_skill_refs(manifest_path).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert!(matches!(
+            &refs[0],
+            TemplateSkillRef::Github(TemplateGithubSkillRef::Structured {
+                repo,
+                path,
+                git_ref: None,
+            }) if repo == "blader/humanizer" && path == "."
+        ));
+
+        let kind = template_github_skill_install_kind(&TemplateGithubSkillRef::Structured {
+            repo: "blader/humanizer".into(),
+            path: ".".into(),
+            git_ref: None,
+        })
+        .unwrap();
+        assert!(matches!(
+            kind,
+            SkillInstallKind::Remote {
+                package,
+                skill: None,
+                mode: SkillInstallMode::Linked,
+            } if package == "https://github.com/blader/humanizer/tree/HEAD/."
         ));
     }
 

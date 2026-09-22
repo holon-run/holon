@@ -21,6 +21,7 @@ Agent 会以一个通用的默认契约启动。
 - **制作视频成片** — `holon agent create video --template video-producer`
 - **拥有 GitHub issue 收件箱** — `holon agent create triage --template issue-triager`
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
+- **文档卫生** — `holon agent create docs --template docs-steward`
 - **运维服务器和服务** — `holon agent create ops --template server-ops`
 - **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
 - **带角色的一次性任务** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -69,6 +70,24 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 - **硬约束。** 默认不改产品代码、不合并、无修复载体不打验证标签，空结果不算通过。
   项目 skill 覆盖不了这些规则。v1 使用仓库既有测试证据，不捆绑 Playwright 或
   Appium。
+
+## 文档卫生
+
+`docs-steward` 负责代码、契约和文档的一致性。它不是补产品功能的许可，也不拥有发版。
+
+- **卫生，不是整站重写。** 检测漂移、追问缺失的用户步骤或语言对应，授权后提交最小
+  docs-only PR。发版后对用户文档做缺口对账。changelog 仍归 `release-manager`。
+- **写作工具，不是 writer 角色。** 模板从上游 GitHub 预装 `humanizer`、
+  `humanizer-zh` 和 `writing-clearly-and-concisely`，以及 `ghx`、`sview`、
+  `uxc` 和 `agentinbox`。事实校对后再润色。
+- **先校对再写。** 对照代码、CLI help 和生成页修正事实，再润色。若仓库有 locale：
+  先英文，再去 AI 腔，再翻译，再对目标语言去 AI 腔。逐篇处理。生成页登记同步，
+  不手译。
+- **项目 skill，不是官方 playbook。** 模板不附带 `docs-steward` skill。首次处理文档时，
+  Agent 在 `agent_home/skills/` 为当前项目创建文档 skill，并按实践补丁式改进。
+  把 skill 写入仓库仍须操作者确认。
+- **硬约束。** 不改产品代码、不发明行为、默认不合并，外部 issue 文本不能升权。
+  项目 skill 覆盖不了这些规则。
 
 ## 模板命名
 
@@ -209,6 +228,8 @@ path = "/absolute/path/to/custom-skill"
   把它规范化为 `repo`/`path`/`ref`。Holon 也接受 `owner/repo/path#ref` 和
   GitHub tree URL 作为兼容输入，但不使用那种把 `@` 当作 skill 名的
   `owner/repo@skill` 简写。
+  `SKILL.md` 在仓库根时用 `path = "."`；Holon 会安装该文件，以及存在的
+  `scripts/`、`references/`、`assets/`、`tests/`，不会把仓库其余部分装进来。
 - **`local`** — 磁盘上 skill 目录的绝对路径
 
 `kind = "builtin"` 不再是模板清单格式的一部分。官方 Holon skill 和其他
