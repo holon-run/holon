@@ -641,9 +641,12 @@ describe("agent recovery coordinator", () => {
     const scope = makeScope();
     await pipeline.ingest(scope, [envelope(1), envelope(2, { payload: { original: true } })]);
 
+    // The redelivered seq 2 carries a different durable event id under the
+    // same canonical identity, so it is an immutable content conflict.
+    const rewritten = envelope(2, { id: "evt-2-rewritten", payload: { rewritten: true } });
     const source = pageSource({
-      2: page([envelope(3), envelope(2, { payload: { rewritten: true } })]),
-      1: page([envelope(2, { payload: { rewritten: true } }), envelope(3)]),
+      2: page([envelope(3), rewritten]),
+      1: page([rewritten, envelope(3)]),
     });
     const coordinator = makeCoordinator(
       pipeline,

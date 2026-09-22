@@ -736,14 +736,15 @@ describe("ledger ingestion pipeline", () => {
     ledger.close();
   });
 
-  it("rejects conflicting redelivery of the same event atomically", async () => {
+  it("rejects a different event redelivered under the same canonical identity atomically", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const scope = makeScope();
 
     await pipeline.ingest(scope, [envelope(1, { payload: { status: "a" } })]);
+    // Same canonical identity, different durable event id.
     await expect(
-      pipeline.ingest(scope, [envelope(1, { payload: { status: "b" } })]),
+      pipeline.ingest(scope, [envelope(1, { id: "evt-1-other", payload: { status: "a" } })]),
     ).rejects.toBeInstanceOf(LedgerIdentityConflictError);
 
     const ledger = await openLedgerHandle();
