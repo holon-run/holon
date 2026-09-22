@@ -1796,6 +1796,17 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
     Ok(())
 }
 
+fn decision_route_is_empty(route: &DecisionRouteConfigFile) -> bool {
+    route.provider.is_none()
+        && route.endpoint.is_none()
+        && route.model.is_none()
+        && route.credential_profile.is_none()
+        && route.model_dir.is_none()
+        && route.variant.is_none()
+        && route.num_threads.is_none()
+        && route.checksum.is_none()
+}
+
 pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     match key {
         "auth.mode" => config.auth.mode = None,
@@ -1899,10 +1910,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.provider" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.provider = None;
-                if route.endpoint.is_none()
-                    && route.model.is_none()
-                    && route.credential_profile.is_none()
-                {
+                if decision_route_is_empty(route) {
                     config.decision.route = None;
                 }
             }
@@ -1910,7 +1918,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.endpoint" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.endpoint = None;
-                if route.model.is_none() && route.credential_profile.is_none() {
+                if decision_route_is_empty(route) {
                     config.decision.route = None;
                 }
             }
@@ -1918,7 +1926,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.model" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.model = None;
-                if route.endpoint.is_none() && route.credential_profile.is_none() {
+                if decision_route_is_empty(route) {
                     config.decision.route = None;
                 }
             }
@@ -1926,6 +1934,41 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.credential_profile" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.credential_profile = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.model_dir" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.model_dir = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.variant" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.variant = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.num_threads" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.num_threads = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.checksum" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.checksum = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
             }
         }
         "decision.timeout_ms" => config.decision.timeout_ms = None,

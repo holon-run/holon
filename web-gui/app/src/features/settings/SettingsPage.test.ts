@@ -211,6 +211,22 @@ describe("buildDecisionConfigUpdates", () => {
       { key: "decision.route.checksum", value: "sha256:abc" },
     ]);
   });
+
+  it("never writes local ONNX fields for remote providers", () => {
+    expect(
+      buildDecisionConfigUpdates("openai", true, "https://api.example.test/v1", "gpt-4.1", "", "/models/decision", "q4f16", "4", "sha256:abc"),
+    ).toEqual([
+      { key: "decision.route.provider", value: "openai" },
+      { key: "decision.enabled", value: true },
+      { key: "decision.route.endpoint", value: "https://api.example.test/v1" },
+      { key: "decision.route.model", value: "gpt-4.1" },
+      { key: "decision.route.credential_profile", unset: true },
+      { key: "decision.route.model_dir", unset: true },
+      { key: "decision.route.variant", unset: true },
+      { key: "decision.route.num_threads", unset: true },
+      { key: "decision.route.checksum", unset: true },
+    ]);
+  });
 });
 
 describe("fallback model settings helpers", () => {

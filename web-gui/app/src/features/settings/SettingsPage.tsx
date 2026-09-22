@@ -106,6 +106,7 @@ export function buildDecisionConfigUpdates(
   checksum: string,
 ): Array<{ key: string; value?: unknown; unset?: boolean }> {
   const trimmedProvider = provider.trim();
+  const localOnnx = trimmedProvider === "local-onnx";
   const trimmedEndpoint = endpoint.trim();
   const trimmedModel = model.trim();
   const trimmedCredentialProfile = credentialProfile.trim();
@@ -127,16 +128,16 @@ export function buildDecisionConfigUpdates(
     trimmedCredentialProfile
       ? { key: "decision.route.credential_profile", value: trimmedCredentialProfile }
       : { key: "decision.route.credential_profile", unset: true },
-    trimmedModelDir
+    localOnnx && trimmedModelDir
       ? { key: "decision.route.model_dir", value: trimmedModelDir }
       : { key: "decision.route.model_dir", unset: true },
-    trimmedVariant
+    localOnnx && trimmedVariant
       ? { key: "decision.route.variant", value: trimmedVariant }
       : { key: "decision.route.variant", unset: true },
-    Number.isFinite(parsedNumThreads) && parsedNumThreads > 0
+    localOnnx && Number.isFinite(parsedNumThreads) && parsedNumThreads > 0
       ? { key: "decision.route.num_threads", value: parsedNumThreads }
       : { key: "decision.route.num_threads", unset: true },
-    trimmedChecksum
+    localOnnx && trimmedChecksum
       ? { key: "decision.route.checksum", value: trimmedChecksum }
       : { key: "decision.route.checksum", unset: true },
   ];

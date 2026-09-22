@@ -74,10 +74,8 @@ impl LocalOnnxConfig {
         } else {
             ModelManifest::default()
         };
-        let model_path = model_dir.join(&manifest.model);
-        let tokenizer_path = model_dir.join(&manifest.tokenizer);
-        ensure_local_file(&model_path, "model")?;
-        ensure_local_file(&tokenizer_path, "tokenizer")?;
+        let model_path = resolve_model_file(&model_dir, &manifest.model, "model")?;
+        let tokenizer_path = resolve_model_file(&model_dir, &manifest.tokenizer, "tokenizer")?;
         if let Some(expected) = self.checksum.as_deref() {
             verify_sha256(&model_path, expected)?;
         }
@@ -181,14 +179,33 @@ pub enum LocalOnnxError {
     FeatureDisabled,
 }
 
-fn ensure_local_file(path: &Path, kind: &str) -> Result<(), LocalOnnxError> {
-    if path.is_file() {
-        return Ok(());
+fn resolve_model_file(
+    model_dir: &Path,
+    relative: &str,
+    kind: &str,
+) -> Result<PathBuf, LocalOnnxError> {
+    let candidate = model_dir.join(relative);
+    let canonical = fs::canonicalize(&candidate).map_err(|error| {
+        LocalOnnxError::ModelUnavailable(format!(
+            "{kind} file {} is missing: {error}",
+            candidate.display()
+        ))
+    })?;
+    // Manifest paths must stay inside the configured model directory so an
+    // untrusted bundle cannot redirect loading outside the local boundary.
+    if !canonical.starts_with(model_dir) {
+        return Err(LocalOnnxError::InvalidManifest(format!(
+            "{kind} path {} escapes the model directory",
+            candidate.display()
+        )));
     }
-    Err(LocalOnnxError::ModelUnavailable(format!(
-        "{kind} file {} is missing",
-        path.display()
-    )))
+    if !canonical.is_file() {
+        return Err(LocalOnnxError::ModelUnavailable(format!(
+            "{kind} file {} is missing",
+            canonical.display()
+        )));
+    }
+    Ok(canonical)
 }
 
 fn verify_sha256(path: &Path, expected: &str) -> Result<(), LocalOnnxError> {
@@ -289,7 +306,7 @@ impl LocalOnnxProvider {
                 let created = OnnxRuntime::load(&files, num_threads)?;
                 guard.insert(created)
             };
-            runtime.decide(&request)
+            runtime.decide(&request, &context)
         })
         .await
         .map_err(|error| LocalOnnxError::Inference(error.to_string()))?
@@ -382,6 +399,7 @@ impl OnnxRuntime {
     fn decide(
         &mut self,
         request: &DecisionRequest<Value, Value>,
+        context: &DecisionContext,
     ) -> Result<InferenceResult, LocalOnnxError> {
         let state = request
             .input
@@ -397,6 +415,9 @@ impl OnnxRuntime {
         }
         let mut scores = Vec::with_capacity(texts.len());
         for text in texts {
+            context
+                .check()
+                .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
             let encoding = self
                 .tokenizer
                 .encode(text, true)
@@ -423,7 +444,13 @@ impl OnnxRuntime {
                     self.manifest.token_type_ids.as_str() => &types
                 ])
                 .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
-            let (_, values) = outputs[self.manifest.output.as_str()]
+            let output = outputs.get(self.manifest.output.as_str()).ok_or_else(|| {
+                LocalOnnxError::Inference(format!(
+                    "model output {} is missing",
+                    self.manifest.output
+                ))
+            })?;
+            let (_, values) = output
                 .try_extract_tensor::<f32>()
                 .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
             let score = values.first().copied().ok_or_else(|| {
@@ -508,5 +535,32 @@ mod tests {
         let manifest = ModelManifest::default();
         assert_eq!(manifest.model, DEFAULT_MODEL);
         assert_eq!(manifest.input_ids, "input_ids");
+    }
+
+    #[test]
+    fn rejects_manifest_paths_outside_model_dir() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let model_dir = directory.path().join("models");
+        fs::create_dir(&model_dir).expect("model dir");
+        let outside = directory.path().join("outside.onnx");
+        fs::write(&outside, b"model").expect("outside model");
+
+        let escaped =
+            resolve_model_file(&model_dir, "../outside.onnx", "model").expect_err("rejected");
+        assert!(matches!(escaped, LocalOnnxError::InvalidManifest(_)));
+
+        let absolute = resolve_model_file(&model_dir, &outside.display().to_string(), "model")
+            .expect_err("absolute rejected");
+        assert!(matches!(absolute, LocalOnnxError::InvalidManifest(_)));
+    }
+
+    #[cfg(feature = "onnx")]
+    #[test]
+    fn softmax_is_stable_and_normalized() {
+        let probabilities = softmax(&[1000.0, 1000.0, 1000.0]);
+        assert_eq!(probabilities.len(), 3);
+        for value in &probabilities {
+            assert!((value - 1.0 / 3.0).abs() < 1e-6);
+        }
     }
 }

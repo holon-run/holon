@@ -419,9 +419,14 @@ interface RuntimeConfigSurfaceDto {
 
 interface RuntimeDecisionSurfaceDto {
   enabled?: boolean;
+  provider?: string | null;
   endpoint?: string | null;
   model?: string | null;
   credential_profile?: string | null;
+  model_dir?: string | null;
+  variant?: string | null;
+  num_threads?: number | null;
+  checksum?: string | null;
 }
 
 interface RuntimeProviderSummaryDto {
@@ -2356,9 +2361,14 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
     imageGenerationDefault: surface.image_generation_default ?? undefined,
     decision: {
       enabled: surface.decision?.enabled ?? false,
+      provider: surface.decision?.provider ?? undefined,
       endpoint: surface.decision?.endpoint ?? undefined,
       model: surface.decision?.model ?? undefined,
       credentialProfile: surface.decision?.credential_profile ?? undefined,
+      modelDir: surface.decision?.model_dir ?? undefined,
+      variant: surface.decision?.variant ?? undefined,
+      numThreads: surface.decision?.num_threads ?? undefined,
+      checksum: surface.decision?.checksum ?? undefined,
     },
     modelCatalog: surface.model_catalog ?? [],
     unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,
