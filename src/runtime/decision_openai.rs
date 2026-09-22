@@ -26,6 +26,9 @@ use std::{
 };
 use tokio::sync::Semaphore;
 
+#[cfg(feature = "local-onnx")]
+use super::decision_models::{managed_local_onnx_dir, preset_manifest, DEFAULT_LOCAL_ONNX_PRESET};
+
 const SCHEMA: &str = "holon.scheduler.semantic_candidate_selection";
 const SCHEMA_VERSION: &str = "1";
 const DEFAULT_DECISION_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -72,133 +75,140 @@ fn build_provider(
     }
 }
 
-/// Resolves the configured decision route into validated provider settings.
+/// Resolve Decision from the shared model/provider catalog.
 ///
-/// Returns `Ok(None)` when the decision provider is disabled. Runtime hook
-/// construction and HTTP config-candidate validation both go through this
-/// function so an incomplete route is rejected before it can be persisted.
-pub(crate) fn resolve_decision_route(
+/// The Decision section only stores a `provider@endpoint/model` reference.
+/// Endpoint, transport, and credentials come from the existing provider
+/// configuration and are never duplicated here.
+pub(crate) fn resolve_shared_decision_route(
     configured: &crate::config::DecisionConfigFile,
-    home_dir: &std::path::Path,
+    app_config: &crate::config::AppConfig,
 ) -> anyhow::Result<Option<ResolvedDecisionRoute>> {
     if !configured.enabled.unwrap_or(false) {
         return Ok(None);
     }
-    let route = configured
-        .route
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!("decision.enabled requires decision.route"))?;
-    let provider = route
-        .provider
-        .as_deref()
-        .unwrap_or("openai")
-        .trim()
-        .to_ascii_lowercase();
-    anyhow::ensure!(
-        matches!(provider.as_str(), "openai" | "jev" | "local-onnx"),
-        "decision.route.provider must be one of: openai, jev, local-onnx"
-    );
     let timeout = Duration::from_millis(
         configured
             .timeout_ms
             .unwrap_or(DEFAULT_DECISION_TIMEOUT.as_millis() as u64)
             .max(1),
     );
-    if provider == "local-onnx" {
+    let concurrency = configured
+        .concurrency
+        .unwrap_or(DEFAULT_DECISION_CONCURRENCY)
+        .max(1);
+    let queue_capacity = configured
+        .queue_capacity
+        .unwrap_or(DEFAULT_DECISION_QUEUE_CAPACITY);
+    if configured
+        .local_onnx
+        .as_ref()
+        .and_then(|local| local.enabled)
+        .unwrap_or(false)
+    {
+        anyhow::ensure!(
+            configured.model.as_deref().unwrap_or("").trim().is_empty(),
+            "decision.model and decision.local_onnx.enabled cannot be used together"
+        );
         #[cfg(not(feature = "local-onnx"))]
         anyhow::bail!(
             "local-onnx provider is unavailable in this build; enable the local-onnx feature"
         );
         #[cfg(feature = "local-onnx")]
         {
-            let model_dir = route
+            let local = configured
+                .local_onnx
+                .as_ref()
+                .expect("enabled local config");
+            let preset = local
+                .preset
+                .as_deref()
+                .unwrap_or(DEFAULT_LOCAL_ONNX_PRESET)
+                .trim();
+            anyhow::ensure!(
+                !preset.is_empty(),
+                "decision.local_onnx.preset must not be empty"
+            );
+            let model_dir = local
                 .model_dir
                 .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("decision.route.model_dir is required"))?;
-            anyhow::ensure!(
-                !model_dir.trim().is_empty(),
-                "decision.route.model_dir must not be empty"
-            );
+                .filter(|value| !value.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .map_or_else(|| managed_local_onnx_dir(&app_config.home_dir, preset), Ok)?;
             return Ok(Some(ResolvedDecisionRoute {
                 provider: DecisionProviderKind::LocalOnnx(LocalOnnxConfig {
-                    model_dir: model_dir.into(),
-                    variant: route.variant.clone().unwrap_or_else(|| "q4f16".into()),
-                    num_threads: route.num_threads.unwrap_or(1),
-                    checksum: route.checksum.clone(),
+                    model_dir,
+                    variant: local.variant.clone().unwrap_or_else(|| "q4f16".into()),
+                    num_threads: local.num_threads.unwrap_or(1),
+                    checksum: local.checksum.clone().or_else(|| {
+                        preset_manifest(preset).ok().and_then(|manifest| {
+                            manifest
+                                .files
+                                .iter()
+                                .find(|file| file.name == "model")
+                                .map(|file| file.sha256.to_owned())
+                        })
+                    }),
                 }),
                 timeout,
-                concurrency: configured
-                    .concurrency
-                    .unwrap_or(DEFAULT_DECISION_CONCURRENCY)
-                    .max(1),
-                queue_capacity: configured
-                    .queue_capacity
-                    .unwrap_or(DEFAULT_DECISION_QUEUE_CAPACITY),
+                concurrency,
+                queue_capacity,
             }));
         }
     }
-    let endpoint = route
-        .endpoint
-        .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("decision.route.endpoint is required"))?;
-    let model = route
+    let model = configured
         .model
         .as_deref()
-        .ok_or_else(|| anyhow::anyhow!("decision.route.model is required"))?;
-    anyhow::ensure!(
-        !endpoint.trim().is_empty() && !model.trim().is_empty(),
-        "decision.route endpoint and model must not be empty"
-    );
-    let mut openai_config =
-        OpenAiConfig::new(endpoint.to_owned(), model.to_owned()).with_timeout(timeout);
-    if let Some(max_tokens) = configured.max_tokens {
-        openai_config = openai_config.with_max_tokens(max_tokens);
-    }
-    let mut jev_config = JevConfig::new(endpoint.to_owned())
-        .with_model(model.to_owned())
-        .with_timeout(timeout);
-    if let Some(profile) = route.credential_profile.as_deref() {
-        let store = crate::config::load_credential_store_at(
-            &crate::config::credential_store_path(home_dir),
-        )?;
-        let credential = store
-            .profiles
-            .get(profile)
-            .ok_or_else(|| anyhow::anyhow!("decision credential profile {profile} not found"))?;
-        anyhow::ensure!(
-            matches!(
-                credential.kind,
-                crate::config::CredentialKind::ApiKey | crate::config::CredentialKind::BearerToken
-            ),
-            "decision credential profile {profile} must contain an API key or bearer token"
-        );
-        openai_config = openai_config.with_api_key(credential.material.clone());
-        jev_config = jev_config.with_api_key(credential.material.clone());
-    }
+        .ok_or_else(|| anyhow::anyhow!("decision.enabled requires decision.model"))?;
+    let route_ref = crate::config::ModelRouteRef::parse_compatible(model)?;
+    let catalog = crate::config::RuntimeModelCatalog::from_config(app_config);
+    let context_config = crate::context::ContextConfig::default();
+    let route = catalog
+        .resolve_explicit_model_route(
+            &context_config,
+            &route_ref,
+            crate::config::ModelRouteCapability::Turn,
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!("decision.model does not resolve to a configured turn-capable model")
+        })?;
+    let provider_config = route.provider_config();
+    let endpoint = provider_config.base_url.clone();
+    let model = route.route_ref.model.clone();
+    let credential = provider_config.credential.clone();
+    let provider = match provider_config.transport {
+        crate::config::ProviderTransportKind::OpenAiResponses
+        | crate::config::ProviderTransportKind::OpenAiCodexResponses
+        | crate::config::ProviderTransportKind::OpenAiChatCompletions => {
+            let mut provider = OpenAiConfig::new(endpoint, model).with_timeout(timeout);
+            if let Some(credential) = credential {
+                provider = provider.with_api_key(credential);
+            }
+            DecisionProviderKind::OpenAi(provider)
+        }
+        _ => {
+            let mut provider = JevConfig::new(endpoint)
+                .with_model(model)
+                .with_timeout(timeout);
+            if let Some(credential) = credential {
+                provider = provider.with_api_key(credential);
+            }
+            DecisionProviderKind::Jev(provider)
+        }
+    };
     Ok(Some(ResolvedDecisionRoute {
-        provider: if provider == "jev" {
-            DecisionProviderKind::Jev(jev_config)
-        } else {
-            DecisionProviderKind::OpenAi(openai_config)
-        },
+        provider,
         timeout,
-        concurrency: configured
-            .concurrency
-            .unwrap_or(DEFAULT_DECISION_CONCURRENCY)
-            .max(1),
-        queue_capacity: configured
-            .queue_capacity
-            .unwrap_or(DEFAULT_DECISION_QUEUE_CAPACITY),
+        concurrency,
+        queue_capacity,
     }))
 }
 
-/// Validates the decision route the same way runtime construction does, without
-/// keeping the resulting hook.
-pub(crate) fn validate_decision_route_config(
+pub(crate) fn validate_shared_decision_config(
     configured: &crate::config::DecisionConfigFile,
-    home_dir: &std::path::Path,
+    app_config: &crate::config::AppConfig,
 ) -> anyhow::Result<()> {
-    if let Some(route) = resolve_decision_route(configured, home_dir)? {
+    if let Some(route) = resolve_shared_decision_route(configured, app_config)? {
         build_provider(route.provider)?;
     }
     Ok(())
@@ -220,7 +230,7 @@ impl OpenAiSemanticCandidateSelectionHook {
     pub(crate) fn from_app_config(
         config: &crate::config::AppConfig,
     ) -> anyhow::Result<Option<Self>> {
-        let Some(route) = resolve_decision_route(&config.stored_config.decision, &config.home_dir)?
+        let Some(route) = resolve_shared_decision_route(&config.stored_config.decision, config)?
         else {
             return Ok(None);
         };
@@ -239,24 +249,21 @@ impl AdvisoryDecisionExecutor {
     pub(crate) fn from_app_config(
         config: &crate::config::AppConfig,
     ) -> anyhow::Result<Option<Self>> {
-        let Some(route) = resolve_decision_route(&config.stored_config.decision, &config.home_dir)?
+        let Some(route) = resolve_shared_decision_route(&config.stored_config.decision, config)?
         else {
             return Ok(None);
         };
-        let provider = config
+        let route_ref = config
             .stored_config
             .decision
-            .route
+            .model
+            .as_deref()
+            .and_then(|model| crate::config::ModelRouteRef::parse_compatible(model).ok());
+        let provider = route_ref
             .as_ref()
-            .and_then(|route| route.provider.clone())
-            .unwrap_or_else(|| "openai".into());
-        let model = config
-            .stored_config
-            .decision
-            .route
-            .as_ref()
-            .and_then(|route| route.model.clone())
-            .unwrap_or_default();
+            .map(|route| route.provider.as_str().to_owned())
+            .unwrap_or_else(|| "unknown".into());
+        let model = route_ref.map(|route| route.model).unwrap_or_default();
         Ok(Some(Self {
             executor: DecisionExecutor::new(
                 build_provider(route.provider)?,
@@ -694,81 +701,5 @@ mod tests {
 
         assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
         server.join().expect("server");
-    }
-
-    fn decision_route(endpoint: &str, model: &str) -> crate::config::DecisionConfigFile {
-        crate::config::DecisionConfigFile {
-            enabled: Some(true),
-            route: Some(crate::config::DecisionRouteConfigFile {
-                provider: None,
-                endpoint: Some(endpoint.into()),
-                model: Some(model.into()),
-                credential_profile: None,
-                model_dir: None,
-                variant: None,
-                num_threads: None,
-                checksum: None,
-            }),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn decision_route_validation_matches_runtime_construction() {
-        let home = std::path::Path::new("/nonexistent-holon-test-home");
-
-        assert!(
-            resolve_decision_route(&crate::config::DecisionConfigFile::default(), home)
-                .expect("disabled route resolves")
-                .is_none()
-        );
-
-        let enabled_without_route = crate::config::DecisionConfigFile {
-            enabled: Some(true),
-            ..Default::default()
-        };
-        let error = resolve_decision_route(&enabled_without_route, home)
-            .err()
-            .expect("enabled without route must be rejected");
-        assert!(error.to_string().contains("decision.route"));
-
-        assert!(
-            resolve_decision_route(&decision_route("   ", "jev-decision"), home)
-                .err()
-                .expect("blank endpoint must be rejected")
-                .to_string()
-                .contains("must not be empty")
-        );
-
-        validate_decision_route_config(
-            &decision_route("http://127.0.0.1:9/v1", "jev-decision"),
-            home,
-        )
-        .expect("complete route validates");
-    }
-
-    #[test]
-    fn decision_jev_route_uses_native_provider_factory() {
-        let home = std::path::Path::new("/nonexistent-holon-test-home");
-        let config = crate::config::DecisionConfigFile {
-            enabled: Some(true),
-            route: Some(crate::config::DecisionRouteConfigFile {
-                provider: Some("jev".into()),
-                endpoint: Some("http://127.0.0.1:9/v1".into()),
-                model: Some("jev-decision".into()),
-                credential_profile: None,
-                model_dir: None,
-                variant: None,
-                num_threads: None,
-                checksum: None,
-            }),
-            ..Default::default()
-        };
-
-        let route = resolve_decision_route(&config, home)
-            .expect("Jev route should resolve")
-            .expect("enabled route should be present");
-        assert!(matches!(route.provider, DecisionProviderKind::Jev(_)));
-        validate_decision_route_config(&config, home).expect("Jev route should validate");
     }
 }

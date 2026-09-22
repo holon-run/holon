@@ -25,6 +25,7 @@ use thiserror::Error;
 use tokio::sync::Mutex;
 
 const DEFAULT_MANIFEST: &str = "open_jev_config.json";
+const HOLON_MANIFEST: &str = "holon_model_manifest.json";
 const DEFAULT_MODEL: &str = "model.onnx";
 const DEFAULT_TOKENIZER: &str = "tokenizer.json";
 
@@ -65,7 +66,12 @@ impl LocalOnnxConfig {
                 model_dir.display()
             )));
         }
-        let manifest_path = model_dir.join(DEFAULT_MANIFEST);
+        let managed_manifest = model_dir.join(HOLON_MANIFEST);
+        let manifest_path = if managed_manifest.is_file() {
+            managed_manifest
+        } else {
+            model_dir.join(DEFAULT_MANIFEST)
+        };
         let manifest = if manifest_path.is_file() {
             let bytes = fs::read(&manifest_path)
                 .map_err(|error| LocalOnnxError::ModelUnavailable(error.to_string()))?;

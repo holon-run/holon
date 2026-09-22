@@ -675,6 +675,11 @@ pub fn router(state: AppState) -> Router {
             "/control/runtime/config/migrate-model-routes",
             post(control::runtime_config_migrate_model_routes),
         )
+        .route(
+            "/control/runtime/decision/local-onnx/preset/{preset}",
+            get(control::runtime_decision_local_onnx_preset)
+                .post(control::runtime_decision_local_onnx_preset_download),
+        )
         .route("/control/runtime/shutdown", post(control::runtime_shutdown))
         .route(
             "/auth/codex/device/start",

@@ -20,46 +20,39 @@ The static semantic hook remains the default and fallback path. With
 
 ## Configuration
 
-Decision configuration is independent from the ordinary agent model route:
+Decision reuses an existing turn-capable model route. Endpoint, transport, model
+catalog entry, and credentials are configured once under the ordinary provider
+configuration:
 
 ```yaml
 decision:
   enabled: false
-  route:
-    provider: openai # or jev for the native typed Jev wire provider
-    endpoint: https://decision.example/v1
-    model: bounded-selector
-    credential_profile: decision-api
+  model: openai/gpt-4o-mini
   timeout_ms: 1500
   max_tokens: 256
   concurrency: 4
   queue_capacity: 32
 ```
 
-`decision.enabled: true` requires a non-empty `decision.route.endpoint` and
-`decision.route.model`. `decision.route.provider` accepts `openai` (the
-backward-compatible default) or `jev`, which uses the native typed Jev wire
-provider. Credentials are referenced by profile and are never serialized into
-the Decision configuration or included in request metadata. The Decision route
-is never inherited from the ordinary agent model route.
+`decision.enabled: true` requires a non-empty `decision.model` that resolves to
+an existing turn-capable model route. OpenAI-compatible transports use the
+OpenAI adapter; Jev-compatible transports use the built-in typed Jev adapter.
+Credentials remain owned by the provider configuration and are never serialized
+into the Decision configuration or request metadata. The old `decision.route.*`
+configuration is intentionally not migrated.
 
 ## Web GUI settings
 
-`RuntimeConfigSurface` reports the current Decision route (`enabled`, `provider`,
-`endpoint`, `model`, `credential_profile`), and the Web GUI settings page
-reads and writes the same five `decision.*` keys through
-`/runtime/config/update`. The GUI keeps `model` as free text: a Decision route
-may target an OpenAI-compatible endpoint or a JEV-specific decision model that
-the shared model catalog does not list. The GUI does not enumerate or validate
-remote model lists. The GUI never fills in defaults.
+`RuntimeConfigSurface` reports `enabled`, the selected `model` reference, and
+the independent `local_onnx` settings. The Web GUI reads and writes these
+`decision.*` keys through `/runtime/config/update`; it does not duplicate
+provider endpoints or credentials.
 
-The runtime rejects an incomplete Decision route before persisting it:
+The runtime rejects an unresolved Decision model before persisting it:
 `/runtime/config/update` validates the candidate config through the same
-`decision.enabled` → `decision.route.endpoint`/`decision.route.model`
-construction the runtime hook uses, so a batch that would enable the provider
-without a usable route is reported as rejected with the explicit
-`requires ... decision.route.endpoint/model` reason and nothing is written to
-`config.json`.
+`decision.enabled` → shared model catalog resolution used by the runtime hook,
+so a batch that would enable the provider without a usable model reference is
+reported as rejected and nothing is written to `config.json`.
 
 Persisting such a route would otherwise be worse than a route-loading error:
 `reload_config` constructs the Decision hook before the config snapshot swap,

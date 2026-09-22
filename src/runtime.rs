@@ -6,6 +6,7 @@ mod clock;
 mod closure;
 mod command_task;
 mod continuation;
+pub(crate) mod decision_models;
 pub(crate) mod decision_openai;
 mod delivery;
 mod failure;

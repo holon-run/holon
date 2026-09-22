@@ -444,15 +444,33 @@ export interface RuntimeConfigSurface {
 
 export interface RuntimeDecisionSurface {
   enabled: boolean;
-  provider?: string;
-  endpoint?: string;
   model?: string;
-  credentialProfile?: string;
+  localOnnx: RuntimeDecisionLocalOnnxSurface;
+  tools: RuntimeDecisionToolsSurface;
+}
+
+export interface RuntimeDecisionLocalOnnxSurface {
+  enabled: boolean;
+  preset?: string;
   modelDir?: string;
   variant?: string;
   numThreads?: number;
   checksum?: string;
-  tools: RuntimeDecisionToolsSurface;
+}
+
+export interface RuntimeLocalOnnxPresetFileStatus {
+  name: string;
+  path: string;
+  sha256: string;
+  present: boolean;
+  verified: boolean;
+}
+
+export interface RuntimeLocalOnnxPresetStatus {
+  preset: string;
+  directory: string;
+  complete: boolean;
+  files: RuntimeLocalOnnxPresetFileStatus[];
 }
 
 export interface RuntimeDecisionToolsSurface {

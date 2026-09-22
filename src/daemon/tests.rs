@@ -739,28 +739,14 @@ fn runtime_config_surface_reports_credential_free_providers_as_ready() {
 fn runtime_config_surface_reports_decision_provider_settings() {
     let mut config = test_config();
     config.stored_config.decision.enabled = Some(true);
-    config.stored_config.decision.route = Some(crate::config::DecisionRouteConfigFile {
-        provider: None,
-        endpoint: Some("https://jev.example.test/v1".into()),
-        model: Some("jev-decision-1".into()),
-        credential_profile: Some("jev:default".into()),
-        model_dir: None,
-        variant: None,
-        num_threads: None,
-        checksum: None,
-    });
+    config.stored_config.decision.model = Some("jev:default/jev-decision-1".into());
 
     let surface = RuntimeConfigSurface::new(&config);
 
     assert!(surface.decision.enabled);
     assert_eq!(
-        surface.decision.endpoint.as_deref(),
-        Some("https://jev.example.test/v1")
-    );
-    assert_eq!(surface.decision.model.as_deref(), Some("jev-decision-1"));
-    assert_eq!(
-        surface.decision.credential_profile.as_deref(),
-        Some("jev:default")
+        surface.decision.model.as_deref(),
+        Some("jev:default/jev-decision-1")
     );
 }
 
@@ -769,9 +755,8 @@ fn runtime_config_surface_defaults_decision_provider_to_disabled() {
     let surface = RuntimeConfigSurface::new(&test_config());
 
     assert!(!surface.decision.enabled);
-    assert_eq!(surface.decision.endpoint, None);
     assert_eq!(surface.decision.model, None);
-    assert_eq!(surface.decision.credential_profile, None);
+    assert!(!surface.decision.local_onnx.enabled);
 }
 
 #[tokio::test]

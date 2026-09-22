@@ -34,8 +34,11 @@ pub struct HolonConfigFile {
 pub struct DecisionConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// Shared `provider@endpoint/model` reference resolved from `providers`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub route: Option<DecisionRouteConfigFile>,
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_onnx: Option<DecisionLocalOnnxConfigFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -61,15 +64,12 @@ pub struct DecisionToolsConfigFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct DecisionRouteConfigFile {
+pub struct DecisionLocalOnnxConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
+    pub enabled: Option<bool>,
+    /// Named model preset. The preset is resolved into the managed cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_profile: Option<String>,
+    pub preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -649,11 +649,12 @@ impl RuntimeConfigFile {
 impl DecisionConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
         self.enabled.is_none()
-            && self.route.is_none()
             && self.timeout_ms.is_none()
             && self.max_tokens.is_none()
             && self.concurrency.is_none()
             && self.queue_capacity.is_none()
+            && self.model.is_none()
+            && self.local_onnx.is_none()
             && self.tools.is_none()
     }
 }

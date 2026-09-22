@@ -3204,7 +3204,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         incomplete_decision_payload["results"][0]["reason"]
             .as_str()
             .unwrap_or_default()
-            .contains("decision.enabled requires decision.route"),
+            .contains("decision.enabled requires decision.model"),
         "unexpected incomplete decision config reason: {incomplete_decision_payload}"
     );
 
@@ -3216,9 +3216,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
-                { "key": "decision.route.provider", "value": "jev" },
-                { "key": "decision.route.endpoint", "value": "http://127.0.0.1:9/v1" },
-                { "key": "decision.route.model", "value": "jev-decision" },
+                { "key": "decision.model", "value": "openai/gpt-4o-mini" },
                 { "key": "decision.enabled", "value": true }
             ]
         }))
@@ -3242,27 +3240,15 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         true
     );
     assert_eq!(
-        reloaded_decision_payload["runtime_surface"]["decision"]["provider"],
-        "jev"
+        reloaded_decision_payload["runtime_surface"]["decision"]["model"],
+        "openai/gpt-4o-mini"
     );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
     assert_eq!(persisted.decision.enabled, Some(true));
     assert_eq!(
-        persisted
-            .decision
-            .route
-            .as_ref()
-            .and_then(|route| route.provider.as_deref()),
-        Some("jev")
-    );
-    assert_eq!(
-        persisted
-            .decision
-            .route
-            .as_ref()
-            .and_then(|route| route.model.as_deref()),
-        Some("jev-decision")
+        persisted.decision.model.as_deref(),
+        Some("openai/gpt-4o-mini")
     );
 
     server.abort();

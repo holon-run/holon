@@ -243,6 +243,7 @@ export function App() {
   const refreshModelCatalog = useRuntimeStore((state) => state.refreshModelCatalog);
   const refreshRuntimeConfig = useRuntimeStore((state) => state.refreshRuntimeConfig);
   const updateRuntimeConfig = useRuntimeStore((state) => state.updateRuntimeConfig);
+  const downloadLocalOnnxPreset = useRuntimeStore((state) => state.downloadLocalOnnxPreset);
   const credentialStore = useRuntimeStore((state) => state.credentialStore);
   const credentialStoreLoading = useRuntimeStore((state) => state.credentialStoreLoading);
   const refreshCredentialStore = useRuntimeStore((state) => state.refreshCredentialStore);
@@ -917,6 +918,7 @@ export function App() {
             onRefreshModels={refreshModelCatalog}
             onRefreshRuntimeConfig={refreshRuntimeConfig}
             onUpdateRuntimeConfig={updateRuntimeConfig}
+            onDownloadLocalOnnxPreset={downloadLocalOnnxPreset}
             credentialStore={credentialStore}
             credentialStoreLoading={credentialStoreLoading}
             onRefreshCredentialStore={refreshCredentialStore}
