@@ -128,7 +128,7 @@ async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
         "anthropic_cache diagnostics should be populated"
     );
     let cache_diagnostics = diagnostics.anthropic_cache.as_ref().unwrap();
-    assert_eq!(cache_diagnostics.system_block_count, 1);
+    assert_eq!(cache_diagnostics.system_block_count, 2);
     assert!(!cache_diagnostics.cache_breakpoints.is_empty());
     let stable_prefix = diagnostics
         .stable_prefix
@@ -151,9 +151,18 @@ async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
         body["system"][0]["cache_control"],
         json!({ "type": "ephemeral" })
     );
+    // Non-TurnScoped context rides the system prefix instead of a
+    // materialized conversation head.
+    assert_eq!(body["system"][1]["text"], json!("agent context"));
+    assert_eq!(
+        body["system"][1]["cache_control"],
+        json!({ "type": "ephemeral" })
+    );
+    // The materialized context head is stripped and replaced by a
+    // continuation placeholder carrying the rolling cache marker.
     assert_eq!(
         body["messages"][0]["content"][0]["text"],
-        json!("agent context")
+        json!("Continue using the context above.")
     );
     assert_eq!(
         body["messages"][0]["content"][0]["cache_control"],
@@ -286,7 +295,7 @@ async fn anthropic_continuation_request_retains_cache_control_prompt_anchors() {
         "anthropic_cache diagnostics should be populated for continuations"
     );
     let cache_diagnostics = diagnostics.anthropic_cache.as_ref().unwrap();
-    assert_eq!(cache_diagnostics.system_block_count, 1); // Structured system request
+    assert_eq!(cache_diagnostics.system_block_count, 2); // Structured system + context prefix
     assert_eq!(cache_diagnostics.tools_count, 0); // No tools in continuation request
 
     assert_eq!(
@@ -305,10 +314,18 @@ async fn anthropic_continuation_request_retains_cache_control_prompt_anchors() {
         body["system"][0]["cache_control"],
         json!({ "type": "ephemeral" })
     );
+    assert_eq!(body["system"][1]["text"], json!("agent context"));
     assert_eq!(
-        body["messages"][0]["content"][0]["cache_control"],
+        body["system"][1]["cache_control"],
         json!({ "type": "ephemeral" })
     );
+    // The stripped context head leaves a placeholder user turn that carries
+    // no cache anchor; the rolling marker stays on the latest tool result.
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        json!("Continue using the context above.")
+    );
+    assert_eq!(body["messages"][0]["content"][0].get("cache_control"), None);
     assert_eq!(body["messages"][1]["content"][0]["type"], json!("tool_use"));
     assert_eq!(
         body["messages"][2]["content"][0]["type"],

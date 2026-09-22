@@ -291,10 +291,12 @@ fn anthropic_reasoning_controls<'a>(
 impl AgentProvider for AnthropicProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let cache_strategy = self.context_management.cache_strategy;
-        let wire_conversation = build_anthropic_wire_conversation(&request, cache_strategy);
+        let wire_conversation = build_anthropic_wire_conversation(&request);
+        let turn_scoped_tail = turn_scoped_context_blocks(&request);
         let rolling_cache_marker =
             rolling_conversation_cache_marker(&wire_conversation, cache_strategy);
         let mut messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker);
+        append_turn_scoped_context_tail(&mut messages, &turn_scoped_tail);
         if needs_placeholder_user_text(&self.route_provider) {
             ensure_placeholder_user_text(&mut messages);
         }
@@ -521,14 +523,13 @@ impl AgentProvider for AnthropicProvider {
     }
 }
 
-fn build_anthropic_wire_conversation(
-    request: &ProviderTurnRequest,
-    cache_strategy: AnthropicCacheStrategy,
-) -> Vec<ConversationMessage> {
-    match cache_strategy {
-        AnthropicCacheStrategy::MessagesNative => request.conversation.clone(),
-        AnthropicCacheStrategy::ClaudeCodePromptCache => strip_initial_context_message(request),
-    }
+/// Wire conversation for both cache strategies: history without the
+/// materialized context head. Non-TurnScoped context is carried by the
+/// system prefix and TurnScoped context is re-attached at the message tail
+/// (`append_turn_scoped_context_tail`), so per-turn context changes never
+/// invalidate the conversation history cache prefix.
+fn build_anthropic_wire_conversation(request: &ProviderTurnRequest) -> Vec<ConversationMessage> {
+    strip_initial_context_message(request)
 }
 
 fn anthropic_response_is_sse(response: &Response) -> bool {
@@ -1196,6 +1197,18 @@ fn merge_anthropic_usage(target: &mut ApiUsage, update: ApiUsage) {
     }
 }
 
+/// Strips the materialized context head message when present.
+///
+/// The runtime materializes `prompt_frame.context_blocks` into
+/// `conversation[0]` (see `runtime::turn::projection`), so the head is
+/// stripped whenever it matches exactly. Both cache strategies re-lay out
+/// context on the wire instead of relying on upper-layer materialization:
+/// non-TurnScoped context moves into the system prefix
+/// (`claude_code_prompt_cache_anthropic_system` / `current_anthropic_system`)
+/// and TurnScoped context is re-attached at the conversation tail
+/// (`append_turn_scoped_context_tail`), so unmaterialized frames lose no
+/// context on either path and per-turn context stays out of the cached
+/// history prefix.
 fn strip_initial_context_message(request: &ProviderTurnRequest) -> Vec<ConversationMessage> {
     let mut conversation = request.conversation.clone();
     if matches!(
@@ -1204,16 +1217,6 @@ fn strip_initial_context_message(request: &ProviderTurnRequest) -> Vec<Conversat
             if *blocks == request.prompt_frame.context_blocks
     ) {
         conversation.remove(0);
-        let turn_scoped_context = request
-            .prompt_frame
-            .context_blocks
-            .iter()
-            .filter(|block| block.stability == PromptStability::TurnScoped)
-            .cloned()
-            .collect::<Vec<_>>();
-        if !turn_scoped_context.is_empty() {
-            conversation.insert(0, ConversationMessage::UserBlocks(turn_scoped_context));
-        }
         if conversation.is_empty()
             || !matches!(
                 conversation.first(),
@@ -1229,6 +1232,51 @@ fn strip_initial_context_message(request: &ProviderTurnRequest) -> Vec<Conversat
     conversation
 }
 
+fn turn_scoped_context_blocks(request: &ProviderTurnRequest) -> Vec<PromptContentBlock> {
+    request
+        .prompt_frame
+        .context_blocks
+        .iter()
+        .filter(|block| block.stability == PromptStability::TurnScoped)
+        .cloned()
+        .collect()
+}
+
+/// Appends TurnScoped context blocks to the tail of the wire message list.
+///
+/// Blocks land after the latest tool result inside the final user message
+/// (mirroring Claude Code system-reminder placement) or as a new trailing
+/// user message. They are never marked with `cache_control`: the rolling
+/// marker stays on the last history block so per-turn context changes stay
+/// outside the cached prefix.
+fn append_turn_scoped_context_tail(messages: &mut Vec<ApiMessage>, blocks: &[PromptContentBlock]) {
+    if blocks.is_empty() {
+        return;
+    }
+    let tail_blocks: Vec<Value> = blocks
+        .iter()
+        .map(|block| json!({ "type": "text", "text": block.text }))
+        .collect();
+    match messages.last_mut() {
+        Some(message) if message.role == "user" => match &mut message.content {
+            Value::Array(content) => content.extend(tail_blocks),
+            Value::String(text) => {
+                let mut content = vec![json!({ "type": "text", "text": text.clone() })];
+                content.extend(tail_blocks);
+                message.content = Value::Array(content);
+            }
+            _ => messages.push(ApiMessage {
+                role: "user",
+                content: Value::Array(tail_blocks),
+            }),
+        },
+        _ => messages.push(ApiMessage {
+            role: "user",
+            content: Value::Array(tail_blocks),
+        }),
+    }
+}
+
 fn build_anthropic_system(
     request: &ProviderTurnRequest,
     cache_strategy: AnthropicCacheStrategy,
@@ -1241,19 +1289,37 @@ fn build_anthropic_system(
     }
 }
 
+/// Native-strategy system prefix: structured system blocks plus
+/// non-TurnScoped context blocks. Folding context into the system prefix
+/// keeps the two cache strategies symmetric: the transport owns context
+/// layout on both paths instead of silently depending on upper-layer
+/// materialization into `conversation[0]` (which dropped context entirely
+/// for unmaterialized frames).
 fn current_anthropic_system(request: &ProviderTurnRequest) -> Value {
+    let context_blocks: Vec<Value> = request
+        .prompt_frame
+        .context_blocks
+        .iter()
+        .filter(|block| block.stability != PromptStability::TurnScoped)
+        .map(prompt_block_to_anthropic_content)
+        .collect();
+    if !request.prompt_frame.has_structured_system_blocks() && context_blocks.is_empty() {
+        return Value::String(request.prompt_frame.system_prompt.clone());
+    }
+    let mut blocks: Vec<Value> = Vec::new();
     if request.prompt_frame.has_structured_system_blocks() {
-        Value::Array(
+        blocks.extend(
             request
                 .prompt_frame
                 .system_blocks
                 .iter()
-                .map(prompt_block_to_anthropic_content)
-                .collect(),
-        )
-    } else {
-        Value::String(request.prompt_frame.system_prompt.clone())
+                .map(prompt_block_to_anthropic_content),
+        );
+    } else if !request.prompt_frame.system_prompt.trim().is_empty() {
+        blocks.push(json!({ "type": "text", "text": request.prompt_frame.system_prompt }));
     }
+    blocks.extend(context_blocks);
+    Value::Array(blocks)
 }
 
 fn claude_code_prompt_cache_anthropic_system(request: &ProviderTurnRequest) -> Value {
@@ -2079,6 +2145,13 @@ fn collect_anthropic_cache_diagnostics(
     let (rolling_marker_lag_messages, rolling_marker_at_tail) =
         rolling_marker_diagnostics(conversation, rolling_cache_marker);
 
+    let turn_scoped_context_tail_blocks = request
+        .prompt_frame
+        .context_blocks
+        .iter()
+        .filter(|block| block.stability == PromptStability::TurnScoped)
+        .count();
+
     AnthropicPromptCacheDiagnostics {
         cache_strategy: cache_strategy.as_str().to_string(),
         model: model.to_string(),
@@ -2095,6 +2168,7 @@ fn collect_anthropic_cache_diagnostics(
         message_cache_control_count,
         rolling_marker_lag_messages,
         rolling_marker_at_tail,
+        turn_scoped_context_tail_blocks,
         cache_breakpoints,
         tokens_before_last_breakpoint,
         tokens_after_last_breakpoint,
@@ -2930,12 +3004,160 @@ mod tests {
             None
         );
 
+        // The materialized context head is stripped entirely; TurnScoped
+        // context is re-attached at the message tail instead of the head.
         let conversation = strip_initial_context_message(&request);
         assert!(matches!(
             conversation.as_slice(),
-            [ConversationMessage::UserBlocks(blocks)]
-                if blocks.len() == 1 && blocks[0].text == "current turn"
+            [ConversationMessage::UserText(text)] if text == "Continue using the context above."
         ));
+        assert_eq!(
+            turn_scoped_context_blocks(&request)
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["current turn"]
+        );
+    }
+
+    fn turn_scoped_tail_request() -> ProviderTurnRequest {
+        let context_blocks = vec![
+            PromptContentBlock {
+                text: "agent context".to_string(),
+                stability: PromptStability::AgentScoped,
+                cache_breakpoint: true,
+            },
+            PromptContentBlock {
+                text: "current turn".to_string(),
+                stability: PromptStability::TurnScoped,
+                cache_breakpoint: false,
+            },
+        ];
+        ProviderTurnRequest {
+            continuation_scope_id: None,
+            prompt_frame: ProviderPromptFrame::structured(
+                "stable system".to_string(),
+                vec![PromptContentBlock {
+                    text: "stable system".to_string(),
+                    stability: PromptStability::Stable,
+                    cache_breakpoint: true,
+                }],
+                context_blocks.clone(),
+                None,
+            ),
+            conversation: vec![
+                ConversationMessage::UserBlocks(context_blocks),
+                ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                    id: "toolu_1".to_string(),
+                    name: "ExecCommand".to_string(),
+                    input: json!({ "cmd": "printf ok" }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                }]),
+                ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                    tool_use_id: "toolu_1".to_string(),
+                    content: "ok".to_string(),
+                    is_error: false,
+                    error: None,
+                }]),
+            ],
+            tools: vec![],
+            native_web_search: None,
+            response_format: None,
+        }
+    }
+
+    #[test]
+    fn turn_scoped_context_lands_after_latest_tool_result_for_both_strategies() {
+        let request = turn_scoped_tail_request();
+        for strategy in [
+            AnthropicCacheStrategy::MessagesNative,
+            AnthropicCacheStrategy::ClaudeCodePromptCache,
+        ] {
+            let wire_conversation = build_anthropic_wire_conversation(&request);
+            let rolling_cache_marker =
+                rolling_conversation_cache_marker(&wire_conversation, strategy);
+            let mut messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker);
+            append_turn_scoped_context_tail(&mut messages, &turn_scoped_context_blocks(&request));
+
+            // The stripped history starts with an assistant round, so the
+            // transport keeps a leading user placeholder.
+            assert_eq!(messages[0].role, "user");
+            assert_eq!(
+                messages[0].content[0]["text"],
+                json!("Continue using the context above.")
+            );
+            // The rolling marker stays on the latest tool result.
+            assert_eq!(
+                messages[2].content[0]["cache_control"],
+                json!({ "type": "ephemeral" })
+            );
+            // TurnScoped context follows the tool result in the same user
+            // message, outside the marked prefix.
+            assert_eq!(messages[2].content[1]["text"], json!("current turn"));
+            assert!(messages[2].content[1].get("cache_control").is_none());
+
+            // Both strategies carry non-TurnScoped context in the system
+            // prefix, never TurnScoped content.
+            let system = build_anthropic_system(&request, strategy);
+            let system_text = system
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(system_text.contains("agent context"));
+            assert!(!system_text.contains("current turn"));
+        }
+    }
+
+    #[test]
+    fn messages_native_system_includes_stable_context_without_materialization() {
+        let mut request = turn_scoped_tail_request();
+        request.prompt_frame.system_blocks.clear();
+        request.conversation = vec![ConversationMessage::UserText("hi".to_string())];
+
+        let system = build_anthropic_system(&request, AnthropicCacheStrategy::MessagesNative);
+        let blocks = system.as_array().unwrap();
+        assert_eq!(
+            blocks
+                .iter()
+                .filter_map(|block| block.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["stable system", "agent context"]
+        );
+
+        // An unmaterialized conversation no longer silently drops context on
+        // the native path: the stable part rides the system prefix and the
+        // TurnScoped part rides the message tail.
+        let mut messages = build_anthropic_messages(
+            &request.conversation,
+            rolling_conversation_cache_marker(
+                &request.conversation,
+                AnthropicCacheStrategy::MessagesNative,
+            ),
+        );
+        append_turn_scoped_context_tail(&mut messages, &turn_scoped_context_blocks(&request));
+        assert_eq!(messages[0].content[0]["text"], json!("hi"));
+        assert_eq!(messages[0].content[1]["text"], json!("current turn"));
+    }
+
+    #[test]
+    fn stable_only_context_keeps_placeholder_and_no_tail() {
+        let mut request = turn_scoped_tail_request();
+        request.prompt_frame.context_blocks.truncate(1);
+        if let Some(ConversationMessage::UserBlocks(blocks)) = request.conversation.first_mut() {
+            blocks.truncate(1);
+        }
+
+        assert!(turn_scoped_context_blocks(&request).is_empty());
+        let wire_conversation = build_anthropic_wire_conversation(&request);
+        assert!(matches!(
+            wire_conversation.first(),
+            Some(ConversationMessage::UserText(text)) if text == "Continue using the context above."
+        ));
+        assert!(wire_conversation.len() >= 3);
     }
 
     #[test]

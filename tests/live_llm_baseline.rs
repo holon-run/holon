@@ -256,6 +256,19 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
         "live_llm_baseline_anthropic_cache first={first_cache:?} second={second_cache:?} first_tokens=({},{}) second_tokens=({},{})",
         first.input_tokens, first.output_tokens, second.input_tokens, second.output_tokens
     );
+    // Both cache strategies must carry the frame's stable context blocks into
+    // the request: the transport folds non-TurnScoped context into the system
+    // prefix instead of relying on conversation materialization (#3176).
+    let first_cached_input = first_cache
+        .as_ref()
+        .map(|usage| usage.read_input_tokens + usage.creation_input_tokens)
+        .unwrap_or(0);
+    assert!(
+        first.input_tokens + first_cached_input > 3000,
+        "expected the first Anthropic live cache baseline request to include the stable context blocks; first={first_cache:?} first_tokens=({},{})",
+        first.input_tokens,
+        first.output_tokens
+    );
     assert!(
         second_cache.read_input_tokens > 0,
         "expected second Anthropic baseline request to report cache read tokens; first={first_cache:?} second={second_cache:?}"
