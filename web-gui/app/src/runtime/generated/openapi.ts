@@ -1633,6 +1633,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/runtime/decision/local-onnx/preset/{preset}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Local ONNX preset status
+         * @description Return the managed-cache status for a local ONNX decision preset.
+         */
+        get: operations["runtimeDecisionLocalOnnxPreset"];
+        put?: never;
+        /**
+         * Download local ONNX preset
+         * @description Explicitly download and verify a local ONNX decision preset into the managed cache.
+         */
+        post: operations["runtimeDecisionLocalOnnxPresetDownload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/runtime/metrics": {
         parameters: {
             query?: never;
@@ -5917,33 +5941,36 @@ export interface components {
                 command_task_output_retention_bytes: number;
                 /**
                  * @default {
-                 *       "checksum": null,
-                 *       "credential_profile": null,
                  *       "enabled": false,
-                 *       "endpoint": null,
+                 *       "local_onnx": {
+                 *         "checksum": null,
+                 *         "enabled": false,
+                 *         "model_dir": null,
+                 *         "num_threads": null,
+                 *         "preset": null,
+                 *         "variant": null
+                 *       },
                  *       "model": null,
-                 *       "model_dir": null,
-                 *       "num_threads": null,
-                 *       "provider": null,
                  *       "tools": {
                  *         "enabled": false,
                  *         "max_calls_per_turn": 4,
                  *         "min_confidence_percent": 0,
                  *         "timeout_ms": 1500
-                 *       },
-                 *       "variant": null
+                 *       }
                  *     }
                  */
                 decision: {
-                    checksum?: string | null;
-                    credential_profile?: string | null;
                     enabled: boolean;
-                    endpoint?: string | null;
+                    local_onnx: {
+                        checksum?: string | null;
+                        enabled: boolean;
+                        model_dir?: string | null;
+                        /** Format: uint */
+                        num_threads?: number | null;
+                        preset?: string | null;
+                        variant?: string | null;
+                    };
                     model?: string | null;
-                    model_dir?: string | null;
-                    /** Format: uint */
-                    num_threads?: number | null;
-                    provider?: string | null;
                     /**
                      * @default {
                      *       "enabled": false,
@@ -5961,7 +5988,6 @@ export interface components {
                         /** Format: uint64 */
                         timeout_ms: number;
                     };
-                    variant?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
@@ -6090,33 +6116,36 @@ export interface components {
                 command_task_output_retention_bytes: number;
                 /**
                  * @default {
-                 *       "checksum": null,
-                 *       "credential_profile": null,
                  *       "enabled": false,
-                 *       "endpoint": null,
+                 *       "local_onnx": {
+                 *         "checksum": null,
+                 *         "enabled": false,
+                 *         "model_dir": null,
+                 *         "num_threads": null,
+                 *         "preset": null,
+                 *         "variant": null
+                 *       },
                  *       "model": null,
-                 *       "model_dir": null,
-                 *       "num_threads": null,
-                 *       "provider": null,
                  *       "tools": {
                  *         "enabled": false,
                  *         "max_calls_per_turn": 4,
                  *         "min_confidence_percent": 0,
                  *         "timeout_ms": 1500
-                 *       },
-                 *       "variant": null
+                 *       }
                  *     }
                  */
                 decision: {
-                    checksum?: string | null;
-                    credential_profile?: string | null;
                     enabled: boolean;
-                    endpoint?: string | null;
+                    local_onnx: {
+                        checksum?: string | null;
+                        enabled: boolean;
+                        model_dir?: string | null;
+                        /** Format: uint */
+                        num_threads?: number | null;
+                        preset?: string | null;
+                        variant?: string | null;
+                    };
                     model?: string | null;
-                    model_dir?: string | null;
-                    /** Format: uint */
-                    num_threads?: number | null;
-                    provider?: string | null;
                     /**
                      * @default {
                      *       "enabled": false,
@@ -6134,7 +6163,6 @@ export interface components {
                         /** Format: uint64 */
                         timeout_ms: number;
                     };
-                    variant?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
@@ -10900,6 +10928,82 @@ export interface operations {
         };
     };
     deleteRuntimeCredential: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    runtimeDecisionLocalOnnxPreset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    runtimeDecisionLocalOnnxPresetDownload: {
         parameters: {
             query?: never;
             header?: never;
