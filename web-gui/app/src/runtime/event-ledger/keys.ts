@@ -138,6 +138,15 @@ function serialize(value: unknown): string {
  * events, so an envelope contract revision can add or drop those fields
  * without changing the event. Including them would surface a routine
  * protocol upgrade as a false identity conflict.
+ *
+ * `payload` is excluded for the same reason. The daemon publishes a
+ * *projection* of the durable payload, not the durable payload itself: the
+ * public event contract strips provider diagnostics (`context_fingerprint`,
+ * `compression_epoch`, `prompt_cache_key`, `provider_request_diagnostics`,
+ * `provider_attempt_timeline`, ...), so an envelope stored under an earlier
+ * contract revision legitimately differs from its redelivery. A genuine
+ * identity collision still hard-fails, because a different event carries a
+ * different `id` under the same canonical identity.
  */
 const IMMUTABLE_ENVELOPE_FIELDS = [
   "agent_id",
@@ -146,11 +155,10 @@ const IMMUTABLE_ENVELOPE_FIELDS = [
   "id",
   "ts",
   "type",
-  "payload",
 ] as const;
 
 /**
- * Fingerprint of the immutable identity content of a raw event envelope.
+ * Fingerprint of the durable identity content of a raw event envelope.
  * Two envelopes with the same correctness key but different fingerprints are
  * an identity conflict.
  */

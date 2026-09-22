@@ -389,7 +389,8 @@ describe("event ledger atomic transactions", () => {
       .advanceIngestionCursor(scope, 1)
       .commit();
 
-    const conflict = envelope(1, { text: "mutated" });
+    // The same canonical identity carrying a different durable event id.
+    const conflict = { ...envelope(1, { text: "original" }), id: "evt-1-other" };
     let caught: unknown;
     try {
       await ledger
@@ -449,7 +450,7 @@ describe("event ledger atomic transactions", () => {
     ledger.close();
   });
 
-  it("still conflicts when immutable content changes across envelope shapes", async () => {
+  it("still conflicts when the durable identity changes across envelope shapes", async () => {
     const ledger = await openLedger();
     const scope = makeScope();
     await ledger
@@ -462,7 +463,7 @@ describe("event ledger atomic transactions", () => {
       agent_id: "agent-1",
       event_log_epoch: "epoch-1",
       event_seq: 1,
-      id: "evt-1",
+      id: "evt-1-other",
       payload: { text: "mutated" },
       projection_effect: "none",
       ts: "2026-08-18T00:00:01Z",
@@ -478,6 +479,51 @@ describe("event ledger atomic transactions", () => {
 
     const stored = await ledger.getRawEvent(scope, 1);
     expect((stored?.envelope as { payload: { text: string } }).payload.text).toBe("original");
+    ledger.close();
+  });
+
+  it("treats a redelivered public-payload projection revision as an idempotent duplicate", async () => {
+    const ledger = await openLedger();
+    const scope = makeScope();
+    // Stored while the public event contract still published provider
+    // diagnostics inside the payload.
+    await ledger
+      .beginWrite()
+      .putRawEvent(
+        scope,
+        1,
+        envelope(1, {
+          text: "same",
+          compression_epoch: 4,
+          context_fingerprint: "6de9360dadd9d67e",
+        }),
+        { projectionEffect: "none" },
+      )
+      .advanceIngestionCursor(scope, 1)
+      .commit();
+
+    // The same durable event redelivered after the contract started
+    // projecting those diagnostics out of the public payload.
+    const projected: Record<string, unknown> = {
+      agent_id: "agent-1",
+      event_log_epoch: "epoch-1",
+      event_seq: 1,
+      id: "evt-1",
+      payload: { text: "same" },
+      projection_effect: "none",
+      ts: "2026-08-18T00:00:01Z",
+      type: "test.event",
+    };
+    await ledger
+      .beginWrite()
+      .putRawEvent(scope, 1, projected, { projectionEffect: "none" })
+      .advanceIngestionCursor(scope, 1)
+      .commit();
+
+    const stored = await ledger.getRawEvent(scope, 1);
+    expect((stored?.envelope as { payload: { text: string } }).payload.text).toBe("same");
+    expect((await ledger.getAgentSession(scope))?.ingestedThroughSeq).toBe(1);
+    expect(ledger.durability).toBe("exact");
     ledger.close();
   });
 
