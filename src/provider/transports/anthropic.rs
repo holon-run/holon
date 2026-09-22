@@ -26,6 +26,7 @@ use crate::{
         ProviderNativeWebSearchRequest, ProviderPromptCapability,
         ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
         ProviderTransportTimeline, ProviderTurnRequest, ProviderTurnResponse,
+        INCOMPLETE_TOOL_RESULT_SENTINEL,
     },
 };
 
@@ -33,8 +34,9 @@ use super::{build_http_client, request_send_timeout, response_body_timeout, stre
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
     empty_response_error_with_trace, invalid_response_error_with_trace, parse_retry_after,
-    provider_transport_error, timeout_transport_error_with_trace, ProviderFailureClassification,
-    ProviderFailureKind, RetryDisposition,
+    provider_transport_error, retryable_invalid_response_error_with_trace,
+    timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
+    RetryDisposition,
 };
 
 const ANTHROPIC_PROVIDER_BLOCK_FORMAT: &str = "anthropic_messages/v1";
@@ -748,6 +750,31 @@ fn anthropic_messages_response_to_turn_response(
             trace,
         ));
     }
+
+    if anthropic_response_missing_tool_call_blocks(
+        &parsed.content,
+        parsed.stop_reason.as_deref(),
+        tools_available,
+    ) {
+        warn!(
+            provider = provider_id,
+            model = model,
+            stop_reason = ?parsed.stop_reason,
+            tools_available,
+            "anthropic response stopped for tool_use but returned no tool call blocks"
+        );
+        return Err(retryable_invalid_response_error_with_trace(
+            "invalid Anthropic tool response",
+            "response_protocol",
+            provider_id,
+            Some(model_ref),
+            Some(url),
+            "stop_reason=tool_use without any tool_use block; retrying as protocol violation",
+            trace,
+            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        ));
+    }
+
     strip_zai_redundant_provider_tool_text(&mut parsed.content);
     let response_format_tool_name = anthropic_response_format_tool_name(request);
     let blocks = parsed
@@ -1608,20 +1635,136 @@ fn build_anthropic_messages(
     rolling_cache_marker: Option<(usize, usize)>,
     cache_control: bool,
 ) -> Vec<ApiMessage> {
-    conversation
+    repair_orphaned_tool_use_blocks(
+        conversation
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| conversation_message_has_content(message))
+            .map(|(message_index, message)| {
+                conversation_message_to_api(
+                    message,
+                    rolling_cache_marker
+                        .filter(|(marker_message_index, _)| *marker_message_index == message_index)
+                        .map(|(_, marker_block_index)| marker_block_index),
+                    cache_control,
+                )
+            })
+            .collect(),
+    )
+}
+
+/// Ensure every tool_use block in an assistant message is answered by
+/// tool_result blocks in the immediately following user message. Turn
+/// projection already synthesizes results for incomplete tool calls, so an
+/// orphan here means context escaped that repair; sending it as-is would
+/// make tool_use/tool_result-pairing providers reject the whole request
+/// with HTTP 400. Repair by synthesizing failed tool_results before send.
+fn repair_orphaned_tool_use_blocks(mut messages: Vec<ApiMessage>) -> Vec<ApiMessage> {
+    for index in (0..messages.len()).rev() {
+        if messages[index].role != "assistant" {
+            continue;
+        }
+        let tool_use_ids = assistant_message_tool_use_ids(&messages[index]);
+        if tool_use_ids.is_empty() {
+            continue;
+        }
+        let following_is_user = messages
+            .get(index + 1)
+            .is_some_and(|message| message.role == "user");
+        let missing_ids: Vec<String> = if following_is_user {
+            let answered_ids = user_message_tool_result_ids(&messages[index + 1]);
+            tool_use_ids
+                .iter()
+                .filter(|id| !answered_ids.contains(*id))
+                .cloned()
+                .collect()
+        } else {
+            tool_use_ids.clone()
+        };
+        if missing_ids.is_empty() {
+            continue;
+        }
+        warn!(
+            provider_transport = "anthropic_messages",
+            tool_use_ids = ?missing_ids,
+            "tool_use without matching tool_result; synthesizing failed tool_results before send"
+        );
+        if following_is_user {
+            prepend_user_tool_result_blocks(&mut messages[index + 1], &missing_ids);
+        } else {
+            messages.insert(
+                index + 1,
+                ApiMessage {
+                    role: "user",
+                    content: Value::Array(
+                        missing_ids
+                            .iter()
+                            .map(|id| synthesized_tool_result_block(id))
+                            .collect(),
+                    ),
+                },
+            );
+        }
+    }
+    messages
+}
+
+fn assistant_message_tool_use_ids(message: &ApiMessage) -> Vec<String> {
+    let Value::Array(blocks) = &message.content else {
+        return Vec::new();
+    };
+    blocks
         .iter()
-        .enumerate()
-        .filter(|(_, message)| conversation_message_has_content(message))
-        .map(|(message_index, message)| {
-            conversation_message_to_api(
-                message,
-                rolling_cache_marker
-                    .filter(|(marker_message_index, _)| *marker_message_index == message_index)
-                    .map(|(_, marker_block_index)| marker_block_index),
-                cache_control,
-            )
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_use"))
+        .filter_map(|block| {
+            block
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
         })
         .collect()
+}
+
+fn user_message_tool_result_ids(message: &ApiMessage) -> Vec<String> {
+    let Value::Array(blocks) = &message.content else {
+        return Vec::new();
+    };
+    blocks
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|block| {
+            block
+                .get("tool_use_id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect()
+}
+
+fn synthesized_tool_result_block(tool_use_id: &str) -> Value {
+    json!({
+        "type": "tool_result",
+        "tool_use_id": tool_use_id,
+        "content": INCOMPLETE_TOOL_RESULT_SENTINEL,
+        "is_error": true,
+    })
+}
+
+/// Prepend synthesized tool_result blocks so a cache_control marker on the
+/// message's last block stays last.
+fn prepend_user_tool_result_blocks(message: &mut ApiMessage, tool_use_ids: &[String]) {
+    let mut blocks: Vec<Value> = tool_use_ids
+        .iter()
+        .map(|id| synthesized_tool_result_block(id))
+        .collect();
+    match message.content.take() {
+        Value::Array(existing) => blocks.extend(existing),
+        Value::String(text) if !text.trim().is_empty() => {
+            blocks.push(json!({ "type": "text", "text": text }))
+        }
+        _ => {}
+    }
+    message.content = Value::Array(blocks);
 }
 
 /// Ollama's Anthropic-compatible `/v1/messages` endpoint rejects message
@@ -1993,6 +2136,24 @@ fn anthropic_response_has_text_form_tool_call_violation(
         }
     }
     has_text_form_tool_call
+}
+
+/// #2902: some Anthropic-compatible gateways intermittently return
+/// `stop_reason=tool_use` (with tools available) but zero tool-call blocks,
+/// so the round cannot be replayed as a tool round. Unlike the text-form
+/// markup violation this is retryable: production evidence shows the same
+/// binary passes on retry, and completing it as a text-only round would
+/// silently drop the tool step.
+fn anthropic_response_missing_tool_call_blocks(
+    blocks: &[ApiResponseBlock],
+    stop_reason: Option<&str>,
+    tools_available: bool,
+) -> bool {
+    stop_reason == Some("tool_use")
+        && tools_available
+        && !blocks
+            .iter()
+            .any(|block| matches!(block.kind.as_str(), "tool_use" | "server_tool_use"))
 }
 
 fn text_contains_tool_call_markup(text: &str) -> bool {
@@ -3457,6 +3618,139 @@ mod tests {
         assert!(messages[2].content[0]["text"]
             .as_str()
             .is_some_and(|text| text.contains("Operator message received")));
+    }
+
+    #[test]
+    fn build_anthropic_messages_synthesizes_tool_result_for_orphaned_tool_use() {
+        let conversation = vec![
+            ConversationMessage::UserText("start".to_string()),
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "toolu_orphan".to_string(),
+                name: "ExecCommand".to_string(),
+                input: json!({ "cmd": "printf ok" }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }]),
+            ConversationMessage::UserText("Continue using the context above.".to_string()),
+        ];
+
+        let messages = build_anthropic_messages(&conversation, None, false);
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].role, "assistant");
+        assert_eq!(messages[1].content[0]["type"], "tool_use");
+        assert_eq!(messages[2].role, "user");
+        assert_eq!(messages[2].content[0]["type"], "tool_result");
+        assert_eq!(messages[2].content[0]["tool_use_id"], "toolu_orphan");
+        assert_eq!(messages[2].content[0]["is_error"], true);
+        assert_eq!(
+            messages[2].content[0]["content"],
+            crate::provider::INCOMPLETE_TOOL_RESULT_SENTINEL
+        );
+        assert_eq!(messages[2].content[1]["type"], "text");
+    }
+
+    #[test]
+    fn build_anthropic_messages_appends_tool_results_when_orphan_ends_conversation() {
+        let conversation = vec![ConversationMessage::AssistantBlocks(vec![
+            ModelBlock::ToolUse {
+                id: "toolu_tail".to_string(),
+                name: "ExecCommand".to_string(),
+                input: json!({ "cmd": "printf ok" }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            },
+        ])];
+
+        let messages = build_anthropic_messages(&conversation, None, false);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].role, "assistant");
+        assert_eq!(messages[1].role, "user");
+        assert_eq!(messages[1].content[0]["type"], "tool_result");
+        assert_eq!(messages[1].content[0]["tool_use_id"], "toolu_tail");
+        assert_eq!(messages[1].content[0]["is_error"], true);
+    }
+
+    #[test]
+    fn build_anthropic_messages_leaves_completed_tool_round_untouched() {
+        let conversation = vec![
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "toolu_done".to_string(),
+                name: "ExecCommand".to_string(),
+                input: json!({ "cmd": "printf ok" }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }]),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: "toolu_done".to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                error: None,
+            }]),
+        ];
+
+        let messages = build_anthropic_messages(&conversation, None, false);
+
+        assert_eq!(messages.len(), 2);
+        let blocks = messages[1].content.as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["tool_use_id"], "toolu_done");
+        assert_eq!(blocks[0]["is_error"], false);
+    }
+
+    #[test]
+    fn anthropic_response_missing_tool_call_blocks_detects_zero_block_tool_use_stop() {
+        let text = ApiResponseBlock {
+            kind: "text".to_string(),
+            text: Some("done".to_string()),
+            ..Default::default()
+        };
+        let thinking = ApiResponseBlock {
+            kind: "thinking".to_string(),
+            thinking: Some("checking".to_string()),
+            ..Default::default()
+        };
+        let tool_use = ApiResponseBlock {
+            kind: "tool_use".to_string(),
+            id: Some("toolu_1".to_string()),
+            ..Default::default()
+        };
+        let server_tool_use = ApiResponseBlock {
+            kind: "server_tool_use".to_string(),
+            ..Default::default()
+        };
+
+        assert!(anthropic_response_missing_tool_call_blocks(
+            &[text.clone()],
+            Some("tool_use"),
+            true
+        ));
+        assert!(anthropic_response_missing_tool_call_blocks(
+            &[thinking, text],
+            Some("tool_use"),
+            true
+        ));
+        assert!(!anthropic_response_missing_tool_call_blocks(
+            &[tool_use],
+            Some("tool_use"),
+            true
+        ));
+        assert!(!anthropic_response_missing_tool_call_blocks(
+            &[server_tool_use],
+            Some("tool_use"),
+            true
+        ));
+        assert!(!anthropic_response_missing_tool_call_blocks(
+            &[ApiResponseBlock::default()],
+            Some("tool_use"),
+            false
+        ));
+        assert!(!anthropic_response_missing_tool_call_blocks(
+            &[ApiResponseBlock::default()],
+            Some("end_turn"),
+            true
+        ));
     }
 
     #[test]

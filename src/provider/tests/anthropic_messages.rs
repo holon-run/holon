@@ -378,6 +378,70 @@ async fn anthropic_text_form_tool_call_protocol_failure_writes_failure_trace() {
 }
 
 #[tokio::test]
+async fn anthropic_zero_block_tool_use_stop_fails_as_retryable_protocol_violation() {
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(|| async {
+            Json(json!({
+                "content": [{ "type": "text", "text": "I will check the repository." }],
+                "stop_reason": "tool_use",
+                "usage": { "input_tokens": 4, "output_tokens": 2 }
+            }))
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::anthropic())
+        .unwrap()
+        .base_url = base_url;
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let error = provider
+        .complete_turn(ProviderTurnRequest::plain(
+            "use a tool",
+            Vec::new(),
+            vec![crate::tool::ToolSpec {
+                name: "ExecCommand".into(),
+                description: "Run a command".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "cmd": { "type": "string" }
+                    },
+                    "required": ["cmd"]
+                }),
+                freeform_grammar: None,
+            }],
+        ))
+        .await
+        .expect_err("zero-block tool_use stop_reason should fail");
+
+    let diagnostics =
+        provider_transport_diagnostics(&error).expect("error should include diagnostics");
+    assert_eq!(diagnostics.stage, "response_protocol");
+    assert_eq!(diagnostics.provider.as_deref(), Some("anthropic"));
+    let transport_error = error
+        .downcast_ref::<crate::provider::retry::ProviderTransportError>()
+        .expect("error should be a provider transport error");
+    assert!(matches!(
+        transport_error.classification.kind,
+        crate::provider::retry::ProviderFailureKind::InvalidResponse
+    ));
+    assert!(matches!(
+        transport_error.classification.disposition,
+        crate::provider::retry::RetryDisposition::Retryable
+    ));
+}
+
+#[tokio::test]
 async fn anthropic_continuation_request_retains_cache_control_prompt_anchors() {
     let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
     let captured_body_for_server = captured_body.clone();
