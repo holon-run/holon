@@ -704,7 +704,7 @@ export function SettingsPage({
         decisionVariant,
         decisionNumThreads,
         decisionChecksum,
-      buildDecisionConfigUpdates(decisionProvider, decisionEnabled, decisionEndpoint, decisionModel, decisionCredentialProfile).concat(
+      ).concat(
         buildAdvisoryToolConfigUpdates(
           advisoryToolEnabled,
           advisoryToolMaxCalls,
