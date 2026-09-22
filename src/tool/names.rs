@@ -53,6 +53,7 @@ pub mod tool_names {
     pub const WEB_FETCH: &str = "WebFetch";
     pub const WEB_SEARCH: &str = "WebSearch";
     pub const X_SEARCH: &str = "XSearch";
+    pub const ADVISORY_DECISION: &str = "AdvisoryDecision";
 }
 
 pub use tool_names::*;
@@ -128,6 +129,7 @@ pub const SLEEP_LIKE_TOOLS: &[&str] = &[SLEEP, WAIT_FOR];
 
 /// All builtin tool names, alphabetically sorted.
 pub const ALL_TOOL_NAMES: &[&str] = &[
+    ADVISORY_DECISION,
     GET_AGENT,
     APPLY_PATCH,
     ATTACH_WORKSPACE,

@@ -36,6 +36,12 @@ pub(crate) struct OpenAiSemanticCandidateSelectionHook {
     executor: DecisionExecutor,
 }
 
+pub(crate) struct AdvisoryDecisionExecutor {
+    executor: DecisionExecutor,
+    provider: String,
+    model: String,
+}
+
 pub(crate) struct ResolvedDecisionRoute {
     provider: DecisionProviderKind,
     timeout: Duration,
@@ -227,7 +233,59 @@ impl OpenAiSemanticCandidateSelectionHook {
             ),
         }))
     }
+}
 
+impl AdvisoryDecisionExecutor {
+    pub(crate) fn from_app_config(
+        config: &crate::config::AppConfig,
+    ) -> anyhow::Result<Option<Self>> {
+        let Some(route) = resolve_decision_route(&config.stored_config.decision, &config.home_dir)?
+        else {
+            return Ok(None);
+        };
+        let provider = config
+            .stored_config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.provider.clone())
+            .unwrap_or_else(|| "openai".into());
+        let model = config
+            .stored_config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.model.clone())
+            .unwrap_or_default();
+        Ok(Some(Self {
+            executor: DecisionExecutor::new(
+                build_provider(route.provider)?,
+                route.timeout,
+                route.concurrency,
+                route.queue_capacity,
+            ),
+            provider,
+            model,
+        }))
+    }
+
+    pub(crate) async fn decide(
+        &self,
+        request: DecisionRequest<Value, Value>,
+    ) -> Result<DecisionResponse<Value>, DecisionError> {
+        self.executor.decide(request).await
+    }
+
+    pub(crate) fn provider(&self) -> &str {
+        &self.provider
+    }
+
+    pub(crate) fn model(&self) -> &str {
+        &self.model
+    }
+}
+
+impl OpenAiSemanticCandidateSelectionHook {
     fn request(
         &self,
         context: &AutonomousContinuationSelectionContext,

@@ -3,6 +3,7 @@
 //! This module defines the public types used to describe tools and their input/output schemas.
 
 use anyhow::Result;
+use std::sync::{atomic::AtomicUsize, Arc};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,7 @@ pub struct ToolExecutionContext {
     pub completion_report_candidate: Option<CompletionReportCandidate>,
     pub effective_work_item_id: Option<String>,
     pub trace_context: Option<crate::observability::TraceContext>,
+    pub decision_tool_calls: Arc<AtomicUsize>,
 }
 
 #[derive(Debug, Clone)]

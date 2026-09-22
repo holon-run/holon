@@ -492,6 +492,10 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "decision.max_tokens"
             | "decision.concurrency"
             | "decision.queue_capacity"
+            | "decision.tools.enabled"
+            | "decision.tools.max_calls_per_turn"
+            | "decision.tools.timeout_ms"
+            | "decision.tools.min_confidence"
     ) || key.starts_with("runtime.retention.")
         || key.starts_with("providers.")
         || key.starts_with("agent_templates.")

@@ -73,6 +73,10 @@ pub(super) struct ConfigSnapshot {
     pub command_task_output_policy: crate::types::CommandTaskOutputPolicy,
     pub web_config: crate::web::WebConfig,
     pub x_search_config: Option<crate::config::XSearchRuntimeConfig>,
+    pub decision_tool_enabled: bool,
+    pub decision_tool_max_calls_per_turn: usize,
+    pub decision_tool_timeout_ms: u64,
+    pub decision_tool_min_confidence: f32,
 }
 
 impl ConfigSnapshot {
@@ -111,6 +115,36 @@ impl ConfigSnapshot {
             },
             web_config: config.web_config.clone(),
             x_search_config: crate::config::XSearchRuntimeConfig::from_app_config(config)?,
+            decision_tool_enabled: config.stored_config.decision.enabled.unwrap_or(false)
+                && config
+                    .stored_config
+                    .decision
+                    .tools
+                    .as_ref()
+                    .and_then(|tools| tools.enabled)
+                    .unwrap_or(false),
+            decision_tool_max_calls_per_turn: config
+                .stored_config
+                .decision
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.max_calls_per_turn)
+                .unwrap_or(4),
+            decision_tool_timeout_ms: config
+                .stored_config
+                .decision
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.timeout_ms)
+                .unwrap_or(1500)
+                .max(1),
+            decision_tool_min_confidence: config
+                .stored_config
+                .decision
+                .tools
+                .as_ref()
+                .and_then(|tools| tools.min_confidence)
+                .unwrap_or(0.0),
         })
     }
 }
@@ -422,6 +456,35 @@ impl RuntimeHandle {
             command_task_output_policy,
             web_config: web_config.clone(),
             x_search_config,
+            decision_tool_enabled: provider_reconfig
+                .as_ref()
+                .and_then(|reconfig| reconfig.config.stored_config.decision.tools.as_ref())
+                .and_then(|tools| tools.enabled)
+                .unwrap_or(false)
+                && provider_reconfig.as_ref().is_some_and(|reconfig| {
+                    reconfig
+                        .config
+                        .stored_config
+                        .decision
+                        .enabled
+                        .unwrap_or(false)
+                }),
+            decision_tool_max_calls_per_turn: provider_reconfig
+                .as_ref()
+                .and_then(|reconfig| reconfig.config.stored_config.decision.tools.as_ref())
+                .and_then(|tools| tools.max_calls_per_turn)
+                .unwrap_or(4),
+            decision_tool_timeout_ms: provider_reconfig
+                .as_ref()
+                .and_then(|reconfig| reconfig.config.stored_config.decision.tools.as_ref())
+                .and_then(|tools| tools.timeout_ms)
+                .unwrap_or(1500)
+                .max(1),
+            decision_tool_min_confidence: provider_reconfig
+                .as_ref()
+                .and_then(|reconfig| reconfig.config.stored_config.decision.tools.as_ref())
+                .and_then(|tools| tools.min_confidence)
+                .unwrap_or(0.0),
         });
         let mut provider = provider;
         let PreparedRuntimeStorage {

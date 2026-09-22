@@ -1,7 +1,11 @@
 //! Turn execution: the agent loop that drives provider rounds, tool calls,
 //! checkpointing, context projection, and completion.
 
-use std::{collections::HashSet, time::Instant};
+use std::{
+    collections::HashSet,
+    sync::{atomic::AtomicUsize, Arc},
+    time::Instant,
+};
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -1622,6 +1626,7 @@ impl TurnExecution<'_> {
         let mut last_assistant_citations = Vec::<Citation>::new();
         let mut last_assistant_round_id: Option<String> = None;
         let mut max_output_recovery_count = 0usize;
+        let decision_tool_calls = Arc::new(AtomicUsize::new(0));
         let provider_recovery = model_selection.recovery.clone();
         let mut checkpoint_state = {
             let guard = runtime.inner.agent.lock().await;
@@ -3554,6 +3559,7 @@ impl TurnExecution<'_> {
                         ),
                     effective_work_item_id: pre_tool_work_item_id.clone(),
                     trace_context: trace_context.as_ref().map(|parent| parent.child()),
+                    decision_tool_calls: decision_tool_calls.clone(),
                 };
                 let tool_started_at = chrono::Utc::now();
                 let tool_exec_started = std::time::Instant::now();

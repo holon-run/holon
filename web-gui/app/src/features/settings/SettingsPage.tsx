@@ -143,6 +143,23 @@ export function buildDecisionConfigUpdates(
   ];
 }
 
+export function buildAdvisoryToolConfigUpdates(
+  enabled: boolean,
+  maxCallsPerTurn: string,
+  timeoutMs: string,
+  minConfidencePercent: string,
+): Array<{ key: string; value?: unknown; unset?: boolean }> {
+  const maxCalls = numberFromInput(maxCallsPerTurn);
+  const timeout = numberFromInput(timeoutMs);
+  const confidence = Math.min(100, numberFromInput(minConfidencePercent));
+  return [
+    { key: "decision.tools.enabled", value: enabled },
+    { key: "decision.tools.max_calls_per_turn", value: Math.max(1, maxCalls) },
+    { key: "decision.tools.timeout_ms", value: Math.max(1, timeout) },
+    { key: "decision.tools.min_confidence", value: confidence / 100 },
+  ];
+}
+
 export function reorderModelFallbacks(
   models: string[],
   fromIndex: number,
@@ -304,6 +321,10 @@ export function SettingsPage({
   const [decisionVariant, setDecisionVariant] = useState("q4f16");
   const [decisionNumThreads, setDecisionNumThreads] = useState("1");
   const [decisionChecksum, setDecisionChecksum] = useState("");
+  const [advisoryToolEnabled, setAdvisoryToolEnabled] = useState(false);
+  const [advisoryToolMaxCalls, setAdvisoryToolMaxCalls] = useState("4");
+  const [advisoryToolTimeout, setAdvisoryToolTimeout] = useState("1500");
+  const [advisoryToolMinConfidence, setAdvisoryToolMinConfidence] = useState("0");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
   const [disableProviderFallback, setDisableProviderFallback] = useState(false);
@@ -413,6 +434,10 @@ export function SettingsPage({
     setDecisionVariant(surface.decision?.variant ?? "q4f16");
     setDecisionNumThreads(String(surface.decision?.numThreads ?? 1));
     setDecisionChecksum(surface.decision?.checksum ?? "");
+    setAdvisoryToolEnabled(surface.decision?.tools.enabled ?? false);
+    setAdvisoryToolMaxCalls(String(surface.decision?.tools.maxCallsPerTurn ?? 4));
+    setAdvisoryToolTimeout(String(surface.decision?.tools.timeoutMs ?? 1500));
+    setAdvisoryToolMinConfidence(String(surface.decision?.tools.minConfidencePercent ?? 0));
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
     setDisableProviderFallback(surface.disableProviderFallback);
@@ -679,6 +704,13 @@ export function SettingsPage({
         decisionVariant,
         decisionNumThreads,
         decisionChecksum,
+      buildDecisionConfigUpdates(decisionProvider, decisionEnabled, decisionEndpoint, decisionModel, decisionCredentialProfile).concat(
+        buildAdvisoryToolConfigUpdates(
+          advisoryToolEnabled,
+          advisoryToolMaxCalls,
+          advisoryToolTimeout,
+          advisoryToolMinConfidence,
+        ),
       ),
     );
     if (!result) return;
@@ -1279,6 +1311,67 @@ export function SettingsPage({
                     <p className="settings-hint">{t("settings.decisionCredentialHint")}</p>
                   </>
                 )}
+                <label>
+                  <span>{t("settings.decisionEndpoint")}</span>
+                  <input
+                    value={decisionEndpoint}
+                    onChange={(event) => setDecisionEndpoint(event.target.value)}
+                    placeholder="https://jev.example.com/v1"
+                  />
+                </label>
+                <label>
+                  <span>{t("settings.decisionModel")}</span>
+                  <input
+                    value={decisionModel}
+                    onChange={(event) => setDecisionModel(event.target.value)}
+                    placeholder="jev-decision-1"
+                  />
+                </label>
+                <p className="settings-hint">{t("settings.decisionModelHint")}</p>
+                <label>
+                  <span>{t("settings.decisionCredentialProfile")}</span>
+                  <input
+                    value={decisionCredentialProfile}
+                    onChange={(event) => setDecisionCredentialProfile(event.target.value)}
+                    placeholder="jev:default"
+                  />
+                </label>
+                <p className="settings-hint">{t("settings.decisionCredentialHint")}</p>
+                <label className="settings-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={advisoryToolEnabled}
+                    onChange={(event) => setAdvisoryToolEnabled(event.target.checked)}
+                  />
+                  <span>{t("settings.enableAdvisoryDecisionTool")}</span>
+                </label>
+                <p className="settings-hint">{t("settings.advisoryDecisionToolHint")}</p>
+                <div className="settings-grid">
+                  <label>
+                    <span>{t("settings.advisoryDecisionMaxCalls")}</span>
+                    <input
+                      inputMode="numeric"
+                      value={advisoryToolMaxCalls}
+                      onChange={(event) => setAdvisoryToolMaxCalls(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>{t("settings.advisoryDecisionTimeout")}</span>
+                    <input
+                      inputMode="numeric"
+                      value={advisoryToolTimeout}
+                      onChange={(event) => setAdvisoryToolTimeout(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>{t("settings.advisoryDecisionMinConfidence")}</span>
+                    <input
+                      inputMode="numeric"
+                      value={advisoryToolMinConfidence}
+                      onChange={(event) => setAdvisoryToolMinConfidence(event.target.value)}
+                    />
+                  </label>
+                </div>
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
                     {runtimeConfigSaving ? t("settings.saving") : t("settings.saveDecision")}
