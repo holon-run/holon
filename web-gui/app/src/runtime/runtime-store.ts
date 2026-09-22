@@ -95,6 +95,7 @@ import type {
   RuntimeConnectionConfig,
   TaskSummary,
   RuntimeConfigState,
+  RuntimeLocalOnnxPresetStatus,
   TaskStatusSnapshot,
   CodexDeviceLoginState,
   CredentialMutationResult,
@@ -423,6 +424,7 @@ export interface RuntimeStoreState {
   refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
   updateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  downloadLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
   refreshSkillCatalog: () => Promise<void>;
   refreshSkillDetail: (skillId: string | undefined, agentId?: string) => Promise<void>;
   refreshTemplateCatalog: () => Promise<void>;
@@ -2041,6 +2043,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       }));
       return undefined;
     }
+  },
+
+  downloadLocalOnnxPreset: async (preset) => {
+    const request = captureClientRequest();
+    return request.client.downloadLocalOnnxPreset(preset);
   },
 
   refreshSkillCatalog: async () => {

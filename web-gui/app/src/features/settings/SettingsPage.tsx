@@ -31,6 +31,7 @@ import type {
   CredentialStoreState,
   RuntimeConfigState,
   RuntimeConnection,
+  RuntimeLocalOnnxPresetStatus,
   RuntimeModelCatalog,
   RuntimeModelOption,
   RuntimeProviderSummary,
@@ -50,6 +51,7 @@ interface SettingsPageProps {
   onRefreshModels: () => Promise<void>;
   onRefreshRuntimeConfig: () => Promise<void>;
   onUpdateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
+  onDownloadLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
   credentialStore: CredentialStoreState;
   credentialStoreLoading: boolean;
   onRefreshCredentialStore: () => Promise<void>;
@@ -95,51 +97,39 @@ export function buildImageGenerationConfigUpdates(imageGenDefault: string): Arra
 }
 
 export function buildDecisionConfigUpdates(
-  provider: string,
   enabled: boolean,
-  endpoint: string,
   model: string,
-  credentialProfile: string,
   modelDir: string,
   variant: string,
   numThreads: string,
   checksum: string,
+  preset = "jev-selector-q4f16",
 ): Array<{ key: string; value?: unknown; unset?: boolean }> {
-  const trimmedProvider = provider.trim();
-  const localOnnx = trimmedProvider === "local-onnx";
-  const trimmedEndpoint = endpoint.trim();
   const trimmedModel = model.trim();
-  const trimmedCredentialProfile = credentialProfile.trim();
   const trimmedModelDir = modelDir.trim();
   const trimmedVariant = variant.trim();
   const parsedNumThreads = Number.parseInt(numThreads.trim(), 10);
   const trimmedChecksum = checksum.trim();
   return [
-    trimmedProvider
-      ? { key: "decision.route.provider", value: trimmedProvider }
-      : { key: "decision.route.provider", unset: true },
     enabled ? { key: "decision.enabled", value: true } : { key: "decision.enabled", unset: true },
-    trimmedEndpoint
-      ? { key: "decision.route.endpoint", value: trimmedEndpoint }
-      : { key: "decision.route.endpoint", unset: true },
     trimmedModel
-      ? { key: "decision.route.model", value: trimmedModel }
-      : { key: "decision.route.model", unset: true },
-    trimmedCredentialProfile
-      ? { key: "decision.route.credential_profile", value: trimmedCredentialProfile }
-      : { key: "decision.route.credential_profile", unset: true },
-    localOnnx && trimmedModelDir
-      ? { key: "decision.route.model_dir", value: trimmedModelDir }
-      : { key: "decision.route.model_dir", unset: true },
-    localOnnx && trimmedVariant
-      ? { key: "decision.route.variant", value: trimmedVariant }
-      : { key: "decision.route.variant", unset: true },
-    localOnnx && Number.isFinite(parsedNumThreads) && parsedNumThreads > 0
-      ? { key: "decision.route.num_threads", value: parsedNumThreads }
-      : { key: "decision.route.num_threads", unset: true },
-    localOnnx && trimmedChecksum
-      ? { key: "decision.route.checksum", value: trimmedChecksum }
-      : { key: "decision.route.checksum", unset: true },
+      ? { key: "decision.model", value: trimmedModel }
+      : { key: "decision.model", unset: true },
+    preset.trim()
+      ? { key: "decision.local_onnx.preset", value: preset.trim() }
+      : { key: "decision.local_onnx.preset", unset: true },
+    trimmedModelDir
+      ? { key: "decision.local_onnx.model_dir", value: trimmedModelDir }
+      : { key: "decision.local_onnx.model_dir", unset: true },
+    trimmedVariant
+      ? { key: "decision.local_onnx.variant", value: trimmedVariant }
+      : { key: "decision.local_onnx.variant", unset: true },
+    Number.isFinite(parsedNumThreads) && parsedNumThreads > 0
+      ? { key: "decision.local_onnx.num_threads", value: parsedNumThreads }
+      : { key: "decision.local_onnx.num_threads", unset: true },
+    trimmedChecksum
+      ? { key: "decision.local_onnx.checksum", value: trimmedChecksum }
+      : { key: "decision.local_onnx.checksum", unset: true },
   ];
 }
 
@@ -287,6 +277,7 @@ export function SettingsPage({
   onRefreshModels,
   onRefreshRuntimeConfig,
   onUpdateRuntimeConfig,
+  onDownloadLocalOnnxPreset,
   credentialStore,
   credentialStoreLoading,
   onRefreshCredentialStore,
@@ -313,14 +304,14 @@ export function SettingsPage({
   const [visionDefault, setVisionDefault] = useState("");
   const [imageGenDefault, setImageGenDefault] = useState("");
   const [decisionEnabled, setDecisionEnabled] = useState(false);
-  const [decisionProvider, setDecisionProvider] = useState("openai");
-  const [decisionEndpoint, setDecisionEndpoint] = useState("");
   const [decisionModel, setDecisionModel] = useState("");
-  const [decisionCredentialProfile, setDecisionCredentialProfile] = useState("");
   const [decisionModelDir, setDecisionModelDir] = useState("");
   const [decisionVariant, setDecisionVariant] = useState("q4f16");
   const [decisionNumThreads, setDecisionNumThreads] = useState("1");
   const [decisionChecksum, setDecisionChecksum] = useState("");
+  const [decisionPreset, setDecisionPreset] = useState("jev-selector-q4f16");
+  const [localOnnxDownload, setLocalOnnxDownload] = useState<RuntimeLocalOnnxPresetStatus | undefined>();
+  const [localOnnxDownloading, setLocalOnnxDownloading] = useState(false);
   const [advisoryToolEnabled, setAdvisoryToolEnabled] = useState(false);
   const [advisoryToolMaxCalls, setAdvisoryToolMaxCalls] = useState("4");
   const [advisoryToolTimeout, setAdvisoryToolTimeout] = useState("1500");
@@ -426,14 +417,12 @@ export function SettingsPage({
     setVisionDefault(surface.visionDefault ?? "");
     setImageGenDefault(surface.imageGenerationDefault ?? "");
     setDecisionEnabled(surface.decision?.enabled ?? false);
-    setDecisionProvider(surface.decision?.provider ?? "openai");
-    setDecisionEndpoint(surface.decision?.endpoint ?? "");
     setDecisionModel(surface.decision?.model ?? "");
-    setDecisionCredentialProfile(surface.decision?.credentialProfile ?? "");
-    setDecisionModelDir(surface.decision?.modelDir ?? "");
-    setDecisionVariant(surface.decision?.variant ?? "q4f16");
-    setDecisionNumThreads(String(surface.decision?.numThreads ?? 1));
-    setDecisionChecksum(surface.decision?.checksum ?? "");
+    setDecisionPreset(surface.decision?.localOnnx.preset ?? "jev-selector-q4f16");
+    setDecisionModelDir(surface.decision?.localOnnx.modelDir ?? "");
+    setDecisionVariant(surface.decision?.localOnnx.variant ?? "q4f16");
+    setDecisionNumThreads(String(surface.decision?.localOnnx.numThreads ?? 1));
+    setDecisionChecksum(surface.decision?.localOnnx.checksum ?? "");
     setAdvisoryToolEnabled(surface.decision?.tools.enabled ?? false);
     setAdvisoryToolMaxCalls(String(surface.decision?.tools.maxCallsPerTurn ?? 4));
     setAdvisoryToolTimeout(String(surface.decision?.tools.timeoutMs ?? 1500));
@@ -695,15 +684,13 @@ export function SettingsPage({
     setDecisionSaveMessage(undefined);
     const result = await onUpdateRuntimeConfig(
       buildDecisionConfigUpdates(
-        decisionProvider,
         decisionEnabled,
-        decisionEndpoint,
         decisionModel,
-        decisionCredentialProfile,
         decisionModelDir,
         decisionVariant,
         decisionNumThreads,
         decisionChecksum,
+        decisionPreset,
       ).concat(
         buildAdvisoryToolConfigUpdates(
           advisoryToolEnabled,
@@ -1227,116 +1214,104 @@ export function SettingsPage({
                   <input type="checkbox" checked={decisionEnabled} onChange={(event) => setDecisionEnabled(event.target.checked)} />
                   <span>{t("settings.enableDecisionProvider")}</span>
                 </label>
-                <p className="settings-hint">
-                  {decisionProvider === "local-onnx"
-                    ? t("settings.decisionLocalEnableHint")
-                    : t("settings.decisionEnableHint")}
-                </p>
-                <label>
-                  <span>{t("settings.decisionRouteProvider")}</span>
-                  <select value={decisionProvider} onChange={(event) => setDecisionProvider(event.target.value)}>
-                    <option value="openai">OpenAI-compatible</option>
-                    <option value="jev">Jev native</option>
-                    <option value="local-onnx">Local ONNX</option>
-                  </select>
-                </label>
-                <p className="settings-hint">{t("settings.decisionRouteProviderHint")}</p>
-                {decisionProvider === "local-onnx" ? (
-                  <>
-                    <label>
-                      <span>{t("settings.decisionModelDir")}</span>
-                      <input
-                        value={decisionModelDir}
-                        onChange={(event) => setDecisionModelDir(event.target.value)}
-                        placeholder="/var/lib/holon/models/decision"
-                      />
-                    </label>
-                    <p className="settings-hint">{t("settings.decisionModelDirHint")}</p>
-                    <label>
-                      <span>{t("settings.decisionVariant")}</span>
-                      <select value={decisionVariant} onChange={(event) => setDecisionVariant(event.target.value)}>
-                        <option value="fp32">fp32</option>
-                        <option value="fp16">fp16</option>
-                        <option value="q4">q4</option>
-                        <option value="q4f16">q4f16</option>
-                      </select>
-                    </label>
-                    <label>
-                      <span>{t("settings.decisionNumThreads")}</span>
-                      <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={decisionNumThreads}
-                        onChange={(event) => setDecisionNumThreads(event.target.value)}
-                      />
-                    </label>
-                    <label>
-                      <span>{t("settings.decisionChecksum")}</span>
-                      <input
-                        value={decisionChecksum}
-                        onChange={(event) => setDecisionChecksum(event.target.value)}
-                        placeholder="sha256:..."
-                      />
-                    </label>
-                    <p className="settings-hint">{t("settings.decisionChecksumHint")}</p>
-                  </>
-                ) : (
-                  <>
-                    <label>
-                      <span>{t("settings.decisionEndpoint")}</span>
-                      <input
-                        value={decisionEndpoint}
-                        onChange={(event) => setDecisionEndpoint(event.target.value)}
-                        placeholder="https://jev.example.com/v1"
-                      />
-                    </label>
-                    <label>
-                      <span>{t("settings.decisionModel")}</span>
-                      <input
-                        value={decisionModel}
-                        onChange={(event) => setDecisionModel(event.target.value)}
-                        placeholder="jev-decision-1"
-                      />
-                    </label>
-                    <p className="settings-hint">{t("settings.decisionModelHint")}</p>
-                    <label>
-                      <span>{t("settings.decisionCredentialProfile")}</span>
-                      <input
-                        value={decisionCredentialProfile}
-                        onChange={(event) => setDecisionCredentialProfile(event.target.value)}
-                        placeholder="jev:default"
-                      />
-                    </label>
-                    <p className="settings-hint">{t("settings.decisionCredentialHint")}</p>
-                  </>
-                )}
-                <label>
-                  <span>{t("settings.decisionEndpoint")}</span>
-                  <input
-                    value={decisionEndpoint}
-                    onChange={(event) => setDecisionEndpoint(event.target.value)}
-                    placeholder="https://jev.example.com/v1"
-                  />
-                </label>
+                <p className="settings-hint">{t("settings.decisionEnableHint")}</p>
                 <label>
                   <span>{t("settings.decisionModel")}</span>
                   <input
+                    list="decision-model-catalog"
                     value={decisionModel}
                     onChange={(event) => setDecisionModel(event.target.value)}
-                    placeholder="jev-decision-1"
+                    placeholder="openai/default/gpt-4o-mini"
                   />
                 </label>
+                <datalist id="decision-model-catalog">
+                  {(surface.modelCatalog ?? []).map((model) => <option key={model} value={model} />)}
+                </datalist>
                 <p className="settings-hint">{t("settings.decisionModelHint")}</p>
-                <label>
-                  <span>{t("settings.decisionCredentialProfile")}</span>
-                  <input
-                    value={decisionCredentialProfile}
-                    onChange={(event) => setDecisionCredentialProfile(event.target.value)}
-                    placeholder="jev:default"
-                  />
-                </label>
-                <p className="settings-hint">{t("settings.decisionCredentialHint")}</p>
+                <details>
+                  <summary>{t("settings.decisionLocalOnnx")}</summary>
+                  <label className="settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={surface.decision?.localOnnx.enabled ?? false}
+                      onChange={(event) => {
+                        void onUpdateRuntimeConfig([{
+                          key: "decision.local_onnx.enabled",
+                          value: event.target.checked,
+                        }]);
+                      }}
+                    />
+                    <span>{t("settings.enableDecisionLocalOnnx")}</span>
+                  </label>
+                  <label>
+                    <span>{t("settings.decisionPreset")}</span>
+                    <input
+                      value={decisionPreset}
+                      onChange={(event) => setDecisionPreset(event.target.value)}
+                      placeholder="jev-selector-q4f16"
+                    />
+                  </label>
+                  <div className="settings-inline-actions">
+                    <Button
+                      type="button"
+                      disabled={localOnnxDownloading || !decisionPreset.trim()}
+                      onClick={async () => {
+                        setLocalOnnxDownloading(true);
+                        try {
+                          setLocalOnnxDownload(await onDownloadLocalOnnxPreset(decisionPreset.trim()));
+                        } finally {
+                          setLocalOnnxDownloading(false);
+                        }
+                      }}
+                    >
+                      {localOnnxDownloading ? t("settings.downloadingDecisionPreset") : t("settings.downloadDecisionPreset")}
+                    </Button>
+                    {localOnnxDownload ? (
+                      <span className="settings-hint">
+                        {localOnnxDownload.complete
+                          ? t("settings.decisionPresetReady")
+                          : t("settings.decisionPresetIncomplete")}
+                      </span>
+                    ) : null}
+                  </div>
+                  <label>
+                    <span>{t("settings.decisionModelDir")}</span>
+                    <input
+                      value={decisionModelDir}
+                      onChange={(event) => setDecisionModelDir(event.target.value)}
+                      placeholder="/var/lib/holon/models/decision"
+                    />
+                  </label>
+                  <p className="settings-hint">{t("settings.decisionModelDirHint")}</p>
+                  <label>
+                    <span>{t("settings.decisionVariant")}</span>
+                    <select value={decisionVariant} onChange={(event) => setDecisionVariant(event.target.value)}>
+                      <option value="fp32">fp32</option>
+                      <option value="fp16">fp16</option>
+                      <option value="q4">q4</option>
+                      <option value="q4f16">q4f16</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>{t("settings.decisionNumThreads")}</span>
+                    <input
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={decisionNumThreads}
+                      onChange={(event) => setDecisionNumThreads(event.target.value)}
+                    />
+                  </label>
+                  <label>
+                    <span>{t("settings.decisionChecksum")}</span>
+                    <input
+                      value={decisionChecksum}
+                      onChange={(event) => setDecisionChecksum(event.target.value)}
+                      placeholder="sha256:..."
+                    />
+                  </label>
+                  <p className="settings-hint">{t("settings.decisionChecksumHint")}</p>
+                </details>
                 <label className="settings-checkbox">
                   <input
                     type="checkbox"

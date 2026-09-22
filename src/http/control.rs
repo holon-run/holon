@@ -6,6 +6,35 @@ const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_TRACE_SEARCH_RESULTS: usize = 100;
 
+pub async fn runtime_decision_local_onnx_preset(
+    Path(preset): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let config = state.host.config();
+    let status =
+        crate::runtime::decision_models::local_onnx_preset_status(&config.home_dir, &preset)
+            .map_err(error_response)?;
+    Ok(Json(status))
+}
+
+pub async fn runtime_decision_local_onnx_preset_download(
+    Path(preset): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let home_dir = state.host.config().home_dir.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        crate::runtime::decision_models::download_local_onnx_preset(&home_dir, &preset)
+    })
+    .await
+    .map_err(|error| error_response(anyhow::anyhow!("model download task failed: {error}")))?
+    .map_err(error_response)?;
+    Ok(Json(status))
+}
+
 pub async fn runtime_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -440,10 +469,7 @@ fn validate_runtime_config_candidate(
     crate::web::materialize_web_config(&candidate.web, &credentials)?;
     // Reject incomplete decision routes here: an invalid persisted route aborts
     // every later config reload and blocks runtime spawn on restart.
-    crate::runtime::decision_openai::validate_decision_route_config(
-        &candidate.decision,
-        &config.home_dir,
-    )?;
+    crate::runtime::decision_openai::validate_shared_decision_config(&candidate.decision, config)?;
     Ok(())
 }
 
@@ -480,14 +506,13 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "runtime.max_tool_output_tokens"
             | "runtime.disable_provider_fallback"
             | "decision.enabled"
-            | "decision.route.provider"
-            | "decision.route.endpoint"
-            | "decision.route.model"
-            | "decision.route.credential_profile"
-            | "decision.route.model_dir"
-            | "decision.route.variant"
-            | "decision.route.num_threads"
-            | "decision.route.checksum"
+            | "decision.model"
+            | "decision.local_onnx.enabled"
+            | "decision.local_onnx.preset"
+            | "decision.local_onnx.model_dir"
+            | "decision.local_onnx.variant"
+            | "decision.local_onnx.num_threads"
+            | "decision.local_onnx.checksum"
             | "decision.timeout_ms"
             | "decision.max_tokens"
             | "decision.concurrency"
@@ -1373,8 +1398,8 @@ mod tests {
         assert!(is_runtime_mutable_config_key("vision.default"));
         assert!(is_runtime_mutable_config_key("image_generation.default"));
         assert!(is_runtime_mutable_config_key("decision.enabled"));
-        assert!(is_runtime_mutable_config_key("decision.route.provider"));
-        assert!(is_runtime_mutable_config_key("decision.route.endpoint"));
+        assert!(is_runtime_mutable_config_key("decision.model"));
+        assert!(is_runtime_mutable_config_key("decision.local_onnx.preset"));
         assert!(!is_runtime_mutable_config_key("runtime.scheduler"));
     }
 

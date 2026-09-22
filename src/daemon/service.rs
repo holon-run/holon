@@ -138,16 +138,20 @@ pub struct RuntimeConfigSurface {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeDecisionSurface {
     pub enabled: bool,
-    pub provider: Option<String>,
-    pub endpoint: Option<String>,
     pub model: Option<String>,
-    pub credential_profile: Option<String>,
+    pub local_onnx: RuntimeDecisionLocalOnnxSurface,
+    #[serde(default)]
+    pub tools: RuntimeDecisionToolsSurface,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeDecisionLocalOnnxSurface {
+    pub enabled: bool,
+    pub preset: Option<String>,
     pub model_dir: Option<String>,
     pub variant: Option<String>,
     pub num_threads: Option<usize>,
     pub checksum: Option<String>,
-    #[serde(default)]
-    pub tools: RuntimeDecisionToolsSurface,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -171,18 +175,21 @@ impl Default for RuntimeDecisionToolsSurface {
 
 impl RuntimeDecisionSurface {
     pub fn from_config(config: &crate::config::DecisionConfigFile) -> Self {
-        let route = config.route.as_ref();
+        let local_onnx = config.local_onnx.as_ref();
         let tools = config.tools.as_ref();
         Self {
             enabled: config.enabled.unwrap_or(false),
-            provider: route.and_then(|route| route.provider.clone()),
-            endpoint: route.and_then(|route| route.endpoint.clone()),
-            model: route.and_then(|route| route.model.clone()),
-            credential_profile: route.and_then(|route| route.credential_profile.clone()),
-            model_dir: route.and_then(|route| route.model_dir.clone()),
-            variant: route.and_then(|route| route.variant.clone()),
-            num_threads: route.and_then(|route| route.num_threads),
-            checksum: route.and_then(|route| route.checksum.clone()),
+            model: config.model.clone(),
+            local_onnx: RuntimeDecisionLocalOnnxSurface {
+                enabled: local_onnx
+                    .and_then(|config| config.enabled)
+                    .unwrap_or(false),
+                preset: local_onnx.and_then(|config| config.preset.clone()),
+                model_dir: local_onnx.and_then(|config| config.model_dir.clone()),
+                variant: local_onnx.and_then(|config| config.variant.clone()),
+                num_threads: local_onnx.and_then(|config| config.num_threads),
+                checksum: local_onnx.and_then(|config| config.checksum.clone()),
+            },
             tools: RuntimeDecisionToolsSurface {
                 enabled: tools.and_then(|tools| tools.enabled).unwrap_or(false),
                 max_calls_per_turn: tools

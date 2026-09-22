@@ -24,6 +24,7 @@ import type {
   RuntimeConfigState,
   RuntimeConfigSurface,
   RuntimeConnection,
+  RuntimeLocalOnnxPresetStatus,
   RuntimeBriefRecord,
   RuntimeMessageEnvelope,
   RuntimeModelCatalog,
@@ -419,15 +420,33 @@ interface RuntimeConfigSurfaceDto {
 
 interface RuntimeDecisionSurfaceDto {
   enabled?: boolean;
-  provider?: string | null;
-  endpoint?: string | null;
   model?: string | null;
-  credential_profile?: string | null;
+  local_onnx?: RuntimeDecisionLocalOnnxSurfaceDto;
+  tools?: RuntimeDecisionToolsSurfaceDto;
+}
+
+interface RuntimeDecisionLocalOnnxSurfaceDto {
+  enabled?: boolean;
+  preset?: string | null;
   model_dir?: string | null;
   variant?: string | null;
   num_threads?: number | null;
   checksum?: string | null;
-  tools?: RuntimeDecisionToolsSurfaceDto;
+}
+
+interface RuntimeLocalOnnxPresetFileStatusDto {
+  name?: string;
+  path?: string;
+  sha256?: string;
+  present?: boolean;
+  verified?: boolean;
+}
+
+interface RuntimeLocalOnnxPresetStatusDto {
+  preset?: string;
+  directory?: string;
+  complete?: boolean;
+  files?: RuntimeLocalOnnxPresetFileStatusDto[];
 }
 
 interface RuntimeDecisionToolsSurfaceDto {
@@ -1253,6 +1272,31 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       }
       const response = await patchJson<RuntimeConfigResponseDto>(fetchImpl, baseUrl, "/control/runtime/config", { updates }, requestHeaders, { timeoutMs: CONFIG_UPDATE_TIMEOUT_MS });
       return projectRuntimeConfigState(response);
+    },
+    async downloadLocalOnnxPreset(preset: string): Promise<RuntimeLocalOnnxPresetStatus> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await postJson<RuntimeLocalOnnxPresetStatusDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/runtime/decision/local-onnx/${encodeURIComponent(preset)}/download`,
+        {},
+        requestHeaders,
+        { timeoutMs: CONFIG_UPDATE_TIMEOUT_MS },
+      );
+      return {
+        preset: response.preset ?? preset,
+        directory: response.directory ?? "",
+        complete: response.complete ?? false,
+        files: (response.files ?? []).map((file) => ({
+          name: file.name ?? "",
+          path: file.path ?? "",
+          sha256: file.sha256 ?? "",
+          present: file.present ?? false,
+          verified: file.verified ?? false,
+        })),
+      };
     },
     async listCredentials(): Promise<CredentialStoreState> {
       if (!baseUrl) {
@@ -2369,14 +2413,15 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
     imageGenerationDefault: surface.image_generation_default ?? undefined,
     decision: {
       enabled: surface.decision?.enabled ?? false,
-      provider: surface.decision?.provider ?? undefined,
-      endpoint: surface.decision?.endpoint ?? undefined,
       model: surface.decision?.model ?? undefined,
-      credentialProfile: surface.decision?.credential_profile ?? undefined,
-      modelDir: surface.decision?.model_dir ?? undefined,
-      variant: surface.decision?.variant ?? undefined,
-      numThreads: surface.decision?.num_threads ?? undefined,
-      checksum: surface.decision?.checksum ?? undefined,
+      localOnnx: {
+        enabled: surface.decision?.local_onnx?.enabled ?? false,
+        preset: surface.decision?.local_onnx?.preset ?? undefined,
+        modelDir: surface.decision?.local_onnx?.model_dir ?? undefined,
+        variant: surface.decision?.local_onnx?.variant ?? undefined,
+        numThreads: surface.decision?.local_onnx?.num_threads ?? undefined,
+        checksum: surface.decision?.local_onnx?.checksum ?? undefined,
+      },
       tools: {
         enabled: surface.decision?.tools?.enabled ?? false,
         maxCallsPerTurn: surface.decision?.tools?.max_calls_per_turn ?? 4,
