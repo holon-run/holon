@@ -210,6 +210,20 @@ async fn live_llm_baseline_anthropic_prompt_cache_hit() -> Result<()> {
         ProviderTransportKind::AnthropicMessages,
         "anthropic provider must use Anthropic Messages transport"
     );
+    // Implicit-cache endpoints (deepseek, bigmodel) ignore explicit
+    // `cache_control`; setting HOLON_LIVE_ANTHROPIC_CACHE_CONTROL=false
+    // exercises the capability-gated wire shape live: no cache mimicry,
+    // caller-owned sampling, automatic caching still expected to hit.
+    let cache_control = std::env::var("HOLON_LIVE_ANTHROPIC_CACHE_CONTROL")
+        .ok()
+        .map(|value| !matches!(value.trim(), "false" | "0" | "no"))
+        .unwrap_or(true);
+    if !cache_control {
+        provider_config
+            .context_management
+            .cache_capabilities
+            .cache_control = false;
+    }
     let trace_home_dir = tempfile::tempdir()?;
     let provider = AnthropicProvider::from_runtime_config(
         provider_config,

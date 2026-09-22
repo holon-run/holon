@@ -277,6 +277,11 @@ pub struct ProviderConfigFile {
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
+    /// Overrides the endpoint's prompt-cache capabilities (defaults come
+    /// from the built-in provider registry; custom providers default to
+    /// `cache_control = true`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_capabilities: Option<AnthropicCacheCapabilities>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: BTreeMap<ProviderEndpointId, ProviderEndpointConfigFile>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

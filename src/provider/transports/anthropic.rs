@@ -291,11 +291,13 @@ fn anthropic_reasoning_controls<'a>(
 impl AgentProvider for AnthropicProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let cache_strategy = self.context_management.cache_strategy;
+        let cache_control = self.context_management.cache_capabilities.cache_control;
         let wire_conversation = build_anthropic_wire_conversation(&request);
         let turn_scoped_tail = turn_scoped_context_blocks(&request);
         let rolling_cache_marker =
-            rolling_conversation_cache_marker(&wire_conversation, cache_strategy);
-        let mut messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker);
+            rolling_conversation_cache_marker(&wire_conversation, cache_strategy, cache_control);
+        let mut messages =
+            build_anthropic_messages(&wire_conversation, rolling_cache_marker, cache_control);
         append_turn_scoped_context_tail(&mut messages, &turn_scoped_tail);
         if needs_placeholder_user_text(&self.route_provider) {
             ensure_placeholder_user_text(&mut messages);
@@ -313,13 +315,14 @@ impl AgentProvider for AnthropicProvider {
             thinking,
             output_config,
             stream: true,
-            system: build_anthropic_system(&request, cache_strategy),
+            system: build_anthropic_system(&request, cache_strategy, cache_control),
             messages,
             tools: build_anthropic_tools(&request),
             tool_choice: response_format_tool_choice,
             betas: self.context_management.betas.clone(),
-            metadata: build_anthropic_metadata(&request, cache_strategy),
-            temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache)
+            metadata: build_anthropic_metadata(&request, cache_strategy, cache_control),
+            temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache
+                && cache_control)
                 .then_some(1.0),
             context_management: build_context_management_request(&self.context_management),
         };
@@ -1280,11 +1283,12 @@ fn append_turn_scoped_context_tail(messages: &mut Vec<ApiMessage>, blocks: &[Pro
 fn build_anthropic_system(
     request: &ProviderTurnRequest,
     cache_strategy: AnthropicCacheStrategy,
+    cache_control: bool,
 ) -> Value {
     match cache_strategy {
-        AnthropicCacheStrategy::MessagesNative => current_anthropic_system(request),
+        AnthropicCacheStrategy::MessagesNative => current_anthropic_system(request, cache_control),
         AnthropicCacheStrategy::ClaudeCodePromptCache => {
-            claude_code_prompt_cache_anthropic_system(request)
+            claude_code_prompt_cache_anthropic_system(request, cache_control)
         }
     }
 }
@@ -1295,13 +1299,13 @@ fn build_anthropic_system(
 /// layout on both paths instead of silently depending on upper-layer
 /// materialization into `conversation[0]` (which dropped context entirely
 /// for unmaterialized frames).
-fn current_anthropic_system(request: &ProviderTurnRequest) -> Value {
+fn current_anthropic_system(request: &ProviderTurnRequest, cache_control: bool) -> Value {
     let context_blocks: Vec<Value> = request
         .prompt_frame
         .context_blocks
         .iter()
         .filter(|block| block.stability != PromptStability::TurnScoped)
-        .map(prompt_block_to_anthropic_content)
+        .map(|block| prompt_block_to_anthropic_content(block, cache_control))
         .collect();
     if !request.prompt_frame.has_structured_system_blocks() && context_blocks.is_empty() {
         return Value::String(request.prompt_frame.system_prompt.clone());
@@ -1313,7 +1317,7 @@ fn current_anthropic_system(request: &ProviderTurnRequest) -> Value {
                 .prompt_frame
                 .system_blocks
                 .iter()
-                .map(prompt_block_to_anthropic_content),
+                .map(|block| prompt_block_to_anthropic_content(block, cache_control)),
         );
     } else if !request.prompt_frame.system_prompt.trim().is_empty() {
         blocks.push(json!({ "type": "text", "text": request.prompt_frame.system_prompt }));
@@ -1322,11 +1326,19 @@ fn current_anthropic_system(request: &ProviderTurnRequest) -> Value {
     Value::Array(blocks)
 }
 
-fn claude_code_prompt_cache_anthropic_system(request: &ProviderTurnRequest) -> Value {
-    let mut system = vec![json!({
-        "type": "text",
-        "text": "x-anthropic-billing-header: holon",
-    })];
+fn claude_code_prompt_cache_anthropic_system(
+    request: &ProviderTurnRequest,
+    cache_control: bool,
+) -> Value {
+    let mut system = Vec::new();
+    // Claude Code's billing marker is part of the cache-mimicry surface; it
+    // only pays off where explicit `cache_control` breakpoints work.
+    if cache_control {
+        system.push(json!({
+            "type": "text",
+            "text": "x-anthropic-billing-header: holon",
+        }));
+    }
 
     if !request.prompt_frame.system_blocks.is_empty() {
         system.extend(
@@ -1334,10 +1346,14 @@ fn claude_code_prompt_cache_anthropic_system(request: &ProviderTurnRequest) -> V
                 .prompt_frame
                 .system_blocks
                 .iter()
-                .map(prompt_block_to_anthropic_content),
+                .map(|block| prompt_block_to_anthropic_content(block, cache_control)),
         );
     } else if !request.prompt_frame.system_prompt.trim().is_empty() {
-        system.push(cacheable_text_block(&request.prompt_frame.system_prompt));
+        system.push(if cache_control {
+            cacheable_text_block(&request.prompt_frame.system_prompt)
+        } else {
+            json!({ "type": "text", "text": request.prompt_frame.system_prompt })
+        });
     }
 
     system.extend(
@@ -1346,7 +1362,7 @@ fn claude_code_prompt_cache_anthropic_system(request: &ProviderTurnRequest) -> V
             .context_blocks
             .iter()
             .filter(|block| block.stability != PromptStability::TurnScoped)
-            .map(prompt_block_to_anthropic_content),
+            .map(|block| prompt_block_to_anthropic_content(block, cache_control)),
     );
 
     Value::Array(system)
@@ -1363,8 +1379,9 @@ fn cacheable_text_block(text: &str) -> Value {
 fn build_anthropic_metadata(
     request: &ProviderTurnRequest,
     cache_strategy: AnthropicCacheStrategy,
+    cache_control: bool,
 ) -> Option<Value> {
-    if cache_strategy != AnthropicCacheStrategy::ClaudeCodePromptCache {
+    if cache_strategy != AnthropicCacheStrategy::ClaudeCodePromptCache || !cache_control {
         return None;
     }
     let session_id = normalize_anthropic_session_id(
@@ -1589,6 +1606,7 @@ fn build_context_management_request(
 fn build_anthropic_messages(
     conversation: &[ConversationMessage],
     rolling_cache_marker: Option<(usize, usize)>,
+    cache_control: bool,
 ) -> Vec<ApiMessage> {
     conversation
         .iter()
@@ -1600,6 +1618,7 @@ fn build_anthropic_messages(
                 rolling_cache_marker
                     .filter(|(marker_message_index, _)| *marker_message_index == message_index)
                     .map(|(_, marker_block_index)| marker_block_index),
+                cache_control,
             )
         })
         .collect()
@@ -1673,6 +1692,7 @@ fn conversation_message_has_content(message: &ConversationMessage) -> bool {
 fn conversation_message_to_api(
     message: &ConversationMessage,
     rolling_cache_block_index: Option<usize>,
+    cache_control: bool,
 ) -> ApiMessage {
     match message {
         ConversationMessage::UserText(text) => ApiMessage {
@@ -1690,7 +1710,7 @@ fn conversation_message_to_api(
                     .enumerate()
                     .map(|(block_index, block)| {
                         maybe_mark_cache_control(
-                            prompt_block_to_anthropic_content(block),
+                            prompt_block_to_anthropic_content(block, cache_control),
                             rolling_cache_block_index == Some(block_index),
                         )
                     })
@@ -1868,7 +1888,11 @@ fn maybe_mark_cache_control(mut content: Value, should_mark: bool) -> Value {
 fn rolling_conversation_cache_marker(
     conversation: &[ConversationMessage],
     cache_strategy: AnthropicCacheStrategy,
+    cache_control: bool,
 ) -> Option<(usize, usize)> {
+    if !cache_control {
+        return None;
+    }
     conversation
         .iter()
         .enumerate()
@@ -1908,12 +1932,12 @@ fn last_cacheable_content_index(
     }
 }
 
-fn prompt_block_to_anthropic_content(block: &PromptContentBlock) -> Value {
+fn prompt_block_to_anthropic_content(block: &PromptContentBlock, cache_control: bool) -> Value {
     let mut content = json!({
         "type": "text",
         "text": block.text,
     });
-    if block.cache_breakpoint {
+    if block.cache_breakpoint && cache_control {
         content["cache_control"] = json!({ "type": "ephemeral" });
     }
     content
@@ -2858,7 +2882,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
+            true,
         );
 
         assert_eq!(
@@ -2891,7 +2917,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &conversation,
                 AnthropicCacheStrategy::ClaudeCodePromptCache,
+                true,
             ),
+            true,
         );
 
         assert_eq!(
@@ -2982,8 +3010,11 @@ mod tests {
             response_format: None,
         };
 
-        let system =
-            build_anthropic_system(&request, AnthropicCacheStrategy::ClaudeCodePromptCache);
+        let system = build_anthropic_system(
+            &request,
+            AnthropicCacheStrategy::ClaudeCodePromptCache,
+            true,
+        );
         let system_text = system
             .as_array()
             .unwrap()
@@ -3076,8 +3107,9 @@ mod tests {
         ] {
             let wire_conversation = build_anthropic_wire_conversation(&request);
             let rolling_cache_marker =
-                rolling_conversation_cache_marker(&wire_conversation, strategy);
-            let mut messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker);
+                rolling_conversation_cache_marker(&wire_conversation, strategy, true);
+            let mut messages =
+                build_anthropic_messages(&wire_conversation, rolling_cache_marker, true);
             append_turn_scoped_context_tail(&mut messages, &turn_scoped_context_blocks(&request));
 
             // The stripped history starts with an assistant round, so the
@@ -3099,7 +3131,7 @@ mod tests {
 
             // Both strategies carry non-TurnScoped context in the system
             // prefix, never TurnScoped content.
-            let system = build_anthropic_system(&request, strategy);
+            let system = build_anthropic_system(&request, strategy, true);
             let system_text = system
                 .as_array()
                 .unwrap()
@@ -3118,7 +3150,7 @@ mod tests {
         request.prompt_frame.system_blocks.clear();
         request.conversation = vec![ConversationMessage::UserText("hi".to_string())];
 
-        let system = build_anthropic_system(&request, AnthropicCacheStrategy::MessagesNative);
+        let system = build_anthropic_system(&request, AnthropicCacheStrategy::MessagesNative, true);
         let blocks = system.as_array().unwrap();
         assert_eq!(
             blocks
@@ -3136,7 +3168,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &request.conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
+            true,
         );
         append_turn_scoped_context_tail(&mut messages, &turn_scoped_context_blocks(&request));
         assert_eq!(messages[0].content[0]["text"], json!("hi"));
@@ -3302,7 +3336,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
+            true,
         );
 
         assert_eq!(
@@ -3325,7 +3361,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
+            true,
         );
 
         assert_eq!(messages.len(), 2);
@@ -3354,7 +3392,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
+            true,
         );
 
         assert_eq!(messages.len(), 1);
@@ -3401,7 +3441,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
+            true,
         );
 
         assert_eq!(messages.len(), 3);
@@ -3430,7 +3472,9 @@ mod tests {
             rolling_conversation_cache_marker(
                 &conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
+            true,
         );
 
         assert_eq!(
@@ -3520,6 +3564,7 @@ mod tests {
             rolling_conversation_cache_marker(
                 &request.conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
             &request_payload,
             "claude-sonnet-4-6",
@@ -3607,6 +3652,7 @@ mod tests {
             rolling_conversation_cache_marker(
                 &request.conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
             &request_payload,
             "claude-sonnet-4-6",
@@ -3637,6 +3683,7 @@ mod tests {
         let rolling_cache_marker = rolling_conversation_cache_marker(
             &request.conversation,
             AnthropicCacheStrategy::MessagesNative,
+            true,
         );
         let body = MessagesRequest {
             model: "claude-sonnet-4-6",
@@ -3650,13 +3697,13 @@ mod tests {
                         .prompt_frame
                         .system_blocks
                         .iter()
-                        .map(prompt_block_to_anthropic_content)
+                        .map(|block| prompt_block_to_anthropic_content(block, true))
                         .collect(),
                 )
             } else {
                 Value::String(request.prompt_frame.system_prompt.clone())
             },
-            messages: build_anthropic_messages(&request.conversation, rolling_cache_marker),
+            messages: build_anthropic_messages(&request.conversation, rolling_cache_marker, true),
             tools: build_anthropic_tools(request),
             tool_choice: anthropic_response_format_tool_choice(request),
             betas: Vec::new(),
@@ -4081,6 +4128,7 @@ mod tests {
             rolling_conversation_cache_marker(
                 &request.conversation,
                 AnthropicCacheStrategy::MessagesNative,
+                true,
             ),
             &request_payload,
             AnthropicCacheStrategy::MessagesNative,
@@ -4398,7 +4446,7 @@ mod tests {
             },
         ]);
 
-        let encoded = conversation_message_to_api(&message, None);
+        let encoded = conversation_message_to_api(&message, None, true);
         assert_eq!(encoded.content, json!([raw_use, raw_result]));
     }
 

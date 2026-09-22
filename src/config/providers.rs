@@ -129,6 +129,29 @@ pub struct ProviderAuthConfig {
     pub external: Option<String>,
 }
 
+/// Per-endpoint prompt-cache capabilities for Anthropic-compatible
+/// providers.
+///
+/// Endpoints with implicit-only caching ignore explicit `cache_control`
+/// breakpoints (deepseek ignores them entirely; bigmodel/GLM caches
+/// implicitly). Declaring that here lets the transport skip Claude-Code
+/// cache mimicry (billing header, `metadata.user_id`, forced
+/// `temperature=1.0`) instead of changing sampling behavior for no cache
+/// benefit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnthropicCacheCapabilities {
+    /// Endpoint honors explicit `cache_control` breakpoints.
+    pub cache_control: bool,
+}
+
+impl Default for AnthropicCacheCapabilities {
+    fn default() -> Self {
+        Self {
+            cache_control: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnthropicContextManagementConfig {
     pub enabled: bool,
@@ -137,6 +160,7 @@ pub struct AnthropicContextManagementConfig {
     pub clear_at_least_input_tokens: Option<u32>,
     pub cache_strategy: AnthropicCacheStrategy,
     pub betas: Vec<String>,
+    pub cache_capabilities: AnthropicCacheCapabilities,
 }
 
 impl Default for AnthropicContextManagementConfig {
@@ -148,7 +172,18 @@ impl Default for AnthropicContextManagementConfig {
             clear_at_least_input_tokens: None,
             cache_strategy: AnthropicCacheStrategy::MessagesNative,
             betas: Vec::new(),
+            cache_capabilities: AnthropicCacheCapabilities::default(),
         }
+    }
+}
+
+impl AnthropicContextManagementConfig {
+    /// Marks the endpoint as implicit-cache-only: explicit
+    /// `cache_control` breakpoints and Claude-Code cache mimicry are
+    /// skipped, preserving caller sampling behavior.
+    pub fn with_implicit_prompt_caching(mut self) -> Self {
+        self.cache_capabilities.cache_control = false;
+        self
     }
 }
 

@@ -21,14 +21,14 @@ use crate::config::{
     parse_comma_separated_values, parse_url_value, persisted_config_path,
     provider_registry_for_tests, resolve_anthropic_context_management_config,
     save_persisted_config_at, set_config_key, set_credential_profile_at, unset_config_key,
-    validate_provider_config, AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig,
-    ControlAuthMode, ControlTransportKind, CredentialKind, CredentialSource, CredentialStoreFile,
-    HolonConfigFile, ModelConfigFile, ModelRef, ModelRouteCapability, ModelRouteRef,
-    ModelsConfigFile, ProviderAuthConfig, ProviderBuiltinWebSearchConfig, ProviderConfigFile,
-    ProviderEndpointConfigFile, ProviderEndpointId, ProviderId, ProviderPlanConfigFile,
-    ProviderRegistry, ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog,
-    XSearchRuntimeConfig, DEFAULT_LOCAL_AGENT_ID, DEFAULT_X_SEARCH_MODEL,
-    OPENAI_CODEX_CREDENTIAL_PROFILE,
+    validate_provider_config, AnthropicCacheCapabilities, AnthropicCacheStrategy,
+    AnthropicContextManagementConfig, AppConfig, ControlAuthMode, ControlTransportKind,
+    CredentialKind, CredentialSource, CredentialStoreFile, HolonConfigFile, ModelConfigFile,
+    ModelRef, ModelRouteCapability, ModelRouteRef, ModelsConfigFile, ProviderAuthConfig,
+    ProviderBuiltinWebSearchConfig, ProviderConfigFile, ProviderEndpointConfigFile,
+    ProviderEndpointId, ProviderId, ProviderPlanConfigFile, ProviderRegistry,
+    ProviderRuntimeConfig, ProviderTransportKind, RuntimeModelCatalog, XSearchRuntimeConfig,
+    DEFAULT_LOCAL_AGENT_ID, DEFAULT_X_SEARCH_MODEL, OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 
 struct EnvVarSnapshot {
@@ -432,6 +432,7 @@ fn app_config_applies_provider_overrides_before_materializing_openai_codex_profi
             providers: BTreeMap::from([(
                 ProviderId::openai_codex(),
                 ProviderConfigFile {
+                    cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiCodexResponses,
                     base_url: "https://chatgpt.com/backend-api/codex".into(),
                     auth: ProviderAuthConfig {
@@ -1179,6 +1180,7 @@ fn custom_provider_auth_requires_explicit_contract() {
 fn provider_builtin_web_search_rejects_empty_tool_metadata() {
     let id = ProviderId::parse("custom-anthropic").unwrap();
     let config = ProviderConfigFile {
+        cache_capabilities: None,
         transport: ProviderTransportKind::AnthropicMessages,
         base_url: "https://api.example.com".into(),
         auth: ProviderAuthConfig {
@@ -1208,6 +1210,7 @@ fn provider_builtin_web_search_rejects_empty_tool_metadata() {
 fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
     let id = ProviderId::parse("custom-openai").unwrap();
     let config = ProviderConfigFile {
+        cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiResponses,
         base_url: "https://api.example.com".into(),
         auth: ProviderAuthConfig {
@@ -1236,6 +1239,7 @@ fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
 fn provider_builtin_web_search_rejects_wrong_tool_type() {
     let id = ProviderId::parse("custom-openai").unwrap();
     let config = ProviderConfigFile {
+        cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiResponses,
         base_url: "https://api.example.com".into(),
         auth: ProviderAuthConfig {
@@ -1264,6 +1268,7 @@ fn provider_builtin_web_search_rejects_wrong_tool_type() {
 fn provider_builtin_web_search_accepts_codex_tool_type() {
     let id = ProviderId::openai_codex();
     let config = ProviderConfigFile {
+        cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiCodexResponses,
         base_url: "https://chatgpt.com/backend-api/codex".into(),
         auth: ProviderAuthConfig {
@@ -1291,6 +1296,7 @@ fn provider_builtin_web_search_accepts_codex_tool_type() {
 fn provider_builtin_web_search_rejects_wrong_codex_tool_type() {
     let id = ProviderId::openai_codex();
     let config = ProviderConfigFile {
+        cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiCodexResponses,
         base_url: "https://chatgpt.com/backend-api/codex".into(),
         auth: ProviderAuthConfig {
@@ -1327,6 +1333,7 @@ fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provid
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: "https://chatgpt.com/backend-api/codex".into(),
             auth: ProviderAuthConfig {
@@ -1357,6 +1364,57 @@ fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provid
 }
 
 #[test]
+fn builtin_implicit_cache_providers_declare_no_cache_control_capability() {
+    let providers = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    for name in ["deepseek", "bigmodel"] {
+        let provider = providers.get(&ProviderId::parse(name).unwrap()).unwrap();
+        assert!(
+            !provider.context_management.cache_capabilities.cache_control,
+            "{name} caches implicitly and should not receive cache_control mimicry"
+        );
+    }
+    for name in ["anthropic", "dashscope"] {
+        let provider = providers.get(&ProviderId::parse(name).unwrap()).unwrap();
+        assert!(
+            provider.context_management.cache_capabilities.cache_control,
+            "{name} honors explicit cache_control breakpoints"
+        );
+    }
+}
+
+#[test]
+fn provider_config_file_overrides_cache_capabilities() {
+    let id = ProviderId::parse("deepseek").unwrap();
+    let built_in = built_in_provider_registry_with_settings(&HashMap::new())
+        .unwrap()
+        .remove(&id)
+        .unwrap();
+    assert!(!built_in.context_management.cache_capabilities.cache_control);
+
+    let runtime = super::materialize_provider_config(
+        id.clone(),
+        ProviderConfigFile {
+            cache_capabilities: Some(AnthropicCacheCapabilities {
+                cache_control: true,
+            }),
+            transport: ProviderTransportKind::AnthropicMessages,
+            base_url: "https://api.deepseek.com/anthropic".into(),
+            auth: Default::default(),
+            reasoning_effort: None,
+            builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
+        },
+        &HashMap::new(),
+        &CredentialStoreFile::default(),
+        Some(built_in),
+    )
+    .unwrap();
+
+    assert!(runtime.context_management.cache_capabilities.cache_control);
+}
+
+#[test]
 fn materialize_provider_config_resolves_env_credentials_from_settings() {
     let mut settings_env = HashMap::new();
     settings_env.insert("OPENROUTER_API_KEY".to_string(), "settings-key".to_string());
@@ -1364,6 +1422,7 @@ fn materialize_provider_config_resolves_env_credentials_from_settings() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://openrouter.example/v1".into(),
             auth: ProviderAuthConfig {
@@ -1454,6 +1513,7 @@ fn materialize_provider_config_resolves_credential_profile() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://openrouter.example/v1".into(),
             auth: ProviderAuthConfig {
@@ -1512,6 +1572,7 @@ fn app_config_rejects_bad_credential_store_permissions_when_store_exists() {
     config.providers.insert(
         ProviderId::parse("openrouter").unwrap(),
         ProviderConfigFile {
+            cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://openrouter.example/v1".into(),
             auth: ProviderAuthConfig {
@@ -1897,6 +1958,7 @@ fn materialize_provider_config_preserves_builtin_runtime_fields() {
     let runtime = super::materialize_provider_config(
         id,
         ProviderConfigFile {
+            cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: "https://codex.example/backend-api".into(),
             auth: ProviderAuthConfig {
@@ -2051,6 +2113,7 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiChatCompletions,
                     base_url: "https://custom.example/v1".into(),
                     auth: ProviderAuthConfig {
@@ -2700,6 +2763,7 @@ fn load_persisted_config_uses_default_endpoint_override_for_runtime_provider() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiResponses,
                     base_url: "https://legacy.example/v1".into(),
                     auth: ProviderAuthConfig::default(),
@@ -2751,6 +2815,7 @@ fn load_persisted_config_materializes_plan_endpoint_alias() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiResponses,
                     base_url: "https://default.example/v1".into(),
                     auth: ProviderAuthConfig::default(),

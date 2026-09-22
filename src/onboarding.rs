@@ -495,6 +495,7 @@ fn provider_config_file_from_runtime(provider: &ProviderRuntimeConfig) -> Provid
         auth: provider.auth.clone(),
         reasoning_effort: provider.reasoning_effort.clone(),
         builtin_web_search: provider.builtin_web_search.clone(),
+        cache_capabilities: None,
         endpoints: BTreeMap::new(),
         plans: BTreeMap::new(),
     }
@@ -1151,6 +1152,7 @@ mod tests {
         config.stored_config.providers.insert(
             ProviderId::openai(),
             ProviderConfigFile {
+                cache_capabilities: None,
                 transport: ProviderTransportKind::OpenAiResponses,
                 base_url: "https://api.openai.com/v1".into(),
                 auth: ProviderAuthConfig {
@@ -1243,6 +1245,7 @@ mod tests {
         config.stored_config.providers.insert(
             custom_provider.clone(),
             ProviderConfigFile {
+                cache_capabilities: None,
                 transport: custom_provider_config.transport,
                 base_url: custom_provider_config.base_url.clone(),
                 auth: custom_provider_config.auth.clone(),

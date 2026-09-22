@@ -171,6 +171,142 @@ async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
 }
 
 #[tokio::test]
+async fn claude_code_prompt_cache_skips_cache_mimicry_without_cache_control_capability() {
+    let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
+    let captured_body_for_server = captured_body.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let captured_body = captured_body_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    {
+        let provider_config = fixture
+            .config
+            .providers
+            .get_mut(&ProviderId::anthropic())
+            .unwrap();
+        provider_config.base_url = base_url;
+        provider_config.context_management.cache_strategy =
+            AnthropicCacheStrategy::ClaudeCodePromptCache;
+        provider_config
+            .context_management
+            .cache_capabilities
+            .cache_control = false;
+    }
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture request body");
+    // Endpoints that ignore `cache_control` get no Claude-Code mimicry:
+    // sampling stays caller-owned and no breakpoint/metadata fields ship.
+    assert!(body.get("temperature").is_none());
+    assert!(body.get("metadata").is_none());
+    let system = body["system"].as_array().expect("system block array");
+    assert_eq!(system.len(), 2);
+    assert_eq!(system[0]["text"], json!("stable system"));
+    assert_eq!(system[1]["text"], json!("agent context"));
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert!(!serialized.contains("cache_control"));
+    assert!(!serialized.contains("x-anthropic-billing-header"));
+    // Context layout is preserved: the materialized context head is still
+    // stripped and replaced by the continuation placeholder.
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        json!("Continue using the context above.")
+    );
+}
+
+#[tokio::test]
+async fn messages_native_skips_breakpoints_without_cache_control_capability() {
+    let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
+    let captured_body_for_server = captured_body.clone();
+    let base_url = spawn_test_server(Router::new().route(
+        "/v1/messages",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let captured_body = captured_body_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(json!({
+                    "content": [{ "type": "text", "text": "ok" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 4, "output_tokens": 2 }
+                }))
+            }
+        }),
+    ))
+    .await;
+    let mut fixture = test_config(
+        "anthropic/claude-sonnet-4-6",
+        &[],
+        None,
+        Some("anthropic-token"),
+        false,
+    );
+    {
+        let provider_config = fixture
+            .config
+            .providers
+            .get_mut(&ProviderId::anthropic())
+            .unwrap();
+        provider_config.base_url = base_url;
+        provider_config.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
+        provider_config
+            .context_management
+            .cache_capabilities
+            .cache_control = false;
+    }
+    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+
+    provider
+        .complete_turn(provider_turn_request_with_prompt_frame())
+        .await
+        .unwrap();
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture request body");
+    // Breakpoint-flagged blocks still ride the system prefix as plain text;
+    // no `cache_control` ships anywhere for implicit-cache endpoints.
+    let system = body["system"].as_array().expect("system block array");
+    assert_eq!(system.len(), 2);
+    assert_eq!(system[0]["text"], json!("stable system"));
+    assert_eq!(system[1]["text"], json!("agent context"));
+    let serialized = serde_json::to_string(&body).unwrap();
+    assert!(!serialized.contains("cache_control"));
+    assert_eq!(
+        body["messages"][0]["content"][0]["text"],
+        json!("Continue using the context above.")
+    );
+}
+
+#[tokio::test]
 async fn anthropic_text_form_tool_call_protocol_failure_writes_failure_trace() {
     let base_url = spawn_test_server(Router::new().route(
         "/v1/messages",
