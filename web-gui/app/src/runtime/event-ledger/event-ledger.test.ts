@@ -413,6 +413,74 @@ describe("event ledger atomic transactions", () => {
     ledger.close();
   });
 
+  it("treats a redelivered envelope-shape revision as an idempotent duplicate", async () => {
+    const ledger = await openLedger();
+    const scope = makeScope();
+    // Stored under the previous envelope contract: per-event contract
+    // version, duplicated provenance, and synthesized schema defaults.
+    await ledger
+      .beginWrite()
+      .putRawEvent(scope, 1, envelope(1, { text: "same" }), { projectionEffect: "none" })
+      .advanceIngestionCursor(scope, 1)
+      .commit();
+
+    // The same event under the consolidated envelope: the contract version is
+    // declared per stream, provenance is derived from the payload, and
+    // schema-less events omit the schema fields.
+    const consolidated: Record<string, unknown> = {
+      agent_id: "agent-1",
+      event_log_epoch: "epoch-1",
+      event_seq: 1,
+      id: "evt-1",
+      payload: { text: "same" },
+      projection_effect: "none",
+      ts: "2026-08-18T00:00:01Z",
+      type: "test.event",
+    };
+    await ledger
+      .beginWrite()
+      .putRawEvent(scope, 1, consolidated, { projectionEffect: "none" })
+      .advanceIngestionCursor(scope, 1)
+      .commit();
+
+    const stored = await ledger.getRawEvent(scope, 1);
+    expect((stored?.envelope as { payload: { text: string } }).payload.text).toBe("same");
+    expect((await ledger.getAgentSession(scope))?.ingestedThroughSeq).toBe(1);
+    ledger.close();
+  });
+
+  it("still conflicts when immutable content changes across envelope shapes", async () => {
+    const ledger = await openLedger();
+    const scope = makeScope();
+    await ledger
+      .beginWrite()
+      .putRawEvent(scope, 1, envelope(1, { text: "original" }), { projectionEffect: "none" })
+      .advanceIngestionCursor(scope, 1)
+      .commit();
+
+    const consolidatedMutated: Record<string, unknown> = {
+      agent_id: "agent-1",
+      event_log_epoch: "epoch-1",
+      event_seq: 1,
+      id: "evt-1",
+      payload: { text: "mutated" },
+      projection_effect: "none",
+      ts: "2026-08-18T00:00:01Z",
+      type: "test.event",
+    };
+    await expect(
+      ledger
+        .beginWrite()
+        .putRawEvent(scope, 1, consolidatedMutated, { projectionEffect: "none" })
+        .advanceIngestionCursor(scope, 1)
+        .commit(),
+    ).rejects.toBeInstanceOf(LedgerIdentityConflictError);
+
+    const stored = await ledger.getRawEvent(scope, 1);
+    expect((stored?.envelope as { payload: { text: string } }).payload.text).toBe("original");
+    ledger.close();
+  });
+
   it("merges a stale cursor patch monotonically without aborting its batch", async () => {
     const ledger = await openLedger();
     const scope = makeScope();
