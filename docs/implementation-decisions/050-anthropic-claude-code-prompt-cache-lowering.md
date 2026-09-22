@@ -43,7 +43,29 @@ assembly.
 
 The lowering preserves prompt stability boundaries. Stable and agent-scoped
 system/context blocks remain in the cacheable system prefix, while turn-scoped
-context stays in the initial user message instead of changing that prefix on
-every turn. The rolling conversation marker follows the latest cacheable
-content block, including Anthropic `tool_result` blocks after tool-only rounds;
-the runtime conversation is not mutated.
+system/context blocks ride the conversation tail (see below). The rolling
+conversation marker follows the latest cacheable content block, including
+Anthropic `tool_result` blocks after tool-only rounds; the runtime
+conversation is not mutated.
+
+## Context layout update (2026-09-22, #3175/#3176)
+
+Live probes against real Anthropic-compatible endpoints (dashscope, deepseek,
+bigmodel) showed that keeping turn-scoped context in the initial user message
+still invalidated the conversation history prefix on every turn (a changed
+head breaks prefix matching for everything after it). Both cache strategies now
+share one context layout:
+
+- Non-TurnScoped context blocks ride the system prefix on both strategies
+  (including `messages_native`, which previously relied on upper-layer
+  materialization into `conversation[0]` and silently dropped context for
+  unmaterialized frames).
+- TurnScoped context blocks are re-attached at the conversation tail, inside
+  the final user message after the latest tool result (mirroring Claude Code
+  system-reminder placement), never carrying `cache_control`. The rolling
+  marker stays on the last history block, so per-turn context changes stay
+  outside the cached prefix.
+
+Diagnostics expose `turn_scoped_context_tail_blocks` so the layout is
+observable per request; per-request cache read/create tokens remain in usage
+records.
