@@ -328,7 +328,7 @@ async fn anthropic_continuation_request_retains_cache_control_prompt_anchors() {
 }
 
 #[tokio::test]
-async fn anthropic_claude_code_prompt_cache_strategy_moves_context_to_system_prefix() {
+async fn anthropic_claude_code_prompt_cache_strategy_preserves_structured_system_blocks() {
     let captured_body = Arc::new(Mutex::new(None::<serde_json::Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -419,7 +419,7 @@ async fn anthropic_claude_code_prompt_cache_strategy_moves_context_to_system_pre
         json!("x-anthropic-billing-header: holon")
     );
     assert!(body["system"][0].get("cache_control").is_none());
-    assert_eq!(body["system"][1]["text"], json!("rendered system"));
+    assert_eq!(body["system"][1]["text"], json!("stable system"));
     assert_eq!(
         body["system"][1]["cache_control"],
         json!({ "type": "ephemeral" })
@@ -862,7 +862,7 @@ async fn anthropic_claude_code_prompt_cache_strategy_keeps_non_empty_initial_mes
 }
 
 #[tokio::test]
-async fn anthropic_claude_code_prompt_cache_strategy_does_not_cache_mark_tool_results() {
+async fn anthropic_claude_code_prompt_cache_strategy_marks_tool_results() {
     let captured_body = Arc::new(Mutex::new(None::<Value>));
     let captured_body_for_server = captured_body.clone();
     let base_url = spawn_test_server(Router::new().route(
@@ -939,16 +939,16 @@ async fn anthropic_claude_code_prompt_cache_strategy_does_not_cache_mark_tool_re
         body["messages"][0]["content"][0]["text"],
         json!("Continue using the context above.")
     );
-    assert_eq!(
-        body["messages"][1]["content"][0]["cache_control"],
-        json!({ "type": "ephemeral" })
-    );
+    assert!(body["messages"][1]["content"][0]
+        .get("cache_control")
+        .is_none());
     assert!(body["messages"][1]["content"][1]
         .get("cache_control")
         .is_none());
-    assert!(body["messages"][2]["content"][0]
-        .get("cache_control")
-        .is_none());
+    assert_eq!(
+        body["messages"][2]["content"][0]["cache_control"],
+        json!({ "type": "ephemeral" })
+    );
     assert_eq!(body["messages"][1]["content"][1]["type"], json!("tool_use"));
     assert_eq!(
         body["messages"][2]["content"][0]["type"],
