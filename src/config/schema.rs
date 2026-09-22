@@ -539,9 +539,9 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "decision.route.provider",
             kind: "string",
-            description: "Decision provider implementation: openai or jev.",
+            description: "Decision provider implementation: openai, jev, or local-onnx.",
             default: json!("openai"),
-            allowed_values: vec!["openai", "jev"],
+            allowed_values: vec!["openai", "jev", "local-onnx"],
         },
         ConfigSchemaEntry {
             key: "decision.route.endpoint",
@@ -561,6 +561,34 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "decision.route.credential_profile",
             kind: "string",
             description: "Credential profile used for the Decision route.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.route.model_dir",
+            kind: "string",
+            description: "Local filesystem directory containing the local-onnx model assets.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.route.variant",
+            kind: "string",
+            description: "Local-onnx model variant label.",
+            default: json!("q4f16"),
+            allowed_values: vec!["fp32", "fp16", "q4", "q4f16"],
+        },
+        ConfigSchemaEntry {
+            key: "decision.route.num_threads",
+            kind: "positive_integer",
+            description: "Local-onnx intra-session CPU thread count.",
+            default: json!(1),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.route.checksum",
+            kind: "string",
+            description: "Optional sha256 checksum for the local-onnx model graph.",
             default: Value::Null,
             allowed_values: vec![],
         },
@@ -1088,6 +1116,35 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .and_then(|route| route.credential_profile.as_ref())
             .map(|value| json!(value))
             .unwrap_or(Value::Null)),
+        "decision.route.model_dir" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.model_dir.as_ref())
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "decision.route.variant" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.variant.as_ref())
+            .cloned()
+            .unwrap_or_else(|| "q4f16".into())
+            .into()),
+        "decision.route.num_threads" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.num_threads)
+            .map(|value| json!(value))
+            .unwrap_or_else(|| json!(1))),
+        "decision.route.checksum" => Ok(config
+            .decision
+            .route
+            .as_ref()
+            .and_then(|route| route.checksum.as_ref())
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "decision.timeout_ms" => Ok(config
             .decision
             .timeout_ms
@@ -1484,8 +1541,8 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "decision.route.provider" => {
             let provider = raw_value.trim();
             anyhow::ensure!(
-                matches!(provider, "openai" | "jev"),
-                "{key} must be one of: openai, jev"
+                matches!(provider, "openai" | "jev" | "local-onnx"),
+                "{key} must be one of: openai, jev, local-onnx"
             );
             ensure_decision_route(config).provider = Some(provider.to_owned());
         }
@@ -1495,6 +1552,24 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "decision.route.model" => ensure_decision_route(config).model = Some(raw_value.to_owned()),
         "decision.route.credential_profile" => {
             ensure_decision_route(config).credential_profile = Some(raw_value.to_owned())
+        }
+        "decision.route.model_dir" => {
+            ensure_decision_route(config).model_dir = Some(raw_value.to_owned())
+        }
+        "decision.route.variant" => {
+            let variant = raw_value.trim();
+            anyhow::ensure!(
+                matches!(variant, "fp32" | "fp16" | "q4" | "q4f16"),
+                "{key} must be one of: fp32, fp16, q4, q4f16"
+            );
+            ensure_decision_route(config).variant = Some(variant.to_owned());
+        }
+        "decision.route.num_threads" => {
+            ensure_decision_route(config).num_threads =
+                Some(parse_positive_usize_key(key, raw_value)?)
+        }
+        "decision.route.checksum" => {
+            ensure_decision_route(config).checksum = Some(raw_value.trim().to_owned())
         }
         "decision.timeout_ms" => {
             config.decision.timeout_ms = Some(parse_positive_u64_key(key, raw_value)?)
@@ -1721,6 +1796,17 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
     Ok(())
 }
 
+fn decision_route_is_empty(route: &DecisionRouteConfigFile) -> bool {
+    route.provider.is_none()
+        && route.endpoint.is_none()
+        && route.model.is_none()
+        && route.credential_profile.is_none()
+        && route.model_dir.is_none()
+        && route.variant.is_none()
+        && route.num_threads.is_none()
+        && route.checksum.is_none()
+}
+
 pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     match key {
         "auth.mode" => config.auth.mode = None,
@@ -1824,10 +1910,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.provider" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.provider = None;
-                if route.endpoint.is_none()
-                    && route.model.is_none()
-                    && route.credential_profile.is_none()
-                {
+                if decision_route_is_empty(route) {
                     config.decision.route = None;
                 }
             }
@@ -1835,7 +1918,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.endpoint" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.endpoint = None;
-                if route.model.is_none() && route.credential_profile.is_none() {
+                if decision_route_is_empty(route) {
                     config.decision.route = None;
                 }
             }
@@ -1843,7 +1926,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.model" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.model = None;
-                if route.endpoint.is_none() && route.credential_profile.is_none() {
+                if decision_route_is_empty(route) {
                     config.decision.route = None;
                 }
             }
@@ -1851,6 +1934,41 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.route.credential_profile" => {
             if let Some(route) = config.decision.route.as_mut() {
                 route.credential_profile = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.model_dir" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.model_dir = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.variant" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.variant = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.num_threads" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.num_threads = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
+            }
+        }
+        "decision.route.checksum" => {
+            if let Some(route) = config.decision.route.as_mut() {
+                route.checksum = None;
+                if decision_route_is_empty(route) {
+                    config.decision.route = None;
+                }
             }
         }
         "decision.timeout_ms" => config.decision.timeout_ms = None,

@@ -12243,13 +12243,23 @@
               },
               "decision": {
                 "default": {
+                  "checksum": null,
                   "credential_profile": null,
                   "enabled": false,
                   "endpoint": null,
                   "model": null,
-                  "provider": null
+                  "model_dir": null,
+                  "num_threads": null,
+                  "provider": null,
+                  "variant": null
                 },
                 "properties": {
+                  "checksum": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "credential_profile": {
                     "type": [
                       "string",
@@ -12271,7 +12281,27 @@
                       "null"
                     ]
                   },
+                  "model_dir": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "num_threads": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
                   "provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "variant": {
                     "type": [
                       "string",
                       "null"
@@ -12779,13 +12809,23 @@
               },
               "decision": {
                 "default": {
+                  "checksum": null,
                   "credential_profile": null,
                   "enabled": false,
                   "endpoint": null,
                   "model": null,
-                  "provider": null
+                  "model_dir": null,
+                  "num_threads": null,
+                  "provider": null,
+                  "variant": null
                 },
                 "properties": {
+                  "checksum": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "credential_profile": {
                     "type": [
                       "string",
@@ -12807,7 +12847,27 @@
                       "null"
                     ]
                   },
+                  "model_dir": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "num_threads": {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
                   "provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "variant": {
                     "type": [
                       "string",
                       "null"
