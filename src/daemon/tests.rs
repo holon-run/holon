@@ -744,6 +744,10 @@ fn runtime_config_surface_reports_decision_provider_settings() {
         endpoint: Some("https://jev.example.test/v1".into()),
         model: Some("jev-decision-1".into()),
         credential_profile: Some("jev:default".into()),
+        model_dir: None,
+        variant: None,
+        num_threads: None,
+        checksum: None,
     });
 
     let surface = RuntimeConfigSurface::new(&config);

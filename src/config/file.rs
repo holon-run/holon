@@ -56,6 +56,14 @@ pub struct DecisionRouteConfigFile {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_dir: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_threads: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

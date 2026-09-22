@@ -1,0 +1,25 @@
+[package]
+name = "decision-local-onnx"
+version = "0.1.0"
+edition = "2021"
+description = "Embedded local ONNX decision provider for decision-core"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[features]
+default = []
+onnx = ["dep:ort", "dep:tokenizers"]
+
+[dependencies]
+async-trait = "0.1"
+decision-core = { version = "0.1.0", path = "../decision-core" }
+ort = { version = "2.0.0-rc.10", default-features = false, features = ["std", "load-dynamic"], optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokenizers = { version = "0.21", optional = true }
+tokio = { version = "1.0", features = ["sync", "time"] }
+
+[dev-dependencies]
+tempfile = "3.15"

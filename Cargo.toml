@@ -41,6 +41,7 @@ crossterm = "0.28"
 decision-core = { version = "0.1.0", path = "crates/decision-core" }
 decision-jev = { version = "0.1.0", path = "crates/decision-jev" }
 decision-openai = { version = "0.1.0", path = "crates/decision-openai" }
+decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 encoding_rs = "0.8"
 fs2 = "0.4"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
@@ -77,6 +78,10 @@ twox-hash = { version = "2.1.2", features = ["std"] }
 aide = { version = "0.15.1", features = ["axum"] }
 wreq = { version = "=6.0.0-rc.31", features = ["gzip", "stream"] }
 wreq-util = { version = "=3.0.0-rc.14" }
+
+[features]
+default = []
+local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 
 [dev-dependencies]
 flate2 = "1.0"

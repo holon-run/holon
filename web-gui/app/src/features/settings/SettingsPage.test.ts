@@ -153,32 +153,62 @@ describe("buildImageGenerationConfigUpdates", () => {
 
 describe("buildDecisionConfigUpdates", () => {
   it("persists enabled Decision provider routing fields", () => {
-    expect(buildDecisionConfigUpdates("jev", true, " https://jev.example.test/v1 ", " jev-decision-1 ", " jev:default ")).toEqual([
+    expect(
+      buildDecisionConfigUpdates("jev", true, " https://jev.example.test/v1 ", " jev-decision-1 ", " jev:default ", "", "", "", ""),
+    ).toEqual([
       { key: "decision.route.provider", value: "jev" },
       { key: "decision.enabled", value: true },
       { key: "decision.route.endpoint", value: "https://jev.example.test/v1" },
       { key: "decision.route.model", value: "jev-decision-1" },
       { key: "decision.route.credential_profile", value: "jev:default" },
+      { key: "decision.route.model_dir", unset: true },
+      { key: "decision.route.variant", unset: true },
+      { key: "decision.route.num_threads", unset: true },
+      { key: "decision.route.checksum", unset: true },
     ]);
   });
 
   it("unsets every Decision key when disabled and left empty", () => {
-    expect(buildDecisionConfigUpdates("", false, "  ", "", "   ")).toEqual([
+    expect(buildDecisionConfigUpdates("", false, "  ", "", "   ", "", "", "", "")).toEqual([
       { key: "decision.route.provider", unset: true },
       { key: "decision.enabled", unset: true },
       { key: "decision.route.endpoint", unset: true },
       { key: "decision.route.model", unset: true },
       { key: "decision.route.credential_profile", unset: true },
+      { key: "decision.route.model_dir", unset: true },
+      { key: "decision.route.variant", unset: true },
+      { key: "decision.route.num_threads", unset: true },
+      { key: "decision.route.checksum", unset: true },
     ]);
   });
 
   it("keeps a JEV model name as free text without catalog rewrite", () => {
-    expect(buildDecisionConfigUpdates("jev", true, "https://jev.example.test/v1", "jev/decision-pro", "")).toEqual([
+    expect(buildDecisionConfigUpdates("jev", true, "https://jev.example.test/v1", "jev/decision-pro", "", "", "", "", "")).toEqual([
       { key: "decision.route.provider", value: "jev" },
       { key: "decision.enabled", value: true },
       { key: "decision.route.endpoint", value: "https://jev.example.test/v1" },
       { key: "decision.route.model", value: "jev/decision-pro" },
       { key: "decision.route.credential_profile", unset: true },
+      { key: "decision.route.model_dir", unset: true },
+      { key: "decision.route.variant", unset: true },
+      { key: "decision.route.num_threads", unset: true },
+      { key: "decision.route.checksum", unset: true },
+    ]);
+  });
+
+  it("persists local ONNX assets without remote route fields", () => {
+    expect(
+      buildDecisionConfigUpdates("local-onnx", true, "", "", "", " /models/decision ", "q4f16", " 4 ", " sha256:abc "),
+    ).toEqual([
+      { key: "decision.route.provider", value: "local-onnx" },
+      { key: "decision.enabled", value: true },
+      { key: "decision.route.endpoint", unset: true },
+      { key: "decision.route.model", unset: true },
+      { key: "decision.route.credential_profile", unset: true },
+      { key: "decision.route.model_dir", value: "/models/decision" },
+      { key: "decision.route.variant", value: "q4f16" },
+      { key: "decision.route.num_threads", value: 4 },
+      { key: "decision.route.checksum", value: "sha256:abc" },
     ]);
   });
 });

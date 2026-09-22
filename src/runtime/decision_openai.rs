@@ -12,6 +12,8 @@ use decision_core::{
     DecisionResponse,
 };
 use decision_jev::{JevConfig, JevProvider};
+#[cfg(feature = "local-onnx")]
+use decision_local_onnx::{LocalOnnxConfig, LocalOnnxProvider};
 use decision_openai::{OpenAiConfig, OpenAiProvider};
 use serde_json::{json, Value};
 use std::{
@@ -44,6 +46,8 @@ pub(crate) struct ResolvedDecisionRoute {
 enum DecisionProviderKind {
     OpenAi(OpenAiConfig),
     Jev(JevConfig),
+    #[cfg(feature = "local-onnx")]
+    LocalOnnx(LocalOnnxConfig),
 }
 
 type DecisionProviderObject =
@@ -55,6 +59,10 @@ fn build_provider(
     match provider {
         DecisionProviderKind::OpenAi(config) => Ok(Box::new(OpenAiProvider::new(config)?)),
         DecisionProviderKind::Jev(config) => Ok(Box::new(JevProvider::new(config)?)),
+        #[cfg(feature = "local-onnx")]
+        DecisionProviderKind::LocalOnnx(config) => LocalOnnxProvider::new(config)
+            .map(|provider| Box::new(provider) as Box<DecisionProviderObject>)
+            .map_err(|error| DecisionError::Provider(error.to_string())),
     }
 }
 
@@ -74,6 +82,55 @@ pub(crate) fn resolve_decision_route(
         .route
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("decision.enabled requires decision.route"))?;
+    let provider = route
+        .provider
+        .as_deref()
+        .unwrap_or("openai")
+        .trim()
+        .to_ascii_lowercase();
+    anyhow::ensure!(
+        matches!(provider.as_str(), "openai" | "jev" | "local-onnx"),
+        "decision.route.provider must be one of: openai, jev, local-onnx"
+    );
+    let timeout = Duration::from_millis(
+        configured
+            .timeout_ms
+            .unwrap_or(DEFAULT_DECISION_TIMEOUT.as_millis() as u64)
+            .max(1),
+    );
+    if provider == "local-onnx" {
+        #[cfg(not(feature = "local-onnx"))]
+        anyhow::bail!(
+            "local-onnx provider is unavailable in this build; enable the local-onnx feature"
+        );
+        #[cfg(feature = "local-onnx")]
+        {
+            let model_dir = route
+                .model_dir
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("decision.route.model_dir is required"))?;
+            anyhow::ensure!(
+                !model_dir.trim().is_empty(),
+                "decision.route.model_dir must not be empty"
+            );
+            return Ok(Some(ResolvedDecisionRoute {
+                provider: DecisionProviderKind::LocalOnnx(LocalOnnxConfig {
+                    model_dir: model_dir.into(),
+                    variant: route.variant.clone().unwrap_or_else(|| "q4f16".into()),
+                    num_threads: route.num_threads.unwrap_or(1),
+                    checksum: route.checksum.clone(),
+                }),
+                timeout,
+                concurrency: configured
+                    .concurrency
+                    .unwrap_or(DEFAULT_DECISION_CONCURRENCY)
+                    .max(1),
+                queue_capacity: configured
+                    .queue_capacity
+                    .unwrap_or(DEFAULT_DECISION_QUEUE_CAPACITY),
+            }));
+        }
+    }
     let endpoint = route
         .endpoint
         .as_deref()
@@ -85,22 +142,6 @@ pub(crate) fn resolve_decision_route(
     anyhow::ensure!(
         !endpoint.trim().is_empty() && !model.trim().is_empty(),
         "decision.route endpoint and model must not be empty"
-    );
-    let provider = route
-        .provider
-        .as_deref()
-        .unwrap_or("openai")
-        .trim()
-        .to_ascii_lowercase();
-    anyhow::ensure!(
-        matches!(provider.as_str(), "openai" | "jev"),
-        "decision.route.provider must be one of: openai, jev"
-    );
-    let timeout = Duration::from_millis(
-        configured
-            .timeout_ms
-            .unwrap_or(DEFAULT_DECISION_TIMEOUT.as_millis() as u64)
-            .max(1),
     );
     let mut openai_config =
         OpenAiConfig::new(endpoint.to_owned(), model.to_owned()).with_timeout(timeout);
@@ -605,6 +646,10 @@ mod tests {
                 endpoint: Some(endpoint.into()),
                 model: Some(model.into()),
                 credential_profile: None,
+                model_dir: None,
+                variant: None,
+                num_threads: None,
+                checksum: None,
             }),
             ..Default::default()
         }
@@ -654,6 +699,10 @@ mod tests {
                 endpoint: Some("http://127.0.0.1:9/v1".into()),
                 model: Some("jev-decision".into()),
                 credential_profile: None,
+                model_dir: None,
+                variant: None,
+                num_threads: None,
+                checksum: None,
             }),
             ..Default::default()
         };

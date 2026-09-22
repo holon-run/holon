@@ -100,11 +100,19 @@ export function buildDecisionConfigUpdates(
   endpoint: string,
   model: string,
   credentialProfile: string,
+  modelDir: string,
+  variant: string,
+  numThreads: string,
+  checksum: string,
 ): Array<{ key: string; value?: unknown; unset?: boolean }> {
   const trimmedProvider = provider.trim();
   const trimmedEndpoint = endpoint.trim();
   const trimmedModel = model.trim();
   const trimmedCredentialProfile = credentialProfile.trim();
+  const trimmedModelDir = modelDir.trim();
+  const trimmedVariant = variant.trim();
+  const parsedNumThreads = Number.parseInt(numThreads.trim(), 10);
+  const trimmedChecksum = checksum.trim();
   return [
     trimmedProvider
       ? { key: "decision.route.provider", value: trimmedProvider }
@@ -119,6 +127,18 @@ export function buildDecisionConfigUpdates(
     trimmedCredentialProfile
       ? { key: "decision.route.credential_profile", value: trimmedCredentialProfile }
       : { key: "decision.route.credential_profile", unset: true },
+    trimmedModelDir
+      ? { key: "decision.route.model_dir", value: trimmedModelDir }
+      : { key: "decision.route.model_dir", unset: true },
+    trimmedVariant
+      ? { key: "decision.route.variant", value: trimmedVariant }
+      : { key: "decision.route.variant", unset: true },
+    Number.isFinite(parsedNumThreads) && parsedNumThreads > 0
+      ? { key: "decision.route.num_threads", value: parsedNumThreads }
+      : { key: "decision.route.num_threads", unset: true },
+    trimmedChecksum
+      ? { key: "decision.route.checksum", value: trimmedChecksum }
+      : { key: "decision.route.checksum", unset: true },
   ];
 }
 
@@ -279,6 +299,10 @@ export function SettingsPage({
   const [decisionEndpoint, setDecisionEndpoint] = useState("");
   const [decisionModel, setDecisionModel] = useState("");
   const [decisionCredentialProfile, setDecisionCredentialProfile] = useState("");
+  const [decisionModelDir, setDecisionModelDir] = useState("");
+  const [decisionVariant, setDecisionVariant] = useState("q4f16");
+  const [decisionNumThreads, setDecisionNumThreads] = useState("1");
+  const [decisionChecksum, setDecisionChecksum] = useState("");
   const [defaultToolOutputTokens, setDefaultToolOutputTokens] = useState("");
   const [maxToolOutputTokens, setMaxToolOutputTokens] = useState("");
   const [disableProviderFallback, setDisableProviderFallback] = useState(false);
@@ -384,6 +408,10 @@ export function SettingsPage({
     setDecisionEndpoint(surface.decision?.endpoint ?? "");
     setDecisionModel(surface.decision?.model ?? "");
     setDecisionCredentialProfile(surface.decision?.credentialProfile ?? "");
+    setDecisionModelDir(surface.decision?.modelDir ?? "");
+    setDecisionVariant(surface.decision?.variant ?? "q4f16");
+    setDecisionNumThreads(String(surface.decision?.numThreads ?? 1));
+    setDecisionChecksum(surface.decision?.checksum ?? "");
     setDefaultToolOutputTokens(String(surface.defaultToolOutputTokens));
     setMaxToolOutputTokens(String(surface.maxToolOutputTokens));
     setDisableProviderFallback(surface.disableProviderFallback);
@@ -640,7 +668,17 @@ export function SettingsPage({
   async function saveDecisionConfig() {
     setDecisionSaveMessage(undefined);
     const result = await onUpdateRuntimeConfig(
-      buildDecisionConfigUpdates(decisionProvider, decisionEnabled, decisionEndpoint, decisionModel, decisionCredentialProfile),
+      buildDecisionConfigUpdates(
+        decisionProvider,
+        decisionEnabled,
+        decisionEndpoint,
+        decisionModel,
+        decisionCredentialProfile,
+        decisionModelDir,
+        decisionVariant,
+        decisionNumThreads,
+        decisionChecksum,
+      ),
     );
     if (!result) return;
     const rejected = result.results?.filter((entry) => entry.effect === "rejected") ?? [];
@@ -1156,41 +1194,90 @@ export function SettingsPage({
                   <input type="checkbox" checked={decisionEnabled} onChange={(event) => setDecisionEnabled(event.target.checked)} />
                   <span>{t("settings.enableDecisionProvider")}</span>
                 </label>
-                <p className="settings-hint">{t("settings.decisionEnableHint")}</p>
+                <p className="settings-hint">
+                  {decisionProvider === "local-onnx"
+                    ? t("settings.decisionLocalEnableHint")
+                    : t("settings.decisionEnableHint")}
+                </p>
                 <label>
                   <span>{t("settings.decisionRouteProvider")}</span>
                   <select value={decisionProvider} onChange={(event) => setDecisionProvider(event.target.value)}>
                     <option value="openai">OpenAI-compatible</option>
                     <option value="jev">Jev native</option>
+                    <option value="local-onnx">Local ONNX</option>
                   </select>
                 </label>
                 <p className="settings-hint">{t("settings.decisionRouteProviderHint")}</p>
-                <label>
-                  <span>{t("settings.decisionEndpoint")}</span>
-                  <input
-                    value={decisionEndpoint}
-                    onChange={(event) => setDecisionEndpoint(event.target.value)}
-                    placeholder="https://jev.example.com/v1"
-                  />
-                </label>
-                <label>
-                  <span>{t("settings.decisionModel")}</span>
-                  <input
-                    value={decisionModel}
-                    onChange={(event) => setDecisionModel(event.target.value)}
-                    placeholder="jev-decision-1"
-                  />
-                </label>
-                <p className="settings-hint">{t("settings.decisionModelHint")}</p>
-                <label>
-                  <span>{t("settings.decisionCredentialProfile")}</span>
-                  <input
-                    value={decisionCredentialProfile}
-                    onChange={(event) => setDecisionCredentialProfile(event.target.value)}
-                    placeholder="jev:default"
-                  />
-                </label>
-                <p className="settings-hint">{t("settings.decisionCredentialHint")}</p>
+                {decisionProvider === "local-onnx" ? (
+                  <>
+                    <label>
+                      <span>{t("settings.decisionModelDir")}</span>
+                      <input
+                        value={decisionModelDir}
+                        onChange={(event) => setDecisionModelDir(event.target.value)}
+                        placeholder="/var/lib/holon/models/decision"
+                      />
+                    </label>
+                    <p className="settings-hint">{t("settings.decisionModelDirHint")}</p>
+                    <label>
+                      <span>{t("settings.decisionVariant")}</span>
+                      <select value={decisionVariant} onChange={(event) => setDecisionVariant(event.target.value)}>
+                        <option value="fp32">fp32</option>
+                        <option value="fp16">fp16</option>
+                        <option value="q4">q4</option>
+                        <option value="q4f16">q4f16</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{t("settings.decisionNumThreads")}</span>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={decisionNumThreads}
+                        onChange={(event) => setDecisionNumThreads(event.target.value)}
+                      />
+                    </label>
+                    <label>
+                      <span>{t("settings.decisionChecksum")}</span>
+                      <input
+                        value={decisionChecksum}
+                        onChange={(event) => setDecisionChecksum(event.target.value)}
+                        placeholder="sha256:..."
+                      />
+                    </label>
+                    <p className="settings-hint">{t("settings.decisionChecksumHint")}</p>
+                  </>
+                ) : (
+                  <>
+                    <label>
+                      <span>{t("settings.decisionEndpoint")}</span>
+                      <input
+                        value={decisionEndpoint}
+                        onChange={(event) => setDecisionEndpoint(event.target.value)}
+                        placeholder="https://jev.example.com/v1"
+                      />
+                    </label>
+                    <label>
+                      <span>{t("settings.decisionModel")}</span>
+                      <input
+                        value={decisionModel}
+                        onChange={(event) => setDecisionModel(event.target.value)}
+                        placeholder="jev-decision-1"
+                      />
+                    </label>
+                    <p className="settings-hint">{t("settings.decisionModelHint")}</p>
+                    <label>
+                      <span>{t("settings.decisionCredentialProfile")}</span>
+                      <input
+                        value={decisionCredentialProfile}
+                        onChange={(event) => setDecisionCredentialProfile(event.target.value)}
+                        placeholder="jev:default"
+                      />
+                    </label>
+                    <p className="settings-hint">{t("settings.decisionCredentialHint")}</p>
+                  </>
+                )}
                 <div className="settings-actions">
                   <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>
                     {runtimeConfigSaving ? t("settings.saving") : t("settings.saveDecision")}

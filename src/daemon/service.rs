@@ -142,6 +142,10 @@ pub struct RuntimeDecisionSurface {
     pub endpoint: Option<String>,
     pub model: Option<String>,
     pub credential_profile: Option<String>,
+    pub model_dir: Option<String>,
+    pub variant: Option<String>,
+    pub num_threads: Option<usize>,
+    pub checksum: Option<String>,
 }
 
 impl RuntimeDecisionSurface {
@@ -153,6 +157,10 @@ impl RuntimeDecisionSurface {
             endpoint: route.and_then(|route| route.endpoint.clone()),
             model: route.and_then(|route| route.model.clone()),
             credential_profile: route.and_then(|route| route.credential_profile.clone()),
+            model_dir: route.and_then(|route| route.model_dir.clone()),
+            variant: route.and_then(|route| route.variant.clone()),
+            num_threads: route.and_then(|route| route.num_threads),
+            checksum: route.and_then(|route| route.checksum.clone()),
         }
     }
 }

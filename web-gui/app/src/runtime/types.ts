@@ -448,6 +448,10 @@ export interface RuntimeDecisionSurface {
   endpoint?: string;
   model?: string;
   credentialProfile?: string;
+  modelDir?: string;
+  variant?: string;
+  numThreads?: number;
+  checksum?: string;
 }
 
 export interface RuntimeWebSearchSummary {
