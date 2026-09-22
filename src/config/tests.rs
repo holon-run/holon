@@ -1415,6 +1415,42 @@ fn provider_config_file_overrides_cache_capabilities() {
 }
 
 #[test]
+fn provider_cache_capabilities_config_key_round_trip() {
+    let mut config = HolonConfigFile::default();
+    let key = "providers.deepseek.cache_capabilities.cache_control";
+
+    // No override persisted yet: get reports null instead of the builtin default.
+    assert_eq!(get_config_key(&config, key).unwrap(), json!(null));
+
+    set_config_key(&mut config, key, "true").unwrap();
+    assert_eq!(get_config_key(&config, key).unwrap(), json!(true));
+    assert_eq!(
+        config
+            .providers
+            .get(&ProviderId::parse("deepseek").unwrap())
+            .unwrap()
+            .cache_capabilities,
+        Some(AnthropicCacheCapabilities {
+            cache_control: true
+        })
+    );
+
+    set_config_key(&mut config, key, "false").unwrap();
+    assert_eq!(get_config_key(&config, key).unwrap(), json!(false));
+
+    unset_config_key(&mut config, key).unwrap();
+    assert_eq!(get_config_key(&config, key).unwrap(), json!(null));
+    assert_eq!(
+        config
+            .providers
+            .get(&ProviderId::parse("deepseek").unwrap())
+            .unwrap()
+            .cache_capabilities,
+        None
+    );
+}
+
+#[test]
 fn materialize_provider_config_resolves_env_credentials_from_settings() {
     let mut settings_env = HashMap::new();
     settings_env.insert("OPENROUTER_API_KEY".to_string(), "settings-key".to_string());

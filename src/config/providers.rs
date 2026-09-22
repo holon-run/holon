@@ -179,8 +179,11 @@ impl Default for AnthropicContextManagementConfig {
 
 impl AnthropicContextManagementConfig {
     /// Marks the endpoint as implicit-cache-only: explicit
-    /// `cache_control` breakpoints and Claude-Code cache mimicry are
-    /// skipped, preserving caller sampling behavior.
+    /// `cache_control` breakpoints and Claude-Code cache mimicry
+    /// (billing header, `metadata.user_id`, forced `temperature=1.0`)
+    /// are skipped. The request then omits `temperature`, so the
+    /// endpoint default applies; a caller-facing temperature
+    /// passthrough does not exist yet.
     pub fn with_implicit_prompt_caching(mut self) -> Self {
         self.cache_capabilities.cache_control = false;
         self

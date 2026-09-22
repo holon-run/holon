@@ -5,8 +5,10 @@ official API and dashscope honor explicit `cache_control` breakpoints; deepseek
 ignores `cache_control` entirely (Context Caching is automatic) and
 bigmodel/GLM caches implicitly only. Sending the `claude_code_prompt_cache`
 wire shape to an implicit-cache endpoint bought no cache benefit while its
-mimicry changed behavior: forced `temperature=1.0` overrode caller sampling on
-endpoints that support the full temperature range.
+mimicry changed behavior: forced `temperature=1.0` overrode the endpoint's
+default sampling on endpoints that support the full temperature range.
+(A caller-facing temperature passthrough does not exist yet; the request
+simply omits `temperature`, so the endpoint default applies.)
 
 The decision: cache mimicry is gated by a per-endpoint capability declared in
 the provider registry, not by the strategy alone.
