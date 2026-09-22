@@ -1204,6 +1204,16 @@ fn strip_initial_context_message(request: &ProviderTurnRequest) -> Vec<Conversat
             if *blocks == request.prompt_frame.context_blocks
     ) {
         conversation.remove(0);
+        let turn_scoped_context = request
+            .prompt_frame
+            .context_blocks
+            .iter()
+            .filter(|block| block.stability == PromptStability::TurnScoped)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !turn_scoped_context.is_empty() {
+            conversation.insert(0, ConversationMessage::UserBlocks(turn_scoped_context));
+        }
         if conversation.is_empty()
             || !matches!(
                 conversation.first(),
@@ -1252,20 +1262,26 @@ fn claude_code_prompt_cache_anthropic_system(request: &ProviderTurnRequest) -> V
         "text": "x-anthropic-billing-header: holon",
     })];
 
-    if !request.prompt_frame.system_prompt.trim().is_empty() {
+    if !request.prompt_frame.system_blocks.is_empty() {
+        system.extend(
+            request
+                .prompt_frame
+                .system_blocks
+                .iter()
+                .map(prompt_block_to_anthropic_content),
+        );
+    } else if !request.prompt_frame.system_prompt.trim().is_empty() {
         system.push(cacheable_text_block(&request.prompt_frame.system_prompt));
     }
 
-    let context_text = request
-        .prompt_frame
-        .context_blocks
-        .iter()
-        .map(|block| block.text.as_str())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if !context_text.trim().is_empty() {
-        system.push(cacheable_text_block(&context_text));
-    }
+    system.extend(
+        request
+            .prompt_frame
+            .context_blocks
+            .iter()
+            .filter(|block| block.stability != PromptStability::TurnScoped)
+            .map(prompt_block_to_anthropic_content),
+    );
 
     Value::Array(system)
 }
@@ -1819,7 +1835,9 @@ fn last_cacheable_content_index(
             AnthropicCacheStrategy::MessagesNative => {
                 (!results.is_empty()).then_some(results.len() - 1)
             }
-            AnthropicCacheStrategy::ClaudeCodePromptCache => None,
+            AnthropicCacheStrategy::ClaudeCodePromptCache => {
+                (!results.is_empty()).then_some(results.len() - 1)
+            }
         },
     }
 }
@@ -2058,6 +2076,8 @@ fn collect_anthropic_cache_diagnostics(
         estimate_token_distribution_from_payload(request_payload, &cache_breakpoints);
     let (system_cache_control_count, message_cache_control_count) =
         count_payload_cache_controls(request_payload);
+    let (rolling_marker_lag_messages, rolling_marker_at_tail) =
+        rolling_marker_diagnostics(conversation, rolling_cache_marker);
 
     AnthropicPromptCacheDiagnostics {
         cache_strategy: cache_strategy.as_str().to_string(),
@@ -2073,11 +2093,32 @@ fn collect_anthropic_cache_diagnostics(
         conversation_content_block_count,
         system_cache_control_count,
         message_cache_control_count,
+        rolling_marker_lag_messages,
+        rolling_marker_at_tail,
         cache_breakpoints,
         tokens_before_last_breakpoint,
         tokens_after_last_breakpoint,
         automatic_cache_control_requested: false,
     }
+}
+
+fn rolling_marker_diagnostics(
+    conversation: &[ConversationMessage],
+    rolling_cache_marker: Option<(usize, usize)>,
+) -> (usize, bool) {
+    let Some((marker_message_index, _)) = rolling_cache_marker else {
+        return (conversation.len(), false);
+    };
+    let Some(last_content_message_index) = conversation
+        .iter()
+        .rposition(conversation_message_has_content)
+    else {
+        return (0, false);
+    };
+    (
+        last_content_message_index.saturating_sub(marker_message_index),
+        marker_message_index == last_content_message_index,
+    )
 }
 
 fn hash_tools(tools: &[crate::tool::ToolSpec]) -> String {
@@ -2754,6 +2795,150 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_prompt_cache_marks_latest_tool_result_as_rolling_cache_tail() {
+        let conversation = vec![
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "toolu_1".to_string(),
+                name: "ExecCommand".to_string(),
+                input: json!({ "cmd": "printf ok" }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }]),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: "toolu_1".to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                error: None,
+            }]),
+        ];
+
+        let messages = build_anthropic_messages(
+            &conversation,
+            rolling_conversation_cache_marker(
+                &conversation,
+                AnthropicCacheStrategy::ClaudeCodePromptCache,
+            ),
+        );
+
+        assert_eq!(
+            messages[1].content[0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn rolling_marker_diagnostics_reports_tail_distance() {
+        let conversation = vec![
+            ConversationMessage::UserText("inspect".to_string()),
+            ConversationMessage::AssistantBlocks(vec![ModelBlock::ToolUse {
+                id: "toolu_1".to_string(),
+                name: "ExecCommand".to_string(),
+                input: json!({ "cmd": "printf ok" }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }]),
+            ConversationMessage::UserToolResults(vec![ToolResultBlock {
+                tool_use_id: "toolu_1".to_string(),
+                content: "ok".to_string(),
+                is_error: false,
+                error: None,
+            }]),
+        ];
+
+        assert_eq!(
+            rolling_marker_diagnostics(&conversation, Some((0, 0))),
+            (2, false)
+        );
+        assert_eq!(
+            rolling_marker_diagnostics(&conversation, Some((2, 0))),
+            (0, true)
+        );
+        assert_eq!(
+            rolling_marker_diagnostics(&conversation, None),
+            (conversation.len(), false)
+        );
+    }
+
+    #[test]
+    fn claude_code_prompt_cache_keeps_turn_scoped_context_out_of_system_prefix() {
+        let request = ProviderTurnRequest {
+            continuation_scope_id: None,
+            prompt_frame: ProviderPromptFrame {
+                system_prompt: "unused plain system".to_string(),
+                system_blocks: vec![
+                    PromptContentBlock {
+                        text: "stable system".to_string(),
+                        stability: PromptStability::Stable,
+                        cache_breakpoint: true,
+                    },
+                    PromptContentBlock {
+                        text: "turn system".to_string(),
+                        stability: PromptStability::TurnScoped,
+                        cache_breakpoint: false,
+                    },
+                ],
+                context_blocks: vec![
+                    PromptContentBlock {
+                        text: "agent context".to_string(),
+                        stability: PromptStability::AgentScoped,
+                        cache_breakpoint: true,
+                    },
+                    PromptContentBlock {
+                        text: "current turn".to_string(),
+                        stability: PromptStability::TurnScoped,
+                        cache_breakpoint: false,
+                    },
+                ],
+                cache: None,
+            },
+            conversation: vec![ConversationMessage::UserBlocks(vec![
+                PromptContentBlock {
+                    text: "agent context".to_string(),
+                    stability: PromptStability::AgentScoped,
+                    cache_breakpoint: true,
+                },
+                PromptContentBlock {
+                    text: "current turn".to_string(),
+                    stability: PromptStability::TurnScoped,
+                    cache_breakpoint: false,
+                },
+            ])],
+            tools: vec![],
+            native_web_search: None,
+            response_format: None,
+        };
+
+        let system =
+            build_anthropic_system(&request, AnthropicCacheStrategy::ClaudeCodePromptCache);
+        let system_text = system
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|block| block.get("text").and_then(Value::as_str))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(system_text.contains("stable system"));
+        assert!(system_text.contains("agent context"));
+        assert!(!system_text.contains("current turn"));
+        assert_eq!(
+            system
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|block| block.get("text").and_then(Value::as_str) == Some("turn system"))
+                .and_then(|block| block.get("cache_control")),
+            None
+        );
+
+        let conversation = strip_initial_context_message(&request);
+        assert!(matches!(
+            conversation.as_slice(),
+            [ConversationMessage::UserBlocks(blocks)]
+                if blocks.len() == 1 && blocks[0].text == "current turn"
+        ));
+    }
+
+    #[test]
     fn api_response_block_preserves_text_form_dsml_tool_calls_as_text() {
         let block = ApiResponseBlock {
             kind: "text".to_string(),
@@ -3149,6 +3334,8 @@ mod tests {
         );
         assert!(diagnostics.tokens_before_last_breakpoint > 0);
         assert_eq!(diagnostics.tokens_after_last_breakpoint, 0);
+        assert_eq!(diagnostics.rolling_marker_lag_messages, 0);
+        assert!(diagnostics.rolling_marker_at_tail);
     }
 
     #[test]
@@ -3220,6 +3407,8 @@ mod tests {
         // Check token distribution
         assert!(diagnostics.tokens_before_last_breakpoint > 0);
         assert!(diagnostics.tokens_after_last_breakpoint < u64::MAX);
+        assert_eq!(diagnostics.rolling_marker_lag_messages, 0);
+        assert!(diagnostics.rolling_marker_at_tail);
     }
 
     fn anthropic_request_payload_for_test(request: &ProviderTurnRequest) -> Value {
