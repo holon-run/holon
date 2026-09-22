@@ -404,9 +404,20 @@ describe("createRuntimeClient", () => {
 
     expect(config.surface?.decision).toEqual({
       enabled: false,
+      provider: undefined,
       endpoint: undefined,
       model: undefined,
       credentialProfile: undefined,
+      modelDir: undefined,
+      variant: undefined,
+      numThreads: undefined,
+      checksum: undefined,
+      tools: {
+        enabled: false,
+        maxCallsPerTurn: 4,
+        timeoutMs: 1500,
+        minConfidencePercent: 0,
+      },
     });
   });
 

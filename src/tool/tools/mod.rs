@@ -11,6 +11,7 @@ use crate::{
     types::{AuthorityClass, ToolCapabilityFamily},
 };
 
+pub(crate) mod advisory_decision;
 pub(crate) mod apply_patch_tool;
 pub(crate) mod attach_workspace;
 pub(crate) mod cancel_external_trigger;
@@ -67,6 +68,7 @@ pub(crate) struct ToolModelRenderContext<'a> {
 
 pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
     Ok(vec![
+        advisory_decision::definition()?,
         sleep::definition()?,
         wait_for::definition()?,
         timer::create_definition()?,
@@ -158,6 +160,13 @@ fn execute_builtin_tool_inner<'a>(
     context: &'a ToolExecutionContext,
 ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
     match call.name.as_str() {
+        advisory_decision::NAME => Box::pin(advisory_decision::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+            context,
+        )),
         sleep::NAME => Box::pin(sleep::execute(
             runtime,
             agent_id,
@@ -601,6 +610,7 @@ mod tests {
             "GetTimer" => "src/tool/tool_descriptions/get_timer.md",
             "GetWorkItem" => "src/tool/tool_descriptions/get_work_item.md",
             "GetWorkspaceState" => "src/tool/tool_descriptions/get_workspace_state.md",
+            "AdvisoryDecision" => "src/tool/tool_descriptions/advisory_decision.md",
             "ListModelProviders" => "src/tool/tool_descriptions/list_model_providers.md",
             "ListProviderModels" => "src/tool/tool_descriptions/list_provider_models.md",
             "ListTasks" => "src/tool/tool_descriptions/list_tasks.md",

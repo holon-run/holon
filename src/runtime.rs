@@ -3521,6 +3521,37 @@ impl RuntimeHandle {
         self.inner.config_snapshot.load().web_config.clone()
     }
 
+    pub(crate) fn advisory_decision_tool_config(&self) -> (bool, usize, u64, f32) {
+        let snap = self.inner.config_snapshot.load();
+        (
+            snap.decision_tool_enabled,
+            snap.decision_tool_max_calls_per_turn,
+            snap.decision_tool_timeout_ms,
+            snap.decision_tool_min_confidence,
+        )
+    }
+
+    pub(crate) async fn execute_advisory_decision(
+        &self,
+        request: decision_core::DecisionRequest<Value, Value>,
+    ) -> Result<(decision_core::DecisionResponse<Value>, String, String)> {
+        let snap = self.inner.config_snapshot.load();
+        let reconfig = snap
+            .provider_reconfig
+            .as_ref()
+            .ok_or_else(|| anyhow!("Decision provider configuration is unavailable"))?;
+        let executor =
+            decision_openai::AdvisoryDecisionExecutor::from_app_config(&reconfig.config)?
+                .ok_or_else(|| anyhow!("Decision provider is disabled"))?;
+        let provider = executor.provider().to_string();
+        let model = executor.model().to_string();
+        let response = executor
+            .decide(request)
+            .await
+            .map_err(|error| anyhow!(error.to_string()))?;
+        Ok((response, provider, model))
+    }
+
     pub(crate) fn x_search_config(&self) -> Option<crate::config::XSearchRuntimeConfig> {
         self.inner.config_snapshot.load().x_search_config.clone()
     }

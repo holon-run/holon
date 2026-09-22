@@ -452,6 +452,14 @@ export interface RuntimeDecisionSurface {
   variant?: string;
   numThreads?: number;
   checksum?: string;
+  tools: RuntimeDecisionToolsSurface;
+}
+
+export interface RuntimeDecisionToolsSurface {
+  enabled: boolean;
+  maxCallsPerTurn: number;
+  timeoutMs: number;
+  minConfidencePercent: number;
 }
 
 export interface RuntimeWebSearchSummary {

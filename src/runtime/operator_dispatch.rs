@@ -446,6 +446,10 @@ impl RuntimeHandle {
             .filter(|(_, tool)| {
                 tool.name != crate::tool::names::X_SEARCH || self.x_search_config().is_some()
             })
+            .filter(|(_, tool)| {
+                tool.name != crate::tool::names::ADVISORY_DECISION
+                    || self.advisory_decision_tool_config().0
+            })
             .map(|(_, tool)| tool)
             .collect())
     }

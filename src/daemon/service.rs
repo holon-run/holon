@@ -146,11 +146,33 @@ pub struct RuntimeDecisionSurface {
     pub variant: Option<String>,
     pub num_threads: Option<usize>,
     pub checksum: Option<String>,
+    #[serde(default)]
+    pub tools: RuntimeDecisionToolsSurface,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct RuntimeDecisionToolsSurface {
+    pub enabled: bool,
+    pub max_calls_per_turn: usize,
+    pub timeout_ms: u64,
+    pub min_confidence_percent: u8,
+}
+
+impl Default for RuntimeDecisionToolsSurface {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_calls_per_turn: 4,
+            timeout_ms: 1500,
+            min_confidence_percent: 0,
+        }
+    }
 }
 
 impl RuntimeDecisionSurface {
     pub fn from_config(config: &crate::config::DecisionConfigFile) -> Self {
         let route = config.route.as_ref();
+        let tools = config.tools.as_ref();
         Self {
             enabled: config.enabled.unwrap_or(false),
             provider: route.and_then(|route| route.provider.clone()),
@@ -161,6 +183,17 @@ impl RuntimeDecisionSurface {
             variant: route.and_then(|route| route.variant.clone()),
             num_threads: route.and_then(|route| route.num_threads),
             checksum: route.and_then(|route| route.checksum.clone()),
+            tools: RuntimeDecisionToolsSurface {
+                enabled: tools.and_then(|tools| tools.enabled).unwrap_or(false),
+                max_calls_per_turn: tools
+                    .and_then(|tools| tools.max_calls_per_turn)
+                    .unwrap_or(4),
+                timeout_ms: tools.and_then(|tools| tools.timeout_ms).unwrap_or(1500),
+                min_confidence_percent: tools
+                    .and_then(|tools| tools.min_confidence)
+                    .unwrap_or(0.0)
+                    .mul_add(100.0, 0.5) as u8,
+            },
         }
     }
 }

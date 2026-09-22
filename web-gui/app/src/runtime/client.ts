@@ -427,6 +427,14 @@ interface RuntimeDecisionSurfaceDto {
   variant?: string | null;
   num_threads?: number | null;
   checksum?: string | null;
+  tools?: RuntimeDecisionToolsSurfaceDto;
+}
+
+interface RuntimeDecisionToolsSurfaceDto {
+  enabled?: boolean;
+  max_calls_per_turn?: number;
+  timeout_ms?: number;
+  min_confidence_percent?: number;
 }
 
 interface RuntimeProviderSummaryDto {
@@ -2369,6 +2377,12 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       variant: surface.decision?.variant ?? undefined,
       numThreads: surface.decision?.num_threads ?? undefined,
       checksum: surface.decision?.checksum ?? undefined,
+      tools: {
+        enabled: surface.decision?.tools?.enabled ?? false,
+        maxCallsPerTurn: surface.decision?.tools?.max_calls_per_turn ?? 4,
+        timeoutMs: surface.decision?.tools?.timeout_ms ?? 1500,
+        minConfidencePercent: surface.decision?.tools?.min_confidence_percent ?? 0,
+      },
     },
     modelCatalog: surface.model_catalog ?? [],
     unknownModelFallbackConfigured: surface.unknown_model_fallback_configured ?? false,

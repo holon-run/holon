@@ -17,6 +17,25 @@ fn ensure_decision_route(config: &mut HolonConfigFile) -> &mut DecisionRouteConf
         .get_or_insert_with(DecisionRouteConfigFile::default)
 }
 
+fn ensure_decision_tools(config: &mut HolonConfigFile) -> &mut DecisionToolsConfigFile {
+    config
+        .decision
+        .tools
+        .get_or_insert_with(DecisionToolsConfigFile::default)
+}
+
+fn clear_decision_tools_field<F>(config: &mut HolonConfigFile, clear: F)
+where
+    F: FnOnce(&mut DecisionToolsConfigFile),
+{
+    if let Some(tools) = config.decision.tools.as_mut() {
+        clear(tools);
+        if tools.is_empty() {
+            config.decision.tools = None;
+        }
+    }
+}
+
 fn parse_optional_session_ttl(key: &str, raw_value: &str) -> Result<Option<u64>> {
     let value = raw_value.trim();
     if value.eq_ignore_ascii_case("null") || value == "0" {
@@ -628,6 +647,34 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "decision.tools.enabled",
+            kind: "boolean",
+            description: "Expose the advisory Decision tool to the agent loop. Disabled by default.",
+            default: json!(false),
+            allowed_values: vec!["true", "false"],
+        },
+        ConfigSchemaEntry {
+            key: "decision.tools.max_calls_per_turn",
+            kind: "positive_integer",
+            description: "Maximum advisory Decision tool calls allowed in one turn.",
+            default: json!(4),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.tools.timeout_ms",
+            kind: "positive_integer",
+            description: "Advisory Decision tool timeout in milliseconds.",
+            default: json!(1500),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "decision.tools.min_confidence",
+            kind: "number",
+            description: "Minimum confidence required for a non-abstain advisory result.",
+            default: json!(0.0),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "tui.alternate_screen",
             kind: "enum",
             description: "Whether the TUI uses the terminal alternate screen buffer.",
@@ -1172,6 +1219,30 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .queue_capacity
             .map(|value| json!(value))
             .unwrap_or_else(|| json!(32))),
+        "decision.tools.enabled" => Ok(json!(config
+            .decision
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.enabled)
+            .unwrap_or(false))),
+        "decision.tools.max_calls_per_turn" => Ok(json!(config
+            .decision
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.max_calls_per_turn)
+            .unwrap_or(4))),
+        "decision.tools.timeout_ms" => Ok(json!(config
+            .decision
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.timeout_ms)
+            .unwrap_or(1500))),
+        "decision.tools.min_confidence" => Ok(json!(config
+            .decision
+            .tools
+            .as_ref()
+            .and_then(|tools| tools.min_confidence)
+            .unwrap_or(0.0))),
         "tui.alternate_screen" => Ok(config
             .tui
             .alternate_screen
@@ -1590,6 +1661,30 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "decision.queue_capacity" => {
             config.decision.queue_capacity = Some(parse_positive_usize_key(key, raw_value)?)
         }
+        "decision.tools.enabled" => {
+            ensure_decision_tools(config).enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
+        "decision.tools.max_calls_per_turn" => {
+            ensure_decision_tools(config).max_calls_per_turn =
+                Some(parse_positive_usize_key(key, raw_value)?);
+        }
+        "decision.tools.timeout_ms" => {
+            ensure_decision_tools(config).timeout_ms =
+                Some(parse_positive_u64_key(key, raw_value)?);
+        }
+        "decision.tools.min_confidence" => {
+            let value = raw_value
+                .trim()
+                .parse::<f32>()
+                .map_err(|_| anyhow!("{key} expects a number"))?;
+            anyhow::ensure!(
+                (0.0..=1.0).contains(&value),
+                "{key} expects a number between 0 and 1"
+            );
+            ensure_decision_tools(config).min_confidence = Some(value);
+        }
         "tui.alternate_screen" => {
             config.tui.alternate_screen = Some(AltScreenMode::parse(raw_value)?);
         }
@@ -1982,6 +2077,18 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "decision.max_tokens" => config.decision.max_tokens = None,
         "decision.concurrency" => config.decision.concurrency = None,
         "decision.queue_capacity" => config.decision.queue_capacity = None,
+        "decision.tools.enabled" => {
+            clear_decision_tools_field(config, |tools| tools.enabled = None)
+        }
+        "decision.tools.max_calls_per_turn" => {
+            clear_decision_tools_field(config, |tools| tools.max_calls_per_turn = None)
+        }
+        "decision.tools.timeout_ms" => {
+            clear_decision_tools_field(config, |tools| tools.timeout_ms = None)
+        }
+        "decision.tools.min_confidence" => {
+            clear_decision_tools_field(config, |tools| tools.min_confidence = None)
+        }
         "tui.alternate_screen" => config.tui.alternate_screen = None,
         "web.fetch.enabled" => config.web.fetch.enabled = None,
         "web.fetch.max_chars" => config.web.fetch.max_chars = None,

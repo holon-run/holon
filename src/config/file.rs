@@ -44,6 +44,20 @@ pub struct DecisionConfigFile {
     pub concurrency: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_capacity: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<DecisionToolsConfigFile>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct DecisionToolsConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_calls_per_turn: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_confidence: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -640,6 +654,16 @@ impl DecisionConfigFile {
             && self.max_tokens.is_none()
             && self.concurrency.is_none()
             && self.queue_capacity.is_none()
+            && self.tools.is_none()
+    }
+}
+
+impl DecisionToolsConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.max_calls_per_turn.is_none()
+            && self.timeout_ms.is_none()
+            && self.min_confidence.is_none()
     }
 }
 
