@@ -1692,18 +1692,20 @@ fn repair_orphaned_tool_use_blocks(mut messages: Vec<ApiMessage>) -> Vec<ApiMess
         if following_is_user {
             prepend_user_tool_result_blocks(&mut messages[index + 1], &missing_ids);
         } else {
-            messages.insert(
-                index + 1,
-                ApiMessage {
-                    role: "user",
-                    content: Value::Array(
-                        missing_ids
-                            .iter()
-                            .map(|id| synthesized_tool_result_block(id))
-                            .collect(),
-                    ),
-                },
-            );
+            let mut message = ApiMessage {
+                role: "user",
+                content: Value::Array(
+                    missing_ids
+                        .iter()
+                        .map(|id| synthesized_tool_result_block(id))
+                        .collect(),
+                ),
+            };
+            // The rolling cache marker may already mark the orphaned
+            // assistant tail; move it so cache_control stays on the final
+            // block of the repaired request.
+            transfer_tail_cache_marker(&mut messages[index], &mut message);
+            messages.insert(index + 1, message);
         }
     }
     messages
@@ -1765,6 +1767,32 @@ fn prepend_user_tool_result_blocks(message: &mut ApiMessage, tool_use_ids: &[Str
         _ => {}
     }
     message.content = Value::Array(blocks);
+}
+
+/// Move a `cache_control` marker from an orphaned assistant message onto the
+/// synthesized tool_result message inserted after it, so the rolling marker
+/// stays anchored to the conversation tail after repair.
+fn transfer_tail_cache_marker(assistant: &mut ApiMessage, inserted: &mut ApiMessage) {
+    let Value::Array(blocks) = &mut assistant.content else {
+        return;
+    };
+    let Some(marker) = blocks
+        .iter_mut()
+        .filter_map(|block| {
+            block
+                .as_object_mut()
+                .and_then(|object| object.remove("cache_control"))
+        })
+        .next()
+    else {
+        return;
+    };
+    let Value::Array(inserted_blocks) = &mut inserted.content else {
+        return;
+    };
+    if let Some(last) = inserted_blocks.last_mut() {
+        last["cache_control"] = marker;
+    }
 }
 
 /// Ollama's Anthropic-compatible `/v1/messages` endpoint rejects message
@@ -3670,6 +3698,61 @@ mod tests {
         assert_eq!(messages[1].content[0]["type"], "tool_result");
         assert_eq!(messages[1].content[0]["tool_use_id"], "toolu_tail");
         assert_eq!(messages[1].content[0]["is_error"], true);
+    }
+
+    #[test]
+    fn build_anthropic_messages_moves_rolling_cache_marker_to_repaired_tail() {
+        let conversation = vec![
+            ConversationMessage::UserText("start".to_string()),
+            ConversationMessage::AssistantBlocks(vec![
+                ModelBlock::Text {
+                    text: "checking".to_string(),
+                },
+                ModelBlock::ToolUse {
+                    id: "toolu_tail".to_string(),
+                    name: "ExecCommand".to_string(),
+                    input: json!({ "cmd": "printf ok" }),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                },
+            ]),
+        ];
+
+        for strategy in [
+            AnthropicCacheStrategy::ClaudeCodePromptCache,
+            AnthropicCacheStrategy::MessagesNative,
+        ] {
+            let messages = build_anthropic_messages(
+                &conversation,
+                rolling_conversation_cache_marker(&conversation, strategy, true),
+                true,
+            );
+
+            assert_eq!(messages.len(), 3, "{strategy:?}");
+            assert_eq!(messages[2].role, "user", "{strategy:?}");
+            assert_eq!(
+                messages[2].content[0]["type"], "tool_result",
+                "{strategy:?}"
+            );
+            assert!(
+                messages[1].content.as_array().is_some_and(|blocks| blocks
+                    .iter()
+                    .all(|block| block.get("cache_control").is_none())),
+                "orphaned assistant must not keep the cache_control marker ({strategy:?})"
+            );
+            assert_eq!(
+                messages[2].content[0]["cache_control"],
+                json!({ "type": "ephemeral" }),
+                "repaired tail must carry the transferred marker ({strategy:?})"
+            );
+            let marker_count = messages
+                .iter()
+                .filter_map(|message| message.content.as_array())
+                .flatten()
+                .filter(|block| block.get("cache_control").is_some())
+                .count();
+            assert_eq!(marker_count, 1, "{strategy:?}");
+        }
     }
 
     #[test]
