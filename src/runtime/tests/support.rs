@@ -1127,6 +1127,21 @@ impl AgentProvider for WaitForFinalReportProvider {
                         request.tools.is_empty(),
                         "the report request after two tool rounds must be text-only"
                     );
+                    let last_user_text = request
+                        .conversation
+                        .iter()
+                        .rev()
+                        .find_map(|message| match message {
+                            ConversationMessage::UserText(text) => Some(text.as_str()),
+                            _ => None,
+                        })
+                        .expect("text-only fallback request must follow a user text notice");
+                    assert!(
+                        last_user_text.contains("Report tool budget exhausted.")
+                            && last_user_text
+                                .contains("Tool calls are now disabled at the API layer"),
+                        "text-only fallback request must be preceded by the fallback notice, got: {last_user_text}"
+                    );
                     vec![ModelBlock::Text {
                         text: "Waiting for final verification; I will resume when it changes."
                             .into(),
