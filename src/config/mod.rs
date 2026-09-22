@@ -865,6 +865,7 @@ fn resolve_anthropic_context_management_config_with_defaults(
         clear_at_least_input_tokens,
         cache_strategy,
         betas,
+        cache_capabilities: AnthropicCacheCapabilities::default(),
     })
 }
 

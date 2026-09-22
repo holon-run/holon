@@ -312,6 +312,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "providers.<id>.cache_capabilities.cache_control",
+            kind: "boolean",
+            description: "Whether the Anthropic-compatible endpoint honors explicit cache_control breakpoints. Implicit-cache endpoints (deepseek, bigmodel) default to false and skip Claude-Code cache mimicry.",
+            default: json!(true),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "models.catalog",
             kind: "json_object",
             description: "Per-model runtime metadata and policy keyed by provider/model ref.",

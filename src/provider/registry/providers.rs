@@ -16,6 +16,10 @@ pub(crate) enum ProviderContextManagement {
     Default,
     Anthropic,
     AnthropicCompatible,
+    /// Anthropic-compatible endpoint whose caching is implicit-only:
+    /// explicit `cache_control` breakpoints are ignored, so the transport
+    /// skips them and Claude-Code cache mimicry entirely.
+    AnthropicCompatibleImplicitCache,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,7 +248,7 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
     provider!(
         "deepseek" => "deepseek" @ "default",
         AnthropicMessages, "https://api.deepseek.com/anthropic", ["DEEPSEEK_API_KEY"],
-        Generic, AnthropicCompatible, DeepSeek, None, None, StaticOnly
+        Generic, AnthropicCompatibleImplicitCache, DeepSeek, None, None, StaticOnly
     ),
     provider!(
         "fireworks" => "fireworks" @ "default",
@@ -423,7 +427,7 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
     provider!(
         "bigmodel" => "bigmodel" @ "default",
         AnthropicMessages, "https://open.bigmodel.cn/api/anthropic", ["BIGMODEL_API_KEY"],
-        Generic, AnthropicCompatible, BigModel, None, None, StaticOnly
+        Generic, AnthropicCompatibleImplicitCache, BigModel, None, None, StaticOnly
     ),
     provider!(
         "minimax" => "minimax" @ "default",

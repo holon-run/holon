@@ -6121,6 +6121,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                 }
             };
             let provider_config = ProviderConfigFile {
+                cache_capabilities: None,
                 transport,
                 base_url,
                 auth: ProviderAuthConfig {

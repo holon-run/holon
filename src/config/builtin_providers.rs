@@ -264,6 +264,14 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
+    if let Some(id) = rest.strip_suffix(".cache_capabilities.cache_control") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.cache_capabilities.as_ref())
+            .map(|capabilities| Value::Bool(capabilities.cache_control))
+            .unwrap_or(Value::Null));
+    }
     if rest.contains('.') {
         return Err(unknown_config_key(key));
     }
@@ -330,6 +338,15 @@ pub(crate) fn set_provider_config_key(
             .external = (!value.is_empty()).then(|| value.to_string());
         return Ok(());
     }
+    if key.ends_with(".cache_capabilities.cache_control") {
+        let value =
+            parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?;
+        persisted_provider_config_mut(config, key, ".cache_capabilities.cache_control")?
+            .cache_capabilities = Some(AnthropicCacheCapabilities {
+            cache_control: value,
+        });
+        return Ok(());
+    }
     Err(unknown_config_key(key))
 }
 
@@ -356,6 +373,11 @@ pub(crate) fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str)
         persisted_provider_config_mut(config, key, ".auth.external")?
             .auth
             .external = None;
+        return Ok(());
+    }
+    if key.ends_with(".cache_capabilities.cache_control") {
+        persisted_provider_config_mut(config, key, ".cache_capabilities.cache_control")?
+            .cache_capabilities = None;
         return Ok(());
     }
     let id = key
@@ -582,6 +604,7 @@ pub(crate) fn built_in_provider_default_config_with_settings(
             auth: ProviderAuthConfig::default(),
             reasoning_effort: None,
             builtin_web_search: None,
+            cache_capabilities: None,
             endpoints: BTreeMap::new(),
             plans: BTreeMap::new(),
         }))
@@ -1051,6 +1074,9 @@ fn insert_generic_provider(
         ProviderContextManagement::AnthropicCompatible => {
             resolve_anthropic_compatible_context_management_config()?
         }
+        ProviderContextManagement::AnthropicCompatibleImplicitCache => {
+            resolve_anthropic_compatible_context_management_config()?.with_implicit_prompt_caching()
+        }
     };
     let builtin_web_search = match definition.web_search {
         ProviderWebSearch::None => None,
@@ -1337,6 +1363,9 @@ pub(crate) fn materialize_provider_config(
     runtime.credential = credential;
     if provider_config.reasoning_effort.is_some() {
         runtime.reasoning_effort = provider_config.reasoning_effort;
+    }
+    if let Some(cache_capabilities) = provider_config.cache_capabilities {
+        runtime.context_management.cache_capabilities = cache_capabilities;
     }
     if let Some(builtin_web_search) = provider_config.builtin_web_search {
         runtime.builtin_web_search = builtin_web_search.enabled.then_some(builtin_web_search);
