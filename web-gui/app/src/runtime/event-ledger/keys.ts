@@ -130,10 +130,38 @@ function serialize(value: unknown): string {
 }
 
 /**
+ * Immutable identity content of a raw event envelope.
+ *
+ * Envelope-level transport metadata is deliberately excluded: the public
+ * event contract declares the contract version once per stream, derives
+ * `provenance` from the payload, and emits `payload_schema` only for typed
+ * events, so an envelope contract revision can add or drop those fields
+ * without changing the event. Including them would surface a routine
+ * protocol upgrade as a false identity conflict.
+ */
+const IMMUTABLE_ENVELOPE_FIELDS = [
+  "agent_id",
+  "event_log_epoch",
+  "event_seq",
+  "id",
+  "ts",
+  "type",
+  "payload",
+] as const;
+
+/**
  * Fingerprint of the immutable identity content of a raw event envelope.
  * Two envelopes with the same correctness key but different fingerprints are
  * an identity conflict.
  */
 export function computeEnvelopeFingerprint(envelope: unknown): string {
-  return stableStringify(envelope);
+  if (typeof envelope !== "object" || envelope === null) {
+    return stableStringify(envelope);
+  }
+  const record = envelope as Record<string, unknown>;
+  const immutable: Record<string, unknown> = {};
+  for (const field of IMMUTABLE_ENVELOPE_FIELDS) {
+    if (record[field] !== undefined) immutable[field] = record[field];
+  }
+  return stableStringify(immutable);
 }

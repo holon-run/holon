@@ -496,19 +496,29 @@ export class EventLedgerWriteBatch {
           if (!existing) break;
           existing.onsuccess = () => {
             const prior = existing.result;
-            if (prior && prior.identityFingerprint !== fingerprint) {
-              failure =
-                failure ??
-                new LedgerIdentityConflictError({
-                  store: RAW_EVENTS_STORE,
-                  key: keyLabel,
-                  existingFingerprint: prior.identityFingerprint,
-                  incomingFingerprint: fingerprint,
-                });
-              tryAbort(tx);
-              return;
+            if (prior) {
+              // The persisted fingerprint is a fast path only. It may have
+              // been written by an older client whose projection differed, so
+              // a mismatch is re-derived from the stored envelope before it is
+              // treated as an immutable content conflict.
+              const priorFingerprint =
+                prior.identityFingerprint === fingerprint
+                  ? fingerprint
+                  : computeEnvelopeFingerprint(prior.envelope);
+              if (priorFingerprint !== fingerprint) {
+                failure =
+                  failure ??
+                  new LedgerIdentityConflictError({
+                    store: RAW_EVENTS_STORE,
+                    key: keyLabel,
+                    existingFingerprint: priorFingerprint,
+                    incomingFingerprint: fingerprint,
+                  });
+                tryAbort(tx);
+                return;
+              }
+              return; // Idempotent duplicate: keep the stored value.
             }
-            if (prior) return; // Idempotent duplicate: keep the stored value.
             const put = issue(() =>
               events.put({
                 ...op.scope,
