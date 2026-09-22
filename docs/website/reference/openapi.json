@@ -12243,65 +12243,71 @@
               },
               "decision": {
                 "default": {
-                  "checksum": null,
-                  "credential_profile": null,
                   "enabled": false,
-                  "endpoint": null,
+                  "local_onnx": {
+                    "checksum": null,
+                    "enabled": false,
+                    "model_dir": null,
+                    "num_threads": null,
+                    "preset": null,
+                    "variant": null
+                  },
                   "model": null,
-                  "model_dir": null,
-                  "num_threads": null,
-                  "provider": null,
                   "tools": {
                     "enabled": false,
                     "max_calls_per_turn": 4,
                     "min_confidence_percent": 0,
                     "timeout_ms": 1500
-                  },
-                  "variant": null
+                  }
                 },
                 "properties": {
-                  "checksum": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "credential_profile": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
                   "enabled": {
                     "type": "boolean"
                   },
-                  "endpoint": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
+                  "local_onnx": {
+                    "properties": {
+                      "checksum": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "model_dir": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "num_threads": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "preset": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "enabled"
+                    ],
+                    "type": "object"
                   },
                   "model": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "model_dir": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "num_threads": {
-                    "format": "uint",
-                    "minimum": 0,
-                    "type": [
-                      "integer",
-                      "null"
-                    ]
-                  },
-                  "provider": {
                     "type": [
                       "string",
                       "null"
@@ -12342,16 +12348,11 @@
                       "min_confidence_percent"
                     ],
                     "type": "object"
-                  },
-                  "variant": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
                   }
                 },
                 "required": [
-                  "enabled"
+                  "enabled",
+                  "local_onnx"
                 ],
                 "type": "object"
               },
@@ -12851,65 +12852,71 @@
               },
               "decision": {
                 "default": {
-                  "checksum": null,
-                  "credential_profile": null,
                   "enabled": false,
-                  "endpoint": null,
+                  "local_onnx": {
+                    "checksum": null,
+                    "enabled": false,
+                    "model_dir": null,
+                    "num_threads": null,
+                    "preset": null,
+                    "variant": null
+                  },
                   "model": null,
-                  "model_dir": null,
-                  "num_threads": null,
-                  "provider": null,
                   "tools": {
                     "enabled": false,
                     "max_calls_per_turn": 4,
                     "min_confidence_percent": 0,
                     "timeout_ms": 1500
-                  },
-                  "variant": null
+                  }
                 },
                 "properties": {
-                  "checksum": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "credential_profile": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
                   "enabled": {
                     "type": "boolean"
                   },
-                  "endpoint": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
+                  "local_onnx": {
+                    "properties": {
+                      "checksum": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "model_dir": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "num_threads": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
+                      },
+                      "preset": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "variant": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "enabled"
+                    ],
+                    "type": "object"
                   },
                   "model": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "model_dir": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
-                  },
-                  "num_threads": {
-                    "format": "uint",
-                    "minimum": 0,
-                    "type": [
-                      "integer",
-                      "null"
-                    ]
-                  },
-                  "provider": {
                     "type": [
                       "string",
                       "null"
@@ -12950,16 +12957,11 @@
                       "min_confidence_percent"
                     ],
                     "type": "object"
-                  },
-                  "variant": {
-                    "type": [
-                      "string",
-                      "null"
-                    ]
                   }
                 },
                 "required": [
-                  "enabled"
+                  "enabled",
+                  "local_onnx"
                 ],
                 "type": "object"
               },
@@ -22939,6 +22941,100 @@
           }
         ],
         "summary": "Set runtime credential",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/decision/local-onnx/preset/{preset}": {
+      "get": {
+        "description": "Return the managed-cache status for a local ONNX decision preset.",
+        "operationId": "runtimeDecisionLocalOnnxPreset",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Local ONNX preset status",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "post": {
+        "description": "Explicitly download and verify a local ONNX decision preset into the managed cache.",
+        "operationId": "runtimeDecisionLocalOnnxPresetDownload",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Download local ONNX preset",
         "tags": [
           "runtime"
         ]

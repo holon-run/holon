@@ -134,9 +134,7 @@ pub(crate) fn resolve_shared_decision_route(
                 .as_deref()
                 .filter(|value| !value.trim().is_empty())
                 .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| {
-                    managed_local_onnx_dir(&app_config.home_dir, preset).expect("validated preset")
-                });
+                .map_or_else(|| managed_local_onnx_dir(&app_config.home_dir, preset), Ok)?;
             return Ok(Some(ResolvedDecisionRoute {
                 provider: DecisionProviderKind::LocalOnnx(LocalOnnxConfig {
                     model_dir,

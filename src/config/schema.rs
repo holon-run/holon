@@ -1572,7 +1572,13 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         }
         "decision.local_onnx.preset" => {
             let preset = raw_value.trim();
-            anyhow::ensure!(!preset.is_empty(), "{key} must not be empty");
+            anyhow::ensure!(
+                !preset.is_empty()
+                    && preset.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')
+                    }),
+                "{key} must be a non-empty name containing only ASCII letters, digits, '-' or '_'"
+            );
             ensure_decision_local_onnx(config).preset = Some(preset.to_owned());
         }
         "decision.local_onnx.model_dir" => {

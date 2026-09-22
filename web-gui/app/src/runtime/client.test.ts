@@ -372,9 +372,15 @@ describe("createRuntimeClient", () => {
           runtime_surface: {
             decision: {
               enabled: true,
-              endpoint: "https://jev.example.test/v1",
-              model: "jev-decision-1",
-              credential_profile: "jev:default",
+              model: "jev:default/jev-decision-1",
+              local_onnx: {
+                enabled: false,
+                preset: "jev-selector-q4f16",
+                model_dir: "/tmp/models",
+                variant: "q4f16",
+                num_threads: 2,
+                checksum: "sha256:example",
+              },
             },
           },
         })) as typeof fetch,
@@ -384,9 +390,15 @@ describe("createRuntimeClient", () => {
       surface: {
         decision: {
           enabled: true,
-          endpoint: "https://jev.example.test/v1",
-          model: "jev-decision-1",
-          credentialProfile: "jev:default",
+          model: "jev:default/jev-decision-1",
+          localOnnx: {
+            enabled: false,
+            preset: "jev-selector-q4f16",
+            modelDir: "/tmp/models",
+            variant: "q4f16",
+            numThreads: 2,
+            checksum: "sha256:example",
+          },
         },
       },
     });
@@ -404,14 +416,15 @@ describe("createRuntimeClient", () => {
 
     expect(config.surface?.decision).toEqual({
       enabled: false,
-      provider: undefined,
-      endpoint: undefined,
       model: undefined,
-      credentialProfile: undefined,
-      modelDir: undefined,
-      variant: undefined,
-      numThreads: undefined,
-      checksum: undefined,
+      localOnnx: {
+        enabled: false,
+        preset: undefined,
+        modelDir: undefined,
+        variant: undefined,
+        numThreads: undefined,
+        checksum: undefined,
+      },
       tools: {
         enabled: false,
         maxCallsPerTurn: 4,
