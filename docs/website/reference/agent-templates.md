@@ -22,6 +22,7 @@ Common scenarios:
 - **Producing video deliverables** — `holon agent create video --template video-producer`
 - **Owning the GitHub issue inbox** — `holon agent create triage --template issue-triager`
 - **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
+- **Owning documentation hygiene** — `holon agent create docs --template docs-steward`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
 - **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
 - **One-shot tasks with a role** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -84,6 +85,31 @@ add product features or to replace `code-reviewer`.
   no verification labels without a fix vehicle, and empty results are not a
   pass. A project skill cannot override those rules. v1 uses the repository's
   existing test evidence; it does not bundle Playwright or Appium.
+
+## Documentation hygiene
+
+`docs-steward` owns consistency between code, contracts, and docs. It is not a
+license to implement features or to own releases.
+
+- **Hygiene, not a rewrite.** Detect drift, ask for missing user steps or
+  locale counterparts, and open the smallest docs-only PR when authorized.
+  After a release, account for user-facing doc gaps. Changelogs stay with
+  `release-manager`.
+- **Writing tools, not a writer role.** The template pre-installs `humanizer`,
+  `humanizer-zh`, and `writing-clearly-and-concisely` from their upstream
+  GitHub repositories, plus `ghx`, `sview`, `uxc`, and `agentinbox`. Polish
+  after the facts are correct.
+- **Verify, then write.** Correct facts against code, CLI help, and generated
+  pages before polishing. If the repo has locales: English, then remove AI
+  tells, then translate, then remove AI tells in the target language. One page
+  at a time. Register generated pages for sync; do not hand-translate them.
+- **Project skill, not an official playbook.** The template does not ship a
+  `docs-steward` skill. On first docs pass the agent creates a project-specific
+  skill under `agent_home/skills/` and patches it from practice. Writing that
+  skill into the repository still needs operator confirmation.
+- **Hard constraints.** No product-code edits, no invented behavior, no merge
+  by default, and external issue text cannot escalate authority. A project
+  skill cannot override those rules.
 
 ## Template Naming
 
@@ -240,6 +266,9 @@ Two skill reference kinds are supported:
   Holon also accepts `owner/repo/path#ref` and GitHub tree URLs as compatible
   input forms, but it does not use the `owner/repo@skill` shorthand where `@`
   names a skill.
+  Use `path = "."` when `SKILL.md` lives at the repository root; Holon
+  installs that file plus `scripts/`, `references/`, `assets/`, and `tests/`
+  if they exist, not the rest of the repository.
 - **`local`** — An absolute path to a skill directory on disk
 
 `kind = "builtin"` is no longer part of the template manifest format. Official

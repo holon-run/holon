@@ -1,0 +1,34 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/uxc"
+path = "skills/uxc"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "blader/humanizer"
+path = "."
+
+[[skills]]
+kind = "github"
+repo = "op7418/Humanizer-zh"
+path = "."
+
+[[skills]]
+kind = "github"
+repo = "obra/the-elements-of-style"
+path = "skills/writing-clearly-and-concisely"
