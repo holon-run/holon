@@ -611,6 +611,123 @@ fn exact_round_messages_preserves_tool_only_round_before_interjection_text() {
     }
 }
 
+#[test]
+fn exact_round_messages_synthesizes_failed_result_for_incomplete_tool_use() {
+    let round = fixture_round_with_tool(
+        3,
+        "checking",
+        "ExecCommand",
+        serde_json::json!({ "cmd": "ls" }),
+    );
+
+    let messages = exact_round_messages(&round);
+
+    assert_eq!(messages.len(), 2);
+    match &messages[1] {
+        ConversationMessage::UserToolResults(results) => {
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].tool_use_id, "call_3");
+            assert!(results[0].is_error);
+            assert_eq!(
+                results[0].content,
+                crate::provider::INCOMPLETE_TOOL_RESULT_SENTINEL
+            );
+        }
+        other => panic!("expected synthesized tool result message, got {other:?}"),
+    }
+}
+
+#[test]
+fn exact_round_messages_synthesizes_only_missing_tool_results() {
+    let mut round = fixture_round_with_tool(
+        4,
+        "checking",
+        "ExecCommand",
+        serde_json::json!({ "cmd": "ls" }),
+    );
+    round.assistant_blocks.push(ModelBlock::ToolUse {
+        id: "call_extra".to_string(),
+        name: "ExecCommand".to_string(),
+        input: serde_json::json!({ "cmd": "pwd" }),
+        kind: crate::provider::ModelToolCallKind::Function,
+        provider_data: None,
+    });
+    round.tool_results.push(ToolResultBlock {
+        tool_use_id: "call_extra".to_string(),
+        content: "ok".to_string(),
+        is_error: false,
+        error: None,
+    });
+
+    let messages = exact_round_messages(&round);
+
+    assert_eq!(messages.len(), 2);
+    match &messages[1] {
+        ConversationMessage::UserToolResults(results) => {
+            assert_eq!(results.len(), 2);
+            assert_eq!(results[0].tool_use_id, "call_extra");
+            assert!(!results[0].is_error);
+            assert_eq!(results[1].tool_use_id, "call_4");
+            assert!(results[1].is_error);
+            assert_eq!(
+                results[1].content,
+                crate::provider::INCOMPLETE_TOOL_RESULT_SENTINEL
+            );
+        }
+        other => panic!("expected tool result message, got {other:?}"),
+    }
+}
+
+#[test]
+fn compacted_round_messages_synthesizes_failed_result_for_incomplete_tool_use() {
+    let round = fixture_round_with_tool(
+        5,
+        "checking",
+        "ExecCommand",
+        serde_json::json!({ "cmd": "ls" }),
+    );
+
+    let (messages, stats) = compacted_round_messages(&round, 8_000)
+        .expect("compaction should succeed for a small round");
+
+    assert_eq!(stats.compacted_tool_results, 0);
+    match &messages[1] {
+        ConversationMessage::UserToolResults(results) => {
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].tool_use_id, "call_5");
+            assert!(results[0].is_error);
+        }
+        other => panic!("expected synthesized tool result message, got {other:?}"),
+    }
+}
+
+#[test]
+fn degraded_round_messages_synthesizes_failed_result_for_incomplete_tool_use() {
+    let round = fixture_round_with_tool(
+        6,
+        "checking",
+        "ExecCommand",
+        serde_json::json!({ "cmd": "ls" }),
+    );
+
+    let (messages, _trimmed) = degraded_round_messages(&round, 4_000);
+
+    let results = messages
+        .iter()
+        .find_map(|message| match message {
+            ConversationMessage::UserToolResults(results) => Some(results),
+            _ => None,
+        })
+        .expect("degraded projection should carry tool results");
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].tool_use_id, "call_6");
+    assert!(results[0].is_error);
+    assert_eq!(
+        results[0].content,
+        crate::provider::INCOMPLETE_TOOL_RESULT_SENTINEL
+    );
+}
+
 fn fixture_round_with_tool_result(
     round: usize,
     text: &str,
@@ -2536,9 +2653,21 @@ fn degraded_round_messages_no_trimmable_returns_exact() {
     assert!(!trimmed, "should not be trimmed when no trimmable content");
     assert_eq!(
         messages.len(),
-        1,
-        "should have exactly one message (assistant blocks)"
+        2,
+        "assistant blocks plus synthesized failed tool result"
     );
+    match &messages[1] {
+        ConversationMessage::UserToolResults(results) => {
+            assert_eq!(results.len(), 1);
+            assert_eq!(results[0].tool_use_id, "call_1");
+            assert!(results[0].is_error);
+            assert_eq!(
+                results[0].content,
+                crate::provider::INCOMPLETE_TOOL_RESULT_SENTINEL
+            );
+        }
+        other => panic!("expected synthesized tool result message, got {other:?}"),
+    }
 }
 
 #[test]

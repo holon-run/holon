@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+use tracing::debug;
+
 use crate::config::ModelRouteRef;
 use crate::provider::{
     ConversationMessage, ModelBlock, PromptContentBlock, ProviderAttemptTimeline,
@@ -296,10 +298,10 @@ pub(super) fn exact_round_messages(round: &TurnRoundRecord) -> Vec<ConversationM
     messages.push(ConversationMessage::AssistantBlocks(
         round.assistant_blocks.clone(),
     ));
-    if !round.tool_results.is_empty() {
-        messages.push(ConversationMessage::UserToolResults(
-            round.tool_results.clone(),
-        ));
+    let mut tool_results = round.tool_results.clone();
+    extend_incomplete_tool_results(round, &mut tool_results);
+    if !tool_results.is_empty() {
+        messages.push(ConversationMessage::UserToolResults(tool_results));
     }
     messages.extend(
         round
@@ -309,6 +311,43 @@ pub(super) fn exact_round_messages(round: &TurnRoundRecord) -> Vec<ConversationM
             .map(ConversationMessage::UserText),
     );
     messages
+}
+
+/// Managed tool_use ids in this round's assistant blocks that never received
+/// a tool_result before the turn ended.
+fn incomplete_tool_use_ids(round: &TurnRoundRecord) -> Vec<String> {
+    round
+        .assistant_blocks
+        .iter()
+        .filter_map(|block| match block {
+            ModelBlock::ToolUse { id, .. } => Some(id.as_str()),
+            _ => None,
+        })
+        .filter(|id| {
+            !round
+                .tool_results
+                .iter()
+                .any(|result| result.tool_use_id == *id)
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// A round interrupted between model output and tool execution would project
+/// as an orphaned tool_use that tool_use/tool_result-pairing providers reject.
+/// Synthesize a failed result per incomplete call so the round stays
+/// replayable. Projection-time only; nothing is persisted.
+fn extend_incomplete_tool_results(round: &TurnRoundRecord, results: &mut Vec<ToolResultBlock>) {
+    let missing_ids = incomplete_tool_use_ids(round);
+    if missing_ids.is_empty() {
+        return;
+    }
+    debug!(
+        round = round.round,
+        tool_use_ids = ?missing_ids,
+        "round has tool_use without tool_result; projecting synthesized failed tool_results"
+    );
+    results.extend(missing_ids.into_iter().map(ToolResultBlock::incomplete));
 }
 
 #[derive(Debug, Clone, Default)]
@@ -510,8 +549,8 @@ pub(super) fn compacted_round_messages(
         round.assistant_blocks.clone(),
     )];
     let mut stats = ToolResultProjectionStats::default();
+    let mut projected_results = Vec::with_capacity(round.tool_results.len());
     if !round.tool_results.is_empty() {
-        let mut projected_results = Vec::with_capacity(round.tool_results.len());
         for (index, result) in round.tool_results.iter().enumerate() {
             if estimate_tool_result_block_tokens(result) <= tool_output_budget_estimated_tokens {
                 projected_results.push(result.clone());
@@ -531,6 +570,9 @@ pub(super) fn compacted_round_messages(
                 .preserved_artifact_refs
                 .saturating_add(preserved_artifact_refs);
         }
+    }
+    extend_incomplete_tool_results(round, &mut projected_results);
+    if !projected_results.is_empty() {
         messages.push(ConversationMessage::UserToolResults(projected_results));
     }
     messages.extend(
@@ -601,8 +643,8 @@ pub(super) fn degraded_round_messages(
     }
     messages.push(ConversationMessage::AssistantBlocks(degraded_assistant));
 
+    let mut degraded_results = Vec::with_capacity(round.tool_results.len());
     if !round.tool_results.is_empty() {
-        let mut degraded_results = Vec::with_capacity(round.tool_results.len());
         for result in &round.tool_results {
             let char_count = result.content.chars().count();
             if char_count > per_item_char_limit {
@@ -621,6 +663,9 @@ pub(super) fn degraded_round_messages(
                 degraded_results.push(result.clone());
             }
         }
+    }
+    extend_incomplete_tool_results(round, &mut degraded_results);
+    if !degraded_results.is_empty() {
         messages.push(ConversationMessage::UserToolResults(degraded_results));
     }
 

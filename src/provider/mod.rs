@@ -564,6 +564,24 @@ pub struct ToolResultBlock {
     pub error: Option<ToolError>,
 }
 
+/// Sentinel content for tool_results synthesized over tool_use calls that
+/// never completed before a turn ended; providers requiring
+/// tool_use/tool_result pairing would otherwise reject the conversation.
+pub const INCOMPLETE_TOOL_RESULT_SENTINEL: &str =
+    "[tool result unavailable: turn ended before completion]";
+
+impl ToolResultBlock {
+    /// Synthesized failed result for a tool_use call that never completed.
+    pub fn incomplete(tool_use_id: impl Into<String>) -> Self {
+        Self {
+            tool_use_id: tool_use_id.into(),
+            content: INCOMPLETE_TOOL_RESULT_SENTINEL.to_string(),
+            is_error: true,
+            error: None,
+        }
+    }
+}
+
 #[async_trait]
 pub trait AgentProvider: Send + Sync {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse>;

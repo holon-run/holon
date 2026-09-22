@@ -511,6 +511,44 @@ pub(crate) fn invalid_response_error_with_trace(
     )
 }
 
+/// #2902: provider returned a structurally invalid but plausibly transient
+/// response (e.g. `stop_reason=tool_use` with zero tool-call blocks). Unlike
+/// `invalid_response_error_with_trace`, the same provider chain is retried
+/// before the failure surfaces.
+pub(crate) fn retryable_invalid_response_error_with_trace(
+    context: &str,
+    stage: &str,
+    provider: &str,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    error: impl std::fmt::Display,
+    trace: Option<&ProviderHttpTraceRequest>,
+    token_usage: TokenUsage,
+) -> anyhow::Error {
+    let error = error.to_string();
+    provider_transport_error_with_evidence(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::InvalidResponse,
+            disposition: RetryDisposition::Retryable,
+        },
+        None,
+        None,
+        Some(ProviderTransportDiagnostics {
+            stage: stage.to_string(),
+            provider: Some(provider.to_string()),
+            model_ref: model_ref.map(ToString::to_string),
+            url: url.map(sanitize_transport_url),
+            status: None,
+            reqwest: None,
+            http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+            source_chain: vec![error.clone()],
+        }),
+        Some(token_usage),
+        None,
+        format!("{context}: {error}"),
+    )
+}
+
 pub(crate) fn empty_response_error(
     context: &str,
     error: impl std::fmt::Display,
