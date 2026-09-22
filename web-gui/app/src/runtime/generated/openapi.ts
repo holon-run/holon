@@ -5925,6 +5925,12 @@ export interface components {
                  *       "model_dir": null,
                  *       "num_threads": null,
                  *       "provider": null,
+                 *       "tools": {
+                 *         "enabled": false,
+                 *         "max_calls_per_turn": 4,
+                 *         "min_confidence_percent": 0,
+                 *         "timeout_ms": 1500
+                 *       },
                  *       "variant": null
                  *     }
                  */
@@ -5938,6 +5944,23 @@ export interface components {
                     /** Format: uint */
                     num_threads?: number | null;
                     provider?: string | null;
+                    /**
+                     * @default {
+                     *       "enabled": false,
+                     *       "max_calls_per_turn": 4,
+                     *       "min_confidence_percent": 0,
+                     *       "timeout_ms": 1500
+                     *     }
+                     */
+                    tools: {
+                        enabled: boolean;
+                        /** Format: uint */
+                        max_calls_per_turn: number;
+                        /** Format: uint8 */
+                        min_confidence_percent: number;
+                        /** Format: uint64 */
+                        timeout_ms: number;
+                    };
                     variant?: string | null;
                 };
                 /** Format: uint32 */
@@ -6075,6 +6098,12 @@ export interface components {
                  *       "model_dir": null,
                  *       "num_threads": null,
                  *       "provider": null,
+                 *       "tools": {
+                 *         "enabled": false,
+                 *         "max_calls_per_turn": 4,
+                 *         "min_confidence_percent": 0,
+                 *         "timeout_ms": 1500
+                 *       },
                  *       "variant": null
                  *     }
                  */
@@ -6088,6 +6117,23 @@ export interface components {
                     /** Format: uint */
                     num_threads?: number | null;
                     provider?: string | null;
+                    /**
+                     * @default {
+                     *       "enabled": false,
+                     *       "max_calls_per_turn": 4,
+                     *       "min_confidence_percent": 0,
+                     *       "timeout_ms": 1500
+                     *     }
+                     */
+                    tools: {
+                        enabled: boolean;
+                        /** Format: uint */
+                        max_calls_per_turn: number;
+                        /** Format: uint8 */
+                        min_confidence_percent: number;
+                        /** Format: uint64 */
+                        timeout_ms: number;
+                    };
                     variant?: string | null;
                 };
                 /** Format: uint32 */

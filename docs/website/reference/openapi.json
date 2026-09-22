@@ -12251,6 +12251,12 @@
                   "model_dir": null,
                   "num_threads": null,
                   "provider": null,
+                  "tools": {
+                    "enabled": false,
+                    "max_calls_per_turn": 4,
+                    "min_confidence_percent": 0,
+                    "timeout_ms": 1500
+                  },
                   "variant": null
                 },
                 "properties": {
@@ -12300,6 +12306,42 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "tools": {
+                    "default": {
+                      "enabled": false,
+                      "max_calls_per_turn": 4,
+                      "min_confidence_percent": 0,
+                      "timeout_ms": 1500
+                    },
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "max_calls_per_turn": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "min_confidence_percent": {
+                        "format": "uint8",
+                        "maximum": 255,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "timeout_ms": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "enabled",
+                      "max_calls_per_turn",
+                      "timeout_ms",
+                      "min_confidence_percent"
+                    ],
+                    "type": "object"
                   },
                   "variant": {
                     "type": [
@@ -12817,6 +12859,12 @@
                   "model_dir": null,
                   "num_threads": null,
                   "provider": null,
+                  "tools": {
+                    "enabled": false,
+                    "max_calls_per_turn": 4,
+                    "min_confidence_percent": 0,
+                    "timeout_ms": 1500
+                  },
                   "variant": null
                 },
                 "properties": {
@@ -12866,6 +12914,42 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "tools": {
+                    "default": {
+                      "enabled": false,
+                      "max_calls_per_turn": 4,
+                      "min_confidence_percent": 0,
+                      "timeout_ms": 1500
+                    },
+                    "properties": {
+                      "enabled": {
+                        "type": "boolean"
+                      },
+                      "max_calls_per_turn": {
+                        "format": "uint",
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "min_confidence_percent": {
+                        "format": "uint8",
+                        "maximum": 255,
+                        "minimum": 0,
+                        "type": "integer"
+                      },
+                      "timeout_ms": {
+                        "format": "uint64",
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    },
+                    "required": [
+                      "enabled",
+                      "max_calls_per_turn",
+                      "timeout_ms",
+                      "min_confidence_percent"
+                    ],
+                    "type": "object"
                   },
                   "variant": {
                     "type": [
