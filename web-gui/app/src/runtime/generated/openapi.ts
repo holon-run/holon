@@ -5917,19 +5917,28 @@ export interface components {
                 command_task_output_retention_bytes: number;
                 /**
                  * @default {
+                 *       "checksum": null,
                  *       "credential_profile": null,
                  *       "enabled": false,
                  *       "endpoint": null,
                  *       "model": null,
-                 *       "provider": null
+                 *       "model_dir": null,
+                 *       "num_threads": null,
+                 *       "provider": null,
+                 *       "variant": null
                  *     }
                  */
                 decision: {
+                    checksum?: string | null;
                     credential_profile?: string | null;
                     enabled: boolean;
                     endpoint?: string | null;
                     model?: string | null;
+                    model_dir?: string | null;
+                    /** Format: uint */
+                    num_threads?: number | null;
                     provider?: string | null;
+                    variant?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
@@ -6058,19 +6067,28 @@ export interface components {
                 command_task_output_retention_bytes: number;
                 /**
                  * @default {
+                 *       "checksum": null,
                  *       "credential_profile": null,
                  *       "enabled": false,
                  *       "endpoint": null,
                  *       "model": null,
-                 *       "provider": null
+                 *       "model_dir": null,
+                 *       "num_threads": null,
+                 *       "provider": null,
+                 *       "variant": null
                  *     }
                  */
                 decision: {
+                    checksum?: string | null;
                     credential_profile?: string | null;
                     enabled: boolean;
                     endpoint?: string | null;
                     model?: string | null;
+                    model_dir?: string | null;
+                    /** Format: uint */
+                    num_threads?: number | null;
                     provider?: string | null;
+                    variant?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
