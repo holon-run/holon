@@ -767,6 +767,78 @@ impl AgentProvider for AbandonCompletionReportProvider {
     }
 }
 
+struct CompletionReportFallbackBudgetProvider {
+    work_item_id: String,
+    calls: Mutex<usize>,
+}
+
+#[async_trait]
+impl AgentProvider for CompletionReportFallbackBudgetProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let blocks = match *calls {
+            1 => vec![ModelBlock::ToolUse {
+                id: "complete-work".into(),
+                name: "CompleteWorkItem".into(),
+                input: serde_json::json!({
+                    "work_item_id": self.work_item_id.clone()
+                }),
+                kind: crate::provider::ModelToolCallKind::Function,
+                provider_data: None,
+            }],
+            2 | 3 => {
+                assert!(
+                    request.tools.iter().any(|tool| tool.name == "GetAgent"),
+                    "allowed report tools should remain available within the budget"
+                );
+                vec![ModelBlock::ToolUse {
+                    id: format!("allowed-report-tool-{}", *calls),
+                    name: "GetAgent".into(),
+                    input: serde_json::json!({}),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                }]
+            }
+            4 => {
+                assert!(
+                    request.tools.is_empty(),
+                    "the completion report request after two tool rounds must be text-only"
+                );
+                let last_user_text = request
+                    .conversation
+                    .iter()
+                    .rev()
+                    .find_map(|message| match message {
+                        ConversationMessage::UserText(text) => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .expect("text-only fallback request must follow a user text notice");
+                assert!(
+                    last_user_text.contains("Report tool budget exhausted.")
+                        && last_user_text
+                            .contains("Tool calls are now disabled at the API layer"),
+                    "text-only fallback request must be preceded by the fallback notice, got: {last_user_text}"
+                );
+                vec![ModelBlock::Text {
+                    text: "All work is complete; final report delivered.".into(),
+                }]
+            }
+            call => panic!("unexpected provider call {call}"),
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
 struct RevisionChangeCompletionReportProvider {
     work_item_id: String,
     calls: Mutex<usize>,
@@ -4896,6 +4968,166 @@ async fn abandoned_completion_report_protocol_interrupts_deferred_tool_atomicall
         .iter()
         .all(|event| event.kind != "tool_execution_failed"));
     runtime_task.abort();
+}
+
+#[tokio::test]
+async fn completion_report_text_only_fallback_notifies_model_and_completes() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let seed_runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = seed_runtime
+        .create_work_item(
+            "completion report fallback budget".into(),
+            None,
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    seed_runtime
+        .pick_work_item(work_item.id.clone())
+        .await
+        .unwrap();
+
+    let provider = Arc::new(CompletionReportFallbackBudgetProvider {
+        work_item_id: work_item.id.clone(),
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        continuation_context_config(),
+    )
+    .unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("control".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "finish the tracked work".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::HttpControlPrompt,
+        AdmissionContext::ControlAuthenticated,
+    );
+    message.work_item_id = Some(work_item.id.clone());
+
+    let mut runtime_task = tokio::spawn(runtime.clone().run());
+    runtime.enqueue(message).await.unwrap();
+    let completion = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        loop {
+            if runtime
+                .latest_work_item(&work_item.id)
+                .await
+                .unwrap()
+                .is_some_and(|record| record.state == WorkItemState::Completed)
+            {
+                break;
+            }
+            if runtime_task.is_finished() {
+                panic!(
+                    "runtime exited before the text-only fallback completion report: {:#}",
+                    (&mut runtime_task)
+                        .await
+                        .expect("runtime task join")
+                        .expect_err("runtime unexpectedly completed")
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if completion.is_err() {
+        let calls = *provider.calls.lock().await;
+        let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+        let turns = runtime.storage().read_recent_turns(10).unwrap();
+        let events = runtime
+            .storage()
+            .read_recent_events(200)
+            .unwrap()
+            .into_iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>();
+        panic!(
+            "timed out waiting for the fallback completion report: calls={calls}, tools={tools:?}, turns={turns:?}, events={events:?}, runtime_finished={}",
+            runtime_task.is_finished()
+        );
+    }
+    runtime_task.abort();
+
+    assert_eq!(*provider.calls.lock().await, 4);
+    let completed = runtime
+        .latest_work_item(&work_item.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(completed.state, WorkItemState::Completed);
+    assert!(completed.result_brief_id.is_some());
+    assert!(runtime
+        .recent_briefs(10)
+        .await
+        .unwrap()
+        .iter()
+        .any(|brief| brief.kind == BriefKind::Result
+            && brief.text == "All work is complete; final report delivered."));
+
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    let completion_tools = tools
+        .iter()
+        .filter(|tool| tool.tool_name == "CompleteWorkItem")
+        .collect::<Vec<_>>();
+    assert_eq!(completion_tools.len(), 1);
+    assert_eq!(completion_tools[0].status, ToolExecutionStatus::Success);
+    assert_eq!(
+        tools
+            .iter()
+            .filter(|tool| tool.tool_name == "GetAgent")
+            .count(),
+        2,
+        "allowed report tools should execute for both budgeted rounds"
+    );
+
+    let transcript = runtime.storage().read_recent_transcript(20).unwrap();
+    assert!(transcript.iter().any(|entry| {
+        entry.kind == crate::types::TranscriptEntryKind::ContinuationPrompt
+            && entry.data.get("reason").and_then(|value| value.as_str())
+                == Some("completion_report_fallback_notice")
+            && entry
+                .data
+                .get("text")
+                .and_then(|value| value.as_str())
+                .is_some_and(|text| text.contains("Report tool budget exhausted."))
+    }));
+
+    let events = runtime.storage().read_recent_events(200).unwrap();
+    assert!(events.iter().any(|event| {
+        event.kind == "report_fallback_notice_injected"
+            && event.data.get("path").and_then(|value| value.as_str()) == Some("completion")
+            && event
+                .data
+                .get("report_tool_rounds")
+                .and_then(|value| value.as_u64())
+                == Some(2)
+    }));
 }
 
 #[tokio::test]

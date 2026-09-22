@@ -95,6 +95,10 @@ struct PendingWaitReport {
 
 const MAX_REPORT_TOOL_ROUNDS: usize = 2;
 
+const WAIT_REPORT_FALLBACK_NOTICE: &str = "Report tool budget exhausted. Tool calls are now disabled at the API layer. Reply with non-empty operator-facing final text only; do not attempt any tool call, including writing tool calls as text.";
+
+const COMPLETION_REPORT_FALLBACK_NOTICE: &str = "Report tool budget exhausted. Tool calls are now disabled at the API layer. Reply with the final operator-facing completion report directly; do not attempt any tool call, including writing tool calls as text.";
+
 fn tool_capability_projection_fingerprint(tools: &[ToolSpec]) -> String {
     let encoded = serde_json::to_vec(tools).unwrap_or_default();
     format!("sha256:{:x}", Sha256::digest(encoded))
@@ -1760,6 +1764,10 @@ impl TurnExecution<'_> {
                 return Err(err);
             }
             round += 1;
+            // Set when this round's report tool usage moves the pending report
+            // protocol into its text-only fallback; carried into the round
+            // record so the next (tools-disabled) request sees the notice.
+            let mut report_fallback_notice: Option<&'static str> = None;
             if let Some(max_tool_rounds) = loop_control.max_tool_rounds {
                 if round > max_tool_rounds {
                     let final_text = format!(
@@ -2664,6 +2672,29 @@ impl TurnExecution<'_> {
 
                 if !tool_calls.is_empty() {
                     pending.report_tool_rounds += 1;
+                    if !pending.text_only_fallback
+                        && pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
+                    {
+                        report_fallback_notice = Some(WAIT_REPORT_FALLBACK_NOTICE);
+                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                            agent_id.to_string(),
+                            TranscriptEntryKind::ContinuationPrompt,
+                            Some(round),
+                            None,
+                            serde_json::json!({
+                                "text": WAIT_REPORT_FALLBACK_NOTICE,
+                                "reason": "wait_report_fallback_notice",
+                            }),
+                        ))?;
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
+                            "report_fallback_notice_injected",
+                            serde_json::json!({
+                                "path": "wait",
+                                "agent_id": agent_id,
+                                "report_tool_rounds": pending.report_tool_rounds,
+                            }),
+                        ))?;
+                    }
                     pending.text_only_fallback =
                         pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS;
                     pending_wait_report = Some(pending);
@@ -2849,6 +2880,31 @@ impl TurnExecution<'_> {
 
                 if !tool_calls.is_empty() {
                     pending.report_tool_rounds += 1;
+                    if !pending.text_only_fallback
+                        && pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS
+                    {
+                        report_fallback_notice = Some(COMPLETION_REPORT_FALLBACK_NOTICE);
+                        runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                            agent_id.to_string(),
+                            TranscriptEntryKind::ContinuationPrompt,
+                            Some(round),
+                            None,
+                            serde_json::json!({
+                                "text": COMPLETION_REPORT_FALLBACK_NOTICE,
+                                "reason": "completion_report_fallback_notice",
+                                "completion_request_id": pending.request_id,
+                            }),
+                        ))?;
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
+                            "report_fallback_notice_injected",
+                            serde_json::json!({
+                                "path": "completion",
+                                "agent_id": agent_id,
+                                "completion_request_id": pending.request_id,
+                                "report_tool_rounds": pending.report_tool_rounds,
+                            }),
+                        ))?;
+                    }
                     pending.text_only_fallback =
                         pending.report_tool_rounds >= MAX_REPORT_TOOL_ROUNDS;
                     pending_completion_report = Some(pending);
@@ -3985,6 +4041,9 @@ impl TurnExecution<'_> {
             let mut interjections = before_tool_execution_interjections;
             interjections.extend(after_tool_results_interjections);
             let has_operator_interjections = !interjections.is_empty();
+            if let Some(notice) = report_fallback_notice.take() {
+                interjections.push(notice.to_string());
+            }
             let terminal_wait_without_text =
                 all_tool_results_should_sleep && last_assistant_message.is_none();
             let round_record = TurnRoundRecord {
