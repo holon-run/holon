@@ -91,6 +91,7 @@ pub(crate) async fn execute(
                 "disabled",
                 "advisory decision tool is disabled",
                 "",
+                fingerprint.clone(),
                 &args.options,
             ),
         );
@@ -109,6 +110,7 @@ pub(crate) async fn execute(
                 "rate_limited",
                 "per-turn advisory decision limit reached",
                 "",
+                fingerprint.clone(),
                 &args.options,
             ),
         );
@@ -147,6 +149,7 @@ pub(crate) async fn execute(
                     "provider_failure",
                     &redact_text(&error.to_string(), 240),
                     "",
+                    fingerprint.clone(),
                     &args.options,
                 ),
             );
@@ -162,6 +165,7 @@ pub(crate) async fn execute(
                     "timeout",
                     "advisory decision provider timed out",
                     "",
+                    fingerprint.clone(),
                     &args.options,
                 ),
             );
@@ -495,6 +499,7 @@ fn abstain_result(
     reason: &str,
     message: &str,
     provider: &str,
+    question_fingerprint: String,
     options: &[String],
 ) -> AdvisoryDecisionResult {
     abstain_result_with_metadata(
@@ -505,7 +510,7 @@ fn abstain_result(
         None,
         None,
         Vec::new(),
-        String::new(),
+        question_fingerprint,
         options
             .iter()
             .map(|option| redact_text(option, 120))
@@ -543,8 +548,8 @@ fn abstain_result_with_metadata(
 #[cfg(test)]
 mod tests {
     use super::{
-        contains_sensitive_state_marker, ensure_authority, sanitize_state, validate_args,
-        AdvisoryDecisionArgs,
+        abstain_result, contains_sensitive_state_marker, ensure_authority, sanitize_state,
+        validate_args, AdvisoryDecisionArgs,
     };
     use crate::types::AuthorityClass;
 
@@ -600,5 +605,18 @@ mod tests {
             state: String::new(),
         };
         assert!(validate_args(&oversized_question).is_err());
+    }
+
+    #[test]
+    fn abstain_result_preserves_question_fingerprint() {
+        let result = abstain_result(
+            "disabled",
+            "advisory decision tool is disabled",
+            "",
+            "0123456789abcdef".into(),
+            &["yes".into(), "no".into()],
+        );
+
+        assert_eq!(result.question_fingerprint, "0123456789abcdef");
     }
 }
