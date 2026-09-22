@@ -341,6 +341,10 @@ pub struct AnthropicPromptCacheDiagnostics {
     pub system_cache_control_count: usize,
     #[serde(default)]
     pub message_cache_control_count: usize,
+    #[serde(default)]
+    pub rolling_marker_lag_messages: usize,
+    #[serde(default)]
+    pub rolling_marker_at_tail: bool,
     pub cache_breakpoints: Vec<CacheBreakpointInfo>,
     pub tokens_before_last_breakpoint: u64,
     pub tokens_after_last_breakpoint: u64,

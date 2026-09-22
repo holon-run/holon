@@ -40,3 +40,10 @@ Diagnostics record the effective strategy, model, betas, and system/message
 cache-control counts. These fields are for benchmark analysis and operator
 inspection; they should not feed back into runtime scheduling or prompt
 assembly.
+
+The lowering preserves prompt stability boundaries. Stable and agent-scoped
+system/context blocks remain in the cacheable system prefix, while turn-scoped
+context stays in the initial user message instead of changing that prefix on
+every turn. The rolling conversation marker follows the latest cacheable
+content block, including Anthropic `tool_result` blocks after tool-only rounds;
+the runtime conversation is not mutated.
