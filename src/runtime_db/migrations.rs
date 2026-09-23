@@ -49,6 +49,8 @@ pub(crate) const AGENT_DELETION_RETRY_DEADLINE_VERSION: i64 = 70;
 pub(crate) const AGENT_DELETION_RETRY_DEADLINE_NAME: &str = "agent_deletion_retry_deadline";
 pub(crate) const MEMORY_REBUILD_KEYSET_INDEXES_VERSION: i64 = 71;
 pub(crate) const MEMORY_REBUILD_KEYSET_INDEXES_NAME: &str = "memory_rebuild_keyset_indexes";
+pub(crate) const WORK_ITEM_AGENT_UPDATED_INDEX_VERSION: i64 = 72;
+pub(crate) const WORK_ITEM_AGENT_UPDATED_INDEX_NAME: &str = "work_item_agent_updated_index";
 pub(crate) const CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL: &str = r#"
 SELECT
   json_extract(
@@ -3687,6 +3689,11 @@ CREATE INDEX idx_agent_deletion_jobs_status_retry_created
         name: MEMORY_REBUILD_KEYSET_INDEXES_NAME,
         sql: "",
     },
+    Migration {
+        version: WORK_ITEM_AGENT_UPDATED_INDEX_VERSION,
+        name: WORK_ITEM_AGENT_UPDATED_INDEX_NAME,
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4006,6 +4013,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == MEMORY_REBUILD_KEYSET_INDEXES_NAME {
         migrate_memory_rebuild_keyset_indexes(transaction)?;
+    }
+    if migration.name == WORK_ITEM_AGENT_UPDATED_INDEX_NAME {
+        migrate_work_item_agent_updated_index(transaction)?;
     }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -5919,6 +5929,16 @@ fn migrate_memory_rebuild_keyset_indexes(connection: &Connection) -> Result<()> 
         if table_exists_internal(connection, table)? {
             connection.execute_batch(statement)?;
         }
+    }
+    Ok(())
+}
+
+fn migrate_work_item_agent_updated_index(connection: &Connection) -> Result<()> {
+    if table_exists_internal(connection, "work_items")? {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_work_items_agent_updated
+             ON work_items(agent_id, updated_at DESC, created_at DESC, work_item_id ASC);",
+        )?;
     }
     Ok(())
 }
