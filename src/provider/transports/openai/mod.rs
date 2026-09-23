@@ -772,18 +772,10 @@ impl AgentProvider for OpenAiProvider {
 impl AgentProvider for OpenAiCodexProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
-        let credential = self.resolve_fresh_credential().await.map_err(|error| {
-            openai_codex_auth_error(
-                "credential_resolution",
-                &model_ref,
-                vec![
-                    error.to_string(),
-                    "OpenAI Codex can use a Holon-managed openai-codex credential profile or the external Codex CLI credential store. Holon may refresh its own profile, but only reads Codex CLI credentials and never overwrites them."
-                        .into(),
-                ],
-                "OpenAI Codex authentication failed: no Holon openai-codex credential profile or usable Codex CLI credentials are available.",
-            )
-        })?;
+        let credential = self
+            .resolve_fresh_credential()
+            .await
+            .map_err(|error| openai_codex_credential_resolution_error(error, &model_ref, false))?;
         if let Some(expires_at) = credential.expires_at {
             if expires_at <= Utc::now() + chrono::Duration::seconds(60) {
                 return Err(openai_codex_auth_error(
@@ -947,17 +939,10 @@ impl AgentProvider for OpenAiCodexProvider {
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
-        let credential = self.resolve_fresh_credential().await.map_err(|error| {
-            openai_codex_auth_error(
-                "credential_resolution",
-                &model_ref,
-                vec![
-                    error.to_string(),
-                    "OpenAI Codex image generation uses Codex OAuth credentials through the Responses image_generation tool.".into(),
-                ],
-                "OpenAI Codex image generation authentication failed: no usable OAuth credentials are available.",
-            )
-        })?;
+        let credential = self
+            .resolve_fresh_credential()
+            .await
+            .map_err(|error| openai_codex_credential_resolution_error(error, &model_ref, true))?;
         if let Some(expires_at) = credential.expires_at {
             if expires_at <= Utc::now() + chrono::Duration::seconds(60) {
                 return Err(openai_codex_auth_error(
@@ -1287,6 +1272,38 @@ fn openai_codex_auth_error(
         }),
         message,
     )
+}
+
+fn openai_codex_credential_resolution_error(
+    error: anyhow::Error,
+    model_ref: &str,
+    image_generation: bool,
+) -> anyhow::Error {
+    if error.downcast_ref::<ProviderTransportError>().is_some() {
+        return error;
+    }
+
+    if image_generation {
+        openai_codex_auth_error(
+            "credential_resolution",
+            model_ref,
+            vec![
+                error.to_string(),
+                "OpenAI Codex image generation uses Codex OAuth credentials through the Responses image_generation tool.".into(),
+            ],
+            "OpenAI Codex image generation authentication failed: no usable OAuth credentials are available.",
+        )
+    } else {
+        openai_codex_auth_error(
+            "credential_resolution",
+            model_ref,
+            vec![
+                error.to_string(),
+                "OpenAI Codex can use a Holon-managed openai-codex credential profile or the external Codex CLI credential store. Holon may refresh its own profile, but only reads Codex CLI credentials and never overwrites them.".into(),
+            ],
+            "OpenAI Codex authentication failed: no Holon openai-codex credential profile or usable Codex CLI credentials are available.",
+        )
+    }
 }
 
 fn openai_codex_status_error_context(status: reqwest::StatusCode) -> &'static str {

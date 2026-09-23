@@ -17,6 +17,9 @@ use crate::config::{
     ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
+use crate::provider::retry::{
+    provider_transport_error, ProviderFailureClassification, ProviderTransportError,
+};
 use crate::provider::{
     ConversationMessage, ProviderGenerateImageRequest, ProviderJsonSchemaResponseFormat,
     ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderResponseFormatRequest,
@@ -32,6 +35,40 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 static CODEX_REFRESH_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn codex_credential_resolution_preserves_typed_transport_errors() {
+    let error = provider_transport_error(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::CredentialRefreshBusy,
+            disposition: RetryDisposition::Retryable,
+        },
+        None,
+        None,
+        "credential refresh lock is already held",
+    );
+
+    let preserved =
+        super::openai_codex_credential_resolution_error(error, "openai-codex/gpt-5", false);
+
+    let typed = preserved
+        .downcast_ref::<ProviderTransportError>()
+        .expect("typed provider transport error should be preserved");
+    let classification = classify_provider_error(&preserved);
+    assert_eq!(
+        typed.classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(
+        typed.classification.disposition,
+        RetryDisposition::Retryable
+    );
+    assert_eq!(
+        classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
 
 struct EnvVarGuard {
     key: &'static str,
