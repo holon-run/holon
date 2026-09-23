@@ -82,6 +82,12 @@ export function runtimeReloadMessage(runtimeConfig: RuntimeConfigState): string 
   return `Configuration reload generation ${reload.completedGeneration} completed.`;
 }
 
+export function shouldHydrateSettingsDrafts(runtimeConfig: RuntimeConfigState): boolean {
+  const results = runtimeConfig.results ?? [];
+  return !results.some((result) => result.effect === "rejected")
+    && runtimeConfig.reload?.state !== "failed";
+}
+
 function numberFromInput(value: string): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -432,7 +438,7 @@ export function SettingsPage({
   );
 
   useEffect(() => {
-    if (!surface) return;
+    if (!surface || !shouldHydrateSettingsDrafts(runtimeConfig)) return;
     setModelDefault(surface.modelDefault);
     setModelFallbacks(surface.modelFallbacks ?? []);
     setVisionDefault(surface.visionDefault ?? "");
@@ -495,7 +501,7 @@ export function SettingsPage({
     setSearchProviderSaveMessage(undefined);
     setVisionSaveMessage(undefined);
     setProviderSaveMessage(undefined);
-  }, [surface]);
+  }, [runtimeConfig, surface]);
 
   useEffect(() => {
     void onRefreshCredentialStore();

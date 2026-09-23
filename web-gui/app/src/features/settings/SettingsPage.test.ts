@@ -11,6 +11,7 @@ import {
   providerCredentialReady,
   reorderModelFallbacks,
   runtimeReloadMessage,
+  shouldHydrateSettingsDrafts,
   sortProvidersForSettings,
   sortSearchProvidersForSettings,
 } from "./SettingsPage";
@@ -395,5 +396,37 @@ describe("runtimeReloadMessage", () => {
         lastError: "provider rebuild failed",
       },
     })).toContain("provider rebuild failed");
+  });
+});
+
+describe("shouldHydrateSettingsDrafts", () => {
+  it("keeps failed update drafts visible when the batch is rejected", () => {
+    expect(shouldHydrateSettingsDrafts({
+      source: "http",
+      results: [{ key: "decision.model", effect: "rejected", reason: "invalid model" }],
+    })).toBe(false);
+  });
+
+  it("keeps drafts visible when runtime reload fails", () => {
+    expect(shouldHydrateSettingsDrafts({
+      source: "http",
+      reload: {
+        requestedGeneration: 3,
+        completedGeneration: 3,
+        state: "failed",
+        lastError: "provider unavailable",
+      },
+    })).toBe(false);
+  });
+
+  it("hydrates drafts after a completed reload", () => {
+    expect(shouldHydrateSettingsDrafts({
+      source: "http",
+      reload: {
+        requestedGeneration: 3,
+        completedGeneration: 3,
+        state: "completed",
+      },
+    })).toBe(true);
   });
 });

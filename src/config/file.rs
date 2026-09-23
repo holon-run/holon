@@ -654,8 +654,22 @@ impl DecisionConfigFile {
             && self.concurrency.is_none()
             && self.queue_capacity.is_none()
             && self.model.is_none()
-            && self.local_onnx.is_none()
+            && self
+                .local_onnx
+                .as_ref()
+                .is_none_or(DecisionLocalOnnxConfigFile::is_empty)
             && self.tools.is_none()
+    }
+}
+
+impl DecisionLocalOnnxConfigFile {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.preset.is_none()
+            && self.model_dir.is_none()
+            && self.variant.is_none()
+            && self.num_threads.is_none()
+            && self.checksum.is_none()
     }
 }
 
