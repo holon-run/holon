@@ -11,7 +11,7 @@ use super::{
     retry::{
         classify_provider_error, format_provider_failure, provider_error_retry_after,
         provider_fallback_disposition, provider_max_attempts, provider_retry_delay,
-        ProviderRetryDelay, RetryDisposition,
+        provider_retry_jitter_seed, ProviderRetryDelay, RetryDisposition,
     },
     AgentProvider, PromptContentBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
     ProviderAttemptTimeline, ProviderBuiltinWebSearchCapability, ProviderContextManagementPolicy,
@@ -193,6 +193,9 @@ mod tests {
         Fail {
             retry_after: Option<std::time::Duration>,
         },
+        ServerError {
+            retry_after: Option<std::time::Duration>,
+        },
         Succeed,
     }
 
@@ -220,6 +223,19 @@ mod tests {
                         None,
                         retry_after,
                         "scripted rate limit",
+                    ),
+                ),
+                ScriptedFailure::ServerError { retry_after } => Err(
+                    crate::provider::retry::provider_transport_error_with_code_and_retry_after(
+                        crate::provider::retry::ProviderFailureClassification {
+                            kind: crate::provider::ProviderFailureKind::ServerError,
+                            disposition: RetryDisposition::Retryable,
+                        },
+                        Some("server_error"),
+                        Some(503),
+                        None,
+                        retry_after,
+                        "scripted server error",
                     ),
                 ),
                 ScriptedFailure::Succeed => Ok(ProviderTurnResponse {
@@ -336,34 +352,45 @@ mod tests {
         assert_eq!(timeline.attempts[0].backoff_source, None);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn retry_without_server_hint_keeps_computed_backoff() {
         let provider = FallbackProvider {
             candidates: vec![scripted_candidate(
                 "openai/gpt-5.4",
                 vec![
-                    ScriptedFailure::Fail { retry_after: None },
-                    ScriptedFailure::Fail { retry_after: None },
+                    ScriptedFailure::ServerError { retry_after: None },
+                    ScriptedFailure::ServerError { retry_after: None },
                     ScriptedFailure::Succeed,
                 ],
             )],
         };
 
-        let (_, diagnostics) = provider
-            .complete_turn_with_diagnostics(plain_turn_request())
-            .await
-            .expect("third attempt should succeed");
+        let task = tokio::spawn(async move {
+            provider
+                .complete_turn_with_diagnostics(plain_turn_request())
+                .await
+                .expect("third attempt should succeed")
+        });
+        tokio::task::yield_now().await;
+        tokio::time::advance(std::time::Duration::from_secs(10)).await;
+        let (_, diagnostics) = task.await.expect("retry task should complete");
         let timeline = diagnostics.expect("timeline");
         assert_eq!(timeline.attempts.len(), 3);
-        assert_eq!(timeline.attempts[0].backoff_ms, Some(200));
+        assert!(matches!(
+            timeline.attempts[0].backoff_ms,
+            Some(2_000..=2_500)
+        ));
         assert_eq!(
             timeline.attempts[0].backoff_source.as_deref(),
-            Some("computed_backoff")
+            Some("server_error_exponential_backoff")
         );
-        assert_eq!(timeline.attempts[1].backoff_ms, Some(400));
+        assert!(matches!(
+            timeline.attempts[1].backoff_ms,
+            Some(4_000..=5_000)
+        ));
         assert_eq!(
             timeline.attempts[1].backoff_source.as_deref(),
-            Some("computed_backoff")
+            Some("server_error_exponential_backoff")
         );
     }
 
@@ -769,6 +796,10 @@ impl AgentProvider for FallbackProvider {
                             attempt,
                             classification.kind,
                             provider_error_retry_after(&error),
+                            provider_retry_jitter_seed(
+                                &candidate.provider_name,
+                                &candidate.model_ref,
+                            ),
                         ))
                     } else {
                         None
