@@ -12253,6 +12253,7 @@
                     "variant": null
                   },
                   "model": null,
+                  "protocol": null,
                   "tools": {
                     "enabled": false,
                     "max_calls_per_turn": 4,
@@ -12308,6 +12309,12 @@
                     "type": "object"
                   },
                   "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "protocol": {
                     "type": [
                       "string",
                       "null"
@@ -12862,6 +12869,7 @@
                     "variant": null
                   },
                   "model": null,
+                  "protocol": null,
                   "tools": {
                     "enabled": false,
                     "max_calls_per_turn": 4,
@@ -12917,6 +12925,12 @@
                     "type": "object"
                   },
                   "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "protocol": {
                     "type": [
                       "string",
                       "null"

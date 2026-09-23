@@ -3216,6 +3216,16 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         .bearer_auth("secret")
         .json(&serde_json::json!({
             "updates": [
+                {
+                    "key": "models.catalog",
+                    "value": {
+                        "openai/gpt-4o-mini": {
+                            "capabilities": {
+                                "decision": true
+                            }
+                        }
+                    }
+                },
                 { "key": "decision.model", "value": "openai/gpt-4o-mini" },
                 { "key": "decision.enabled", "value": true }
             ]
@@ -3228,7 +3238,10 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         valid_decision_response.text().await?
     );
     let valid_decision_payload: serde_json::Value = valid_decision_response.json().await?;
-    assert_eq!(valid_decision_payload["changed"], true);
+    assert_eq!(
+        valid_decision_payload["changed"], true,
+        "valid decision update payload: {valid_decision_payload}"
+    );
     assert_eq!(
         valid_decision_payload["results"][0]["effect"],
         "accepted_reload_scheduled"

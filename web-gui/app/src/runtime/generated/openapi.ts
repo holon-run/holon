@@ -5951,6 +5951,7 @@ export interface components {
                  *         "variant": null
                  *       },
                  *       "model": null,
+                 *       "protocol": null,
                  *       "tools": {
                  *         "enabled": false,
                  *         "max_calls_per_turn": 4,
@@ -5971,6 +5972,7 @@ export interface components {
                         variant?: string | null;
                     };
                     model?: string | null;
+                    protocol?: string | null;
                     /**
                      * @default {
                      *       "enabled": false,
@@ -6126,6 +6128,7 @@ export interface components {
                  *         "variant": null
                  *       },
                  *       "model": null,
+                 *       "protocol": null,
                  *       "tools": {
                  *         "enabled": false,
                  *         "max_calls_per_turn": 4,
@@ -6146,6 +6149,7 @@ export interface components {
                         variant?: string | null;
                     };
                     model?: string | null;
+                    protocol?: string | null;
                     /**
                      * @default {
                      *       "enabled": false,
