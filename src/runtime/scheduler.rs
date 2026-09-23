@@ -1137,6 +1137,9 @@ fn matching_wait_conditions_for_work_item<'a>(
 
 /// Finds the exact task-result wait for `task_id` that is held by an owner
 /// other than `expected_work_item_id` and was triggered by this message.
+/// A wait that was already atomically Resolved while claiming this result
+/// still needs message replay after a restart; a current Resolved wait
+/// carries the same routing authority as a Triggered one.
 /// The wake layer admits exactly one wait per result message
 /// (UNIQUE(agent_id, trigger_message_id)); when several waiters hold the
 /// dependency, the deterministic first waiter carries the wake and the rest
@@ -1153,8 +1156,11 @@ fn triggered_task_wait_for_other_owner<'a>(
         .filter(|condition| {
             condition.kind == WaitConditionKind::Task
                 && condition.work_item_id.as_deref() != expected_work_item_id
-                && condition.status == WaitConditionStatus::Triggered
-                && condition.trigger_message_id() == Some(message.id.as_str())
+                && ((condition.status == WaitConditionStatus::Triggered
+                    && condition.trigger_message_id() == Some(message.id.as_str()))
+                    || (condition.status == WaitConditionStatus::Resolved
+                        && condition.trigger_message_id() == Some(message.id.as_str())
+                        && resolved_task_wait_is_current(projection, condition)))
                 && condition.wake_sources.iter().any(|source| {
                     matches!(
                         source,

@@ -314,6 +314,37 @@ fn immediate_result(
                 Some(summary),
             ))
         }
+        WaitForRegistrationOutcome::TaskResultClaimedByOtherWaiter {
+            task_id,
+            result_message_id,
+            wait_condition_id,
+            claimed_by_work_item_id,
+        } => {
+            let claimed_by = match claimed_by_work_item_id.as_deref() {
+                Some(work_item_id) => format!("work item {work_item_id}"),
+                None => "agent lifecycle".to_string(),
+            };
+            let mut summary = format!(
+                "task result {result_message_id} was already claimed by another waiter ({claimed_by}); no duplicate wake registered"
+            );
+            if let Some(note) = disclosure.ignore_note() {
+                summary = format!("{summary}; {note}");
+            }
+            Ok(ToolResult::success(
+                NAME,
+                json!({
+                    "disposition": "task_result_claimed_by_other_waiter",
+                    "task_id": task_id,
+                    "result_message_id": result_message_id,
+                    "wait_condition_id": wait_condition_id,
+                    "claimed_by_work_item_id": claimed_by_work_item_id,
+                    "waiter_work_item_id": disclosure.waiter_work_item_id,
+                    "requested_work_item_id": disclosure.requested_work_item_id,
+                    "owner_selection": disclosure.owner_selection.as_str(),
+                }),
+                Some(summary),
+            ))
+        }
         WaitForRegistrationOutcome::Registered { .. } => {
             unreachable!("registered wait is handled by settle_impl")
         }

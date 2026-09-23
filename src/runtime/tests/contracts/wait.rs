@@ -888,6 +888,163 @@ async fn terminal_task_result_fast_path_registers_requested_waiter() {
     );
 }
 
+#[tokio::test]
+async fn terminal_fast_path_validates_requested_waiter_before_registering() {
+    let harness = LifecycleHarness::new();
+    let task_owner = harness
+        .runtime()
+        .create_work_item("task owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let running = running_task(
+        "task-terminal-unknown-waiter",
+        &task_owner.id,
+        harness.now(),
+    );
+    harness
+        .runtime()
+        .persist_task_transition(&running, "task_created")
+        .await
+        .unwrap();
+    let mut result_message = task_result_message("task-terminal-unknown-waiter").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result_message.task_id = Some("task-terminal-unknown-waiter".into());
+    result_message.turn_id = Some("turn-terminal-unknown-waiter".into());
+    let terminal = terminal_task_with_result(&running, &result_message, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
+        .await
+        .unwrap();
+
+    // The terminal fast path keeps the explicit-waiter ownership and
+    // open-state restrictions of a normal registration (#3124).
+    let before = harness.snapshot();
+    let error = harness
+        .runtime()
+        .register_wait_for_outcome(
+            "default",
+            Some("work_item_does_not_exist".into()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal.id.clone()),
+            "unknown explicit waiter".into(),
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(
+        crate::runtime_error::describe_runtime_error(&error).code,
+        "work_item_not_found"
+    );
+    harness.assert_unchanged(&before);
+}
+
+#[tokio::test]
+async fn second_terminal_waiter_reports_claimed_waiter_without_duplicate_trigger() {
+    let harness = LifecycleHarness::new();
+    let task_owner = harness
+        .runtime()
+        .create_work_item("task owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let first_waiter = harness
+        .runtime()
+        .create_work_item("first waiter".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let second_waiter = harness
+        .runtime()
+        .create_work_item("second waiter".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let running = running_task("task-terminal-two-waiters", &task_owner.id, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition(&running, "task_created")
+        .await
+        .unwrap();
+    let mut result_message = task_result_message("task-terminal-two-waiters").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result_message.task_id = Some("task-terminal-two-waiters".into());
+    result_message.turn_id = Some("turn-terminal-two-waiters".into());
+    let terminal = terminal_task_with_result(&running, &result_message, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
+        .await
+        .unwrap();
+
+    let first = harness
+        .runtime()
+        .register_wait_for_outcome(
+            "default",
+            Some(first_waiter.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal.id.clone()),
+            "first dependency".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let WaitForRegistrationOutcome::TaskResultQueued {
+        wait_condition_id: first_condition_id,
+        ..
+    } = first
+    else {
+        panic!("first terminal waiter must queue the exact result");
+    };
+
+    // The wake layer admits one wait per result message
+    // (UNIQUE(agent_id, trigger_message_id)); the second waiter gets a
+    // non-fatal disposition instead of a duplicate trigger (#3124).
+    let second = harness
+        .runtime()
+        .register_wait_for_outcome(
+            "default",
+            Some(second_waiter.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal.id.clone()),
+            "second dependency".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let WaitForRegistrationOutcome::TaskResultClaimedByOtherWaiter {
+        wait_condition_id,
+        claimed_by_work_item_id,
+        result_message_id: claimed_result_message_id,
+        ..
+    } = second
+    else {
+        panic!("second terminal waiter must report the claiming waiter");
+    };
+    assert_eq!(wait_condition_id, first_condition_id);
+    assert_eq!(
+        claimed_by_work_item_id.as_deref(),
+        Some(first_waiter.id.as_str())
+    );
+    assert_eq!(claimed_result_message_id, result_message.id);
+
+    let after = harness.snapshot();
+    let triggered: Vec<_> = after
+        .wait_conditions
+        .iter()
+        .filter(|condition| condition.trigger_message_id() == Some(result_message.id.as_str()))
+        .collect();
+    assert_eq!(triggered.len(), 1, "exactly one wait carries the trigger");
+    assert!(
+        !after
+            .wait_conditions
+            .iter()
+            .any(|condition| condition.work_item_id.as_deref() == Some(second_waiter.id.as_str())),
+        "the second waiter keeps no wait registered"
+    );
+}
+
 #[tokio::test(start_paused = true)]
 async fn duplicate_historical_waits_do_not_reject_current_trigger_message() {
     let harness = LifecycleHarness::new();

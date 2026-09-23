@@ -112,6 +112,12 @@ pub(crate) enum WaitForRegistrationOutcome {
         task_id: String,
         result_message_id: String,
     },
+    TaskResultClaimedByOtherWaiter {
+        task_id: String,
+        result_message_id: String,
+        wait_condition_id: String,
+        claimed_by_work_item_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +269,18 @@ impl RuntimeHandle {
                 "task_result_already_consumed",
                 format!(
                     "task {task_id} result was already consumed: {result_message_id}"
+                ),
+            )
+            .into()),
+            WaitForRegistrationOutcome::TaskResultClaimedByOtherWaiter {
+                task_id,
+                result_message_id,
+                wait_condition_id: _,
+                claimed_by_work_item_id: _,
+            } => Err(RuntimeError::validation(
+                "task_result_claimed_by_other_waiter",
+                format!(
+                    "task {task_id} result {result_message_id} was already claimed by another waiter"
                 ),
             )
             .into()),
@@ -680,6 +698,20 @@ impl RuntimeHandle {
         reason: String,
         condition_id: Option<String>,
     ) -> Result<PrepareWaitForOutcome> {
+        // The terminal fast path keeps the normal registration's waiter
+        // restrictions: an explicit waiter must be an owned, still-open
+        // WorkItem (#3124).
+        if let Some(work_item_id) = waiter_work_item_id.as_deref() {
+            let existing = self.validate_owned_work_item(&task.agent_id, work_item_id)?;
+            if existing.state != WorkItemState::Open {
+                return Err(RuntimeError::validation(
+                    "work_item_completed",
+                    format!("cannot wait on completed work item {work_item_id}"),
+                )
+                .with_safe_context("work_item_id", work_item_id)
+                .into());
+            }
+        }
         let result_message_id = task.parent_message_id.clone().ok_or_else(|| {
             RuntimeError::validation(
                 "task_result_evidence_missing",
@@ -729,27 +761,49 @@ impl RuntimeHandle {
                 },
             ));
         }
-        let existing_condition = self
+        let agent_wait_conditions = self
             .inner
             .storage
-            .latest_wait_conditions_for_agent(&task.agent_id)?
-            .into_iter()
+            .latest_wait_conditions_for_agent(&task.agent_id)?;
+        let carries_result_trigger = |record: &WaitConditionRecord| {
+            matches!(
+                record.status,
+                WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+            ) && record.kind == WaitConditionKind::Task
+                && record.trigger_message_id() == Some(result_message_id.as_str())
+                && record.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        WakeSource::TaskResult { task_id } if task_id == &task.id
+                    )
+                })
+        };
+        let existing_condition = agent_wait_conditions
+            .iter()
             .find(|record| {
                 condition_id.as_ref().is_none_or(|id| id == &record.id)
                     && record.work_item_id == waiter_work_item_id
-                    && matches!(
-                        record.status,
-                        WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
-                    )
-                    && record.kind == WaitConditionKind::Task
-                    && record.trigger_message_id() == Some(result_message_id.as_str())
-                    && record.wake_sources.iter().any(|source| {
-                        matches!(
-                            source,
-                            WakeSource::TaskResult { task_id } if task_id == &task.id
-                        )
-                    })
-            });
+                    && carries_result_trigger(record)
+            })
+            .cloned();
+        // The wake layer admits exactly one wait per result message
+        // (UNIQUE(agent_id, trigger_message_id)); when another same-agent
+        // waiter already carries this trigger, report a non-fatal
+        // disposition instead of writing a duplicate record (#3124).
+        if existing_condition.is_none() {
+            if let Some(claimed) = agent_wait_conditions.iter().find(|record| {
+                record.work_item_id != waiter_work_item_id && carries_result_trigger(record)
+            }) {
+                return Ok(PrepareWaitForOutcome::Immediate(
+                    WaitForRegistrationOutcome::TaskResultClaimedByOtherWaiter {
+                        task_id: task.id.clone(),
+                        result_message_id,
+                        wait_condition_id: claimed.id.clone(),
+                        claimed_by_work_item_id: claimed.work_item_id.clone(),
+                    },
+                ));
+            }
+        }
 
         let now = self.now();
         // The fast path must leave the same durable wait semantics as a
