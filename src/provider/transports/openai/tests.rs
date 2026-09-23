@@ -17,6 +17,9 @@ use crate::config::{
     ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
+use crate::provider::retry::{
+    provider_transport_error, ProviderFailureClassification, ProviderTransportError,
+};
 use crate::provider::{
     ConversationMessage, ProviderGenerateImageRequest, ProviderJsonSchemaResponseFormat,
     ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderResponseFormatRequest,
@@ -32,6 +35,40 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 static CODEX_REFRESH_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn codex_credential_resolution_preserves_typed_transport_errors() {
+    let error = provider_transport_error(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::CredentialRefreshBusy,
+            disposition: RetryDisposition::Retryable,
+        },
+        None,
+        None,
+        "credential refresh lock is already held",
+    );
+
+    let preserved =
+        super::openai_codex_credential_resolution_error(error, "openai-codex/gpt-5", false);
+
+    let typed = preserved
+        .downcast_ref::<ProviderTransportError>()
+        .expect("typed provider transport error should be preserved");
+    let classification = classify_provider_error(&preserved);
+    assert_eq!(
+        typed.classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(
+        typed.classification.disposition,
+        RetryDisposition::Retryable
+    );
+    assert_eq!(
+        classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
 
 struct EnvVarGuard {
     key: &'static str,
@@ -565,7 +602,7 @@ async fn openai_codex_refresh_fails_without_access_token() {
 fn openai_codex_refresh_lock_uses_owner_only_permissions() {
     let home = tempfile::tempdir().unwrap();
     let lock_path = home.path().join("credentials.json.lock");
-    let lock = CredentialStoreRefreshLock::acquire(&lock_path).unwrap();
+    let lock = CredentialStoreRefreshLock::acquire_for(&lock_path, "openai", "default").unwrap();
 
     #[cfg(unix)]
     {
@@ -576,6 +613,31 @@ fn openai_codex_refresh_lock_uses_owner_only_permissions() {
 
     drop(lock);
     assert!(!lock_path.exists());
+}
+
+#[test]
+fn oauth_refresh_lock_contention_is_typed_retryable_and_contextual() {
+    let home = tempfile::tempdir().unwrap();
+    let lock_path = home.path().join("credentials.json.lock");
+    let lock =
+        CredentialStoreRefreshLock::acquire_for(&lock_path, "xai", "operator-oauth").unwrap();
+
+    let error = match CredentialStoreRefreshLock::acquire_for(&lock_path, "xai", "operator-oauth") {
+        Ok(_) => panic!("held refresh lock should reject a concurrent acquisition"),
+        Err(error) => error,
+    };
+    let classification = classify_provider_error(&error);
+    let message = error.to_string();
+
+    assert_eq!(
+        classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+    assert!(message.contains("provider xai/profile operator-oauth"));
+    assert!(!message.contains("OpenAI Codex"));
+
+    drop(lock);
 }
 
 #[test]

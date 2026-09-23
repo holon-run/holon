@@ -100,7 +100,8 @@ impl OpenAiBearerAuth {
             )
         })?;
         let lock_path = store_path.with_extension("json.lock");
-        let _lock = CredentialStoreRefreshLock::acquire(&lock_path)?;
+        let _lock =
+            CredentialStoreRefreshLock::acquire_for(&lock_path, &self.provider_id, profile)?;
         let mut store = load_credential_store_at(store_path)?;
         let entry = store.profiles.get(profile).cloned().ok_or_else(|| {
             anyhow::anyhow!("Holon credential profile {profile} disappeared before refresh")
@@ -291,7 +292,8 @@ impl OpenAiCodexProvider {
             )
         })?;
         let lock_path = store_path.with_extension("json.lock");
-        let _lock = CredentialStoreRefreshLock::acquire(&lock_path)?;
+        let _lock =
+            CredentialStoreRefreshLock::acquire_for(&lock_path, &self.provider_id, profile)?;
         let mut store = load_credential_store_at(store_path)?;
         let entry = store.profiles.get(profile).cloned().ok_or_else(|| {
             anyhow::anyhow!("Holon credential profile {profile} disappeared before refresh")
@@ -337,7 +339,7 @@ pub(super) struct CredentialStoreRefreshLock {
 }
 
 impl CredentialStoreRefreshLock {
-    pub(super) fn acquire(path: &Path) -> Result<Self> {
+    pub(super) fn acquire_for(path: &Path, provider: &str, profile: &str) -> Result<Self> {
         match Self::try_acquire(path) {
             Ok(lock) => return Ok(lock),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
@@ -357,9 +359,10 @@ impl CredentialStoreRefreshLock {
                     path.display()
                 )
             })?;
-            return Self::try_acquire(path).map_err(|error| Self::acquire_error(path, error));
+            return Self::try_acquire(path)
+                .map_err(|error| Self::acquire_error(path, provider, profile, error));
         }
-        Self::try_acquire(path).map_err(|error| Self::acquire_error(path, error))
+        Self::try_acquire(path).map_err(|error| Self::acquire_error(path, provider, profile, error))
     }
 
     fn try_acquire(path: &Path) -> std::io::Result<Self> {
@@ -375,10 +378,23 @@ impl CredentialStoreRefreshLock {
         })
     }
 
-    fn acquire_error(path: &Path, error: std::io::Error) -> anyhow::Error {
+    fn acquire_error(
+        path: &Path,
+        provider: &str,
+        profile: &str,
+        error: std::io::Error,
+    ) -> anyhow::Error {
         if error.kind() == std::io::ErrorKind::AlreadyExists {
-            anyhow::anyhow!(
-                "OpenAI Codex OAuth refresh is already in progress for this credential store; retry shortly"
+            crate::provider::retry::provider_transport_error(
+                crate::provider::retry::ProviderFailureClassification {
+                    kind: crate::provider::retry::ProviderFailureKind::CredentialRefreshBusy,
+                    disposition: crate::provider::retry::RetryDisposition::Retryable,
+                },
+                None,
+                None,
+                format!(
+                    "OAuth credential refresh is already in progress for provider {provider}/profile {profile}; retry shortly"
+                ),
             )
         } else {
             anyhow::Error::new(error).context(format!(
