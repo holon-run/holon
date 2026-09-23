@@ -565,7 +565,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "decision.model",
             kind: "string",
-            description: "Existing provider model route used by Decision, in provider@endpoint/model form.",
+            description: "Shared provider model route used by Decision; the selected model must explicitly advertise Decision capability and may choose an OpenAI-compatible or Jev protocol.",
             default: Value::Null,
             allowed_values: vec![],
         },
@@ -1905,6 +1905,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
                 value.runtime_max_output_tokens = None;
             });
         }
+        "decision.model" => config.decision.model = None,
         key if key.starts_with("providers.") => unset_provider_config_key(config, key)?,
         "runtime.max_output_tokens" => config.runtime.max_output_tokens = None,
         "runtime.default_tool_output_tokens" => config.runtime.default_tool_output_tokens = None,

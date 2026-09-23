@@ -2365,6 +2365,60 @@ fn resolves_compatible_reasoning_effort_for_non_codex_route() {
 }
 
 #[test]
+fn runtime_model_catalog_separates_turn_and_decision_capabilities_per_model() {
+    let mut fixture = test_app_config("openai@default/turn-model", &[]);
+    let turn_model = ModelRef::parse("openai/turn-model").unwrap();
+    let decision_model = ModelRef::parse("openai/decision-model").unwrap();
+    let turn_override = ModelRuntimeOverride {
+        capabilities: Some(ModelCapabilityOverride {
+            agent_turn: Some(true),
+            decision: Some(false),
+            ..ModelCapabilityOverride::default()
+        }),
+        ..ModelRuntimeOverride::default()
+    };
+    let decision_override = ModelRuntimeOverride {
+        capabilities: Some(ModelCapabilityOverride {
+            agent_turn: Some(false),
+            decision: Some(true),
+            ..ModelCapabilityOverride::default()
+        }),
+        decision_protocol: Some(crate::model_catalog::DecisionProtocol::Jev),
+        ..ModelRuntimeOverride::default()
+    };
+    fixture
+        .config
+        .validated_model_overrides
+        .insert(turn_model, turn_override);
+    fixture
+        .config
+        .validated_model_overrides
+        .insert(decision_model, decision_override);
+
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+    let context = ContextConfig::default();
+    let turn_route = route_ref("openai@default/turn-model");
+    let decision_route = route_ref("openai@default/decision-model");
+
+    assert!(catalog
+        .resolve_explicit_model_route(&context, &turn_route, ModelRouteCapability::Turn)
+        .is_some());
+    assert!(catalog
+        .resolve_explicit_model_route(&context, &turn_route, ModelRouteCapability::Decision)
+        .is_none());
+    assert!(catalog
+        .resolve_explicit_model_route(&context, &decision_route, ModelRouteCapability::Turn)
+        .is_none());
+    let decision = catalog
+        .resolve_explicit_model_route(&context, &decision_route, ModelRouteCapability::Decision)
+        .expect("Decision-capable model should resolve through the shared provider");
+    assert_eq!(
+        decision.policy.decision_protocol,
+        Some(crate::model_catalog::DecisionProtocol::Jev)
+    );
+}
+
+#[test]
 fn provider_chain_for_turn_starts_at_pending_fallback_model() {
     let fixture = test_app_config(
         "openai@default/gpt-5.4",

@@ -167,26 +167,19 @@ pub(crate) fn resolve_shared_decision_route(
         .resolve_explicit_model_route(
             &context_config,
             &route_ref,
-            crate::config::ModelRouteCapability::Turn,
+            crate::config::ModelRouteCapability::Decision,
         )
         .ok_or_else(|| {
-            anyhow::anyhow!("decision.model does not resolve to a configured turn-capable model")
+            anyhow::anyhow!(
+                "decision.model does not resolve to a configured decision-capable model"
+            )
         })?;
     let provider_config = route.provider_config();
     let endpoint = provider_config.base_url.clone();
     let model = route.route_ref.model.clone();
     let credential = provider_config.credential.clone();
-    let provider = match provider_config.transport {
-        crate::config::ProviderTransportKind::OpenAiResponses
-        | crate::config::ProviderTransportKind::OpenAiCodexResponses
-        | crate::config::ProviderTransportKind::OpenAiChatCompletions => {
-            let mut provider = OpenAiConfig::new(endpoint, model).with_timeout(timeout);
-            if let Some(credential) = credential {
-                provider = provider.with_api_key(credential);
-            }
-            DecisionProviderKind::OpenAi(provider)
-        }
-        _ => {
+    let provider = match route.policy.decision_protocol {
+        Some(crate::model_catalog::DecisionProtocol::Jev) => {
             let mut provider = JevConfig::new(endpoint)
                 .with_model(model)
                 .with_timeout(timeout);
@@ -194,6 +187,22 @@ pub(crate) fn resolve_shared_decision_route(
                 provider = provider.with_api_key(credential);
             }
             DecisionProviderKind::Jev(provider)
+        }
+        Some(crate::model_catalog::DecisionProtocol::OpenAiCompatible) | None => {
+            anyhow::ensure!(
+                matches!(
+                    provider_config.transport,
+                    crate::config::ProviderTransportKind::OpenAiResponses
+                        | crate::config::ProviderTransportKind::OpenAiCodexResponses
+                        | crate::config::ProviderTransportKind::OpenAiChatCompletions
+                ),
+                "decision model requires an OpenAI-compatible transport or explicit Jev protocol"
+            );
+            let mut provider = OpenAiConfig::new(endpoint, model).with_timeout(timeout);
+            if let Some(credential) = credential {
+                provider = provider.with_api_key(credential);
+            }
+            DecisionProviderKind::OpenAi(provider)
         }
     };
     Ok(Some(ResolvedDecisionRoute {

@@ -135,7 +135,7 @@ impl DecisionProvider<Value, Value> for JevProvider {
             headers.insert(AUTHORIZATION, value);
         }
 
-        let wire_request = JevRequest::from_request(&request)?;
+        let wire_request = JevRequest::from_request(&request, &self.config.model)?;
         let body = serde_json::to_vec(&wire_request)
             .map_err(|error| DecisionError::Serialization(error.to_string()))?;
         if body.len() > self.config.max_request_bytes {
@@ -203,6 +203,7 @@ pub enum JevAnswer {
 
 #[derive(Debug, Serialize)]
 struct JevRequest<'a> {
+    model: &'a str,
     state: &'a Value,
     questions: BTreeMap<String, JevQuestion>,
 }
@@ -216,7 +217,10 @@ struct JevQuestion {
 }
 
 impl<'a> JevRequest<'a> {
-    fn from_request(request: &'a DecisionRequest<Value, Value>) -> Result<Self, DecisionError> {
+    fn from_request(
+        request: &'a DecisionRequest<Value, Value>,
+        model: &'a str,
+    ) -> Result<Self, DecisionError> {
         let mut criteria = Map::new();
         for (index, candidate) in request.candidates.iter().enumerate() {
             criteria.insert(
@@ -235,6 +239,7 @@ impl<'a> JevRequest<'a> {
             },
         );
         Ok(Self {
+            model,
             state: &request.input,
             questions,
         })
@@ -504,7 +509,8 @@ mod tests {
     #[test]
     fn builds_vercel_evaluation_request() {
         let request = request();
-        let wire = JevRequest::from_request(&request).expect("request");
+        let wire = JevRequest::from_request(&request, "jev-latest").expect("request");
+        assert_eq!(wire.model, "jev-latest");
         assert_eq!(wire.questions["decision"].question_type, "choice");
         assert_eq!(
             wire.questions["decision"].criteria["candidate_0"],

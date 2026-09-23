@@ -265,6 +265,7 @@ fn project_capabilities(model: &ModelsDevModel) -> ModelCapabilityFlags {
     let interactive_exec = false;
 
     ModelCapabilityFlags {
+        agent_turn: true,
         parallel_tool_calls,
         image_input,
         image_generation,

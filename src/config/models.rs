@@ -200,6 +200,7 @@ impl<'de> Deserialize<'de> for ModelRouteRef {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelRouteCapability {
     Turn,
+    Decision,
     VisionObservation,
     ImageGeneration,
 }
@@ -207,7 +208,8 @@ pub enum ModelRouteCapability {
 impl ModelRouteCapability {
     pub fn model_supports(self, policy: &ResolvedRuntimeModelPolicy) -> bool {
         match self {
-            Self::Turn => true,
+            Self::Turn => policy.agent_turn,
+            Self::Decision => policy.decision_capable,
             Self::VisionObservation => policy.capabilities.image_input,
             Self::ImageGeneration => policy.capabilities.image_generation,
         }
@@ -216,6 +218,7 @@ impl ModelRouteCapability {
     pub fn transport_supports(self, transport: ProviderTransportKind) -> bool {
         match self {
             Self::Turn => true,
+            Self::Decision => true,
             Self::VisionObservation => transport.supports_view_image_observation_generation(),
             Self::ImageGeneration => transport.supports_image_generation(),
         }
@@ -227,6 +230,8 @@ pub struct ResolvedModelCapabilities {
     pub intrinsic: crate::model_catalog::ModelIntrinsicCapabilities,
     pub endpoint: crate::model_catalog::EndpointModelPolicy,
     pub transport: TransportCapabilities,
+    pub agent_turn: bool,
+    pub decision_capable: bool,
     pub image_input: bool,
     pub image_output: bool,
 }
@@ -251,6 +256,8 @@ impl ResolvedModelCapabilities {
             transport.image_output,
         );
         Self {
+            agent_turn: policy.agent_turn,
+            decision_capable: policy.decision_capable,
             image_input,
             image_output,
             intrinsic,
@@ -261,7 +268,8 @@ impl ResolvedModelCapabilities {
 
     pub fn supports(&self, capability: ModelRouteCapability) -> bool {
         match capability {
-            ModelRouteCapability::Turn => true,
+            ModelRouteCapability::Turn => self.agent_turn,
+            ModelRouteCapability::Decision => self.decision_capable,
             ModelRouteCapability::VisionObservation => self.image_input,
             ModelRouteCapability::ImageGeneration => self.image_output,
         }

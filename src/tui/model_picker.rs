@@ -255,6 +255,9 @@ mod tests {
                 supports_reasoning: reasoning,
                 ..ModelCapabilityFlags::default()
             },
+            agent_turn: true,
+            decision_capable: false,
+            decision_protocol: None,
             reasoning_effort_options: reasoning
                 .then(|| vec!["low".into(), "medium".into(), "high".into()])
                 .unwrap_or_default(),

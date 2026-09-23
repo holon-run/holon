@@ -467,9 +467,15 @@ fn validate_runtime_config_candidate(
 ) -> Result<()> {
     let credentials = load_credential_store_at(&credential_store_path(&config.home_dir))?;
     crate::web::materialize_web_config(&candidate.web, &credentials)?;
+    let mut candidate_config = config.clone();
+    candidate_config.stored_config = candidate.clone();
+    candidate_config.validated_model_overrides = crate::config::resolve_model_catalog(candidate)?;
     // Reject incomplete decision routes here: an invalid persisted route aborts
     // every later config reload and blocks runtime spawn on restart.
-    crate::runtime::decision_openai::validate_shared_decision_config(&candidate.decision, config)?;
+    crate::runtime::decision_openai::validate_shared_decision_config(
+        &candidate.decision,
+        &candidate_config,
+    )?;
     Ok(())
 }
 

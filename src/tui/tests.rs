@@ -252,6 +252,9 @@ fn sample_agent_summary(agent_id: &str) -> AgentSummary {
                     image_input: true,
                     ..crate::model_catalog::ModelCapabilityFlags::default()
                 },
+                agent_turn: true,
+                decision_capable: false,
+                decision_protocol: None,
                 reasoning_effort_options: Vec::new(),
                 source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
                 evidence: Default::default(),
@@ -341,6 +344,9 @@ fn sample_model_availability(
                 supports_reasoning: reasoning,
                 ..crate::model_catalog::ModelCapabilityFlags::default()
             },
+            agent_turn: true,
+            decision_capable: false,
+            decision_protocol: None,
             reasoning_effort_options: reasoning
                 .then(|| vec!["low".into(), "medium".into(), "high".into()])
                 .unwrap_or_default(),
