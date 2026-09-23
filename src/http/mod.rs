@@ -680,6 +680,10 @@ pub fn router(state: AppState) -> Router {
             get(control::runtime_decision_local_onnx_preset)
                 .post(control::runtime_decision_local_onnx_preset_download),
         )
+        .route(
+            "/control/runtime/decision/test",
+            post(control::runtime_decision_test),
+        )
         .route("/control/runtime/shutdown", post(control::runtime_shutdown))
         .route(
             "/auth/codex/device/start",

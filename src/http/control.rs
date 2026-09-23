@@ -6,6 +6,84 @@ const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_TRACE_SEARCH_RESULTS: usize = 100;
 
+#[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimeDecisionTestRequest {
+    #[serde(default)]
+    pub question: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct RuntimeDecisionTestResponse {
+    pub ok: bool,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elapsed_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_code: Option<String>,
+}
+
+pub async fn runtime_decision_test(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(request): Json<RuntimeDecisionTestRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+
+    let runtime = state.host.default_runtime().await.map_err(error_response)?;
+    let question = request
+        .question
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "Return the connectivity candidate.".to_owned());
+    let request = decision_core::DecisionRequest {
+        request_id: format!(
+            "holon-control-test-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ),
+        input: json!({ "question": question }),
+        candidates: vec![json!({ "id": "connectivity", "label": "Decision provider reachable" })],
+        schema: "Select the connectivity candidate or abstain.".to_owned(),
+        schema_version: "1".to_owned(),
+        metadata: [("integration".to_owned(), "holon-control-test".to_owned())]
+            .into_iter()
+            .collect(),
+        deadline_ms: Some(5_000),
+    };
+
+    let result = runtime.execute_advisory_decision(request).await;
+    let response = match result {
+        Ok((response, _provider, _model)) => {
+            let outcome = match response.outcome {
+                decision_core::DecisionOutcome::Rank { .. } => "rank",
+                decision_core::DecisionOutcome::Select { .. } => "select",
+                decision_core::DecisionOutcome::Abstain { .. } => "abstain",
+                decision_core::DecisionOutcome::Fallback { .. } => "fallback",
+            };
+            RuntimeDecisionTestResponse {
+                ok: true,
+                status: "ready".to_owned(),
+                outcome: Some(outcome.to_owned()),
+                confidence: response.confidence,
+                elapsed_ms: response.elapsed_ms,
+                error_code: None,
+            }
+        }
+        Err(_) => RuntimeDecisionTestResponse {
+            ok: false,
+            status: "failed".to_owned(),
+            outcome: None,
+            confidence: None,
+            elapsed_ms: None,
+            error_code: Some("decision_provider_test_failed".to_owned()),
+        },
+    };
+    Ok(Json(response))
+}
+
 pub async fn runtime_decision_local_onnx_preset(
     Path(preset): Path<String>,
     State(state): State<Arc<AppState>>,
