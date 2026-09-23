@@ -447,6 +447,15 @@ export interface RuntimeConfigSurface {
 export interface RuntimeDecisionSurface {
   enabled: boolean;
   model?: string;
+  protocol?: string;
+  provider?: string;
+  endpoint?: string;
+  routeProvider?: string;
+  transport?: string;
+  decisionCapable?: boolean;
+  credentialConfigured?: boolean;
+  available?: boolean;
+  unavailableReason?: string;
   localOnnx: RuntimeDecisionLocalOnnxSurface;
   tools: RuntimeDecisionToolsSurface;
 }

@@ -464,6 +464,29 @@ fn base_context_config(config: &AppConfig) -> ContextConfig {
 }
 
 fn provider_availability(config: &AppConfig, route_ref: &ModelRouteRef) -> Value {
+    let catalog = RuntimeModelCatalog::from_config(config);
+    if let Some(route) =
+        catalog.resolve_explicit_model_metadata(&base_context_config(config), route_ref)
+    {
+        // Decision-only routes intentionally have no agent-turn provider
+        // builder. Their catalog availability is determined by the shared
+        // credential contract rather than by attempting an agent request.
+        if route.policy.decision_capable && !route.policy.agent_turn {
+            let provider = &route.endpoint.runtime_config;
+            let credential_configured = provider_static_credential_configured(provider);
+            return if credential_configured {
+                json!({ "available": true })
+            } else {
+                json!({
+                    "available": false,
+                    "unavailable_reason": "credential_missing",
+                    "failure_kind": "credential_missing",
+                    "disposition": "fail_fast",
+                })
+            };
+        }
+    }
+
     let mut availability = match build_candidate(config, route_ref) {
         Ok(candidate) => json!({
             "available": true,

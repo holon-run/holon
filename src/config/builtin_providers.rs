@@ -1707,5 +1707,30 @@ pub fn provider_registry_for_tests(
             builtin_web_search: None,
         },
     );
+    let typesafe = ProviderId::parse("typesafe").expect("typesafe provider id");
+    registry.insert(
+        typesafe.clone(),
+        ProviderRuntimeConfig {
+            id: typesafe.clone(),
+            route_provider: typesafe,
+            route_endpoint: ProviderEndpointId::default_endpoint(),
+            transport: ProviderTransportKind::AiEvaluationModel,
+            base_url: "https://api.typesafe.ai/v1/systemone".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::Env,
+                kind: CredentialKind::ApiKey,
+                env: Some("TYPESAFE_API_KEY".into()),
+                profile: None,
+                external: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
+        },
+    );
     registry
 }
