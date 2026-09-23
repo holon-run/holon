@@ -113,6 +113,26 @@ pub async fn runtime_decision_local_onnx_preset_download(
     Ok(Json(status))
 }
 
+pub async fn runtime_decision_local_onnx_preset_cancel(
+    Path(preset): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let home_dir = state.host.config().home_dir.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        crate::runtime::decision_models::cancel_local_onnx_preset(&home_dir, &preset)
+    })
+    .await
+    .map_err(|error| {
+        error_response(anyhow::anyhow!(
+            "model download cancel task failed: {error}"
+        ))
+    })?
+    .map_err(error_response)?;
+    Ok(Json(status))
+}
+
 pub async fn runtime_status(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

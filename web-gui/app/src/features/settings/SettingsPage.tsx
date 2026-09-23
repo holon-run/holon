@@ -52,6 +52,7 @@ interface SettingsPageProps {
   onRefreshRuntimeConfig: () => Promise<void>;
   onUpdateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   onDownloadLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
+  onCancelLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
   credentialStore: CredentialStoreState;
   credentialStoreLoading: boolean;
   onRefreshCredentialStore: () => Promise<void>;
@@ -292,6 +293,7 @@ export function SettingsPage({
   onRefreshRuntimeConfig,
   onUpdateRuntimeConfig,
   onDownloadLocalOnnxPreset,
+  onCancelLocalOnnxPreset,
   credentialStore,
   credentialStoreLoading,
   onRefreshCredentialStore,
@@ -1293,11 +1295,22 @@ export function SettingsPage({
                     >
                       {localOnnxDownloading ? t("settings.downloadingDecisionPreset") : t("settings.downloadDecisionPreset")}
                     </Button>
+                    {localOnnxDownload?.cancellable ? (
+                      <Button
+                        type="button"
+                        disabled={localOnnxDownloading}
+                        onClick={async () => {
+                          setLocalOnnxDownload(await onCancelLocalOnnxPreset(decisionPreset.trim()));
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    ) : null}
                     {localOnnxDownload ? (
                       <span className="settings-hint">
                         {localOnnxDownload.complete
                           ? t("settings.decisionPresetReady")
-                          : t("settings.decisionPresetIncomplete")}
+                          : `${t("settings.decisionPresetIncomplete")} (${localOnnxDownload.phase}, ${localOnnxDownload.downloadedBytes} bytes)`}
                       </span>
                     ) : null}
                   </div>

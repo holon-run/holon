@@ -480,7 +480,12 @@ export interface RuntimeLocalOnnxPresetFileStatus {
 export interface RuntimeLocalOnnxPresetStatus {
   preset: string;
   directory: string;
+  phase: "complete" | "partial" | "missing" | "corrupt" | string;
   complete: boolean;
+  downloadedBytes: number;
+  bytesTotal?: number;
+  retryable: boolean;
+  cancellable: boolean;
   files: RuntimeLocalOnnxPresetFileStatus[];
 }
 

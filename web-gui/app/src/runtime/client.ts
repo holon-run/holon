@@ -461,7 +461,12 @@ interface RuntimeLocalOnnxPresetFileStatusDto {
 interface RuntimeLocalOnnxPresetStatusDto {
   preset?: string;
   directory?: string;
+  phase?: string;
   complete?: boolean;
+  downloaded_bytes?: number;
+  bytes_total?: number | null;
+  retryable?: boolean;
+  cancellable?: boolean;
   files?: RuntimeLocalOnnxPresetFileStatusDto[];
 }
 
@@ -1304,7 +1309,40 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       return {
         preset: response.preset ?? preset,
         directory: response.directory ?? "",
+        phase: response.phase ?? (response.complete ? "complete" : "missing"),
         complete: response.complete ?? false,
+        downloadedBytes: response.downloaded_bytes ?? 0,
+        bytesTotal: response.bytes_total ?? undefined,
+        retryable: response.retryable ?? true,
+        cancellable: response.cancellable ?? false,
+        files: (response.files ?? []).map((file) => ({
+          name: file.name ?? "",
+          path: file.path ?? "",
+          sha256: file.sha256 ?? "",
+          present: file.present ?? false,
+          verified: file.verified ?? false,
+        })),
+      };
+    },
+    async cancelLocalOnnxPreset(preset: string): Promise<RuntimeLocalOnnxPresetStatus> {
+      if (!baseUrl) {
+        throw new Error("Holon API base URL is not configured.");
+      }
+      const response = await deleteJson<RuntimeLocalOnnxPresetStatusDto>(
+        fetchImpl,
+        baseUrl,
+        `/control/runtime/decision/local-onnx/${encodeURIComponent(preset)}/download`,
+        requestHeaders,
+      );
+      return {
+        preset: response.preset ?? preset,
+        directory: response.directory ?? "",
+        phase: response.phase ?? (response.complete ? "complete" : "missing"),
+        complete: response.complete ?? false,
+        downloadedBytes: response.downloaded_bytes ?? 0,
+        bytesTotal: response.bytes_total ?? undefined,
+        retryable: response.retryable ?? true,
+        cancellable: response.cancellable ?? false,
         files: (response.files ?? []).map((file) => ({
           name: file.name ?? "",
           path: file.path ?? "",

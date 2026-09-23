@@ -681,6 +681,10 @@ pub fn router(state: AppState) -> Router {
                 .post(control::runtime_decision_local_onnx_preset_download),
         )
         .route(
+            "/control/runtime/decision/local-onnx/preset/{preset}",
+            delete(control::runtime_decision_local_onnx_preset_cancel),
+        )
+        .route(
             "/control/runtime/decision/test",
             post(control::runtime_decision_test),
         )

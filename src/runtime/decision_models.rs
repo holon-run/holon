@@ -84,27 +84,55 @@ pub(crate) fn local_onnx_preset_status(
 ) -> Result<LocalOnnxPresetStatus> {
     let manifest = preset_manifest(preset)?;
     let directory = managed_local_onnx_dir(home_dir, preset)?;
-    let complete = manifest.files.iter().all(|file| {
-        let path = directory.join(file.local_name);
-        path.is_file() && sha256_file(&path).is_ok_and(|hash| hash == file.sha256)
-    });
+    let temporary = directory.with_extension("download");
+    let (status_directory, phase) = if directory.is_dir() {
+        (directory.clone(), "ready")
+    } else if temporary.is_dir() {
+        (temporary.clone(), "partial")
+    } else {
+        (directory.clone(), "missing")
+    };
+    let files = manifest
+        .files
+        .iter()
+        .map(|file| {
+            let path = status_directory.join(file.local_name);
+            let present = path.is_file();
+            let verified = present && sha256_file(&path).is_ok_and(|hash| hash == file.sha256);
+            LocalOnnxPresetFileStatus {
+                name: file.name,
+                path,
+                sha256: file.sha256,
+                present,
+                verified,
+                bytes: if present {
+                    fs::metadata(&status_directory.join(file.local_name))
+                        .map(|metadata| metadata.len())
+                        .unwrap_or_default()
+                } else {
+                    0
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let complete = phase == "ready" && files.iter().all(|file| file.verified);
+    let phase = if complete {
+        "complete"
+    } else if phase == "ready" {
+        "corrupt"
+    } else {
+        phase
+    };
     Ok(LocalOnnxPresetStatus {
         preset: manifest.preset,
-        directory: directory.clone(),
+        directory,
+        phase,
         complete,
-        files: manifest
-            .files
-            .iter()
-            .map(|file| LocalOnnxPresetFileStatus {
-                name: file.name,
-                path: directory.join(file.local_name),
-                sha256: file.sha256,
-                present: directory.join(file.local_name).is_file(),
-                verified: directory.join(file.local_name).is_file()
-                    && sha256_file(&directory.join(file.local_name))
-                        .is_ok_and(|hash| hash == file.sha256),
-            })
-            .collect(),
+        downloaded_bytes: files.iter().map(|file| file.bytes).sum(),
+        bytes_total: None,
+        retryable: !complete,
+        cancellable: phase == "partial",
+        files,
     })
 }
 
@@ -112,7 +140,12 @@ pub(crate) fn local_onnx_preset_status(
 pub(crate) struct LocalOnnxPresetStatus {
     pub preset: &'static str,
     pub directory: PathBuf,
+    pub phase: &'static str,
     pub complete: bool,
+    pub downloaded_bytes: u64,
+    pub bytes_total: Option<u64>,
+    pub retryable: bool,
+    pub cancellable: bool,
     pub files: Vec<LocalOnnxPresetFileStatus>,
 }
 
@@ -123,6 +156,7 @@ pub(crate) struct LocalOnnxPresetFileStatus {
     pub sha256: &'static str,
     pub present: bool,
     pub verified: bool,
+    pub bytes: u64,
 }
 
 pub(crate) fn download_local_onnx_preset(
@@ -199,6 +233,19 @@ pub(crate) fn download_local_onnx_preset(
     local_onnx_preset_status(home_dir, preset)
 }
 
+pub(crate) fn cancel_local_onnx_preset(
+    home_dir: &Path,
+    preset: &str,
+) -> Result<LocalOnnxPresetStatus> {
+    preset_manifest(preset)?;
+    let directory = managed_local_onnx_dir(home_dir, preset)?;
+    let temporary = directory.with_extension("download");
+    if temporary.is_dir() {
+        fs::remove_dir_all(&temporary)?;
+    }
+    local_onnx_preset_status(home_dir, preset)
+}
+
 fn validate_preset_name(preset: &str) -> Result<()> {
     anyhow::ensure!(
         !preset.is_empty()
@@ -222,4 +269,42 @@ fn sha256_file(path: &Path) -> Result<String> {
         hasher.update(&buffer[..read]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn preset_status_reports_missing_and_partial_downloads() {
+        let home = tempdir().unwrap();
+        let missing = local_onnx_preset_status(home.path(), DEFAULT_LOCAL_ONNX_PRESET).unwrap();
+        assert_eq!(missing.phase, "missing");
+        assert!(missing.retryable);
+        assert!(!missing.cancellable);
+
+        let temporary = managed_local_onnx_dir(home.path(), DEFAULT_LOCAL_ONNX_PRESET)
+            .unwrap()
+            .with_extension("download");
+        fs::create_dir_all(&temporary).unwrap();
+        fs::write(temporary.join(PRESET_FILES[0].local_name), b"partial").unwrap();
+        let partial = local_onnx_preset_status(home.path(), DEFAULT_LOCAL_ONNX_PRESET).unwrap();
+        assert_eq!(partial.phase, "partial");
+        assert!(partial.cancellable);
+        assert!(partial.downloaded_bytes > 0);
+    }
+
+    #[test]
+    fn cancelling_preset_removes_partial_download() {
+        let home = tempdir().unwrap();
+        let directory = managed_local_onnx_dir(home.path(), DEFAULT_LOCAL_ONNX_PRESET).unwrap();
+        let temporary = directory.with_extension("download");
+        fs::create_dir_all(&temporary).unwrap();
+        fs::write(temporary.join(PRESET_FILES[0].local_name), b"partial").unwrap();
+
+        let status = cancel_local_onnx_preset(home.path(), DEFAULT_LOCAL_ONNX_PRESET).unwrap();
+        assert_eq!(status.phase, "missing");
+        assert!(!temporary.exists());
+    }
 }
