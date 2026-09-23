@@ -311,6 +311,8 @@ interface RuntimeAvailableModelDto {
   policy?: {
     supported_parameters?: string[];
     reasoning_effort_options?: string[];
+    decision_capable?: boolean;
+    decision_protocol?: "jev" | "openai_compatible";
     capabilities?: {
       image_input?: boolean;
       image_generation?: boolean;
@@ -332,9 +334,14 @@ interface ModelAvailabilityDto {
   unavailable_reason?: string;
   failure_kind?: string;
   failure_disposition?: "retryable" | "fail_fast";
+  resolved_capabilities?: {
+    decision_capable?: boolean;
+  };
   policy?: {
     supported_parameters?: string[];
     reasoning_effort_options?: string[];
+    decision_capable?: boolean;
+    decision_protocol?: "jev" | "openai_compatible";
     capabilities?: {
       image_input?: boolean;
       image_generation?: boolean;
@@ -2797,6 +2804,11 @@ export function projectModelOptions(response: RuntimeModelsDto): RuntimeModelOpt
       available: retryableFailure ? true : (entry.available ?? existing?.available ?? false),
       unavailableReason: retryableFailure ? undefined : entry.unavailable_reason,
       availabilityWarning: retryableFailure ? (entry.unavailable_reason ?? entry.failure_kind) : undefined,
+      decisionCapable: entry.resolved_capabilities?.decision_capable
+        ?? entry.policy?.decision_capable
+        ?? existing?.decisionCapable
+        ?? false,
+      decisionProtocol: entry.policy?.decision_protocol ?? existing?.decisionProtocol,
       supportsImageInput: entry.policy?.capabilities?.image_input ?? existing?.supportsImageInput ?? false,
       supportsImageGeneration: entry.policy?.capabilities?.image_generation ?? existing?.supportsImageGeneration ?? false,
       supportsReasoningEffort: supportsReasoningEffort(entry) || (existing?.supportsReasoningEffort ?? false),
@@ -2813,7 +2825,7 @@ function projectAvailableModels(
   entries: Array<string | RuntimeAvailableModelDto>,
 ): RuntimeModelOption[] {
   return entries
-    .map((entry) => {
+    .map((entry): RuntimeModelOption | undefined => {
       const model = typeof entry === "string" ? entry : entry.model;
       if (!model) return undefined;
       const provider = typeof entry === "string" ? (model.split("/")[0] ?? "unknown") : (entry.provider ?? model.split("/")[0] ?? "unknown");
@@ -2828,6 +2840,8 @@ function projectAvailableModels(
         routeProvider: typeof entry === "string" ? provider : (entry.route_provider ?? provider),
         displayName: typeof entry === "string" ? model : (entry.display_name ?? model),
         available: true,
+        decisionCapable: typeof entry === "string" ? false : (entry.policy?.decision_capable ?? false),
+        decisionProtocol: typeof entry === "string" ? undefined : entry.policy?.decision_protocol,
         supportsImageInput: typeof entry === "string" ? false : (entry.capabilities?.image_input ?? false),
         supportsImageGeneration: typeof entry === "string" ? false : (entry.capabilities?.image_generation ?? false),
         supportsReasoningEffort: typeof entry === "string" ? false : supportsReasoningEffort(entry),

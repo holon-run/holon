@@ -104,6 +104,7 @@ export function buildDecisionConfigUpdates(
   numThreads: string,
   checksum: string,
   preset = "jev-selector-q4f16",
+  modelUpdate: "set" | "preserve" = "set",
 ): Array<{ key: string; value?: unknown; unset?: boolean }> {
   const trimmedModel = model.trim();
   const trimmedModelDir = modelDir.trim();
@@ -112,9 +113,13 @@ export function buildDecisionConfigUpdates(
   const trimmedChecksum = checksum.trim();
   return [
     enabled ? { key: "decision.enabled", value: true } : { key: "decision.enabled", unset: true },
-    trimmedModel
-      ? { key: "decision.model", value: trimmedModel }
-      : { key: "decision.model", unset: true },
+    ...(modelUpdate === "preserve"
+      ? []
+      : [
+          trimmedModel
+            ? { key: "decision.model", value: trimmedModel }
+            : { key: "decision.model", unset: true },
+        ]),
     preset.trim()
       ? { key: "decision.local_onnx.preset", value: preset.trim() }
       : { key: "decision.local_onnx.preset", unset: true },
@@ -288,6 +293,10 @@ export function SettingsPage({
   onClearCodexDeviceLogin,
 }: SettingsPageProps) {
   const groupedModels = groupModelsByProvider(modelCatalog.options);
+  const decisionModels = useMemo(
+    () => modelCatalog.options.filter((model) => model.decisionCapable),
+    [modelCatalog.options],
+  );
   const availableCount = modelCatalog.options.filter((model) => model.available).length;
   const unavailableCount = modelCatalog.options.length - availableCount;
   const { t } = useTranslation();
@@ -350,6 +359,8 @@ export function SettingsPage({
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
   const [searchCredentialMessages, setSearchCredentialMessages] = useState<Record<string, string>>({});
   const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
+  const decisionModelIsCatalogRoute = !decisionModel.trim()
+    || decisionModels.some((model) => model.model === decisionModel.trim());
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
   const imageGenModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageGeneration), [modelCatalog.options]);
@@ -691,6 +702,7 @@ export function SettingsPage({
         decisionNumThreads,
         decisionChecksum,
         decisionPreset,
+        decisionModelIsCatalogRoute ? "set" : "preserve",
       ).concat(
         buildAdvisoryToolConfigUpdates(
           advisoryToolEnabled,
@@ -1217,17 +1229,24 @@ export function SettingsPage({
                 <p className="settings-hint">{t("settings.decisionEnableHint")}</p>
                 <label>
                   <span>{t("settings.decisionModel")}</span>
-                  <input
-                    list="decision-model-catalog"
-                    value={decisionModel}
+                  <select
+                    value={decisionModelIsCatalogRoute ? decisionModel : ""}
                     onChange={(event) => setDecisionModel(event.target.value)}
-                    placeholder="openai/default/gpt-4o-mini"
-                  />
+                    disabled={decisionModels.length === 0}
+                  >
+                    <option value="">{t("settings.decisionModelNone")}</option>
+                    {decisionModels.map((model) => (
+                      <option key={model.routeRef} value={model.model} disabled={!model.available}>
+                        {model.displayName} · {model.provider} · {model.decisionProtocol ?? "unknown"}
+                      </option>
+                    ))}
+                  </select>
                 </label>
-                <datalist id="decision-model-catalog">
-                  {(surface.modelCatalog ?? []).map((model) => <option key={model} value={model} />)}
-                </datalist>
-                <p className="settings-hint">{t("settings.decisionModelHint")}</p>
+                <p className="settings-hint">
+                  {decisionModelIsCatalogRoute
+                    ? t("settings.decisionModelHint")
+                    : t("settings.decisionModelNotInCatalog", { model: decisionModel })}
+                </p>
                 <details>
                   <summary>{t("settings.decisionLocalOnnx")}</summary>
                   <label className="settings-checkbox">

@@ -383,6 +383,8 @@ export interface RuntimeModelOption {
   available: boolean;
   unavailableReason?: string;
   availabilityWarning?: string;
+  decisionCapable?: boolean;
+  decisionProtocol?: "jev" | "openai_compatible";
   supportsImageInput: boolean;
   supportsImageGeneration: boolean;
   supportsReasoningEffort: boolean;
