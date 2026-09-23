@@ -9,6 +9,8 @@ mod gateways;
 #[cfg(test)]
 mod hosted;
 mod tencent_tokenhub;
+#[cfg(test)]
+mod typesafe;
 
 pub(crate) use tencent_tokenhub::is_tencent_tokenhub_model_id;
 
@@ -28,12 +30,14 @@ pub(super) fn entries_for_registration(
         ProviderCatalogRegistration::HostedLate => hosted::late_entries(),
         ProviderCatalogRegistration::ChinaLate => china::late_entries(),
         ProviderCatalogRegistration::TencentTokenHub => tencent_tokenhub::entries(),
+        ProviderCatalogRegistration::Typesafe => typesafe::entries(),
     }
 }
 
 #[cfg(test)]
 pub(super) fn route_definitions() -> Vec<super::BuiltInModelRouteDefinition> {
     let mut definitions = china::route_definitions();
+    definitions.extend(typesafe::route_definitions());
     definitions.extend(tencent_tokenhub::route_definitions());
     definitions.extend(
         ["deepseek-v4-flash", "deepseek-v4-pro"]

@@ -283,7 +283,8 @@ fn forced_native_web_search_request(
             max_results: Some(3),
         }),
         ProviderTransportKind::OpenAiChatCompletions
-        | ProviderTransportKind::GeminiGenerateContent => None,
+        | ProviderTransportKind::GeminiGenerateContent
+        | ProviderTransportKind::AiEvaluationModel => None,
     }
 }
 
@@ -331,7 +332,8 @@ async fn live_configured_model_chain_builtin_web_search_support() -> Result<()> 
                 )?)
             }
             ProviderTransportKind::OpenAiChatCompletions
-            | ProviderTransportKind::GeminiGenerateContent => {
+            | ProviderTransportKind::GeminiGenerateContent
+            | ProviderTransportKind::AiEvaluationModel => {
                 println!(
                     "SKIP {}: transport {:?} has no builtin web search lowering",
                     model_ref.as_string(),

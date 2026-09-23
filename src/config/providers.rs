@@ -48,6 +48,10 @@ pub enum ProviderTransportKind {
     OpenAiChatCompletions,
     AnthropicMessages,
     GeminiGenerateContent,
+    /// Typed decision/evaluation wire family used by TypeSafe System One and the
+    /// Vercel AI Gateway evaluation-model endpoint. It serves Decision requests
+    /// only and has no agent-turn wire implementation.
+    AiEvaluationModel,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

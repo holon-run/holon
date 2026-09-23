@@ -29,6 +29,7 @@ fn transport_wire_name(kind: ProviderTransportKind) -> &'static str {
         ProviderTransportKind::OpenAiChatCompletions => "openai_chat_completions",
         ProviderTransportKind::AnthropicMessages => "anthropic_messages",
         ProviderTransportKind::GeminiGenerateContent => "gemini_generate_content",
+        ProviderTransportKind::AiEvaluationModel => "ai_evaluation_model",
     }
 }
 

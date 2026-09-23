@@ -52,6 +52,7 @@ interface SettingsPageProps {
   onRefreshRuntimeConfig: () => Promise<void>;
   onUpdateRuntimeConfig: (updates: Array<{ key: string; value?: unknown; unset?: boolean }>) => Promise<RuntimeConfigState | undefined>;
   onDownloadLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
+  onCancelLocalOnnxPreset: (preset: string) => Promise<RuntimeLocalOnnxPresetStatus>;
   credentialStore: CredentialStoreState;
   credentialStoreLoading: boolean;
   onRefreshCredentialStore: () => Promise<void>;
@@ -194,6 +195,15 @@ export function filterFallbackSuggestions(
       ))
     .slice(0, 10);
 }
+
+export function isDecisionCatalogRoute(
+  model: string,
+  decisionModels: readonly RuntimeModelOption[],
+): boolean {
+  const trimmed = model.trim();
+  return !trimmed || decisionModels.some((option) => option.routeRef === trimmed);
+}
+
 function isProviderKeyCredential(kind: string): boolean {
   return kind === "api_key" || kind === "bearer_token";
 }
@@ -283,6 +293,7 @@ export function SettingsPage({
   onRefreshRuntimeConfig,
   onUpdateRuntimeConfig,
   onDownloadLocalOnnxPreset,
+  onCancelLocalOnnxPreset,
   credentialStore,
   credentialStoreLoading,
   onRefreshCredentialStore,
@@ -359,8 +370,7 @@ export function SettingsPage({
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
   const [searchCredentialMessages, setSearchCredentialMessages] = useState<Record<string, string>>({});
   const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
-  const decisionModelIsCatalogRoute = !decisionModel.trim()
-    || decisionModels.some((model) => model.model === decisionModel.trim());
+  const decisionModelIsCatalogRoute = isDecisionCatalogRoute(decisionModel, decisionModels);
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
   const imageGenModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageGeneration), [modelCatalog.options]);
@@ -1236,7 +1246,7 @@ export function SettingsPage({
                   >
                     <option value="">{t("settings.decisionModelNone")}</option>
                     {decisionModels.map((model) => (
-                      <option key={model.routeRef} value={model.model} disabled={!model.available}>
+                      <option key={model.routeRef} value={model.routeRef} disabled={!model.available}>
                         {model.displayName} · {model.provider} · {model.decisionProtocol ?? "unknown"}
                       </option>
                     ))}
@@ -1285,11 +1295,22 @@ export function SettingsPage({
                     >
                       {localOnnxDownloading ? t("settings.downloadingDecisionPreset") : t("settings.downloadDecisionPreset")}
                     </Button>
+                    {localOnnxDownload?.cancellable ? (
+                      <Button
+                        type="button"
+                        disabled={localOnnxDownloading}
+                        onClick={async () => {
+                          setLocalOnnxDownload(await onCancelLocalOnnxPreset(decisionPreset.trim()));
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    ) : null}
                     {localOnnxDownload ? (
                       <span className="settings-hint">
                         {localOnnxDownload.complete
                           ? t("settings.decisionPresetReady")
-                          : t("settings.decisionPresetIncomplete")}
+                          : `${t("settings.decisionPresetIncomplete")} (${localOnnxDownload.phase}, ${localOnnxDownload.downloadedBytes} bytes)`}
                       </span>
                     ) : null}
                   </div>

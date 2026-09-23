@@ -14,6 +14,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -34,6 +35,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -54,6 +56,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -74,6 +77,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -94,6 +98,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -114,6 +119,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -134,6 +140,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -154,6 +161,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -174,6 +182,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -194,6 +203,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -214,6 +224,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -234,6 +245,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -254,6 +266,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -274,6 +287,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -294,6 +308,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -314,6 +329,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -334,6 +350,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -354,6 +371,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -374,6 +392,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -394,6 +413,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -414,6 +434,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -434,6 +455,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -454,6 +476,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -474,6 +497,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -494,6 +518,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -514,6 +539,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -534,6 +560,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -554,6 +581,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -574,6 +602,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -594,6 +623,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -614,6 +644,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -634,6 +665,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -654,6 +686,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -674,6 +707,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -694,6 +728,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -714,6 +749,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -734,6 +770,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -754,6 +791,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -774,6 +812,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -794,6 +833,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -814,6 +854,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -834,6 +875,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -854,6 +896,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -874,6 +917,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -894,6 +938,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -914,6 +959,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -934,6 +980,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -954,6 +1001,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -974,6 +1022,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -994,6 +1043,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1014,6 +1064,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1034,6 +1085,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1054,6 +1106,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1074,6 +1127,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1094,6 +1148,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1114,6 +1169,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1134,6 +1190,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1154,6 +1211,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1174,6 +1232,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1194,6 +1253,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1214,6 +1274,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1234,6 +1295,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1254,6 +1316,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1274,6 +1337,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1294,6 +1358,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1314,6 +1379,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1334,6 +1400,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1354,6 +1421,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1374,6 +1442,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1394,6 +1463,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1414,6 +1484,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1434,6 +1505,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1454,6 +1526,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1474,6 +1547,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1494,6 +1568,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1514,6 +1589,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1534,6 +1610,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1554,6 +1631,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1574,6 +1652,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1594,6 +1673,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1614,6 +1694,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1634,6 +1715,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1654,6 +1736,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1674,6 +1757,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1694,6 +1778,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1714,6 +1799,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1734,6 +1820,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1754,6 +1841,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1774,6 +1862,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1794,6 +1883,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1814,6 +1904,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1834,6 +1925,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1854,6 +1946,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1874,6 +1967,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1899,6 +1993,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1919,6 +2014,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1939,6 +2035,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1959,6 +2056,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -1979,6 +2077,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -1999,6 +2098,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2019,6 +2119,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2039,6 +2140,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2059,6 +2161,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2079,6 +2182,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2099,6 +2203,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2119,6 +2224,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2139,6 +2245,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2159,6 +2266,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2179,6 +2287,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2199,6 +2308,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2219,6 +2329,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2239,6 +2350,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2259,6 +2371,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2279,6 +2392,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2299,6 +2413,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2319,6 +2434,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2339,6 +2455,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2359,6 +2476,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2379,6 +2497,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2399,6 +2518,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2419,6 +2539,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2439,6 +2560,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2459,6 +2581,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2479,6 +2602,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2499,6 +2623,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2519,6 +2644,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2539,6 +2665,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2559,6 +2686,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2579,6 +2707,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2599,6 +2728,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2619,6 +2749,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2639,6 +2770,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2659,6 +2791,7 @@
       "default_verbosity": "low",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2679,6 +2812,7 @@
       "default_verbosity": "low",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -2699,6 +2833,7 @@
       "default_verbosity": "medium",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -2719,6 +2854,7 @@
       "default_verbosity": "low",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -2739,6 +2875,7 @@
       "default_verbosity": "low",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -2759,6 +2896,7 @@
       "default_verbosity": "low",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -2779,6 +2917,7 @@
       "default_verbosity": "low",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -2799,6 +2938,7 @@
       "default_verbosity": "low",
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": true,
         "image_input": true,
         "image_generation": true,
@@ -2819,6 +2959,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2839,6 +2980,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2859,6 +3001,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2879,6 +3022,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2899,6 +3043,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2919,6 +3064,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -2939,6 +3085,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": true,
@@ -2959,6 +3106,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2979,6 +3127,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -2999,6 +3148,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3019,6 +3169,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3039,6 +3190,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3059,6 +3211,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3079,6 +3232,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3099,6 +3253,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3119,6 +3274,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3139,6 +3295,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3159,6 +3316,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3179,6 +3337,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3199,6 +3358,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3219,6 +3379,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3239,6 +3400,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3259,6 +3421,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3279,6 +3442,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3299,6 +3463,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3319,6 +3484,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3339,6 +3505,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3359,6 +3526,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3379,6 +3547,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3399,6 +3568,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3419,6 +3589,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3439,6 +3610,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3459,6 +3631,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3479,6 +3652,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3499,6 +3673,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3519,6 +3694,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3539,6 +3715,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3559,6 +3736,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3579,6 +3757,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3599,6 +3778,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3619,6 +3799,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3639,6 +3820,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3659,6 +3841,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3679,6 +3862,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3699,6 +3883,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3719,6 +3904,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3739,6 +3925,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3759,6 +3946,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3779,6 +3967,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3799,6 +3988,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3819,6 +4009,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3839,6 +4030,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3859,6 +4051,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3879,6 +4072,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3899,6 +4093,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3919,6 +4114,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3939,6 +4135,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -3959,6 +4156,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3979,6 +4177,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -3999,6 +4198,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4019,6 +4219,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4039,6 +4240,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4059,6 +4261,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4079,6 +4282,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4099,6 +4303,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4119,6 +4324,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4139,6 +4345,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4159,6 +4366,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4179,6 +4387,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4199,6 +4408,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4219,6 +4429,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4239,6 +4450,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4259,6 +4471,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4279,6 +4492,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4299,6 +4513,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4319,6 +4534,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4339,6 +4555,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4359,6 +4576,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4379,6 +4597,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4386,6 +4605,27 @@
         "interactive_exec": false
       },
       "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "typesafe/jev-latest",
+      "display_name": "JEV Latest",
+      "description": "TypeSafe System One JEV decision model served through the typed evaluation endpoint.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": null,
+      "capabilities": {
+        "agent_turn": false,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
     },
     {
       "model_ref": "venice/qwen3-235b-a22b-thinking-2507",
@@ -4399,6 +4639,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4424,6 +4665,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4444,6 +4686,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4464,6 +4707,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4484,6 +4728,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4509,6 +4754,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4529,6 +4775,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4549,6 +4796,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4569,6 +4817,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4589,6 +4838,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4609,6 +4859,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4629,6 +4880,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4649,6 +4901,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4669,6 +4922,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4689,6 +4943,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4709,6 +4964,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4729,6 +4985,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4749,6 +5006,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4769,6 +5027,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4789,6 +5048,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": true,
@@ -4809,6 +5069,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4829,6 +5090,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4849,6 +5111,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4869,6 +5132,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4889,6 +5153,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4909,6 +5174,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4929,6 +5195,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -4949,6 +5216,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4969,6 +5237,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -4989,6 +5258,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5009,6 +5279,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5029,6 +5300,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5049,6 +5321,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5069,6 +5342,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5089,6 +5363,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -5109,6 +5384,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5129,6 +5405,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -5149,6 +5426,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -5169,6 +5447,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -5189,6 +5468,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5209,6 +5489,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5229,6 +5510,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5249,6 +5531,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5269,6 +5552,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5289,6 +5573,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5309,6 +5594,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5329,6 +5615,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -5349,6 +5636,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -5369,6 +5657,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -9844,6 +10133,25 @@
       }
     },
     {
+      "route_ref": "typesafe@default/jev-latest",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {
+          "decision": true
+        },
+        "decision_protocol": "jev",
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "venice@default/qwen3-235b-a22b-thinking-2507",
       "policy": {
         "display_name": null,
@@ -12422,6 +12730,10 @@
     {
       "model_ref": "together/zai-org/GLM-5.2",
       "route_ref": "together@default/zai-org/GLM-5.2"
+    },
+    {
+      "model_ref": "typesafe/jev-latest",
+      "route_ref": "typesafe@default/jev-latest"
     },
     {
       "model_ref": "venice/qwen3-235b-a22b-thinking-2507",

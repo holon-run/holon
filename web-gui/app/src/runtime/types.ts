@@ -447,6 +447,15 @@ export interface RuntimeConfigSurface {
 export interface RuntimeDecisionSurface {
   enabled: boolean;
   model?: string;
+  protocol?: string;
+  provider?: string;
+  endpoint?: string;
+  routeProvider?: string;
+  transport?: string;
+  decisionCapable?: boolean;
+  credentialConfigured?: boolean;
+  available?: boolean;
+  unavailableReason?: string;
   localOnnx: RuntimeDecisionLocalOnnxSurface;
   tools: RuntimeDecisionToolsSurface;
 }
@@ -471,7 +480,12 @@ export interface RuntimeLocalOnnxPresetFileStatus {
 export interface RuntimeLocalOnnxPresetStatus {
   preset: string;
   directory: string;
+  phase: "complete" | "partial" | "missing" | "corrupt" | string;
   complete: boolean;
+  downloadedBytes: number;
+  bytesTotal?: number;
+  retryable: boolean;
+  cancellable: boolean;
   files: RuntimeLocalOnnxPresetFileStatus[];
 }
 

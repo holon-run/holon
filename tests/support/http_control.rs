@@ -3222,7 +3222,8 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
                         "openai/gpt-4o-mini": {
                             "capabilities": {
                                 "decision": true
-                            }
+                            },
+                            "decision_protocol": "open_ai_compatible"
                         }
                     }
                 },

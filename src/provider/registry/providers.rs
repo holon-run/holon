@@ -84,6 +84,7 @@ pub(crate) enum ProviderCatalogRegistration {
     HostedLate,
     ChinaLate,
     TencentTokenHub,
+    Typesafe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,6 +446,12 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
             VercelAiGateway
         ),
         StaticAndDiscovery
+    ),
+    provider!(
+        "typesafe" => "typesafe" @ "default",
+        AiEvaluationModel, "https://api.typesafe.ai/v1/systemone",
+        ["TYPESAFE_API_KEY"],
+        Generic, Default, None, None, None, StaticOnly, Typesafe
     ),
 ];
 

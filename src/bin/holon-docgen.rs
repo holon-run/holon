@@ -35,6 +35,7 @@ fn transport_display(transport: &ProviderTransportKind) -> String {
         ProviderTransportKind::OpenAiResponses => "OpenAI Responses".to_string(),
         ProviderTransportKind::OpenAiChatCompletions => "OpenAI Chat Completions".to_string(),
         ProviderTransportKind::OpenAiCodexResponses => "OpenAI Codex".to_string(),
+        ProviderTransportKind::AiEvaluationModel => "AI Evaluation Model".to_string(),
     }
 }
 

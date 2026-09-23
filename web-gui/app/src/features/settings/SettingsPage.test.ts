@@ -7,6 +7,7 @@ import {
   buildStandardSearchProviderDefinitions,
   buildVisionConfigUpdates,
   filterFallbackSuggestions,
+  isDecisionCatalogRoute,
   providerCredentialReady,
   reorderModelFallbacks,
   runtimeReloadMessage,
@@ -14,6 +15,7 @@ import {
   sortSearchProvidersForSettings,
 } from "./SettingsPage";
 import type {
+  RuntimeModelOption,
   RuntimeProviderSummary,
   RuntimeWebSearchProviderCapabilities,
   RuntimeWebSearchProviderSummary,
@@ -74,6 +76,34 @@ describe("providerCredentialReady", () => {
 
   it("still requires configured credentials for API-key providers", () => {
     expect(providerCredentialReady(provider("openai", false))).toBe(false);
+  });
+});
+
+describe("isDecisionCatalogRoute", () => {
+  const options: RuntimeModelOption[] = [{
+    model: "jev-latest",
+    routeRef: "typesafe@default/jev-latest",
+    provider: "typesafe",
+    providerFamily: "typesafe",
+    endpoint: "default",
+    routeProvider: "typesafe",
+    displayName: "JEV latest",
+    available: false,
+    decisionCapable: true,
+    decisionProtocol: "jev",
+    supportsImageInput: false,
+    supportsImageGeneration: false,
+    supportsReasoningEffort: false,
+    reasoningEffortOptions: [],
+  }];
+
+  it("matches the persisted route reference rather than the bare model name", () => {
+    expect(isDecisionCatalogRoute("typesafe@default/jev-latest", options)).toBe(true);
+    expect(isDecisionCatalogRoute("jev-latest", options)).toBe(false);
+  });
+
+  it("accepts an empty route as the explicit no-remote choice", () => {
+    expect(isDecisionCatalogRoute("  ", options)).toBe(true);
   });
 });
 

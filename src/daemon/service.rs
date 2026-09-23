@@ -16,6 +16,7 @@ use tokio::sync::watch;
 use crate::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
+    provider::resolved_model_availability,
     runtime_db::RuntimeDbProtectionStatus,
     types::{AgentStatus, RuntimeFailureSummary},
     web::{WebProviderCapabilityMetadata, WebProviderKind},
@@ -140,6 +141,22 @@ pub struct RuntimeDecisionSurface {
     pub enabled: bool,
     pub model: Option<String>,
     pub protocol: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport: Option<String>,
+    #[serde(default)]
+    pub decision_capable: bool,
+    #[serde(default)]
+    pub credential_configured: bool,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<String>,
     pub local_onnx: RuntimeDecisionLocalOnnxSurface,
     #[serde(default)]
     pub tools: RuntimeDecisionToolsSurface,
@@ -179,28 +196,60 @@ impl RuntimeDecisionSurface {
         let decision = &config.stored_config.decision;
         let local_onnx = decision.local_onnx.as_ref();
         let tools = decision.tools.as_ref();
+        let selected_availability = decision
+            .model
+            .as_deref()
+            .and_then(|model| crate::config::ModelRouteRef::parse_compatible(model).ok())
+            .and_then(|route| {
+                let model_ref = route.model_ref().as_string();
+                resolved_model_availability(config)
+                    .into_iter()
+                    .find(|entry| {
+                        entry.model == model_ref
+                            && entry.provider == route.provider.as_str()
+                            && entry.endpoint == route.endpoint.as_str()
+                    })
+            });
         Self {
             enabled: decision.enabled.unwrap_or(false),
             model: decision.model.clone(),
-            protocol: decision
-                .model
-                .as_deref()
-                .and_then(|model| crate::config::ModelRouteRef::parse_compatible(model).ok())
-                .and_then(|route| {
-                    crate::config::RuntimeModelCatalog::from_config(config)
-                        .resolve_explicit_model_route(
-                            &crate::context::ContextConfig::default(),
-                            &route,
-                            crate::config::ModelRouteCapability::Decision,
-                        )
-                        .and_then(|resolved| resolved.policy.decision_protocol)
-                })
+            protocol: selected_availability
+                .as_ref()
+                .and_then(|entry| entry.policy.decision_protocol)
                 .map(|protocol| match protocol {
                     crate::model_catalog::DecisionProtocol::OpenAiCompatible => {
                         "openai_compatible".to_string()
                     }
                     crate::model_catalog::DecisionProtocol::Jev => "jev".to_string(),
                 }),
+            provider: selected_availability
+                .as_ref()
+                .map(|entry| entry.provider.clone()),
+            endpoint: selected_availability
+                .as_ref()
+                .map(|entry| entry.endpoint.clone()),
+            route_provider: selected_availability
+                .as_ref()
+                .map(|entry| entry.route_provider.clone()),
+            transport: selected_availability
+                .as_ref()
+                .and_then(|entry| entry.transport.clone()),
+            decision_capable: selected_availability
+                .as_ref()
+                .and_then(|entry| entry.resolved_capabilities.as_ref())
+                .map(|capabilities| capabilities.decision_capable)
+                .unwrap_or(false),
+            credential_configured: selected_availability
+                .as_ref()
+                .map(|entry| entry.credential_configured)
+                .unwrap_or(false),
+            available: selected_availability
+                .as_ref()
+                .map(|entry| entry.available)
+                .unwrap_or(false),
+            unavailable_reason: selected_availability
+                .as_ref()
+                .and_then(|entry| entry.unavailable_reason.clone()),
             local_onnx: RuntimeDecisionLocalOnnxSurface {
                 enabled: local_onnx
                     .and_then(|config| config.enabled)

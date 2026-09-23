@@ -344,6 +344,9 @@ async fn smoke_one_provider(
                     trace_dir,
                 )?))
             }
+            ProviderTransportKind::AiEvaluationModel => Err(anyhow::anyhow!(
+                "AI evaluation model transport is not an agent-turn provider"
+            )),
         }
     };
 

@@ -739,15 +739,30 @@ fn runtime_config_surface_reports_credential_free_providers_as_ready() {
 fn runtime_config_surface_reports_decision_provider_settings() {
     let mut config = test_config();
     config.stored_config.decision.enabled = Some(true);
-    config.stored_config.decision.model = Some("jev:default/jev-decision-1".into());
+    config.stored_config.decision.model = Some("typesafe@default/jev-latest".into());
 
     let surface = RuntimeConfigSurface::new(&config);
 
     assert!(surface.decision.enabled);
     assert_eq!(
         surface.decision.model.as_deref(),
-        Some("jev:default/jev-decision-1")
+        Some("typesafe@default/jev-latest")
     );
+    assert_eq!(surface.decision.provider.as_deref(), Some("typesafe"));
+    assert_eq!(surface.decision.endpoint.as_deref(), Some("default"));
+    assert_eq!(surface.decision.route_provider.as_deref(), Some("typesafe"));
+    assert_eq!(
+        surface.decision.transport.as_deref(),
+        Some("ai_evaluation_model")
+    );
+    assert!(surface.decision.decision_capable);
+    assert!(!surface.decision.credential_configured);
+    assert!(!surface.decision.available);
+    assert_eq!(
+        surface.decision.unavailable_reason.as_deref(),
+        Some("credential_missing")
+    );
+    assert_eq!(surface.decision.protocol.as_deref(), Some("jev"));
 }
 
 #[test]
