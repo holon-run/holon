@@ -53,19 +53,22 @@ public class HolonHttpClient internal constructor(
     private val bearerTokenProvider: BearerTokenProvider,
     private val httpClient: OkHttpClient,
     private val sessionCredentialStore: SessionCredentialStore?,
+    insecureHttpHosts: Set<String>,
 ) {
     public constructor(
         baseUrl: String,
         bearerTokenProvider: BearerTokenProvider = BearerTokenProvider { null },
         sessionCredentialStore: SessionCredentialStore? = null,
+        insecureHttpHosts: Set<String> = emptySet(),
     ) : this(
         baseUrl = baseUrl,
         bearerTokenProvider = bearerTokenProvider,
         httpClient = defaultHttpClient(),
         sessionCredentialStore = sessionCredentialStore,
+        insecureHttpHosts = insecureHttpHosts,
     )
 
-    private val baseUrl: HttpUrl = normalizeBaseUrl(baseUrl)
+    private val baseUrl: HttpUrl = normalizeBaseUrl(baseUrl, insecureHttpHosts)
     private val sseHttpClient: OkHttpClient =
         sseHttpClient(httpClient)
 
@@ -582,7 +585,10 @@ public class HolonHttpClient internal constructor(
                 .readTimeout(45, TimeUnit.SECONDS)
                 .build()
 
-        internal fun normalizeBaseUrl(value: String): HttpUrl {
+        internal fun normalizeBaseUrl(
+            value: String,
+            insecureHttpHosts: Set<String> = emptySet(),
+        ): HttpUrl {
             val parsed =
                 requireNotNull(value.toHttpUrlOrNull()) {
                     "Holon base URL must be an absolute HTTP(S) URL"
@@ -593,7 +599,11 @@ public class HolonHttpClient internal constructor(
             require(parsed.query == null && parsed.fragment == null) {
                 "Holon base URL must not contain a query or fragment"
             }
-            require(parsed.scheme == "https" || isLoopbackHttp(parsed)) {
+            require(
+                parsed.scheme == "https" ||
+                    isLoopbackHttp(parsed) ||
+                    (parsed.scheme == "http" && parsed.host in insecureHttpHosts),
+            ) {
                 "Holon base URL must use HTTPS except for loopback development"
             }
 
