@@ -217,6 +217,22 @@ describe("buildDecisionConfigUpdates", () => {
       { key: "decision.local_onnx.checksum", value: "sha256:abc" },
     ]);
   });
+
+  it("preserves a configured non-catalog route when saving other Decision settings", () => {
+    const updates = buildDecisionConfigUpdates(
+      true,
+      "legacy/decision-route",
+      "",
+      "",
+      "",
+      "",
+      "jev-selector-q4f16",
+      "preserve",
+    );
+
+    expect(updates).not.toContainEqual({ key: "decision.model", value: "legacy/decision-route" });
+    expect(updates).not.toContainEqual({ key: "decision.model", unset: true });
+  });
 });
 
 describe("fallback model settings helpers", () => {

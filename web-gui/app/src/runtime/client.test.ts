@@ -70,6 +70,29 @@ function agentStateFixture(agentId: string): components["schemas"]["AgentStateSn
 }
 
 describe("projectModelOptions", () => {
+  it("projects Decision capability and protocol from runtime availability", () => {
+    const options = projectModelOptions({
+      model_availability: [
+        {
+          model: "typesafe/jev-latest",
+          provider: "typesafe",
+          provider_family: "typesafe",
+          endpoint: "default",
+          resolved_capabilities: { decision_capable: true },
+          policy: { decision_protocol: "jev" },
+          available: true,
+        },
+      ],
+    });
+
+    expect(options).toEqual([
+      expect.objectContaining({
+        model: "typesafe/jev-latest",
+        decisionCapable: true,
+        decisionProtocol: "jev",
+      }),
+    ]);
+  });
   it("detects reasoning effort support from runtime available model capabilities", () => {
     const options = projectModelOptions({
       available_models: [
