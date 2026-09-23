@@ -194,6 +194,15 @@ export function filterFallbackSuggestions(
       ))
     .slice(0, 10);
 }
+
+export function isDecisionCatalogRoute(
+  model: string,
+  decisionModels: readonly RuntimeModelOption[],
+): boolean {
+  const trimmed = model.trim();
+  return !trimmed || decisionModels.some((option) => option.routeRef === trimmed);
+}
+
 function isProviderKeyCredential(kind: string): boolean {
   return kind === "api_key" || kind === "bearer_token";
 }
@@ -359,8 +368,7 @@ export function SettingsPage({
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});
   const [searchCredentialMessages, setSearchCredentialMessages] = useState<Record<string, string>>({});
   const [deviceLoginProviderId, setDeviceLoginProviderId] = useState<string | null>(null);
-  const decisionModelIsCatalogRoute = !decisionModel.trim()
-    || decisionModels.some((model) => model.model === decisionModel.trim());
+  const decisionModelIsCatalogRoute = isDecisionCatalogRoute(decisionModel, decisionModels);
   const availableModels = useMemo(() => modelCatalog.options.filter((model) => model.available), [modelCatalog.options]);
   const visionModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageInput), [modelCatalog.options]);
   const imageGenModels = useMemo(() => modelCatalog.options.filter((model) => model.available && model.supportsImageGeneration), [modelCatalog.options]);
@@ -1236,7 +1244,7 @@ export function SettingsPage({
                   >
                     <option value="">{t("settings.decisionModelNone")}</option>
                     {decisionModels.map((model) => (
-                      <option key={model.routeRef} value={model.model} disabled={!model.available}>
+                      <option key={model.routeRef} value={model.routeRef} disabled={!model.available}>
                         {model.displayName} · {model.provider} · {model.decisionProtocol ?? "unknown"}
                       </option>
                     ))}
