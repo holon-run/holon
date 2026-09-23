@@ -2210,7 +2210,8 @@ pub(super) fn trigger_wait_and_enqueue_tx(
     };
 
     let selection = crate::wake_contract::select_wait_to_trigger(message, &conditions);
-    let mut triggered_wait = None;
+    let mut triggered_waits: Vec<(WaitConditionRecord, crate::wake_contract::WakeMatch)> =
+        Vec::new();
     let outcome = match selection {
         crate::wake_contract::WaitTriggerSelection::Match { condition, wake } => {
             if !wait_generation_matches_tx(tx, message, condition)? {
@@ -2228,7 +2229,7 @@ pub(super) fn trigger_wait_and_enqueue_tx(
                 triggered.mark_triggered(&message.id, queue_entry.updated_at);
                 validate_wait_condition_tx(tx, &triggered)?;
                 let wait_id = triggered.id.clone();
-                triggered_wait = Some((triggered, wake));
+                triggered_waits.push((triggered, wake));
                 TriggerWaitAndEnqueueOutcome::Triggered { wait_id }
             }
         }
@@ -2249,7 +2250,8 @@ pub(super) fn trigger_wait_and_enqueue_tx(
 
     let (message, message_inserted) = append_message_tx(tx, message)?;
     let queue_applied = upsert_queue_entry_tx(tx, queue_entry)?;
-    let wait_applied = if let Some((triggered, wake)) = triggered_wait.as_ref() {
+    let mut wait_applied = false;
+    for (index, (triggered, wake)) in triggered_waits.iter().enumerate() {
         let applied = upsert_wait_condition_tx(tx, triggered)?;
         let mut event = AuditEvent::legacy(
             "wait_condition_triggered",
@@ -2262,12 +2264,16 @@ pub(super) fn trigger_wait_and_enqueue_tx(
                 "subject_ref": wake.subject_ref,
             }),
         );
-        event.id = format!("audit:wait-triggered:{}", message.id);
+        // Keep the single-wait audit identity stable; extra task waiters
+        // triggered by the same result get a per-wait suffix (#3124).
+        event.id = if index == 0 {
+            format!("audit:wait-triggered:{}", message.id)
+        } else {
+            format!("audit:wait-triggered:{}:{}", message.id, triggered.id)
+        };
         append_audit_event_tx(tx, Some(&message.agent_id), &event)?;
-        applied
-    } else {
-        false
-    };
+        wait_applied = wait_applied || applied;
+    }
     if let TriggerWaitAndEnqueueOutcome::Stale { wait_id } = &outcome {
         let mut event = AuditEvent::legacy(
             "wait_trigger_correlation_stale",

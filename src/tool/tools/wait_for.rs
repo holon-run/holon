@@ -70,6 +70,12 @@ pub(crate) struct WaitForResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) requested_work_item_id: Option<String>,
+    /// How the actual waiter was selected: execution_binding (a conflicting
+    /// explicit work_item_id is ignored), explicit_request, turn_bound,
+    /// current_focus, or agent_lifecycle (#3124).
+    pub(crate) owner_selection: &'static str,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) recheck_after_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) recheck_at: Option<DateTime<Utc>>,
@@ -134,9 +140,9 @@ async fn settle_impl(
 
     let context = query_context(runtime).await?;
     let state = runtime.agent_state().await?;
-    let work_item_id = resolve_wait_work_item_id(
-        args.wake,
-        optional_resource(args.work_item_id),
+    let requested_work_item_id = optional_resource(args.work_item_id.clone());
+    let (work_item_id, owner_selection) = resolve_wait_work_item_id(
+        requested_work_item_id.clone(),
         state
             .current_execution_binding
             .as_ref()
@@ -144,6 +150,14 @@ async fn settle_impl(
         state.current_turn_work_item_id.clone(),
         context.current_work_item_id.clone(),
     );
+    let disclosure = WaitForOwnerDisclosure {
+        waiter_work_item_id: work_item_id.clone(),
+        requested_work_item_id: requested_work_item_id.clone(),
+        owner_selection,
+        ignored_request: requested_work_item_id
+            .as_deref()
+            .is_some_and(|requested| work_item_id.as_deref() != Some(requested)),
+    };
     let (registration, prepared_wait_for) = if prepare_only {
         match runtime
             .prepare_wait_for_outcome(
@@ -159,14 +173,14 @@ async fn settle_impl(
             crate::runtime::PrepareWaitForOutcome::Prepared(mut prepared) => {
                 prepared.delivery = args.delivery;
                 if prepared.command.task_result_admission.is_some() {
-                    let mut result = immediate_result(prepared.outcome())?;
+                    let mut result = immediate_result(prepared.outcome(), &disclosure)?;
                     result.prepared_wait_for = Some(prepared);
                     return Ok(result);
                 }
                 (prepared.registration.clone(), Some(prepared))
             }
             crate::runtime::PrepareWaitForOutcome::Immediate(outcome) => {
-                return immediate_result(outcome);
+                return immediate_result(outcome, &disclosure);
             }
         }
     } else {
@@ -182,7 +196,7 @@ async fn settle_impl(
             .await?;
         match outcome {
             WaitForRegistrationOutcome::Registered { registration } => (registration, None),
-            outcome => return immediate_result(outcome),
+            outcome => return immediate_result(outcome, &disclosure),
         }
     };
     let updated_context = query_context(runtime).await?;
@@ -224,6 +238,8 @@ async fn settle_impl(
         wake: args.wake,
         resource,
         work_item_id,
+        requested_work_item_id: disclosure.requested_work_item_id.clone(),
+        owner_selection: disclosure.owner_selection.as_str(),
         recheck_after_ms: registration.recheck_after_ms,
         recheck_at: registration.recheck_at,
         wait_condition: WaitConditionSummary::from(registration.condition),
@@ -231,27 +247,35 @@ async fn settle_impl(
         cancelled_wait_condition_ids: registration.cancelled_wait_condition_ids,
     };
     let value = serde_json::to_value(&result)?;
-    let mut result = ToolResult::sleep(
-        NAME,
-        value,
-        Some(match result.scope {
-            WaitForScope::WorkItem => format!("waiting on work item: {reason}"),
-            WaitForScope::Agent => format!("waiting at agent scope: {reason}"),
-        }),
-        None,
-    );
+    let mut summary = match result.scope {
+        WaitForScope::WorkItem => format!("waiting on work item: {reason}"),
+        WaitForScope::Agent => format!("waiting at agent scope: {reason}"),
+    };
+    if let Some(note) = disclosure.ignore_note() {
+        summary = format!("{summary}; {note}");
+    }
+    let mut result = ToolResult::sleep(NAME, value, Some(summary), None);
     result.terminal_transition = true;
     result.prepared_wait_for = prepared_wait_for;
     Ok(result)
 }
 
-fn immediate_result(outcome: WaitForRegistrationOutcome) -> Result<ToolResult> {
+fn immediate_result(
+    outcome: WaitForRegistrationOutcome,
+    disclosure: &WaitForOwnerDisclosure,
+) -> Result<ToolResult> {
     match outcome {
         WaitForRegistrationOutcome::TaskResultQueued {
             task_id,
             result_message_id,
             wait_condition_id,
         } => {
+            let mut summary = format!(
+                "task result already completed; queued exact result message {result_message_id} and registered the triggered wait"
+            );
+            if let Some(note) = disclosure.ignore_note() {
+                summary = format!("{summary}; {note}");
+            }
             let mut result = ToolResult::success(
                 NAME,
                 json!({
@@ -259,10 +283,11 @@ fn immediate_result(outcome: WaitForRegistrationOutcome) -> Result<ToolResult> {
                     "task_id": task_id,
                     "result_message_id": result_message_id,
                     "wait_condition_id": wait_condition_id,
+                    "waiter_work_item_id": disclosure.waiter_work_item_id,
+                    "requested_work_item_id": disclosure.requested_work_item_id,
+                    "owner_selection": disclosure.owner_selection.as_str(),
                 }),
-                Some(format!(
-                    "task result already completed; queued exact result message {result_message_id} and registered the triggered wait"
-                )),
+                Some(summary),
             );
             result.should_sleep = true;
             result.terminal_transition = true;
@@ -271,20 +296,52 @@ fn immediate_result(outcome: WaitForRegistrationOutcome) -> Result<ToolResult> {
         WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
             task_id,
             result_message_id,
-        } => Ok(ToolResult::success(
-            NAME,
-            json!({
-                "disposition": "task_result_already_consumed",
-                "task_id": task_id,
-                "result_message_id": result_message_id,
-            }),
-            Some(format!(
-                "task result was already consumed: {result_message_id}"
-            )),
-        )),
+        } => {
+            let mut summary = format!("task result was already consumed: {result_message_id}");
+            if let Some(note) = disclosure.ignore_note() {
+                summary = format!("{summary}; {note}");
+            }
+            Ok(ToolResult::success(
+                NAME,
+                json!({
+                    "disposition": "task_result_already_consumed",
+                    "task_id": task_id,
+                    "result_message_id": result_message_id,
+                    "waiter_work_item_id": disclosure.waiter_work_item_id,
+                    "requested_work_item_id": disclosure.requested_work_item_id,
+                    "owner_selection": disclosure.owner_selection.as_str(),
+                }),
+                Some(summary),
+            ))
+        }
         WaitForRegistrationOutcome::Registered { .. } => {
             unreachable!("registered wait is handled by settle_impl")
         }
+    }
+}
+
+struct WaitForOwnerDisclosure {
+    waiter_work_item_id: Option<String>,
+    requested_work_item_id: Option<String>,
+    owner_selection: WaitForOwnerSelection,
+    ignored_request: bool,
+}
+
+impl WaitForOwnerDisclosure {
+    /// Explains that an explicit work_item_id was ignored because the
+    /// execution binding takes priority (#3124).
+    fn ignore_note(&self) -> Option<String> {
+        if !self.ignored_request {
+            return None;
+        }
+        Some(format!(
+            "ignored work_item_id {} (owner_selection={}; waiter: {})",
+            self.requested_work_item_id.as_deref().unwrap_or_default(),
+            self.owner_selection.as_str(),
+            self.waiter_work_item_id
+                .as_deref()
+                .unwrap_or("agent lifecycle"),
+        ))
     }
 }
 
@@ -304,21 +361,49 @@ fn validate_wait_for_args(args: &WaitForArgs) -> Result<()> {
     validate_resource_for_wake(args.wake, resource.as_deref())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WaitForOwnerSelection {
+    ExecutionBinding,
+    ExplicitRequest,
+    TurnBound,
+    CurrentFocus,
+    AgentLifecycle,
+}
+
+impl WaitForOwnerSelection {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::ExecutionBinding => "execution_binding",
+            Self::ExplicitRequest => "explicit_request",
+            Self::TurnBound => "turn_bound",
+            Self::CurrentFocus => "current_focus",
+            Self::AgentLifecycle => "agent_lifecycle",
+        }
+    }
+}
+
+/// Resolves who waits (#3124): the current execution binding first (a
+/// conflicting explicit work_item_id is ignored, not fatal), then the
+/// explicit request, the turn-bound WorkItem, and current focus.
 fn resolve_wait_work_item_id(
-    wake: WaitForWakeArg,
     explicit_work_item_id: Option<String>,
     execution_work_item_id: Option<String>,
     turn_work_item_id: Option<String>,
     current_work_item_id: Option<String>,
-) -> Option<String> {
-    if wake == WaitForWakeArg::TaskResult {
-        explicit_work_item_id
-    } else {
-        explicit_work_item_id
-            .or(execution_work_item_id)
-            .or(turn_work_item_id)
-            .or(current_work_item_id)
+) -> (Option<String>, WaitForOwnerSelection) {
+    if let Some(work_item_id) = execution_work_item_id {
+        return (Some(work_item_id), WaitForOwnerSelection::ExecutionBinding);
     }
+    if let Some(work_item_id) = explicit_work_item_id {
+        return (Some(work_item_id), WaitForOwnerSelection::ExplicitRequest);
+    }
+    if let Some(work_item_id) = turn_work_item_id {
+        return (Some(work_item_id), WaitForOwnerSelection::TurnBound);
+    }
+    if let Some(work_item_id) = current_work_item_id {
+        return (Some(work_item_id), WaitForOwnerSelection::CurrentFocus);
+    }
+    (None, WaitForOwnerSelection::AgentLifecycle)
 }
 
 fn validate_resource_for_wake(wake: WaitForWakeArg, resource: Option<&str>) -> Result<()> {
@@ -450,50 +535,68 @@ mod tests {
     }
 
     #[test]
-    fn task_result_wait_does_not_inherit_context_work_item() {
+    fn wait_owner_prefers_execution_binding_over_explicit_request() {
         assert_eq!(
             resolve_wait_work_item_id(
-                WaitForWakeArg::TaskResult,
                 None,
                 Some("execution-work".into()),
                 Some("turn-work".into()),
                 Some("current-work".into()),
             ),
-            None
+            (
+                Some("execution-work".into()),
+                WaitForOwnerSelection::ExecutionBinding,
+            )
         );
+        // A conflicting explicit request is ignored, not fatal (#3124):
+        // the execution binding keeps deciding who waits.
         assert_eq!(
             resolve_wait_work_item_id(
-                WaitForWakeArg::TaskResult,
                 Some("explicit-work".into()),
                 Some("execution-work".into()),
                 Some("turn-work".into()),
                 Some("current-work".into()),
             ),
-            Some("explicit-work".into())
+            (
+                Some("execution-work".into()),
+                WaitForOwnerSelection::ExecutionBinding,
+            )
         );
     }
 
     #[test]
-    fn non_task_wait_keeps_context_work_item_fallback_order() {
+    fn wait_owner_falls_back_to_explicit_turn_current_and_lifecycle() {
         assert_eq!(
             resolve_wait_work_item_id(
-                WaitForWakeArg::External,
-                None,
+                Some("explicit-work".into()),
                 Some("execution-work".into()),
                 Some("turn-work".into()),
                 Some("current-work".into()),
             ),
-            Some("execution-work".into())
+            (
+                Some("execution-work".into()),
+                WaitForOwnerSelection::ExecutionBinding,
+            )
         );
         assert_eq!(
             resolve_wait_work_item_id(
-                WaitForWakeArg::External,
                 None,
                 None,
                 Some("turn-work".into()),
                 Some("current-work".into()),
             ),
-            Some("turn-work".into())
+            (Some("turn-work".into()), WaitForOwnerSelection::TurnBound)
+        );
+        assert_eq!(
+            resolve_wait_work_item_id(None, None, None, Some("current-work".into())),
+            (
+                Some("current-work".into()),
+                WaitForOwnerSelection::CurrentFocus,
+            )
+        );
+        assert_eq!(
+            resolve_wait_work_item_id(None, None, None, None),
+            (None, WaitForOwnerSelection::AgentLifecycle)
         );
     }
 

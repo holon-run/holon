@@ -990,6 +990,32 @@ pub(crate) fn resolve_canonical_activation_scenario(
     }
     let matching_wait = matching_waits.first().copied();
 
+    // #3124: the exact task wait may be held by a WorkItem other than the
+    // task owner (or by agent lifecycle). The dependency wake is a
+    // scheduling consequence of the result and routes to the recorded
+    // waiter; the task owner keeps its own continuation path.
+    if message.kind == MessageKind::TaskResult && matching_wait.is_none() {
+        if let MessageOrigin::Task { task_id } = &message.origin {
+            if let Some(wait) = triggered_task_wait_for_other_owner(
+                projection,
+                message,
+                task_id,
+                candidate.expected_work_item_id(),
+            ) {
+                return Ok(Some(CanonicalActivationScenario::ExactWaitResume {
+                    owner: wait
+                        .work_item_id
+                        .clone()
+                        .map(|work_item_id| SchedulerOwner::WorkItem { work_item_id })
+                        .unwrap_or_else(|| SchedulerOwner::AgentLifecycle {
+                            agent_id: wait.agent_id.clone(),
+                        }),
+                    wait_id: wait.id.clone(),
+                }));
+            }
+        }
+    }
+
     if let CanonicalActivationCandidate::ExactTaskRejoin {
         task_id,
         work_item_id,
@@ -1107,6 +1133,42 @@ fn matching_wait_conditions_for_work_item<'a>(
                     || resolved_task_wait_is_current(projection, condition))
         })
         .collect()
+}
+
+/// Finds the exact task-result wait for `task_id` that is held by an owner
+/// other than `expected_work_item_id` and was triggered by this message.
+/// The wake layer admits exactly one wait per result message
+/// (UNIQUE(agent_id, trigger_message_id)); when several waiters hold the
+/// dependency, the deterministic first waiter carries the wake and the rest
+/// keep their unsatisfied waits as durable evidence (#3124).
+fn triggered_task_wait_for_other_owner<'a>(
+    projection: &'a SchedulerProjection,
+    message: &MessageEnvelope,
+    task_id: &str,
+    expected_work_item_id: Option<&str>,
+) -> Option<&'a WaitConditionRecord> {
+    let mut matching = projection
+        .activation_waits
+        .iter()
+        .filter(|condition| {
+            condition.kind == WaitConditionKind::Task
+                && condition.work_item_id.as_deref() != expected_work_item_id
+                && condition.status == WaitConditionStatus::Triggered
+                && condition.trigger_message_id() == Some(message.id.as_str())
+                && condition.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        WakeSource::TaskResult { task_id: id } if id == task_id
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    matching.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    matching.into_iter().next()
 }
 
 fn resolved_task_wait_is_current(

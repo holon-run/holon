@@ -691,34 +691,107 @@ async fn late_task_result_missing_message_evidence_is_validation_only() {
 }
 
 #[tokio::test]
-async fn explicit_task_result_work_item_mismatch_is_rejected() {
+async fn explicit_task_result_waiter_decouples_from_task_owner() {
     let harness = LifecycleHarness::new();
     let task_owner = harness
         .runtime()
         .create_work_item("task owner".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let other_work_item = harness
+    let waiter = harness
         .runtime()
-        .create_work_item("other owner".into(), None, None, Vec::new())
+        .create_work_item("waiter".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let task = running_task("task-owner-mismatch", &task_owner.id, harness.now());
+    let task = running_task("task-cross-owner", &task_owner.id, harness.now());
     harness
         .runtime()
         .persist_task_transition(&task, "task_created")
         .await
         .unwrap();
+
+    // An explicit waiter different from the task owner is legal (#3124):
+    // the wait settles the requesting WorkItem, never the task owner.
+    let outcome = harness
+        .runtime()
+        .register_wait_for_outcome(
+            "default",
+            Some(waiter.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(task.id.clone()),
+            "dependency on another work item's task".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let WaitForRegistrationOutcome::Registered { registration } = outcome else {
+        panic!("cross-owner task wait must register");
+    };
+    assert_eq!(
+        registration.condition.work_item_id.as_deref(),
+        Some(waiter.id.as_str())
+    );
+    assert!(registration
+        .work_item
+        .as_ref()
+        .is_some_and(|record| record.id == waiter.id));
+
+    let after = harness.snapshot();
+    assert_eq!(
+        after
+            .tasks
+            .iter()
+            .find(|record| record.id == task.id)
+            .expect("task record")
+            .work_item_id
+            .as_deref(),
+        Some(task_owner.id.as_str()),
+        "task ownership never changes"
+    );
+    assert!(
+        after
+            .work_items
+            .iter()
+            .find(|record| record.id == task_owner.id)
+            .expect("task owner work item")
+            .blocked_by
+            .is_none(),
+        "the task owner work item is not blocked by the waiter's wait"
+    );
+    assert_eq!(
+        after
+            .work_items
+            .iter()
+            .find(|record| record.id == waiter.id)
+            .expect("waiter work item")
+            .blocked_by
+            .as_deref(),
+        Some("dependency on another work item's task")
+    );
+}
+
+#[tokio::test]
+async fn cross_agent_task_result_wait_is_still_rejected() {
+    let harness = LifecycleHarness::new();
+    let work_item = harness
+        .runtime()
+        .create_work_item("waiter".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let mut task = running_task("task-foreign-agent", &work_item.id, harness.now());
+    task.agent_id = "other-agent".into();
+    harness.runtime().storage().append_task(&task).unwrap();
     let before = harness.snapshot();
 
     let error = harness
         .runtime()
         .register_wait_for_outcome(
             "default",
-            Some(other_work_item.id),
+            Some(work_item.id),
             WaitForWakeKind::TaskResult,
             Some(task.id),
-            "must not migrate task owner".into(),
+            "foreign agent task".into(),
             None,
         )
         .await
@@ -726,9 +799,93 @@ async fn explicit_task_result_work_item_mismatch_is_rejected() {
 
     assert_eq!(
         crate::runtime_error::describe_runtime_error(&error).code,
-        "task_work_item_mismatch"
+        "task_agent_mismatch"
     );
     harness.assert_unchanged(&before);
+}
+
+#[tokio::test]
+async fn terminal_task_result_fast_path_registers_requested_waiter() {
+    let harness = LifecycleHarness::new();
+    let task_owner = harness
+        .runtime()
+        .create_work_item("task owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let waiter = harness
+        .runtime()
+        .create_work_item("waiter".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let running = running_task("task-terminal-cross-owner", &task_owner.id, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition(&running, "task_created")
+        .await
+        .unwrap();
+    let mut result_message = task_result_message("task-terminal-cross-owner").with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    result_message.task_id = Some("task-terminal-cross-owner".into());
+    result_message.turn_id = Some("turn-terminal-cross-owner".into());
+    let terminal = terminal_task_with_result(&running, &result_message, harness.now());
+    harness
+        .runtime()
+        .persist_task_transition_with_message(&terminal, "task_status_updated", &result_message)
+        .await
+        .unwrap();
+
+    // The terminal fast path settles the requested waiter even when the
+    // task belongs to another WorkItem (#3124).
+    let outcome = harness
+        .runtime()
+        .register_wait_for_outcome(
+            "default",
+            Some(waiter.id.clone()),
+            WaitForWakeKind::TaskResult,
+            Some(terminal.id.clone()),
+            "late dependency on another work item's task".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let WaitForRegistrationOutcome::TaskResultQueued {
+        result_message_id,
+        wait_condition_id,
+        ..
+    } = outcome
+    else {
+        panic!("terminal cross-owner task wait must queue the exact result");
+    };
+    assert_eq!(result_message_id, result_message.id);
+    let after = harness.snapshot();
+    let triggered = after
+        .wait_conditions
+        .iter()
+        .find(|condition| condition.id == wait_condition_id)
+        .expect("triggered fast-path wait is registered");
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    assert_eq!(
+        triggered.work_item_id.as_deref(),
+        Some(waiter.id.as_str()),
+        "the waiter — not the task owner — holds the dependency wait"
+    );
+    assert!(after.queue_entries.iter().any(|entry| {
+        entry.message_id == result_message.id && entry.status == QueueEntryStatus::Queued
+    }));
+    assert_eq!(
+        after
+            .tasks
+            .iter()
+            .find(|record| record.id == terminal.id)
+            .expect("task record")
+            .work_item_id
+            .as_deref(),
+        Some(task_owner.id.as_str()),
+        "terminal fast path never migrates the task owner"
+    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -703,15 +703,16 @@ mod tests {
         assert!(section
             .content
             .contains("explicit owned open `work_item_id`"));
-        assert!(section
-            .content
-            .contains("then the execution-bound WorkItem"));
+        assert!(section.content.contains("execution-bound WorkItem first"));
         assert!(section.content.contains("then the turn-bound WorkItem"));
         assert!(section.content.contains("then current focus"));
         assert!(section.content.contains("agent lifecycle"));
         assert!(section
             .content
-            .contains("cannot migrate or bypass the task's captured owner"));
+            .contains("never migrated by an explicit `work_item_id`"));
+        assert!(section
+            .content
+            .contains("any WorkItem of that agent may hold the wait"));
         assert!(section
             .content
             .contains("without first creating or picking a WorkItem"));

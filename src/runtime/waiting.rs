@@ -347,7 +347,7 @@ impl RuntimeHandle {
     pub(super) async fn prepare_wait_for_outcome_with_id(
         &self,
         agent_id: &str,
-        mut work_item_id: Option<String>,
+        work_item_id: Option<String>,
         wake: WaitForWakeKind,
         resource: Option<String>,
         reason: String,
@@ -374,11 +374,13 @@ impl RuntimeHandle {
                     )
                     .with_safe_context("task_id", &task_id)
                 })?;
-            work_item_id =
-                self.resolve_wait_for_task_owner(agent_id, work_item_id.as_deref(), &task)?;
+            // The waiter is the WorkItem settling now (resolved by the
+            // caller); the task's captured owner never changes and never
+            // decides who waits (#3124).
+            self.validate_wait_for_task_access(agent_id, &task)?;
             if task_state_reducer::is_terminal_task_status(&task.status) {
                 return self
-                    .prepare_terminal_task_result(task, reason, condition_id)
+                    .prepare_terminal_task_result(task, work_item_id, reason, condition_id)
                     .await;
             }
             expected_task = Some(task_expectation(&task));
@@ -659,12 +661,7 @@ impl RuntimeHandle {
         )))
     }
 
-    fn resolve_wait_for_task_owner(
-        &self,
-        agent_id: &str,
-        work_item_id: Option<&str>,
-        task: &TaskRecord,
-    ) -> Result<Option<String>> {
+    fn validate_wait_for_task_access(&self, agent_id: &str, task: &TaskRecord) -> Result<()> {
         if task.agent_id != agent_id {
             return Err(RuntimeError::validation(
                 "task_agent_mismatch",
@@ -673,23 +670,13 @@ impl RuntimeHandle {
             .with_safe_context("task_id", &task.id)
             .into());
         }
-        if work_item_id.is_some() && task.work_item_id.as_deref() != work_item_id {
-            return Err(RuntimeError::validation(
-                "task_work_item_mismatch",
-                format!(
-                    "wait_for task owner does not match the current work item: {}",
-                    task.id
-                ),
-            )
-            .with_safe_context("task_id", &task.id)
-            .into());
-        }
-        Ok(task.work_item_id.clone())
+        Ok(())
     }
 
     async fn prepare_terminal_task_result(
         &self,
         task: TaskRecord,
+        waiter_work_item_id: Option<String>,
         reason: String,
         condition_id: Option<String>,
     ) -> Result<PrepareWaitForOutcome> {
@@ -749,7 +736,7 @@ impl RuntimeHandle {
             .into_iter()
             .find(|record| {
                 condition_id.as_ref().is_none_or(|id| id == &record.id)
-                    && record.work_item_id == task.work_item_id
+                    && record.work_item_id == waiter_work_item_id
                     && matches!(
                         record.status,
                         WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
@@ -775,7 +762,7 @@ impl RuntimeHandle {
         let condition = existing_condition.unwrap_or_else(|| WaitConditionRecord {
             id: condition_id.unwrap_or_else(crate::ids::wait_condition_id),
             agent_id: task.agent_id.clone(),
-            work_item_id: task.work_item_id.clone(),
+            work_item_id: waiter_work_item_id.clone(),
             status: WaitConditionStatus::Triggered,
             kind: WaitConditionKind::Task,
             source: Some("WaitFor".to_string()),
@@ -808,7 +795,7 @@ impl RuntimeHandle {
                 .raw_unresolved_wait_conditions_for_agent(&task.agent_id)?
                 .into_iter()
                 .filter(|record| record.id != condition.id)
-                .filter(|record| match task.work_item_id.as_deref() {
+                .filter(|record| match waiter_work_item_id.as_deref() {
                     Some(work_item_id) => record.work_item_id.as_deref() == Some(work_item_id),
                     None => record.work_item_id.is_none(),
                 })
@@ -822,7 +809,7 @@ impl RuntimeHandle {
             "wait_condition_registered",
             serde_json::json!({
                 "agent_id": task.agent_id,
-                "work_item_id": task.work_item_id,
+                "work_item_id": waiter_work_item_id,
                 "wait_condition_id": condition.id,
                 "source": "WaitFor",
                 "kind": &condition.kind,
@@ -844,7 +831,7 @@ impl RuntimeHandle {
                 "wait_conditions_cancelled",
                 serde_json::json!({
                     "agent_id": task.agent_id,
-                    "work_item_id": task.work_item_id,
+                    "work_item_id": waiter_work_item_id,
                     "reason": "wait_for_replaced",
                     "wait_condition_ids": &cancelled_wait_condition_ids,
                 }),
@@ -855,7 +842,7 @@ impl RuntimeHandle {
                 "wait_conditions_resolved",
                 serde_json::json!({
                     "agent_id": task.agent_id,
-                    "work_item_id": task.work_item_id,
+                    "work_item_id": waiter_work_item_id,
                     "reason": "wait_for_replaced_after_trigger",
                     "wait_condition_ids": &resolved_after_trigger_wait_condition_ids,
                 }),
@@ -867,7 +854,7 @@ impl RuntimeHandle {
                 "agent_id": task.agent_id,
                 "wait_condition_id": condition.id,
                 "trigger_message_id": result_message_id,
-                "work_item_id": task.work_item_id,
+                "work_item_id": waiter_work_item_id,
             }),
         ));
         wait_conditions.push(condition.clone());
@@ -878,11 +865,16 @@ impl RuntimeHandle {
                 "task_id": task.id,
                 "result_message_id": result_message_id,
                 "wait_condition_id": condition.id,
+                "work_item_id": waiter_work_item_id,
             }),
         ));
         let expected_task = task_expectation(&task);
-        let execution_protocol =
-            self.execution_continue_settlement_transition(&task, &result_message, now)?;
+        let execution_protocol = self.execution_continue_settlement_transition(
+            &task,
+            waiter_work_item_id.as_deref(),
+            &result_message,
+            now,
+        )?;
         let guard = self.inner.agent.lock().await;
         let already_in_memory = guard
             .queue
@@ -912,7 +904,7 @@ impl RuntimeHandle {
                 delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Silent,
                 wake: WaitForWakeKind::TaskResult,
                 registration: WaitForRegistration {
-                    scope: if task.work_item_id.is_some() {
+                    scope: if waiter_work_item_id.is_some() {
                         WaitForScope::WorkItem
                     } else {
                         WaitForScope::Agent
@@ -957,6 +949,7 @@ impl RuntimeHandle {
     fn execution_continue_settlement_transition(
         &self,
         task: &TaskRecord,
+        waiter_work_item_id: Option<&str>,
         result_message: &MessageEnvelope,
         settled_at: DateTime<Utc>,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
@@ -978,12 +971,12 @@ impl RuntimeHandle {
         };
         let outcome = match &attempt.binding {
             ExecutionBinding::WorkItem { work_item_id }
-                if task.work_item_id.as_deref() == Some(work_item_id.as_str()) =>
+                if waiter_work_item_id == Some(work_item_id.as_str()) =>
             {
                 ExecutionOutcome::WorkItem(WorkItemOutcome::Continue)
             }
             ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
-                if let Some(work_item_id) = task.work_item_id.as_deref() {
+                if let Some(work_item_id) = waiter_work_item_id {
                     ExecutionOutcome::Conversation(ConversationOutcome::HandoffToWorkItemContinue {
                         work_item_id: work_item_id.to_string(),
                     })
@@ -996,7 +989,7 @@ impl RuntimeHandle {
             }
             _ => {
                 return Err(anyhow!(
-                    "task result owner does not match the current execution binding"
+                    "WaitFor waiter does not match the current execution binding"
                 ));
             }
         };
