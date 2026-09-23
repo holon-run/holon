@@ -1651,6 +1651,30 @@ export interface paths {
          * @description Explicitly download and verify a local ONNX decision preset into the managed cache.
          */
         post: operations["runtimeDecisionLocalOnnxPresetDownload"];
+        /**
+         * Cancel local ONNX preset download
+         * @description Remove an incomplete managed-cache download without changing Decision configuration.
+         */
+        delete: operations["runtimeDecisionLocalOnnxPresetCancel"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/runtime/decision/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Test Decision provider
+         * @description Run a fixed, side-effect-free Decision provider smoke test without returning credentials or mutating configuration.
+         */
+        post: operations["testDecision"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5941,6 +5965,9 @@ export interface components {
                 command_task_output_retention_bytes: number;
                 /**
                  * @default {
+                 *       "available": false,
+                 *       "credential_configured": false,
+                 *       "decision_capable": false,
                  *       "enabled": false,
                  *       "local_onnx": {
                  *         "checksum": null,
@@ -5961,7 +5988,14 @@ export interface components {
                  *     }
                  */
                 decision: {
+                    /** @default false */
+                    available: boolean;
+                    /** @default false */
+                    credential_configured: boolean;
+                    /** @default false */
+                    decision_capable: boolean;
                     enabled: boolean;
+                    endpoint?: string | null;
                     local_onnx: {
                         checksum?: string | null;
                         enabled: boolean;
@@ -5973,6 +6007,8 @@ export interface components {
                     };
                     model?: string | null;
                     protocol?: string | null;
+                    provider?: string | null;
+                    route_provider?: string | null;
                     /**
                      * @default {
                      *       "enabled": false,
@@ -5990,6 +6026,8 @@ export interface components {
                         /** Format: uint64 */
                         timeout_ms: number;
                     };
+                    transport?: string | null;
+                    unavailable_reason?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
@@ -6118,6 +6156,9 @@ export interface components {
                 command_task_output_retention_bytes: number;
                 /**
                  * @default {
+                 *       "available": false,
+                 *       "credential_configured": false,
+                 *       "decision_capable": false,
                  *       "enabled": false,
                  *       "local_onnx": {
                  *         "checksum": null,
@@ -6138,7 +6179,14 @@ export interface components {
                  *     }
                  */
                 decision: {
+                    /** @default false */
+                    available: boolean;
+                    /** @default false */
+                    credential_configured: boolean;
+                    /** @default false */
+                    decision_capable: boolean;
                     enabled: boolean;
+                    endpoint?: string | null;
                     local_onnx: {
                         checksum?: string | null;
                         enabled: boolean;
@@ -6150,6 +6198,8 @@ export interface components {
                     };
                     model?: string | null;
                     protocol?: string | null;
+                    provider?: string | null;
+                    route_provider?: string | null;
                     /**
                      * @default {
                      *       "enabled": false,
@@ -6167,6 +6217,8 @@ export interface components {
                         /** Format: uint64 */
                         timeout_ms: number;
                     };
+                    transport?: string | null;
+                    unavailable_reason?: string | null;
                 };
                 /** Format: uint32 */
                 default_tool_output_tokens: number;
@@ -6233,6 +6285,22 @@ export interface components {
                     kind: string;
                 }[];
             };
+        };
+        /** RuntimeDecisionTestRequest */
+        RuntimeDecisionTestRequest: {
+            /** @default null */
+            question: string | null;
+        };
+        /** RuntimeDecisionTestResponse */
+        RuntimeDecisionTestResponse: {
+            /** Format: float */
+            confidence?: number | null;
+            /** Format: uint64 */
+            elapsed_ms?: number | null;
+            error_code?: string | null;
+            ok: boolean;
+            outcome?: string | null;
+            status: string;
         };
         RuntimeErrorContext: {
             causation_id?: string | null;
@@ -11023,6 +11091,86 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    runtimeDecisionLocalOnnxPresetCancel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    testDecision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RuntimeDecisionTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RuntimeDecisionTestResponse"];
                 };
             };
             /** @description Client error JSON response. */
