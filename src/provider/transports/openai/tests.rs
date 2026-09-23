@@ -565,7 +565,7 @@ async fn openai_codex_refresh_fails_without_access_token() {
 fn openai_codex_refresh_lock_uses_owner_only_permissions() {
     let home = tempfile::tempdir().unwrap();
     let lock_path = home.path().join("credentials.json.lock");
-    let lock = CredentialStoreRefreshLock::acquire(&lock_path).unwrap();
+    let lock = CredentialStoreRefreshLock::acquire_for(&lock_path, "openai", "default").unwrap();
 
     #[cfg(unix)]
     {
@@ -576,6 +576,31 @@ fn openai_codex_refresh_lock_uses_owner_only_permissions() {
 
     drop(lock);
     assert!(!lock_path.exists());
+}
+
+#[test]
+fn oauth_refresh_lock_contention_is_typed_retryable_and_contextual() {
+    let home = tempfile::tempdir().unwrap();
+    let lock_path = home.path().join("credentials.json.lock");
+    let lock =
+        CredentialStoreRefreshLock::acquire_for(&lock_path, "xai", "operator-oauth").unwrap();
+
+    let error = match CredentialStoreRefreshLock::acquire_for(&lock_path, "xai", "operator-oauth") {
+        Ok(_) => panic!("held refresh lock should reject a concurrent acquisition"),
+        Err(error) => error,
+    };
+    let classification = classify_provider_error(&error);
+    let message = error.to_string();
+
+    assert_eq!(
+        classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+    assert!(message.contains("provider xai/profile operator-oauth"));
+    assert!(!message.contains("OpenAI Codex"));
+
+    drop(lock);
 }
 
 #[test]

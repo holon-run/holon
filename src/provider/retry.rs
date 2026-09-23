@@ -24,6 +24,7 @@ pub(crate) const PROVIDER_RECOVERY_MAX_FALLBACKS: usize = 2;
 pub(crate) enum ProviderFailureKind {
     Timeout,
     Connection,
+    CredentialRefreshBusy,
     RateLimited,
     ServerError,
     EmptyResponse,
@@ -88,6 +89,7 @@ impl ProviderFailureKind {
         match self {
             Self::Timeout => "timeout",
             Self::Connection => "connection",
+            Self::CredentialRefreshBusy => "credential_refresh_busy",
             Self::RateLimited => "rate_limited",
             Self::ServerError => "server_error",
             Self::EmptyResponse => "empty_response",
@@ -130,6 +132,7 @@ pub(crate) fn provider_retry_policy_json() -> Value {
         "retryable_failure_kinds": [
             ProviderFailureKind::Timeout.as_str(),
             ProviderFailureKind::Connection.as_str(),
+            ProviderFailureKind::CredentialRefreshBusy.as_str(),
             ProviderFailureKind::RateLimited.as_str(),
             ProviderFailureKind::ServerError.as_str(),
             ProviderFailureKind::EmptyResponse.as_str(),
@@ -428,7 +431,17 @@ pub(crate) fn classify_status_error_with_trace(
             disposition: RetryDisposition::FailFast,
         },
     };
-    let code = status_error_code(&body);
+    let detail = extract_upstream_error_detail(&body);
+    let code = detail
+        .as_ref()
+        .and_then(|detail| detail.code.as_deref())
+        .or_else(|| status_error_code(&body));
+    let detail_message = detail
+        .as_ref()
+        .map(format_upstream_error_detail)
+        .filter(|detail| !detail.is_empty())
+        .map(|detail| format!(": {detail}"))
+        .unwrap_or_default();
     provider_transport_error_with_code_and_retry_after(
         classification,
         code,
@@ -444,13 +457,130 @@ pub(crate) fn classify_status_error_with_trace(
             source_chain: status_error_source_chain(provider, status),
         }),
         retry_after,
-        format!("{context} with status {status}"),
+        format!("{context} with status {status}{detail_message}"),
     )
 }
 
 fn status_error_code(body: &str) -> Option<&'static str> {
     body.contains("Items are not persisted when `store` is set to false")
         .then_some("non_persisted_item_id")
+}
+
+const MAX_UPSTREAM_ERROR_BODY_BYTES: usize = 16 * 1024;
+const MAX_UPSTREAM_ERROR_FIELD_CHARS: usize = 256;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpstreamErrorDetail {
+    pub error_type: Option<String>,
+    pub code: Option<String>,
+    pub message: Option<String>,
+}
+
+pub(crate) fn extract_upstream_error_detail(body: &str) -> Option<UpstreamErrorDetail> {
+    if body.len() > MAX_UPSTREAM_ERROR_BODY_BYTES {
+        return None;
+    }
+    let value = serde_json::from_str::<Value>(body).ok()?;
+    extract_upstream_error_detail_from_value(&value)
+}
+
+pub(crate) fn extract_upstream_error_detail_from_value(
+    value: &Value,
+) -> Option<UpstreamErrorDetail> {
+    let object = if let Some(error) = value.get("error") {
+        error.as_object()?
+    } else {
+        value.as_object()?
+    };
+
+    let detail = UpstreamErrorDetail {
+        error_type: object
+            .get("type")
+            .and_then(Value::as_str)
+            .and_then(sanitize_upstream_error_text),
+        code: object
+            .get("code")
+            .and_then(Value::as_str)
+            .and_then(sanitize_upstream_error_text),
+        message: object
+            .get("message")
+            .and_then(Value::as_str)
+            .and_then(sanitize_upstream_error_text),
+    };
+    (detail.error_type.is_some() || detail.code.is_some() || detail.message.is_some())
+        .then_some(detail)
+}
+
+pub(crate) fn format_upstream_error_detail(detail: &UpstreamErrorDetail) -> String {
+    let mut fields = Vec::new();
+    if let Some(error_type) = detail.error_type.as_deref() {
+        fields.push(format!("type={error_type}"));
+    }
+    if let Some(code) = detail.code.as_deref() {
+        fields.push(format!("code={code}"));
+    }
+    if let Some(message) = detail.message.as_deref() {
+        fields.push(format!("message={message}"));
+    }
+    fields.join(", ")
+}
+
+fn sanitize_upstream_error_text(raw: &str) -> Option<String> {
+    let mut sanitized = String::new();
+    let mut redact_tokens = 0usize;
+    for token in raw.split_whitespace() {
+        let lower = token.to_ascii_lowercase();
+        let token = if redact_tokens > 0 {
+            redact_tokens -= 1;
+            if lower == "bearer" {
+                redact_tokens = 1;
+                token.to_string()
+            } else {
+                "[REDACTED]".to_string()
+            }
+        } else if lower == "bearer" {
+            redact_tokens = 1;
+            token.to_string()
+        } else if lower == "authorization:" || lower == "authorization" {
+            redact_tokens = 2;
+            token.to_string()
+        } else if let Some((key, _)) = token.split_once('=') {
+            if matches!(
+                key.to_ascii_lowercase().as_str(),
+                "api_key"
+                    | "apikey"
+                    | "access_token"
+                    | "refresh_token"
+                    | "token"
+                    | "authorization"
+                    | "cookie"
+            ) {
+                format!("{key}=[REDACTED]")
+            } else {
+                token.to_string()
+            }
+        } else if let Some(query_start) = token.find('?') {
+            format!("{}?[REDACTED]", &token[..query_start])
+        } else {
+            token.to_string()
+        };
+        if !sanitized.is_empty() {
+            sanitized.push(' ');
+        }
+        sanitized.push_str(&token);
+    }
+    let sanitized = sanitized.trim();
+    if sanitized.is_empty() {
+        return None;
+    }
+    let mut bounded = sanitized
+        .chars()
+        .take(MAX_UPSTREAM_ERROR_FIELD_CHARS)
+        .collect::<String>();
+    if sanitized.chars().count() > MAX_UPSTREAM_ERROR_FIELD_CHARS {
+        bounded.push('…');
+    }
+    Some(bounded)
 }
 
 fn status_error_source_chain(provider: Option<&str>, status: StatusCode) -> Vec<String> {
@@ -901,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn status_error_display_excludes_response_body_but_preserves_typed_code() {
+    fn status_error_display_preserves_safe_upstream_detail_without_secrets() {
         let error = classify_status_error_with_trace(
             "OpenAI compact request failed",
             "response_status",
@@ -916,7 +1046,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "OpenAI compact request failed with status 404 Not Found"
+            "OpenAI compact request failed with status 404 Not Found: message=Items are not persisted when `store` is set to false"
         );
         assert!(!error.to_string().contains("short-secret"));
         assert_eq!(
@@ -924,6 +1054,18 @@ mod tests {
                 .downcast_ref::<ProviderTransportError>()
                 .and_then(|error| error.code.as_deref()),
             Some("non_persisted_item_id")
+        );
+    }
+
+    #[test]
+    fn upstream_error_detail_requires_error_object_when_envelope_is_present() {
+        let value = serde_json::json!({
+            "error": "not an object",
+            "message": "should not be used"
+        });
+        assert_eq!(
+            super::extract_upstream_error_detail_from_value(&value),
+            None
         );
     }
 

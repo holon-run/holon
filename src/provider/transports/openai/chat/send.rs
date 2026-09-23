@@ -161,15 +161,16 @@ pub(crate) fn classify_openai_chat_completion_error(
     trace: Option<&ProviderHttpTraceRequest>,
     retry_after: Option<std::time::Duration>,
 ) -> anyhow::Error {
-    let error_type = error
-        .get("type")
-        .and_then(Value::as_str)
+    let detail = extract_upstream_error_detail_from_value(error);
+    let error_type = detail
+        .as_ref()
+        .and_then(|detail| detail.error_type.as_deref())
         .unwrap_or("unknown");
-    let error_message = error
-        .get("message")
-        .and_then(Value::as_str)
+    let error_message = detail
+        .as_ref()
+        .and_then(|detail| detail.message.as_deref())
         .unwrap_or("unknown error");
-    let error_code = error.get("code").and_then(Value::as_str);
+    let error_code = detail.as_ref().and_then(|detail| detail.code.as_deref());
 
     let classification = match error_code {
         Some("rate_limit_exceeded") | Some("rate_limit_exceeded_error") => {
@@ -222,10 +223,12 @@ pub(crate) fn classify_openai_chat_completion_error(
         },
     };
 
-    let detail = if let Some(code) = error_code {
-        format!("{}: {}", code, error_message)
+    let detail = if let Some(detail) = detail.as_ref() {
+        format_upstream_error_detail(detail)
+    } else if let Some(code) = error_code {
+        format!("{code}: {error_message}")
     } else {
-        format!("{}: {}", error_type, error_message)
+        format!("{error_type}: {error_message}")
     };
 
     crate::provider::retry::provider_transport_error_with_code_and_retry_after(
