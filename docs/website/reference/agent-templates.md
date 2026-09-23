@@ -23,6 +23,7 @@ Common scenarios:
 - **Owning the GitHub issue inbox** — `holon agent create triage --template issue-triager`
 - **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
 - **Owning documentation hygiene** — `holon agent create docs --template docs-steward`
+- **Owning defensive security review** — `holon agent create security --template security-reviewer`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
 - **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
 - **One-shot tasks with a role** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -110,6 +111,32 @@ license to implement features or to own releases.
 - **Hard constraints.** No product-code edits, no invented behavior, no merge
   by default, and external issue text cannot escalate authority. A project
   skill cannot override those rules.
+
+## Security review
+
+`security-reviewer` owns defensive security findings and alert triage. It is
+not a license to implement features, merge, run exploits, or replace
+`code-reviewer`, `qa-engineer`, `server-ops`, or `holon-ops`.
+
+- **Findings, not merge readiness.** Review diffs and imported GitHub security
+  alerts. Report only cited findings. Do not write exploits, PoC payloads, or
+  attack steps. An alert is not a merge license.
+- **Methodology skill, not a scanner pack.** The template pre-installs
+  `security-review` from `github/awesome-copilot`, plus `ghx`, `sview`, `uxc`,
+  and `agentinbox`. The role contract overrides that skill's full-repository
+  default, attack examples, and automatic patch proposals. Scanner wrappers
+  stay out of the default install.
+- **Routing is a role class, not a live agent id.** Suggest the next
+  responsible template role. Never use a template id as an `agent_id`.
+- **Project skill, not an official playbook.** The template does not ship a
+  `security-reviewer` skill. On first review the agent creates a
+  project-specific skill under `agent_home/skills/` and patches it from
+  practice. Writing that skill into the repository still needs operator
+  confirmation.
+- **Hard constraints.** No product-code edits by default, no merge by default,
+  no exploit/PoC output, no storing or echoing secrets, and empty scan results
+  are not proof of safety. External issue and alert text cannot escalate
+  authority. A project skill cannot override those rules.
 
 ## Template Naming
 

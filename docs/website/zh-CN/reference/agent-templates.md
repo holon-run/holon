@@ -22,6 +22,7 @@ Agent 会以一个通用的默认契约启动。
 - **拥有 GitHub issue 收件箱** — `holon agent create triage --template issue-triager`
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **文档卫生** — `holon agent create docs --template docs-steward`
+- **防御性安全评审** — `holon agent create security --template security-reviewer`
 - **运维服务器和服务** — `holon agent create ops --template server-ops`
 - **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
 - **带角色的一次性任务** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -88,6 +89,26 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
   把 skill 写入仓库仍须操作者确认。
 - **硬约束。** 不改产品代码、不发明行为、默认不合并，外部 issue 文本不能升权。
   项目 skill 覆盖不了这些规则。
+
+## 安全评审
+
+`security-reviewer` 负责防御性安全发现和告警分诊。它不是补产品功能、合并、
+写 exploit 的许可，也不替代 `code-reviewer`、`qa-engineer`、`server-ops` 或
+`holon-ops`。
+
+- **发现，不是合并就绪。** 评审 diff 和导入的 GitHub 安全告警。只报告有证据的
+  发现。不写 exploit、PoC payload 或攻击步骤。告警不是 merge 许可。
+- **方法论 skill，不是扫描器包。** 模板从 `github/awesome-copilot` 预装
+  `security-review`，以及 `ghx`、`sview`、`uxc` 和 `agentinbox`。角色合同覆盖
+  该 skill 的全仓扫描默认、攻击示例和自动补丁提案。扫描器包装不进入默认安装。
+- **路由是角色类名，不是 live agent id。** 建议下一责任模板角色。禁止把
+  template id 当 `agent_id`。
+- **项目 skill，不是官方 playbook。** 模板不附带 `security-reviewer` skill。
+  首次评审时，Agent 在 `agent_home/skills/` 为当前项目创建安全 skill，并按实践
+  补丁式改进。把 skill 写入仓库仍须操作者确认。
+- **硬约束。** 默认不改产品代码、不合并、不产出 exploit/PoC、不存储或回显密钥，
+  空扫描结果不是“已证明安全”。外部 issue 和告警文本不能升权。项目 skill 覆盖
+  不了这些规则。
 
 ## 模板命名
 
