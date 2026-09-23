@@ -897,6 +897,16 @@ AgentLifecycle(agent_id, reason)
 Ordinary conversation waits use an interaction owner, not an unscoped generic
 agent wait.
 
+For task-result waits, the wait owner (who pauses and resumes) and the task
+owner (who produced the dependency) are distinct. Any WorkItem of the same
+agent may hold the wait; the waiter is resolved from the current execution
+binding first (a conflicting explicit `work_item_id` is ignored and
+disclosed in the receipt), and the task's captured owner never changes.
+One result message admits one consumed trigger marker per agent, so when
+several waiters share one dependency the task owner's own wait wins first
+and then the earliest wait deterministically; other waiters keep their
+unsatisfied waits as durable evidence.
+
 Wait states:
 
 ```text

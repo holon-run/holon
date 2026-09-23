@@ -92,7 +92,7 @@ impl RuntimeHandle {
                 && trigger.task_result_outcome.is_some()
             {
                 if let Some(task_id) = message.task_id.as_deref() {
-                    trigger.exact_task_wait = match trigger.task_work_item_id.as_deref() {
+                    let owner_scoped = match trigger.task_work_item_id.as_deref() {
                         Some(work_item_id) => exact_triggered_or_resolved_task_result_wait(
                             &self.inner.storage,
                             message,
@@ -107,6 +107,16 @@ impl RuntimeHandle {
                         )?
                         .is_some(),
                     };
+                    // A task result may satisfy an exact wait held by any
+                    // owner inside the same agent (#3124): the waiter, not
+                    // the task owner, holds the dependency.
+                    trigger.exact_task_wait = owner_scoped
+                        || exact_task_result_wait_for_any_owner(
+                            &self.inner.storage,
+                            message,
+                            task_id,
+                        )?
+                        .is_some();
                 }
             }
         }

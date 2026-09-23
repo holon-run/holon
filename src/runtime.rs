@@ -1362,6 +1362,40 @@ fn exact_agent_scope_task_result_wait(
     Ok(Some(wait.clone()))
 }
 
+/// Waiter-agnostic task-result wait evidence (#3124): a task result may
+/// satisfy an exact wait held by any owner inside the same agent. The
+/// task's captured owner is irrelevant to the dependency wake.
+fn exact_task_result_wait_for_any_owner(
+    storage: &AppStorage,
+    message: &MessageEnvelope,
+    task_id: &str,
+) -> Result<Option<WaitConditionRecord>> {
+    let mut matching_waits = storage
+        .latest_wait_conditions_for_agent(&message.agent_id)?
+        .into_iter()
+        .filter(|wait| {
+            matches!(
+                wait.status,
+                WaitConditionStatus::Triggered | WaitConditionStatus::Resolved
+            ) && wait.kind == crate::types::WaitConditionKind::Task
+                && wait.trigger_message_id() == Some(message.id.as_str())
+                && wait.wake_sources.iter().any(|source| {
+                    matches!(
+                        source,
+                        crate::types::WakeSource::TaskResult { task_id: expected }
+                            if expected == task_id
+                    )
+                })
+        })
+        .collect::<Vec<_>>();
+    matching_waits.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(matching_waits.into_iter().next())
+}
+
 fn exact_agent_scope_wait_recheck(
     storage: &AppStorage,
     message: &MessageEnvelope,

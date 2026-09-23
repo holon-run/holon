@@ -279,8 +279,16 @@ impl AgentProvider for WorkItemDeliverySummaryProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_prefers_completed_work_item_result_brief_over_latest_turn_text() -> Result<()> {
+#[test]
+fn run_once_prefers_completed_work_item_result_brief_over_latest_turn_text() -> Result<()> {
+    run_on_large_stack(
+        "run-once-work-item-brief-preference",
+        assert_run_once_prefers_completed_work_item_result_brief_over_latest_turn_text,
+    )
+}
+
+async fn assert_run_once_prefers_completed_work_item_result_brief_over_latest_turn_text(
+) -> Result<()> {
     let test_config = test_config();
     let provider = Arc::new(WorkItemDeliverySummaryProvider::new());
     let host = RuntimeHost::new_with_provider(test_config.config().clone(), provider.clone())?;
@@ -450,8 +458,15 @@ impl AgentProvider for FileEditingProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_collects_changed_files_from_mutating_tools() -> Result<()> {
+#[test]
+fn run_once_collects_changed_files_from_mutating_tools() -> Result<()> {
+    run_on_large_stack(
+        "run-once-changed-files-from-mutating-tools",
+        assert_run_once_collects_changed_files_from_mutating_tools,
+    )
+}
+
+async fn assert_run_once_collects_changed_files_from_mutating_tools() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -541,8 +556,15 @@ impl AgentProvider for MultiMutatingToolsProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_collects_changed_files_from_multiple_mutating_tools() -> Result<()> {
+#[test]
+fn run_once_collects_changed_files_from_multiple_mutating_tools() -> Result<()> {
+    run_on_large_stack(
+        "run-once-changed-files-from-multiple-mutating-tools",
+        assert_run_once_collects_changed_files_from_multiple_mutating_tools,
+    )
+}
+
+async fn assert_run_once_collects_changed_files_from_multiple_mutating_tools() -> Result<()> {
     let test_config = test_config();
     let workspace_dir = test_config.workspace_dir().to_path_buf();
     let host = RuntimeHost::new_with_provider(
@@ -795,8 +817,16 @@ impl AgentProvider for EmptyTerminalDeliveryProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_uses_last_assistant_message_without_terminal_delivery_round() -> Result<()> {
+#[test]
+fn run_once_uses_last_assistant_message_without_terminal_delivery_round() -> Result<()> {
+    run_on_large_stack(
+        "run-once-last-assistant-message-without-delivery-round",
+        assert_run_once_uses_last_assistant_message_without_terminal_delivery_round,
+    )
+}
+
+async fn assert_run_once_uses_last_assistant_message_without_terminal_delivery_round() -> Result<()>
+{
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -813,8 +843,15 @@ async fn run_once_uses_last_assistant_message_without_terminal_delivery_round() 
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_keeps_last_assistant_message_without_structured_fallback() -> Result<()> {
+#[test]
+fn run_once_keeps_last_assistant_message_without_structured_fallback() -> Result<()> {
+    run_on_large_stack(
+        "run-once-last-assistant-message-without-structured-fallback",
+        assert_run_once_keeps_last_assistant_message_without_structured_fallback,
+    )
+}
+
+async fn assert_run_once_keeps_last_assistant_message_without_structured_fallback() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -831,8 +868,15 @@ async fn run_once_keeps_last_assistant_message_without_structured_fallback() -> 
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_leaves_final_text_empty_without_assistant_text() -> Result<()> {
+#[test]
+fn run_once_leaves_final_text_empty_without_assistant_text() -> Result<()> {
+    run_on_large_stack(
+        "run-once-final-text-empty-without-assistant-text",
+        assert_run_once_leaves_final_text_empty_without_assistant_text,
+    )
+}
+
+async fn assert_run_once_leaves_final_text_empty_without_assistant_text() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -904,8 +948,15 @@ impl AgentProvider for SleepTaskProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_waits_for_background_tasks_by_default() -> Result<()> {
+#[test]
+fn run_once_waits_for_background_tasks_by_default() -> Result<()> {
+    run_on_large_stack(
+        "run-once-waits-for-background-tasks-by-default",
+        assert_run_once_waits_for_background_tasks_by_default,
+    )
+}
+
+async fn assert_run_once_waits_for_background_tasks_by_default() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -982,8 +1033,15 @@ impl AgentProvider for CommandTaskProvider {
     }
 }
 
-#[tokio::test]
-async fn run_once_waits_for_command_tasks_by_default() -> Result<()> {
+#[test]
+fn run_once_waits_for_command_tasks_by_default() -> Result<()> {
+    run_on_large_stack(
+        "run-once-waits-for-command-tasks-by-default",
+        assert_run_once_waits_for_command_tasks_by_default,
+    )
+}
+
+async fn assert_run_once_waits_for_command_tasks_by_default() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -1000,8 +1058,15 @@ async fn run_once_waits_for_command_tasks_by_default() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_no_wait_does_not_interrupt_session_local_sleep() -> Result<()> {
+#[test]
+fn run_once_no_wait_does_not_interrupt_session_local_sleep() -> Result<()> {
+    run_on_large_stack(
+        "run-once-no-wait-keeps-session-local-sleep",
+        assert_run_once_no_wait_does_not_interrupt_session_local_sleep,
+    )
+}
+
+async fn assert_run_once_no_wait_does_not_interrupt_session_local_sleep() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -1028,8 +1093,15 @@ async fn run_once_no_wait_does_not_interrupt_session_local_sleep() -> Result<()>
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result<()> {
+#[test]
+fn run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result<()> {
+    run_on_large_stack(
+        "run-once-no-wait-stops-unfinished-command-tasks",
+        assert_run_once_no_wait_stops_unfinished_command_tasks_before_exit,
+    )
+}
+
+async fn assert_run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -1059,8 +1131,15 @@ async fn run_once_no_wait_stops_unfinished_command_tasks_before_exit() -> Result
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_no_wait_allows_short_tasks_to_finish_during_quiescence() -> Result<()> {
+#[test]
+fn run_once_no_wait_allows_short_tasks_to_finish_during_quiescence() -> Result<()> {
+    run_on_large_stack(
+        "run-once-no-wait-allows-short-tasks-during-quiescence",
+        assert_run_once_no_wait_allows_short_tasks_to_finish_during_quiescence,
+    )
+}
+
+async fn assert_run_once_no_wait_allows_short_tasks_to_finish_during_quiescence() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -1083,8 +1162,16 @@ async fn run_once_no_wait_allows_short_tasks_to_finish_during_quiescence() -> Re
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_no_wait_allows_short_command_tasks_to_finish_during_quiescence() -> Result<()> {
+#[test]
+fn run_once_no_wait_allows_short_command_tasks_to_finish_during_quiescence() -> Result<()> {
+    run_on_large_stack(
+        "run-once-no-wait-allows-short-command-tasks-during-quiescence",
+        assert_run_once_no_wait_allows_short_command_tasks_to_finish_during_quiescence,
+    )
+}
+
+async fn assert_run_once_no_wait_allows_short_command_tasks_to_finish_during_quiescence(
+) -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),
@@ -1376,8 +1463,15 @@ fn run_once_multi_round_single_turn_does_not_exceed_max_turns() -> Result<()> {
     )
 }
 
-#[tokio::test]
-async fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<()> {
+#[test]
+fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<()> {
+    run_on_large_stack(
+        "run-once-turn-budget-warning-on-last-allowed-turn",
+        assert_run_once_injects_turn_budget_warning_on_last_allowed_turn,
+    )
+}
+
+async fn assert_run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<()> {
     // With max_turns=1, the single turn is the last allowed turn.
     // The budget warning is injected via the runtime_reminder projection path
     // on round 2+ within that turn.
@@ -1401,8 +1495,15 @@ async fn run_once_injects_turn_budget_warning_on_last_allowed_turn() -> Result<(
     Ok(())
 }
 
-#[tokio::test]
-async fn run_once_allows_terminal_task_result_turn_at_budget_boundary() -> Result<()> {
+#[test]
+fn run_once_allows_terminal_task_result_turn_at_budget_boundary() -> Result<()> {
+    run_on_large_stack(
+        "run-once-terminal-task-result-turn-at-budget-boundary",
+        assert_run_once_allows_terminal_task_result_turn_at_budget_boundary,
+    )
+}
+
+async fn assert_run_once_allows_terminal_task_result_turn_at_budget_boundary() -> Result<()> {
     let test_config = test_config();
     let host = RuntimeHost::new_with_provider(
         test_config.config().clone(),

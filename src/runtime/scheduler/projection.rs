@@ -74,6 +74,22 @@ impl SchedulerProjection {
         self.canonical_work_states.get_or_insert_with(HashMap::new);
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_canonical_waiting_state_for_test(
+        &mut self,
+        work_item_id: &str,
+        wait_id: &str,
+    ) {
+        self.canonical_work_states
+            .get_or_insert_with(HashMap::new)
+            .insert(
+                work_item_id.to_string(),
+                CanonicalWorkExecutionState::Waiting {
+                    wait_id: wait_id.to_string(),
+                },
+            );
+    }
+
     pub(crate) fn from_state(storage: &AppStorage, state: &AgentState) -> Result<Self> {
         Self::from_state_with_queue_len(storage, state, state.pending)
     }

@@ -167,6 +167,40 @@ fn append_operator_wait_condition(
         .unwrap();
 }
 
+fn append_resolved_task_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    task_id: &str,
+    trigger_message_id: &str,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Resolved,
+            kind: WaitConditionKind::Task,
+            source: Some("test".into()),
+            subject_ref: Some(task_id.into()),
+            waiting_for: format!("task {task_id} result"),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: task_id.into(),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: Some(Utc::now()),
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: Some(trigger_message_id.into()),
+            triggered_at: Some(Utc::now()),
+        })
+        .unwrap();
+}
+
 #[derive(Deserialize)]
 struct ExpectedFixture {
     current_work_item_id: Option<String>,
@@ -2287,6 +2321,70 @@ fn explicitly_bound_low_authority_operator_input_preserves_content_trust() {
         } if work_item_id == "wi-operator"
     ));
     assert_eq!(message.authority_class, AuthorityClass::ExternalEvidence);
+}
+
+#[test]
+fn resolved_cross_owner_task_wait_still_routes_result_replay_to_waiter() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent(&agent).unwrap();
+    append_open_work_item(&storage, "wi-owner", "default");
+    append_open_work_item(&storage, "wi-waiter", "default");
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-resolved".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "terminal result".into(),
+        },
+    );
+    message.task_id = Some("task-resolved".into());
+    message.work_item_id = Some("wi-owner".into());
+    append_resolved_task_wait_condition(
+        &storage,
+        "wait-cross-owner",
+        "default",
+        Some("wi-waiter"),
+        "task-resolved",
+        &message.id,
+    );
+    let task = TaskRecord {
+        id: "task-resolved".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(message.id.clone()),
+        work_item_id: Some("wi-owner".into()),
+        summary: Some("terminal task".into()),
+        detail: None,
+        recovery: None,
+    };
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.enable_canonical_authority_for_test();
+    projection.set_canonical_waiting_state_for_test("wi-waiter", "wait-cross-owner");
+    let candidate = scheduler::canonical_activation_candidate(&message, None, Some(&task))
+        .unwrap()
+        .expect("bound terminal task result should be activatable");
+
+    // After a restart the queued result needs replay; the fallback must
+    // route it to the recorded waiter even though its wait is already
+    // Resolved (#3124).
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "wi-waiter".into(),
+            },
+            wait_id: "wait-cross-owner".into(),
+        })
+    );
 }
 
 #[test]

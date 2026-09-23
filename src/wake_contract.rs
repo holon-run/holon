@@ -1,6 +1,6 @@
 use crate::types::{
     AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageEnvelope, MessageKind,
-    MessageOrigin, WaitConditionRecord, WaitConditionStatus, WakeSource,
+    MessageOrigin, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,12 +65,49 @@ pub(crate) fn select_wait_to_trigger<'a>(
             condition,
             wake: wake.clone(),
         },
-        _ => WaitTriggerSelection::Ambiguous {
-            wait_ids: candidates
-                .iter()
-                .map(|(condition, _)| condition.id.clone())
-                .collect(),
-        },
+        _ => {
+            // One task result message admits only one consumed trigger
+            // marker per agent (wait_conditions UNIQUE(agent_id,
+            // trigger_message_id)). When several same-agent task waits
+            // match the result, the task owner's own wait wins first and
+            // then the earliest wait deterministically; other waiters keep
+            // their unsatisfied waits as durable evidence (#3124).
+            if message.kind == MessageKind::TaskResult
+                && candidates.iter().all(|(condition, _)| {
+                    condition.kind == WaitConditionKind::Task
+                        && condition.wake_sources.iter().any(|source| {
+                            matches!(
+                                source,
+                                WakeSource::TaskResult { task_id }
+                                    if Some(task_id.as_str()) == message.task_id.as_deref()
+                            )
+                        })
+                })
+            {
+                let mut selection = candidates;
+                selection.sort_by(|(left, _), (right, _)| {
+                    let left_owner =
+                        left.work_item_id.as_deref() == message.work_item_id.as_deref();
+                    let right_owner =
+                        right.work_item_id.as_deref() == message.work_item_id.as_deref();
+                    right_owner
+                        .cmp(&left_owner)
+                        .then_with(|| left.created_at.cmp(&right.created_at))
+                        .then_with(|| left.id.cmp(&right.id))
+                });
+                let (condition, wake) = selection
+                    .into_iter()
+                    .next()
+                    .expect("non-empty candidate slice has a deterministic task wait");
+                return WaitTriggerSelection::Match { condition, wake };
+            }
+            WaitTriggerSelection::Ambiguous {
+                wait_ids: candidates
+                    .iter()
+                    .map(|(condition, _)| condition.id.clone())
+                    .collect(),
+            }
+        }
     }
 }
 
@@ -103,8 +140,17 @@ pub(crate) fn matching_wake_source(
     message: &MessageEnvelope,
     condition: &WaitConditionRecord,
 ) -> Option<WakeMatch> {
+    // A task result message is addressed to the task's owner, but any
+    // WorkItem (or agent lifecycle) inside the same agent may hold the
+    // dependency wait (#3124): match task waits by task identity instead of
+    // the message's WorkItem binding.
+    let task_result_message = matches!(
+        (&message.kind, &message.origin),
+        (MessageKind::TaskResult, MessageOrigin::Task { .. })
+    );
     if message.agent_id != condition.agent_id
-        || message.work_item_id.as_deref() != condition.work_item_id.as_deref()
+        || (!task_result_message
+            && message.work_item_id.as_deref() != condition.work_item_id.as_deref())
         || (condition.status == WaitConditionStatus::Triggered
             && condition.trigger_message_id() != Some(message.id.as_str()))
     {
@@ -278,12 +324,35 @@ mod tests {
     }
 
     #[test]
-    fn selection_requires_the_same_owner() {
+    fn selection_matches_cross_owner_task_wait() {
+        // #3124: a task result message is addressed to the task's owner,
+        // but any WorkItem in the same agent may hold the dependency wait.
         let message = task_result("task-a", Some("work-b"));
-        assert_eq!(
-            select_wait_to_trigger(&message, &[task_wait("wait-a", Some("work-a"), "task-a")]),
-            WaitTriggerSelection::NoMatch
-        );
+        let wait = task_wait("wait-a", Some("work-a"), "task-a");
+        match select_wait_to_trigger(&message, &[wait]) {
+            WaitTriggerSelection::Match { condition, wake } => {
+                assert_eq!(condition.id, "wait-a");
+                assert_eq!(wake.source, "task_result");
+            }
+            other => panic!("expected cross-owner task match, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn selection_picks_owner_wait_deterministically_among_task_waiters() {
+        // One result message admits one consumed trigger marker per agent;
+        // the task owner's own wait wins over older foreign waiters.
+        let mut message = task_result("task-a", Some("work-b"));
+        message.task_id = Some("task-a".into());
+        let owner_wait = task_wait("wait-owner", Some("work-b"), "task-a");
+        let mut other_wait = task_wait("wait-other", Some("work-a"), "task-a");
+        other_wait.created_at -= chrono::Duration::milliseconds(5);
+        match select_wait_to_trigger(&message, &[other_wait, owner_wait]) {
+            WaitTriggerSelection::Match { condition, .. } => {
+                assert_eq!(condition.id, "wait-owner");
+            }
+            other => panic!("expected deterministic task wait pick, got {other:?}"),
+        }
     }
 
     #[test]
