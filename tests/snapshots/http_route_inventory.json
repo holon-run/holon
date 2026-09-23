@@ -38,6 +38,22 @@
     ]
   },
   {
+    "method": "delete",
+    "path": "/api/control/runtime/decision/local-onnx/preset/{preset}",
+    "handler": "runtime_decision_local_onnx_preset_cancel",
+    "operation_id": "runtimeDecisionLocalOnnxPresetCancel",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
     "method": "get",
     "path": "/api/",
     "handler": "root",
@@ -2197,6 +2213,22 @@
     "tag": "runtime",
     "parameters": [],
     "request_schema": "ModelConfigMigrationRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/control/runtime/decision/test",
+    "handler": "runtime_decision_test",
+    "operation_id": "testDecision",
+    "tag": "runtime",
+    "parameters": [],
+    "request_schema": "RuntimeDecisionTestRequest",
     "request_strict": true,
     "response_content_types": [
       "application/json"

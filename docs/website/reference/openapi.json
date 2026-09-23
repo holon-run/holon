@@ -12243,6 +12243,9 @@
               },
               "decision": {
                 "default": {
+                  "available": false,
+                  "credential_configured": false,
+                  "decision_capable": false,
                   "enabled": false,
                   "local_onnx": {
                     "checksum": null,
@@ -12262,8 +12265,26 @@
                   }
                 },
                 "properties": {
+                  "available": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "credential_configured": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "decision_capable": {
+                    "default": false,
+                    "type": "boolean"
+                  },
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "endpoint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "local_onnx": {
                     "properties": {
@@ -12320,6 +12341,18 @@
                       "null"
                     ]
                   },
+                  "provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "route_provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "tools": {
                     "default": {
                       "enabled": false,
@@ -12355,6 +12388,18 @@
                       "min_confidence_percent"
                     ],
                     "type": "object"
+                  },
+                  "transport": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "unavailable_reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -12859,6 +12904,9 @@
               },
               "decision": {
                 "default": {
+                  "available": false,
+                  "credential_configured": false,
+                  "decision_capable": false,
                   "enabled": false,
                   "local_onnx": {
                     "checksum": null,
@@ -12878,8 +12926,26 @@
                   }
                 },
                 "properties": {
+                  "available": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "credential_configured": {
+                    "default": false,
+                    "type": "boolean"
+                  },
+                  "decision_capable": {
+                    "default": false,
+                    "type": "boolean"
+                  },
                   "enabled": {
                     "type": "boolean"
+                  },
+                  "endpoint": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   },
                   "local_onnx": {
                     "properties": {
@@ -12936,6 +13002,18 @@
                       "null"
                     ]
                   },
+                  "provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "route_provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "tools": {
                     "default": {
                       "enabled": false,
@@ -12971,6 +13049,18 @@
                       "min_confidence_percent"
                     ],
                     "type": "object"
+                  },
+                  "transport": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "unavailable_reason": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -13257,6 +13347,63 @@
           "reload"
         ],
         "title": "RuntimeConfigUpdateResponse",
+        "type": "object"
+      },
+      "RuntimeDecisionTestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "question": {
+            "default": null,
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "RuntimeDecisionTestRequest",
+        "type": "object"
+      },
+      "RuntimeDecisionTestResponse": {
+        "properties": {
+          "confidence": {
+            "format": "float",
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "elapsed_ms": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "status"
+        ],
+        "title": "RuntimeDecisionTestResponse",
         "type": "object"
       },
       "RuntimeErrorContext": {
@@ -22961,6 +23108,52 @@
       }
     },
     "/api/control/runtime/decision/local-onnx/preset/{preset}": {
+      "delete": {
+        "description": "Remove an incomplete managed-cache download without changing Decision configuration.",
+        "operationId": "runtimeDecisionLocalOnnxPresetCancel",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Cancel local ONNX preset download",
+        "tags": [
+          "runtime"
+        ]
+      },
       "get": {
         "description": "Return the managed-cache status for a local ONNX decision preset.",
         "operationId": "runtimeDecisionLocalOnnxPreset",
@@ -23049,6 +23242,64 @@
           }
         ],
         "summary": "Download local ONNX preset",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/control/runtime/decision/test": {
+      "post": {
+        "description": "Run a fixed, side-effect-free Decision provider smoke test without returning credentials or mutating configuration.",
+        "operationId": "testDecision",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RuntimeDecisionTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeDecisionTestResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Test Decision provider",
         "tags": [
           "runtime"
         ]

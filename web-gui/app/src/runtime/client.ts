@@ -1301,7 +1301,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const response = await postJson<RuntimeLocalOnnxPresetStatusDto>(
         fetchImpl,
         baseUrl,
-        `/control/runtime/decision/local-onnx/${encodeURIComponent(preset)}/download`,
+        `/control/runtime/decision/local-onnx/preset/${encodeURIComponent(preset)}`,
         {},
         requestHeaders,
         { timeoutMs: CONFIG_UPDATE_TIMEOUT_MS },
@@ -1331,7 +1331,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       const response = await deleteJson<RuntimeLocalOnnxPresetStatusDto>(
         fetchImpl,
         baseUrl,
-        `/control/runtime/decision/local-onnx/${encodeURIComponent(preset)}/download`,
+        `/control/runtime/decision/local-onnx/preset/${encodeURIComponent(preset)}`,
         requestHeaders,
       );
       return {
