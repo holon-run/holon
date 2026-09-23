@@ -63,6 +63,7 @@ pub enum ModelMetadataField {
     Verbosity,
     ToolOutputTruncationEstimatedTokens,
     MaxOutputTokensUpperLimit,
+    AgentTurn,
     ParallelToolCalls,
     ImageInput,
     ImageGeneration,
@@ -109,8 +110,10 @@ impl ModelMetadataEvidence {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ModelCapabilityFlags {
+    #[serde(default = "default_agent_turn_capability")]
+    pub agent_turn: bool,
     #[serde(default)]
     pub parallel_tool_calls: bool,
     #[serde(default)]
@@ -121,6 +124,19 @@ pub struct ModelCapabilityFlags {
     pub supports_reasoning: bool,
     #[serde(default)]
     pub interactive_exec: bool,
+}
+
+impl Default for ModelCapabilityFlags {
+    fn default() -> Self {
+        Self {
+            agent_turn: default_agent_turn_capability(),
+            parallel_tool_calls: false,
+            image_input: false,
+            image_generation: false,
+            supports_reasoning: false,
+            interactive_exec: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -188,6 +204,8 @@ pub struct EndpointModelPolicy {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct ModelCapabilityOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_turn: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_calls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_input: Option<bool>,
@@ -197,15 +215,19 @@ pub struct ModelCapabilityOverride {
     pub supports_reasoning: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interactive_exec: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<bool>,
 }
 
 impl ModelCapabilityOverride {
     pub fn is_empty(&self) -> bool {
-        self.parallel_tool_calls.is_none()
+        self.agent_turn.is_none()
+            && self.parallel_tool_calls.is_none()
             && self.image_input.is_none()
             && self.image_generation.is_none()
             && self.supports_reasoning.is_none()
             && self.interactive_exec.is_none()
+            && self.decision.is_none()
     }
 }
 
@@ -269,6 +291,10 @@ impl BuiltInModelRoutePolicy {
                 model_entry.tool_output_truncation_estimated_tokens,
             ),
             capabilities: ModelCapabilityOverride {
+                agent_turn: field_diff(
+                    route_entry.capabilities.agent_turn,
+                    model_entry.capabilities.agent_turn,
+                ),
                 parallel_tool_calls: field_diff(
                     route_entry.capabilities.parallel_tool_calls,
                     model_entry.capabilities.parallel_tool_calls,
@@ -289,6 +315,7 @@ impl BuiltInModelRoutePolicy {
                     route_entry.capabilities.interactive_exec,
                     model_entry.capabilities.interactive_exec,
                 ),
+                decision: None,
             },
             reasoning_effort_options: field_diff(
                 route_entry.reasoning_effort_options.clone(),
@@ -299,6 +326,11 @@ impl BuiltInModelRoutePolicy {
 
     fn validate_narrowing(&self, model: &BuiltInModelMetadata) -> Result<(), String> {
         for (name, route, intrinsic) in [
+            (
+                "agent_turn",
+                self.capabilities.agent_turn,
+                model.capabilities.agent_turn,
+            ),
             (
                 "parallel_tool_calls",
                 self.capabilities.parallel_tool_calls,
@@ -401,6 +433,8 @@ pub struct ModelRuntimeOverride {
     pub tool_output_truncation_estimated_tokens: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capabilities: Option<ModelCapabilityOverride>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_protocol: Option<DecisionProtocol>,
 }
 
 impl ModelRuntimeOverride {
@@ -421,7 +455,15 @@ impl ModelRuntimeOverride {
                 .as_ref()
                 .map(ModelCapabilityOverride::is_empty)
                 .unwrap_or(true)
+            && self.decision_protocol.is_none()
     }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DecisionProtocol {
+    OpenAiCompatible,
+    Jev,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -461,6 +503,12 @@ pub struct ResolvedRuntimeModelPolicy {
     pub max_output_tokens_upper_limit: Option<u32>,
     #[serde(default)]
     pub capabilities: ModelCapabilityFlags,
+    #[serde(default = "default_agent_turn_capability")]
+    pub agent_turn: bool,
+    #[serde(default)]
+    pub decision_capable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_protocol: Option<DecisionProtocol>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reasoning_effort_options: Vec<String>,
     pub source: ModelMetadataSource,
@@ -515,6 +563,9 @@ impl Default for ResolvedRuntimeModelPolicy {
                 DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
             max_output_tokens_upper_limit: None,
             capabilities: ModelCapabilityFlags::default(),
+            agent_turn: default_agent_turn_capability(),
+            decision_capable: false,
+            decision_protocol: None,
             reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::UnknownFallback,
             evidence: ModelMetadataEvidence::default(),
@@ -1336,6 +1387,19 @@ impl BuiltInModelCatalog {
                 DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS
             });
         let mut capabilities = ModelCapabilityFlags {
+            agent_turn: resolve_capability_field(
+                &mut evidence,
+                ModelMetadataField::AgentTurn,
+                override_config
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.agent_turn),
+                discovered.map(|entry| entry.capabilities.agent_turn),
+                model_builtin.map(|entry| entry.capabilities.agent_turn),
+                fallback_override
+                    .and_then(|value| value.capabilities.as_ref())
+                    .and_then(|value| value.agent_turn),
+                default_agent_turn_capability(),
+            ),
             parallel_tool_calls: resolve_capability_field(
                 &mut evidence,
                 ModelMetadataField::ParallelToolCalls,
@@ -1347,6 +1411,7 @@ impl BuiltInModelCatalog {
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.parallel_tool_calls),
+                false,
             ),
             image_input: resolve_capability_field(
                 &mut evidence,
@@ -1359,6 +1424,7 @@ impl BuiltInModelCatalog {
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.image_input),
+                false,
             ),
             image_generation: resolve_capability_field(
                 &mut evidence,
@@ -1371,6 +1437,7 @@ impl BuiltInModelCatalog {
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.image_generation),
+                false,
             ),
             supports_reasoning: resolve_capability_field(
                 &mut evidence,
@@ -1383,6 +1450,7 @@ impl BuiltInModelCatalog {
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.supports_reasoning),
+                false,
             ),
             interactive_exec: resolve_capability_field(
                 &mut evidence,
@@ -1395,9 +1463,16 @@ impl BuiltInModelCatalog {
                 fallback_override
                     .and_then(|value| value.capabilities.as_ref())
                     .and_then(|value| value.interactive_exec),
+                false,
             ),
         };
         if let Some(route) = route_builtin {
+            apply_route_capability_constraint(
+                &mut capabilities.agent_turn,
+                route.capabilities.agent_turn,
+                ModelMetadataField::AgentTurn,
+                &mut evidence,
+            );
             apply_route_capability_constraint(
                 &mut capabilities.parallel_tool_calls,
                 route.capabilities.parallel_tool_calls,
@@ -1429,6 +1504,11 @@ impl BuiltInModelCatalog {
                 &mut evidence,
             );
         }
+        let decision_capable = override_config
+            .and_then(|value| value.capabilities.as_ref())
+            .and_then(|value| value.decision)
+            .unwrap_or(false);
+        let decision_protocol = override_config.and_then(|value| value.decision_protocol);
         let reasoning_effort_options = select_field(
             &mut evidence,
             ModelMetadataField::ReasoningEffortOptions,
@@ -1484,6 +1564,9 @@ impl BuiltInModelCatalog {
             tool_output_truncation_estimated_tokens,
             max_output_tokens_upper_limit,
             capabilities: capabilities.clone(),
+            agent_turn: capabilities.agent_turn,
+            decision_capable,
+            decision_protocol,
             reasoning_effort_options: reasoning_effort_options.clone(),
             source,
             evidence,
@@ -1595,6 +1678,7 @@ fn resolve_capability_field(
     discovered: Option<bool>,
     model_builtin: Option<bool>,
     unknown_fallback: Option<bool>,
+    default: bool,
 ) -> bool {
     select_field(
         evidence,
@@ -1611,7 +1695,7 @@ fn resolve_capability_field(
     )
     .unwrap_or_else(|| {
         record_origin(evidence, field, ModelMetadataOrigin::Derived);
-        false
+        default
     })
 }
 
@@ -1635,6 +1719,10 @@ fn apply_route_capability_constraint(
 
 fn default_effective_context_window_percent() -> u8 {
     DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT
+}
+
+fn default_agent_turn_capability() -> bool {
+    true
 }
 
 fn validated_percent(percent: u8) -> u8 {

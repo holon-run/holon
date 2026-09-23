@@ -3849,6 +3849,9 @@ mod tests {
                         image_input: true,
                         ..crate::model_catalog::ModelCapabilityFlags::default()
                     },
+                    agent_turn: true,
+                    decision_capable: false,
+                    decision_protocol: None,
                     reasoning_effort_options: Vec::new(),
                     source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
                     evidence: Default::default(),

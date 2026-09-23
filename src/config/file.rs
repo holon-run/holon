@@ -34,7 +34,7 @@ pub struct HolonConfigFile {
 pub struct DecisionConfigFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// Shared `provider@endpoint/model` reference resolved from `providers`.
+    /// Shared provider model route used by Decision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -139,6 +139,7 @@ pub struct RuntimeConfigSurface {
 pub struct RuntimeDecisionSurface {
     pub enabled: bool,
     pub model: Option<String>,
+    pub protocol: Option<String>,
     pub local_onnx: RuntimeDecisionLocalOnnxSurface,
     #[serde(default)]
     pub tools: RuntimeDecisionToolsSurface,
@@ -174,12 +175,32 @@ impl Default for RuntimeDecisionToolsSurface {
 }
 
 impl RuntimeDecisionSurface {
-    pub fn from_config(config: &crate::config::DecisionConfigFile) -> Self {
-        let local_onnx = config.local_onnx.as_ref();
-        let tools = config.tools.as_ref();
+    pub fn from_app_config(config: &AppConfig) -> Self {
+        let decision = &config.stored_config.decision;
+        let local_onnx = decision.local_onnx.as_ref();
+        let tools = decision.tools.as_ref();
         Self {
-            enabled: config.enabled.unwrap_or(false),
-            model: config.model.clone(),
+            enabled: decision.enabled.unwrap_or(false),
+            model: decision.model.clone(),
+            protocol: decision
+                .model
+                .as_deref()
+                .and_then(|model| crate::config::ModelRouteRef::parse_compatible(model).ok())
+                .and_then(|route| {
+                    crate::config::RuntimeModelCatalog::from_config(config)
+                        .resolve_explicit_model_route(
+                            &crate::context::ContextConfig::default(),
+                            &route,
+                            crate::config::ModelRouteCapability::Decision,
+                        )
+                        .and_then(|resolved| resolved.policy.decision_protocol)
+                })
+                .map(|protocol| match protocol {
+                    crate::model_catalog::DecisionProtocol::OpenAiCompatible => {
+                        "openai_compatible".to_string()
+                    }
+                    crate::model_catalog::DecisionProtocol::Jev => "jev".to_string(),
+                }),
             local_onnx: RuntimeDecisionLocalOnnxSurface {
                 enabled: local_onnx
                     .and_then(|config| config.enabled)
@@ -267,7 +288,7 @@ impl RuntimeConfigSurface {
                 .image_generation_model
                 .as_ref()
                 .map(|value| value.as_string()),
-            decision: RuntimeDecisionSurface::from_config(&config.stored_config.decision),
+            decision: RuntimeDecisionSurface::from_app_config(config),
             model_catalog,
             unknown_model_fallback_configured: config.validated_unknown_model_fallback.is_some(),
             runtime_max_output_tokens: config.runtime_max_output_tokens,

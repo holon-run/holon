@@ -116,6 +116,7 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
             default_verbosity: Some(ModelVerbosity::Low),
             tool_output_truncation_estimated_tokens: Some(2_500),
             capabilities: ModelCapabilityFlags {
+                agent_turn: true,
                 parallel_tool_calls: true,
                 image_input: true,
                 image_generation: true,
