@@ -14,6 +14,8 @@ use crate::types::TokenUsage;
 
 pub(crate) const PROVIDER_MAX_RETRIES: usize = 2;
 const PROVIDER_RETRY_BASE_BACKOFF_MS: u64 = 200;
+const PROVIDER_SERVER_ERROR_RETRY_BASE_BACKOFF_MS: u64 = 2_000;
+const PROVIDER_RETRY_JITTER_MAX_PERCENT: u64 = 25;
 pub(crate) const PROVIDER_RETRY_SERVER_HINT_CAP_MS: u64 = 30_000;
 pub(crate) const PROVIDER_RECOVERY_BASE_BACKOFF_MS: u64 = 2_000;
 pub(crate) const PROVIDER_RECOVERY_MAX_BACKOFF_MS: u64 = 30_000;
@@ -63,6 +65,7 @@ pub(crate) struct ProviderTransportError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderRetryDelaySource {
     ServerRetryAfter,
+    ServerErrorExponentialBackoff,
     ComputedBackoff,
 }
 
@@ -70,6 +73,7 @@ impl ProviderRetryDelaySource {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::ServerRetryAfter => "server_retry_after",
+            Self::ServerErrorExponentialBackoff => "server_error_exponential_backoff",
             Self::ComputedBackoff => "computed_backoff",
         }
     }
@@ -127,6 +131,9 @@ pub(crate) fn provider_retry_policy_json() -> Value {
         "max_retries_per_provider": PROVIDER_MAX_RETRIES,
         "max_attempts_per_provider": provider_max_attempts(),
         "base_backoff_ms": PROVIDER_RETRY_BASE_BACKOFF_MS,
+        "server_error_base_backoff_ms": PROVIDER_SERVER_ERROR_RETRY_BASE_BACKOFF_MS,
+        "server_error_jitter_max_percent": PROVIDER_RETRY_JITTER_MAX_PERCENT,
+        "server_error_backoff_cap_ms": PROVIDER_RETRY_SERVER_HINT_CAP_MS,
         "server_hint_cap_ms": PROVIDER_RETRY_SERVER_HINT_CAP_MS,
         "server_hint_semantics": "429/503 Retry-After at or below the cap extends the computed backoff; hints above the cap skip remaining retries and defer to fallback",
         "retryable_failure_kinds": [
@@ -164,6 +171,39 @@ pub(crate) fn provider_retry_backoff(attempt: usize) -> Duration {
     Duration::from_millis(PROVIDER_RETRY_BASE_BACKOFF_MS * attempt as u64)
 }
 
+pub(crate) fn provider_retry_jitter_seed(provider_name: &str, model_ref: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in provider_name.bytes().chain([0]).chain(model_ref.bytes()) {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+fn provider_server_error_retry_backoff(attempt: usize, jitter_seed: u64) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(63);
+    let exponential = PROVIDER_SERVER_ERROR_RETRY_BASE_BACKOFF_MS
+        .saturating_mul(1u64 << exponent)
+        .min(PROVIDER_RETRY_SERVER_HINT_CAP_MS);
+    let jitter_cap = exponential
+        .saturating_mul(PROVIDER_RETRY_JITTER_MAX_PERCENT)
+        .checked_div(100)
+        .unwrap_or_default()
+        .min(PROVIDER_RETRY_SERVER_HINT_CAP_MS.saturating_sub(exponential));
+    let jitter = if jitter_cap == 0 {
+        0
+    } else {
+        let mut mixed = jitter_seed ^ (attempt as u64).wrapping_mul(0x9e3779b97f4a7c15);
+        mixed ^= mixed >> 30;
+        mixed = mixed.wrapping_mul(0xbf58476d1ce4e5b9);
+        mixed ^= mixed >> 27;
+        mixed = mixed.wrapping_mul(0x94d049bb133111eb);
+        mixed ^= mixed >> 31;
+        mixed % (jitter_cap + 1)
+    };
+    Duration::from_millis(exponential.saturating_add(jitter))
+}
+
 pub(crate) fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     let raw = headers
         .get(&reqwest::header::RETRY_AFTER)?
@@ -191,8 +231,19 @@ pub(crate) fn provider_retry_delay(
     attempt: usize,
     kind: ProviderFailureKind,
     retry_after: Option<Duration>,
+    jitter_seed: u64,
 ) -> ProviderRetryDelay {
-    let computed = provider_retry_backoff(attempt);
+    let (computed, computed_source) = if kind == ProviderFailureKind::ServerError {
+        (
+            provider_server_error_retry_backoff(attempt, jitter_seed),
+            ProviderRetryDelaySource::ServerErrorExponentialBackoff,
+        )
+    } else {
+        (
+            provider_retry_backoff(attempt),
+            ProviderRetryDelaySource::ComputedBackoff,
+        )
+    };
     // Retry-After is a server-side throttle hint; only the kinds that carry
     // that semantic (429 rate limits and 5xx server errors) may extend the wait.
     let server_hint = match kind {
@@ -202,7 +253,7 @@ pub(crate) fn provider_retry_delay(
     let Some(server_hint) = server_hint else {
         return ProviderRetryDelay::Wait {
             backoff: computed,
-            source: ProviderRetryDelaySource::ComputedBackoff,
+            source: computed_source,
         };
     };
     if server_hint > Duration::from_millis(PROVIDER_RETRY_SERVER_HINT_CAP_MS) {
@@ -935,7 +986,8 @@ mod tests {
             provider_retry_delay(
                 1,
                 ProviderFailureKind::RateLimited,
-                Some(Duration::from_secs(5))
+                Some(Duration::from_secs(5)),
+                0
             ),
             ProviderRetryDelay::Wait {
                 backoff: Duration::from_secs(5),
@@ -949,8 +1001,9 @@ mod tests {
         assert_eq!(
             provider_retry_delay(
                 2,
-                ProviderFailureKind::ServerError,
-                Some(Duration::from_millis(50))
+                ProviderFailureKind::RateLimited,
+                Some(Duration::from_millis(50)),
+                0
             ),
             ProviderRetryDelay::Wait {
                 backoff: Duration::from_millis(400),
@@ -965,7 +1018,8 @@ mod tests {
             provider_retry_delay(
                 1,
                 ProviderFailureKind::RateLimited,
-                Some(Duration::from_secs(45))
+                Some(Duration::from_secs(45)),
+                0
             ),
             ProviderRetryDelay::SkipToFallback
         );
@@ -974,10 +1028,77 @@ mod tests {
     #[test]
     fn retry_delay_without_hint_uses_computed_backoff() {
         assert_eq!(
-            provider_retry_delay(1, ProviderFailureKind::RateLimited, None),
+            provider_retry_delay(1, ProviderFailureKind::RateLimited, None, 0),
             ProviderRetryDelay::Wait {
                 backoff: Duration::from_millis(200),
                 source: ProviderRetryDelaySource::ComputedBackoff
+            }
+        );
+    }
+
+    #[test]
+    fn server_error_without_hint_uses_stable_exponential_backoff_with_jitter() {
+        let seed = super::provider_retry_jitter_seed("openai", "gpt-5.4");
+        let first = provider_retry_delay(1, ProviderFailureKind::ServerError, None, seed);
+        let second = provider_retry_delay(2, ProviderFailureKind::ServerError, None, seed);
+        let backoff = |delay| match delay {
+            ProviderRetryDelay::Wait { backoff, .. } => backoff,
+            ProviderRetryDelay::SkipToFallback => panic!("expected retry wait"),
+        };
+
+        assert_eq!(
+            first,
+            provider_retry_delay(1, ProviderFailureKind::ServerError, None, seed)
+        );
+        assert_eq!(
+            first,
+            ProviderRetryDelay::Wait {
+                backoff: backoff(first),
+                source: ProviderRetryDelaySource::ServerErrorExponentialBackoff
+            }
+        );
+        assert_eq!(
+            second,
+            ProviderRetryDelay::Wait {
+                backoff: backoff(second),
+                source: ProviderRetryDelaySource::ServerErrorExponentialBackoff
+            }
+        );
+        assert!((Duration::from_secs(2)..=Duration::from_millis(2_500)).contains(&backoff(first)));
+        assert!((Duration::from_secs(4)..=Duration::from_millis(5_000)).contains(&backoff(second)));
+    }
+
+    #[test]
+    fn server_error_hint_still_extends_computed_backoff() {
+        let seed = super::provider_retry_jitter_seed("openai", "gpt-5.4");
+        assert_eq!(
+            provider_retry_delay(
+                1,
+                ProviderFailureKind::ServerError,
+                Some(Duration::from_secs(5)),
+                seed
+            ),
+            ProviderRetryDelay::Wait {
+                backoff: Duration::from_secs(5),
+                source: ProviderRetryDelaySource::ServerRetryAfter
+            }
+        );
+    }
+
+    #[test]
+    fn server_error_backoff_is_capped_at_retry_hint_limit() {
+        let delay = provider_retry_delay(
+            usize::MAX,
+            ProviderFailureKind::ServerError,
+            None,
+            super::provider_retry_jitter_seed("openai", "gpt-5.4"),
+        );
+
+        assert_eq!(
+            delay,
+            ProviderRetryDelay::Wait {
+                backoff: Duration::from_millis(super::PROVIDER_RETRY_SERVER_HINT_CAP_MS),
+                source: ProviderRetryDelaySource::ServerErrorExponentialBackoff
             }
         );
     }
@@ -988,7 +1109,8 @@ mod tests {
             provider_retry_delay(
                 1,
                 ProviderFailureKind::Timeout,
-                Some(Duration::from_secs(5))
+                Some(Duration::from_secs(5)),
+                0
             ),
             ProviderRetryDelay::Wait {
                 backoff: Duration::from_millis(200),
