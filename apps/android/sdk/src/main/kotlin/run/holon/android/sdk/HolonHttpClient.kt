@@ -166,6 +166,13 @@ public class HolonHttpClient internal constructor(
                 },
         )
 
+    public fun conversationSnapshot(
+        agentId: String,
+        limit: Int? = null,
+        before: String? = null,
+    ): HolonConversationSnapshot =
+        HolonConversationSnapshot.from(conversation(agentId, limit, before))
+
     public fun agentState(agentId: String): HolonJsonDocument =
         getJson("agents/${agentId.pathSegment()}/state")
 
@@ -352,6 +359,46 @@ public class HolonHttpClient internal constructor(
                 },
             policy = policy,
         )
+
+    public fun conversationChanges(
+        agentId: String,
+        after: String? = null,
+        limit: Int? = null,
+        activityLimit: Int? = null,
+        lastEventId: String? = null,
+    ): Sequence<HolonConversationStreamEvent> =
+        sequence {
+            val connection =
+                conversationStream(
+                    agentId = agentId,
+                    after = after,
+                    limit = limit,
+                    activityLimit = activityLimit,
+                    lastEventId = lastEventId,
+                )
+            try {
+                for (event in connection.events()) {
+                    yield(event.toConversationEvent())
+                }
+            } finally {
+                connection.close()
+            }
+        }
+
+    public fun reconnectingConversationChanges(
+        agentId: String,
+        after: String? = null,
+        limit: Int? = null,
+        activityLimit: Int? = null,
+        policy: SseReconnectPolicy = SseReconnectPolicy(),
+    ): Sequence<HolonConversationStreamEvent> =
+        reconnectingConversationStream(
+            agentId = agentId,
+            after = after,
+            limit = limit,
+            activityLimit = activityLimit,
+            policy = policy,
+        ).map(HolonSseEvent::toConversationEvent)
 
     private fun reconnectingSse(
         path: String,

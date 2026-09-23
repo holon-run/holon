@@ -35,6 +35,9 @@ import run.holon.android.sdk.CompatibilityResult
 import run.holon.android.sdk.HolonHttpClient
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonProtocolException
+import run.holon.android.sdk.HolonConversationSnapshot
+import run.holon.android.sdk.HolonConversationStreamEvent
+import run.holon.android.sdk.SseReconnectPolicy
 import run.holon.android.sdk.SessionCredentialStore
 import java.io.IOException
 
@@ -84,10 +87,19 @@ private fun HolonApp(context: android.content.Context) {
     var agents by remember { mutableStateOf(emptyList<AgentSummary>()) }
     var requestGeneration by remember { mutableStateOf(0) }
     var logoutInProgress by remember { mutableStateOf(false) }
+    var selectedAgent by remember { mutableStateOf<AgentSummary?>(null) }
+    var conversation by remember { mutableStateOf<HolonConversationSnapshot?>(null) }
+    var conversationStatus by remember { mutableStateOf("请选择 agent 查看会话") }
+    var conversationCursor by remember { mutableStateOf<String?>(null) }
+    var conversationResetRequired by remember { mutableStateOf(false) }
+    var conversationJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     fun fail(message: String) {
         state = ConnectionState.Failed
         status = message
         agents = emptyList()
+        selectedAgent = null
+        conversation = null
+        conversationJob?.cancel()
     }
 
     fun client(): HolonHttpClient =
@@ -116,6 +128,11 @@ private fun HolonApp(context: android.content.Context) {
         state = ConnectionState.Connecting
         status = "正在连接…"
         agents = emptyList()
+        selectedAgent = null
+        conversation = null
+        conversationCursor = null
+        conversationResetRequired = false
+        conversationJob?.cancel()
         val url = baseUrl
         scope.launch {
             runCatching {
@@ -161,6 +178,64 @@ private fun HolonApp(context: android.content.Context) {
         }
     }
 
+    fun loadConversation(agent: AgentSummary, reset: Boolean = false) {
+        selectedAgent = agent
+        if (reset) {
+            conversation = null
+            conversationCursor = null
+            conversationResetRequired = false
+        }
+        conversationStatus = "正在加载会话…"
+        conversationJob?.cancel()
+        val generation = requestGeneration
+        conversationJob =
+            scope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        client().conversationSnapshot(agent.id, limit = 30)
+                    }
+                }.onSuccess { snapshot ->
+                    if (generation != requestGeneration) return@onSuccess
+                    conversation = snapshot
+                    conversationCursor = snapshot.snapshotCursor
+                    conversationResetRequired = false
+                    conversationStatus = "已加载 ${snapshot.turns.size} 个单元，正在接收增量…"
+                    conversationJob =
+                        scope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    client().reconnectingConversationChanges(
+                                        agentId = agent.id,
+                                        after = snapshot.snapshotCursor,
+                                        policy = SseReconnectPolicy(maxAttempts = 8),
+                                    ).forEach { change ->
+                                        when (change) {
+                                            is HolonConversationStreamEvent.Checkpoint ->
+                                                conversationCursor = change.checkpoint
+                                            is HolonConversationStreamEvent.ResetRequired -> {
+                                                conversationResetRequired = true
+                                                conversationStatus =
+                                                    "服务端要求重新同步：${change.reason ?: "cursor_invalid"}"
+                                                return@withContext
+                                            }
+                                            else -> Unit
+                                        }
+                                    }
+                                }
+                            }.onFailure { error ->
+                                if (generation == requestGeneration) {
+                                    conversationStatus = "会话流已断开：${connectionError(error)}"
+                                }
+                            }
+                        }
+                }.onFailure { error ->
+                    if (generation == requestGeneration) {
+                        conversationStatus = "会话加载失败：${connectionError(error)}"
+                    }
+                }
+            }
+    }
+
     fun logout() {
         if (logoutInProgress) return
         requestGeneration++
@@ -169,6 +244,9 @@ private fun HolonApp(context: android.content.Context) {
         state = ConnectionState.Disconnected
         status = "已登出"
         agents = emptyList()
+        selectedAgent = null
+        conversation = null
+        conversationJob?.cancel()
         sessionCredential = ""
         scope.launch {
             runCatching { withContext(Dispatchers.IO) { client().logout() } }
@@ -257,8 +335,53 @@ private fun HolonApp(context: android.content.Context) {
                             style = MaterialTheme.typography.titleMedium,
                         )
                         Text("注册：${agent.registryStatus} · 运行：${agent.runtimeStatus} · 待处理：${agent.pending}")
+                        TextButton(onClick = { loadConversation(agent) }) {
+                            Text(if (selectedAgent?.id == agent.id) "已选择 · 查看会话" else "查看会话")
+                        }
                     }
                 }
+            }
+        }
+        selectedAgent?.let { agent ->
+            Spacer(Modifier.height(16.dp))
+            Text("会话时间线 · ${agent.displayName}", style = MaterialTheme.typography.titleLarge)
+            Text(
+                conversationStatus,
+                color =
+                    if (conversationResetRequired) {
+                        MaterialTheme.colorScheme.error
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { loadConversation(agent, reset = true) }) {
+                    Text(if (conversationResetRequired) "重新同步" else "刷新")
+                }
+                TextButton(
+                    onClick = {
+                        conversationJob?.cancel()
+                        conversation = null
+                        conversationCursor = null
+                        conversationResetRequired = false
+                        conversationStatus = "已重置本地 checkpoint"
+                    },
+                ) {
+                    Text("重置")
+                }
+            }
+            conversation?.turns?.forEach { turn ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                ) {
+                    Text(turn.id, style = MaterialTheme.typography.labelMedium)
+                    Text(turn.summary)
+                }
+            }
+            conversationCursor?.let {
+                Text("checkpoint: $it", style = MaterialTheme.typography.labelSmall)
             }
         }
     }
