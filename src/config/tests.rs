@@ -644,6 +644,38 @@ fn set_get_and_unset_round_trip_runtime_disable_provider_fallback() {
 }
 
 #[test]
+fn set_get_and_unset_round_trip_decision_local_onnx_fields() {
+    let mut config = HolonConfigFile::default();
+    set_config_key(
+        &mut config,
+        "decision.local_onnx.model_dir",
+        "/models/decision",
+    )
+    .unwrap();
+    set_config_key(&mut config, "decision.local_onnx.checksum", "sha256:abc").unwrap();
+    assert_eq!(
+        get_config_key(&config, "decision.local_onnx.model_dir").unwrap(),
+        json!("/models/decision")
+    );
+    assert_eq!(
+        get_config_key(&config, "decision.local_onnx.checksum").unwrap(),
+        json!("sha256:abc")
+    );
+
+    unset_config_key(&mut config, "decision.local_onnx.model_dir").unwrap();
+    unset_config_key(&mut config, "decision.local_onnx.checksum").unwrap();
+    assert_eq!(
+        get_config_key(&config, "decision.local_onnx.model_dir").unwrap(),
+        Value::Null
+    );
+    assert_eq!(
+        get_config_key(&config, "decision.local_onnx.checksum").unwrap(),
+        Value::Null
+    );
+    assert!(config.decision.local_onnx.is_none());
+}
+
+#[test]
 fn runtime_scheduler_is_not_a_mutable_config_key() {
     let mut config = HolonConfigFile::default();
     assert!(set_config_key(&mut config, "runtime.scheduler", "canonical").is_err());

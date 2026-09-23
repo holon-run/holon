@@ -2013,7 +2013,16 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const request = captureClientRequest();
     set({ runtimeConfigSaving: true, runtimeConfigError: undefined });
     try {
-      const runtimeConfig = await request.client.updateRuntimeConfig(updates);
+      const response = await request.client.updateRuntimeConfig(updates);
+      if (!isCurrentClientRequest(request)) return undefined;
+      const runtimeConfig = response.changed && response.reload
+        ? {
+            ...response,
+            ...(await observeRuntimeConfigReload(request, response.reload.requestedGeneration)),
+            changed: response.changed,
+            results: response.results,
+          }
+        : response;
       if (!isCurrentClientRequest(request)) return undefined;
       set({ runtimeConfig, runtimeConfigSaving: false, runtimeConfigError: runtimeConfig.error });
       if (runtimeConfig.changed && !runtimeConfig.error) {

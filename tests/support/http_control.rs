@@ -3228,7 +3228,9 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
                     }
                 },
                 { "key": "decision.model", "value": "openai/gpt-4o-mini" },
-                { "key": "decision.enabled", "value": true }
+                { "key": "decision.enabled", "value": true },
+                { "key": "decision.local_onnx.model_dir", "unset": true },
+                { "key": "decision.local_onnx.checksum", "unset": true }
             ]
         }))
         .send()
@@ -3243,10 +3245,12 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         valid_decision_payload["changed"], true,
         "valid decision update payload: {valid_decision_payload}"
     );
-    assert_eq!(
-        valid_decision_payload["results"][0]["effect"],
-        "accepted_reload_scheduled"
-    );
+    assert!(valid_decision_payload["results"]
+        .as_array()
+        .is_some_and(|results| results.len() == 5
+            && results
+                .iter()
+                .all(|result| result["effect"] == "accepted_reload_scheduled")));
     let reloaded_decision_payload =
         wait_for_runtime_config_reload(&client, addr, &valid_decision_payload).await?;
     assert_eq!(
@@ -3257,6 +3261,10 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         reloaded_decision_payload["runtime_surface"]["decision"]["model"],
         "openai/gpt-4o-mini"
     );
+    assert_eq!(
+        reloaded_decision_payload["runtime_surface"]["decision"]["local_onnx"]["model_dir"],
+        serde_json::Value::Null
+    );
 
     let persisted = load_persisted_config_at(&config.config_file_path)?;
     assert_eq!(persisted.decision.enabled, Some(true));
@@ -3264,6 +3272,7 @@ pub async fn runtime_config_route_reads_and_updates_persisted_runtime_config() -
         persisted.decision.model.as_deref(),
         Some("openai/gpt-4o-mini")
     );
+    assert!(persisted.decision.local_onnx.is_none());
 
     server.abort();
     Ok(())
