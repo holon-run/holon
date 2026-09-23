@@ -26,9 +26,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.BearerTokenProvider
 import run.holon.android.sdk.CompatibilityResult
@@ -37,6 +42,10 @@ import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonProtocolException
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonConversationStreamEvent
+import run.holon.android.sdk.HolonTaskOutputSnapshot
+import run.holon.android.sdk.HolonTaskSnapshot
+import run.holon.android.sdk.HolonToolExecutionSnapshot
+import run.holon.android.sdk.HolonWorkItemSnapshot
 import run.holon.android.sdk.SseReconnectPolicy
 import run.holon.android.sdk.SessionCredentialStore
 import java.io.IOException
@@ -74,6 +83,10 @@ private fun connectionError(error: Throwable): String =
         else -> "连接失败，请重试"
     }
 
+private fun isTerminalTaskStatus(status: String): Boolean =
+    status.lowercase() in
+        setOf("completed", "succeeded", "success", "failed", "error", "cancelled", "canceled", "done")
+
 @Composable
 private fun HolonApp(context: android.content.Context) {
     val scope = rememberCoroutineScope()
@@ -93,13 +106,40 @@ private fun HolonApp(context: android.content.Context) {
     var conversationCursor by remember { mutableStateOf<String?>(null) }
     var conversationResetRequired by remember { mutableStateOf(false) }
     var conversationJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var taskInput by remember { mutableStateOf("") }
+    var taskStatus by remember { mutableStateOf("暂无任务") }
+    var tasks by remember { mutableStateOf(emptyList<HolonTaskSnapshot>()) }
+    var taskOutput by remember { mutableStateOf<HolonTaskOutputSnapshot?>(null) }
+    var workItems by remember { mutableStateOf(emptyList<HolonWorkItemSnapshot>()) }
+    var toolExecutions by remember { mutableStateOf(emptyList<HolonToolExecutionSnapshot>()) }
+    var artifactStatus by remember { mutableStateOf<String?>(null) }
+    var artifactContent by remember { mutableStateOf<String?>(null) }
+    var taskRefreshJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var taskSubmitJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    fun clearTaskDetails(cancelSubmit: Boolean = false) {
+        taskRefreshJob?.cancel()
+        if (cancelSubmit) {
+            taskSubmitJob?.cancel()
+        }
+        tasks = emptyList()
+        workItems = emptyList()
+        taskOutput = null
+        taskStatus = "暂无任务"
+        artifactStatus = null
+        artifactContent = null
+    }
+
     fun fail(message: String) {
         state = ConnectionState.Failed
         status = message
         agents = emptyList()
         selectedAgent = null
         conversation = null
+        toolExecutions = emptyList()
+        artifactStatus = null
+        artifactContent = null
         conversationJob?.cancel()
+        clearTaskDetails(cancelSubmit = true)
     }
 
     fun client(): HolonHttpClient =
@@ -113,6 +153,154 @@ private fun HolonApp(context: android.content.Context) {
                 emptySet()
             },
         )
+
+    fun refreshAgentDetails(
+        agent: AgentSummary,
+        generation: Int = requestGeneration,
+        preferredTaskId: String? = null,
+        loadLatestOutput: Boolean = true,
+    ) {
+        taskRefreshJob?.cancel()
+        tasks = emptyList()
+        workItems = emptyList()
+        taskOutput = null
+        taskStatus = "正在加载任务与 WorkItem…"
+        taskRefreshJob =
+            scope.launch {
+                try {
+                    val details = withContext(Dispatchers.IO) {
+                        val connection = client()
+                        val loadedTasks = connection.taskSnapshots(agent.id, limit = 20)
+                        val loadedWorkItems = connection.workItemSnapshots(agent.id, limit = 20)
+                        val preferredTask =
+                            preferredTaskId?.let { taskId ->
+                                loadedTasks.firstOrNull { it.taskId == taskId }
+                                    ?: runCatching {
+                                        connection.taskStatusSnapshot(agent.id, taskId)
+                                    }.getOrNull()
+                            }
+                        val displayTasks =
+                            if (preferredTask != null && loadedTasks.none { it.taskId == preferredTask.taskId }) {
+                                listOf(preferredTask) + loadedTasks
+                            } else {
+                                loadedTasks
+                            }
+                        val latestOutput =
+                            if (!loadLatestOutput) {
+                                null
+                            } else {
+                                preferredTask ?: loadedTasks.firstOrNull()
+                            }?.let { task ->
+                                runCatching {
+                                    connection.taskOutputSnapshot(agent.id, task.taskId)
+                                }.getOrNull()
+                            }
+                        Triple(displayTasks, loadedWorkItems, latestOutput)
+                    }
+                    if (generation != requestGeneration) return@launch
+                    val (loadedTasks, loadedWorkItems, latestOutput) = details
+                    tasks = loadedTasks
+                    workItems = loadedWorkItems
+                    taskOutput = latestOutput
+                    taskStatus =
+                        if (latestOutput != null && isTerminalTaskStatus(latestOutput.status)) {
+                            "任务已结束：${latestOutput.status}"
+                        } else if (loadedTasks.isEmpty()) {
+                            "暂无活动任务"
+                        } else {
+                            "活动任务：${loadedTasks.size}"
+                        }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    if (generation == requestGeneration) {
+                        taskStatus = "任务/WorkItem 加载失败：${connectionError(error)}"
+                        tasks = emptyList()
+                        workItems = emptyList()
+                        taskOutput = null
+                    }
+                }
+            }
+    }
+
+    fun sendTask(agent: AgentSummary) {
+        val text = taskInput.trim()
+        if (text.isEmpty() || taskSubmitJob?.isActive == true) return
+        taskStatus = "正在提交文字任务…"
+        val generation = requestGeneration
+        val existingTaskIds = tasks.mapTo(mutableSetOf()) { it.taskId }
+        taskSubmitJob =
+            scope.launch {
+                try {
+                    val result =
+                        withContext(Dispatchers.IO) {
+                            client().enqueueText(agent.id, text)
+                        }
+                    if (generation != requestGeneration) return@launch
+                    if (!result.ok) {
+                        throw HolonProtocolException("服务端未接受文字任务")
+                    }
+                    taskInput = ""
+                    taskStatus =
+                        if (result.messageId == null) {
+                            "任务已排队"
+                        } else {
+                            "任务已排队：${result.messageId}"
+                        }
+                    var observedTaskId: String? = null
+                    for (attempt in 0 until 120) {
+                        if (observedTaskId == null) {
+                            val newTask =
+                                withContext(Dispatchers.IO) {
+                                    client().taskSnapshots(agent.id, limit = 20)
+                                        .firstOrNull { it.taskId !in existingTaskIds }
+                                }
+                            if (newTask != null) {
+                                observedTaskId = newTask.taskId
+                                tasks = listOf(newTask) + tasks.filter { it.taskId != newTask.taskId }
+                                taskStatus = "任务状态：${newTask.status}"
+                            }
+                        }
+                        val taskId = observedTaskId
+                        if (taskId != null) {
+                            val snapshot =
+                                withContext(Dispatchers.IO) {
+                                    client().taskStatusSnapshot(agent.id, taskId)
+                                }
+                            tasks = listOf(snapshot) + tasks.filter { it.taskId != taskId }
+                            taskStatus = "任务状态：${snapshot.status}"
+                            if (isTerminalTaskStatus(snapshot.status)) {
+                                taskOutput =
+                                    withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            client().taskOutputSnapshot(agent.id, taskId)
+                                        }.getOrNull()
+                                    }
+                                break
+                            }
+                        }
+                        delay(500)
+                    }
+                    if (generation == requestGeneration) {
+                        refreshAgentDetails(
+                            agent = agent,
+                            generation = generation,
+                            preferredTaskId = observedTaskId,
+                            loadLatestOutput = observedTaskId != null,
+                        )
+                        if (observedTaskId == null) {
+                            taskStatus = "任务已排队，等待服务端生成 task"
+                        }
+                    }
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Throwable) {
+                    if (generation == requestGeneration) {
+                        taskStatus = "任务提交失败：${connectionError(error)}"
+                    }
+                }
+            }
+    }
 
     fun connect() {
         if (logoutInProgress) return
@@ -130,6 +318,10 @@ private fun HolonApp(context: android.content.Context) {
         agents = emptyList()
         selectedAgent = null
         conversation = null
+        toolExecutions = emptyList()
+        artifactStatus = null
+        artifactContent = null
+        clearTaskDetails(cancelSubmit = true)
         conversationCursor = null
         conversationResetRequired = false
         conversationJob?.cancel()
@@ -179,6 +371,7 @@ private fun HolonApp(context: android.content.Context) {
     }
 
     fun loadConversation(agent: AgentSummary, reset: Boolean = false) {
+        clearTaskDetails(cancelSubmit = true)
         selectedAgent = agent
         if (reset) {
             conversation = null
@@ -192,21 +385,43 @@ private fun HolonApp(context: android.content.Context) {
             scope.launch {
                 runCatching {
                     withContext(Dispatchers.IO) {
-                        client().conversationSnapshot(agent.id, limit = 30)
+                        val connection = client()
+                        val snapshot = connection.conversationSnapshot(agent.id, limit = 30)
+                        val toolIds =
+                            snapshot.turns
+                                .flatMap { turn ->
+                                    (turn.raw["tool_execution_ids"] as? JsonArray)
+                                        .orEmpty()
+                                        .mapNotNull { it.jsonPrimitive.contentOrNull }
+                                }
+                                .distinct()
+                                .takeLast(20)
+                        val tools =
+                            toolIds.mapNotNull { toolId ->
+                                runCatching {
+                                    connection.toolExecutionSnapshot(agent.id, toolId)
+                                }.getOrNull()
+                            }
+                        snapshot to tools
                     }
                 }.onSuccess { snapshot ->
                     if (generation != requestGeneration) return@onSuccess
-                    conversation = snapshot
-                    conversationCursor = snapshot.snapshotCursor
+                    val (loadedSnapshot, loadedTools) = snapshot
+                    conversation = loadedSnapshot
+                    toolExecutions = loadedTools
+                    artifactStatus = null
+                    artifactContent = null
+                    conversationCursor = loadedSnapshot.snapshotCursor
                     conversationResetRequired = false
-                    conversationStatus = "已加载 ${snapshot.turns.size} 个单元，正在接收增量…"
+                    conversationStatus = "已加载 ${loadedSnapshot.turns.size} 个单元，正在接收增量…"
+                    refreshAgentDetails(agent, generation)
                     conversationJob =
                         scope.launch {
                             runCatching {
                                 withContext(Dispatchers.IO) {
                                     client().reconnectingConversationChanges(
                                         agentId = agent.id,
-                                        after = snapshot.snapshotCursor,
+                                        after = loadedSnapshot.snapshotCursor,
                                         policy = SseReconnectPolicy(maxAttempts = 8),
                                     ).forEach { change ->
                                         when (change) {
@@ -246,13 +461,39 @@ private fun HolonApp(context: android.content.Context) {
         agents = emptyList()
         selectedAgent = null
         conversation = null
+        toolExecutions = emptyList()
+        artifactStatus = null
+        artifactContent = null
         conversationJob?.cancel()
+        clearTaskDetails(cancelSubmit = true)
         sessionCredential = ""
         scope.launch {
             runCatching { withContext(Dispatchers.IO) { client().logout() } }
             if (logoutGeneration == requestGeneration) {
                 sessionStore.clear()
                 logoutInProgress = false
+            }
+        }
+    }
+
+    fun loadArtifact(agent: AgentSummary, tool: HolonToolExecutionSnapshot, index: Int) {
+        artifactStatus = "正在加载产物…"
+        artifactContent = null
+        val generation = requestGeneration
+        scope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    client().artifact(agent.id, tool.toolExecutionId, index)
+                }
+            }.onSuccess { artifact ->
+                if (generation == requestGeneration && selectedAgent?.id == agent.id) {
+                    artifactStatus = "产物 #${artifact.artifactIndex} · ${artifact.size} bytes"
+                    artifactContent = artifact.content
+                }
+            }.onFailure { error ->
+                if (generation == requestGeneration && selectedAgent?.id == agent.id) {
+                    artifactStatus = "产物加载失败：${connectionError(error)}"
+                }
             }
         }
     }
@@ -382,6 +623,100 @@ private fun HolonApp(context: android.content.Context) {
             }
             conversationCursor?.let {
                 Text("checkpoint: $it", style = MaterialTheme.typography.labelSmall)
+            }
+            Text("工具调用", style = MaterialTheme.typography.titleMedium)
+            if (toolExecutions.isEmpty()) {
+                Text("暂无可见工具调用")
+            } else {
+                toolExecutions.forEach { tool ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Text(
+                            "${tool.toolName} · ${tool.status}",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        tool.summary?.let { summary -> Text(summary) }
+                        repeat(tool.artifactCount) { index ->
+                            TextButton(onClick = { loadArtifact(agent, tool, index) }) {
+                                Text("查看产物 #$index")
+                            }
+                        }
+                    }
+                }
+            }
+            artifactStatus?.let { Text(it) }
+            artifactContent?.let {
+                Text(it, modifier = Modifier.fillMaxWidth())
+            }
+            Spacer(Modifier.height(12.dp))
+            Text("文字任务", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = taskInput,
+                onValueChange = { taskInput = it },
+                label = { Text("输入任务") },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = taskSubmitJob?.isActive != true && taskRefreshJob?.isActive != true,
+            )
+            Button(
+                onClick = { sendTask(agent) },
+                enabled =
+                    taskInput.isNotBlank() &&
+                        taskSubmitJob?.isActive != true &&
+                        taskRefreshJob?.isActive != true,
+            ) {
+                Text(
+                    if (taskSubmitJob?.isActive == true || taskRefreshJob?.isActive == true) {
+                        "处理中…"
+                    } else {
+                        "发送任务"
+                    },
+                )
+            }
+            Text(taskStatus)
+            tasks.forEach { task ->
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                ) {
+                    Text("${task.taskId} · ${task.status}", style = MaterialTheme.typography.labelMedium)
+                    val summary = task.summary
+                    if (summary != null) {
+                        Text(summary)
+                    }
+                }
+            }
+            taskOutput?.let { output ->
+                Text("最近结果 · ${output.status}", style = MaterialTheme.typography.titleSmall)
+                val resultSummary = output.resultSummary
+                if (resultSummary != null) {
+                    Text(resultSummary)
+                }
+                val outputPreview = output.outputPreview
+                if (!outputPreview.isNullOrBlank()) {
+                    Text(outputPreview)
+                }
+            }
+            Text("WorkItem（只读）", style = MaterialTheme.typography.titleMedium)
+            if (workItems.isEmpty()) {
+                Text("暂无可见 WorkItem")
+            } else {
+                workItems.forEach { item ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Text("${item.workItemId} · ${item.state}", style = MaterialTheme.typography.labelMedium)
+                        val objective = item.objective
+                        if (objective != null) {
+                            Text(objective)
+                        }
+                    }
+                }
             }
         }
     }

@@ -22,6 +22,87 @@ public data class HolonEnqueueResult(
     public val raw: JsonObject,
 )
 
+public data class HolonTaskSnapshot(
+    public val taskId: String,
+    public val status: String,
+    public val summary: String?,
+    public val raw: JsonObject,
+) {
+    public companion object {
+        public fun from(raw: JsonObject): HolonTaskSnapshot =
+            HolonTaskSnapshot(
+                taskId = raw.string("task_id") ?: raw.string("id") ?: "unknown-task",
+                status = raw.string("status") ?: "unknown",
+                summary = raw.string("summary"),
+                raw = raw,
+            )
+    }
+}
+
+public data class HolonTaskOutputSnapshot(
+    public val taskId: String,
+    public val status: String,
+    public val outputPreview: String?,
+    public val resultSummary: String?,
+    public val raw: JsonObject,
+) {
+    public companion object {
+        public fun from(raw: JsonObject): HolonTaskOutputSnapshot =
+            HolonTaskOutputSnapshot(
+                taskId = raw.string("task_id") ?: "unknown-task",
+                status = raw.string("status") ?: "unknown",
+                outputPreview = raw.string("output_preview"),
+                resultSummary = raw.string("result_summary"),
+                raw = raw,
+            )
+    }
+}
+
+public data class HolonToolExecutionSnapshot(
+    public val toolExecutionId: String,
+    public val toolName: String,
+    public val status: String,
+    public val summary: String?,
+    public val artifactCount: Int,
+    public val raw: JsonObject,
+) {
+    public companion object {
+        public fun from(raw: JsonObject): HolonToolExecutionSnapshot {
+            val output = raw["output"] as? JsonObject
+            val result =
+                (output?.get("result") as? JsonObject)
+                    ?: ((output?.get("envelope") as? JsonObject)?.get("result") as? JsonObject)
+                    ?: output
+            val artifactCount = (result?.get("artifacts") as? JsonArray)?.size ?: 0
+            return HolonToolExecutionSnapshot(
+                toolExecutionId = raw.string("id") ?: "unknown-tool-execution",
+                toolName = raw.string("tool_name") ?: "unknown-tool",
+                status = raw.string("status") ?: "unknown",
+                summary = raw.string("summary"),
+                artifactCount = artifactCount,
+                raw = raw,
+            )
+        }
+    }
+}
+
+public data class HolonWorkItemSnapshot(
+    public val workItemId: String,
+    public val state: String,
+    public val objective: String?,
+    public val raw: JsonObject,
+) {
+    public companion object {
+        public fun from(raw: JsonObject): HolonWorkItemSnapshot =
+            HolonWorkItemSnapshot(
+                workItemId = raw.string("id") ?: raw.string("work_item_id") ?: "unknown-work-item",
+                state = raw.string("state") ?: raw.string("scheduling_state") ?: "unknown",
+                objective = raw.string("objective"),
+                raw = raw,
+            )
+    }
+}
+
 public data class HolonArtifact(
     public val artifactIndex: Int,
     public val size: Long,
