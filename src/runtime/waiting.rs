@@ -365,7 +365,7 @@ impl RuntimeHandle {
     pub(super) async fn prepare_wait_for_outcome_with_id(
         &self,
         agent_id: &str,
-        work_item_id: Option<String>,
+        mut work_item_id: Option<String>,
         wake: WaitForWakeKind,
         resource: Option<String>,
         reason: String,
@@ -392,10 +392,15 @@ impl RuntimeHandle {
                     )
                     .with_safe_context("task_id", &task_id)
                 })?;
-            // The waiter is the WorkItem settling now (resolved by the
-            // caller); the task's captured owner never changes and never
-            // decides who waits (#3124).
+            // #3124: the task's captured owner never changes and never
+            // restricts who may wait; an explicit waiter (resolved by the
+            // caller, binding-first) wins. With no explicit waiter, keep the
+            // legacy task-owner attribution so a conversation-scoped wait
+            // still hands off to the WorkItem that owns the task.
             self.validate_wait_for_task_access(agent_id, &task)?;
+            if work_item_id.is_none() {
+                work_item_id = task.work_item_id.clone();
+            }
             if task_state_reducer::is_terminal_task_status(&task.status) {
                 return self
                     .prepare_terminal_task_result(task, work_item_id, reason, condition_id)
