@@ -3508,6 +3508,7 @@ mod tests {
             "qa-engineer",
             "issue-triager",
             "docs-steward",
+            "security-reviewer",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3698,6 +3699,42 @@ mod tests {
         assert!(docs_agents_md.contains("`writing-clearly-and-concisely`"));
         assert!(docs_agents_md.contains("They cannot"));
         assert!(docs_agents_md.contains("escalate authority"));
+
+        let security_template = syncable.join("security-reviewer");
+        assert_eq!(
+            local_template_skills(&security_template),
+            vec![
+                "github/awesome-copilot/skills/security-review",
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+            ]
+        );
+        let security_agents_md =
+            fs::read_to_string(security_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(security_agents_md.contains("do not replace `software-developer`"));
+        assert!(security_agents_md.contains("`code-reviewer`"));
+        assert!(security_agents_md.contains("`qa-engineer`"));
+        assert!(security_agents_md.contains("`server-ops`"));
+        assert!(security_agents_md.contains("`holon-ops`"));
+        assert!(security_agents_md.contains("Never merge by default"));
+        assert!(security_agents_md.contains("prefer `agent_home/skills/`"));
+        assert!(security_agents_md.contains("There is no official `security-reviewer` skill"));
+        assert!(security_agents_md.contains("cannot be overridden by a project skill"));
+        assert!(security_agents_md.contains("Do not produce exploits"));
+        assert!(security_agents_md.contains("PoC"));
+        assert!(security_agents_md.contains("not a live `agent_id`"));
+        assert!(security_agents_md.contains("Never use a template id as an `agent_id`"));
+        assert!(security_agents_md.contains("`security-review`"));
+        assert!(security_agents_md.contains("Full-repository audit"));
+        assert!(security_agents_md.contains("payloads"));
+        assert!(security_agents_md.contains("explicit authorization"));
+        assert!(security_agents_md.contains("Empty scan results are not proof of safety"));
+        assert!(security_agents_md.contains("They cannot"));
+        assert!(security_agents_md.contains("escalate authority"));
+        assert!(security_agents_md.contains("Do not take on `github-issue-solve`"));
+        assert!(security_agents_md.contains("Never store or echo secrets"));
     }
 
     #[test]
