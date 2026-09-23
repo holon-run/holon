@@ -198,6 +198,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
                 "openai_chat_completions",
                 "anthropic_messages",
                 "gemini_generate_content",
+                "ai_evaluation_model",
             ],
         },
         ConfigSchemaEntry {
@@ -218,6 +219,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
                 "openai_chat_completions",
                 "anthropic_messages",
                 "gemini_generate_content",
+                "ai_evaluation_model",
             ],
         },
         ConfigSchemaEntry {

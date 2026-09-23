@@ -244,6 +244,11 @@ pub struct BuiltInModelRoutePolicy {
     default_verbosity: Option<Option<ModelVerbosity>>,
     tool_output_truncation_estimated_tokens: Option<Option<usize>>,
     capabilities: ModelCapabilityOverride,
+    /// Explicit Decision wire protocol declared by the route. Decision route
+    /// selection must never infer the protocol from the provider, model id,
+    /// endpoint, or transport.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    decision_protocol: Option<DecisionProtocol>,
     reasoning_effort_options: Option<Vec<String>>,
 }
 
@@ -317,6 +322,7 @@ impl BuiltInModelRoutePolicy {
                 ),
                 decision: None,
             },
+            decision_protocol: None,
             reasoning_effort_options: field_diff(
                 route_entry.reasoning_effort_options.clone(),
                 model_entry.reasoning_effort_options.clone(),
@@ -724,10 +730,12 @@ impl BuiltInModelCatalog {
                     .entry(definition.legacy_provider)
                     .or_insert_with(|| route_ref.clone());
             }
+            // A model entry always registers its own route with an empty policy
+            // diff, so an explicit definition may refine that placeholder route
+            // while any other duplicate route stays a hard error.
+            let replaced = route_entries.insert(route_ref.clone(), definition.policy);
             assert!(
-                route_entries
-                    .insert(route_ref.clone(), definition.policy)
-                    .is_none(),
+                replaced.is_none_or(|policy| policy == BuiltInModelRoutePolicy::default()),
                 "duplicate built-in route {}",
                 route_ref.as_string()
             );
@@ -1504,11 +1512,17 @@ impl BuiltInModelCatalog {
                 &mut evidence,
             );
         }
-        let decision_capable = override_config
+        let decision_declared = override_config
             .and_then(|value| value.capabilities.as_ref())
             .and_then(|value| value.decision)
+            .or_else(|| route_builtin.and_then(|route| route.capabilities.decision))
             .unwrap_or(false);
-        let decision_protocol = override_config.and_then(|value| value.decision_protocol);
+        let decision_protocol = override_config
+            .and_then(|value| value.decision_protocol)
+            .or_else(|| route_builtin.and_then(|route| route.decision_protocol));
+        // Decision requires an explicit capability opt-in *and* an explicit
+        // protocol; an unknown protocol must never fall back to a guess.
+        let decision_capable = decision_declared && decision_protocol.is_some();
         let reasoning_effort_options = select_field(
             &mut evidence,
             ModelMetadataField::ReasoningEffortOptions,
@@ -1900,6 +1914,29 @@ mod tests {
         assert_eq!(policy.prompt_budget_estimated_tokens, 258_400);
         assert_eq!(policy.compaction_trigger_estimated_tokens, 232_560);
         assert_eq!(policy.source, ModelMetadataSource::BuiltInCatalog);
+    }
+
+    #[test]
+    fn typesafe_route_declares_decision_capability_and_jev_protocol() {
+        let catalog = BuiltInModelCatalog::new();
+        let route_ref = ModelRouteRef::new(
+            provider_id("typesafe"),
+            ProviderEndpointId::parse("default").expect("valid endpoint"),
+            "jev-latest",
+        );
+        let policy = catalog.resolve_route_policy(
+            &route_ref,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(policy.decision_protocol, Some(DecisionProtocol::Jev));
+        assert!(policy.decision_capable);
+        assert!(!policy.agent_turn);
+        assert!(!crate::config::ModelRouteCapability::Turn.model_supports(&policy));
+        assert!(crate::config::ModelRouteCapability::Decision.model_supports(&policy));
     }
 
     #[test]

@@ -77,6 +77,15 @@ const TRANSPORT_DEFINITIONS: &[ProviderTransportDefinition] = &[
         },
         builder: build_gemini_provider,
     },
+    ProviderTransportDefinition {
+        kind: ProviderTransportKind::AiEvaluationModel,
+        wire_name: "ai_evaluation_model",
+        capabilities: TransportCapabilities {
+            image_input: false,
+            image_output: false,
+        },
+        builder: build_ai_evaluation_model_provider,
+    },
 ];
 
 pub(crate) fn provider_transport_definitions() -> &'static [ProviderTransportDefinition] {
@@ -105,6 +114,20 @@ pub(crate) fn build_provider_for_route(
     route: &ResolvedModelRoute,
 ) -> Result<Arc<dyn AgentProvider>> {
     (provider_transport_definition(route.provider_config().transport).builder)(home_dir, route)
+}
+
+/// The evaluation-model wire family only serves Decision requests. Agent turns
+/// select their provider from this registry, so the missing builder is the
+/// explicit boundary rather than an implicit failure somewhere deeper.
+fn build_ai_evaluation_model_provider(
+    _home_dir: &Path,
+    route: &ResolvedModelRoute,
+) -> Result<Arc<dyn AgentProvider>> {
+    anyhow::bail!(
+        "provider {} transport {} serves Decision requests only and cannot run agent turns",
+        route.provider_config().id.as_str(),
+        ProviderTransportKind::AiEvaluationModel.as_str()
+    )
 }
 
 fn openai_compaction_policy(route: &ResolvedModelRoute) -> OpenAiCompactionPolicy {
@@ -199,6 +222,7 @@ mod tests {
             ProviderTransportKind::OpenAiChatCompletions,
             ProviderTransportKind::AnthropicMessages,
             ProviderTransportKind::GeminiGenerateContent,
+            ProviderTransportKind::AiEvaluationModel,
         ];
         let definitions = provider_transport_definitions();
         assert_eq!(definitions.len(), expected.len());
@@ -238,7 +262,7 @@ mod tests {
                 assert!(catalog_registrations.insert(registration));
             }
         }
-        assert_eq!(catalog_registrations.len(), 9);
+        assert_eq!(catalog_registrations.len(), 10);
 
         let registry = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
         let materialized = definitions
