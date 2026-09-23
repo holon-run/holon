@@ -1233,6 +1233,37 @@ mod tests {
     }
 
     #[test]
+    fn latest_non_open_work_items_use_agent_updated_index() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let connection = db.connection()?;
+        let mut statement = connection.prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT payload_json
+             FROM work_items
+             WHERE agent_id = 'agent-a' AND state != 'open'
+             ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
+             LIMIT 128",
+        )?;
+        let query_plan = statement
+            .query_map([], |row| row.get::<_, String>(3))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert!(
+            query_plan
+                .iter()
+                .any(|detail| detail.contains("idx_work_items_agent_updated")),
+            "latest non-open work item query must use the agent/order index: {query_plan:?}"
+        );
+        assert!(
+            query_plan
+                .iter()
+                .all(|detail| !detail.contains("TEMP B-TREE")),
+            "latest non-open work item query must not sort the agent backlog: {query_plan:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn release_baseline_failure_rolls_back_to_published_floor() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         {
