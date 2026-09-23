@@ -1,16 +1,19 @@
 # models.dev refresh summary
 
-- Supplement models: 32 (drafted this run: 5, retained: 27, removed: 0)
-- Deferred candidates: 165 (not auto-drafted; see below)
+- Supplement models: 40 (drafted this run: 8, retained: 32, removed: 0)
+- Deferred candidates: 166 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `dashscope/kimi-k3` — Kimi K3 (context 1048576, reasoning true, image input true)
-- `mistral/zai-glm-5-3` — GLM-5.3 (context 1000000, reasoning true, image input false)
-- `volcengine/glm-5-3-flash-260828` — GLM-5.3-Flash (context 1000000, reasoning true, image input true)
-- `zai/glm-5.3-flashx` — GLM-5.3-FlashX (context 1000000, reasoning true, image input true)
-- `bigmodel/glm-5.3-flashx` — GLM-5.3-FlashX (context 1000000, reasoning true, image input true)
+- `anthropic/claude-opus-5-5` — Claude Opus 5.5 (context 1000000, reasoning true, image input true)
+- `openai/gpt-6-luna` — GPT-6 Luna (context 1050000, reasoning true, image input true)
+- `openai/gpt-6-sol` — GPT-6 Sol (context 1050000, reasoning true, image input true)
+- `stepfun/step-5-preview` — Step 5 Preview (context 1000000, reasoning true, image input true)
+- `xai/grok-4.7` — Grok 4.7 (context 500000, reasoning true, image input true)
+- `xiaomi/mimo-v2.6-flash` — MiMo-V2.6-Flash (context 1048576, reasoning true, image input true)
+- `xiaomi/mimo-v2.6-pro` — MiMo-V2.6-Pro (context 1048576, reasoning true, image input true)
+- `xiaomi/mimo-v2.6-pro-ultraspeed` — MiMo-V2.6-Pro-UltraSpeed (context 1048576, reasoning true, image input true)
 
 ## Deferred (needs human decision or outside policy)
 
@@ -54,4 +57,4 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 125 more (see `holon models-dev audit`)
+- … and 126 more (see `holon models-dev audit`)

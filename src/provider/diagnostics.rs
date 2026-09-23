@@ -847,6 +847,39 @@ mod tests {
     }
 
     #[test]
+    fn resolved_provider_models_includes_codex_sol_contract() {
+        let fixture = test_config(Some("openai-key"));
+        let models = resolved_provider_models(&fixture.config, "openai-codex");
+        let sol = models
+            .iter()
+            .find(|entry| entry.model_ref == "openai-codex/gpt-6-sol")
+            .expect("Codex Sol model entry");
+
+        assert_eq!(sol.provider, "openai-codex");
+        assert_eq!(sol.id, "gpt-6-sol");
+        assert_eq!(sol.metadata_source, "built_in_catalog");
+        assert_eq!(sol.policy.context_window_tokens, Some(272_000));
+        assert!(sol.policy.capabilities.agent_turn);
+        assert!(sol.policy.capabilities.image_input);
+        assert!(sol.policy.capabilities.image_generation);
+        assert!(sol.policy.capabilities.interactive_exec);
+        assert!(sol.policy.capabilities.supports_reasoning);
+        assert_eq!(
+            sol.policy.reasoning_effort_options,
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+        let reasoning_effort = sol
+            .parameter_contracts
+            .iter()
+            .find(|parameter| parameter.name == "reasoning_effort")
+            .expect("resolved reasoning effort contract");
+        assert_eq!(
+            reasoning_effort.allowed_values,
+            vec!["low", "medium", "high", "xhigh", "max"]
+        );
+    }
+
+    #[test]
     fn resolved_model_projection_preserves_canonical_provider_endpoint_and_route_provider() {
         let mut fixture = test_config(Some("openai-key"));
         let route_provider = ProviderId::parse("volcengine").unwrap();

@@ -1762,7 +1762,9 @@ fn reasoning_effort_options(
     }
 
     let options = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
-        ("openai-codex", "gpt-6-astra") => &["low", "medium", "high", "xhigh", "max"][..],
+        ("openai-codex", "gpt-6-astra" | "gpt-6-sol") => {
+            &["low", "medium", "high", "xhigh", "max"][..]
+        }
         ("openai-codex", "gpt-5.6-sol" | "gpt-5.6-terra") => {
             &["low", "medium", "high", "xhigh", "max"][..]
         }
@@ -2290,6 +2292,30 @@ mod tests {
             .to_string()
             .contains("orchestration semantics"));
 
+        let codex_sol = catalog.resolve_policy(
+            &ModelRef::parse("openai-codex/gpt-6-sol").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(codex_sol.display_name, "GPT-6-Sol (Codex)");
+        assert_eq!(codex_sol.context_window_tokens, Some(272_000));
+        assert_eq!(codex_sol.prompt_budget_estimated_tokens, 258_400);
+        assert_eq!(codex_sol.runtime_max_output_tokens, 8192);
+        assert_eq!(codex_sol.verbosity, Some(ModelVerbosity::Low));
+        assert!(codex_sol.capabilities.agent_turn);
+        assert!(codex_sol.capabilities.image_input);
+        assert!(codex_sol.capabilities.image_generation);
+        assert!(codex_sol.capabilities.interactive_exec);
+        assert!(codex_sol.capabilities.supports_reasoning);
+        assert_eq!(
+            codex_sol.reasoning_effort_options,
+            ["low", "medium", "high", "xhigh", "max"]
+        );
+        assert!(codex_sol.validate_reasoning_effort("max").is_ok());
+
         let openai_astra = catalog.resolve_policy(
             &ModelRef::parse("openai/gpt-6-astra").unwrap(),
             &HashMap::new(),
@@ -2312,6 +2338,24 @@ mod tests {
             openai_astra.source,
             ModelMetadataSource::ModelsDevSupplement
         );
+
+        let openai_sol = catalog.resolve_policy(
+            &ModelRef::parse("openai/gpt-6-sol").unwrap(),
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &base_context(),
+            8192,
+        );
+        assert_eq!(openai_sol.display_name, "GPT-6 Sol");
+        assert_eq!(openai_sol.context_window_tokens, Some(1_050_000));
+        assert_eq!(openai_sol.runtime_max_output_tokens, 128_000);
+        assert_eq!(
+            openai_sol.reasoning_effort_options,
+            ["none", "low", "medium", "high", "xhigh", "max"]
+        );
+        assert_eq!(openai_sol.source, ModelMetadataSource::ModelsDevSupplement);
+
         let codex_55 = catalog.resolve_policy(
             &ModelRef::parse("openai-codex/gpt-5.5").unwrap(),
             &HashMap::new(),

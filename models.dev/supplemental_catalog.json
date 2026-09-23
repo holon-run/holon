@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "0b8f08a9c83d301f8e28fc901d63f87f18824065187096b801274e72fb7ba3db",
-  "adapter_version": "0.44.1 (ab261d4)",
+  "upstream_revision": "984c34c7a7da6854221edcea2d7f979808aa90adf94c43cf4b514df32809d700",
+  "adapter_version": "0.44.1 (a34544ee)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -15,6 +15,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -42,6 +43,35 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "anthropic/claude-opus-5-5",
+      "display_name": "Claude Opus 5.5",
+      "description": "Claude model for long-running agentic coding and knowledge work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -69,6 +99,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -94,6 +125,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -119,6 +151,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -144,6 +177,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -169,6 +203,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -193,6 +228,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -217,6 +253,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": true,
@@ -241,6 +278,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -267,6 +305,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -287,6 +326,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -313,6 +353,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -338,6 +379,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -363,6 +405,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -388,6 +431,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -414,6 +458,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -439,6 +484,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -464,6 +510,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -492,6 +539,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -499,6 +547,64 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "openai/gpt-6-luna",
+      "display_name": "GPT-6 Luna",
+      "description": "OpenAI's most efficient model for focused, high-volume tasks",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "openai/gpt-6-sol",
+      "display_name": "GPT-6 Sol",
+      "description": "OpenAI model for complex coding and agentic workflows",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
         "low",
         "medium",
         "high",
@@ -519,6 +625,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -535,6 +642,32 @@
       "source": "models_dev_supplement"
     },
     {
+      "model_ref": "stepfun/step-5-preview",
+      "display_name": "Step 5 Preview",
+      "description": "StepFun's next-generation flagship base model for coding and professional knowledge work, with native text, image, and video input and a 1M-token context window",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 1000000,
+      "max_output_tokens_upper_limit": 1000000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
       "model_ref": "volcengine/deepseek-v4-flash-ga-260731",
       "display_name": "DeepSeek V4 Flash 0731",
       "description": "Official DeepSeek V4 Flash release with enhanced agentic capabilities and integrated DSpark speculative decoding",
@@ -546,6 +679,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -572,6 +706,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -598,6 +733,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -627,6 +763,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -656,6 +793,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -681,6 +819,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -710,6 +849,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
@@ -736,6 +876,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -761,6 +902,34 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "xai/grok-4.7",
+      "display_name": "Grok 4.7",
+      "description": "xAI's frontier model for long-running agents, coding, knowledge work, and visual projects",
+      "context_window_tokens": 500000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 475000,
+      "default_max_output_tokens": 500000,
+      "max_output_tokens_upper_limit": 500000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
@@ -787,8 +956,72 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "xiaomi/mimo-v2.6-flash",
+      "display_name": "MiMo-V2.6-Flash",
+      "description": "MiMo Flash model for multimodal coding agents and long-context automation",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "xiaomi/mimo-v2.6-pro",
+      "display_name": "MiMo-V2.6-Pro",
+      "description": "MiMo Pro model for multimodal coding agents and long-context automation",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "xiaomi/mimo-v2.6-pro-ultraspeed",
+      "display_name": "MiMo-V2.6-Pro-UltraSpeed",
+      "description": "MiMo pro model for strong multimodal reasoning and agent execution",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
         "image_generation": false,
         "supports_reasoning": true,
         "interactive_exec": false
@@ -807,6 +1040,7 @@
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
+        "agent_turn": true,
         "parallel_tool_calls": false,
         "image_input": true,
         "image_generation": false,
