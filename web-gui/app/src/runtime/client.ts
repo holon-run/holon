@@ -312,7 +312,7 @@ interface RuntimeAvailableModelDto {
     supported_parameters?: string[];
     reasoning_effort_options?: string[];
     decision_capable?: boolean;
-    decision_protocol?: "jev" | "openai_compatible";
+    decision_protocol?: "jev" | "open_ai_compatible";
     capabilities?: {
       image_input?: boolean;
       image_generation?: boolean;
@@ -341,7 +341,7 @@ interface ModelAvailabilityDto {
     supported_parameters?: string[];
     reasoning_effort_options?: string[];
     decision_capable?: boolean;
-    decision_protocol?: "jev" | "openai_compatible";
+    decision_protocol?: "jev" | "open_ai_compatible";
     capabilities?: {
       image_input?: boolean;
       image_generation?: boolean;
