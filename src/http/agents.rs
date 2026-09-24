@@ -15,6 +15,15 @@ pub struct HandshakeResponse {
     pub auth: HandshakeAuth,
     pub capabilities: Vec<String>,
     pub runtime: HandshakeRuntime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<HandshakeLimits>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct HandshakeLimits {
+    pub prompt_body_max_bytes: u64,
+    pub prompt_image_attachment_max_bytes: u64,
+    pub prompt_file_attachment_max_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -242,6 +251,10 @@ fn handshake_capabilities(state: &AppState) -> Vec<&'static str> {
         "agents.state",
         "agents.events",
         "agents.control",
+        "auth.native-session.v1",
+        "control.prompt-idempotency.v1",
+        "control.prompt-attachments.v1",
+        "brief.attachments.v1",
         "tui.remote",
     ];
     let verification = load_observer_sync_verification(state);
@@ -312,6 +325,13 @@ pub async fn handshake(
             listen: config.http_addr.to_string(),
             advertise_url: state.advertise_url.clone(),
         },
+        limits: Some(HandshakeLimits {
+            prompt_body_max_bytes: super::CONTROL_PROMPT_BODY_LIMIT_BYTES as u64,
+            prompt_image_attachment_max_bytes:
+                super::control::MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES,
+            prompt_file_attachment_max_bytes:
+                super::control::MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES,
+        }),
     }))
 }
 

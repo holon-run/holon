@@ -3,9 +3,10 @@
 This directory contains the native Android client implementation.
 
 `:sdk` is a Kotlin/JVM library that keeps generated wire models separate from
-stable client-facing domain models. `:app` is a minimal Compose application for
-the development connection flow; it does not provide production login, signing,
-or distribution configuration.
+stable client-facing domain models. `:app` is a Compose application with native
+session login, recent conversations, Agent browsing, offline caches, a durable
+prompt outbox, attachments, and brief/artifact viewing. Store signing and public
+distribution configuration are intentionally out of scope.
 
 The generated transport sources remain owned by
 `packages/client-wire-kotlin`. Do not copy or edit those models in this
@@ -30,12 +31,15 @@ cd apps/android
 ./gradlew :app:assembleDebug :app:assembleRelease :sdk:test
 ```
 
-The debug app defaults to `http://10.0.2.2:7878/api` for an Android emulator
-connecting to a daemon on the development host. Only the debug build permits
-cleartext traffic to `10.0.2.2`. Its session credential field accepts an
-already-exchanged session credential and stores it using Android Keystore;
-leaving it blank does not create a session. The release build does not expose
-session injection or cleartext traffic and cannot log in yet.
+The debug app defaults to `http://10.0.2.2:7878/api` on an Android emulator and
+`http://127.0.0.1:7878/api` on a physical device. For a USB-connected device,
+run `adb reverse tcp:7878 tcp:7878` before connecting. Only the debug build
+allows loopback HTTP without confirmation. Both debug and release builds allow
+an explicitly confirmed HTTP address for self-hosted LAN and encrypted-tunnel
+deployments. The login screen warns that HTTP itself does not encrypt traffic.
+Session login exchanges a local auth or one-time bootstrap token for a revocable
+native session. Only the session is encrypted with Android Keystore; the input
+token is not persisted.
 
 `HolonHttpClient` accepts the API base URL. For a directly connected daemon,
 use an address ending in `/api`; reverse proxies may supply another API prefix.

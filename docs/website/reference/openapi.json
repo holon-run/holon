@@ -5689,6 +5689,14 @@
             },
             "type": "array"
           },
+          "client_request_id": {
+            "default": null,
+            "description": "Stable caller-generated identity used to safely retry a prompt after\n the client loses the HTTP response. Older clients may omit it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "text": {
             "type": "string"
           },
@@ -8984,6 +8992,12 @@
           "agent_id": {
             "type": "string"
           },
+          "disposition": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "message_id": {
             "type": "string"
           },
@@ -9228,6 +9242,31 @@
         ],
         "type": "object"
       },
+      "HandshakeLimits": {
+        "properties": {
+          "prompt_body_max_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt_file_attachment_max_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "prompt_image_attachment_max_bytes": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "prompt_body_max_bytes",
+          "prompt_image_attachment_max_bytes",
+          "prompt_file_attachment_max_bytes"
+        ],
+        "type": "object"
+      },
       "HandshakeProtocol": {
         "properties": {
           "name": {
@@ -9255,6 +9294,16 @@
               "type": "string"
             },
             "type": "array"
+          },
+          "limits": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/HandshakeLimits"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "ok": {
             "type": "boolean"

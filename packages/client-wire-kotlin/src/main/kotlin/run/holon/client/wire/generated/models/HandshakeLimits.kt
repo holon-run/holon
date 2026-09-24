@@ -31,26 +31,22 @@ import kotlinx.serialization.Contextual
 /**
  *
  *
- * @param agentId
- * @param messageId
- * @param ok
- * @param disposition
+ * @param promptBodyMaxBytes
+ * @param promptFileAttachmentMaxBytes
+ * @param promptImageAttachmentMaxBytes
  */
 @Serializable
 
-data class EnqueueResponse (
+data class HandshakeLimits (
 
-    @SerialName(value = "agent_id")
-    val agentId: kotlin.String,
+    @SerialName(value = "prompt_body_max_bytes")
+    val promptBodyMaxBytes: kotlin.Int,
 
-    @SerialName(value = "message_id")
-    val messageId: kotlin.String,
+    @SerialName(value = "prompt_file_attachment_max_bytes")
+    val promptFileAttachmentMaxBytes: kotlin.Int,
 
-    @SerialName(value = "ok")
-    val ok: kotlin.Boolean,
-
-    @SerialName(value = "disposition")
-    val disposition: kotlin.String? = null
+    @SerialName(value = "prompt_image_attachment_max_bytes")
+    val promptImageAttachmentMaxBytes: kotlin.Int
 
 ) {
 

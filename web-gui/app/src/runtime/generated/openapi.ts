@@ -4054,6 +4054,12 @@ export interface components {
         ControlPromptRequest: {
             /** @default [] */
             attachments: components["schemas"]["ControlPromptAttachment"][];
+            /**
+             * @description Stable caller-generated identity used to safely retry a prompt after
+             *      the client loses the HTTP response. Older clients may omit it.
+             * @default null
+             */
+            client_request_id: string | null;
             text: string;
             /** @default null */
             work_item_id: string | null;
@@ -4904,6 +4910,7 @@ export interface components {
         /** EnqueueResponse */
         EnqueueResponse: {
             agent_id: string;
+            disposition?: string | null;
             message_id: string;
             ok: boolean;
         };
@@ -4978,6 +4985,14 @@ export interface components {
             mode: string;
             required: boolean;
         };
+        HandshakeLimits: {
+            /** Format: uint64 */
+            prompt_body_max_bytes: number;
+            /** Format: uint64 */
+            prompt_file_attachment_max_bytes: number;
+            /** Format: uint64 */
+            prompt_image_attachment_max_bytes: number;
+        };
         HandshakeProtocol: {
             name: string;
             /** Format: uint32 */
@@ -4987,6 +5002,7 @@ export interface components {
         HandshakeResponse: {
             auth: components["schemas"]["HandshakeAuth"];
             capabilities: string[];
+            limits?: components["schemas"]["HandshakeLimits"] | null;
             ok: boolean;
             protocol: components["schemas"]["HandshakeProtocol"];
             runtime: components["schemas"]["HandshakeRuntime"];

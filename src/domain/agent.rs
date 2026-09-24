@@ -322,6 +322,8 @@ pub struct AgentMessageDeliveryRecord {
 pub struct AgentMessageDeliveryReceipt {
     pub delivery_id: String,
     pub target_agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     pub outcome: AgentMessageDeliveryOutcome,
     pub state: AgentMessageDeliveryState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -342,6 +344,7 @@ impl AgentMessageDeliveryRecord {
         AgentMessageDeliveryReceipt {
             delivery_id: self.delivery_id.clone(),
             target_agent_id: self.target_agent_id.clone(),
+            message_id: self.message_id.clone(),
             outcome: self.outcome,
             state: self.state,
             accepted_at: self.accepted_at,

@@ -11,6 +11,12 @@ public data class AgentSummary(
     val effectiveModel: String,
     val pending: Int,
     val currentRunId: String?,
+    val schedulingPosture: String = "unknown",
+    val postureReason: String? = null,
+    val waitingReason: String? = null,
+    val currentWorkItemId: String? = null,
+    val workspaceLabel: String? = null,
+    val latestBrief: HolonLatestBrief? = null,
 )
 
 internal fun AgentListEntry.toAgentSummary(): AgentSummary =
@@ -23,4 +29,9 @@ internal fun AgentListEntry.toAgentSummary(): AgentSummary =
         effectiveModel = model.effectiveModel,
         pending = pending ?: 0,
         currentRunId = currentRunId,
+        schedulingPosture = schedulingPosture?.posture?.value ?: "unknown",
+        postureReason = schedulingPosture?.reason,
+        waitingReason = waitingReason?.value,
+        currentWorkItemId = schedulingPosture?.workItemId,
+        workspaceLabel = activeWorkspaceEntry?.workspaceAnchor,
     )

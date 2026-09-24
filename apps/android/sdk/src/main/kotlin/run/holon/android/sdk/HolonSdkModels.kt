@@ -7,6 +7,54 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 
+public data class HolonCurrentUser(
+    public val userId: String,
+    public val displayName: String?,
+    public val authMethod: String,
+)
+
+public data class HolonLatestBrief(
+    public val briefId: String,
+    public val createdAt: String,
+    public val preview: String,
+    public val createdEventSeq: Long?,
+)
+
+public data class HolonRosterSnapshot(
+    public val runtimeId: String,
+    public val eventLogEpoch: String,
+    public val visibilityScopeId: String,
+    public val agents: List<AgentSummary>,
+)
+
+public data class HolonPromptAttachment(
+    public val kind: String,
+    public val name: String?,
+    public val mediaType: String,
+    public val dataBase64: String,
+    public val size: Long,
+)
+
+public data class HolonPromptReceipt(
+    public val agentId: String,
+    public val messageId: String,
+    public val disposition: String,
+)
+
+public data class HolonPendingInput(
+    public val messageId: String,
+    public val state: String,
+    public val preview: String,
+    public val createdAt: String?,
+)
+
+public data class HolonTurnInput(
+    public val messageId: String,
+    public val preview: String,
+    public val actorDisplayName: String?,
+    public val presentationClass: String?,
+)
+
 /** A forward-compatible JSON response from a Holon route. */
 public data class HolonJsonDocument(
     public val raw: JsonElement,
@@ -109,9 +157,25 @@ public data class HolonArtifact(
     public val content: String,
 )
 
+public data class HolonDownloadedArtifact(
+    public val bytes: ByteArray,
+    public val mediaType: String,
+    public val fileName: String,
+)
+
 public data class HolonConversationTurn(
     public val id: String,
     public val summary: String,
+    public val presentationClass: String?,
+    public val inputs: List<HolonTurnInput>,
+    public val executionKind: String,
+    public val terminalOutcome: String?,
+    public val resultKind: String,
+    public val attentionKind: String?,
+    public val briefIds: List<String>,
+    public val startedAt: String?,
+    public val completedAt: String?,
+    public val settled: Boolean,
     public val raw: JsonObject,
 )
 
@@ -119,6 +183,10 @@ public data class HolonConversationSnapshot(
     public val raw: JsonObject,
     public val snapshotCursor: String?,
     public val turns: List<HolonConversationTurn>,
+    public val pendingInputs: List<HolonPendingInput>,
+    public val runtimeId: String?,
+    public val eventLogEpoch: String?,
+    public val hasMore: Boolean,
 ) {
     public companion object {
         public fun from(document: HolonJsonDocument): HolonConversationSnapshot {
@@ -134,15 +202,83 @@ public data class HolonConversationSnapshot(
                         summary =
                             turn.stringValue("title")
                                 ?: turn.stringValue("summary")
-                                ?: turn.stringValue("status")
-                                ?: turn.toString(),
+                                ?: when ((turn["result"] as? JsonObject).stringValue("kind")) {
+                                    "available" -> "Work result available"
+                                    "failure" -> "Work failed"
+                                    else -> turn.stringValue("status") ?: "Work in progress"
+                                },
+                        presentationClass = turn.stringValue("presentation_class"),
+                        inputs =
+                            (turn["inputs"] as? JsonArray).orEmpty().mapNotNull { inputElement ->
+                                val input = inputElement as? JsonObject ?: return@mapNotNull null
+                                HolonTurnInput(
+                                    messageId = input.stringValue("message_id") ?: return@mapNotNull null,
+                                    preview = input.stringValue("preview").orEmpty().displayTextPreview(),
+                                    actorDisplayName = input.stringValue("actor_display_name"),
+                                    presentationClass = input.stringValue("presentation_class"),
+                                )
+                            },
+                        executionKind = (turn["execution"] as? JsonObject).stringValue("kind") ?: "unknown",
+                        terminalOutcome = (turn["execution"] as? JsonObject).stringValue("outcome"),
+                        resultKind = (turn["result"] as? JsonObject).stringValue("kind") ?: "unknown",
+                        attentionKind = (turn["attention"] as? JsonObject).stringValue("kind"),
+                        briefIds =
+                            (turn["brief_ids"] as? JsonArray).orEmpty().mapNotNull {
+                                it.jsonPrimitive.contentOrNull
+                            },
+                        startedAt = turn.stringValue("started_at"),
+                        completedAt = turn.stringValue("completed_at"),
+                        settled = turn["settled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
                         raw = turn,
                     )
                 }
-            return HolonConversationSnapshot(raw, raw.stringValue("snapshot_cursor"), turns)
+            val pendingInputs =
+                (raw["pending_inputs"] as? JsonArray).orEmpty().mapNotNull { inputElement ->
+                    val input = inputElement as? JsonObject ?: return@mapNotNull null
+                    HolonPendingInput(
+                        messageId = input.stringValue("message_id") ?: return@mapNotNull null,
+                        state = input.stringValue("state") ?: "unknown",
+                        preview = input.stringValue("preview").orEmpty(),
+                        createdAt = input.stringValue("created_at"),
+                    )
+                }
+            return HolonConversationSnapshot(
+                raw = raw,
+                snapshotCursor = raw.stringValue("snapshot_cursor"),
+                turns = turns,
+                pendingInputs = pendingInputs,
+                runtimeId = raw.stringValue("runtime_id"),
+                eventLogEpoch = raw.stringValue("event_log_epoch"),
+                hasMore = raw["has_more"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+            )
         }
     }
 }
+
+public data class HolonConversationActivity(
+    public val id: String,
+    public val kind: String,
+    public val summary: String,
+    public val eventSeq: Long?,
+)
+
+public data class HolonBriefAttachment(
+    public val kind: String,
+    public val name: String,
+    public val uri: String?,
+    public val value: JsonElement?,
+)
+
+public data class HolonBrief(
+    public val id: String,
+    public val agentId: String,
+    public val workItemId: String?,
+    public val kind: String,
+    public val createdAt: String,
+    public val text: String,
+    public val attachments: List<HolonBriefAttachment>,
+    public val relatedTaskId: String?,
+)
 
 public sealed interface HolonConversationStreamEvent {
     public data class BatchBegin(
@@ -205,6 +341,18 @@ private fun JsonObject?.stringValue(name: String): String? =
 
 private fun JsonObject?.longValue(name: String): Long? =
     this?.get(name)?.jsonPrimitive?.longOrNull
+
+private fun String.displayTextPreview(): String {
+    if (!trimStart().startsWith('{')) return this
+    val objectValue = runCatching {
+        HolonWire.json.parseToJsonElement(this) as? JsonObject
+    }.getOrNull() ?: return this
+    return if (objectValue.stringValue("type") == "text") {
+        objectValue.stringValue("text") ?: this
+    } else {
+        this
+    }
+}
 
 public data class HolonSseEvent(
     public val event: String = "message",

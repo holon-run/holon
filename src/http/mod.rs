@@ -1272,6 +1272,13 @@ pub(crate) enum ControlActor {
 }
 
 impl ControlActor {
+    pub(crate) fn principal_id(&self) -> String {
+        match self {
+            ControlActor::User { user_id, .. } => user_id.clone(),
+            ControlActor::LocalControl => "control".to_string(),
+        }
+    }
+
     /// Build the operator message origin for this actor. The display name is
     /// snapshotted at send time so persisted messages stay self-contained.
     pub(crate) fn operator_origin(&self) -> MessageOrigin {
@@ -1310,7 +1317,22 @@ pub(crate) fn control_actor(headers: &HeaderMap, state: &AppState) -> Result<Con
     if state.uses_trusted_local_admission() {
         return Ok(ControlActor::LocalControl);
     }
-    if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
+    let config = state.host.config();
+    if config.auth.mode == crate::authentication::AuthenticationMode::Local {
+        // Local auth always attributes work to the shared control identity.
+        // A supplied session still has to be active; only the configured
+        // static token bypasses session lookup.
+        if headers.contains_key(AUTHORIZATION) || cookie_session_credential(headers).is_some() {
+            let uses_static_token = bearer_session_credential(headers).as_deref()
+                == config.control_token.as_deref()
+                && cookie_session_credential(headers).is_none();
+            if !uses_static_token {
+                authenticate_session(headers, state)?;
+            }
+        }
+        return Ok(ControlActor::LocalControl);
+    }
+    if headers.contains_key(AUTHORIZATION) || cookie_session_credential(headers).is_some() {
         let session = authenticate_session(headers, state)?;
         let user = state
             .host

@@ -106,6 +106,8 @@ pub(crate) struct EnqueueResponse {
     pub(crate) ok: bool,
     pub(crate) agent_id: String,
     pub(crate) message_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) disposition: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -137,6 +139,10 @@ pub struct ControlPromptRequest {
     pub work_item_id: Option<String>,
     #[serde(default)]
     pub attachments: Vec<ControlPromptAttachment>,
+    /// Stable caller-generated identity used to safely retry a prompt after
+    /// the client loses the HTTP response. Older clients may omit it.
+    #[serde(default)]
+    pub client_request_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
