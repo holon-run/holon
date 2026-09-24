@@ -17,6 +17,26 @@ describe("shared Markdown references", () => {
     expect(classifyReference("/tmp/literal%2520.md")).toMatchObject({ reference: { absolutePath: "/tmp/literal%20.md" } });
     expect(classifyReference("/tmp/bad%xx").kind).toBe("error");
   });
+  it("normalizes local file URLs into absolute paths without weakening remote-host checks", () => {
+    expect(classifyReference("file:///tmp/report%20draft%2520%23.md#section%201")).toEqual({
+      kind: "file",
+      reference: { type: "absolute_path", absolutePath: "/tmp/report draft%20#.md" },
+      fragment: "section 1",
+    });
+    expect(classifyReference("file://localhost/tmp/report.md")).toEqual({
+      kind: "file",
+      reference: { type: "absolute_path", absolutePath: "/tmp/report.md" },
+      fragment: undefined,
+    });
+    for (const value of [
+      "file://nas/share/report.md",
+      "file://127.0.0.1/tmp/report.md",
+      "file://user@localhost/tmp/report.md",
+      "file:///tmp/report.md?download=1",
+      "file:///tmp/bad%xx.md",
+      "file:///tmp/bad%00.md",
+    ]) expect(classifyReference(value).kind).toBe("error");
+  });
   it("requires full document provenance and does not reinterpret absolute paths", () => {
     expect(classifyReference("./a.md")).toMatchObject({ kind: "error", message: "Missing file location context" });
     expect(classifyReference("../a.md", base)).toMatchObject({ reference: { type: "relative_path", relativePath: "../a.md", baseFile: base } });
@@ -26,7 +46,7 @@ describe("shared Markdown references", () => {
   it("keeps historical URIs intact and rejects unsupported queries and schemes", () => {
     const uri = "workspace://ws/a%2520.md?root=worktree%3Aone#part";
     expect(classifyReference(uri)).toMatchObject({ reference: { type: "workspace_uri", workspaceUri: uri }, fragment: "part" });
-    for (const value of ["a.md?download=1", "workspace://ws/a?root=x&other=y", "workspace://ws/a?root=x&root=y", "file:///tmp/a", "javascript:alert(1)", "C:\\foo"]) expect(classifyReference(value, base).kind).toBe("error");
+    for (const value of ["a.md?download=1", "workspace://ws/a?root=x&other=y", "workspace://ws/a?root=x&root=y", "javascript:alert(1)", "C:\\foo"]) expect(classifyReference(value, base).kind).toBe("error");
     for (const value of ["https://example.com/a?b#c", "http://example.com", "mailto:user@example.com"]) expect(classifyReference(value).kind).toBe("external");
   });
   it("collects links, images, reference-style links and literal inline code, not prose or fenced code", () => {
@@ -35,6 +55,15 @@ describe("shared Markdown references", () => {
     expect(entries).toHaveLength(4);
     expect(entries.map((entry) => entry.value)).toContainEqual({ kind: "file", reference: { type: "absolute_path", absolutePath: "/tmp/空 格%20#?.md" }, fragment: undefined });
     expect(collectMarkdownReferences('`./child.md`')).toHaveLength(0);
+  });
+  it("collects file URLs from Markdown links and inline code", () => {
+    const entries = [...collectMarkdownReferences(
+      "[report](file:///tmp/report%20draft.md#summary) `file://localhost/tmp/other%20report.md#details`",
+    ).values()];
+    expect(entries.map((entry) => entry.value)).toEqual([
+      { kind: "file", reference: { type: "absolute_path", absolutePath: "/tmp/report draft.md" }, fragment: "summary" },
+      { kind: "file", reference: { type: "absolute_path", absolutePath: "/tmp/other report.md" }, fragment: "details" },
+    ]);
   });
   it("makes stable Unicode heading slugs, including collisions", () => {
     const slug = createHeadingSlugger();

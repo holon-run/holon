@@ -6,7 +6,7 @@ test.use({ channel: "chromium" });
 const root = "git_worktree_root:ws:/tmp/feature";
 const locator = (path: string, executionRoot = root) => ({ workspace_id: "ws", execution_root_id: executionRoot, absolute_path: `/tmp/feature/${path}`, path, kind: path === "docs" ? "directory" : "file", root_kind: "git_worktree_root" });
 const targetName = "空 格(1)%20#?.md";
-const text = `[Absolute](/tmp/feature/${encodeURIComponent(targetName)}#target)\n\n[Historical](workspace://ws/${encodeURIComponent(targetName)}?root=${root})\n\n[Relative](./${encodeURIComponent(targetName)}#target)\n\n[Directory](/tmp/feature/docs)\n\n[Missing](/tmp/missing.md)\n\n[External](https://example.com "API docs")\n\n![Chart](/tmp/feature/image.png "Chart details")\n\n![External chart](https://example.com/diagram.png "External diagram")\n\n[Local](#local-section)\n\n## Local section`;
+const text = `[Absolute](/tmp/feature/${encodeURIComponent(targetName)}#target)\n\n[File URL](file:///tmp/feature/${encodeURIComponent(targetName)}#target)\n\n[Historical](workspace://ws/${encodeURIComponent(targetName)}?root=${root})\n\n[Relative](./${encodeURIComponent(targetName)}#target)\n\n[Directory](/tmp/feature/docs)\n\n[Missing](/tmp/missing.md)\n\n[External](https://example.com "API docs")\n\n![Chart](/tmp/feature/image.png "Chart details")\n\n![External chart](https://example.com/diagram.png "External diagram")\n\n[Local](#local-section)\n\n## Local section`;
 async function mockFiles(context: BrowserContext) {
   const batches: any[][] = [];
   await context.route("https://example.com/diagram.png", (route) => route.fulfill({ status: 204 }));
@@ -42,6 +42,7 @@ test("Explorer shares resolver rules; native new-tab links, fragments, images an
   await page.goto(preview("base.md"));
   const content = page.locator(".file-browser-markdown");
   await expect(content.getByRole("link", { name: "Absolute", exact: true })).toHaveAttribute("href", preview(targetName) + "#target");
+  await expect(content.getByRole("link", { name: "File URL", exact: true })).toHaveAttribute("href", preview(targetName) + "#target");
   await expect(content.getByRole("img", { name: "Chart", exact: true })).toHaveAttribute("src", /^blob:/);
   const missing = content.getByText("/tmp/missing.md", { exact: true });
   await expect(missing).toBeVisible();
@@ -111,6 +112,7 @@ test("brief and live assistant keep the same absolute references; relative refer
   for (const id of ["done", "live"]) {
     const block = page.locator(`[data-turn-id="${id}"]`);
     await expect(block.getByRole("link", { name: "Absolute", exact: true })).toHaveAttribute("href", preview(targetName) + "#target");
+    await expect(block.getByRole("link", { name: "File URL", exact: true })).toHaveAttribute("href", preview(targetName) + "#target");
     const relative = block.getByText(`./${encodeURIComponent(targetName)}#target`, { exact: true });
     await expect(relative).toBeVisible();
     await expect(relative).toHaveAttribute("title", "Missing file location context");
