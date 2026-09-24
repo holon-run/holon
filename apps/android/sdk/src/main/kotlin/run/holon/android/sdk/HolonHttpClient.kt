@@ -416,7 +416,7 @@ public class HolonHttpClient internal constructor(
             ?.mapNotNull { field ->
                 val parts = field.split('=', limit = 2)
                 if (parts.firstOrNull() == "root") {
-                    URLDecoder.decode(parts.getOrElse(1) { "" }, StandardCharsets.UTF_8)
+                    URLDecoder.decode(parts.getOrElse(1) { "" }, StandardCharsets.UTF_8.name())
                 } else {
                     null
                 }

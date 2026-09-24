@@ -2,6 +2,8 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Self-hosted Holon runtimes commonly use trusted LAN or tailnet HTTP.
+         The SDK restricts cleartext requests to the user-confirmed base host. -->
     <application
         android:allowBackup="false"
         android:label="Holon"

@@ -5,12 +5,14 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
 import java.io.File
+import java.io.IOException
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.BearerTokenProvider
 import run.holon.android.sdk.CompatibilityResult
@@ -28,7 +30,6 @@ import run.holon.android.sdk.HolonSseConnection
 import run.holon.android.sdk.HolonWorkItemSnapshot
 import run.holon.android.sdk.SessionCredentialStore
 
-internal const val MAX_ATTACHMENT_BYTES = 20L * 1024L * 1024L
 internal val REQUIRED_CAPABILITIES =
     setOf(
         "agents.conversation-read.v1",
@@ -42,9 +43,10 @@ internal data class ActiveSession(
     val baseUrl: String,
     val user: HolonCurrentUser,
     val runtimeId: String,
+    val visibilityScopeId: String,
     val server: HolonServerInfo,
 ) {
-    val scopeKey: String = "$runtimeId:${user.userId}"
+    val scopeKey: String = cacheScopeKey(runtimeId, user.userId, visibilityScopeId)
 }
 
 @Serializable
@@ -119,9 +121,11 @@ internal class HolonRepository(
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
             val roster = candidate.rosterSnapshot()
-            val session = ActiveSession(baseUrl, user, roster.runtimeId, server)
+            val session = ActiveSession(baseUrl, user, roster.runtimeId, roster.visibilityScopeId, server)
             activate(session, candidate, roster)
-            preferences.write(SavedConnection(baseUrl, roster.runtimeId, user.userId))
+            preferences.write(
+                SavedConnection(baseUrl, roster.runtimeId, user.userId, roster.visibilityScopeId),
+            )
             session to roster
         } catch (error: Throwable) {
             transientToken = null
@@ -131,19 +135,41 @@ internal class HolonRepository(
     }
 
     suspend fun resume(): ResumeResult {
-        val saved = preferences.read() ?: return ResumeResult.NoSession
+        val saved = preferences.read()
+            ?: run {
+                sessionStore.clear()
+                return ResumeResult.NoSession
+            }
         if (sessionStore.read().isNullOrBlank()) return ResumeResult.NoSession
         val candidate = clientFor(saved.baseUrl)
         return try {
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
             val roster = candidate.rosterSnapshot()
-            if (saved.userId != user.userId || saved.runtimeId != roster.runtimeId) {
+            if (
+                saved.userId != user.userId ||
+                saved.runtimeId != roster.runtimeId ||
+                saved.visibilityScopeId != roster.visibilityScopeId
+            ) {
                 clearLocalState()
             }
-            val session = ActiveSession(saved.baseUrl, user, roster.runtimeId, server)
+            val session =
+                ActiveSession(
+                    saved.baseUrl,
+                    user,
+                    roster.runtimeId,
+                    roster.visibilityScopeId,
+                    server,
+                )
             activate(session, candidate, roster)
-            preferences.write(SavedConnection(saved.baseUrl, roster.runtimeId, user.userId))
+            preferences.write(
+                SavedConnection(
+                    saved.baseUrl,
+                    roster.runtimeId,
+                    user.userId,
+                    roster.visibilityScopeId,
+                ),
+            )
             retryOutbox()
             ResumeResult.Ready(session, roster)
         } catch (error: HolonHttpException) {
@@ -165,9 +191,12 @@ internal class HolonRepository(
     suspend fun refreshRoster(): HolonRosterSnapshot {
         val roster = requireClient().rosterSnapshot()
         val current = requireSession()
-        if (roster.runtimeId != current.runtimeId) {
+        if (
+            roster.runtimeId != current.runtimeId ||
+            roster.visibilityScopeId != current.visibilityScopeId
+        ) {
             clearAuthentication()
-            throw IllegalStateException("Holon runtime identity changed; sign in again")
+            throw IllegalStateException("Holon runtime or visibility scope changed; sign in again")
         }
         cacheRoster(current.scopeKey, roster)
         return roster
@@ -231,7 +260,12 @@ internal class HolonRepository(
         }
     }
 
-    suspend fun stageAttachment(uri: Uri, preferredKind: String? = null): StagedAttachment {
+    suspend fun stageAttachment(
+        uri: Uri,
+        preferredKind: String? = null,
+        existingAttachments: List<StagedAttachment> = emptyList(),
+        promptText: String = "",
+    ): StagedAttachment {
         val resolver = context.contentResolver
         val metadata = resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)
             ?.use { cursor ->
@@ -245,41 +279,56 @@ internal class HolonRepository(
             }
         val mediaType = resolver.getType(uri) ?: "application/octet-stream"
         val name = metadata?.first?.takeIf(String::isNotBlank) ?: "attachment"
-        metadata?.second?.let { require(it <= MAX_ATTACHMENT_BYTES) { "附件不能超过 20 MB" } }
+        val kind = preferredKind ?: if (mediaType.startsWith("image/")) "image" else "file"
+        val maxBytes = attachmentLimit(kind)
+        metadata?.second?.let {
+            require(it <= maxBytes) { "${attachmentLabel(kind)}不能超过 ${formatBytes(maxBytes)}" }
+        }
         val directory = File(context.filesDir, "outbox").apply { mkdirs() }
         val target = File(directory, "${UUID.randomUUID()}-${safeFileName(name)}")
-        val copied = resolver.openInputStream(uri)?.use { input ->
-            target.outputStream().use { output ->
-                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                var total = 0L
-                while (true) {
-                    val read = input.read(buffer)
-                    if (read < 0) break
-                    total += read
-                    require(total <= MAX_ATTACHMENT_BYTES) { "附件不能超过 20 MB" }
-                    output.write(buffer, 0, read)
+        return try {
+            val copied = resolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    var total = 0L
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        total += read
+                        require(total <= maxBytes) {
+                            "${attachmentLabel(kind)}不能超过 ${formatBytes(maxBytes)}"
+                        }
+                        output.write(buffer, 0, read)
+                    }
+                    total
                 }
-                total
-            }
-        } ?: throw IllegalArgumentException("无法读取所选文件")
-        return StagedAttachment(
-            kind = preferredKind ?: if (mediaType.startsWith("image/")) "image" else "file",
-            name = name,
-            mediaType = mediaType,
-            localPath = target.absolutePath,
-            size = copied,
-        )
+            } ?: throw IllegalArgumentException("无法读取所选文件")
+            val staged =
+                StagedAttachment(
+                    kind = kind,
+                    name = name,
+                    mediaType = mediaType,
+                    localPath = target.absolutePath,
+                    size = copied,
+                )
+            validatePromptBody(promptText, existingAttachments + staged, SAMPLE_REQUEST_ID)
+            staged
+        } catch (error: Throwable) {
+            target.delete()
+            throw error
+        }
     }
 
-    suspend fun send(
+    suspend fun enqueue(
         agentId: String,
         text: String,
         attachments: List<StagedAttachment>,
         requestId: String = UUID.randomUUID().toString(),
     ): OutboxEntity {
         val session = requireSession()
+        validatePromptBody(text, attachments, requestId)
         val now = System.currentTimeMillis()
-        var entry =
+        val entry =
             OutboxEntity(
                 requestId = requestId,
                 scopeKey = session.scopeKey,
@@ -292,16 +341,21 @@ internal class HolonRepository(
                 createdAt = now,
                 updatedAt = now,
             )
+        // Persist the retryable request before removing any composer state. If the
+        // process stops between these writes, recovery keeps both the outbox entry
+        // and the old draft instead of losing the user's message.
         dao.putOutbox(entry)
-        entry = deliver(entry)
-        dao.putOutbox(entry)
+        dao.putDraft(DraftEntity(session.scopeKey, agentId, "", now))
         return entry
     }
+
+    suspend fun deliverOutbox(entry: OutboxEntity): OutboxEntity =
+        deliver(entry).also { dao.putOutbox(it) }
 
     suspend fun retryOutbox() {
         val session = requireSession()
         dao.pendingOutbox(session.scopeKey).forEach { pending ->
-            dao.putOutbox(deliver(pending))
+            deliverOutbox(pending)
         }
     }
 
@@ -323,6 +377,7 @@ internal class HolonRepository(
                 )
             }
         } catch (error: Throwable) {
+            if (!error.isTransportFailure()) throw error
             dao.brief(session.scopeKey, agentId, briefId)?.let { decodeBrief(it.payloadJson) }
                 ?: throw error
         }
@@ -444,7 +499,14 @@ internal class HolonRepository(
                 baseUrl = saved.baseUrl,
                 user = HolonCurrentUser(saved.userId, null, "cached"),
                 runtimeId = saved.runtimeId,
-                server = HolonServerInfo("", "cached", true, emptySet()),
+                visibilityScopeId = saved.visibilityScopeId,
+                server =
+                    HolonServerInfo(
+                        defaultAgentId = "",
+                        authMode = "cached",
+                        authRequired = true,
+                        capabilities = emptySet(),
+                    ),
             )
         active = session
         client = candidate
@@ -491,6 +553,31 @@ internal class HolonRepository(
 
     private fun requireSession(): ActiveSession = checkNotNull(active) { "No active Holon session" }
     private fun requireClient(): HolonHttpClient = checkNotNull(client) { "No active Holon client" }
+
+    private fun attachmentLimit(kind: String): Long {
+        val limits = requireNotNull(requireSession().server.limits) {
+            "daemon 未报告附件大小限制，请升级 daemon"
+        }
+        return when (kind) {
+            "image" -> limits.promptImageAttachmentMaxBytes
+            "file" -> limits.promptFileAttachmentMaxBytes
+            else -> throw IllegalArgumentException("不支持的附件类型：$kind")
+        }
+    }
+
+    private fun validatePromptBody(
+        text: String,
+        attachments: List<StagedAttachment>,
+        requestId: String,
+    ) {
+        val maxBytes = requireNotNull(requireSession().server.limits) {
+            "daemon 未报告消息大小限制，请升级 daemon"
+        }.promptBodyMaxBytes
+        val actualBytes = encodedPromptBodySize(text, attachments, requestId)
+        require(actualBytes <= maxBytes) {
+            "消息和附件编码后不能超过 ${formatBytes(maxBytes)}"
+        }
+    }
 
     private fun deleteOutboxFiles(entry: OutboxEntity) {
         runCatching {
@@ -629,5 +716,51 @@ private inline fun <reified T : Throwable> Throwable.hasCause(): Boolean {
     return false
 }
 
+private fun Throwable.isTransportFailure(): Boolean {
+    if (this is HolonHttpException) return false
+    if (this is IOException && this !is HolonProtocolException) return true
+    var current = cause
+    while (current != null) {
+        if (current is IOException && current !is HolonHttpException) return true
+        current = current.cause
+    }
+    return false
+}
+
+internal fun cacheScopeKey(runtimeId: String, userId: String, visibilityScopeId: String): String =
+    listOf(runtimeId, userId, visibilityScopeId).joinToString("|") { "${it.length}:$it" }
+
+internal fun encodedPromptBodySize(
+    text: String,
+    attachments: List<StagedAttachment>,
+    requestId: String,
+): Long {
+    var bytes = utf8Size("{\"text\":") + jsonStringSize(text)
+    bytes += utf8Size(",\"client_request_id\":") + jsonStringSize(requestId)
+    bytes += utf8Size(",\"attachments\":[")
+    attachments.forEachIndexed { index, attachment ->
+        if (index > 0) bytes += 1
+        bytes += utf8Size("{\"kind\":") + jsonStringSize(attachment.kind)
+        bytes += utf8Size(",\"name\":") + jsonStringSize(attachment.name)
+        bytes += utf8Size(",\"media_type\":") + jsonStringSize(attachment.mediaType)
+        bytes += utf8Size(",\"data_base64\":\"")
+        bytes += ((attachment.size + 2) / 3) * 4
+        bytes += utf8Size("\"}")
+    }
+    return bytes + utf8Size("]}")
+}
+
+private fun jsonStringSize(value: String): Long =
+    JsonPrimitive(value).toString().toByteArray(Charsets.UTF_8).size.toLong()
+
+private fun utf8Size(value: String): Long = value.toByteArray(Charsets.UTF_8).size.toLong()
+
+private fun attachmentLabel(kind: String): String = if (kind == "image") "图片" else "文件"
+
+private fun formatBytes(bytes: Long): String =
+    if (bytes % (1024 * 1024) == 0L) "${bytes / (1024 * 1024)} MB" else "$bytes 字节"
+
+private const val SAMPLE_REQUEST_ID = "00000000-0000-0000-0000-000000000000"
+
 private val SavedConnection.scopeKey: String
-    get() = "$runtimeId:$userId"
+    get() = cacheScopeKey(runtimeId, userId, visibilityScopeId)

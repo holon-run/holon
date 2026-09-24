@@ -1197,13 +1197,16 @@ pub async fn control_prompt(
     let semantic_content = serde_json::to_value(&request)
         .map_err(anyhow::Error::from)
         .map_err(error_response)?;
-    let text = control_prompt_text_with_attachments(&agent_id, &runtime.agent_home(), request)
-        .map_err(|err| bad_request(err.to_string()))?;
+    let materialized =
+        control_prompt_text_with_attachments(&agent_id, &runtime.agent_home(), request)
+            .map_err(|err| bad_request(err.to_string()))?;
+    let text = materialized.text;
+    let created_attachment_paths = materialized.created_paths;
     let admission_context = control_admission_context(&state);
 
     if let Some(client_request_id) = client_request_id {
         let caller_principal = actor.principal_id();
-        let mut prepared = crate::runtime::AgentMessageDeliveryService::prepare(
+        let preparation = crate::runtime::AgentMessageDeliveryService::prepare(
             crate::types::AgentMessageSendRequest {
                 target_agent_id: agent_id.clone(),
                 content: MessageBody::Json {
@@ -1227,8 +1230,14 @@ pub async fn control_prompt(
                 current_task_id: None,
                 current_work_item_id: None,
             },
-        )
-        .map_err(|error| bad_request(error.to_string()))?;
+        );
+        let mut prepared = match preparation {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                remove_materialized_control_prompt_attachments(&created_attachment_paths);
+                return Err(bad_request(error.to_string()));
+            }
+        };
         prepared.message.kind = MessageKind::OperatorPrompt;
         prepared.message.body = MessageBody::Text { text };
         prepared.message.work_item_id = work_item_id;
@@ -1236,16 +1245,19 @@ pub async fn control_prompt(
             "control": true,
             "client_request_id": client_request_id,
         }));
-        let receipt = runtime
+        let delivery = runtime
             .agent_message_delivery_service()
             .deliver(&prepared)
-            .await
-            .map_err(|error| {
+            .await;
+        let receipt = match delivery {
+            Ok(receipt) => receipt,
+            Err(error) => {
+                remove_materialized_control_prompt_attachments(&created_attachment_paths);
                 if error
                     .downcast_ref::<crate::types::AgentMessageDeliveryError>()
                     .is_some()
                 {
-                    (
+                    return Err((
                         StatusCode::CONFLICT,
                         Json(json!({
                             "ok": false,
@@ -1253,11 +1265,12 @@ pub async fn control_prompt(
                             "error": "client_request_id was reused with different prompt content",
                             "retryable": false,
                         })),
-                    )
+                    ));
                 } else {
-                    error_response(error)
+                    return Err(error_response(error));
                 }
-            })?;
+            }
+        };
         let message_id = receipt
             .message_id
             .ok_or_else(|| error_response(anyhow!("accepted prompt receipt omitted message_id")))?;
@@ -1289,7 +1302,13 @@ pub async fn control_prompt(
         trace_context: None,
     }
     .into_message();
-    let queued = runtime.enqueue(message).await.map_err(error_response)?;
+    let queued = match runtime.enqueue(message).await {
+        Ok(queued) => queued,
+        Err(error) => {
+            remove_materialized_control_prompt_attachments(&created_attachment_paths);
+            return Err(error_response(error));
+        }
+    };
     Ok(Json(EnqueueResponse {
         ok: true,
         agent_id,
@@ -1298,13 +1317,22 @@ pub async fn control_prompt(
     }))
 }
 
+#[derive(Debug)]
+struct MaterializedControlPrompt {
+    text: String,
+    created_paths: Vec<std::path::PathBuf>,
+}
+
 fn control_prompt_text_with_attachments(
     agent_id: &str,
     agent_home: &std::path::Path,
     request: ControlPromptRequest,
-) -> Result<String> {
+) -> Result<MaterializedControlPrompt> {
     if request.attachments.is_empty() {
-        return Ok(request.text);
+        return Ok(MaterializedControlPrompt {
+            text: request.text,
+            created_paths: Vec::new(),
+        });
     }
 
     let inbox = agent_home.join("media").join("inbox");
@@ -1313,74 +1341,87 @@ fn control_prompt_text_with_attachments(
 
     let stable_request_id = request.client_request_id.clone();
     let mut text = request.text;
-    for (index, attachment) in request.attachments.into_iter().enumerate() {
-        let position = index + 1;
-        match attachment {
-            ControlPromptAttachment::Image(ControlPromptImageAttachment {
-                name,
-                media_type,
-                data_base64,
-            }) => {
-                let bytes = decode_control_prompt_attachment(
-                    "image",
-                    position,
-                    &data_base64,
-                    MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES,
-                )?;
-                let extension = image_extension_for_media_type(&media_type)
-                    .ok_or_else(|| anyhow!("unsupported image media type: {media_type}"))?;
-                let file_name = write_control_prompt_attachment(
-                    &inbox,
-                    "image",
-                    position,
-                    name.as_deref(),
-                    extension,
-                    bytes,
-                    stable_request_id.as_deref(),
-                )?;
-                append_attachment_separator(&mut text);
-                text.push_str(&format!(
-                    "\n![{}](workspace://{}/media/inbox/{})",
-                    markdown_alt_text(name.as_deref())
-                        .unwrap_or_else(|| format!("image {}", position)),
-                    crate::types::agent_home_workspace_id(agent_id),
-                    percent_encode_path_segment(&file_name)
-                ));
-            }
-            ControlPromptAttachment::File(ControlPromptFileAttachment {
-                name,
-                media_type,
-                data_base64,
-            }) => {
-                let bytes = decode_control_prompt_attachment(
-                    "file",
-                    position,
-                    &data_base64,
-                    MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES,
-                )?;
-                let extension = file_extension_for_attachment(name.as_deref(), &media_type);
-                let file_name = write_control_prompt_attachment(
-                    &inbox,
-                    "file",
-                    position,
-                    name.as_deref(),
-                    &extension,
-                    bytes,
-                    stable_request_id.as_deref(),
-                )?;
-                append_attachment_separator(&mut text);
-                text.push_str(&format!(
-                    "\n[{}](workspace://{}/media/inbox/{})",
-                    markdown_alt_text(name.as_deref())
-                        .unwrap_or_else(|| format!("file {}", position)),
-                    crate::types::agent_home_workspace_id(agent_id),
-                    percent_encode_path_segment(&file_name)
-                ));
+    let mut created_paths = Vec::new();
+    let materialization = (|| -> Result<()> {
+        for (index, attachment) in request.attachments.into_iter().enumerate() {
+            let position = index + 1;
+            match attachment {
+                ControlPromptAttachment::Image(ControlPromptImageAttachment {
+                    name,
+                    media_type,
+                    data_base64,
+                }) => {
+                    let bytes = decode_control_prompt_attachment(
+                        "image",
+                        position,
+                        &data_base64,
+                        MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES,
+                    )?;
+                    let extension = image_extension_for_media_type(&media_type)
+                        .ok_or_else(|| anyhow!("unsupported image media type: {media_type}"))?;
+                    let written = write_control_prompt_attachment(
+                        &inbox,
+                        "image",
+                        position,
+                        name.as_deref(),
+                        extension,
+                        bytes,
+                        stable_request_id.as_deref(),
+                    )?;
+                    created_paths.extend(written.created_path);
+                    append_attachment_separator(&mut text);
+                    text.push_str(&format!(
+                        "\n![{}](workspace://{}/media/inbox/{})",
+                        markdown_alt_text(name.as_deref())
+                            .unwrap_or_else(|| format!("image {}", position)),
+                        crate::types::agent_home_workspace_id(agent_id),
+                        percent_encode_path_segment(&written.file_name)
+                    ));
+                }
+                ControlPromptAttachment::File(ControlPromptFileAttachment {
+                    name,
+                    media_type,
+                    data_base64,
+                }) => {
+                    let bytes = decode_control_prompt_attachment(
+                        "file",
+                        position,
+                        &data_base64,
+                        MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES,
+                    )?;
+                    let extension = file_extension_for_attachment(name.as_deref(), &media_type);
+                    let written = write_control_prompt_attachment(
+                        &inbox,
+                        "file",
+                        position,
+                        name.as_deref(),
+                        &extension,
+                        bytes,
+                        stable_request_id.as_deref(),
+                    )?;
+                    created_paths.extend(written.created_path);
+                    append_attachment_separator(&mut text);
+                    text.push_str(&format!(
+                        "\n[{}](workspace://{}/media/inbox/{})",
+                        markdown_alt_text(name.as_deref())
+                            .unwrap_or_else(|| format!("file {}", position)),
+                        crate::types::agent_home_workspace_id(agent_id),
+                        percent_encode_path_segment(&written.file_name)
+                    ));
+                }
             }
         }
+        Ok(())
+    })();
+    if let Err(error) = materialization {
+        remove_materialized_control_prompt_attachments(&created_paths);
+        return Err(error);
     }
 
-    Ok(text)
+    Ok(MaterializedControlPrompt {
+        text,
+        created_paths,
+    })
 }
 
 fn decode_control_prompt_attachment(
@@ -1403,6 +1444,11 @@ fn decode_control_prompt_attachment(
     Ok(bytes)
 }
 
+struct WrittenControlPromptAttachment {
+    file_name: String,
+    created_path: Option<std::path::PathBuf>,
+}
+
 fn write_control_prompt_attachment(
     inbox: &std::path::Path,
     label: &str,
@@ -1411,8 +1457,9 @@ fn write_control_prompt_attachment(
     extension: &str,
     bytes: Vec<u8>,
     stable_request_id: Option<&str>,
-) -> Result<String> {
+) -> Result<WrittenControlPromptAttachment> {
     use sha2::{Digest, Sha256};
+    use std::io::Write as _;
 
     let stem = safe_media_stem(name).unwrap_or_else(|| label.to_string());
     let prefix = stable_request_id.map_or_else(
@@ -1435,9 +1482,47 @@ fn write_control_prompt_attachment(
     );
     let file_name = format!("{}-{}-{}.{}", prefix, position, stem, extension);
     let path = inbox.join(&file_name);
-    std::fs::write(&path, bytes)
-        .with_context(|| format!("write {label} attachment to {}", path.display()))?;
-    Ok(file_name)
+    let created_path = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            if let Err(error) = file.write_all(&bytes) {
+                drop(file);
+                let _ = std::fs::remove_file(&path);
+                return Err(error)
+                    .with_context(|| format!("write {label} attachment to {}", path.display()));
+            }
+            Some(path)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = std::fs::read(&path).with_context(|| {
+                format!("read existing {label} attachment at {}", path.display())
+            })?;
+            if existing != bytes {
+                return Err(anyhow!(
+                    "refusing to replace existing {label} attachment at {}",
+                    path.display()
+                ));
+            }
+            None
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("create {label} attachment at {}", path.display()));
+        }
+    };
+    Ok(WrittenControlPromptAttachment {
+        file_name,
+        created_path,
+    })
+}
+
+fn remove_materialized_control_prompt_attachments(paths: &[std::path::PathBuf]) {
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn append_attachment_separator(text: &mut String) {
@@ -1663,7 +1748,8 @@ mod tests {
                 client_request_id: None,
             },
         )
-        .unwrap();
+        .unwrap()
+        .text;
 
         let files = inbox_files(home.path());
         assert_eq!(files.len(), 1);
@@ -1691,7 +1777,8 @@ mod tests {
                 client_request_id: None,
             },
         )
-        .unwrap();
+        .unwrap()
+        .text;
 
         let files = inbox_files(home.path());
         assert_eq!(files.len(), 1);

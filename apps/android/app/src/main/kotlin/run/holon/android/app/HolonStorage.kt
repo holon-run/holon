@@ -20,19 +20,22 @@ internal data class SavedConnection(
     val baseUrl: String,
     val runtimeId: String,
     val userId: String,
+    val visibilityScopeId: String,
 )
 
 internal class HostPreferences(private val context: Context) {
     private val baseUrlKey = stringPreferencesKey("base_url")
     private val runtimeIdKey = stringPreferencesKey("runtime_id")
     private val userIdKey = stringPreferencesKey("user_id")
+    private val visibilityScopeIdKey = stringPreferencesKey("visibility_scope_id")
 
     suspend fun read(): SavedConnection? {
         val values = context.holonDataStore.data.first()
         val baseUrl = values[baseUrlKey] ?: return null
         val runtimeId = values[runtimeIdKey] ?: return null
         val userId = values[userIdKey] ?: return null
-        return SavedConnection(baseUrl, runtimeId, userId)
+        val visibilityScopeId = values[visibilityScopeIdKey] ?: return null
+        return SavedConnection(baseUrl, runtimeId, userId, visibilityScopeId)
     }
 
     suspend fun write(connection: SavedConnection) {
@@ -40,6 +43,7 @@ internal class HostPreferences(private val context: Context) {
             values[baseUrlKey] = connection.baseUrl
             values[runtimeIdKey] = connection.runtimeId
             values[userIdKey] = connection.userId
+            values[visibilityScopeIdKey] = connection.visibilityScopeId
         }
     }
 

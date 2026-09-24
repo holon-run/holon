@@ -5,11 +5,18 @@ import run.holon.client.wire.generated.models.HandshakeResponse
 public const val HOLON_CONTROL_PROTOCOL_NAME: String = "holon-control"
 public const val HOLON_CONTROL_PROTOCOL_VERSION: Int = 1
 
+public data class HolonServerLimits(
+    val promptBodyMaxBytes: Long,
+    val promptFileAttachmentMaxBytes: Long,
+    val promptImageAttachmentMaxBytes: Long,
+)
+
 public data class HolonServerInfo(
     val defaultAgentId: String,
     val authMode: String,
     val authRequired: Boolean,
     val capabilities: Set<String>,
+    val limits: HolonServerLimits? = null,
 )
 
 public sealed interface CompatibilityResult {
@@ -56,6 +63,13 @@ internal fun HandshakeResponse.checkCompatibility(
             authMode = auth.mode,
             authRequired = auth.required,
             capabilities = capabilities.toSet(),
+            limits = limits?.let {
+                HolonServerLimits(
+                    promptBodyMaxBytes = it.promptBodyMaxBytes.toLong(),
+                    promptFileAttachmentMaxBytes = it.promptFileAttachmentMaxBytes.toLong(),
+                    promptImageAttachmentMaxBytes = it.promptImageAttachmentMaxBytes.toLong(),
+                )
+            },
         ),
     )
 }

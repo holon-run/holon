@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
@@ -46,6 +47,7 @@ internal data class HolonUiState(
     val showToken: Boolean = false,
     val allowInsecureHttp: Boolean = false,
     val busy: Boolean = false,
+    val enqueueing: Boolean = false,
     val online: Boolean = false,
     val session: ActiveSession? = null,
     val agents: List<AgentSummary> = emptyList(),
@@ -98,6 +100,8 @@ internal class HolonViewModel(
     private var conversationJob: Job? = null
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
+    private val draftSaveJobs = mutableMapOf<String, Job>()
+    private var draftRevision = 0L
 
     init {
         viewModelScope.launch {
@@ -217,6 +221,7 @@ internal class HolonViewModel(
     }
 
     fun openAgent(agent: AgentSummary) {
+        if (state.value.enqueueing) return
         conversationJob?.cancel()
         stopConversationStream()
         val abandonedAttachments =
@@ -278,6 +283,7 @@ internal class HolonViewModel(
     }
 
     fun closeConversation() {
+        if (state.value.enqueueing) return
         conversationJob?.cancel()
         stopConversationStream()
         val abandonedAttachments = state.value.attachments
@@ -302,14 +308,25 @@ internal class HolonViewModel(
 
     fun updateDraft(value: String) {
         val agent = state.value.selectedAgent ?: return
+        draftRevision++
         mutableState.update { it.copy(draft = value) }
-        viewModelScope.launch(Dispatchers.IO) { repository.saveDraft(agent.id, value) }
+        draftSaveJobs.remove(agent.id)?.cancel()
+        draftSaveJobs[agent.id] =
+            viewModelScope.launch(Dispatchers.IO) { repository.saveDraft(agent.id, value) }
     }
 
     fun addAttachment(uri: Uri, preferredKind: String? = null) {
+        val before = state.value
         viewModelScope.launch {
             runCatching {
-                withContext(Dispatchers.IO) { repository.stageAttachment(uri, preferredKind) }
+                withContext(Dispatchers.IO) {
+                    repository.stageAttachment(
+                        uri = uri,
+                        preferredKind = preferredKind,
+                        existingAttachments = before.attachments,
+                        promptText = before.draft,
+                    )
+                }
             }.onSuccess { attachment ->
                 mutableState.update { it.copy(attachments = it.attachments + attachment, error = null) }
             }.onFailure { error -> mutableState.update { it.copy(error = humanError(error)) } }
@@ -327,43 +344,65 @@ internal class HolonViewModel(
     fun send() {
         val current = state.value
         val agent = current.selectedAgent ?: return
+        if (current.enqueueing) return
         if (current.draft.isBlank() && current.attachments.isEmpty()) return
         val text = current.draft
         val attachments = current.attachments
-        val optimistic =
-            OutboxEntity(
-                requestId = UUID.randomUUID().toString(),
-                scopeKey = current.session?.scopeKey.orEmpty(),
-                agentId = agent.id,
-                text = text,
-                attachmentsJson = "[]",
-                state = "pending",
-                messageId = null,
-                error = null,
-                createdAt = System.currentTimeMillis(),
-                updatedAt = System.currentTimeMillis(),
-            )
-        mutableState.update {
-            it.copy(
-                draft = "",
-                attachments = emptyList(),
-                outbox = it.outbox + optimistic,
-                error = null,
-            )
-        }
+        val requestId = UUID.randomUUID().toString()
+        val pendingDraftSave = draftSaveJobs[agent.id]
+        val sentDraftRevision = draftRevision
+        mutableState.update { it.copy(enqueueing = true, error = null) }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repository.saveDraft(agent.id, "")
-                    repository.send(agent.id, text, attachments, optimistic.requestId)
+                    pendingDraftSave?.join()
+                    repository.enqueue(agent.id, text, attachments, requestId)
                 }
-            }.onSuccess { sent ->
+            }.onSuccess { pending ->
+                if (draftSaveJobs[agent.id] === pendingDraftSave) {
+                    draftSaveJobs.remove(agent.id)
+                }
                 mutableState.update { value ->
-                    value.copy(outbox = value.outbox.map { if (it.requestId == sent.requestId) sent else it })
+                    value.copy(
+                        draft =
+                            if (
+                                value.selectedAgent?.id == agent.id &&
+                                draftRevision == sentDraftRevision
+                            ) {
+                                ""
+                            } else {
+                                value.draft
+                            },
+                        attachments = removeSentAttachments(value.attachments, attachments),
+                        outbox = value.outbox + pending,
+                        enqueueing = false,
+                        error = null,
+                    )
                 }
-                openAgent(agent)
-            }.onFailure(::handleRuntimeFailure)
+                runCatching {
+                    withContext(Dispatchers.IO) { repository.deliverOutbox(pending) }
+                }.onSuccess { sent ->
+                    mutableState.update { value ->
+                        value.copy(
+                            outbox = value.outbox.map {
+                                if (it.requestId == sent.requestId) sent else it
+                            },
+                        )
+                    }
+                    openAgent(agent)
+                }.onFailure(::handleRuntimeFailure)
+            }.onFailure { error ->
+                mutableState.update { it.copy(enqueueing = false, error = humanError(error)) }
+            }
         }
+    }
+
+    private fun removeSentAttachments(
+        current: List<StagedAttachment>,
+        sent: List<StagedAttachment>,
+    ): List<StagedAttachment> {
+        val sentPaths = sent.mapTo(mutableSetOf(), StagedAttachment::localPath)
+        return current.filterNot { it.localPath in sentPaths }
     }
 
     fun openBrief(briefId: String) {
@@ -400,6 +439,7 @@ internal class HolonViewModel(
     fun logout() = endSession(keepCurrentHost = false)
 
     private fun endSession(keepCurrentHost: Boolean) {
+        if (state.value.enqueueing) return
         stopConversationStream()
         val nextBaseUrl = if (keepCurrentHost) state.value.baseUrl else defaultBaseUrl()
         mutableState.update { it.copy(busy = true, error = null) }
@@ -415,39 +455,49 @@ internal class HolonViewModel(
         stopConversationStream()
         conversationStreamJob =
             viewModelScope.launch(Dispatchers.IO) {
-                var openedConnection: HolonSseConnection? = null
+                var cursor = after
                 try {
-                    val connection = repository.openConversationStream(agent.id, after)
-                    openedConnection = connection
-                    conversationStream = connection
-                    for (event in connection.events()) {
-                        val change = event.toConversationEvent()
-                        if (change is HolonConversationStreamEvent.Checkpoint ||
-                            change is HolonConversationStreamEvent.ResetRequired
-                        ) {
-                            val bundle = repository.conversation(agent)
-                            withContext(Dispatchers.Main) {
-                                if (state.value.selectedAgent?.id == agent.id) {
-                                    mutableState.update {
-                                        it.copy(
-                                            conversation = bundle.snapshot,
-                                            outbox = bundle.outbox,
-                                            draft = bundle.draft,
-                                            online = true,
-                                            statusMessage = null,
-                                        )
+                    while (isActive && state.value.selectedAgent?.id == agent.id) {
+                        var reopenAfterReset = false
+                        val connection = repository.openConversationStream(agent.id, cursor)
+                        conversationStream = connection
+                        try {
+                            for (event in connection.events()) {
+                                val change = event.toConversationEvent()
+                                if (change is HolonConversationStreamEvent.Checkpoint ||
+                                    change is HolonConversationStreamEvent.ResetRequired
+                                ) {
+                                    val bundle = repository.conversation(agent)
+                                    cursor = bundle.snapshot.snapshotCursor
+                                    withContext(Dispatchers.Main) {
+                                        if (state.value.selectedAgent?.id == agent.id) {
+                                            mutableState.update {
+                                                it.copy(
+                                                    conversation = bundle.snapshot,
+                                                    outbox = bundle.outbox,
+                                                    draft = bundle.draft,
+                                                    online = true,
+                                                    statusMessage = null,
+                                                )
+                                            }
+                                        }
+                                    }
+                                    if (change is HolonConversationStreamEvent.ResetRequired) {
+                                        reopenAfterReset = true
+                                        break
                                     }
                                 }
                             }
+                        } finally {
+                            connection.close()
+                            if (conversationStream === connection) conversationStream = null
                         }
+                        if (!reopenAfterReset) break
                     }
                 } catch (_: CancellationException) {
                     // Closing the foreground-only stream is an expected lifecycle transition.
                 } catch (error: Throwable) {
                     withContext(Dispatchers.Main) { handleRuntimeFailure(error) }
-                } finally {
-                    openedConnection?.close()
-                    if (conversationStream === openedConnection) conversationStream = null
                 }
             }
     }

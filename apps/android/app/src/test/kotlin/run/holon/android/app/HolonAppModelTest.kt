@@ -43,6 +43,31 @@ class HolonAppModelTest {
         )
     }
 
+    @Test
+    fun `cache scope includes visibility boundary without separator collisions`() {
+        assertEquals("1:a|2:bc|1:d", cacheScopeKey("a", "bc", "d"))
+        assertEquals("2:ab|1:c|1:d", cacheScopeKey("ab", "c", "d"))
+    }
+
+    @Test
+    fun `prompt body sizing includes base64 and json escaping`() {
+        val attachment =
+            StagedAttachment(
+                kind = "file",
+                name = "a\"b.txt",
+                mediaType = "text/plain",
+                localPath = "/unused",
+                size = 3,
+            )
+        val expected =
+            """{"text":"hi","client_request_id":"request-1","attachments":[{"kind":"file","name":"a\"b.txt","media_type":"text/plain","data_base64":"AQID"}]}"""
+
+        assertEquals(
+            expected.toByteArray(Charsets.UTF_8).size.toLong(),
+            encodedPromptBodySize("hi", listOf(attachment), "request-1"),
+        )
+    }
+
     private fun agent(id: String, createdAt: String) =
         AgentSummary(
             id = id,

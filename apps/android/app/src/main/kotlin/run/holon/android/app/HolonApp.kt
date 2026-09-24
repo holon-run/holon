@@ -656,7 +656,10 @@ private fun Composer(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
-                            TextButton(onClick = { viewModel.removeAttachment(index) }) { Text("移除") }
+                            TextButton(
+                                onClick = { viewModel.removeAttachment(index) },
+                                enabled = !state.enqueueing,
+                            ) { Text("移除") }
                         }
                     }
                 }
@@ -667,16 +670,19 @@ private fun Composer(
                 placeholder = { Text("输入消息…") },
                 minLines = 1,
                 maxLines = 4,
+                enabled = !state.enqueueing,
                 modifier = Modifier.fillMaxWidth(),
             )
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onImage) { Text("相册") }
-                TextButton(onClick = onCamera) { Text("拍照") }
-                TextButton(onClick = onFile) { Text("文件") }
+                TextButton(onClick = onImage, enabled = !state.enqueueing) { Text("相册") }
+                TextButton(onClick = onCamera, enabled = !state.enqueueing) { Text("拍照") }
+                TextButton(onClick = onFile, enabled = !state.enqueueing) { Text("文件") }
                 Spacer(Modifier.weight(1f))
                 Button(
                     onClick = viewModel::send,
-                    enabled = state.draft.isNotBlank() || state.attachments.isNotEmpty(),
+                    enabled =
+                        !state.enqueueing &&
+                            (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
                     shape = RoundedCornerShape(9.dp),
                 ) { Text("发送") }
             }

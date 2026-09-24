@@ -2469,11 +2469,23 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
 }
 
 pub async fn control_prompt_is_idempotent_for_native_clients() -> Result<()> {
-    let (_host, base, server) = spawn_server().await?;
+    let (host, base, server) = spawn_server().await?;
+    let inbox = host
+        .config()
+        .agent_root_dir()
+        .join("default")
+        .join("media")
+        .join("inbox");
     let client = reqwest::Client::new();
     let request = serde_json::json!({
         "text": "continue safely",
         "client_request_id": "android-request-1",
+        "attachments": [{
+            "kind": "file",
+            "name": "notes.txt",
+            "media_type": "text/plain",
+            "data_base64": "Zmlyc3Q="
+        }],
     });
 
     let first = client
@@ -2484,6 +2496,7 @@ pub async fn control_prompt_is_idempotent_for_native_clients() -> Result<()> {
     assert!(first.status().is_success());
     let first: serde_json::Value = first.json().await?;
     assert_eq!(first["disposition"], "accepted");
+    assert_eq!(std::fs::read_dir(&inbox)?.count(), 1);
 
     let replay = client
         .post(format!("{base}/api/control/agents/default/prompt"))
@@ -2494,18 +2507,26 @@ pub async fn control_prompt_is_idempotent_for_native_clients() -> Result<()> {
     let replay: serde_json::Value = replay.json().await?;
     assert_eq!(replay["disposition"], "duplicate");
     assert_eq!(replay["message_id"], first["message_id"]);
+    assert_eq!(std::fs::read_dir(&inbox)?.count(), 1);
 
     let conflict = client
         .post(format!("{base}/api/control/agents/default/prompt"))
         .json(&serde_json::json!({
             "text": "different content",
             "client_request_id": "android-request-1",
+            "attachments": [{
+                "kind": "file",
+                "name": "notes.txt",
+                "media_type": "text/plain",
+                "data_base64": "ZGlmZmVyZW50"
+            }],
         }))
         .send()
         .await?;
     assert_eq!(conflict.status(), reqwest::StatusCode::CONFLICT);
     let conflict: serde_json::Value = conflict.json().await?;
     assert_eq!(conflict["code"], "idempotency_conflict");
+    assert_eq!(std::fs::read_dir(&inbox)?.count(), 1);
 
     server.abort();
     Ok(())

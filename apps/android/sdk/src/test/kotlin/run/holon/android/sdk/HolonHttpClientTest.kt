@@ -87,6 +87,28 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `handshake exposes daemon prompt limits`() {
+        MockWebServer().use { server ->
+            val response =
+                fixture("handshake-v1.json").replace(
+                    "\"future_handshake_field\"",
+                    "\"limits\":{\"prompt_body_max_bytes\":1024," +
+                        "\"prompt_file_attachment_max_bytes\":512," +
+                        "\"prompt_image_attachment_max_bytes\":256}," +
+                        "\"future_handshake_field\"",
+                )
+            server.enqueue(jsonResponse(response))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val compatible = assertIs<CompatibilityResult.Compatible>(client.handshake())
+
+            assertEquals(1024L, compatible.server.limits?.promptBodyMaxBytes)
+            assertEquals(512L, compatible.server.limits?.promptFileAttachmentMaxBytes)
+            assertEquals(256L, compatible.server.limits?.promptImageAttachmentMaxBytes)
+        }
+    }
+
+    @Test
     fun `agent roster decodes through generated DTOs and domain adapter`() {
         MockWebServer().use { server ->
             server.enqueue(jsonResponse(fixture("agent-list-v1.json")))
