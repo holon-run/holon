@@ -12259,7 +12259,7 @@
                   "protocol": null,
                   "tools": {
                     "enabled": false,
-                    "max_calls_per_turn": 4,
+                    "max_calls_per_turn": null,
                     "min_confidence_percent": 0,
                     "timeout_ms": 1500
                   }
@@ -12356,7 +12356,7 @@
                   "tools": {
                     "default": {
                       "enabled": false,
-                      "max_calls_per_turn": 4,
+                      "max_calls_per_turn": null,
                       "min_confidence_percent": 0,
                       "timeout_ms": 1500
                     },
@@ -12367,7 +12367,10 @@
                       "max_calls_per_turn": {
                         "format": "uint",
                         "minimum": 0,
-                        "type": "integer"
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
                       },
                       "min_confidence_percent": {
                         "format": "uint8",
@@ -12383,7 +12386,6 @@
                     },
                     "required": [
                       "enabled",
-                      "max_calls_per_turn",
                       "timeout_ms",
                       "min_confidence_percent"
                     ],
@@ -12920,7 +12922,7 @@
                   "protocol": null,
                   "tools": {
                     "enabled": false,
-                    "max_calls_per_turn": 4,
+                    "max_calls_per_turn": null,
                     "min_confidence_percent": 0,
                     "timeout_ms": 1500
                   }
@@ -13017,7 +13019,7 @@
                   "tools": {
                     "default": {
                       "enabled": false,
-                      "max_calls_per_turn": 4,
+                      "max_calls_per_turn": null,
                       "min_confidence_percent": 0,
                       "timeout_ms": 1500
                     },
@@ -13028,7 +13030,10 @@
                       "max_calls_per_turn": {
                         "format": "uint",
                         "minimum": 0,
-                        "type": "integer"
+                        "type": [
+                          "integer",
+                          "null"
+                        ]
                       },
                       "min_confidence_percent": {
                         "format": "uint8",
@@ -13044,7 +13049,6 @@
                     },
                     "required": [
                       "enabled",
-                      "max_calls_per_turn",
                       "timeout_ms",
                       "min_confidence_percent"
                     ],
