@@ -296,6 +296,18 @@ describe("parseInputPreview", () => {
     expect(parseInputPreview("plain")).toBe("plain");
     expect(parseInputPreview("")).toBe("");
   });
+
+  it("recovers readable text from byte-truncated serialized text bodies", () => {
+    const text = 'First line\n\nQuoted "value" and a path\\name. ' + "More detail. ".repeat(300);
+    const preview = JSON.stringify({ type: "text", text }).slice(0, 2048);
+    const parsed = parseInputPreview(preview);
+    expect(parsed).toContain('First line\n\nQuoted "value" and a path\\name.');
+    expect(parsed).toMatch(/…$/);
+    expect(parsed).not.toContain('{"type":"text"');
+
+    expect(parseInputPreview('{"type":"text","text":"ends with an incomplete escape\\')).toBe("ends with an incomplete escape…");
+    expect(parseInputPreview('{"unknown":"shape"')).toBe('{"unknown":"shape"');
+  });
 });
 
 describe("summarizeActivity", () => {
