@@ -1524,7 +1524,16 @@ impl AgentProvider for RecoveringContextLengthProvider {
                     pending_fallback_disposition: None,
                     aggregated_token_usage: None,
                 },
-                anyhow!("context_length_exceeded"),
+                provider_transport_error_with_code(
+                    ProviderFailureClassification {
+                        kind: ProviderFailureKind::ContractError,
+                        disposition: RetryDisposition::FailFast,
+                    },
+                    Some("context_length_exceeded"),
+                    Some(400),
+                    None,
+                    "context_length_exceeded",
+                ),
             ));
         }
         Ok(ProviderTurnResponse {

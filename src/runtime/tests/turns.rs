@@ -3026,7 +3026,7 @@ async fn context_length_exceeded_turn_recovers_once_with_recent_turns() {
         AuthorityClass::OperatorInstruction,
         Priority::Normal,
         MessageBody::Text {
-            text: "historical context".repeat(256),
+            text: "historical context".repeat(2048),
         },
     );
     let mut historical_turn = TurnRecord::new("default", "turn-context-recovery-history", 1);

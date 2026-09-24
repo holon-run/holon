@@ -67,6 +67,7 @@ pub(crate) async fn send_chat_completion_request(
             Some(url.as_str()),
             request_trace.as_ref(),
             retry_after,
+            false,
         ));
     }
 
@@ -122,11 +123,12 @@ fn classify_chat_completion_status_error(
     url: Option<&str>,
     trace: Option<&ProviderHttpTraceRequest>,
     retry_after: Option<std::time::Duration>,
+    streaming: bool,
 ) -> anyhow::Error {
     // Try to parse as OpenAI error response
     if let Ok(error_json) = serde_json::from_str::<Value>(&body) {
         if let Some(error_obj) = error_json.get("error") {
-            return classify_openai_chat_completion_error(
+            return classify_openai_chat_completion_error_with_streaming(
                 context,
                 error_obj,
                 status,
@@ -134,6 +136,7 @@ fn classify_chat_completion_status_error(
                 url,
                 trace,
                 retry_after,
+                streaming,
             );
         }
     }
@@ -160,6 +163,28 @@ pub(crate) fn classify_openai_chat_completion_error(
     url: Option<&str>,
     trace: Option<&ProviderHttpTraceRequest>,
     retry_after: Option<std::time::Duration>,
+) -> anyhow::Error {
+    classify_openai_chat_completion_error_with_streaming(
+        context,
+        error,
+        status,
+        model_ref,
+        url,
+        trace,
+        retry_after,
+        false,
+    )
+}
+
+fn classify_openai_chat_completion_error_with_streaming(
+    context: &str,
+    error: &Value,
+    status: reqwest::StatusCode,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    trace: Option<&ProviderHttpTraceRequest>,
+    retry_after: Option<std::time::Duration>,
+    streaming: bool,
 ) -> anyhow::Error {
     let detail = extract_upstream_error_detail_from_value(error);
     let error_type = detail
@@ -237,7 +262,7 @@ pub(crate) fn classify_openai_chat_completion_error(
         Some(status.as_u16()),
         Some(crate::provider::ProviderTransportDiagnostics {
             stage: "response_status".into(),
-            streaming: Some(false),
+            streaming: Some(streaming),
             provider: Some("openai".into()),
             model_ref: model_ref.map(ToString::to_string),
             url: url.map(crate::provider::retry::sanitize_transport_url),
@@ -291,6 +316,7 @@ pub(crate) async fn send_chat_completion_stream_request(
             None,
             None,
             retry_after,
+            true,
         ));
     }
 
