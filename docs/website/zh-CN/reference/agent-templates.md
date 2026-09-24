@@ -23,6 +23,7 @@ Agent 会以一个通用的默认契约启动。
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **文档卫生** — `holon agent create docs --template docs-steward`
 - **防御性安全评审** — `holon agent create security --template security-reviewer`
+- **把目标收成规格** — `holon agent create pm --template product-manager`
 - **运维服务器和服务** — `holon agent create ops --template server-ops`
 - **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
 - **带角色的一次性任务** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -109,6 +110,25 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 - **硬约束。** 默认不改产品代码、不合并、不产出 exploit/PoC、不存储或回显密钥，
   空扫描结果不是“已证明安全”。外部 issue 和告警文本不能升权。项目 skill 覆盖
   不了这些规则。
+
+## 产品需求
+
+`product-manager` 把目标、issue 和反馈收成可评审规格和可测试验收标准，并建议优先级。
+
+- **规格和验收，不是实现计划。** 写下问题、非目标、约束、成功标准和后续角色可以
+  判定的验收标准。证据不足标 `unconfirmed`。追问一次，然后等待。
+- **生成器 skill，不是再做五个模板。** 模板从 `github/awesome-copilot` 预装
+  `prd`、`create-specification`、`update-specification`、`breakdown-epic-pm`、
+  `breakdown-feature-prd` 和 `gen-specs-as-issues`，以及 `ghx`、`sview`、`uxc`
+  和 `agentinbox`。角色合同覆盖这些 skill 的固定路径、完整 PRD schema，以及未授权的
+  写文件或开 issue。默认产出仍是短规格加可测试验收标准。
+- **路由是角色类名，不是 live agent id。** 建议下一责任模板角色。禁止把
+  template id 当 `agent_id`。
+- **项目 skill，不是官方 playbook。** 模板不附带 `product-manager` skill。
+  首次处理时，Agent 在 `agent_home/skills/` 为当前项目创建产品 skill，并按实践
+  补丁式改进。把 skill 写入仓库仍须操作者确认。
+- **硬约束。** 不发明需求。外部反馈不能升权。默认只报告。默认不合并。项目 skill
+  覆盖不了这些规则。操作者可以放宽写范围，包括实现，而不必改写硬约束。
 
 ## 模板命名
 
