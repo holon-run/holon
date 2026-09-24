@@ -1054,5 +1054,22 @@
       ],
       "source": "models_dev_supplement"
     }
+  ],
+  "routes": [
+    "dashscope@coding-plan/kimi-k3",
+    "dashscope@token-plan/kimi-k3",
+    "stepfun@plan/step-5-preview",
+    "volcengine@plan/deepseek-v4-flash-ga-260731",
+    "volcengine@plan/deepseek-v4-pro-ga-260813",
+    "volcengine@plan/doubao-seed-2-1-pro-260628",
+    "volcengine@plan/doubao-seed-2-1-turbo-260628",
+    "volcengine@plan/doubao-seed-character-260628",
+    "volcengine@plan/doubao-seed-evolving",
+    "volcengine@plan/glm-5-2-260617",
+    "volcengine@plan/glm-5-3-flash-260828",
+    "xiaomi@token-plan/mimo-v2.5-pro-ultraspeed",
+    "xiaomi@token-plan/mimo-v2.6-flash",
+    "xiaomi@token-plan/mimo-v2.6-pro",
+    "xiaomi@token-plan/mimo-v2.6-pro-ultraspeed"
   ]
 }
