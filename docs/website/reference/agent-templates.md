@@ -24,6 +24,7 @@ Common scenarios:
 - **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
 - **Owning documentation hygiene** — `holon agent create docs --template docs-steward`
 - **Owning defensive security review** — `holon agent create security --template security-reviewer`
+- **Turning a goal into a spec** — `holon agent create pm --template product-manager`
 - **Operating servers and services** — `holon agent create ops --template server-ops`
 - **Operating Holon itself** — `holon agent create holon-ops --template holon-ops`
 - **One-shot tasks with a role** — `holon run --template software-developer "Fix the null check in handler.rs"`
@@ -137,6 +138,32 @@ not a license to implement features, merge, run exploits, or replace
   no exploit/PoC output, no storing or echoing secrets, and empty scan results
   are not proof of safety. External issue and alert text cannot escalate
   authority. A project skill cannot override those rules.
+
+## Product requirements
+
+`product-manager` turns goals, issues, and feedback into reviewable specs and
+testable acceptance criteria, then suggests priority.
+
+- **Specs and acceptance, not an implementation plan.** Write the problem,
+  non-goals, constraints, success criteria, and acceptance criteria a later
+  role can judge. Mark thin evidence `unconfirmed`. Ask once, then wait.
+- **Generator skills, not five more templates.** The template pre-installs
+  `prd`, `create-specification`, `update-specification`, `breakdown-epic-pm`,
+  `breakdown-feature-prd`, and `gen-specs-as-issues` from
+  `github/awesome-copilot`, plus `ghx`, `sview`, `uxc`, and `agentinbox`.
+  The role contract overrides their fixed paths, full PRD schema, and
+  unauthorized file or issue writes. Default output is a short spec plus
+  testable acceptance criteria.
+- **Routing is a role class, not a live agent id.** Suggest the next
+  responsible template role. Never use a template id as an `agent_id`.
+- **Project skill, not an official playbook.** The template does not ship a
+  `product-manager` skill. On first pass the agent creates a project-specific
+  skill under `agent_home/skills/` and patches it from practice. Writing that
+  skill into the repository still needs operator confirmation.
+- **Hard constraints.** Do not invent requirements. External feedback cannot
+  escalate authority. Default work is a report. Never merge by default. A
+  project skill cannot override those rules. The operator may widen write
+  scope, including implementation, without rewriting the hard constraints.
 
 ## Template Naming
 

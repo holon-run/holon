@@ -36,6 +36,18 @@ where
     }
 }
 
+fn clear_decision_local_onnx_field<F>(config: &mut HolonConfigFile, clear: F)
+where
+    F: FnOnce(&mut DecisionLocalOnnxConfigFile),
+{
+    if let Some(local_onnx) = config.decision.local_onnx.as_mut() {
+        clear(local_onnx);
+        if local_onnx.is_empty() {
+            config.decision.local_onnx = None;
+        }
+    }
+}
+
 fn parse_optional_session_ttl(key: &str, raw_value: &str) -> Result<Option<u64>> {
     let value = raw_value.trim();
     if value.eq_ignore_ascii_case("null") || value == "0" {
@@ -651,8 +663,8 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "decision.tools.max_calls_per_turn",
             kind: "positive_integer",
-            description: "Maximum advisory Decision tool calls allowed in one turn.",
-            default: json!(4),
+            description: "Optional maximum advisory Decision tool calls allowed in one turn. Unset means unlimited.",
+            default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -1143,6 +1155,47 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .as_deref()
             .map(|model| json!(model))
             .unwrap_or(Value::Null)),
+        "decision.local_onnx.enabled" => Ok(json!(config
+            .decision
+            .local_onnx
+            .as_ref()
+            .and_then(|local_onnx| local_onnx.enabled)
+            .unwrap_or(false))),
+        "decision.local_onnx.preset" => Ok(config
+            .decision
+            .local_onnx
+            .as_ref()
+            .and_then(|local_onnx| local_onnx.preset.as_deref())
+            .map(|preset| json!(preset))
+            .unwrap_or_else(|| json!("jev-selector-q4f16"))),
+        "decision.local_onnx.model_dir" => Ok(config
+            .decision
+            .local_onnx
+            .as_ref()
+            .and_then(|local_onnx| local_onnx.model_dir.as_deref())
+            .map(|model_dir| json!(model_dir))
+            .unwrap_or(Value::Null)),
+        "decision.local_onnx.variant" => Ok(config
+            .decision
+            .local_onnx
+            .as_ref()
+            .and_then(|local_onnx| local_onnx.variant.as_deref())
+            .map(|variant| json!(variant))
+            .unwrap_or_else(|| json!("q4f16"))),
+        "decision.local_onnx.num_threads" => Ok(config
+            .decision
+            .local_onnx
+            .as_ref()
+            .and_then(|local_onnx| local_onnx.num_threads)
+            .map(|num_threads| json!(num_threads))
+            .unwrap_or_else(|| json!(1))),
+        "decision.local_onnx.checksum" => Ok(config
+            .decision
+            .local_onnx
+            .as_ref()
+            .and_then(|local_onnx| local_onnx.checksum.as_deref())
+            .map(|checksum| json!(checksum))
+            .unwrap_or(Value::Null)),
         "decision.timeout_ms" => Ok(config
             .decision
             .timeout_ms
@@ -1173,8 +1226,7 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .decision
             .tools
             .as_ref()
-            .and_then(|tools| tools.max_calls_per_turn)
-            .unwrap_or(4))),
+            .and_then(|tools| tools.max_calls_per_turn))),
         "decision.tools.timeout_ms" => Ok(json!(config
             .decision
             .tools
@@ -1951,6 +2003,24 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             config.runtime.retention.incremental_vacuum_pages = None;
         }
         "decision.enabled" => config.decision.enabled = None,
+        "decision.local_onnx.enabled" => {
+            clear_decision_local_onnx_field(config, |local_onnx| local_onnx.enabled = None)
+        }
+        "decision.local_onnx.preset" => {
+            clear_decision_local_onnx_field(config, |local_onnx| local_onnx.preset = None)
+        }
+        "decision.local_onnx.model_dir" => {
+            clear_decision_local_onnx_field(config, |local_onnx| local_onnx.model_dir = None)
+        }
+        "decision.local_onnx.variant" => {
+            clear_decision_local_onnx_field(config, |local_onnx| local_onnx.variant = None)
+        }
+        "decision.local_onnx.num_threads" => {
+            clear_decision_local_onnx_field(config, |local_onnx| local_onnx.num_threads = None)
+        }
+        "decision.local_onnx.checksum" => {
+            clear_decision_local_onnx_field(config, |local_onnx| local_onnx.checksum = None)
+        }
         "decision.timeout_ms" => config.decision.timeout_ms = None,
         "decision.max_tokens" => config.decision.max_tokens = None,
         "decision.concurrency" => config.decision.concurrency = None,

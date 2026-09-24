@@ -24,6 +24,8 @@ use thiserror::Error;
 #[cfg(feature = "onnx")]
 use tokio::sync::Mutex;
 
+pub mod state;
+
 const DEFAULT_MANIFEST: &str = "open_jev_config.json";
 const HOLON_MANIFEST: &str = "holon_model_manifest.json";
 const DEFAULT_MODEL: &str = "model.onnx";
@@ -80,6 +82,12 @@ impl LocalOnnxConfig {
         } else {
             ModelManifest::default()
         };
+        if manifest.encoding != ENCODING_QUESTION_TAIL {
+            return Err(LocalOnnxError::InvalidManifest(format!(
+                "unsupported encoding '{}' (expected '{}')",
+                manifest.encoding, ENCODING_QUESTION_TAIL
+            )));
+        }
         let model_path = resolve_model_file(&model_dir, &manifest.model, "model")?;
         let tokenizer_path = resolve_model_file(&model_dir, &manifest.tokenizer, "tokenizer")?;
         if let Some(expected) = self.checksum.as_deref() {
@@ -112,6 +120,11 @@ pub struct ModelManifest {
     pub max_length: usize,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    /// Text encoding contract. Required so model dirs from before this
+    /// contract fail loudly at load instead of silently scoring under the
+    /// wrong template. Only `question-tail` (training-corpus format with
+    /// tail-preserving truncation) is supported.
+    pub encoding: String,
 }
 
 fn default_model() -> String {
@@ -146,6 +159,12 @@ fn default_temperature() -> f32 {
     1.05
 }
 
+const ENCODING_QUESTION_TAIL: &str = "question-tail";
+
+fn default_encoding() -> String {
+    ENCODING_QUESTION_TAIL.into()
+}
+
 impl Default for ModelManifest {
     fn default() -> Self {
         Self {
@@ -157,6 +176,7 @@ impl Default for ModelManifest {
             output: default_output(),
             max_length: default_max_length(),
             temperature: default_temperature(),
+            encoding: default_encoding(),
         }
     }
 }
@@ -354,6 +374,10 @@ impl DecisionProvider<Value, Value> for LocalOnnxProvider {
                 "model_dir".into(),
                 self.files.model_dir.display().to_string(),
             );
+            evidence[0].metadata.insert(
+                "probabilities".into(),
+                serde_json::to_string(&result.probabilities).unwrap_or_default(),
+            );
             Ok(DecisionResponse {
                 schema_version: request.schema_version,
                 outcome: result.outcome,
@@ -377,6 +401,7 @@ struct OnnxRuntime {
 struct InferenceResult {
     outcome: DecisionOutcome<Value>,
     confidence: Option<f32>,
+    probabilities: Vec<f32>,
 }
 
 #[cfg(feature = "onnx")]
@@ -402,6 +427,46 @@ impl OnnxRuntime {
         })
     }
 
+    /// Encode one (state, schema, option) decision in the training-corpus
+    /// `question-tail` format: `[CLS] + state + "\n[问题] schema\n[选项] option" + [SEP]`.
+    /// The tail is always kept; the state head is truncated to fit max_length.
+    fn encode_question_tail(
+        &self,
+        state: &str,
+        schema: &str,
+        option: &str,
+    ) -> Result<Vec<i64>, LocalOnnxError> {
+        let tail = format!("\n[问题] {schema}\n[选项] {option}");
+        let tail_ids = self
+            .tokenizer
+            .encode(tail, false)
+            .map_err(|error| LocalOnnxError::Inference(error.to_string()))?
+            .get_ids()
+            .iter()
+            .map(|value| *value as i64)
+            .collect::<Vec<_>>();
+        let state_ids = self
+            .tokenizer
+            .encode(state, false)
+            .map_err(|error| LocalOnnxError::Inference(error.to_string()))?
+            .get_ids()
+            .iter()
+            .map(|value| *value as i64)
+            .collect::<Vec<_>>();
+        let cls = self
+            .tokenizer
+            .token_to_id("[CLS]")
+            .ok_or_else(|| LocalOnnxError::Inference("missing [CLS] token".into()))?
+            as i64;
+        let sep = self
+            .tokenizer
+            .token_to_id("[SEP]")
+            .ok_or_else(|| LocalOnnxError::Inference("missing [SEP] token".into()))?
+            as i64;
+        state::assemble_question_tail(cls, sep, &state_ids, &tail_ids, self.manifest.max_length)
+            .map_err(|message| LocalOnnxError::Inference(message.to_owned()))
+    }
+
     fn decide(
         &mut self,
         request: &DecisionRequest<Value, Value>,
@@ -412,44 +477,43 @@ impl OnnxRuntime {
             .get("baseline")
             .cloned()
             .unwrap_or_else(|| request.input.clone());
-        let mut texts = Vec::with_capacity(request.candidates.len());
+        let state_text = value_text(&state);
+        let mut sequences = Vec::with_capacity(request.candidates.len());
         for candidate in &request.candidates {
-            texts.push(format!(
-                "[CLS] [STATE] {} [Q] {} [OPT] {} [SEP]",
-                state, request.schema, candidate
-            ));
+            let option_text = value_text(candidate);
+            let sequence = self.encode_question_tail(&state_text, &request.schema, &option_text)?;
+            sequences.push(sequence);
         }
-        let mut scores = Vec::with_capacity(texts.len());
-        for text in texts {
+        let wants_token_types = self
+            .session
+            .inputs()
+            .iter()
+            .any(|input| input.name() == self.manifest.token_type_ids);
+        let mut scores = Vec::with_capacity(sequences.len());
+        for sequence in sequences {
             context
                 .check()
                 .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
-            let encoding = self
-                .tokenizer
-                .encode(text, true)
+            let length = sequence.len();
+            let ids = ort::value::Tensor::from_array((vec![1, length], sequence))
                 .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
-            let ids = encoding
-                .get_ids()
-                .iter()
-                .take(self.manifest.max_length)
-                .map(|value| *value as i64)
-                .collect::<Vec<_>>();
-            let mask = vec![1_i64; ids.len()];
-            let types = vec![0_i64; ids.len()];
-            let ids = ort::value::Tensor::from_array((vec![1, ids.len()], ids))
+            let mask = ort::value::Tensor::from_array((vec![1, length], vec![1_i64; length]))
                 .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
-            let mask = ort::value::Tensor::from_array((vec![1, mask.len()], mask))
-                .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
-            let types = ort::value::Tensor::from_array((vec![1, types.len()], types))
-                .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
-            let outputs = self
-                .session
-                .run(ort::inputs![
+            let outputs = if wants_token_types {
+                let types = ort::value::Tensor::from_array((vec![1, length], vec![0_i64; length]))
+                    .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
+                self.session.run(ort::inputs![
                     self.manifest.input_ids.as_str() => &ids,
                     self.manifest.attention_mask.as_str() => &mask,
                     self.manifest.token_type_ids.as_str() => &types
                 ])
-                .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
+            } else {
+                self.session.run(ort::inputs![
+                    self.manifest.input_ids.as_str() => &ids,
+                    self.manifest.attention_mask.as_str() => &mask
+                ])
+            }
+            .map_err(|error| LocalOnnxError::Inference(error.to_string()))?;
             let output = outputs.get(self.manifest.output.as_str()).ok_or_else(|| {
                 LocalOnnxError::Inference(format!(
                     "model output {} is missing",
@@ -477,6 +541,7 @@ impl OnnxRuntime {
                     reason: "local-onnx confidence below threshold".into(),
                 },
                 confidence: Some(confidence),
+                probabilities,
             });
         }
         let _ = best;
@@ -485,6 +550,7 @@ impl OnnxRuntime {
                 value: request.candidates[winner].clone(),
             },
             confidence: Some(confidence),
+            probabilities,
         })
     }
 }
@@ -498,6 +564,14 @@ fn softmax(scores: &[f32]) -> Vec<f32> {
         .collect::<Vec<_>>();
     let total = values.iter().sum::<f32>();
     values.into_iter().map(|value| value / total).collect()
+}
+
+#[cfg(feature = "onnx")]
+fn value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 #[cfg(test)]
@@ -541,6 +615,13 @@ mod tests {
         let manifest = ModelManifest::default();
         assert_eq!(manifest.model, DEFAULT_MODEL);
         assert_eq!(manifest.input_ids, "input_ids");
+    }
+
+    #[test]
+    fn manifest_requires_explicit_encoding() {
+        let error = serde_json::from_str::<ModelManifest>(r#"{"model": "model.onnx"}"#)
+            .expect_err("missing encoding must fail");
+        assert!(error.to_string().contains("encoding"));
     }
 
     #[test]

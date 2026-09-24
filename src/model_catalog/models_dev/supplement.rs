@@ -17,8 +17,8 @@
 //!
 //! The runtime merges the checked-in supplement into the built-in catalog
 //! (see `model_catalog::snapshot`). Nothing becomes callable without PR
-//! review and merge; the supplement never changes routes, credentials, or
-//! provider enablement.
+//! review and merge; the supplement never changes credentials or provider
+//! enablement.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
@@ -73,6 +73,9 @@ pub struct ModelsDevSupplement {
     #[serde(default)]
     pub adapter_version: String,
     pub models: Vec<BuiltInModelMetadata>,
+    /// Non-default routes admitted for newly drafted models.
+    #[serde(default)]
+    pub routes: Vec<ModelRouteRef>,
 }
 
 impl ModelsDevSupplement {
@@ -83,6 +86,7 @@ impl ModelsDevSupplement {
             upstream_revision: String::new(),
             adapter_version: String::new(),
             models: Vec::new(),
+            routes: Vec::new(),
         }
     }
 
@@ -100,6 +104,7 @@ impl ModelsDevSupplement {
         sorted
             .models
             .sort_by_key(|model| model.model_ref.as_string());
+        sorted.routes.sort_by_key(ModelRouteRef::as_string);
         serde_json::to_string_pretty(&sorted)
             .map_err(|error| format!("failed to serialize models.dev supplement: {error}"))
     }
@@ -145,6 +150,30 @@ impl ModelsDevSupplement {
                 ));
             }
         }
+        let model_refs: HashSet<ModelRef> = self
+            .models
+            .iter()
+            .map(|model| model.model_ref.clone())
+            .collect();
+        let mut seen_routes = HashSet::new();
+        for route in &self.routes {
+            if route.endpoint == ProviderEndpointId::default_endpoint() {
+                return Err(format!(
+                    "supplement route {} must not use the default endpoint",
+                    route.as_string()
+                ));
+            }
+            if !model_refs.contains(&route.model_ref()) {
+                return Err(format!(
+                    "supplement route {} references missing model {}",
+                    route.as_string(),
+                    route.model_ref().as_string()
+                ));
+            }
+            if !seen_routes.insert(route.clone()) {
+                return Err(format!("duplicate supplement route {}", route.as_string()));
+            }
+        }
         Ok(())
     }
 
@@ -179,6 +208,18 @@ impl ModelsDevSupplement {
                 .route_entries
                 .entry(route_ref)
                 .or_insert_with(BuiltInModelRoutePolicy::default);
+        }
+        for route_ref in &self.routes {
+            if catalog
+                .route_entries
+                .insert(route_ref.clone(), BuiltInModelRoutePolicy::default())
+                .is_some()
+            {
+                return Err(format!(
+                    "supplement route {} collides with a built-in route",
+                    route_ref.as_string()
+                ));
+            }
         }
         Ok(())
     }
@@ -403,6 +444,34 @@ pub fn generate(
     }));
 
     models.sort_by_key(|model| model.model_ref.as_string());
+    let current_model_refs: HashSet<ModelRef> =
+        models.iter().map(|model| model.model_ref.clone()).collect();
+    let mut routes = Vec::new();
+    let mut route_keys = HashSet::new();
+    if let Some(previous) = previous {
+        for route in &previous.routes {
+            if current_model_refs.contains(&route.model_ref())
+                && route_keys.insert(route.as_string())
+            {
+                routes.push(route.clone());
+            }
+        }
+    }
+    for model in &drafted {
+        for endpoint in supplemental_route_endpoints(model.model_ref.provider.as_str()) {
+            let endpoint = ProviderEndpointId::parse(endpoint)
+                .expect("supplemental route endpoint constants must be valid");
+            let route = ModelRouteRef::new(
+                model.model_ref.provider.clone(),
+                endpoint,
+                model.model_ref.model.clone(),
+            );
+            if route_keys.insert(route.as_string()) {
+                routes.push(route);
+            }
+        }
+    }
+    routes.sort_by_key(ModelRouteRef::as_string);
     retained.sort();
     deferred.sort_by(|a, b| a.model_ref.cmp(&b.model_ref));
     removed.sort_by(|a, b| a.model_ref.cmp(&b.model_ref));
@@ -414,6 +483,7 @@ pub fn generate(
             upstream_revision: upstream_revision.to_string(),
             adapter_version: adapter_version.to_string(),
             models,
+            routes,
         },
         drafted,
         retained,
@@ -421,6 +491,16 @@ pub fn generate(
         deferred,
         providers_not_allowlisted,
     })
+}
+
+fn supplemental_route_endpoints(provider: &str) -> &'static [&'static str] {
+    match provider {
+        "dashscope" => &["coding-plan", "token-plan"],
+        "stepfun" => &["plan"],
+        "volcengine" => &["plan"],
+        "xiaomi" => &["token-plan"],
+        _ => &[],
+    }
 }
 
 fn release_date_key(model: &ModelsDevModel) -> Option<&str> {
@@ -583,6 +663,7 @@ mod tests {
             upstream_revision: "abc".into(),
             adapter_version: "test".into(),
             models: vec![metadata, vanished],
+            routes: Vec::new(),
         }
     }
 

@@ -3509,6 +3509,7 @@ mod tests {
             "issue-triager",
             "docs-steward",
             "security-reviewer",
+            "product-manager",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3735,6 +3736,45 @@ mod tests {
         assert!(security_agents_md.contains("escalate authority"));
         assert!(security_agents_md.contains("Do not take on `github-issue-solve`"));
         assert!(security_agents_md.contains("Never store or echo secrets"));
+
+        let product_template = syncable.join("product-manager");
+        assert_eq!(
+            local_template_skills(&product_template),
+            vec![
+                "github/awesome-copilot/skills/breakdown-epic-pm",
+                "github/awesome-copilot/skills/breakdown-feature-prd",
+                "github/awesome-copilot/skills/create-specification",
+                "github/awesome-copilot/skills/gen-specs-as-issues",
+                "github/awesome-copilot/skills/prd",
+                "github/awesome-copilot/skills/update-specification",
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+            ]
+        );
+        let product_agents_md =
+            fs::read_to_string(product_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(product_agents_md.contains("reviewable specs and testable acceptance criteria"));
+        assert!(product_agents_md.contains("ask once, then wait"));
+        assert!(product_agents_md.contains("suggest priority"));
+        assert!(product_agents_md.contains("Never merge by default"));
+        assert!(product_agents_md.contains("prefer `agent_home/skills/`"));
+        assert!(product_agents_md.contains("There is no official `product-manager` skill"));
+        assert!(product_agents_md.contains("cannot be overridden by a project skill"));
+        assert!(product_agents_md.contains("not a live `agent_id`"));
+        assert!(product_agents_md.contains("Never use a template id as an `agent_id`"));
+        assert!(product_agents_md.contains("escalate authority"));
+        assert!(product_agents_md.contains("`unconfirmed`"));
+        assert!(product_agents_md.contains("`prd`"));
+        assert!(product_agents_md.contains("`create-specification`"));
+        assert!(product_agents_md.contains("`update-specification`"));
+        assert!(product_agents_md.contains("`breakdown-epic-pm`"));
+        assert!(product_agents_md.contains("`breakdown-feature-prd`"));
+        assert!(product_agents_md.contains("`gen-specs-as-issues`"));
+        assert!(product_agents_md.contains("Do not create `/spec/`"));
+        assert!(product_agents_md.contains("Do not open a GitHub issue without"));
+        assert!(product_agents_md.contains("Default work is a report"));
     }
 
     #[test]
