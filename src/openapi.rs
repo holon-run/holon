@@ -82,7 +82,7 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/handshake", "handshake", "discovery", "Protocol handshake", "Return auth mode, protocol version, capabilities, and runtime hints.", None, "HandshakeResponse", AuthKind::RemoteAccess),
     route("get", "/models", "models", "discovery", "List available models", "Return model catalog entries and runtime availability.", None, AuthKind::RemoteAccess),
     route("post", "/models/refresh", "refreshModels", "discovery", "Refresh available models", "Discover models for providers with missing or expired caches, then return the model catalog and runtime availability.", None, AuthKind::RemoteAccess),
-    aide_route_with_response("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries.", None, "AgentListResponse", AuthKind::RemoteAccess),
+    aide_route_with_response("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries. Optional parent query parameter filters the public roster to direct children of that parent.", None, "AgentListResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/snapshot", "agentsSnapshot", "agents", "Agent roster snapshot", "Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentRosterSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/projection-snapshot", "agentProjectionSnapshot", "agents", "Agent projection snapshot", "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentProjectionSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
@@ -472,6 +472,15 @@ fn aide_operation(spec: &RouteSpec) -> Operation {
 
 fn operation(spec: &RouteSpec) -> Value {
     let mut parameters = path_parameters(spec.path);
+    if spec.operation_id == "listAgents" {
+        parameters.push(json!({
+            "name": "parent",
+            "in": "query",
+            "required": false,
+            "description": "Exact direct parent agent id; filters only the lightweight public roster.",
+            "schema": { "type": "string" }
+        }));
+    }
     if spec.operation_id == "runtimeTraceSearch" {
         parameters.push(json!({
             "name": "query",

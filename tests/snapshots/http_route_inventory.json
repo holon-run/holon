@@ -75,7 +75,13 @@
     "handler": "list_agent_entries",
     "operation_id": "listAgents",
     "tag": "agents",
-    "parameters": [],
+    "parameters": [
+      {
+        "name": "parent",
+        "location": "query",
+        "required": false
+      }
+    ],
     "request_schema": null,
     "request_strict": null,
     "response_content_types": [
