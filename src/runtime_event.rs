@@ -1,6 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::decision_telemetry::{DecisionAdvisoryCompletedEvent, DecisionOutcomeRecordedEvent};
 use crate::types::{
     AgentStateChangedEvent, BriefCreatedAuditEvent, MessageLifecycleAuditEvent,
     SchedulerDiagnosticAuditEvent, TaskLifecycleAuditEvent, WorkItemLifecycleAuditEvent,
@@ -65,6 +66,8 @@ pub const ALL_RUNTIME_EVENT_KINDS: &[RuntimeEventKind] = &[
     RuntimeEventKind::WorkItemWritten,
     RuntimeEventKind::AgentStateChanged,
     RuntimeEventKind::SchedulerDiagnostic,
+    RuntimeEventKind::DecisionAdvisoryCompleted,
+    RuntimeEventKind::DecisionOutcomeRecorded,
 ];
 
 /// Wire names in the public typed-event matrix. Events outside this set stay
@@ -79,6 +82,8 @@ pub const PUBLIC_TYPED_RUNTIME_EVENT_WIRE_NAMES: &[&str] = &[
     "work_item_written",
     "agent_state_changed",
     "scheduler_diagnostic",
+    "decision_advisory_completed",
+    "decision_outcome_recorded",
 ];
 
 pub fn legacy_contract_version() -> u32 {
@@ -116,6 +121,8 @@ pub enum RuntimeEventKind {
     WorkItemWritten,
     AgentStateChanged,
     SchedulerDiagnostic,
+    DecisionAdvisoryCompleted,
+    DecisionOutcomeRecorded,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema, PartialEq, Eq)]
@@ -157,6 +164,14 @@ impl RuntimeEventPayload for AgentStateChangedEvent {
 
 impl RuntimeEventPayload for SchedulerDiagnosticAuditEvent {
     const SCHEMA_ID: &'static str = "holon.runtime_event.scheduler_diagnostic";
+}
+
+impl RuntimeEventPayload for DecisionAdvisoryCompletedEvent {
+    const SCHEMA_ID: &'static str = "holon.runtime_event.decision_advisory_completed";
+}
+
+impl RuntimeEventPayload for DecisionOutcomeRecordedEvent {
+    const SCHEMA_ID: &'static str = "holon.runtime_event.decision_outcome_recorded";
 }
 
 const REGISTRY: &[RuntimeEventDescriptor] = &[
@@ -240,6 +255,24 @@ const REGISTRY: &[RuntimeEventDescriptor] = &[
         payload_schema_version: SchedulerDiagnosticAuditEvent::SCHEMA_VERSION,
         display_family: RuntimeEventDisplayFamily::Scheduler,
         fixture_json: r#"{"agent_id":"default","decision":"StartModelTurn","reason":"message_admitted","boundary":"run_loop","scenario_class":"message_admission","work_item_id":null,"message_id":"msg_fixture","task_id":null,"evidence":["queue_len=1"]}"#,
+    },
+    RuntimeEventDescriptor {
+        kind: RuntimeEventKind::DecisionAdvisoryCompleted,
+        wire_name: "decision_advisory_completed",
+        projection_effect: ProjectionEffect::None,
+        payload_schema: DecisionAdvisoryCompletedEvent::SCHEMA_ID,
+        payload_schema_version: DecisionAdvisoryCompletedEvent::SCHEMA_VERSION,
+        display_family: RuntimeEventDisplayFamily::Scheduler,
+        fixture_json: r#"{"decision_id":"decision_fixture","agent_id":"default","request_fingerprint":"fixture","provider":"fixture","model":"fixture","outcome":"select","choice":"yes","abstain":false,"fallback":false,"timeout":false,"evidence":[],"recorded_at":"2026-01-01T00:00:00Z"}"#,
+    },
+    RuntimeEventDescriptor {
+        kind: RuntimeEventKind::DecisionOutcomeRecorded,
+        wire_name: "decision_outcome_recorded",
+        projection_effect: ProjectionEffect::None,
+        payload_schema: DecisionOutcomeRecordedEvent::SCHEMA_ID,
+        payload_schema_version: DecisionOutcomeRecordedEvent::SCHEMA_VERSION,
+        display_family: RuntimeEventDisplayFamily::Scheduler,
+        fixture_json: r#"{"decision_id":"decision_fixture","agent_id":"default","task_id":"task_fixture","task_status":"completed","recorded_at":"2026-01-01T00:00:00Z"}"#,
     },
 ];
 
@@ -376,6 +409,14 @@ mod tests {
                 RuntimeEventKind::SchedulerDiagnostic => {
                     serde_json::from_str::<SchedulerDiagnosticAuditEvent>(entry.fixture_json)
                         .expect("scheduler diagnostic fixture must match its payload type");
+                }
+                RuntimeEventKind::DecisionAdvisoryCompleted => {
+                    serde_json::from_str::<DecisionAdvisoryCompletedEvent>(entry.fixture_json)
+                        .expect("decision advisory fixture must match its payload type");
+                }
+                RuntimeEventKind::DecisionOutcomeRecorded => {
+                    serde_json::from_str::<DecisionOutcomeRecordedEvent>(entry.fixture_json)
+                        .expect("decision outcome fixture must match its payload type");
                 }
             }
         }
@@ -630,16 +671,18 @@ mod tests {
 
     #[test]
     fn scheduler_diagnostics_are_projection_neutral() {
-        // Self-contained diagnostics are outside AgentCanonicalProjection v1;
-        // every other family references canonical display state.
-        assert_eq!(
-            RuntimeEventKind::SchedulerDiagnostic
-                .descriptor()
-                .projection_effect,
-            ProjectionEffect::None
-        );
+        // Self-contained diagnostics and decision telemetry are outside
+        // AgentCanonicalProjection v1; every other family references
+        // canonical display state.
+        let neutral_kinds = [
+            RuntimeEventKind::SchedulerDiagnostic,
+            RuntimeEventKind::DecisionAdvisoryCompleted,
+            RuntimeEventKind::DecisionOutcomeRecorded,
+        ];
         for entry in runtime_event_registry() {
-            if entry.kind != RuntimeEventKind::SchedulerDiagnostic {
+            if neutral_kinds.contains(&entry.kind) {
+                assert_eq!(entry.projection_effect, ProjectionEffect::None);
+            } else {
                 assert_eq!(
                     entry.projection_effect,
                     ProjectionEffect::DisplayInvalidation
