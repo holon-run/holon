@@ -74,7 +74,7 @@ pub(super) struct ConfigSnapshot {
     pub web_config: crate::web::WebConfig,
     pub x_search_config: Option<crate::config::XSearchRuntimeConfig>,
     pub decision_tool_enabled: bool,
-    pub decision_tool_max_calls_per_turn: usize,
+    pub decision_tool_max_calls_per_turn: Option<usize>,
     pub decision_tool_timeout_ms: u64,
     pub decision_tool_min_confidence: f32,
 }
@@ -128,8 +128,7 @@ impl ConfigSnapshot {
                 .decision
                 .tools
                 .as_ref()
-                .and_then(|tools| tools.max_calls_per_turn)
-                .unwrap_or(4),
+                .and_then(|tools| tools.max_calls_per_turn),
             decision_tool_timeout_ms: config
                 .stored_config
                 .decision
@@ -472,8 +471,7 @@ impl RuntimeHandle {
             decision_tool_max_calls_per_turn: provider_reconfig
                 .as_ref()
                 .and_then(|reconfig| reconfig.config.stored_config.decision.tools.as_ref())
-                .and_then(|tools| tools.max_calls_per_turn)
-                .unwrap_or(4),
+                .and_then(|tools| tools.max_calls_per_turn),
             decision_tool_timeout_ms: provider_reconfig
                 .as_ref()
                 .and_then(|reconfig| reconfig.config.stored_config.decision.tools.as_ref())

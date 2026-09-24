@@ -175,7 +175,7 @@ pub struct RuntimeDecisionLocalOnnxSurface {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct RuntimeDecisionToolsSurface {
     pub enabled: bool,
-    pub max_calls_per_turn: usize,
+    pub max_calls_per_turn: Option<usize>,
     pub timeout_ms: u64,
     pub min_confidence_percent: u8,
 }
@@ -184,7 +184,7 @@ impl Default for RuntimeDecisionToolsSurface {
     fn default() -> Self {
         Self {
             enabled: false,
-            max_calls_per_turn: 4,
+            max_calls_per_turn: None,
             timeout_ms: 1500,
             min_confidence_percent: 0,
         }
@@ -262,9 +262,7 @@ impl RuntimeDecisionSurface {
             },
             tools: RuntimeDecisionToolsSurface {
                 enabled: tools.and_then(|tools| tools.enabled).unwrap_or(false),
-                max_calls_per_turn: tools
-                    .and_then(|tools| tools.max_calls_per_turn)
-                    .unwrap_or(4),
+                max_calls_per_turn: tools.and_then(|tools| tools.max_calls_per_turn),
                 timeout_ms: tools.and_then(|tools| tools.timeout_ms).unwrap_or(1500),
                 min_confidence_percent: tools
                     .and_then(|tools| tools.min_confidence)

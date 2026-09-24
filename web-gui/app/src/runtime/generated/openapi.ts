@@ -5981,7 +5981,7 @@ export interface components {
                  *       "protocol": null,
                  *       "tools": {
                  *         "enabled": false,
-                 *         "max_calls_per_turn": 4,
+                 *         "max_calls_per_turn": null,
                  *         "min_confidence_percent": 0,
                  *         "timeout_ms": 1500
                  *       }
@@ -6012,7 +6012,7 @@ export interface components {
                     /**
                      * @default {
                      *       "enabled": false,
-                     *       "max_calls_per_turn": 4,
+                     *       "max_calls_per_turn": null,
                      *       "min_confidence_percent": 0,
                      *       "timeout_ms": 1500
                      *     }
@@ -6020,7 +6020,7 @@ export interface components {
                     tools: {
                         enabled: boolean;
                         /** Format: uint */
-                        max_calls_per_turn: number;
+                        max_calls_per_turn?: number | null;
                         /** Format: uint8 */
                         min_confidence_percent: number;
                         /** Format: uint64 */
@@ -6172,7 +6172,7 @@ export interface components {
                  *       "protocol": null,
                  *       "tools": {
                  *         "enabled": false,
-                 *         "max_calls_per_turn": 4,
+                 *         "max_calls_per_turn": null,
                  *         "min_confidence_percent": 0,
                  *         "timeout_ms": 1500
                  *       }
@@ -6203,7 +6203,7 @@ export interface components {
                     /**
                      * @default {
                      *       "enabled": false,
-                     *       "max_calls_per_turn": 4,
+                     *       "max_calls_per_turn": null,
                      *       "min_confidence_percent": 0,
                      *       "timeout_ms": 1500
                      *     }
@@ -6211,7 +6211,7 @@ export interface components {
                     tools: {
                         enabled: boolean;
                         /** Format: uint */
-                        max_calls_per_turn: number;
+                        max_calls_per_turn?: number | null;
                         /** Format: uint8 */
                         min_confidence_percent: number;
                         /** Format: uint64 */
