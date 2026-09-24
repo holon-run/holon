@@ -1,5 +1,8 @@
 package run.holon.android.app
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,6 +22,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -26,6 +31,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -69,6 +77,8 @@ private enum class ConnectionState {
 }
 
 private val requiredCapabilities = setOf("agents.conversation-read.v1")
+private const val APP_PREFERENCES = "holon_android"
+private const val BASE_URL_KEY = "base_url"
 
 private fun connectionError(error: Throwable): String =
     when (error) {
@@ -87,14 +97,26 @@ private fun isTerminalTaskStatus(status: String): Boolean =
     status.lowercase() in
         setOf("completed", "succeeded", "success", "failed", "error", "cancelled", "canceled", "done")
 
+private fun isNetworkAvailable(context: Context): Boolean {
+    val manager = context.getSystemService(ConnectivityManager::class.java) ?: return false
+    val network = manager.activeNetwork ?: return false
+    return manager.getNetworkCapabilities(network) != null
+}
+
 @Composable
-private fun HolonApp(context: android.content.Context) {
+private fun HolonApp(context: Context) {
     val scope = rememberCoroutineScope()
     val sessionStore = remember(context) { createSessionStore(context) }
-    var baseUrl by remember { mutableStateOf(defaultBaseUrl()) }
+    val preferences = remember(context) {
+        context.getSharedPreferences(APP_PREFERENCES, Context.MODE_PRIVATE)
+    }
+    var baseUrl by remember {
+        mutableStateOf(preferences.getString(BASE_URL_KEY, null) ?: defaultBaseUrl())
+    }
     var sessionCredential by remember {
         mutableStateOf(sessionStore.read().orEmpty())
     }
+    var networkAvailable by remember { mutableStateOf(isNetworkAvailable(context)) }
     var state by remember { mutableStateOf(ConnectionState.Disconnected) }
     var status by remember { mutableStateOf("未连接") }
     var agents by remember { mutableStateOf(emptyList<AgentSummary>()) }
@@ -105,6 +127,7 @@ private fun HolonApp(context: android.content.Context) {
     var conversationStatus by remember { mutableStateOf("请选择 agent 查看会话") }
     var conversationCursor by remember { mutableStateOf<String?>(null) }
     var conversationResetRequired by remember { mutableStateOf(false) }
+    var connectionJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var conversationJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var taskInput by remember { mutableStateOf("") }
     var taskStatus by remember { mutableStateOf("暂无任务") }
@@ -116,6 +139,7 @@ private fun HolonApp(context: android.content.Context) {
     var artifactContent by remember { mutableStateOf<String?>(null) }
     var taskRefreshJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
     var taskSubmitJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var restoreConversation by remember { mutableStateOf(false) }
     fun clearTaskDetails(cancelSubmit: Boolean = false) {
         taskRefreshJob?.cancel()
         if (cancelSubmit) {
@@ -302,8 +326,13 @@ private fun HolonApp(context: android.content.Context) {
             }
     }
 
-    fun connect() {
-        if (logoutInProgress) return
+    fun connect(preserveSelection: Boolean = false) {
+        if (logoutInProgress || state == ConnectionState.Connecting) return
+        if (!networkAvailable) {
+            state = ConnectionState.Disconnected
+            status = "网络离线，恢复网络后可自动重连"
+            return
+        }
         requestGeneration++
         val generation = requestGeneration
         if (BuildConfig.DEBUG) {
@@ -316,8 +345,10 @@ private fun HolonApp(context: android.content.Context) {
         state = ConnectionState.Connecting
         status = "正在连接…"
         agents = emptyList()
-        selectedAgent = null
-        conversation = null
+        if (!preserveSelection) {
+            selectedAgent = null
+            conversation = null
+        }
         toolExecutions = emptyList()
         artifactStatus = null
         artifactContent = null
@@ -326,7 +357,7 @@ private fun HolonApp(context: android.content.Context) {
         conversationResetRequired = false
         conversationJob?.cancel()
         val url = baseUrl
-        scope.launch {
+        connectionJob = scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
                     val connection = HolonHttpClient(
@@ -498,6 +529,103 @@ private fun HolonApp(context: android.content.Context) {
         }
     }
 
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(context) {
+        val manager = context.getSystemService(ConnectivityManager::class.java)
+        if (manager == null) {
+            onDispose { }
+        } else {
+            val callback =
+                object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        scope.launch {
+                            networkAvailable = true
+                            if (sessionCredential.isNotBlank() &&
+                                state != ConnectionState.Connected &&
+                                state != ConnectionState.Connecting
+                            ) {
+                                connect(preserveSelection = true)
+                            }
+                        }
+                    }
+
+                    override fun onLost(network: Network) {
+                        scope.launch {
+                            networkAvailable = isNetworkAvailable(context)
+                            if (!networkAvailable || state == ConnectionState.Connecting) {
+                                requestGeneration++
+                                connectionJob?.cancel()
+                                conversationJob?.cancel()
+                                conversation = null
+                                conversationCursor = null
+                                restoreConversation = selectedAgent != null
+                                clearTaskDetails(cancelSubmit = true)
+                                state = ConnectionState.Disconnected
+                                status = "网络离线，恢复网络后自动重连"
+                                conversationStatus = "网络离线，前台恢复后重新同步"
+                            }
+                        }
+                    }
+                }
+            manager.registerDefaultNetworkCallback(callback)
+            onDispose {
+                manager.unregisterNetworkCallback(callback)
+            }
+        }
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer =
+            LifecycleEventObserver { _, event ->
+                when (event) {
+                    Lifecycle.Event.ON_STOP -> {
+                        if (state != ConnectionState.Disconnected ||
+                            connectionJob?.isActive == true ||
+                            conversationJob?.isActive == true ||
+                            taskRefreshJob?.isActive == true ||
+                            taskSubmitJob?.isActive == true
+                        ) {
+                            requestGeneration++
+                            connectionJob?.cancel()
+                            conversationJob?.cancel()
+                            conversation = null
+                            conversationCursor = null
+                            restoreConversation = true
+                            clearTaskDetails(cancelSubmit = true)
+                            state = ConnectionState.Disconnected
+                            status = "应用进入后台，前台恢复后重新连接"
+                            conversationStatus = "应用进入后台，前台恢复后重新同步"
+                        }
+                    }
+                    Lifecycle.Event.ON_START -> {
+                        if (networkAvailable &&
+                            sessionCredential.isNotBlank() &&
+                            state != ConnectionState.Connected &&
+                            state != ConnectionState.Connecting
+                        ) {
+                            connect(preserveSelection = true)
+                        }
+                    }
+                    else -> Unit
+                }
+            }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(Unit) {
+        if (networkAvailable && sessionCredential.isNotBlank()) {
+            connect()
+        }
+    }
+
+    LaunchedEffect(state, restoreConversation) {
+        if (state == ConnectionState.Connected && restoreConversation) {
+            restoreConversation = false
+            selectedAgent?.let { loadConversation(it) }
+        }
+    }
+
     Column(
         modifier =
             Modifier
@@ -516,9 +644,25 @@ private fun HolonApp(context: android.content.Context) {
             },
             style = MaterialTheme.typography.titleMedium,
         )
+        Text(
+            if (networkAvailable) {
+                "网络状态：在线"
+            } else {
+                "网络状态：离线（请求已暂停，恢复后自动重连）"
+            },
+            color =
+                if (networkAvailable) {
+                    MaterialTheme.colorScheme.onSurface
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+        )
         OutlinedTextField(
             value = baseUrl,
-            onValueChange = { baseUrl = it },
+            onValueChange = {
+                baseUrl = it
+                preferences.edit().putString(BASE_URL_KEY, it).apply()
+            },
             label = { Text("Holon API base URL") },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
@@ -542,7 +686,7 @@ private fun HolonApp(context: android.content.Context) {
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = ::connect,
-                enabled = state != ConnectionState.Connecting && !logoutInProgress,
+                enabled = networkAvailable && state != ConnectionState.Connecting && !logoutInProgress,
             ) {
                 Text(when (state) {
                     ConnectionState.Connecting -> "连接中…"
@@ -653,6 +797,10 @@ private fun HolonApp(context: android.content.Context) {
             }
             Spacer(Modifier.height(12.dp))
             Text("文字任务", style = MaterialTheme.typography.titleMedium)
+            Text(
+                "图片任务：当前服务端未公开 Android 可用接口，已安全禁用。",
+                style = MaterialTheme.typography.bodySmall,
+            )
             OutlinedTextField(
                 value = taskInput,
                 onValueChange = { taskInput = it },
