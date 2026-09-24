@@ -210,7 +210,7 @@ export interface paths {
         };
         /**
          * Agent event page
-         * @description Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level-filtered page changes presentation only and is never proof of raw continuity. The page declares the envelope contract version once as a top-level contract_version field; envelopes carry payload_schema only for typed events and no longer repeat contract_version, payload_schema_version, or provenance.
+         * @description Return a bounded page of versioned runtime event envelopes. Query parameters: before_seq, after_seq, limit, order, max_level, event_kind. Identity is (event_log_epoch, agent_id, event_seq); unknown kinds retain their opaque payload. While events.projection-effect.v1 is advertised every envelope carries the additive projection_effect classification derived from the runtime event registry (envelope contract version 3); a max_level- or event_kind-filtered page changes presentation only and is never proof of raw continuity. The page declares the envelope contract version once as a top-level contract_version field; envelopes carry payload_schema only for typed events and no longer repeat contract_version, payload_schema_version, or provenance.
          */
         get: operations["agentEvents"];
         put?: never;
@@ -5981,7 +5981,7 @@ export interface components {
                  *       "protocol": null,
                  *       "tools": {
                  *         "enabled": false,
-                 *         "max_calls_per_turn": 4,
+                 *         "max_calls_per_turn": null,
                  *         "min_confidence_percent": 0,
                  *         "timeout_ms": 1500
                  *       }
@@ -6012,7 +6012,7 @@ export interface components {
                     /**
                      * @default {
                      *       "enabled": false,
-                     *       "max_calls_per_turn": 4,
+                     *       "max_calls_per_turn": null,
                      *       "min_confidence_percent": 0,
                      *       "timeout_ms": 1500
                      *     }
@@ -6020,7 +6020,7 @@ export interface components {
                     tools: {
                         enabled: boolean;
                         /** Format: uint */
-                        max_calls_per_turn: number;
+                        max_calls_per_turn?: number | null;
                         /** Format: uint8 */
                         min_confidence_percent: number;
                         /** Format: uint64 */
@@ -6172,7 +6172,7 @@ export interface components {
                  *       "protocol": null,
                  *       "tools": {
                  *         "enabled": false,
-                 *         "max_calls_per_turn": 4,
+                 *         "max_calls_per_turn": null,
                  *         "min_confidence_percent": 0,
                  *         "timeout_ms": 1500
                  *       }
@@ -6203,7 +6203,7 @@ export interface components {
                     /**
                      * @default {
                      *       "enabled": false,
-                     *       "max_calls_per_turn": 4,
+                     *       "max_calls_per_turn": null,
                      *       "min_confidence_percent": 0,
                      *       "timeout_ms": 1500
                      *     }
@@ -6211,7 +6211,7 @@ export interface components {
                     tools: {
                         enabled: boolean;
                         /** Format: uint */
-                        max_calls_per_turn: number;
+                        max_calls_per_turn?: number | null;
                         /** Format: uint8 */
                         min_confidence_percent: number;
                         /** Format: uint64 */
