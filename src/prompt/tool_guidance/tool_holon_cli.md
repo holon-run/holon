@@ -42,3 +42,19 @@ operational/control failure, and `2` for CLI usage failure. Use
 `holon task list` and `holon work-item` lifecycle commands for inspection and
 bounded mutations; do not use recursive `holon run` or `holon prompt` as a
 replacement for `Enqueue`, `CreateAgent`, `InvokeAgent`, or the current WorkItem lifecycle.
+
+Agent lifecycle and child visibility:
+
+- The runtime already exposes direct child agents in the current agent's
+  `AgentSummary.active_children` projection, including private supervised
+  children. Use the native `GetAgent` view first; do not recreate a second
+  child roster in prompts or CLI scripts.
+- `holon agent list --parent self` is only a lightweight public-roster filter.
+  It is useful for public named agents, but it is not a replacement for
+  `active_children` and does not enumerate private supervised children.
+- If you created a disposable child and have confirmed that it is no longer
+  needed, remove only that owned child with
+  `holon agent delete <AGENT_ID> --yes --wait`. Use
+  `--cascade-private-children` only when you intentionally want to remove its
+  private descendants as well. Do not delete shared or long-lived agents just
+  because their current task is terminal.

@@ -338,6 +338,7 @@ pub async fn handshake(
 pub async fn list_agent_entries(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<AgentListQuery>,
 ) -> AxumResponse {
     let started_at = std::time::Instant::now();
     if let Err(error) = authorize_remote_access(&headers, &state) {
@@ -349,7 +350,7 @@ pub async fn list_agent_entries(
             let projection_started = std::time::Instant::now();
             let agents = state
                 .host
-                .list_agent_entries()
+                .list_agent_entries_for_parent(query.parent.as_deref())
                 .await
                 .map_err(error_response)
                 .map_err(ProjectionFailure::from)?;
@@ -361,4 +362,12 @@ pub async fn list_agent_entries(
         Ok(bytes) => traced_json_bytes("/agents/list", started_at, bytes),
         Err(error) => projection_gate_error_response(error),
     }
+}
+
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+pub struct AgentListQuery {
+    /// Exact direct parent filter. The endpoint still returns only the
+    /// lightweight public roster; private supervised children are exposed via
+    /// the caller's AgentSummary.active_children projection.
+    pub parent: Option<String>,
 }

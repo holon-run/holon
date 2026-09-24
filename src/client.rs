@@ -412,6 +412,16 @@ impl LocalClient {
         self.get_json("/agents/list").await
     }
 
+    pub async fn list_agent_entries_for_parent(
+        &self,
+        parent_agent_id: &str,
+    ) -> Result<Vec<AgentListEntry>> {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("parent", parent_agent_id)
+            .finish();
+        self.get_json(&format!("/agents/list?{query}")).await
+    }
+
     pub async fn operator_agent_tree(&self) -> Result<AgentTreeProjection> {
         self.get_json("/control/agents/tree").await
     }

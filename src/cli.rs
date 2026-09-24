@@ -861,7 +861,12 @@ pub enum RuntimeDbAuditCheckArg {
 
 #[derive(Debug, Subcommand)]
 pub enum AgentCommands {
-    List,
+    List {
+        /// Filter to direct children of this parent agent; `self` means the
+        /// current caller in agent mode.
+        #[arg(long)]
+        parent: Option<String>,
+    },
     Get {
         agent_id: Option<String>,
     },

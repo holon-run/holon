@@ -1526,8 +1526,18 @@ mod tests {
         assert!(matches!(
             cli.command,
             Commands::Agent {
-                command: Some(AgentCommands::List)
+                command: Some(AgentCommands::List { parent: None })
             }
+        ));
+
+        let cli = Cli::parse_from(["holon", "agent", "list", "--parent", "self"]);
+        assert!(matches!(
+            cli.command,
+            Commands::Agent {
+                command: Some(AgentCommands::List {
+                    parent: Some(parent)
+                })
+            } if parent == "self"
         ));
     }
 
@@ -5193,6 +5203,24 @@ fn cli_target_agent(config: &AppConfig, explicit: Option<String>) -> Result<Stri
         .unwrap_or_else(|| config.default_agent_id.clone()))
 }
 
+fn cli_agent_list_parent(parent: String) -> Result<String> {
+    let context = cli_invocation_context()?;
+    if parent == "self" {
+        return context
+            .map(|context| context.caller_agent_id)
+            .ok_or_else(|| anyhow!("agent_scope_denied: --parent self requires agent mode"));
+    }
+    if let Some(context) = context {
+        if context.caller_agent_id != parent {
+            return Err(anyhow!(
+                "agent_scope_denied: agent mode may only query its own direct children; \
+                 use --parent self"
+            ));
+        }
+    }
+    Ok(parent)
+}
+
 fn cli_invocation_context() -> Result<Option<AgentInvocationContext>> {
     AgentInvocationContext::from_env().map_err(|error| anyhow!(error))
 }
@@ -5246,9 +5274,18 @@ fn read_report_input(report: Option<String>, report_file: Option<PathBuf>) -> Re
 
 async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>) -> Result<()> {
     match command {
-        None | Some(AgentCommands::List) => {
+        None | Some(AgentCommands::List { parent: None }) => {
             let client = LocalClient::new(config.clone())?;
             print_json(&serde_json::to_value(client.list_agent_entries().await?)?)
+        }
+        Some(AgentCommands::List {
+            parent: Some(parent),
+        }) => {
+            let parent = cli_agent_list_parent(parent)?;
+            let client = LocalClient::new(config.clone())?;
+            print_json(&serde_json::to_value(
+                client.list_agent_entries_for_parent(&parent).await?,
+            )?)
         }
         Some(AgentCommands::Get { agent_id }) => {
             let agent = cli_target_agent(config, agent_id)?;
