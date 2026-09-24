@@ -288,7 +288,10 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
         <details key={input.message_id} className="conversation-source" data-conversation-anchor={`input:${input.message_id}`}>
           <summary><Bot size={13} />{t(`agentPage.turnSource.${input.presentation_class ?? turn.presentationClass}`)}<ChevronRight size={12} /></summary>
           <ConversationEventInput input={input} source={input.presentation_class ?? turn.presentationClass} onInspectActivity={actions.onInspectActivity} />
-          <span className="conversation-source-id">{`#${turn.turnIndex}`}</span>
+          <span className="conversation-source-meta">
+            <span className="conversation-source-id">{`#${turn.turnIndex}`}</span>
+            <InputTimestamp timestamp={turn.startedAt} />
+          </span>
         </details>
       ))}
       <div className="conversation-response">
@@ -335,6 +338,17 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
 function InputSender({ input }: { input: TurnInputSummary }) {
   const name = input.actor_display_name?.trim();
   return name ? <div className="conversation-input-sender"><User size={12} aria-hidden="true" /><span>{name}</span></div> : null;
+}
+
+function InputTimestamp({ timestamp }: { timestamp?: string | null }) {
+  if (!timestamp) return null;
+  const created = new Date(timestamp);
+  if (Number.isNaN(created.getTime())) return null;
+  return (
+    <time dateTime={timestamp} title={created.toLocaleString()}>
+      {created.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+    </time>
+  );
 }
 
 function ConversationInputLine({ input }: { input: TurnInputSummary }) {

@@ -6929,6 +6929,8 @@ code {
 }
 .conversation-input-line .markdown-content,
 .conversation-pending-chip .markdown-content { font-size: 15px; line-height: 1.65; }
+.conversation-input-line .markdown-content,
+.conversation-pending-chip .markdown-content { white-space: pre-wrap; }
 .conversation-input-sender { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .conversation-input-sender svg { flex-shrink: 0; }
 .conversation-input-sender span { min-width: 0; }
@@ -6953,7 +6955,9 @@ code {
 .conversation-source summary { display: flex; align-items: center; gap: 7px; cursor: pointer; width: fit-content; padding: 4px 0; }
 .conversation-source summary::-webkit-details-marker { display: none; }
 .conversation-source > .markdown-content { padding: 8px 12px; border-left: 1px solid var(--line); margin-top: 8px; }
+.conversation-source-meta { display: flex; align-items: center; gap: 8px; padding-top: 4px; }
 .conversation-source-id { display: block; padding-top: 4px; font-family: var(--mono); }
+.conversation-source-meta .conversation-source-id { padding-top: 0; }
 .conversation-brief { display: flex; min-width: 0; flex-direction: column; gap: 8px; padding: 8px 0 0; }
 .conversation-brief + .conversation-brief { margin-top: 24px; }
 .conversation-brief > .markdown-content { font-size: 15px; line-height: 1.7; }

@@ -562,8 +562,8 @@ export function AgentOverviewPanel({
 
       {workItems.length ? (
         <CollapsibleInspectorCard
-          title={currentWorkItems.length + openWorkItems.length ? t("rightPanel.workItemsWithCount", { count: currentWorkItems.length + openWorkItems.length }) : t("rightPanel.completedCount", { count: completedWorkItems.length })}
-          className={currentWorkItems.length + openWorkItems.length ? "current-work" : "past-work"}
+          title={t("rightPanel.workItemsWithCount", { count: currentWorkItems.length + openWorkItems.length })}
+          className="current-work"
         >
           {currentWorkItems.map((workItem) => (
             <WorkItemCard key={workItem.id} workItem={workItem} featured onSelect={selectWorkItem} />
