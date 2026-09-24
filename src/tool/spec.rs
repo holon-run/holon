@@ -51,6 +51,9 @@ pub struct CompletionReportCandidate {
 pub struct ToolExecutionContext {
     pub completion_report_candidate: Option<CompletionReportCandidate>,
     pub effective_work_item_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub message_id: Option<String>,
+    pub tool_call_id: Option<String>,
     pub trace_context: Option<crate::observability::TraceContext>,
     pub decision_tool_calls: Arc<AtomicUsize>,
 }

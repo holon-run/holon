@@ -13,6 +13,7 @@ pub mod config;
 pub mod context;
 pub mod contract_inventory;
 pub mod daemon;
+pub(crate) mod decision_telemetry;
 pub mod deletion;
 pub mod diagnostics;
 pub mod diagnostics_store;

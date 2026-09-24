@@ -304,6 +304,7 @@ pub struct EventsQuery {
     pub(crate) limit: Option<usize>,
     pub(crate) order: Option<EventPageOrder>,
     pub(crate) max_level: Option<OperatorDisplayMode>,
+    pub(crate) event_kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

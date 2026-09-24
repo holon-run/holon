@@ -3558,6 +3558,13 @@ impl TurnExecution<'_> {
                             },
                         ),
                     effective_work_item_id: pre_tool_work_item_id.clone(),
+                    turn_id: execution_binding
+                        .as_ref()
+                        .map(|binding| binding.turn_id.clone()),
+                    message_id: execution_binding
+                        .as_ref()
+                        .map(|binding| binding.source_message_id.clone()),
+                    tool_call_id: Some(tool_call_id.clone()),
                     trace_context: trace_context.as_ref().map(|parent| parent.child()),
                     decision_tool_calls: decision_tool_calls.clone(),
                 };

@@ -20,6 +20,7 @@ pub async fn events(
     let cursor_seq = storage.latest_event_seq().map_err(error_response)?;
     let event_log_epoch = storage.event_log_epoch().map_err(error_response)?;
     let max_level = query.max_level;
+    let event_kind = query.event_kind.as_deref();
     let filter_context = match max_level {
         Some(_) => Some(event_filter_context(&storage).map_err(error_response)?),
         None => None,
@@ -30,15 +31,18 @@ pub async fn events(
             query.after_seq,
             limit,
             order.into(),
-            |event| match (max_level, filter_context.as_ref()) {
-                (Some(level), Some(filter_context)) => is_operator_event_in_display_mode(
-                    &event.kind,
-                    &event.data,
-                    &event_fallback_summary(event),
-                    filter_context,
-                    level,
-                ),
-                _ => true,
+            |event| {
+                let level_matches = match (max_level, filter_context.as_ref()) {
+                    (Some(level), Some(filter_context)) => is_operator_event_in_display_mode(
+                        &event.kind,
+                        &event.data,
+                        &event_fallback_summary(event),
+                        filter_context,
+                        level,
+                    ),
+                    _ => true,
+                };
+                level_matches && event_kind.is_none_or(|kind| event.kind == kind)
             },
         )
         .map_err(error_response)?;

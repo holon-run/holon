@@ -464,7 +464,23 @@ impl RuntimeHandle {
         event_kind: &'static str,
     ) -> Result<()> {
         self.apply_task_transition(TaskTransition::new(task, event_kind))
-            .await
+            .await?;
+        if matches!(
+            task.status,
+            TaskStatus::Completed
+                | TaskStatus::Failed
+                | TaskStatus::Cancelled
+                | TaskStatus::Interrupted
+        ) {
+            if let Err(error) = self.record_decision_outcome_for_task(task) {
+                tracing::warn!(
+                    error = %error,
+                    task_id = %task.id,
+                    "failed to append decision outcome telemetry"
+                );
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]

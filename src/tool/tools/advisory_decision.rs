@@ -8,6 +8,7 @@ use std::time::Duration;
 use decision_core::{DecisionOutcome, DecisionRequest};
 
 use crate::{
+    decision_telemetry::{stable_decision_id, DecisionAdvisoryCompletedEvent},
     runtime::RuntimeHandle,
     tool::{
         helpers::parse_tool_args,
@@ -476,6 +477,44 @@ fn finish_result(
     question_fingerprint: &str,
     result: AdvisoryDecisionResult,
 ) -> Result<crate::tool::ToolResult> {
+    let decision_id = stable_decision_id(
+        agent_id,
+        context.turn_id.as_deref(),
+        context.message_id.as_deref(),
+        context.effective_work_item_id.as_deref(),
+        context.tool_call_id.as_deref(),
+        question_fingerprint,
+    );
+    let error_class = result
+        .reason
+        .as_deref()
+        .and_then(|reason| reason.split_once(':').map(|(class, _)| class.to_string()));
+    let event = DecisionAdvisoryCompletedEvent {
+        decision_id,
+        agent_id: agent_id.to_string(),
+        turn_id: context.turn_id.clone(),
+        message_id: context.message_id.clone(),
+        work_item_id: context.effective_work_item_id.clone(),
+        request_fingerprint: question_fingerprint.to_string(),
+        provider: result.provider.clone(),
+        model: result.model.clone(),
+        latency_ms: result.latency_ms,
+        token_count: None,
+        cost_usd: None,
+        outcome: result.outcome.clone(),
+        choice: result.choice.clone(),
+        confidence: result.confidence,
+        abstain: result.abstain,
+        fallback: result.outcome == "fallback",
+        timeout: error_class.as_deref() == Some("timeout"),
+        error_class,
+        reason: result.reason.clone(),
+        evidence: result.evidence.clone(),
+        recorded_at: chrono::Utc::now(),
+    };
+    if let Err(error) = runtime.append_decision_advisory_event(&event) {
+        tracing::warn!(error = %error, "failed to append decision advisory telemetry");
+    }
     let audit = json!({
         "agent_id": agent_id,
         "work_item_id": context.effective_work_item_id,

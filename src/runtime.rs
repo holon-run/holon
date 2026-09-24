@@ -4692,6 +4692,104 @@ impl RuntimeHandle {
             .append_event(&AuditEvent::legacy(kind, data))
     }
 
+    pub(crate) fn append_decision_advisory_event(
+        &self,
+        event: &crate::decision_telemetry::DecisionAdvisoryCompletedEvent,
+    ) -> Result<()> {
+        self.inner.storage.append_event(&AuditEvent::typed(
+            crate::runtime_event::RuntimeEventKind::DecisionAdvisoryCompleted,
+            event,
+        )?)
+    }
+
+    pub(crate) fn append_decision_outcome_event(
+        &self,
+        event: &crate::decision_telemetry::DecisionOutcomeRecordedEvent,
+    ) -> Result<()> {
+        self.inner.storage.append_event(&AuditEvent::typed(
+            crate::runtime_event::RuntimeEventKind::DecisionOutcomeRecorded,
+            event,
+        )?)
+    }
+
+    pub(crate) fn record_decision_outcome_for_task(
+        &self,
+        task: &crate::types::TaskRecord,
+    ) -> Result<()> {
+        let Some(parent_message_id) = task.parent_message_id.as_deref() else {
+            return Ok(());
+        };
+        let agent_id = self.inner.storage.current_agent_id()?;
+        let events = self
+            .inner
+            .runtime_db
+            .audit_events()
+            .recent(agent_id.as_deref(), 512)?;
+        let Some(advisory) = events.iter().rev().find(|event| {
+            event.kind == "decision_advisory_completed"
+                && event.data["message_id"].as_str() == Some(parent_message_id)
+                && task.work_item_id.as_deref().is_none_or(|work_item_id| {
+                    event.data["work_item_id"].as_str() == Some(work_item_id)
+                })
+        }) else {
+            return Ok(());
+        };
+        let Some(decision_id) = advisory.data["decision_id"].as_str() else {
+            return Ok(());
+        };
+        if events.iter().any(|event| {
+            event.kind == "decision_outcome_recorded"
+                && event.data["decision_id"].as_str() == Some(decision_id)
+                && event.data["task_id"].as_str() == Some(task.id.as_str())
+        }) {
+            return Ok(());
+        }
+        let task_status = match task.status {
+            TaskStatus::Completed => "completed",
+            TaskStatus::Failed => "failed",
+            TaskStatus::Cancelled => "cancelled",
+            TaskStatus::Interrupted => "interrupted",
+            TaskStatus::Cancelling => "cancelling",
+            TaskStatus::Running => "running",
+            TaskStatus::Queued => "queued",
+        };
+        let detail = task.detail.as_ref();
+        let actual_choice = detail
+            .and_then(|value| value.get("actual_choice").or_else(|| value.get("choice")))
+            .and_then(|value| crate::decision_telemetry::safe_value(Some(value), 256));
+        let operator_feedback = detail
+            .and_then(|value| value.get("operator_feedback"))
+            .and_then(|value| crate::decision_telemetry::safe_value(Some(value), 512));
+        let baseline_choice = detail
+            .and_then(|value| value.get("baseline_choice"))
+            .and_then(|value| crate::decision_telemetry::safe_value(Some(value), 256));
+        let result_label = detail
+            .and_then(|value| value.get("result_label"))
+            .and_then(|value| crate::decision_telemetry::safe_value(Some(value), 240))
+            .or_else(|| {
+                task.summary
+                    .as_deref()
+                    .map(|value| value.chars().take(240).collect::<String>())
+            });
+        let event = crate::decision_telemetry::DecisionOutcomeRecordedEvent {
+            decision_id: decision_id.to_string(),
+            agent_id: task.agent_id.clone(),
+            turn_id: advisory.data["turn_id"].as_str().map(ToString::to_string),
+            message_id: Some(parent_message_id.to_string()),
+            work_item_id: task.work_item_id.clone(),
+            task_id: task.id.clone(),
+            task_status: task_status.to_string(),
+            actual_choice,
+            operator_feedback,
+            result_label,
+            error_class: matches!(task.status, TaskStatus::Failed)
+                .then_some("task_failed".to_string()),
+            baseline_choice,
+            recorded_at: Utc::now(),
+        };
+        self.append_decision_outcome_event(&event)
+    }
+
     #[cfg(test)]
     pub(crate) async fn commit_queue_settlement(
         &self,
