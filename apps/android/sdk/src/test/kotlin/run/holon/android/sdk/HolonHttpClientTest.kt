@@ -8,6 +8,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
@@ -335,6 +336,62 @@ class HolonHttpClientTest {
                     client.artifact("main", "tool-1", 2)
                 }.message,
             )
+        }
+    }
+
+    @Test
+    fun `prompt sends stable client request id and decodes duplicate receipt`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """{"ok":true,"agent_id":"main","message_id":"msg-1","disposition":"duplicate"}""",
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val result = client.sendOperatorPrompt("main", "continue", "request-1")
+
+            assertEquals("msg-1", result.messageId)
+            assertEquals("duplicate", result.disposition)
+            val request = server.takeRequest()
+            assertEquals("/control/agents/main/prompt", request.path)
+            assertEquals(
+                "request-1",
+                HolonWire.json.parseToJsonElement(request.body.readUtf8())
+                    .let { it as kotlinx.serialization.json.JsonObject }["client_request_id"]
+                    ?.let { it as kotlinx.serialization.json.JsonPrimitive }
+                    ?.content,
+            )
+        }
+    }
+
+    @Test
+    fun `workspace artifact locator uses authorized workspace download route`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Content-Type", "text/plain; charset=utf-8")
+                    .setBody("finished"),
+            )
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = FakeSessionCredentialStore("session"),
+                )
+
+            val artifact = client.downloadWorkspaceArtifact(
+                "workspace://ws-one/reports/final%20note.txt?root=root%3Aws-one",
+            )
+
+            assertContentEquals("finished".encodeToByteArray(), artifact.bytes)
+            assertEquals("text/plain", artifact.mediaType)
+            assertEquals("final note.txt", artifact.fileName)
+            val request = server.takeRequest()
+            assertEquals(
+                "/workspaces/ws-one/files/reports/final%20note.txt?download=true&execution_root_id=root%3Aws-one",
+                request.path,
+            )
+            assertEquals("Bearer session", request.getHeader("Authorization"))
         }
     }
 

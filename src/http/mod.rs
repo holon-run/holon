@@ -1272,6 +1272,13 @@ pub(crate) enum ControlActor {
 }
 
 impl ControlActor {
+    pub(crate) fn principal_id(&self) -> String {
+        match self {
+            ControlActor::User { user_id, .. } => user_id.clone(),
+            ControlActor::LocalControl => "control".to_string(),
+        }
+    }
+
     /// Build the operator message origin for this actor. The display name is
     /// snapshotted at send time so persisted messages stay self-contained.
     pub(crate) fn operator_origin(&self) -> MessageOrigin {
@@ -1310,7 +1317,17 @@ pub(crate) fn control_actor(headers: &HeaderMap, state: &AppState) -> Result<Con
     if state.uses_trusted_local_admission() {
         return Ok(ControlActor::LocalControl);
     }
-    if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
+    let config = state.host.config();
+    if config.auth.mode == crate::authentication::AuthenticationMode::Oidc
+        || headers.contains_key(AUTHORIZATION)
+        || cookie_session_credential(headers).is_some()
+    {
+        if config.auth.mode == crate::authentication::AuthenticationMode::Local
+            && bearer_session_credential(headers).as_deref() == config.control_token.as_deref()
+            && cookie_session_credential(headers).is_none()
+        {
+            return Ok(ControlActor::LocalControl);
+        }
         let session = authenticate_session(headers, state)?;
         let user = state
             .host

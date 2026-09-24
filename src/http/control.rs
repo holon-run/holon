@@ -2,8 +2,8 @@ use super::*;
 use crate::{daemon::RuntimeStatusResponse, runtime_db::RuntimeDbProtectionStatus};
 use anyhow::Context as _;
 
-const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
-const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_CONTROL_PROMPT_IMAGE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) const MAX_CONTROL_PROMPT_FILE_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_TRACE_SEARCH_RESULTS: usize = 100;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema, Default)]
@@ -1178,10 +1178,101 @@ pub async fn control_prompt(
         .get_public_agent_for_external_ingress(&agent_id)
         .await
         .map_err(agent_access_error)?;
+    let client_request_id = request
+        .client_request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    if request.client_request_id.is_some() && client_request_id.is_none() {
+        return Err(bad_request("client_request_id must not be empty"));
+    }
+    if client_request_id
+        .as_ref()
+        .is_some_and(|value| value.len() > 200)
+    {
+        return Err(bad_request("client_request_id must not exceed 200 bytes"));
+    }
     let work_item_id = request.work_item_id.clone().and_then(non_empty_opt);
+    let semantic_content = serde_json::to_value(&request)
+        .map_err(anyhow::Error::from)
+        .map_err(error_response)?;
     let text = control_prompt_text_with_attachments(&agent_id, &runtime.agent_home(), request)
         .map_err(|err| bad_request(err.to_string()))?;
     let admission_context = control_admission_context(&state);
+
+    if let Some(client_request_id) = client_request_id {
+        let caller_principal = actor.principal_id();
+        let mut prepared = crate::runtime::AgentMessageDeliveryService::prepare(
+            crate::types::AgentMessageSendRequest {
+                target_agent_id: agent_id.clone(),
+                content: MessageBody::Json {
+                    value: semantic_content,
+                },
+                client_idempotency_key: client_request_id.clone(),
+                correlation_id: None,
+                causation_id: None,
+                requested_priority: Some(Priority::Interject),
+            },
+            crate::types::AgentMessageCallerContext {
+                caller_principal,
+                caller_agent_id: None,
+                principal_kind: crate::types::AgentMessagePrincipalKind::Operator,
+                route: "operator_control".into(),
+                origin: actor.operator_origin(),
+                authority_class: AuthorityClass::OperatorInstruction,
+                delivery_surface: MessageDeliverySurface::HttpControlPrompt,
+                admission_context,
+                current_turn_id: None,
+                current_task_id: None,
+                current_work_item_id: None,
+            },
+        )
+        .map_err(|error| bad_request(error.to_string()))?;
+        prepared.message.kind = MessageKind::OperatorPrompt;
+        prepared.message.body = MessageBody::Text { text };
+        prepared.message.work_item_id = work_item_id;
+        prepared.message.metadata = Some(json!({
+            "control": true,
+            "client_request_id": client_request_id,
+        }));
+        let receipt = runtime
+            .agent_message_delivery_service()
+            .deliver(&prepared)
+            .await
+            .map_err(|error| {
+                if error
+                    .downcast_ref::<crate::types::AgentMessageDeliveryError>()
+                    .is_some()
+                {
+                    (
+                        StatusCode::CONFLICT,
+                        Json(json!({
+                            "ok": false,
+                            "code": "idempotency_conflict",
+                            "error": "client_request_id was reused with different prompt content",
+                            "retryable": false,
+                        })),
+                    )
+                } else {
+                    error_response(error)
+                }
+            })?;
+        let message_id = receipt
+            .message_id
+            .ok_or_else(|| error_response(anyhow!("accepted prompt receipt omitted message_id")))?;
+        return Ok(Json(EnqueueResponse {
+            ok: true,
+            agent_id,
+            message_id,
+            disposition: Some(if receipt.idempotent_replay {
+                "duplicate".into()
+            } else {
+                "accepted".into()
+            }),
+        }));
+    }
+
     let message = InboundRequest {
         agent_id: agent_id.clone(),
         kind: MessageKind::OperatorPrompt,
@@ -1203,6 +1294,7 @@ pub async fn control_prompt(
         ok: true,
         agent_id,
         message_id: queued.id,
+        disposition: None,
     }))
 }
 
@@ -1219,6 +1311,7 @@ fn control_prompt_text_with_attachments(
     std::fs::create_dir_all(&inbox)
         .with_context(|| format!("create media inbox at {}", inbox.display()))?;
 
+    let stable_request_id = request.client_request_id.clone();
     let mut text = request.text;
     for (index, attachment) in request.attachments.into_iter().enumerate() {
         let position = index + 1;
@@ -1243,6 +1336,7 @@ fn control_prompt_text_with_attachments(
                     name.as_deref(),
                     extension,
                     bytes,
+                    stable_request_id.as_deref(),
                 )?;
                 append_attachment_separator(&mut text);
                 text.push_str(&format!(
@@ -1272,6 +1366,7 @@ fn control_prompt_text_with_attachments(
                     name.as_deref(),
                     &extension,
                     bytes,
+                    stable_request_id.as_deref(),
                 )?;
                 append_attachment_separator(&mut text);
                 text.push_str(&format!(
@@ -1315,15 +1410,30 @@ fn write_control_prompt_attachment(
     name: Option<&str>,
     extension: &str,
     bytes: Vec<u8>,
+    stable_request_id: Option<&str>,
 ) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
     let stem = safe_media_stem(name).unwrap_or_else(|| label.to_string());
-    let file_name = format!(
-        "{}-{}-{}.{}",
-        Utc::now().format("%Y%m%dT%H%M%S%3fZ"),
-        position,
-        stem,
-        extension
+    let prefix = stable_request_id.map_or_else(
+        || Utc::now().format("%Y%m%dT%H%M%S%3fZ").to_string(),
+        |request_id| {
+            let mut digest = Sha256::new();
+            digest.update(b"holon.control-prompt-attachment.v1\0");
+            digest.update(request_id.as_bytes());
+            digest.update(b"\0");
+            digest.update(position.to_le_bytes());
+            digest.update(b"\0");
+            digest.update(&bytes);
+            let digest = digest.finalize();
+            let short = digest[..8]
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            format!("request-{short}")
+        },
     );
+    let file_name = format!("{}-{}-{}.{}", prefix, position, stem, extension);
     let path = inbox.join(&file_name);
     std::fs::write(&path, bytes)
         .with_context(|| format!("write {label} attachment to {}", path.display()))?;
@@ -1550,6 +1660,7 @@ mod tests {
                         data_base64: encoded(b"png"),
                     },
                 )],
+                client_request_id: None,
             },
         )
         .unwrap();
@@ -1577,6 +1688,7 @@ mod tests {
                     media_type: "application/pdf".into(),
                     data_base64: encoded(b"%PDF-1.7"),
                 })],
+                client_request_id: None,
             },
         )
         .unwrap();
@@ -1623,6 +1735,7 @@ mod tests {
                     media_type: "text/plain".into(),
                     data_base64: encoded(b""),
                 })],
+                client_request_id: None,
             },
         )
         .unwrap_err();
@@ -1644,6 +1757,7 @@ mod tests {
                     media_type: "text/markdown".into(),
                     data_base64: encoded(b"# secret"),
                 })],
+                client_request_id: None,
             },
         )
         .unwrap();
@@ -1802,6 +1916,7 @@ pub async fn operator_ingress(
         ok: true,
         agent_id,
         message_id: queued.id,
+        disposition: None,
     }))
 }
 

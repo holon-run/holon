@@ -34,6 +34,7 @@ import kotlinx.serialization.Contextual
  *
  * @param text
  * @param attachments
+ * @param clientRequestId Stable caller-generated identity used to safely retry a prompt after  the client loses the HTTP response. Older clients may omit it.
  * @param workItemId
  */
 @Serializable
@@ -45,6 +46,10 @@ data class ControlPromptRequest (
 
     @SerialName(value = "attachments")
     val attachments: kotlin.collections.List<ControlPromptAttachment>? = arrayListOf(),
+
+    /* Stable caller-generated identity used to safely retry a prompt after  the client loses the HTTP response. Older clients may omit it. */
+    @SerialName(value = "client_request_id")
+    val clientRequestId: kotlin.String? = "null",
 
     @SerialName(value = "work_item_id")
     val workItemId: kotlin.String? = "null"

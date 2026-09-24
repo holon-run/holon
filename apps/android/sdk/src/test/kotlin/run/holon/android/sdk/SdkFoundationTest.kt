@@ -85,4 +85,20 @@ class SdkFoundationTest {
         assertEquals("scheduler_v2", error.domain)
     }
 
+    @Test
+    fun `conversation unwraps structured text previews and preserves unknown fields`() {
+        val snapshot =
+            HolonConversationSnapshot.from(
+                HolonJsonDocument(
+                    HolonWire.json.parseToJsonElement(
+                        """{"turns":[{"turn_id":"turn-1","presentation_class":"operator","inputs":[{"message_id":"msg-1","preview":"{\"type\":\"text\",\"text\":\"hello\"}","presentation_class":"operator"}],"execution":{"kind":"terminal","outcome":"completed"},"result":{"kind":"available"},"brief_ids":[],"future":true}],"pending_inputs":[],"future_root":true}""",
+                    ),
+                ),
+            )
+
+        assertEquals("hello", snapshot.turns.single().inputs.single().preview)
+        assertEquals("operator", snapshot.turns.single().presentationClass)
+        assertEquals("Work result available", snapshot.turns.single().summary)
+    }
+
 }

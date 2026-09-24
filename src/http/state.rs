@@ -221,6 +221,7 @@ pub(crate) async fn enqueue_internal(
         ok: true,
         agent_id,
         message_id: queued.id,
+        disposition: None,
     }))
 }
 

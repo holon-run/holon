@@ -24,6 +24,7 @@
 package run.holon.client.wire.generated.models
 
 import run.holon.client.wire.generated.models.HandshakeAuth
+import run.holon.client.wire.generated.models.HandshakeLimits
 import run.holon.client.wire.generated.models.HandshakeProtocol
 import run.holon.client.wire.generated.models.HandshakeRuntime
 
@@ -39,6 +40,7 @@ import kotlinx.serialization.Contextual
  * @param ok
  * @param protocol
  * @param runtime
+ * @param limits
  */
 @Serializable
 
@@ -57,7 +59,10 @@ data class HandshakeResponse (
     val protocol: HandshakeProtocol,
 
     @SerialName(value = "runtime")
-    val runtime: HandshakeRuntime
+    val runtime: HandshakeRuntime,
+
+    @SerialName(value = "limits")
+    val limits: HandshakeLimits? = null
 
 ) {
 

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -54,6 +55,8 @@ private val HolonColors =
         onPrimaryContainer = HolonAccent,
         secondary = HolonMuted,
         onSecondary = Color.White,
+        secondaryContainer = HolonAccentSoft,
+        onSecondaryContainer = HolonAccent,
         background = HolonPage,
         onBackground = HolonText,
         surface = Color.White,
@@ -64,6 +67,28 @@ private val HolonColors =
         outlineVariant = HolonLine,
         error = HolonDanger,
         onError = Color.White,
+    )
+
+private val HolonDarkColors =
+    androidx.compose.material3.darkColorScheme(
+        primary = Color(0xFF65C9EE),
+        onPrimary = Color(0xFF003546),
+        primaryContainer = Color(0xFF123D4A),
+        onPrimaryContainer = Color(0xFFA8E2F5),
+        secondary = Color(0xFFB6C7D5),
+        onSecondary = Color(0xFF20333F),
+        secondaryContainer = Color(0xFF123D4A),
+        onSecondaryContainer = Color(0xFFA8E2F5),
+        background = Color(0xFF111416),
+        onBackground = Color(0xFFE4E8EA),
+        surface = Color(0xFF181C1F),
+        onSurface = Color(0xFFE4E8EA),
+        surfaceVariant = Color(0xFF20272C),
+        onSurfaceVariant = Color(0xFFB6C1C8),
+        outline = Color(0xFF71808A),
+        outlineVariant = Color(0xFF343C41),
+        error = Color(0xFFFFB2BC),
+        onError = Color(0xFF67001E),
     )
 
 private val HolonTypography =
@@ -124,9 +149,12 @@ private val HolonTypography =
     )
 
 @Composable
-internal fun HolonTheme(content: @Composable () -> Unit) {
+internal fun HolonTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit,
+) {
     MaterialTheme(
-        colorScheme = HolonColors,
+        colorScheme = if (darkTheme) HolonDarkColors else HolonColors,
         typography = HolonTypography,
         content = content,
     )
@@ -134,6 +162,8 @@ internal fun HolonTheme(content: @Composable () -> Unit) {
 
 @Composable
 internal fun HolonMark(modifier: Modifier = Modifier) {
+    val foreground = MaterialTheme.colorScheme.onSurface
+    val accent = MaterialTheme.colorScheme.primary
     Canvas(modifier = modifier.size(42.dp)) {
         fun hexagon(radius: Float): Path {
             val center = Offset(size.width / 2f, size.height / 2f)
@@ -152,12 +182,12 @@ internal fun HolonMark(modifier: Modifier = Modifier) {
 
         drawPath(
             path = hexagon(size.minDimension * 0.40f),
-            color = HolonText.copy(alpha = 0.78f),
+            color = foreground.copy(alpha = 0.78f),
             style = Stroke(width = 3.2.dp.toPx(), cap = StrokeCap.Square),
         )
         drawPath(
             path = hexagon(size.minDimension * 0.26f),
-            color = HolonAccent,
+            color = accent,
             style = Stroke(width = 4.2.dp.toPx(), cap = StrokeCap.Square),
         )
     }
@@ -179,8 +209,8 @@ internal fun StatusPill(
 ) {
     val color =
         when (tone) {
-            StatusTone.Neutral -> HolonMuted
-            StatusTone.Accent -> HolonAccent
+            StatusTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
+            StatusTone.Accent -> MaterialTheme.colorScheme.primary
             StatusTone.Success -> HolonSuccess
             StatusTone.Warning -> HolonWarning
             StatusTone.Danger -> HolonDanger
@@ -218,7 +248,7 @@ internal fun HolonSection(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, HolonLine),
+        border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
         shadowElevation = 1.dp,
     ) {
         Column(
@@ -229,13 +259,13 @@ internal fun HolonSection(
                 eyebrow?.let {
                     Text(
                         text = it.uppercase(),
-                        color = HolonFaint,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         style = MaterialTheme.typography.labelSmall,
                     )
                 }
                 Text(
                     text = title,
-                    color = HolonText,
+                    color = MaterialTheme.colorScheme.onSurface,
                     style = MaterialTheme.typography.headlineSmall,
                 )
             }
@@ -248,12 +278,12 @@ internal fun HolonSection(
 internal fun EmptyHint(text: String) {
     Text(
         text = text,
-        color = HolonMuted,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
         style = MaterialTheme.typography.bodyMedium,
         modifier =
             Modifier
                 .fillMaxWidth()
-                .background(HolonSidebar, RoundedCornerShape(8.dp))
+                .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
                 .padding(horizontal = 12.dp, vertical = 11.dp),
     )
 }

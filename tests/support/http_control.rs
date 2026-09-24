@@ -2468,6 +2468,49 @@ pub async fn control_prompt_records_message_admission_fields() -> Result<()> {
     Ok(())
 }
 
+pub async fn control_prompt_is_idempotent_for_native_clients() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+    let request = serde_json::json!({
+        "text": "continue safely",
+        "client_request_id": "android-request-1",
+    });
+
+    let first = client
+        .post(format!("{base}/api/control/agents/default/prompt"))
+        .json(&request)
+        .send()
+        .await?;
+    assert!(first.status().is_success());
+    let first: serde_json::Value = first.json().await?;
+    assert_eq!(first["disposition"], "accepted");
+
+    let replay = client
+        .post(format!("{base}/api/control/agents/default/prompt"))
+        .json(&request)
+        .send()
+        .await?;
+    assert!(replay.status().is_success());
+    let replay: serde_json::Value = replay.json().await?;
+    assert_eq!(replay["disposition"], "duplicate");
+    assert_eq!(replay["message_id"], first["message_id"]);
+
+    let conflict = client
+        .post(format!("{base}/api/control/agents/default/prompt"))
+        .json(&serde_json::json!({
+            "text": "different content",
+            "client_request_id": "android-request-1",
+        }))
+        .send()
+        .await?;
+    assert_eq!(conflict.status(), reqwest::StatusCode::CONFLICT);
+    let conflict: serde_json::Value = conflict.json().await?;
+    assert_eq!(conflict["code"], "idempotency_conflict");
+
+    server.abort();
+    Ok(())
+}
+
 pub async fn control_prompt_rejects_stopped_agent_without_queueing() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
@@ -3808,6 +3851,58 @@ pub async fn control_prompt_local_credentials_keep_control_identity() -> Result<
             }
         );
     }
+    server.abort();
+    Ok(())
+}
+
+pub async fn auth_native_session_exchange_returns_reusable_session_and_logout_revokes_it(
+) -> Result<()> {
+    let data_dir = tempdir()?;
+    let workspace_dir = tempdir()?;
+    let config = test_config_with_paths(
+        data_dir.path().to_path_buf(),
+        workspace_dir.path().to_path_buf(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+
+    let exchange = client
+        .post(format!("{base}/api/auth/session/exchange/native"))
+        .json(&serde_json::json!({ "credential": "secret" }))
+        .send()
+        .await?;
+    assert_eq!(exchange.status(), reqwest::StatusCode::OK);
+    let payload: serde_json::Value = exchange.json().await?;
+    let credential = payload["credential"]
+        .as_str()
+        .expect("native exchange should return a session credential");
+    assert_ne!(credential, "secret");
+    assert_eq!(payload["user_id"], serde_json::json!("local-static-token"));
+
+    let authenticated = client
+        .get(format!("{base}/api/auth/session/me"))
+        .bearer_auth(credential)
+        .send()
+        .await?;
+    assert_eq!(authenticated.status(), reqwest::StatusCode::OK);
+
+    let logout = client
+        .post(format!("{base}/api/auth/session/logout"))
+        .bearer_auth(credential)
+        .send()
+        .await?;
+    assert_eq!(logout.status(), reqwest::StatusCode::NO_CONTENT);
+
+    let revoked = client
+        .get(format!("{base}/api/auth/session/me"))
+        .bearer_auth(credential)
+        .send()
+        .await?;
+    assert_eq!(revoked.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let error: serde_json::Value = revoked.json().await?;
+    assert_eq!(error["code"], serde_json::json!("auth_required"));
     server.abort();
     Ok(())
 }
