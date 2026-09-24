@@ -286,6 +286,7 @@ impl EffectivePrompt {
             available_tools,
         );
         let mut prompt = self.clone();
+        prompt.recent_turns_reprojection = Some(reprojection.with_initial_budget(budget));
         prompt.context_sections = context_sections;
         prompt.rendered_context_attachment = rendered_context_attachment;
         prompt.cache_identity.context_fingerprint = context_fingerprint;

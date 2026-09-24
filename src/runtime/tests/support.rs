@@ -1344,6 +1344,7 @@ impl AgentProvider for FailingTimelineProvider {
                     transport_timeline: None,
                     transport_diagnostics: Some(ProviderTransportDiagnostics {
                         stage: "request_send".into(),
+                        streaming: None,
                         provider: Some("openai".into()),
                         model_ref: Some("openai/gpt-5.4".into()),
                         url: Some(

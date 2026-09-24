@@ -237,6 +237,7 @@ pub(crate) fn classify_openai_chat_completion_error(
         Some(status.as_u16()),
         Some(crate::provider::ProviderTransportDiagnostics {
             stage: "response_status".into(),
+            streaming: Some(false),
             provider: Some("openai".into()),
             model_ref: model_ref.map(ToString::to_string),
             url: url.map(crate::provider::retry::sanitize_transport_url),

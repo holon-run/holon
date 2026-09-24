@@ -62,6 +62,18 @@ pub(crate) struct ProviderTransportError {
     message: String,
 }
 
+pub(crate) fn set_provider_transport_streaming(
+    mut error: anyhow::Error,
+    streaming: bool,
+) -> anyhow::Error {
+    if let Some(transport_error) = error.downcast_mut::<ProviderTransportError>() {
+        if let Some(diagnostics) = transport_error.diagnostics.as_mut() {
+            diagnostics.streaming = Some(streaming);
+        }
+    }
+    error
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ProviderRetryDelaySource {
     ServerRetryAfter,
@@ -499,6 +511,7 @@ pub(crate) fn classify_status_error_with_trace(
         Some(status.as_u16()),
         Some(ProviderTransportDiagnostics {
             stage: stage.to_string(),
+            streaming: None,
             provider: provider.map(ToString::to_string),
             model_ref: model_ref.map(ToString::to_string),
             url: url.map(sanitize_transport_url),
@@ -680,6 +693,7 @@ pub(crate) fn invalid_response_error_with_trace(
         None,
         Some(ProviderTransportDiagnostics {
             stage: stage.to_string(),
+            streaming: None,
             provider: Some(provider.to_string()),
             model_ref: model_ref.map(ToString::to_string),
             url: url.map(sanitize_transport_url),
@@ -716,6 +730,7 @@ pub(crate) fn retryable_invalid_response_error_with_trace(
         None,
         Some(ProviderTransportDiagnostics {
             stage: stage.to_string(),
+            streaming: None,
             provider: Some(provider.to_string()),
             model_ref: model_ref.map(ToString::to_string),
             url: url.map(sanitize_transport_url),
@@ -769,6 +784,7 @@ pub(crate) fn empty_response_error_with_trace(
         None,
         Some(ProviderTransportDiagnostics {
             stage: stage.to_string(),
+            streaming: None,
             provider: Some(provider.to_string()),
             model_ref: model_ref.map(ToString::to_string),
             url: url.map(sanitize_transport_url),
@@ -800,6 +816,7 @@ pub(crate) fn timeout_transport_error_with_trace(
         None,
         Some(ProviderTransportDiagnostics {
             stage: stage.to_string(),
+            streaming: None,
             provider: Some(provider.to_string()),
             model_ref: model_ref.map(ToString::to_string),
             url: url.map(sanitize_transport_url),
@@ -837,6 +854,7 @@ fn reqwest_transport_diagnostics(
     let status = error.status().map(|status| status.as_u16());
     ProviderTransportDiagnostics {
         stage: stage.to_string(),
+        streaming: None,
         provider: Some(provider.to_string()),
         model_ref: model_ref.map(ToString::to_string),
         url: url

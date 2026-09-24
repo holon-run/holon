@@ -1301,6 +1301,7 @@ fn openai_codex_auth_error(
         None,
         Some(ProviderTransportDiagnostics {
             stage: stage.into(),
+            streaming: None,
             provider: Some("openai-codex".into()),
             model_ref: Some(model_ref.into()),
             url: None,

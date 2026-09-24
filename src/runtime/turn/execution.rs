@@ -187,13 +187,19 @@ fn provider_error_is_safe_for_context_recovery(error: &anyhow::Error) -> bool {
     let Some(timeline) = provider_attempt_timeline(error) else {
         return false;
     };
-    !timeline.attempts.iter().any(|attempt| {
-        attempt.provider_message_id.is_some()
-            || attempt
-                .transport_timeline
-                .as_ref()
-                .is_some_and(|timeline| timeline.streaming)
-    })
+    !timeline.attempts.is_empty()
+        && timeline.attempts.iter().all(|attempt| {
+            attempt.provider_message_id.is_none()
+                && (attempt
+                    .transport_timeline
+                    .as_ref()
+                    .is_some_and(|timeline| !timeline.streaming)
+                    || attempt
+                        .transport_diagnostics
+                        .as_ref()
+                        .and_then(|diagnostics| diagnostics.streaming)
+                        == Some(false))
+        })
 }
 
 impl RuntimeHandle {
@@ -1874,9 +1880,6 @@ impl TurnExecution<'_> {
                     .await?;
             }
 
-            let context_build_started = Instant::now();
-            let context_build_started_at = chrono::Utc::now();
-
             let provider_round_started = std::time::Instant::now();
             let (
                 response,
@@ -1888,6 +1891,9 @@ impl TurnExecution<'_> {
                 provider_round_ms,
                 turn_local_compaction,
             ) = 'provider_round: loop {
+                let context_build_started = Instant::now();
+                let context_build_started_at = chrono::Utc::now();
+
                 if round == 1 {
                     let request_build_started = std::time::Instant::now();
                     let request_build_started_at = chrono::Utc::now();
@@ -1929,8 +1935,7 @@ impl TurnExecution<'_> {
                         context_build_started_at,
                     );
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                        runtime
-                            .complete_turn_with_timing(provider.clone(), request)
+                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request))
                             .await;
                     record_provider_round_span(
                         trace_context.as_ref(),
@@ -2312,8 +2317,7 @@ impl TurnExecution<'_> {
                         context_build_started_at,
                     );
                     let (result, provider_started_at, provider_completed_at, provider_round_ms) =
-                        runtime
-                            .complete_turn_with_timing(provider.clone(), request)
+                        Box::pin(runtime.complete_turn_with_timing(provider.clone(), request))
                             .await;
                     record_provider_round_span(
                         trace_context.as_ref(),
@@ -4302,7 +4306,7 @@ mod tests {
                 provider_request_id: None,
                 provider_http_trace_id: None,
                 transport_diagnostics: None,
-                transport_timeline: streaming.then_some(ProviderTransportTimeline {
+                transport_timeline: Some(ProviderTransportTimeline {
                     request_started_at: now,
                     response_headers_at: now,
                     response_body_completed_at: None,
@@ -4330,6 +4334,43 @@ mod tests {
         ));
         assert!(!provider_error_is_safe_for_context_recovery(
             &context_error(None, true)
+        ));
+        let unknown_transport_timeline = {
+            let now = Utc::now();
+            let timeline = ProviderAttemptTimeline {
+                attempts: vec![ProviderAttemptRecord {
+                    provider: "test".into(),
+                    model_ref: "test/model".into(),
+                    attempt: 1,
+                    max_attempts: 1,
+                    started_at: Some(now),
+                    completed_at: None,
+                    duration_ms: None,
+                    failure_kind: Some("context_length_exceeded".into()),
+                    disposition: None,
+                    outcome: ProviderAttemptOutcome::FailFastAborted,
+                    advanced_to_fallback: false,
+                    backoff_ms: None,
+                    backoff_source: None,
+                    token_usage: None,
+                    cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
+                    provider_http_trace_id: None,
+                    transport_diagnostics: None,
+                    transport_timeline: None,
+                }],
+                requested_model_ref: "test/model".into(),
+                active_model_ref: None,
+                winning_model_ref: None,
+                pending_fallback_model_ref: None,
+                pending_fallback_disposition: None,
+                aggregated_token_usage: None,
+            };
+            provider_turn_error("context_length_exceeded", timeline, anyhow!("test source"))
+        };
+        assert!(!provider_error_is_safe_for_context_recovery(
+            &unknown_transport_timeline
         ));
     }
 

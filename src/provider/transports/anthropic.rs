@@ -447,16 +447,19 @@ impl AgentProvider for AnthropicProvider {
             if let Some(trace) = request_trace.as_ref() {
                 trace.write_response_body(&body);
             }
-            return Err(classify_status_error_with_trace(
-                "Anthropic request failed",
-                "response_status",
-                Some(&self.route_provider),
-                Some(&model_ref),
-                Some(url.as_str()),
-                status,
-                body,
-                request_trace.as_ref(),
-                retry_after,
+            return Err(crate::provider::retry::set_provider_transport_streaming(
+                classify_status_error_with_trace(
+                    "Anthropic request failed",
+                    "response_status",
+                    Some(&self.route_provider),
+                    Some(&model_ref),
+                    Some(url.as_str()),
+                    status,
+                    body,
+                    request_trace.as_ref(),
+                    retry_after,
+                ),
+                true,
             ));
         }
 

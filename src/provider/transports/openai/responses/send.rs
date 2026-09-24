@@ -56,16 +56,19 @@ pub(in super::super) async fn send_openai_responses_request(
             _ => String::new(),
         };
         trace_response_body(request_trace.as_ref(), &body);
-        return Err(classify_status_error_with_trace(
-            "OpenAI-style request failed",
-            "response_status",
-            Some(provider),
-            Some(model_ref),
-            Some(url.as_str()),
-            status,
-            body,
-            request_trace.as_ref(),
-            retry_after,
+        return Err(crate::provider::retry::set_provider_transport_streaming(
+            classify_status_error_with_trace(
+                "OpenAI-style request failed",
+                "response_status",
+                Some(provider),
+                Some(model_ref),
+                Some(url.as_str()),
+                status,
+                body,
+                request_trace.as_ref(),
+                retry_after,
+            ),
+            false,
         ));
     }
 
@@ -226,20 +229,23 @@ pub(in super::super) async fn send_openai_responses_streaming_request(
             _ => String::new(),
         };
         trace_response_body(request_trace.as_ref(), &body);
-        return Err(classify_status_error_with_trace(
-            if provider == "openai-codex" {
-                openai_codex_status_error_context(status)
-            } else {
-                "OpenAI-style streaming request failed"
-            },
-            "response_status",
-            Some(provider),
-            Some(model_ref),
-            Some(url.as_str()),
-            status,
-            body,
-            request_trace.as_ref(),
-            retry_after,
+        return Err(crate::provider::retry::set_provider_transport_streaming(
+            classify_status_error_with_trace(
+                if provider == "openai-codex" {
+                    openai_codex_status_error_context(status)
+                } else {
+                    "OpenAI-style streaming request failed"
+                },
+                "response_status",
+                Some(provider),
+                Some(model_ref),
+                Some(url.as_str()),
+                status,
+                body,
+                request_trace.as_ref(),
+                retry_after,
+            ),
+            true,
         ));
     }
 
