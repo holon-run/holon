@@ -30,7 +30,7 @@ export interface paths {
         };
         /**
          * List agents
-         * @description Return lightweight public agent entries.
+         * @description Return lightweight public agent entries. Optional parent query parameter filters the public roster to direct children of that parent.
          */
         get: operations["listAgents"];
         put?: never;
@@ -7501,7 +7501,10 @@ export interface operations {
     };
     listAgents: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Exact direct parent agent id; filters only the lightweight public roster. */
+                parent?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
