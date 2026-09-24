@@ -120,9 +120,10 @@ pub struct ModelManifest {
     pub max_length: usize,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
-    /// Text encoding contract. Only `question-tail` (training-corpus format
-    /// with tail-preserving truncation) is supported.
-    #[serde(default = "default_encoding")]
+    /// Text encoding contract. Required so model dirs from before this
+    /// contract fail loudly at load instead of silently scoring under the
+    /// wrong template. Only `question-tail` (training-corpus format with
+    /// tail-preserving truncation) is supported.
     pub encoding: String,
 }
 
@@ -444,7 +445,7 @@ impl OnnxRuntime {
             .iter()
             .map(|value| *value as i64)
             .collect::<Vec<_>>();
-        let mut state_ids = self
+        let state_ids = self
             .tokenizer
             .encode(state, false)
             .map_err(|error| LocalOnnxError::Inference(error.to_string()))?
@@ -452,16 +453,6 @@ impl OnnxRuntime {
             .iter()
             .map(|value| *value as i64)
             .collect::<Vec<_>>();
-        let budget = self.manifest.max_length.saturating_sub(tail_ids.len() + 2);
-        if budget < 8 {
-            return Err(LocalOnnxError::Inference(
-                "tail too long for max_length".into(),
-            ));
-        }
-        if state_ids.len() > budget {
-            let excess = state_ids.len() - budget;
-            state_ids.drain(0..excess);
-        }
         let cls = self
             .tokenizer
             .token_to_id("[CLS]")
@@ -472,12 +463,8 @@ impl OnnxRuntime {
             .token_to_id("[SEP]")
             .ok_or_else(|| LocalOnnxError::Inference("missing [SEP] token".into()))?
             as i64;
-        let mut ids = Vec::with_capacity(state_ids.len() + tail_ids.len() + 2);
-        ids.push(cls);
-        ids.extend(state_ids);
-        ids.extend(tail_ids);
-        ids.push(sep);
-        Ok(ids)
+        state::assemble_question_tail(cls, sep, &state_ids, &tail_ids, self.manifest.max_length)
+            .map_err(|message| LocalOnnxError::Inference(message.to_owned()))
     }
 
     fn decide(
@@ -628,6 +615,13 @@ mod tests {
         let manifest = ModelManifest::default();
         assert_eq!(manifest.model, DEFAULT_MODEL);
         assert_eq!(manifest.input_ids, "input_ids");
+    }
+
+    #[test]
+    fn manifest_requires_explicit_encoding() {
+        let error = serde_json::from_str::<ModelManifest>(r#"{"model": "model.onnx"}"#)
+            .expect_err("missing encoding must fail");
+        assert!(error.to_string().contains("encoding"));
     }
 
     #[test]
