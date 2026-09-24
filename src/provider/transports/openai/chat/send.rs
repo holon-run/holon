@@ -155,6 +155,7 @@ fn classify_chat_completion_status_error(
     )
 }
 
+#[cfg(test)]
 pub(crate) fn classify_openai_chat_completion_error(
     context: &str,
     error: &Value,
