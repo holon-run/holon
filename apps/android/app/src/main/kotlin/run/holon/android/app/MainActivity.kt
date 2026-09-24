@@ -6,19 +6,35 @@ import android.net.Network
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -29,7 +45,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -39,7 +59,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import run.holon.android.sdk.AgentSummary
@@ -61,8 +85,18 @@ import java.io.IOException
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge(
+            statusBarStyle = androidx.activity.SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+            ),
+            navigationBarStyle = androidx.activity.SystemBarStyle.light(
+                android.graphics.Color.TRANSPARENT,
+                android.graphics.Color.TRANSPARENT,
+            ),
+        )
         setContent {
-            MaterialTheme {
+            HolonTheme {
                 HolonApp(applicationContext)
             }
         }
@@ -116,6 +150,7 @@ private fun HolonApp(context: Context) {
     var sessionCredential by remember {
         mutableStateOf(sessionStore.read().orEmpty())
     }
+    var showConnectionEditor by remember { mutableStateOf(false) }
     var networkAvailable by remember { mutableStateOf(isNetworkAvailable(context)) }
     var state by remember { mutableStateOf(ConnectionState.Disconnected) }
     var status by remember { mutableStateOf("未连接") }
@@ -124,6 +159,7 @@ private fun HolonApp(context: Context) {
     var logoutInProgress by remember { mutableStateOf(false) }
     var selectedAgent by remember { mutableStateOf<AgentSummary?>(null) }
     var conversation by remember { mutableStateOf<HolonConversationSnapshot?>(null) }
+    var showAllConversationTurns by remember { mutableStateOf(false) }
     var conversationStatus by remember { mutableStateOf("请选择 agent 查看会话") }
     var conversationCursor by remember { mutableStateOf<String?>(null) }
     var conversationResetRequired by remember { mutableStateOf(false) }
@@ -172,7 +208,7 @@ private fun HolonApp(context: Context) {
             bearerTokenProvider = BearerTokenProvider { sessionStore.read() },
             sessionCredentialStore = sessionStore,
             insecureHttpHosts = if (BuildConfig.DEBUG) {
-                setOf("10.0.2.2")
+                setOf("10.0.2.2", "127.0.0.1", "localhost")
             } else {
                 emptySet()
             },
@@ -364,7 +400,12 @@ private fun HolonApp(context: Context) {
                         baseUrl = url,
                         bearerTokenProvider = BearerTokenProvider { sessionStore.read() },
                         sessionCredentialStore = sessionStore,
-                        insecureHttpHosts = if (BuildConfig.DEBUG) setOf("10.0.2.2") else emptySet(),
+                        insecureHttpHosts =
+                            if (BuildConfig.DEBUG) {
+                                setOf("10.0.2.2", "127.0.0.1", "localhost")
+                            } else {
+                                emptySet()
+                            },
                     )
                     val compatibility = connection.handshake(requiredCapabilities)
                     compatibility to if (compatibility is CompatibilityResult.Compatible) {
@@ -378,6 +419,7 @@ private fun HolonApp(context: Context) {
                 when (compatibility) {
                     is CompatibilityResult.Compatible -> {
                         state = ConnectionState.Connected
+                        showConnectionEditor = false
                         status =
                             "已连接 · ${compatibility.server.authMode} · ${agentList.size} agents"
                         agents = agentList
@@ -403,6 +445,9 @@ private fun HolonApp(context: Context) {
 
     fun loadConversation(agent: AgentSummary, reset: Boolean = false) {
         clearTaskDetails(cancelSubmit = true)
+        if (selectedAgent?.id != agent.id || reset) {
+            showAllConversationTurns = false
+        }
         selectedAgent = agent
         if (reset) {
             conversation = null
@@ -626,246 +671,552 @@ private fun HolonApp(context: Context) {
         }
     }
 
-    Column(
+    Box(
         modifier =
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+                .background(HolonPage),
     ) {
-        Text("Holon", style = MaterialTheme.typography.headlineMedium)
-        Text(
-            text = when (state) {
-                ConnectionState.Connected -> "连接状态：已连接"
-                ConnectionState.Connecting -> "连接状态：连接中"
-                ConnectionState.Failed -> "连接状态：失败"
-                ConnectionState.Disconnected -> "连接状态：未连接"
-            },
-            style = MaterialTheme.typography.titleMedium,
-        )
-        Text(
-            if (networkAvailable) {
-                "网络状态：在线"
-            } else {
-                "网络状态：离线（请求已暂停，恢复后自动重连）"
-            },
-            color =
-                if (networkAvailable) {
-                    MaterialTheme.colorScheme.onSurface
-                } else {
-                    MaterialTheme.colorScheme.error
-                },
-        )
-        OutlinedTextField(
-            value = baseUrl,
-            onValueChange = {
-                baseUrl = it
-                preferences.edit().putString(BASE_URL_KEY, it).apply()
-            },
-            label = { Text("Holon API base URL") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        if (BuildConfig.DEBUG) {
-            OutlinedTextField(
-                value = sessionCredential,
-                onValueChange = {
-                    sessionCredential = it
-                    sessionStore.write(it)
-                },
-                label = { Text("Debug session credential") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                "仅 debug 构建显示。此处注入已兑换的 session credential，不代表正式登录流程。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(
-                onClick = ::connect,
-                enabled = networkAvailable && state != ConnectionState.Connecting && !logoutInProgress,
+        Column(
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            HolonHeader(state = state)
+
+            HolonSection(
+                title = "连接",
+                eyebrow = "DEVICE  /  HOLON RUNTIME",
             ) {
-                Text(when (state) {
-                    ConnectionState.Connecting -> "连接中…"
-                    ConnectionState.Failed -> "重试"
-                    else -> "连接"
-                })
-            }
-            TextButton(onClick = ::logout, enabled = !logoutInProgress) {
-                Text(if (logoutInProgress) "登出中…" else "登出")
-            }
-        }
-        Text(status, color = if (state == ConnectionState.Failed) {
-            MaterialTheme.colorScheme.error
-        } else {
-            MaterialTheme.colorScheme.onSurface
-        })
-        Spacer(Modifier.height(8.dp))
-        Text("Agents", style = MaterialTheme.typography.titleLarge)
-        when (state) {
-            ConnectionState.Disconnected -> Text("连接后查看 agent")
-            ConnectionState.Connecting -> Text("正在加载 agent…")
-            ConnectionState.Failed -> Text("无法加载 agent，请检查提示后重试")
-            ConnectionState.Connected -> if (agents.isEmpty()) {
-                Text("暂无 agent")
-            } else {
-                agents.forEach { agent ->
-                    Column {
-                        Text(
-                            "${agent.displayName} (${agent.id})" +
-                                if (agent.isDefault) " · 默认" else "",
-                            style = MaterialTheme.typography.titleMedium,
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    StatusPill(
+                        label =
+                            when (state) {
+                                ConnectionState.Connected -> "已连接"
+                                ConnectionState.Connecting -> "连接中"
+                                ConnectionState.Failed -> "连接失败"
+                                ConnectionState.Disconnected -> "未连接"
+                            },
+                        tone = connectionTone(state),
+                    )
+                    StatusPill(
+                        label = if (networkAvailable) "网络在线" else "网络离线",
+                        tone = if (networkAvailable) StatusTone.Success else StatusTone.Danger,
+                    )
+                }
+                Text(
+                    text = status,
+                    color = if (state == ConnectionState.Failed) HolonDanger else HolonMuted,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (state == ConnectionState.Connected && !showConnectionEditor) {
+                    DetailRow(label = "API", body = baseUrl)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { showConnectionEditor = true },
+                            shape = RoundedCornerShape(9.dp),
+                        ) {
+                            Text("编辑连接")
+                        }
+                        TextButton(onClick = ::logout, enabled = !logoutInProgress) {
+                            Text(if (logoutInProgress) "清除中…" else "清除会话", color = HolonMuted)
+                        }
+                    }
+                } else {
+                    HolonTextField(
+                        value = baseUrl,
+                        onValueChange = {
+                            baseUrl = it
+                            preferences.edit().putString(BASE_URL_KEY, it).apply()
+                        },
+                        label = "API 地址",
+                        singleLine = true,
+                    )
+                    if (BuildConfig.DEBUG) {
+                        HolonTextField(
+                            value = sessionCredential,
+                            onValueChange = {
+                                sessionCredential = it
+                                sessionStore.write(it)
+                            },
+                            label = "Debug session credential",
+                            singleLine = true,
                         )
-                        Text("注册：${agent.registryStatus} · 运行：${agent.runtimeStatus} · 待处理：${agent.pending}")
-                        TextButton(onClick = { loadConversation(agent) }) {
-                            Text(if (selectedAgent?.id == agent.id) "已选择 · 查看会话" else "查看会话")
+                        Text(
+                            "仅用于开发调试：填入已兑换的 session credential。",
+                            color = HolonFaint,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = ::connect,
+                            enabled = networkAvailable && state != ConnectionState.Connecting && !logoutInProgress,
+                            shape = RoundedCornerShape(9.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = HolonAccent),
+                        ) {
+                            Text(
+                                when (state) {
+                                    ConnectionState.Connecting -> "连接中…"
+                                    ConnectionState.Failed -> "重试连接"
+                                    ConnectionState.Connected -> "保存并重连"
+                                    ConnectionState.Disconnected -> "连接"
+                                },
+                            )
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                if (state == ConnectionState.Connected) {
+                                    showConnectionEditor = false
+                                } else {
+                                    logout()
+                                }
+                            },
+                            enabled = !logoutInProgress,
+                            shape = RoundedCornerShape(9.dp),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = HolonMuted),
+                        ) {
+                            Text(if (state == ConnectionState.Connected) "取消" else "清除会话")
                         }
                     }
                 }
             }
-        }
-        selectedAgent?.let { agent ->
-            Spacer(Modifier.height(16.dp))
-            Text("会话时间线 · ${agent.displayName}", style = MaterialTheme.typography.titleLarge)
-            Text(
-                conversationStatus,
-                color =
-                    if (conversationResetRequired) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurface
-                    },
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { loadConversation(agent, reset = true) }) {
-                    Text(if (conversationResetRequired) "重新同步" else "刷新")
-                }
-                TextButton(
-                    onClick = {
-                        conversationJob?.cancel()
-                        conversation = null
-                        conversationCursor = null
-                        conversationResetRequired = false
-                        conversationStatus = "已重置本地 checkpoint"
-                    },
-                ) {
-                    Text("重置")
-                }
-            }
-            conversation?.turns?.forEach { turn ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                ) {
-                    Text(turn.id, style = MaterialTheme.typography.labelMedium)
-                    Text(turn.summary)
-                }
-            }
-            conversationCursor?.let {
-                Text("checkpoint: $it", style = MaterialTheme.typography.labelSmall)
-            }
-            Text("工具调用", style = MaterialTheme.typography.titleMedium)
-            if (toolExecutions.isEmpty()) {
-                Text("暂无可见工具调用")
-            } else {
-                toolExecutions.forEach { tool ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                    ) {
-                        Text(
-                            "${tool.toolName} · ${tool.status}",
-                            style = MaterialTheme.typography.labelMedium,
+
+            HolonSection(
+                title = "Agents",
+                eyebrow = if (state == ConnectionState.Connected) "${agents.size} REGISTERED" else "ROSTER",
+            ) {
+                when (state) {
+                    ConnectionState.Disconnected -> EmptyHint("连接 Holon runtime 后，这里会显示可用 Agent。")
+                    ConnectionState.Connecting -> EmptyHint("正在同步 Agent roster…")
+                    ConnectionState.Failed -> EmptyHint("暂时无法读取 Agent，请先修复上方连接。")
+                    ConnectionState.Connected -> if (agents.isEmpty()) {
+                        EmptyHint("当前 runtime 还没有注册 Agent。")
+                    } else if (selectedAgent != null) {
+                        AgentRow(
+                            agent = selectedAgent!!,
+                            selected = true,
+                            onClick = { },
                         )
-                        tool.summary?.let { summary -> Text(summary) }
-                        repeat(tool.artifactCount) { index ->
-                            TextButton(onClick = { loadArtifact(agent, tool, index) }) {
-                                Text("查看产物 #$index")
+                        TextButton(
+                            onClick = {
+                                conversationJob?.cancel()
+                                selectedAgent = null
+                                conversation = null
+                                conversationCursor = null
+                                toolExecutions = emptyList()
+                                clearTaskDetails(cancelSubmit = true)
+                            },
+                        ) {
+                            Text("切换 Agent  ·  ${agents.size} 个可用", color = HolonAccent)
+                        }
+                    } else {
+                        agents.forEach { agent ->
+                            AgentRow(
+                                agent = agent,
+                                selected = selectedAgent?.id == agent.id,
+                                onClick = { loadConversation(agent) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            selectedAgent?.let { agent ->
+                HolonSection(
+                    title = agent.displayName,
+                    eyebrow = "CONVERSATION",
+                ) {
+                    Text(
+                        conversationStatus,
+                        color = if (conversationResetRequired) HolonDanger else HolonMuted,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { loadConversation(agent, reset = true) },
+                            shape = RoundedCornerShape(9.dp),
+                        ) {
+                            Text(if (conversationResetRequired) "重新同步" else "刷新时间线")
+                        }
+                        TextButton(
+                            onClick = {
+                                conversationJob?.cancel()
+                                conversation = null
+                                conversationCursor = null
+                                conversationResetRequired = false
+                                conversationStatus = "已重置本地 checkpoint"
+                            },
+                        ) {
+                            Text("重置 checkpoint", color = HolonMuted)
+                        }
+                    }
+                    val turns = conversation?.turns.orEmpty()
+                    if (turns.isEmpty()) {
+                        EmptyHint("还没有可显示的会话记录。")
+                    } else {
+                        val visibleTurns = if (showAllConversationTurns) turns else turns.take(4)
+                        visibleTurns.forEachIndexed { index, turn ->
+                            TimelineEntry(
+                                id = turn.id,
+                                summary = turn.summary,
+                                isLast = index == visibleTurns.lastIndex,
+                            )
+                        }
+                        if (turns.size > 4) {
+                            TextButton(onClick = { showAllConversationTurns = !showAllConversationTurns }) {
+                                Text(
+                                    if (showAllConversationTurns) {
+                                        "收起到最近 4 条"
+                                    } else {
+                                        "展开全部 ${turns.size} 条"
+                                    },
+                                    color = HolonAccent,
+                                )
                             }
                         }
                     }
-                }
-            }
-            artifactStatus?.let { Text(it) }
-            artifactContent?.let {
-                Text(it, modifier = Modifier.fillMaxWidth())
-            }
-            Spacer(Modifier.height(12.dp))
-            Text("文字任务", style = MaterialTheme.typography.titleMedium)
-            Text(
-                "图片任务：当前服务端未公开 Android 可用接口，已安全禁用。",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            OutlinedTextField(
-                value = taskInput,
-                onValueChange = { taskInput = it },
-                label = { Text("输入任务") },
-                modifier = Modifier.fillMaxWidth(),
-                enabled = taskSubmitJob?.isActive != true && taskRefreshJob?.isActive != true,
-            )
-            Button(
-                onClick = { sendTask(agent) },
-                enabled =
-                    taskInput.isNotBlank() &&
-                        taskSubmitJob?.isActive != true &&
-                        taskRefreshJob?.isActive != true,
-            ) {
-                Text(
-                    if (taskSubmitJob?.isActive == true || taskRefreshJob?.isActive == true) {
-                        "处理中…"
-                    } else {
-                        "发送任务"
-                    },
-                )
-            }
-            Text(taskStatus)
-            tasks.forEach { task ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 4.dp),
-                ) {
-                    Text("${task.taskId} · ${task.status}", style = MaterialTheme.typography.labelMedium)
-                    val summary = task.summary
-                    if (summary != null) {
-                        Text(summary)
+                    conversationCursor?.let {
+                        Text("checkpoint  $it", color = HolonFaint, style = MaterialTheme.typography.labelSmall)
                     }
                 }
-            }
-            taskOutput?.let { output ->
-                Text("最近结果 · ${output.status}", style = MaterialTheme.typography.titleSmall)
-                val resultSummary = output.resultSummary
-                if (resultSummary != null) {
-                    Text(resultSummary)
+
+                HolonSection(title = "工具与产物", eyebrow = "EXECUTION") {
+                    if (toolExecutions.isEmpty()) {
+                        EmptyHint("暂无可见工具调用。")
+                    } else {
+                        toolExecutions.forEach { tool ->
+                            DetailRow(
+                                label = "${tool.toolName}  ·  ${tool.status}",
+                                body = tool.summary,
+                            )
+                            if (tool.artifactCount > 0) {
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    repeat(tool.artifactCount) { index ->
+                                        TextButton(onClick = { loadArtifact(agent, tool, index) }) {
+                                            Text("产物 ${index + 1}", color = HolonAccent)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    artifactStatus?.let { Text(it, color = HolonMuted) }
+                    artifactContent?.let {
+                        Text(
+                            it,
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .background(HolonSidebar, RoundedCornerShape(8.dp))
+                                    .padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
-                val outputPreview = output.outputPreview
-                if (!outputPreview.isNullOrBlank()) {
-                    Text(outputPreview)
-                }
-            }
-            Text("WorkItem（只读）", style = MaterialTheme.typography.titleMedium)
-            if (workItems.isEmpty()) {
-                Text("暂无可见 WorkItem")
-            } else {
-                workItems.forEach { item ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
+
+                HolonSection(title = "交给 Agent", eyebrow = "TEXT TASK") {
+                    Text(
+                        "当前 Android 客户端只提交文字任务；图片入口会在服务端契约就绪后开放。",
+                        color = HolonMuted,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    HolonTextField(
+                        value = taskInput,
+                        onValueChange = { taskInput = it },
+                        label = "描述要完成的工作",
+                        enabled = taskSubmitJob?.isActive != true && taskRefreshJob?.isActive != true,
+                        minLines = 3,
+                    )
+                    Button(
+                        onClick = { sendTask(agent) },
+                        enabled =
+                            taskInput.isNotBlank() &&
+                                taskSubmitJob?.isActive != true &&
+                                taskRefreshJob?.isActive != true,
+                        shape = RoundedCornerShape(9.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = HolonAccent),
+                        modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text("${item.workItemId} · ${item.state}", style = MaterialTheme.typography.labelMedium)
-                        val objective = item.objective
-                        if (objective != null) {
-                            Text(objective)
+                        Text(
+                            if (taskSubmitJob?.isActive == true || taskRefreshJob?.isActive == true) {
+                                "处理中…"
+                            } else {
+                                "发送任务"
+                            },
+                        )
+                    }
+                    Text(taskStatus, color = HolonMuted, style = MaterialTheme.typography.bodySmall)
+                    tasks.forEach { task ->
+                        DetailRow(
+                            label = "${task.taskId}  ·  ${task.status}",
+                            body = task.summary,
+                            accent = !isTerminalTaskStatus(task.status),
+                        )
+                    }
+                    taskOutput?.let { output ->
+                        DetailRow(
+                            label = "最近结果  ·  ${output.status}",
+                            body = listOfNotNull(output.resultSummary, output.outputPreview).joinToString("\n").ifBlank { null },
+                        )
+                    }
+                }
+
+                HolonSection(title = "WorkItems", eyebrow = "READ ONLY") {
+                    if (workItems.isEmpty()) {
+                        EmptyHint("暂无可见 WorkItem。")
+                    } else {
+                        workItems.forEach { item ->
+                            DetailRow(
+                                label = "${item.workItemId}  ·  ${item.state}",
+                                body = item.objective,
+                                accent = !isTerminalTaskStatus(item.state),
+                            )
                         }
                     }
                 }
             }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun HolonHeader(state: ConnectionState) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        HolonMark()
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                "Holon",
+                color = HolonText,
+                style = MaterialTheme.typography.headlineLarge,
+            )
+            Text(
+                "持续运行的 Agent 工作台",
+                color = HolonMuted,
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        StatusPill(
+            label =
+                when (state) {
+                    ConnectionState.Connected -> "LIVE"
+                    ConnectionState.Connecting -> "SYNC"
+                    ConnectionState.Failed -> "ERROR"
+                    ConnectionState.Disconnected -> "OFFLINE"
+                },
+            tone = connectionTone(state),
+        )
+    }
+}
+
+private fun connectionTone(state: ConnectionState): StatusTone =
+    when (state) {
+        ConnectionState.Connected -> StatusTone.Success
+        ConnectionState.Connecting -> StatusTone.Accent
+        ConnectionState.Failed -> StatusTone.Danger
+        ConnectionState.Disconnected -> StatusTone.Neutral
+    }
+
+@Composable
+private fun HolonTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    singleLine: Boolean = false,
+    minLines: Int = 1,
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onValueChange,
+        label = { Text(label) },
+        enabled = enabled,
+        singleLine = singleLine,
+        minLines = minLines,
+        shape = RoundedCornerShape(9.dp),
+        colors =
+            OutlinedTextFieldDefaults.colors(
+                focusedBorderColor = HolonAccent,
+                unfocusedBorderColor = HolonLineStrong,
+                focusedLabelColor = HolonAccent,
+                unfocusedLabelColor = HolonMuted,
+                focusedContainerColor = Color.White,
+                unfocusedContainerColor = Color.White,
+            ),
+        modifier = modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun AgentRow(
+    agent: AgentSummary,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val active = agent.runtimeStatus.lowercase() in setOf("active", "running", "busy", "working")
+    val railColor = if (active) HolonAccent else HolonLineStrong
+    Surface(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .clickable(onClick = onClick),
+        color = if (selected) HolonAccentSoft.copy(alpha = 0.55f) else HolonSidebar,
+        shape = RoundedCornerShape(10.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (selected) HolonAccent.copy(alpha = 0.38f) else HolonLine,
+        ),
+    ) {
+        Row(
+            modifier = Modifier.padding(end = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .width(4.dp)
+                    .height(72.dp)
+                    .background(railColor),
+            )
+            Column(
+                modifier =
+                    Modifier
+                        .weight(1f)
+                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        agent.displayName,
+                        color = HolonText,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (agent.isDefault) {
+                        Text("DEFAULT", color = HolonAccent, style = MaterialTheme.typography.labelSmall)
+                    }
+                }
+                Text(
+                    agent.id,
+                    color = HolonFaint,
+                    style = MaterialTheme.typography.labelSmall,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "${agent.runtimeStatus}  ·  pending ${agent.pending}",
+                    color = if (active) HolonAccent else HolonMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Text(if (selected) "已打开" else "打开  →", color = HolonAccent, style = MaterialTheme.typography.labelMedium)
+        }
+    }
+}
+
+@Composable
+private fun TimelineEntry(
+    id: String,
+    summary: String,
+    isLast: Boolean,
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                Modifier
+                    .padding(top = 5.dp)
+                    .size(8.dp)
+                    .background(HolonAccent, CircleShape),
+            )
+            if (!isLast) {
+                Box(
+                    Modifier
+                        .width(1.dp)
+                        .height(132.dp)
+                        .background(HolonLineStrong),
+                )
+            }
+        }
+        Column(
+            modifier = Modifier.padding(start = 11.dp, bottom = if (isLast) 0.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(3.dp),
+        ) {
+            Text(id, color = HolonFaint, style = MaterialTheme.typography.labelSmall)
+            Text(
+                timelinePreview(summary),
+                color = HolonText,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 6,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+private val timelinePreviewKeys = listOf("summary", "preview", "text", "objective", "message")
+
+private fun timelinePreview(raw: String): String {
+    val parsed = runCatching { Json.parseToJsonElement(raw) }.getOrNull() ?: return raw
+    return findTimelinePreview(parsed) ?: raw
+}
+
+private fun findTimelinePreview(element: JsonElement): String? =
+    when (element) {
+        is JsonObject -> {
+            timelinePreviewKeys.forEach { key ->
+                val candidate =
+                    (element[key] as? JsonPrimitive)
+                        ?.contentOrNull
+                        ?.takeIf { it.isNotBlank() }
+                        ?: return@forEach
+                val nested = runCatching { Json.parseToJsonElement(candidate) }.getOrNull()
+                return nested?.let(::findTimelinePreview) ?: candidate
+            }
+            element.values.firstNotNullOfOrNull(::findTimelinePreview)
+        }
+        is JsonArray -> element.firstNotNullOfOrNull(::findTimelinePreview)
+        else -> null
+    }
+
+@Composable
+private fun DetailRow(
+    label: String,
+    body: String?,
+    accent: Boolean = false,
+) {
+    Column(
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .border(1.dp, if (accent) HolonAccent.copy(alpha = 0.28f) else HolonLine, RoundedCornerShape(8.dp))
+                .background(if (accent) HolonAccentSoft.copy(alpha = 0.34f) else HolonSidebar, RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Text(
+            label,
+            color = if (accent) HolonAccent else HolonMuted,
+            style = MaterialTheme.typography.labelMedium,
+        )
+        body?.takeIf { it.isNotBlank() }?.let {
+            HorizontalDivider(color = HolonLine)
+            Text(it, color = HolonText, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
