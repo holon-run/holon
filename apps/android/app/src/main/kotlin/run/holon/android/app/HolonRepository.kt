@@ -98,8 +98,12 @@ internal class HolonRepository(
     private var active: ActiveSession? = null
     private var client: HolonHttpClient? = null
 
-    suspend fun login(address: String, token: CharArray): Pair<ActiveSession, HolonRosterSnapshot> {
-        val baseUrl = normalizeAddress(address)
+    suspend fun login(
+        address: String,
+        token: CharArray,
+        allowInsecureHttp: Boolean,
+    ): Pair<ActiveSession, HolonRosterSnapshot> {
+        val baseUrl = normalizeAddress(address, allowInsecureHttp)
         var transientToken: String? = token.concatToString()
         token.fill('\u0000')
         val candidate =
@@ -107,7 +111,7 @@ internal class HolonRepository(
                 baseUrl = baseUrl,
                 bearerTokenProvider = BearerTokenProvider { transientToken },
                 sessionCredentialStore = sessionStore,
-                insecureHttpHosts = debugHttpHosts(),
+                insecureHttpHosts = insecureHttpHosts(baseUrl),
             )
         return try {
             candidate.exchangeSession(transientToken.orEmpty())
@@ -428,7 +432,7 @@ internal class HolonRepository(
         HolonHttpClient(
             baseUrl = baseUrl,
             sessionCredentialStore = sessionStore,
-            insecureHttpHosts = debugHttpHosts(),
+            insecureHttpHosts = insecureHttpHosts(baseUrl),
         )
 
     private suspend fun offlineResult(
@@ -552,22 +556,22 @@ private data class CachedBrief(
     val relatedTaskId: String?,
 )
 
-internal fun normalizeAddress(input: String): String {
+internal fun normalizeAddress(
+    input: String,
+    allowInsecureHttp: Boolean = false,
+): String {
     val trimmed = input.trim().trimEnd('/')
     require(trimmed.isNotEmpty()) { "请输入 Holon 地址" }
     val uri = runCatching { URI(trimmed) }.getOrElse { throw IllegalArgumentException("地址格式无效") }
-    require(uri.scheme == "https" || (BuildConfig.DEBUG && uri.scheme == "http")) {
-        if (BuildConfig.DEBUG) "地址必须使用 HTTPS，调试版允许 HTTP" else "正式版只允许 HTTPS"
-    }
+    require(uri.scheme == "https" || uri.scheme == "http") { "地址必须使用 HTTP 或 HTTPS" }
     require(uri.host != null && uri.userInfo == null && uri.query == null && uri.fragment == null) {
         "地址必须是完整的 Holon HTTP(S) 地址"
     }
     if (uri.scheme == "http") {
-        require(BuildConfig.DEBUG && uri.host in debugHttpHosts()) {
-            if (BuildConfig.DEBUG) "调试版 HTTP 仅支持本机或 Android 模拟器" else "正式版只允许 HTTPS"
+        require(allowInsecureHttp || (BuildConfig.DEBUG && uri.host in debugHttpHosts())) {
+            "HTTP 本身不加密，请确认仅在可信网络或加密隧道中使用"
         }
     }
-    if (!BuildConfig.DEBUG && uri.scheme != "https") error("正式版只允许 HTTPS")
     val path = uri.path.trimEnd('/')
     require(path.isEmpty() || path == "/api") { "地址路径只能为空或 /api" }
     return URI(uri.scheme, null, uri.host, uri.port, "/api", null, null).toString().trimEnd('/') + "/"
@@ -575,6 +579,9 @@ internal fun normalizeAddress(input: String): String {
 
 private fun debugHttpHosts(): Set<String> =
     if (BuildConfig.DEBUG) setOf("localhost", "127.0.0.1", "::1", "10.0.2.2") else emptySet()
+
+private fun insecureHttpHosts(baseUrl: String): Set<String> =
+    URI(baseUrl).let { uri -> if (uri.scheme == "http") setOfNotNull(uri.host) else emptySet() }
 
 private fun HolonProtocolException.isCompatibilityFailure(): Boolean =
     message?.let {

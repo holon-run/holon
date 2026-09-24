@@ -33,6 +33,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -106,6 +107,7 @@ private fun StartingScreen() {
 
 @Composable
 private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
+    val isInsecureHttp = state.baseUrl.trim().startsWith("http://", ignoreCase = true)
     Box(
         Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
@@ -130,12 +132,37 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 value = state.baseUrl,
                 onValueChange = viewModel::setBaseUrl,
                 label = { Text("Holon 地址") },
-                supportingText = { Text("例如 https://holon.example.com 或调试机 http://127.0.0.1:7878") },
+                supportingText = {
+                    if (isInsecureHttp) {
+                        Text(
+                            "HTTP 本身不加密；请只在可信局域网或 Tailscale 等加密隧道中使用",
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                    } else {
+                        Text("例如 https://holon.example.com 或 http://100.64.0.1:7878")
+                    }
+                },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
                 singleLine = true,
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
             )
+            AnimatedVisibility(visible = isInsecureHttp) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Checkbox(
+                        checked = state.allowInsecureHttp,
+                        onCheckedChange = viewModel::setAllowInsecureHttp,
+                        enabled = !state.busy,
+                    )
+                    Text(
+                        "我确认此地址位于可信网络或加密隧道中",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            }
             OutlinedTextField(
                 value = state.token,
                 onValueChange = viewModel::setToken,
@@ -156,7 +183,10 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
             Button(
                 onClick = viewModel::login,
-                enabled = !state.busy && state.token.isNotBlank(),
+                enabled =
+                    !state.busy &&
+                        state.token.isNotBlank() &&
+                        (!isInsecureHttp || state.allowInsecureHttp),
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(10.dp),
             ) {
@@ -167,7 +197,7 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 Text(if (state.busy) "正在登录" else "登录")
             }
             Text(
-                "正式版强制 HTTPS；调试版仅允许回环 HTTP。浏览器登录和扫码配对将在后续版本提供。",
+                "HTTPS 默认安全；HTTP 需要逐次确认。浏览器登录和扫码配对将在后续版本提供。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -793,8 +823,20 @@ private fun ErrorBanner(message: String, onDismiss: (() -> Unit)?) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = if (onDismiss == null) 0.dp else 8.dp),
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
-            onDismiss?.let { TextButton(onClick = it) { Text("关闭") } }
+            Text(
+                message,
+                modifier = Modifier.weight(1f),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            onDismiss?.let {
+                TextButton(
+                    onClick = it,
+                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                ) {
+                    Text("关闭")
+                }
+            }
         }
     }
 }

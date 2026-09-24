@@ -34,10 +34,12 @@ cd apps/android
 The debug app defaults to `http://10.0.2.2:7878/api` on an Android emulator and
 `http://127.0.0.1:7878/api` on a physical device. For a USB-connected device,
 run `adb reverse tcp:7878 tcp:7878` before connecting. Only the debug build
-permits cleartext traffic to these loopback development hosts. Its session
-login exchanges a local auth or one-time bootstrap token for a revocable native
-session. Only the session is encrypted with Android Keystore; the input token is
-not persisted. Release builds use the same exchange flow but require HTTPS.
+allows loopback HTTP without confirmation. Both debug and release builds allow
+an explicitly confirmed HTTP address for self-hosted LAN and encrypted-tunnel
+deployments. The login screen warns that HTTP itself does not encrypt traffic.
+Session login exchanges a local auth or one-time bootstrap token for a revocable
+native session. Only the session is encrypted with Android Keystore; the input
+token is not persisted.
 
 `HolonHttpClient` accepts the API base URL. For a directly connected daemon,
 use an address ending in `/api`; reverse proxies may supply another API prefix.

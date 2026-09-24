@@ -44,6 +44,7 @@ internal data class HolonUiState(
     val baseUrl: String = "",
     val token: String = "",
     val showToken: Boolean = false,
+    val allowInsecureHttp: Boolean = false,
     val busy: Boolean = false,
     val online: Boolean = false,
     val session: ActiveSession? = null,
@@ -137,9 +138,14 @@ internal class HolonViewModel(
         }
     }
 
-    fun setBaseUrl(value: String) = mutableState.update { it.copy(baseUrl = value, error = null) }
+    fun setBaseUrl(value: String) =
+        mutableState.update {
+            it.copy(baseUrl = value, allowInsecureHttp = false, error = null)
+        }
     fun setToken(value: String) = mutableState.update { it.copy(token = value, error = null) }
     fun toggleToken() = mutableState.update { it.copy(showToken = !it.showToken) }
+    fun setAllowInsecureHttp(value: Boolean) =
+        mutableState.update { it.copy(allowInsecureHttp = value, error = null) }
     fun setSearch(value: String) = mutableState.update { it.copy(search = value) }
 
     fun login() {
@@ -153,7 +159,9 @@ internal class HolonViewModel(
         mutableState.update { it.copy(busy = true, error = null, statusMessage = "正在安全登录…") }
         viewModelScope.launch {
             runCatching {
-                withContext(Dispatchers.IO) { repository.login(before.baseUrl, tokenChars) }
+                withContext(Dispatchers.IO) {
+                    repository.login(before.baseUrl, tokenChars, before.allowInsecureHttp)
+                }
             }.onSuccess { (session, roster) ->
                 mutableState.update {
                     it.copy(

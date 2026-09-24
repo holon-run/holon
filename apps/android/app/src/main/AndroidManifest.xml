@@ -6,6 +6,7 @@
         android:allowBackup="false"
         android:label="Holon"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.Holon">
         <activity
             android:name=".MainActivity"
