@@ -97,6 +97,22 @@ struct PendingWaitReport {
     text_only_fallback: bool,
 }
 
+type ProviderRoundSuccess = (
+    ProviderTurnResponse,
+    Option<ProviderAttemptTimeline>,
+    Map<String, Value>,
+    u64,
+    DateTime<Utc>,
+    DateTime<Utc>,
+    u64,
+    Option<Value>,
+);
+
+enum ProviderRoundResult {
+    Completed(ProviderRoundSuccess),
+    Terminal(AgentLoopOutcome),
+}
+
 const MAX_REPORT_TOOL_ROUNDS: usize = 2;
 
 const WAIT_REPORT_FALLBACK_NOTICE: &str = "Report tool budget exhausted. Tool calls are now disabled at the API layer. Reply with non-empty operator-facing final text only; do not attempt any tool call, including writing tool calls as text.";
@@ -1890,7 +1906,8 @@ impl TurnExecution<'_> {
                 provider_completed_at,
                 provider_round_ms,
                 turn_local_compaction,
-            ) = 'provider_round: loop {
+            ) = match Box::pin(async {
+                'provider_round: loop {
                 let context_build_started = Instant::now();
                 let context_build_started_at = chrono::Utc::now();
 
@@ -1944,17 +1961,20 @@ impl TurnExecution<'_> {
                         provider_started_at,
                         &result,
                     );
-                    break match result {
-                        Ok((response, attempt_timeline)) => (
+                    break Ok(match result {
+                        Ok((response, attempt_timeline)) => ProviderRoundResult::Completed((
                             response,
                             attempt_timeline,
-                            context_management,
+                            context_management
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
                             context_build_ms,
                             provider_started_at,
                             provider_completed_at,
                             provider_round_ms,
                             None,
-                        ),
+                        )),
                         Err(err) => {
                             if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                                 runtime
@@ -1990,7 +2010,7 @@ impl TurnExecution<'_> {
                                 )
                                 .await?
                             {
-                                return Ok(outcome);
+                                return Ok(ProviderRoundResult::Terminal(outcome));
                             }
                             if let Some(outcome) = runtime
                                 .maybe_defer_provider_lineage_failure(
@@ -2006,7 +2026,7 @@ impl TurnExecution<'_> {
                                 )
                                 .await?
                             {
-                                return Ok(outcome);
+                                return Ok(ProviderRoundResult::Terminal(outcome));
                             }
                             runtime
                                 .persist_turn_terminal_record(
@@ -2020,7 +2040,7 @@ impl TurnExecution<'_> {
                                 .await?;
                             return Err(err);
                         }
-                    };
+                    });
                 } else {
                     let context_config = runtime.current_context_config().await;
                     let (turn_index, turn_budget) = {
@@ -2174,7 +2194,7 @@ impl TurnExecution<'_> {
                                         persist_terminal,
                                     )
                                     .await?;
-                                return Ok(AgentLoopOutcome {
+                                return Ok(ProviderRoundResult::Terminal(AgentLoopOutcome {
                                     final_text,
                                     final_citations: Vec::new(),
                                     final_text_source_assistant_round_id: None,
@@ -2187,7 +2207,7 @@ impl TurnExecution<'_> {
                                     prepared_work_item_completion: None,
                                     prepared_wait_for: None,
                                     terminal_tool_executions: Vec::new(),
-                                });
+                                }));
                             }
                         }
                     };
@@ -2326,17 +2346,20 @@ impl TurnExecution<'_> {
                         provider_started_at,
                         &result,
                     );
-                    break match result {
-                        Ok((response, attempt_timeline)) => (
+                    break Ok(match result {
+                        Ok((response, attempt_timeline)) => ProviderRoundResult::Completed((
                             response,
                             attempt_timeline,
-                            context_management,
+                            context_management
+                                .as_object()
+                                .cloned()
+                                .unwrap_or_default(),
                             context_build_ms,
                             provider_started_at,
                             provider_completed_at,
                             provider_round_ms,
                             turn_local_compaction,
-                        ),
+                        )),
                         Err(err) => {
                             if let Some(aborted) = err.downcast_ref::<CurrentRunAborted>() {
                                 runtime
@@ -2372,7 +2395,7 @@ impl TurnExecution<'_> {
                                 )
                                 .await?
                             {
-                                return Ok(outcome);
+                                return Ok(ProviderRoundResult::Terminal(outcome));
                             }
                             if let Some(outcome) = runtime
                                 .maybe_defer_provider_lineage_failure(
@@ -2388,7 +2411,7 @@ impl TurnExecution<'_> {
                                 )
                                 .await?
                             {
-                                return Ok(outcome);
+                                return Ok(ProviderRoundResult::Terminal(outcome));
                             }
                             runtime
                                 .persist_turn_terminal_record(
@@ -2402,8 +2425,14 @@ impl TurnExecution<'_> {
                                 .await?;
                             return Err(err);
                         }
-                    };
+                    });
                 }
+                }
+            })
+            .await?
+            {
+                ProviderRoundResult::Completed(round) => round,
+                ProviderRoundResult::Terminal(outcome) => return Ok(outcome),
             };
             let stop_reason = response.stop_reason.clone();
             let cache_usage = response.cache_usage.clone();
