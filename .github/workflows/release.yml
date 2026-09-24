@@ -139,7 +139,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --locked --target "${{ matrix.target }}"
+        run: cargo build --release --locked --features local-onnx --target "${{ matrix.target }}"
 
       - name: Package release archive
         run: |
@@ -235,7 +235,7 @@ jobs:
             "$keychain"
 
       - name: Build bundled Holon runtime
-        run: cargo build --release --locked --target aarch64-apple-darwin --target x86_64-apple-darwin
+        run: cargo build --release --locked --features local-onnx --target aarch64-apple-darwin --target x86_64-apple-darwin
 
       - name: Merge universal Holon runtime
         run: |
