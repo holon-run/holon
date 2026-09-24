@@ -17,8 +17,9 @@ pub(crate) use crate::{
         provider_transport_error_with_code, provider_turn_error, AgentProvider,
         ConversationMessage, ModelBlock, ProviderAttemptOutcome, ProviderAttemptRecord,
         ProviderAttemptTimeline, ProviderFailureClassification, ProviderFailureKind,
-        ProviderHttpTraceDiagnostics, ProviderTransportDiagnostics, ProviderTurnRequest,
-        ProviderTurnResponse, ReqwestTransportDiagnostics, RetryDisposition, StubProvider,
+        ProviderHttpTraceDiagnostics, ProviderTransportDiagnostics, ProviderTransportTimeline,
+        ProviderTurnRequest, ProviderTurnResponse, ReqwestTransportDiagnostics, RetryDisposition,
+        StubProvider,
     },
     storage::AppStorage,
     system::{ExecutionProfile, ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind},
@@ -539,6 +540,10 @@ pub(crate) struct RecentTurnsRecoveryProbeProvider {
 }
 
 pub(crate) struct ContextLengthExceededProvider;
+
+pub(crate) struct RecoveringContextLengthProvider {
+    pub(crate) calls: Mutex<usize>,
+}
 
 pub(crate) struct DeferredFallbackProvider;
 
@@ -1344,6 +1349,7 @@ impl AgentProvider for FailingTimelineProvider {
                     transport_timeline: None,
                     transport_diagnostics: Some(ProviderTransportDiagnostics {
                         stage: "request_send".into(),
+                        streaming: None,
                         provider: Some("openai".into()),
                         model_ref: Some("openai/gpt-5.4".into()),
                         url: Some(
@@ -1470,6 +1476,78 @@ impl AgentProvider for ContextLengthExceededProvider {
                 "context_length_exceeded: input too long",
             ),
         ))
+    }
+}
+
+#[async_trait]
+impl AgentProvider for RecoveringContextLengthProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        if *calls == 1 {
+            let now = Utc::now();
+            return Err(provider_turn_error(
+                "context_length_exceeded",
+                ProviderAttemptTimeline {
+                    attempts: vec![ProviderAttemptRecord {
+                        provider: "test".into(),
+                        model_ref: "test/model".into(),
+                        attempt: 1,
+                        max_attempts: 1,
+                        started_at: Some(now),
+                        completed_at: Some(now),
+                        duration_ms: Some(1),
+                        failure_kind: Some("context_length_exceeded".into()),
+                        disposition: Some("fail_fast".into()),
+                        outcome: ProviderAttemptOutcome::FailFastAborted,
+                        advanced_to_fallback: false,
+                        backoff_ms: None,
+                        backoff_source: None,
+                        token_usage: None,
+                        cache_usage: None,
+                        provider_message_id: None,
+                        provider_request_id: None,
+                        provider_http_trace_id: None,
+                        transport_timeline: Some(ProviderTransportTimeline {
+                            request_started_at: now,
+                            response_headers_at: now,
+                            response_body_completed_at: Some(now),
+                            parse_completed_at: now,
+                            streaming: false,
+                        }),
+                        transport_diagnostics: None,
+                    }],
+                    requested_model_ref: "test/model".into(),
+                    active_model_ref: None,
+                    winning_model_ref: None,
+                    pending_fallback_model_ref: None,
+                    pending_fallback_disposition: None,
+                    aggregated_token_usage: None,
+                },
+                provider_transport_error_with_code(
+                    ProviderFailureClassification {
+                        kind: ProviderFailureKind::ContractError,
+                        disposition: RetryDisposition::FailFast,
+                    },
+                    Some("context_length_exceeded"),
+                    Some(400),
+                    None,
+                    "context_length_exceeded",
+                ),
+            ));
+        }
+        Ok(ProviderTurnResponse {
+            blocks: vec![ModelBlock::Text {
+                text: "Recovered after reducing recent turns.".into(),
+            }],
+            stop_reason: Some("end_turn".into()),
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
     }
 }
 

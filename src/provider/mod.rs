@@ -801,6 +801,8 @@ pub struct ProviderAttemptTimeline {
 pub struct ProviderTransportDiagnostics {
     pub stage: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_ref: Option<String>,

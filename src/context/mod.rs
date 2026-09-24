@@ -135,6 +135,12 @@ impl RecentTurnsReprojection {
         self.initial_budget
     }
 
+    pub(crate) fn with_initial_budget(&self, initial_budget: usize) -> Self {
+        let mut reprojection = self.clone();
+        reprojection.initial_budget = initial_budget;
+        reprojection
+    }
+
     pub(crate) fn turn_count(&self) -> usize {
         self.turn_records.len()
     }
