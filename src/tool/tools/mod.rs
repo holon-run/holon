@@ -159,6 +159,12 @@ fn execute_builtin_tool_inner<'a>(
     call: &'a ToolCall,
     context: &'a ToolExecutionContext,
 ) -> Pin<Box<dyn Future<Output = Result<ToolResult>> + Send + 'a>> {
+    macro_rules! defer_tool_future {
+        ($future:expr) => {
+            Box::pin(async move { Box::pin($future).await })
+        };
+    }
+
     match call.name.as_str() {
         advisory_decision::NAME => Box::pin(advisory_decision::execute(
             runtime,
@@ -238,7 +244,7 @@ fn execute_builtin_tool_inner<'a>(
             authority_class,
             &call.input,
         )),
-        task_output::NAME => Box::pin(task_output::execute(
+        task_output::NAME => defer_tool_future!(task_output::execute(
             runtime,
             agent_id,
             authority_class,
@@ -298,7 +304,7 @@ fn execute_builtin_tool_inner<'a>(
             authority_class,
             &call.input,
         )),
-        complete_work_item::NAME => Box::pin(complete_work_item::execute(
+        complete_work_item::NAME => defer_tool_future!(complete_work_item::execute(
             runtime,
             agent_id,
             authority_class,
@@ -371,14 +377,14 @@ fn execute_builtin_tool_inner<'a>(
             authority_class,
             &call.input,
         )),
-        exec_command::NAME => Box::pin(exec_command::execute(
+        exec_command::NAME => defer_tool_future!(exec_command::execute(
             runtime,
             agent_id,
             authority_class,
             &call.input,
             context,
         )),
-        exec_command_batch::NAME => Box::pin(exec_command_batch::execute(
+        exec_command_batch::NAME => defer_tool_future!(exec_command_batch::execute(
             runtime,
             agent_id,
             authority_class,

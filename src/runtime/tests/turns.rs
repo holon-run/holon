@@ -2999,6 +2999,98 @@ async fn context_length_exceeded_turn_fails_fast_without_runtime_error() {
 }
 
 #[tokio::test]
+async fn context_length_exceeded_turn_recovers_once_with_recent_turns() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(RecoveringContextLengthProvider {
+        calls: Mutex::new(0),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let historical_message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "historical context".repeat(256),
+        },
+    );
+    let mut historical_turn = TurnRecord::new("default", "turn-context-recovery-history", 1);
+    let mut historical_message = historical_message;
+    historical_message.turn_id = Some(historical_turn.turn_id.clone());
+    historical_turn.input_message_ids = vec![historical_message.id.clone()];
+    historical_turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(
+        &historical_message,
+    ));
+    runtime
+        .storage()
+        .append_message(&historical_message)
+        .unwrap();
+    runtime.storage().append_turn(&historical_turn).unwrap();
+
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "trigger recoverable provider context overflow".into(),
+        },
+    );
+
+    runtime
+        .process_interactive_message(
+            &message,
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(*provider.calls.lock().await, 2);
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state
+            .last_turn_terminal
+            .as_ref()
+            .map(|terminal| terminal.kind),
+        Some(TurnTerminalKind::Completed)
+    );
+    let events = runtime.storage().read_recent_events(50).unwrap();
+    let recovery = events
+        .iter()
+        .find(|event| event.kind == "turn_context_length_recovery")
+        .expect("context recovery audit event should exist");
+    assert_eq!(recovery.data["attempt"].as_u64(), Some(1));
+    assert!(
+        recovery.data["next_recent_turns_budget"].as_u64()
+            < recovery.data["previous_recent_turns_budget"].as_u64()
+    );
+    assert!(!events
+        .iter()
+        .any(|event| event.kind == "turn_context_length_exceeded"));
+}
+
+#[tokio::test]
 async fn runtime_persists_provider_attempt_timeline_on_successful_round() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
