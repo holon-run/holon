@@ -16,6 +16,7 @@ use crate::config::{
     CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderEndpointId, ProviderId,
     ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
+use crate::provider::budget::effective_output_tokens;
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
 use crate::provider::retry::{
     provider_transport_error, ProviderFailureClassification, ProviderTransportError,
@@ -176,10 +177,11 @@ fn chat_completions_resolved_runtime_config_does_not_resolve_metadata_again() {
     config.route_endpoint = ProviderEndpointId::parse("plan").unwrap();
     let home = tempfile::tempdir().unwrap();
 
-    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config(
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
         &config,
         "glm-5.2",
         200_000,
+        None,
         home.path(),
     )
     .unwrap();
@@ -1142,4 +1144,29 @@ fn test_request_shape() -> OpenAiRequestShape {
         wire_shape: json!({ "model": "gpt-test" }),
         prompt_frame: crate::provider::ProviderPromptFrame::plain("system"),
     }
+}
+
+#[test]
+fn openai_responses_request_body_clamps_max_output_tokens() {
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("context".into())],
+        vec![],
+    );
+    let mut body = build_openai_responses_request(
+        "gpt-test",
+        384_000,
+        &request,
+        OpenAiResponsesTransportContract::StandardJson,
+        ToolSchemaContract::Relaxed,
+        None,
+        None,
+    )
+    .expect("request body should build");
+
+    let effective = effective_output_tokens(Some(100_000), 384_000, &body, &["max_output_tokens"]);
+    body["max_output_tokens"] = effective.into();
+
+    assert_eq!(body["max_output_tokens"], json!(effective));
+    assert!(effective < 384_000);
 }

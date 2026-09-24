@@ -12,6 +12,7 @@ use crate::{
     types::{Citation, TokenUsage},
 };
 
+mod budget;
 mod catalog;
 mod diagnostics;
 mod fallback;

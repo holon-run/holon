@@ -43,6 +43,7 @@ use crate::{
     token_estimate::estimate_json_tokens,
 };
 
+use super::super::budget::effective_output_tokens;
 use super::{build_http_client, request_send_timeout, response_body_timeout, stream_idle_timeout};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
@@ -121,6 +122,7 @@ pub struct OpenAiProvider {
     auth: OpenAiBearerAuth,
     model: String,
     max_output_tokens: u32,
+    context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
     endpoint_contract: OpenAiResponsesEndpointContract,
     builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
@@ -152,6 +154,7 @@ pub struct OpenAiCodexProvider {
     originator: String,
     model: String,
     max_output_tokens: u32,
+    context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
     supports_reasoning: bool,
     verbosity: Option<ModelVerbosity>,
@@ -169,6 +172,7 @@ pub struct OpenAiChatCompletionsProvider {
     api_key: Option<String>,
     model: String,
     max_output_tokens: u32,
+    context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
@@ -303,10 +307,11 @@ impl OpenAiProvider {
             .get(&ProviderId::openai())
             .ok_or_else(|| anyhow::anyhow!("missing openai provider config"))?;
         let policy = openai_model_policy_from_config(config, ProviderId::openai(), model);
-        Self::from_runtime_config_with_compaction_policy(
+        Self::from_runtime_config_with_compaction_policy_and_context_window(
             provider_config,
             model,
             policy.runtime_max_output_tokens,
+            policy.context_window_tokens,
             &config.home_dir,
             OpenAiCompactionPolicy {
                 trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
@@ -322,10 +327,11 @@ impl OpenAiProvider {
     ) -> Result<Self> {
         let policy =
             openai_model_policy_for_runtime_config(provider_config, model, max_output_tokens);
-        Self::from_runtime_config_with_compaction_policy(
+        Self::from_runtime_config_with_compaction_policy_and_context_window(
             provider_config,
             model,
             policy.runtime_max_output_tokens,
+            policy.context_window_tokens,
             trace_home_dir,
             OpenAiCompactionPolicy {
                 trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
@@ -333,10 +339,11 @@ impl OpenAiProvider {
         )
     }
 
-    pub(crate) fn from_runtime_config_with_compaction_policy(
+    pub(crate) fn from_runtime_config_with_compaction_policy_and_context_window(
         provider_config: &ProviderRuntimeConfig,
         model: &str,
         max_output_tokens: u32,
+        context_window_tokens: Option<usize>,
         trace_home_dir: &Path,
         compaction_policy: OpenAiCompactionPolicy,
     ) -> Result<Self> {
@@ -351,6 +358,7 @@ impl OpenAiProvider {
             auth,
             model: model.to_string(),
             max_output_tokens,
+            context_window_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
             endpoint_contract: if provider_config.route_provider.as_str() == "deepseek"
                 && provider_config.route_endpoint.as_str() == "responses"
@@ -402,10 +410,11 @@ impl OpenAiChatCompletionsProvider {
             .get(&ProviderId::openai())
             .ok_or_else(|| anyhow::anyhow!("missing openai provider config"))?;
         let policy = openai_model_policy_from_config(config, ProviderId::openai(), model);
-        Self::from_resolved_runtime_config(
+        Self::from_resolved_runtime_config_with_context_window(
             provider_config,
             model,
             policy.runtime_max_output_tokens,
+            policy.context_window_tokens,
             &config.home_dir,
         )
     }
@@ -418,18 +427,20 @@ impl OpenAiChatCompletionsProvider {
     ) -> Result<Self> {
         let policy =
             openai_model_policy_for_runtime_config(provider_config, model, max_output_tokens);
-        Self::from_resolved_runtime_config(
+        Self::from_resolved_runtime_config_with_context_window(
             provider_config,
             model,
             policy.runtime_max_output_tokens,
+            policy.context_window_tokens,
             trace_home_dir,
         )
     }
 
-    pub(crate) fn from_resolved_runtime_config(
+    pub(crate) fn from_resolved_runtime_config_with_context_window(
         provider_config: &ProviderRuntimeConfig,
         model: &str,
         resolved_max_output_tokens: u32,
+        context_window_tokens: Option<usize>,
         trace_home_dir: &Path,
     ) -> Result<Self> {
         let client = build_http_client()?;
@@ -459,6 +470,7 @@ impl OpenAiChatCompletionsProvider {
             api_key,
             model: model.to_string(),
             max_output_tokens: resolved_max_output_tokens,
+            context_window_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
@@ -469,7 +481,7 @@ impl OpenAiChatCompletionsProvider {
 #[async_trait]
 impl AgentProvider for OpenAiProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        let body = build_openai_responses_request(
+        let mut body = build_openai_responses_request(
             &self.model,
             self.max_output_tokens,
             &request,
@@ -478,6 +490,15 @@ impl AgentProvider for OpenAiProvider {
             self.reasoning_effort.as_deref(),
             None,
         )?;
+        let effective_output = effective_output_tokens(
+            self.context_window_tokens,
+            self.max_output_tokens,
+            &body,
+            &["max_output_tokens"],
+        );
+        if body.get("max_output_tokens").is_some() {
+            body["max_output_tokens"] = Value::from(effective_output);
+        }
         let mut plan = plan_openai_responses_request(
             body,
             &request,
@@ -793,7 +814,7 @@ impl AgentProvider for OpenAiCodexProvider {
                 ));
             }
         }
-        let body = build_openai_responses_request(
+        let mut body = build_openai_responses_request(
             &self.model,
             self.max_output_tokens,
             &request,
@@ -806,6 +827,15 @@ impl AgentProvider for OpenAiCodexProvider {
             },
             self.verbosity,
         )?;
+        let effective_output = effective_output_tokens(
+            self.context_window_tokens,
+            self.max_output_tokens,
+            &body,
+            &["max_output_tokens"],
+        );
+        if body.get("max_output_tokens").is_some() {
+            body["max_output_tokens"] = Value::from(effective_output);
+        }
         let mut plan = plan_openai_responses_request(
             body,
             &request,
@@ -1088,7 +1118,7 @@ impl AgentProvider for OpenAiCodexProvider {
 impl AgentProvider for OpenAiChatCompletionsProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         // Build Chat Completions request
-        let (body, plan) = plan_chat_completion_request(
+        let (mut body, plan) = plan_chat_completion_request(
             &self.model,
             self.max_output_tokens,
             &request,
@@ -1097,6 +1127,15 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             self.reasoning_effort.as_deref(),
             &self.continuation,
         )?;
+        let effective_output = effective_output_tokens(
+            self.context_window_tokens,
+            self.max_output_tokens,
+            &body,
+            &["max_tokens"],
+        );
+        if body.get("max_tokens").is_some() {
+            body["max_tokens"] = Value::from(effective_output);
+        }
         let mut sent_diagnostics = plan.diagnostics.clone();
         sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
         let headers = self

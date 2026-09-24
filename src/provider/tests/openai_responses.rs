@@ -500,16 +500,18 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
     provider_config.builtin_web_search = None;
     provider_config.reasoning_effort = Some("high".into());
 
-    let first_provider = OpenAiProvider::from_runtime_config_with_compaction_policy(
-        &provider_config,
-        "deepseek-v4-pro",
-        384_000,
-        fixture.config.home_dir.as_path(),
-        OpenAiCompactionPolicy {
-            trigger_input_tokens: 1,
-        },
-    )
-    .unwrap();
+    let first_provider =
+        OpenAiProvider::from_runtime_config_with_compaction_policy_and_context_window(
+            &provider_config,
+            "deepseek-v4-pro",
+            384_000,
+            None,
+            fixture.config.home_dir.as_path(),
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: 1,
+            },
+        )
+        .unwrap();
     let mut first_request = provider_turn_request_with_prompt_frame();
     first_request.tools = vec![
         crate::tool::tools::apply_patch_tool::definition_for_surface(
@@ -536,7 +538,7 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
         ModelBlock::ToolUse { id, name, kind, .. }
             if id == "patch-1"
                 && name == "ApplyPatch"
-                && *kind == crate::provider::ModelToolCallKind::Custom
+                && kind == &crate::provider::ModelToolCallKind::Custom
     ));
     let diagnostics = first
         .request_diagnostics
@@ -594,16 +596,18 @@ async fn deepseek_responses_streams_and_replays_full_history_across_provider_res
             error: None,
         }]),
     ]);
-    let restarted_provider = OpenAiProvider::from_runtime_config_with_compaction_policy(
-        &provider_config,
-        "deepseek-v4-pro",
-        384_000,
-        fixture.config.home_dir.as_path(),
-        OpenAiCompactionPolicy {
-            trigger_input_tokens: 1,
-        },
-    )
-    .unwrap();
+    let restarted_provider =
+        OpenAiProvider::from_runtime_config_with_compaction_policy_and_context_window(
+            &provider_config,
+            "deepseek-v4-pro",
+            384_000,
+            None,
+            fixture.config.home_dir.as_path(),
+            OpenAiCompactionPolicy {
+                trigger_input_tokens: 1,
+            },
+        )
+        .unwrap();
     let second = restarted_provider.complete_turn(followup).await.unwrap();
     assert!(matches!(
         &second.blocks[0],
