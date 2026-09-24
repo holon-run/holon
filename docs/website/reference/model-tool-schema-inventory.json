@@ -1207,6 +1207,12 @@
               ],
               "type": "object"
             },
+            "message_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "outcome": {
               "enum": [
                 "accepted",
