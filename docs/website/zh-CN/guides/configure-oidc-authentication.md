@@ -16,7 +16,7 @@ order: 17
 - 一个兼容 OIDC 的身份提供商，如 Keycloak、Okta、Authentik、Google Workspace 或 Microsoft Entra ID。
 - 在该 IdP 中创建新应用客户端的管理权限。
 
-> **安全提示：** 在生产环境中，Holon 要求 OIDC Issuer URL 和回调地址必须使用 HTTPS。仅当回调主机为 `localhost` 或 `127.0.0.1` 时才允许使用 HTTP。
+> **安全提示：** 在生产环境中，Holon 要求 OIDC Issuer URL 和回调地址必须使用 HTTPS。仅当回调主机为 `localhost` 时才允许使用 HTTP。
 
 ## 第一步：在 IdP 中注册 Holon 应用
 
@@ -102,8 +102,8 @@ holon serve --access tunnel
 ### 1. 从 Web GUI 登录
 
 1. 在浏览器中打开 `https://<your-holon-host>/login`。
-2. 登录页面检测到 OIDC 模式后，会显示**使用组织账号登录**（Log in with Organization）按钮。
-3. 点击按钮，浏览器将跳转至你的身份提供商登录页。
+2. 登录页面检测到 OIDC 模式后，会显示 **Continue with organization login** 链接。
+3. 点击该链接，浏览器将跳转至你的身份提供商登录页。
 4. 登录完成后，IdP 会重定向回 `/api/auth/oidc/callback`。Holon 将设置安全的 `holon_session` Cookie 并自动跳到控制面板首页 (`/`)。
 
 ### 2. 检查会话身份
@@ -120,15 +120,14 @@ curl -b "holon_session=<session-cookie>" https://<your-holon-host>/api/auth/sess
 curl -H "Authorization: Bearer <session-token>" https://<your-holon-host>/api/auth/session/me
 ```
 
-接口会返回当前会话的状态、角色、过期时间戳与操作人身份：
+接口会返回当前已认证用户的身份与认证方式：
 
 ```json
 {
-  "authenticated": true,
-  "actor_id": "oidc-usr_94f8e21a",
-  "actor_display_name": "Alice Chen",
-  "idle_expires_at": "2026-09-25T10:00:00Z",
-  "absolute_expires_at": "2026-10-01T10:00:00Z"
+  "ok": true,
+  "user_id": "oidc-550e8400-e29b-41d4-a716-446655440000",
+  "display_name": "Alice Chen",
+  "auth_method": "oidc"
 }
 ```
 
@@ -136,7 +135,7 @@ curl -H "Authorization: Bearer <session-token>" https://<your-holon-host>/api/au
 
 在 OIDC 模式下，用户通过 Web GUI 或控制面 API 发送的每一条 Prompt，都会在消息 origin 中记录发送者身份：
 
-- `actor_id`：来自 IdP 的稳定用户标识符（例如 `oidc-usr_94f8e21a`）。
+- `actor_id`：用户在 Holon 中的稳定标识符（格式为 `oidc-<uuid-v4>`）。
 - `actor_display_name`：发送时刻用户的显示名称（若 IdP 未提供姓名 claim 则回退为 `actor_id`）。
 
 无论用户后续在 IdP 中是否修改昵称，历史消息都完整保留发送时刻的快照。审计任务记录或调用 `GET /api/agents/{agent_id}/messages/{message_id}` 时，可以清晰核对每个操作的发起人。

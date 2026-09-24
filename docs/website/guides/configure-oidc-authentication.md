@@ -22,7 +22,7 @@ session timeouts, and verifying logins.
 
 > **Security note:** Holon requires HTTPS for the OIDC issuer URL and callback
 > endpoints in production. HTTP is only permitted when the callback host is
-> `localhost` or `127.0.0.1`.
+> `localhost`.
 
 ## Step 1: Register Holon in your IdP
 
@@ -112,8 +112,8 @@ holon serve --access tunnel
 ### 1. Log in via the Web GUI
 
 1. Open `https://<your-holon-host>/login` in your browser.
-2. The login page detects OIDC mode and displays a **Log in with Organization** button.
-3. Click the button to redirect to your identity provider.
+2. The login page detects OIDC mode and displays a **Continue with organization login** link.
+3. Click the link to redirect to your identity provider.
 4. Sign in. The IdP redirects back to `/api/auth/oidc/callback`, which sets a secure `holon_session` cookie and lands on the dashboard (`/`).
 
 ### 2. Verify session identity
@@ -130,16 +130,14 @@ Or provide the session token as a bearer credential:
 curl -H "Authorization: Bearer <session-token>" https://<your-holon-host>/api/auth/session/me
 ```
 
-The endpoint returns the session status, role, expiration timestamps, and user
-identity:
+The endpoint returns the authenticated user identity and authentication method:
 
 ```json
 {
-  "authenticated": true,
-  "actor_id": "oidc-usr_94f8e21a",
-  "actor_display_name": "Alice Chen",
-  "idle_expires_at": "2026-09-25T10:00:00Z",
-  "absolute_expires_at": "2026-10-01T10:00:00Z"
+  "ok": true,
+  "user_id": "oidc-550e8400-e29b-41d4-a716-446655440000",
+  "display_name": "Alice Chen",
+  "auth_method": "oidc"
 }
 ```
 
@@ -148,7 +146,7 @@ identity:
 In OIDC mode, every prompt sent through the control plane records the user's
 identity in the message origin:
 
-- `actor_id`: The persistent user identifier from the IdP.
+- `actor_id`: The persistent user identifier in Holon (formatted as `oidc-<uuid-v4>`).
 - `actor_display_name`: The user's display name at send time (falls back to `actor_id` if no name claim exists).
 
 When auditing agent transcripts or inspecting messages via `GET
