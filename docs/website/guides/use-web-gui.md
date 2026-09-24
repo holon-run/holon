@@ -27,6 +27,19 @@ out of the box on the same machine.
 > **Note:** If you configured a custom listen address or port, adjust the URL
 > accordingly.
 
+## Authentication and Login
+
+When connecting remotely or running with authentication enabled, navigate to
+`/login` to authenticate:
+
+- **Local Token mode** (`auth.mode = "local"`): Enter your static control token.
+  The runtime exchanges it for an HttpOnly `holon_session` cookie so you stay
+  logged in.
+- **OIDC Single Sign-On** (`auth.mode = "oidc"`): Click **Continue with organization login**
+  to authenticate through your company's identity provider.
+
+For full IdP setup and session timeouts, see [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
+
 ## Pages
 
 ### Dashboard
@@ -316,3 +329,4 @@ instead of blocking the request:
 - [Troubleshoot a Holon task](/guides/troubleshooting) — diagnose common problems
 - [Configuration Reference](/reference/configuration) — CORS, ports, and
   control plane settings
+- [Configure OIDC authentication](/guides/configure-oidc-authentication.md) — set up team SSO and session policies

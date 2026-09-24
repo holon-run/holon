@@ -143,6 +143,7 @@ holon daemon stop
 - **轮换 token**：用新的 `--token-file` 重启 daemon。
 - **只需要本机连接时用 `--access local`**。这是默认值，也是最安全的选择。
 - HTTP 控制平面会执行信任边界规则：即使是只读路由（Agent 状态、事件、任务），远程访问也仍然需要有效 token。
+- **团队部署与多用户**：在多成员协作环境中，建议配置 OIDC 身份认证（`auth.mode = "oidc"`），使用企业单点登录取代单一共享 Token，并审计各操作人身份。参见[配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md)。
 
 ## 另请参阅
 
@@ -150,3 +151,4 @@ holon daemon stop
 - [HTTP 控制平面](/zh-CN/reference/http-control-plane.md) — 编程访问的 API 参考
 - [排查 Holon 任务问题](/zh-CN/guides/troubleshooting.md) — 连接问题
 - [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http.md) — 用代码驱动 Holon
+- [配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md) — 单点登录与审计归属

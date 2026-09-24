@@ -24,10 +24,12 @@ Holon 在设计上是无头的。HTTP 和事件驱动的集成接口应当保留
 
 - **`GET /api/auth/method`** — 返回当前认证模式（`"local"` 或 `"oidc"`）。
 - **`POST /api/auth/session/exchange`** — 使用有效 Token 换取 HTTP-only Session Cookie。
-- **`GET /api/auth/session/me`** — 查询当前已认证 Session 的身份、角色与过期时间。
+- **`GET /api/auth/session/me`** — 查询当前已认证用户的身份与认证方式。
 - **`POST /api/auth/session/logout`** — 注销当前 Session 并清除 Session Cookie。
 - **`GET /api/auth/oidc/start`** 与 **`GET /api/auth/oidc/callback`** — 当 `auth.mode="oidc"` 时发起并完成 OpenID Connect PKCE 授权码流程。
 - **`POST /api/auth/:provider/device/start`** — 发起 OAuth 设备授权码流程（如 OpenAI Codex）。
+
+有关 IdP 注册与会话配置的逐步指南，请参阅[配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md)。
 
 ```
 GET /api/handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }

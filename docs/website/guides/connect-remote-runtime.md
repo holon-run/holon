@@ -156,6 +156,9 @@ holon daemon stop
   the default and the most secure option.
 - The HTTP control plane applies trust-boundary rules: read-only routes
   (agent state, events, tasks) still require a valid token for remote access.
+- **Team deployments**: For shared multi-user deployments, switch to OIDC
+  authentication (`auth.mode = "oidc"`). This replaces the shared control token
+  with individual SSO logins. See [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
 
 ## See Also
 
@@ -163,3 +166,4 @@ holon daemon stop
 - [HTTP control plane](/reference/http-control-plane.md) — API reference for programmatic access
 - [Troubleshoot a Holon task](/guides/troubleshooting.md) — connection problems
 - [Automate Holon over HTTP](/guides/automate-over-http.md) — drive Holon from code
+- [Configure OIDC authentication](/guides/configure-oidc-authentication.md) — single sign-on and audit trails
