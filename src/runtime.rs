@@ -4724,6 +4724,9 @@ impl RuntimeHandle {
             .inner
             .runtime_db
             .audit_events()
+            // This bounded lookup intentionally correlates only recent
+            // advisory/task events; older telemetry remains valid but may
+            // lack an outcome association until an indexed lookup exists.
             .recent(agent_id.as_deref(), 512)?;
         let Some(advisory) = events.iter().rev().find(|event| {
             event.kind == "decision_advisory_completed"

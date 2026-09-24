@@ -508,7 +508,9 @@ fn finish_result(
         fallback: result.outcome == "fallback",
         timeout: error_class.as_deref() == Some("timeout"),
         error_class,
-        reason: result.reason.clone(),
+        reason: result.reason.as_deref().and_then(|reason| {
+            crate::decision_telemetry::safe_value(Some(&Value::String(reason.to_string())), 512)
+        }),
         evidence: result.evidence.clone(),
         recorded_at: chrono::Utc::now(),
     };

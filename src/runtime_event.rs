@@ -82,6 +82,8 @@ pub const PUBLIC_TYPED_RUNTIME_EVENT_WIRE_NAMES: &[&str] = &[
     "work_item_written",
     "agent_state_changed",
     "scheduler_diagnostic",
+    "decision_advisory_completed",
+    "decision_outcome_recorded",
 ];
 
 pub fn legacy_contract_version() -> u32 {
@@ -669,16 +671,18 @@ mod tests {
 
     #[test]
     fn scheduler_diagnostics_are_projection_neutral() {
-        // Self-contained diagnostics are outside AgentCanonicalProjection v1;
-        // every other family references canonical display state.
-        assert_eq!(
-            RuntimeEventKind::SchedulerDiagnostic
-                .descriptor()
-                .projection_effect,
-            ProjectionEffect::None
-        );
+        // Self-contained diagnostics and decision telemetry are outside
+        // AgentCanonicalProjection v1; every other family references
+        // canonical display state.
+        let neutral_kinds = [
+            RuntimeEventKind::SchedulerDiagnostic,
+            RuntimeEventKind::DecisionAdvisoryCompleted,
+            RuntimeEventKind::DecisionOutcomeRecorded,
+        ];
         for entry in runtime_event_registry() {
-            if entry.kind != RuntimeEventKind::SchedulerDiagnostic {
+            if neutral_kinds.contains(&entry.kind) {
+                assert_eq!(entry.projection_effect, ProjectionEffect::None);
+            } else {
                 assert_eq!(
                     entry.projection_effect,
                     ProjectionEffect::DisplayInvalidation
