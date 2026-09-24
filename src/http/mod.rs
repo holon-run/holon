@@ -1318,16 +1318,21 @@ pub(crate) fn control_actor(headers: &HeaderMap, state: &AppState) -> Result<Con
         return Ok(ControlActor::LocalControl);
     }
     let config = state.host.config();
-    if config.auth.mode == crate::authentication::AuthenticationMode::Oidc
-        || headers.contains_key(AUTHORIZATION)
-        || cookie_session_credential(headers).is_some()
-    {
-        if config.auth.mode == crate::authentication::AuthenticationMode::Local
-            && bearer_session_credential(headers).as_deref() == config.control_token.as_deref()
-            && cookie_session_credential(headers).is_none()
-        {
-            return Ok(ControlActor::LocalControl);
+    if config.auth.mode == crate::authentication::AuthenticationMode::Local {
+        // Local auth always attributes work to the shared control identity.
+        // A supplied session still has to be active; only the configured
+        // static token bypasses session lookup.
+        if headers.contains_key(AUTHORIZATION) || cookie_session_credential(headers).is_some() {
+            let uses_static_token = bearer_session_credential(headers).as_deref()
+                == config.control_token.as_deref()
+                && cookie_session_credential(headers).is_none();
+            if !uses_static_token {
+                authenticate_session(headers, state)?;
+            }
         }
+        return Ok(ControlActor::LocalControl);
+    }
+    if headers.contains_key(AUTHORIZATION) || cookie_session_credential(headers).is_some() {
         let session = authenticate_session(headers, state)?;
         let user = state
             .host
