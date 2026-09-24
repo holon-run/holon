@@ -502,6 +502,11 @@ jobs:
       - name: Build all targets, including benchmarks
         run: make build
 
+      # Release binaries build with --features local-onnx (see release.yml);
+      # keep the feature-gated path compiling on CI.
+      - name: Check with local-onnx feature
+        run: cargo check --locked --features local-onnx
+
       - name: Test decision crates
         run: |
           cargo test --manifest-path crates/decision-core/Cargo.toml --locked
