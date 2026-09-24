@@ -49,7 +49,6 @@ pub(crate) struct AdvisoryDecisionResult {
     pub latency_ms: Option<u64>,
     pub evidence: Vec<Value>,
     pub question_fingerprint: String,
-    pub options_summary: Vec<String>,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -93,7 +92,6 @@ pub(crate) async fn execute(
                 "advisory decision tool is disabled",
                 "",
                 fingerprint.clone(),
-                &args.options,
             ),
         );
     }
@@ -113,7 +111,6 @@ pub(crate) async fn execute(
                     "per-turn advisory decision limit reached",
                     "",
                     fingerprint.clone(),
-                    &args.options,
                 ),
             );
         }
@@ -153,7 +150,6 @@ pub(crate) async fn execute(
                     &redact_text(&error.to_string(), 240),
                     "",
                     fingerprint.clone(),
-                    &args.options,
                 ),
             );
         }
@@ -169,7 +165,6 @@ pub(crate) async fn execute(
                     "advisory decision provider timed out",
                     "",
                     fingerprint.clone(),
-                    &args.options,
                 ),
             );
         }
@@ -194,10 +189,6 @@ pub(crate) async fn execute(
                 latency_ms,
                 Vec::new(),
                 fingerprint.clone(),
-                args.options
-                    .iter()
-                    .map(|option| redact_text(option, 120))
-                    .collect(),
             ),
         );
     }
@@ -212,11 +203,6 @@ pub(crate) async fn execute(
             })
         })
         .collect();
-    let options_summary = args
-        .options
-        .iter()
-        .map(|option| redact_text(option, 120))
-        .collect();
     let result = match response.outcome {
         DecisionOutcome::Select { value } => {
             let choice = value.as_str().map(str::to_owned);
@@ -230,7 +216,6 @@ pub(crate) async fn execute(
                     latency_ms,
                     evidence,
                     fingerprint.clone(),
-                    options_summary,
                 )
             } else if choice
                 .as_deref()
@@ -247,7 +232,6 @@ pub(crate) async fn execute(
                     latency_ms,
                     evidence,
                     question_fingerprint: fingerprint.clone(),
-                    options_summary,
                 }
             } else {
                 abstain_result_with_metadata(
@@ -259,7 +243,6 @@ pub(crate) async fn execute(
                     latency_ms,
                     evidence,
                     fingerprint.clone(),
-                    options_summary,
                 )
             }
         }
@@ -275,7 +258,6 @@ pub(crate) async fn execute(
                     latency_ms,
                     evidence,
                     fingerprint.clone(),
-                    options_summary,
                 )
             } else if choice
                 .as_deref()
@@ -292,7 +274,6 @@ pub(crate) async fn execute(
                     latency_ms,
                     evidence,
                     question_fingerprint: fingerprint.clone(),
-                    options_summary,
                 }
             } else {
                 abstain_result_with_metadata(
@@ -304,7 +285,6 @@ pub(crate) async fn execute(
                     latency_ms,
                     evidence,
                     fingerprint.clone(),
-                    options_summary,
                 )
             }
         }
@@ -317,7 +297,6 @@ pub(crate) async fn execute(
             latency_ms,
             evidence,
             fingerprint.clone(),
-            options_summary,
         ),
         DecisionOutcome::Rank { .. } => abstain_result_with_metadata(
             "unsupported_outcome",
@@ -328,7 +307,6 @@ pub(crate) async fn execute(
             latency_ms,
             evidence,
             fingerprint.clone(),
-            options_summary,
         ),
     };
     finish_result(runtime, agent_id, context, &args, &fingerprint, result)
@@ -521,7 +499,11 @@ fn finish_result(
         "agent_id": agent_id,
         "work_item_id": context.effective_work_item_id,
         "question_fingerprint": question_fingerprint,
-        "options_summary": result.options_summary,
+        "options_summary": args
+            .options
+            .iter()
+            .map(|option| redact_text(option, 120))
+            .collect::<Vec<_>>(),
         "provider": result.provider,
         "model": result.model,
         "latency_ms": result.latency_ms,
@@ -543,7 +525,6 @@ fn abstain_result(
     message: &str,
     provider: &str,
     question_fingerprint: String,
-    options: &[String],
 ) -> AdvisoryDecisionResult {
     abstain_result_with_metadata(
         reason,
@@ -554,10 +535,6 @@ fn abstain_result(
         None,
         Vec::new(),
         question_fingerprint,
-        options
-            .iter()
-            .map(|option| redact_text(option, 120))
-            .collect(),
     )
 }
 
@@ -571,7 +548,6 @@ fn abstain_result_with_metadata(
     latency_ms: Option<u64>,
     evidence: Vec<Value>,
     question_fingerprint: String,
-    options_summary: Vec<String>,
 ) -> AdvisoryDecisionResult {
     AdvisoryDecisionResult {
         outcome: "abstain".into(),
@@ -584,7 +560,6 @@ fn abstain_result_with_metadata(
         latency_ms,
         evidence,
         question_fingerprint,
-        options_summary,
     }
 }
 
@@ -657,9 +632,10 @@ mod tests {
             "advisory decision tool is disabled",
             "",
             "0123456789abcdef".into(),
-            &["yes".into(), "no".into()],
         );
 
         assert_eq!(result.question_fingerprint, "0123456789abcdef");
+        let serialized = serde_json::to_value(&result).unwrap();
+        assert!(serialized.get("options_summary").is_none());
     }
 }
