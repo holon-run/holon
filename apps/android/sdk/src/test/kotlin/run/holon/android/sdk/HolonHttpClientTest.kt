@@ -40,9 +40,19 @@ class HolonHttpClientTest {
             "http://[::1]:8787/",
             HolonHttpClient.normalizeBaseUrl("http://[::1]:8787").toString(),
         )
+        assertEquals(
+            "http://10.0.2.2:8787/",
+            HolonHttpClient.normalizeBaseUrl(
+                "http://10.0.2.2:8787",
+                insecureHttpHosts = setOf("10.0.2.2"),
+            ).toString(),
+        )
 
         assertFailsWith<IllegalArgumentException> {
             HolonHttpClient.normalizeBaseUrl("http://192.0.2.10:8787")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            HolonHttpClient.normalizeBaseUrl("http://10.0.2.2:8787")
         }
         assertFailsWith<IllegalArgumentException> {
             HolonHttpClient.normalizeBaseUrl("http://127.attacker.example:8787")
@@ -425,6 +435,7 @@ class HolonHttpClientTest {
                             .callTimeout(20, TimeUnit.MILLISECONDS)
                             .build(),
                         sessionCredentialStore = null,
+                    insecureHttpHosts = emptySet(),
                 )
 
             val error = assertFailsWith<HolonProtocolException> { client.listAgents() }

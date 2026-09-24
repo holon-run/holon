@@ -96,6 +96,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       conversation_sdk: ${{ steps.filter.outputs.conversation_sdk }}
       web: ${{ steps.filter.outputs.web }}
+      android: ${{ steps.filter.outputs.android }}
       macos_app: ${{ steps.filter.outputs.macos_app }}
       macos_rust_check: ${{ steps.filter.outputs.macos_rust_check }}
     steps:
@@ -137,7 +138,6 @@ jobs:
               - 'packages/conversation-sdk/**'
               - '.github/workflows/ci.yml'
             web:
-              - 'apps/android/**'
               - 'src/**'
               - 'crates/**'
               - 'Cargo.toml'
@@ -148,6 +148,10 @@ jobs:
               - 'packages/client-wire-kotlin/**'
               - '.github/workflows/ci.yml'
               - 'docs/website/reference/openapi.json'
+            android:
+              - 'apps/android/**'
+              - 'packages/client-wire-kotlin/**'
+              - '.github/workflows/ci.yml'
             macos_app:
               - '.github/workflows/ci.yml'
               - 'apps/macos/**'
@@ -198,6 +202,36 @@ jobs:
 
       - name: Test and build web GUI
         run: make web-ci
+
+  android:
+    name: Android app
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs: changes
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.android == 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Test SDK and build APKs
+        working-directory: apps/android
+        run: ./gradlew --no-daemon :sdk:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
 
   conversation-sdk:
     name: Conversation SDK

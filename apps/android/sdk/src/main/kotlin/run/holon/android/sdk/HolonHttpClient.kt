@@ -4,8 +4,11 @@ import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -53,19 +56,22 @@ public class HolonHttpClient internal constructor(
     private val bearerTokenProvider: BearerTokenProvider,
     private val httpClient: OkHttpClient,
     private val sessionCredentialStore: SessionCredentialStore?,
+    insecureHttpHosts: Set<String>,
 ) {
     public constructor(
         baseUrl: String,
         bearerTokenProvider: BearerTokenProvider = BearerTokenProvider { null },
         sessionCredentialStore: SessionCredentialStore? = null,
+        insecureHttpHosts: Set<String> = emptySet(),
     ) : this(
         baseUrl = baseUrl,
         bearerTokenProvider = bearerTokenProvider,
         httpClient = defaultHttpClient(),
         sessionCredentialStore = sessionCredentialStore,
+        insecureHttpHosts = insecureHttpHosts,
     )
 
-    private val baseUrl: HttpUrl = normalizeBaseUrl(baseUrl)
+    private val baseUrl: HttpUrl = normalizeBaseUrl(baseUrl, insecureHttpHosts)
     private val sseHttpClient: OkHttpClient =
         sseHttpClient(httpClient)
 
@@ -163,6 +169,13 @@ public class HolonHttpClient internal constructor(
                 },
         )
 
+    public fun conversationSnapshot(
+        agentId: String,
+        limit: Int? = null,
+        before: String? = null,
+    ): HolonConversationSnapshot =
+        HolonConversationSnapshot.from(conversation(agentId, limit, before))
+
     public fun agentState(agentId: String): HolonJsonDocument =
         getJson("agents/${agentId.pathSegment()}/state")
 
@@ -178,8 +191,29 @@ public class HolonHttpClient internal constructor(
             query = limit?.let { mapOf("limit" to it.toString()) } ?: emptyMap(),
         )
 
+    public fun taskSnapshots(agentId: String, limit: Int? = null): List<HolonTaskSnapshot> {
+        val raw = tasks(agentId, limit).raw
+        val values =
+            when (raw) {
+                is JsonArray -> raw
+                is JsonObject -> (raw["tasks"] as? JsonArray).orEmpty()
+                else -> throw HolonProtocolException("Holon tasks response is not an array")
+            }
+        return values.mapIndexed { index, value ->
+            (value as? JsonObject)
+                ?.let(HolonTaskSnapshot::from)
+                ?: throw HolonProtocolException("Holon task $index is not an object")
+        }
+    }
+
     public fun taskStatus(agentId: String, taskId: String): HolonJsonDocument =
         getJson("agents/${agentId.pathSegment()}/tasks/${taskId.pathSegment()}")
+
+    public fun taskStatusSnapshot(agentId: String, taskId: String): HolonTaskSnapshot {
+        val raw = taskStatus(agentId, taskId).objectOrNull
+            ?: throw HolonProtocolException("Holon task status response is not an object")
+        return HolonTaskSnapshot.from(raw)
+    }
 
     public fun taskOutput(
         agentId: String,
@@ -196,10 +230,28 @@ public class HolonHttpClient internal constructor(
                 },
         )
 
+    public fun taskOutputSnapshot(
+        agentId: String,
+        taskId: String,
+        block: Boolean? = null,
+        timeoutMillis: Long? = null,
+    ): HolonTaskOutputSnapshot {
+        val raw = taskOutput(agentId, taskId, block, timeoutMillis).objectOrNull
+            ?: throw HolonProtocolException("Holon task output response is not an object")
+        return HolonTaskOutputSnapshot.from((raw["task"] as? JsonObject) ?: raw)
+    }
+
     public fun toolExecution(agentId: String, toolExecutionId: String): HolonJsonDocument =
         getJson(
             "agents/${agentId.pathSegment()}/tool-executions/${toolExecutionId.pathSegment()}",
         )
+
+    public fun toolExecutionSnapshot(
+        agentId: String,
+        toolExecutionId: String,
+    ): HolonToolExecutionSnapshot =
+        toolExecution(agentId, toolExecutionId).objectOrNull?.let(HolonToolExecutionSnapshot::from)
+            ?: throw HolonProtocolException("Holon tool execution response is not an object")
 
     public fun artifact(
         agentId: String,
@@ -247,6 +299,33 @@ public class HolonHttpClient internal constructor(
             messageId = objectValue.string("message_id"),
             raw = objectValue,
         )
+    }
+
+    public fun enqueueText(agentId: String, text: String): HolonEnqueueResult =
+        enqueue(
+            agentId,
+            buildJsonObject {
+                put("text", text)
+            },
+        )
+
+    public fun workItemSnapshots(agentId: String, limit: Int? = null): List<HolonWorkItemSnapshot> {
+        val raw =
+            getJson(
+                path = "agents/${agentId.pathSegment()}/work-items",
+                query = limit?.let { mapOf("limit" to it.toString()) } ?: emptyMap(),
+            ).raw
+        val values =
+            when (raw) {
+                is JsonArray -> raw
+                is JsonObject -> (raw["items"] as? JsonArray).orEmpty()
+                else -> throw HolonProtocolException("Holon work-items response is not an array")
+            }
+        return values.mapIndexed { index, value ->
+            (value as? JsonObject)
+                ?.let(HolonWorkItemSnapshot::from)
+                ?: throw HolonProtocolException("Holon work item $index is not an object")
+        }
     }
 
     public fun createCommandTask(agentId: String, body: JsonObject): HolonJsonDocument =
@@ -349,6 +428,46 @@ public class HolonHttpClient internal constructor(
                 },
             policy = policy,
         )
+
+    public fun conversationChanges(
+        agentId: String,
+        after: String? = null,
+        limit: Int? = null,
+        activityLimit: Int? = null,
+        lastEventId: String? = null,
+    ): Sequence<HolonConversationStreamEvent> =
+        sequence {
+            val connection =
+                conversationStream(
+                    agentId = agentId,
+                    after = after,
+                    limit = limit,
+                    activityLimit = activityLimit,
+                    lastEventId = lastEventId,
+                )
+            try {
+                for (event in connection.events()) {
+                    yield(event.toConversationEvent())
+                }
+            } finally {
+                connection.close()
+            }
+        }
+
+    public fun reconnectingConversationChanges(
+        agentId: String,
+        after: String? = null,
+        limit: Int? = null,
+        activityLimit: Int? = null,
+        policy: SseReconnectPolicy = SseReconnectPolicy(),
+    ): Sequence<HolonConversationStreamEvent> =
+        reconnectingConversationStream(
+            agentId = agentId,
+            after = after,
+            limit = limit,
+            activityLimit = activityLimit,
+            policy = policy,
+        ).map(HolonSseEvent::toConversationEvent)
 
     private fun reconnectingSse(
         path: String,
@@ -582,7 +701,10 @@ public class HolonHttpClient internal constructor(
                 .readTimeout(45, TimeUnit.SECONDS)
                 .build()
 
-        internal fun normalizeBaseUrl(value: String): HttpUrl {
+        internal fun normalizeBaseUrl(
+            value: String,
+            insecureHttpHosts: Set<String> = emptySet(),
+        ): HttpUrl {
             val parsed =
                 requireNotNull(value.toHttpUrlOrNull()) {
                     "Holon base URL must be an absolute HTTP(S) URL"
@@ -593,7 +715,11 @@ public class HolonHttpClient internal constructor(
             require(parsed.query == null && parsed.fragment == null) {
                 "Holon base URL must not contain a query or fragment"
             }
-            require(parsed.scheme == "https" || isLoopbackHttp(parsed)) {
+            require(
+                parsed.scheme == "https" ||
+                    isLoopbackHttp(parsed) ||
+                    (parsed.scheme == "http" && parsed.host in insecureHttpHosts),
+            ) {
                 "Holon base URL must use HTTPS except for loopback development"
             }
 
