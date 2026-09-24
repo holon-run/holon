@@ -768,6 +768,10 @@ export class LedgerIngestionPipeline {
     if (!(await this.ensureExactHandle())) return;
     const ledger = this.ledger!;
     tracker.state = "draining";
+    // Event-driven recovery re-entered this scope: give the next transient
+    // repair failure its own bounded ladder instead of inheriting an
+    // exhausted count from an earlier incident that already recovered.
+    this.snapshotRepairRetryCounts.delete(this.trackerKey(scope));
     this.emit(scope, tracker);
 
     const pending = () =>
