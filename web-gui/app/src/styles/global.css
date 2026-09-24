@@ -7285,8 +7285,17 @@ code {
   .app-shell .sidebar .agent-row-status { display: grid; }
   .app-shell .sidebar .side-heading { display: flex; }
   .app-shell .sidebar .connection-status span:last-child { display: block; }
-  .app-shell .sidebar .sidebar-brand { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .app-shell .sidebar .sidebar-brand {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    justify-items: stretch;
+  }
+  .app-shell .sidebar .brand-link {
+    width: auto;
+    padding-inline: 8px;
+    justify-content: start;
+  }
   .app-shell .sidebar .brand-icon-link { display: grid; }
+  .app-shell .sidebar .nav-collapse { transform: none; }
   .app-shell .sidebar .agent-filter { display: block; }
   .app-shell .sidebar .agent-row-indicators { display: flex; }
   .app-shell .sidebar .agent-row { padding-inline: 8px; }
@@ -7303,6 +7312,7 @@ code {
     border-bottom: 1px solid color-mix(in srgb, var(--line-strong) 52%, transparent);
   }
   .app-shell .sidebar .global-nav button {
+    justify-content: flex-start;
     min-height: 34px;
     padding-inline: 10px;
     font-size: 13px;
