@@ -45,6 +45,8 @@ const RESUME_LOOKAHEAD_SEQ = 1_000;
 const DEFAULT_MAX_HYDRATION_ATTEMPTS = 5;
 const DEFAULT_HYDRATION_BATCH_SIZE = 64;
 const DEFAULT_HYDRATION_RETRY_DELAY_MS = 500;
+const DEFAULT_MAX_SNAPSHOT_REPAIR_RETRIES = 5;
+const DEFAULT_SNAPSHOT_REPAIR_RETRY_DELAY_MS = 5_000;
 
 export interface LedgerHydrationFetchers {
   /**
@@ -158,6 +160,17 @@ export interface IngestionPipelineDependencies {
    * degraded handle is discarded.
    */
   openLedger?: () => Promise<EventLedgerOpenResult>;
+  /**
+   * Bounded retries for snapshot repair after a transient fetch failure
+   * (e.g. the server restarted mid-bootstrap). A null snapshot return is
+   * explicitly-absent repair and stays terminal; only thrown fetches retry.
+   */
+  maxSnapshotRepairRetries?: number;
+  /**
+   * Delay before a scheduled snapshot-repair retry. Production uses the
+   * default; tests inject a small value to observe the ladder.
+   */
+  snapshotRepairRetryDelayMs?: number;
 }
 
 interface HydrationJobView {
@@ -256,12 +269,20 @@ export class LedgerIngestionPipeline {
   private readonly batchSize: number;
   private readonly hydrationRetryDelayMs: number;
   private readonly hydrationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly maxSnapshotRepairRetries: number;
+  private readonly snapshotRepairRetryDelayMs: number;
+  private readonly snapshotRepairRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly snapshotRepairRetryCounts = new Map<string, number>();
 
   constructor(private readonly dependencies: IngestionPipelineDependencies) {
     this.maxAttempts = dependencies.maxHydrationAttempts ?? DEFAULT_MAX_HYDRATION_ATTEMPTS;
     this.batchSize = dependencies.hydrationBatchSize ?? DEFAULT_HYDRATION_BATCH_SIZE;
     this.hydrationRetryDelayMs =
       dependencies.hydrationRetryDelayMs ?? DEFAULT_HYDRATION_RETRY_DELAY_MS;
+    this.maxSnapshotRepairRetries =
+      dependencies.maxSnapshotRepairRetries ?? DEFAULT_MAX_SNAPSHOT_REPAIR_RETRIES;
+    this.snapshotRepairRetryDelayMs =
+      dependencies.snapshotRepairRetryDelayMs ?? DEFAULT_SNAPSHOT_REPAIR_RETRY_DELAY_MS;
   }
 
   /** Open the ledger handle. Returns false when only memory remains. */
@@ -277,6 +298,9 @@ export class LedgerIngestionPipeline {
   dispose(): void {
     for (const timer of this.hydrationRetryTimers.values()) clearTimeout(timer);
     this.hydrationRetryTimers.clear();
+    for (const timer of this.snapshotRepairRetryTimers.values()) clearTimeout(timer);
+    this.snapshotRepairRetryTimers.clear();
+    this.snapshotRepairRetryCounts.clear();
     this.ledger?.close();
     this.ledger = null;
     this.trackers.clear();
@@ -702,6 +726,15 @@ export class LedgerIngestionPipeline {
     for (const key of Array.from(this.trackers.keys())) {
       if (key.startsWith(prefix)) this.trackers.delete(key);
     }
+    for (const key of Array.from(this.snapshotRepairRetryTimers.keys())) {
+      if (key.startsWith(prefix)) {
+        clearTimeout(this.snapshotRepairRetryTimers.get(key)!);
+        this.snapshotRepairRetryTimers.delete(key);
+      }
+    }
+    for (const key of Array.from(this.snapshotRepairRetryCounts.keys())) {
+      if (key.startsWith(prefix)) this.snapshotRepairRetryCounts.delete(key);
+    }
   }
 
   /**
@@ -735,6 +768,10 @@ export class LedgerIngestionPipeline {
     if (!(await this.ensureExactHandle())) return;
     const ledger = this.ledger!;
     tracker.state = "draining";
+    // Event-driven recovery re-entered this scope: give the next transient
+    // repair failure its own bounded ladder instead of inheriting an
+    // exhausted count from an earlier incident that already recovered.
+    this.snapshotRepairRetryCounts.delete(this.trackerKey(scope));
     this.emit(scope, tracker);
 
     const pending = () =>
@@ -888,6 +925,40 @@ export class LedgerIngestionPipeline {
   }
 
   /**
+   * Bounded snapshot-repair retry for scopes whose hydration jobs all
+   * failed and whose tracker latched `sync_error` from a transient repair
+   * fetch failure. `drainHydration` cannot re-enter such scopes (no
+   * pending work), and asleep agents emit no events to drive it.
+   */
+  private scheduleSnapshotRepairRetry(scope: LedgerScopeKey): void {
+    const key = this.trackerKey(scope);
+    const attempts = (this.snapshotRepairRetryCounts.get(key) ?? 0) + 1;
+    if (attempts > this.maxSnapshotRepairRetries) return;
+    this.snapshotRepairRetryCounts.set(key, attempts);
+    if (this.snapshotRepairRetryTimers.has(key)) return;
+    const timer = setTimeout(() => {
+      this.snapshotRepairRetryTimers.delete(key);
+      void this.retrySnapshotRepair(scope).catch(() => undefined);
+    }, this.snapshotRepairRetryDelayMs);
+    this.snapshotRepairRetryTimers.set(key, timer);
+  }
+
+  private async retrySnapshotRepair(scope: LedgerScopeKey): Promise<void> {
+    const key = this.trackerKey(scope);
+    const tracker = this.trackers.get(key);
+    if (!tracker || tracker.draining) return;
+    if (tracker.state !== "sync_error") {
+      this.snapshotRepairRetryCounts.delete(key);
+      return;
+    }
+    const hasFailedJobs = Array.from(tracker.jobs.values()).some(
+      (job) => job.state === "failed",
+    );
+    if (!hasFailedJobs) return;
+    await this.repairFromSnapshot(scope, tracker);
+  }
+
+  /**
    * Bounded-retry escalation: install an authoritative projection snapshot,
    * clear the jobs it covers, re-verify remaining demand, and fall through
    * to an explicit sync error when divergence persists.
@@ -906,17 +977,25 @@ export class LedgerIngestionPipeline {
     tracker.state = "repairing";
     this.emit(scope, tracker);
     let snapshot: Awaited<ReturnType<ProjectionSnapshotRepairSource["fetchProjectionSnapshot"]>>;
+    let fetchThrew = false;
     try {
       snapshot = await repairSource.fetchProjectionSnapshot(scope);
     } catch {
       snapshot = null;
+      fetchThrew = true;
     }
     if (!snapshot || !(await this.ensureExactHandle())) {
       tracker.state = "sync_error";
       tracker.lastError = snapshot ? "ledger_degraded_during_repair" : "snapshot_repair_unavailable";
       this.emit(scope, tracker);
+      // A thrown fetch is transient (e.g. the server restarted mid-bootstrap);
+      // a null return means repair is explicitly absent and stays terminal.
+      // Asleep agents emit no further events, so the bounded retry ladder
+      // must be scheduled here rather than waiting for one.
+      if (fetchThrew) this.scheduleSnapshotRepairRetry(scope);
       return false;
     }
+    this.snapshotRepairRetryCounts.delete(this.trackerKey(scope));
     const ledger = this.ledger!;
     const batch = ledger.beginWrite();
     for (const record of snapshot.canonicalRecords) {

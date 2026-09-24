@@ -638,6 +638,170 @@ describe("ledger ingestion pipeline", () => {
     pipeline.dispose();
   });
 
+  it("retries snapshot repair after a transient fetch failure", async () => {
+    // The server restarts mid-bootstrap: the first repair fetch throws
+    // (transient network failure), later fetches succeed. Asleep agents
+    // emit no further events, so the scheduled retry must drive recovery
+    // without any external drainHydration call.
+    let fetchCalls = 0;
+    const repairFetch = vi.fn(async () => {
+      fetchCalls += 1;
+      if (fetchCalls === 1) throw new Error("connection refused");
+      return {
+        snapshotThroughSeq: 2,
+        canonicalRecords: [
+          { recordKind: "brief" as const, recordId: "brief-1", record: { id: "brief-1" } },
+        ],
+      };
+    });
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: {
+        fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
+      },
+      snapshotRepair: { fetchProjectionSnapshot: repairFetch },
+      maxHydrationAttempts: 1,
+      snapshotRepairRetryDelayMs: 5,
+    });
+    await pipeline.open();
+    const scope = makeScope();
+
+    await pipeline.ingest(scope, [envelope(1), briefEvent(2, "brief-1")]);
+    // The ingest-driven drain exhausts attempts and the repair fetch
+    // throws: the scope latches sync_error and schedules the retry ladder.
+    await pipeline.drainHydration(scope);
+    expect(pipeline.status(scope)!.state).toBe("sync_error");
+    expect(repairFetch.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    // The scheduled retry re-attempts repair and recovers the scope.
+    await vi.waitFor(
+      () => {
+        expect(pipeline.status(scope)!.state).toBe("idle");
+        expect(pipeline.status(scope)!.pendingHydrationJobs).toBe(0);
+      },
+      { timeout: 2000, interval: 10 },
+    );
+    expect(pipeline.status(scope)!.projectionReadyThroughSeq).toBe(2);
+
+    const ledger = await openLedgerHandle();
+    expect(await ledger.getPendingHydrationJobs(scope)).toEqual([]);
+    ledger.close();
+    pipeline.dispose();
+  });
+
+  it("stops retrying snapshot repair after the bounded limit", async () => {
+    const repairFetch = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: {
+        fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
+      },
+      snapshotRepair: { fetchProjectionSnapshot: repairFetch },
+      maxHydrationAttempts: 1,
+      maxSnapshotRepairRetries: 2,
+      snapshotRepairRetryDelayMs: 5,
+    });
+    await pipeline.open();
+    const scope = makeScope();
+
+    await pipeline.ingest(scope, [envelope(1), briefEvent(2, "brief-1")]);
+    // Complete the ingest-driven drain before asserting the latched state.
+    await pipeline.drainHydration(scope);
+    expect(pipeline.status(scope)!.state).toBe("sync_error");
+
+    // Initial attempt plus two bounded retries, then the ladder stops.
+    await vi.waitFor(
+      () => {
+        expect(repairFetch.mock.calls.length).toBeGreaterThanOrEqual(3);
+      },
+      { timeout: 2000, interval: 10 },
+    );
+    const callsAfterWait = repairFetch.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(repairFetch.mock.calls.length).toBe(callsAfterWait);
+    expect(pipeline.status(scope)!.state).toBe("sync_error");
+    pipeline.dispose();
+  });
+
+  it("keeps repair terminal when the snapshot fetch returns null", async () => {
+    // A null snapshot means repair is explicitly unavailable, not a
+    // transient failure: the scope stays latched and no retry ladder runs.
+    const repairFetch = vi.fn(async () => null);
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: {
+        fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
+      },
+      snapshotRepair: { fetchProjectionSnapshot: repairFetch },
+      maxHydrationAttempts: 1,
+      snapshotRepairRetryDelayMs: 5,
+    });
+    await pipeline.open();
+    const scope = makeScope();
+
+    await pipeline.ingest(scope, [envelope(1), briefEvent(2, "brief-1")]);
+    await pipeline.drainHydration(scope);
+
+    const status = pipeline.status(scope)!;
+    expect(status.state).toBe("sync_error");
+    expect(status.lastError).toBe("snapshot_repair_unavailable");
+    expect(repairFetch.mock.calls.length).toBe(1);
+
+    // The terminal state holds and no ladder was scheduled.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(repairFetch.mock.calls.length).toBe(1);
+    expect(pipeline.status(scope)!.state).toBe("sync_error");
+    pipeline.dispose();
+  });
+
+  it("gives a scope a fresh repair ladder after new work re-enters the drain", async () => {
+    // The transient-failure ladder is per incident: once new work lets drain
+    // re-enter the scope, the next failure must not inherit the exhausted
+    // counter from the previous incident and stay stuck forever.
+    const repairFetch = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    const pipeline = new LedgerIngestionPipeline({
+      fetchers: {
+        fetchCanonicalRecords: async () => ({ recordsById: {}, missingIds: ["brief-1"] }),
+      },
+      snapshotRepair: { fetchProjectionSnapshot: repairFetch },
+      maxHydrationAttempts: 1,
+      maxSnapshotRepairRetries: 1,
+      snapshotRepairRetryDelayMs: 5,
+    });
+    await pipeline.open();
+    const scope = makeScope();
+
+    await pipeline.ingest(scope, [envelope(1), briefEvent(2, "brief-1")]);
+    await pipeline.drainHydration(scope);
+    expect(pipeline.status(scope)!.state).toBe("sync_error");
+
+    // Initial attempt plus one bounded retry, then the ladder parks.
+    await vi.waitFor(
+      () => {
+        expect(repairFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+      },
+      { timeout: 2000, interval: 10 },
+    );
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const callsAfterFirstIncident = repairFetch.mock.calls.length;
+
+    // New work arrives, so the drain re-enters the scope and must reset the
+    // ladder for the next incident.
+    await pipeline.ingest(scope, [envelope(3), briefEvent(4, "brief-2")]);
+    await pipeline.drainHydration(scope);
+    await vi.waitFor(
+      () => {
+        expect(repairFetch.mock.calls.length).toBeGreaterThan(
+          callsAfterFirstIncident + 1,
+        );
+      },
+      { timeout: 2000, interval: 10 },
+    );
+    expect(pipeline.status(scope)!.state).toBe("sync_error");
+    pipeline.dispose();
+  });
+
   it("reports sync_error when repair cannot explain the divergence", async () => {
     const statuses: string[] = [];
     const pipeline = new LedgerIngestionPipeline({
