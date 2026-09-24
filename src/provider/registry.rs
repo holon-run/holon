@@ -118,10 +118,11 @@ fn build_openai_codex_provider(
     route: &ResolvedModelRoute,
 ) -> Result<Arc<dyn AgentProvider>> {
     Ok(Arc::new(
-        OpenAiCodexProvider::from_runtime_config_with_compaction_policy(
+        OpenAiCodexProvider::from_runtime_config_with_compaction_policy_and_context_window(
             route.provider_config(),
             &route.model_ref.model,
             route.policy.runtime_max_output_tokens,
+            route.policy.context_window_tokens,
             home_dir,
             openai_compaction_policy(route),
             route.policy.verbosity,
@@ -135,10 +136,11 @@ fn build_openai_provider(
     route: &ResolvedModelRoute,
 ) -> Result<Arc<dyn AgentProvider>> {
     Ok(Arc::new(
-        OpenAiProvider::from_runtime_config_with_compaction_policy(
+        OpenAiProvider::from_runtime_config_with_compaction_policy_and_context_window(
             route.provider_config(),
             &route.model_ref.model,
             route.policy.runtime_max_output_tokens,
+            route.policy.context_window_tokens,
             home_dir,
             openai_compaction_policy(route),
         )?,
@@ -149,13 +151,16 @@ fn build_anthropic_provider(
     home_dir: &Path,
     route: &ResolvedModelRoute,
 ) -> Result<Arc<dyn AgentProvider>> {
-    Ok(Arc::new(AnthropicProvider::from_runtime_config(
-        route.provider_config(),
-        &route.model_ref.model,
-        route.policy.runtime_max_output_tokens,
-        home_dir,
-        route.policy.capabilities.supports_reasoning,
-    )?))
+    Ok(Arc::new(
+        AnthropicProvider::from_runtime_config_with_context_window(
+            route.provider_config(),
+            &route.model_ref.model,
+            route.policy.runtime_max_output_tokens,
+            route.policy.context_window_tokens,
+            home_dir,
+            route.policy.capabilities.supports_reasoning,
+        )?,
+    ))
 }
 
 fn build_openai_chat_completions_provider(
@@ -163,10 +168,11 @@ fn build_openai_chat_completions_provider(
     route: &ResolvedModelRoute,
 ) -> Result<Arc<dyn AgentProvider>> {
     Ok(Arc::new(
-        OpenAiChatCompletionsProvider::from_resolved_runtime_config(
+        OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
             route.provider_config(),
             &route.model_ref.model,
             route.policy.runtime_max_output_tokens,
+            route.policy.context_window_tokens,
             home_dir,
         )?,
     ))

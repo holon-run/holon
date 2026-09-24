@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 use twox_hash::XxHash64;
 
+use super::super::budget::effective_output_tokens;
 use crate::{
     config::{
         AnthropicCacheStrategy, AnthropicContextManagementConfig, AppConfig, CredentialKind,
@@ -48,6 +49,7 @@ pub struct AnthropicProvider {
     auth_token: Option<String>,
     model: String,
     max_output_tokens: u32,
+    context_window_tokens: Option<usize>,
     reasoning_effort: Option<String>,
     supports_reasoning: bool,
     context_management: AnthropicContextManagementConfig,
@@ -195,6 +197,24 @@ impl AnthropicProvider {
         trace_home_dir: &Path,
         supports_reasoning: bool,
     ) -> Result<Self> {
+        Self::from_runtime_config_with_context_window(
+            provider_config,
+            model,
+            max_output_tokens,
+            None,
+            trace_home_dir,
+            supports_reasoning,
+        )
+    }
+
+    pub fn from_runtime_config_with_context_window(
+        provider_config: &ProviderRuntimeConfig,
+        model: &str,
+        max_output_tokens: u32,
+        context_window_tokens: Option<usize>,
+        trace_home_dir: &Path,
+        supports_reasoning: bool,
+    ) -> Result<Self> {
         let client = build_http_client()?;
         let auth_token = provider_config
             .credential
@@ -218,6 +238,7 @@ impl AnthropicProvider {
             auth_token,
             model: model.to_string(),
             max_output_tokens,
+            context_window_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
             supports_reasoning,
             context_management: provider_config.context_management.clone(),
@@ -321,7 +342,26 @@ impl AgentProvider for AnthropicProvider {
                 .then_some(1.0),
             context_management: build_context_management_request(&self.context_management),
         };
-        let request_payload = serde_json::to_value(&request_body)?;
+        let mut request_payload = serde_json::to_value(&request_body)?;
+        let effective_output = effective_output_tokens(
+            self.context_window_tokens,
+            self.max_output_tokens,
+            &request_payload,
+            &["max_tokens"],
+        );
+        request_payload["max_tokens"] = Value::from(effective_output);
+        if let Some(budget_tokens) = request_payload
+            .get_mut("thinking")
+            .and_then(Value::as_object_mut)
+            .and_then(|thinking| thinking.get_mut("budget_tokens"))
+        {
+            *budget_tokens = Value::from(
+                (*budget_tokens)
+                    .as_u64()
+                    .unwrap_or(0)
+                    .min(effective_output as u64),
+            );
+        }
 
         let url = format!("{}/v1/messages", self.base_url);
         let model_ref = format!(
@@ -370,7 +410,7 @@ impl AgentProvider for AnthropicProvider {
         let request_started_at = chrono::Utc::now();
         let response = request_builder
             .timeout(request_send_timeout())
-            .json(&request_body)
+            .json(&request_payload)
             .send()
             .await
             .map_err(|error| {

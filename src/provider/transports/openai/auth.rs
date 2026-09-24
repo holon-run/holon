@@ -157,10 +157,11 @@ impl OpenAiCodexProvider {
             .get(&ProviderId::openai_codex())
             .ok_or_else(|| anyhow::anyhow!("missing openai-codex provider config"))?;
         let policy = openai_model_policy_from_config(config, ProviderId::openai_codex(), model);
-        Self::from_runtime_config_with_compaction_policy(
+        Self::from_runtime_config_with_compaction_policy_and_context_window(
             provider_config,
             model,
             policy.runtime_max_output_tokens,
+            policy.context_window_tokens,
             &config.home_dir,
             OpenAiCompactionPolicy {
                 trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
@@ -179,10 +180,11 @@ impl OpenAiCodexProvider {
     ) -> Result<Self> {
         let policy =
             openai_model_policy_for_runtime_config(provider_config, model, max_output_tokens);
-        Self::from_runtime_config_with_compaction_policy(
+        Self::from_runtime_config_with_compaction_policy_and_context_window(
             provider_config,
             model,
             policy.runtime_max_output_tokens,
+            policy.context_window_tokens,
             trace_home_dir,
             OpenAiCompactionPolicy {
                 trigger_input_tokens: policy.compaction_trigger_estimated_tokens as u64,
@@ -192,10 +194,11 @@ impl OpenAiCodexProvider {
         )
     }
 
-    pub(crate) fn from_runtime_config_with_compaction_policy(
+    pub(crate) fn from_runtime_config_with_compaction_policy_and_context_window(
         provider_config: &ProviderRuntimeConfig,
         model: &str,
         max_output_tokens: u32,
+        context_window_tokens: Option<usize>,
         trace_home_dir: &Path,
         compaction_policy: OpenAiCompactionPolicy,
         verbosity: Option<ModelVerbosity>,
@@ -222,6 +225,7 @@ impl OpenAiCodexProvider {
                 .unwrap_or_else(|| "codex_cli_rs".into()),
             model: model.to_string(),
             max_output_tokens,
+            context_window_tokens,
             reasoning_effort: provider_config.reasoning_effort.clone(),
             supports_reasoning,
             verbosity,
