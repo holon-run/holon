@@ -296,6 +296,18 @@ describe("parseInputPreview", () => {
     expect(parseInputPreview("plain")).toBe("plain");
     expect(parseInputPreview("")).toBe("");
   });
+
+  it("recovers readable text from byte-truncated serialized text bodies", () => {
+    const text = 'First line\n\nQuoted "value" and a path\\name. ' + "More detail. ".repeat(300);
+    const preview = JSON.stringify({ type: "text", text }).slice(0, 2048);
+    const parsed = parseInputPreview(preview);
+    expect(parsed).toContain('First line\n\nQuoted "value" and a path\\name.');
+    expect(parsed).toMatch(/…$/);
+    expect(parsed).not.toContain('{"type":"text"');
+
+    expect(parseInputPreview('{"type":"text","text":"ends with an incomplete escape\\')).toBe("ends with an incomplete escape…");
+    expect(parseInputPreview('{"unknown":"shape"')).toBe('{"unknown":"shape"');
+  });
 });
 
 describe("summarizeActivity", () => {
@@ -390,10 +402,12 @@ describe("conversation presentation boundaries", () => {
   it("puts queued input after history and exposes system provenance without a user bubble", () => {
     const html = renderTimeline([turnSummary("background", 1, {
       presentation_class: "system", inputs: [{ message_id: "system", preview: "recheck" }],
+      started_at: "2026-09-16T01:02:03Z",
       execution: { kind: "terminal", outcome: "completed" }, result: { kind: "available" },
       settled: true, brief_ids: ["brief-1"],
     })], { pendingInputs: [{ message_id: "queued", revision: 1, state: "queued", preview: "new prompt", presentation_class: "operator" }] } as never);
     expect(html).toContain("System wake");
+    expect(html).toContain('dateTime="2026-09-16T01:02:03Z"');
     expect(html).not.toContain('class="conversation-input-line"');
     expect(html.indexOf("new prompt")).toBeGreaterThan(html.indexOf("这是结果内容 markdown"));
   });

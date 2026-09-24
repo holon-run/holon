@@ -19,6 +19,12 @@ test("portrait phones keep a long agent roster scrollable above the connection f
   await expect(page.locator(".sidebar")).toHaveCSS("transform", /matrix\(1, 0, 0, 1, -/);
   await page.locator(".mobile-nav-toggle").click();
   await expect(page.locator(".sidebar")).toHaveCSS("transform", /matrix\(1, 0, 0, 1, 0, 0\)/);
+  await expect(page.locator(".sidebar .global-nav button").first()).toHaveCSS("justify-content", "flex-start");
+  const brandMark = await page.locator(".sidebar .brand-mark").boundingBox();
+  const brandName = await page.locator(".sidebar .brand-name").boundingBox();
+  expect(brandMark).not.toBeNull();
+  expect(brandName).not.toBeNull();
+  expect(brandMark!.x + brandMark!.width).toBeLessThan(brandName!.x);
   await expect(page.locator(".sidebar .agent-filter")).toBeVisible();
   await expect(page.locator(".sidebar .agent-row-main").first()).toBeVisible();
   await expect(page.locator(".mobile-nav-scrim")).toBeVisible();

@@ -11,6 +11,22 @@ export type Reference =
 export function classifyReference(raw: string, base?: ResolvedFileLocation, literal = false): Reference {
   if (/^(https?:|mailto:)/i.test(raw)) return { kind: "external" };
   try {
+    if (/^file:\/\//i.test(raw)) {
+      const url = new URL(raw);
+      if (url.hostname && url.hostname.toLowerCase() !== "localhost") {
+        return { kind: "error", message: "Remote file URLs are not supported" };
+      }
+      if (url.username || url.password || url.port) {
+        return { kind: "error", message: "Unsupported file URL authority" };
+      }
+      if (url.search) return { kind: "error", message: "File query parameters are not supported" };
+      const path = decodeURIComponent(url.pathname);
+      if (!path || !path.startsWith("/") || path.includes("\0")) {
+        return { kind: "error", message: "Invalid file reference" };
+      }
+      const fragment = url.hash ? decodeURIComponent(url.hash.slice(1)) : undefined;
+      return { kind: "file", reference: { type: "absolute_path", absolutePath: path }, fragment };
+    }
     if (raw.startsWith("workspace://")) {
       const uri = raw.split("#", 1)[0];
       const query = uri.indexOf("?");
@@ -40,7 +56,7 @@ export function fragmentOf(raw: string): string | undefined {
 }
 
 export function isInlineReference(value: string, hasBase: boolean): boolean {
-  return /^workspace:\/\//.test(value) || /^(https?:\/\/|mailto:)\S+$/i.test(value)
+  return /^(workspace|file):\/\//i.test(value) || /^(https?:\/\/|mailto:)\S+$/i.test(value)
     || value.startsWith("/")
     || (hasBase && /^(\.\.?\/)/.test(value));
 }

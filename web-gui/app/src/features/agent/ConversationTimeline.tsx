@@ -288,7 +288,10 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
         <details key={input.message_id} className="conversation-source" data-conversation-anchor={`input:${input.message_id}`}>
           <summary><Bot size={13} />{t(`agentPage.turnSource.${input.presentation_class ?? turn.presentationClass}`)}<ChevronRight size={12} /></summary>
           <ConversationEventInput input={input} source={input.presentation_class ?? turn.presentationClass} onInspectActivity={actions.onInspectActivity} />
-          <span className="conversation-source-id">{`#${turn.turnIndex}`}</span>
+          <span className="conversation-source-meta">
+            <span className="conversation-source-id">{`#${turn.turnIndex}`}</span>
+            <InputTimestamp timestamp={turn.startedAt} />
+          </span>
         </details>
       ))}
       <div className="conversation-response">
@@ -337,6 +340,17 @@ function InputSender({ input }: { input: TurnInputSummary }) {
   return name ? <div className="conversation-input-sender"><User size={12} aria-hidden="true" /><span>{name}</span></div> : null;
 }
 
+function InputTimestamp({ timestamp }: { timestamp?: string | null }) {
+  if (!timestamp) return null;
+  const created = new Date(timestamp);
+  if (Number.isNaN(created.getTime())) return null;
+  return (
+    <time dateTime={timestamp} title={created.toLocaleString()}>
+      {created.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+    </time>
+  );
+}
+
 function ConversationInputLine({ input }: { input: TurnInputSummary }) {
   return (
     <div className="conversation-input-line" data-conversation-anchor={`input:${input.message_id}`}>
@@ -365,7 +379,29 @@ export function parseInputPreview(preview: string): string {
   } catch {
     // Not JSON: treat as plain text preview.
   }
+  const truncatedText = parseTruncatedTextBodyPreview(preview);
+  if (truncatedText !== undefined) return `${truncatedText}…`;
   return preview;
+}
+
+const serializedTextBodyPrefix = '{"type":"text","text":"';
+
+/** Recover the readable prefix when the runtime byte-truncates serialized MessageBody JSON. */
+function parseTruncatedTextBodyPreview(preview: string): string | undefined {
+  if (!preview.startsWith(serializedTextBodyPrefix)) return undefined;
+  const encoded = preview.slice(serializedTextBodyPrefix.length);
+  // A cut may leave one incomplete JSON escape (at most `\\uXXXX`) or the
+  // closing quote without its final object brace. Trim only that bounded tail.
+  for (let trim = 0; trim <= Math.min(6, encoded.length); trim += 1) {
+    const candidate = encoded.slice(0, encoded.length - trim);
+    try {
+      const parsed: unknown = JSON.parse(`"${candidate}"`);
+      if (typeof parsed === "string") return parsed;
+    } catch {
+      // Try again after removing one more character from the incomplete tail.
+    }
+  }
+  return undefined;
 }
 
 const ConversationBriefCard = memo(function ConversationBriefCard({

@@ -488,6 +488,26 @@ test("message senders survive history, pending input, live interjection and relo
   expect(await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth)).toBe(false);
 });
 
+test("a byte-truncated operator input renders as readable text instead of internal JSON", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "long-operator-input");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const fullText = "Investigation result\n\n" + "A complete explanation. ".repeat(300) + "END OF MESSAGE";
+  const preview = JSON.stringify({ type: "text", text: fullText }).slice(0, 2048);
+  expect((await request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [turn("long-operator-input", 1, { inputs: [
+      { message_id: "long-operator-message", preview, presentation_class: "operator" },
+    ] })],
+  } })).ok()).toBe(true);
+
+  await page.goto(`/agents/${agentId}/conversation`);
+  const input = page.locator('[data-conversation-anchor="input:long-operator-message"]');
+  await expect(input).toContainText("Investigation result");
+  await expect(input).toContainText("A complete explanation.");
+  await expect(input).toContainText("…");
+  await expect(input).not.toContainText('{"type":"text"');
+});
+
 test("unmatched historical input opens complete text and does not repeat represented input after completion or reload", async ({ page, context, request }, info) => {
   const session = sessionFor(info, "long-input");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
