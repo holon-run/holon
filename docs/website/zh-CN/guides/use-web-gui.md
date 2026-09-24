@@ -22,6 +22,15 @@ Web GUI 由编译进 `holon` 二进制的内嵌资源提供。默认 CORS 配置
 
 > **注意：** 如果你配置了自定义监听地址或端口，请相应调整 URL。
 
+## 身份认证与登录
+
+在远程访问或启用了认证的环境下，浏览器访问控制台需要先在 `/login` 完成认证：
+
+- **本地 Token 模式** (`auth.mode = "local"`)：输入静态 Control Token，系统将自动换取 HttpOnly 的 `holon_session` Cookie。
+- **OIDC 单点登录模式** (`auth.mode = "oidc"`)：点击**使用组织账号登录**（Log in with Organization），跳转至企业 IdP 完成认证。
+
+有关 IdP 接入与会话超时策略的完整配置，请参阅[配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md)。
+
 ## 页面
 
 ### 仪表盘
@@ -207,3 +216,4 @@ skill 安装这类长时间操作会作为可跟踪的任务运行，而不是�
 - [连接远程 Holon 运行时](/zh-CN/guides/connect-remote-runtime) — 从另一台机器使用 GUI
 - [排查 Holon 任务问题](/zh-CN/guides/troubleshooting) — 诊断常见问题
 - [配置参考](/zh-CN/reference/configuration) — CORS、端口和控制平面设置
+- [配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md) — 设置团队 SSO 与会话策略

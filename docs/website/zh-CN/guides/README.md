@@ -50,6 +50,10 @@ order: 30
   选择模板、创建 Agent，并确认它能接下一个任务。
   <!-- mdorigin:index kind=article -->
 
+- [配置 OIDC 身份认证](./configure-oidc-authentication.md)
+  设置 OpenID Connect 单点登录、配置会话超时策略，并审计用户触发的消息。
+  <!-- mdorigin:index kind=article -->
+
 - [为 Agent 添加 Skill](./use-skills.md)
   找到 skill、安装到库、为某个 Agent 启用，并确认它已生效。
   <!-- mdorigin:index kind=article -->

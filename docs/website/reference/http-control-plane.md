@@ -34,6 +34,8 @@ Starting in v0.36.0, Holon supports a **session-first authentication** architect
 - **`GET /api/auth/oidc/start`** and **`GET /api/auth/oidc/callback`** — Initiate and complete OpenID Connect PKCE authorization code flow when `auth.mode="oidc"`.
 - **`POST /api/auth/:provider/device/start`** — Initiate OAuth device authorization flows (e.g. OpenAI Codex).
 
+For step-by-step IdP registration and session configuration, see [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
+
 ```
 GET /api/handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
 GET /api/auth/method → { "mode": "local" | "oidc" }

@@ -29,6 +29,8 @@ Holon 在设计上是无头的。HTTP 和事件驱动的集成接口应当保留
 - **`GET /api/auth/oidc/start`** 与 **`GET /api/auth/oidc/callback`** — 当 `auth.mode="oidc"` 时发起并完成 OpenID Connect PKCE 授权码流程。
 - **`POST /api/auth/:provider/device/start`** — 发起 OAuth 设备授权码流程（如 OpenAI Codex）。
 
+有关 IdP 注册与会话配置的逐步指南，请参阅[配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md)。
+
 ```
 GET /api/handshake → { "auth": { "mode": "bearer" | "local", "required": bool } }
 GET /api/auth/method → { "mode": "local" | "oidc" }

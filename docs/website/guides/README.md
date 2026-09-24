@@ -49,6 +49,10 @@ how to confirm success.
   Drive agents, work items, and skills from the browser.
   <!-- mdorigin:index kind=article -->
 
+- [Configure OIDC authentication](./configure-oidc-authentication.md)
+  Set up OpenID Connect single sign-on, configure session policies, and audit user prompts.
+  <!-- mdorigin:index kind=article -->
+
 - [Create an agent from a template](./create-agent.md)
   Pick a template, create an agent, and confirm it can take a task.
   <!-- mdorigin:index kind=article -->
