@@ -104,6 +104,7 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
 **`GET /api/agents/list`** — 列出 agent 条目
 
 返回轻量的公共 agent 条目，供选择和导航使用，不加载每个 agent 完整的运行时摘要。
+可选查询参数 `parent` 按直接父 agent ID 筛选；结果仍仅包含公共 agent 条目。
 
 **`GET /api/agents/:id/status`** — 单个 agent 状态
 

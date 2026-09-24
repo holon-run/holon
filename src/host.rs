@@ -3835,11 +3835,25 @@ impl RuntimeHost {
     }
 
     pub async fn list_agent_entries(&self) -> Result<Vec<AgentListEntry>> {
+        self.list_agent_entries_for_parent(None).await
+    }
+
+    pub async fn list_agent_entries_for_parent(
+        &self,
+        parent_agent_id: Option<&str>,
+    ) -> Result<Vec<AgentListEntry>> {
         self.ensure_default_agent_identity()?;
         let mut entries = Vec::new();
         for identity in self.agent_identity_records()?.into_iter().filter(|record| {
             record.status == AgentRegistryStatus::Active
                 && record.visibility == AgentVisibility::Public
+                && parent_agent_id.map_or(true, |parent| {
+                    record
+                        .lineage_parent_agent_id
+                        .as_deref()
+                        .or(record.parent_agent_id.as_deref())
+                        == Some(parent)
+                })
         }) {
             let runtime = {
                 let registry = self.inner.runtimes.read().await;
@@ -7607,6 +7621,59 @@ mod tests {
             .find(|entry| entry.identity.agent_id == "release-bot")
             .expect("release-bot should be listed from DB-only state");
         assert_eq!(entry.status, AgentStatus::Asleep);
+    }
+
+    #[tokio::test]
+    async fn list_agent_entries_for_parent_matches_canonical_lineage_parent() {
+        let (_home, host) = test_host();
+        let parent = AgentIdentityRecord::new(
+            "parent-agent",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        let child = AgentIdentityRecord::new(
+            "lineage-child",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        )
+        .with_lineage_parent_agent_id(Some(parent.agent_id.clone()));
+        let unrelated = AgentIdentityRecord::new(
+            "unrelated-agent",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        let identities = [parent, child, unrelated];
+        for identity in identities {
+            host.append_agent_identity(&identity).unwrap();
+            host.runtime_db()
+                .agent_identities()
+                .upsert(&identity)
+                .unwrap();
+        }
+
+        let entries = host
+            .list_agent_entries_for_parent(Some("parent-agent"))
+            .await
+            .unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.identity.agent_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["lineage-child"]
+        );
     }
 
     #[tokio::test]

@@ -17890,8 +17890,19 @@
     },
     "/api/agents/list": {
       "get": {
-        "description": "Return lightweight public agent entries.",
+        "description": "Return lightweight public agent entries. Optional parent query parameter filters the public roster to direct children of that parent.",
         "operationId": "listAgents",
+        "parameters": [
+          {
+            "description": "Exact direct parent agent id; filters only the lightweight public roster.",
+            "in": "query",
+            "name": "parent",
+            "schema": {
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
         "responses": {
           "200": {
             "content": {
