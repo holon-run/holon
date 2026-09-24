@@ -663,8 +663,8 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "decision.tools.max_calls_per_turn",
             kind: "positive_integer",
-            description: "Maximum advisory Decision tool calls allowed in one turn.",
-            default: json!(4),
+            description: "Optional maximum advisory Decision tool calls allowed in one turn. Unset means unlimited.",
+            default: Value::Null,
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -1226,8 +1226,7 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .decision
             .tools
             .as_ref()
-            .and_then(|tools| tools.max_calls_per_turn)
-            .unwrap_or(4))),
+            .and_then(|tools| tools.max_calls_per_turn))),
         "decision.tools.timeout_ms" => Ok(json!(config
             .decision
             .tools

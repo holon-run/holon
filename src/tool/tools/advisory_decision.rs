@@ -96,24 +96,26 @@ pub(crate) async fn execute(
             ),
         );
     }
-    let call_index = context
-        .decision_tool_calls
-        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    if call_index >= max_calls {
-        return finish_result(
-            runtime,
-            agent_id,
-            context,
-            &args,
-            &fingerprint,
-            abstain_result(
-                "rate_limited",
-                "per-turn advisory decision limit reached",
-                "",
-                fingerprint.clone(),
-                &args.options,
-            ),
-        );
+    if let Some(max_calls) = max_calls {
+        let call_index = context
+            .decision_tool_calls
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        if call_index >= max_calls {
+            return finish_result(
+                runtime,
+                agent_id,
+                context,
+                &args,
+                &fingerprint,
+                abstain_result(
+                    "rate_limited",
+                    "per-turn advisory decision limit reached",
+                    "",
+                    fingerprint.clone(),
+                    &args.options,
+                ),
+            );
+        }
     }
 
     let request = DecisionRequest {

@@ -3556,7 +3556,7 @@ impl RuntimeHandle {
         self.inner.config_snapshot.load().web_config.clone()
     }
 
-    pub(crate) fn advisory_decision_tool_config(&self) -> (bool, usize, u64, f32) {
+    pub(crate) fn advisory_decision_tool_config(&self) -> (bool, Option<usize>, u64, f32) {
         let snap = self.inner.config_snapshot.load();
         (
             snap.decision_tool_enabled,

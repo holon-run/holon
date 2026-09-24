@@ -2595,6 +2595,29 @@ fn api_projection_config_round_trips_and_validates() {
 }
 
 #[test]
+fn decision_tools_max_calls_per_turn_is_optional() {
+    let mut config = HolonConfigFile::default();
+    assert_eq!(
+        get_config_key(&config, "decision.tools.max_calls_per_turn").unwrap(),
+        Value::Null
+    );
+
+    set_config_key(&mut config, "decision.tools.max_calls_per_turn", "2").unwrap();
+    assert_eq!(
+        get_config_key(&config, "decision.tools.max_calls_per_turn").unwrap(),
+        json!(2)
+    );
+
+    unset_config_key(&mut config, "decision.tools.max_calls_per_turn").unwrap();
+    assert_eq!(
+        get_config_key(&config, "decision.tools.max_calls_per_turn").unwrap(),
+        Value::Null
+    );
+
+    assert!(set_config_key(&mut config, "decision.tools.max_calls_per_turn", "0").is_err());
+}
+
+#[test]
 fn api_projection_defaults_match_gate_constants() {
     let projection = crate::config::ApiProjectionConfigFile::default();
     assert_eq!(
