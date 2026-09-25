@@ -101,4 +101,33 @@ class SdkFoundationTest {
         assertEquals("Work result available", snapshot.turns.single().summary)
     }
 
+    @Test
+    fun `terminal turn without result is not projected as work in progress`() {
+        val snapshot =
+            HolonConversationSnapshot.from(
+                HolonJsonDocument(
+                    HolonWire.json.parseToJsonElement(
+                        """{"turns":[{"turn_id":"turn-1","execution":{"kind":"terminal","outcome":"completed"},"result":{"kind":"none","reason":"no_brief"},"brief_ids":[],"completed_at":"2026-09-25T08:00:00Z"}],"pending_inputs":[]}""",
+                    ),
+                ),
+            )
+
+        assertEquals("terminal", snapshot.turns.single().executionKind)
+        assertEquals("Work completed", snapshot.turns.single().summary)
+    }
+
+    @Test
+    fun `completion timestamp wins over stale active execution`() {
+        val snapshot =
+            HolonConversationSnapshot.from(
+                HolonJsonDocument(
+                    HolonWire.json.parseToJsonElement(
+                        """{"turns":[{"turn_id":"turn-1","execution":{"kind":"active"},"result":{"kind":"pending"},"brief_ids":[],"completed_at":"2026-09-25T08:00:00Z"}],"pending_inputs":[]}""",
+                    ),
+                ),
+            )
+
+        assertEquals("Work completed", snapshot.turns.single().summary)
+    }
+
 }

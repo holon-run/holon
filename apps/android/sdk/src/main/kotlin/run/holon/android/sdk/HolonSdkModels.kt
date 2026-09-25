@@ -268,14 +268,7 @@ public data class HolonConversationSnapshot(
                         ?: throw HolonProtocolException("Holon conversation turn $index is not an object")
                     HolonConversationTurn(
                         id = turn.stringValue("turn_id") ?: turn.stringValue("id") ?: "turn-$index",
-                        summary =
-                            turn.stringValue("title")
-                                ?: turn.stringValue("summary")
-                                ?: when ((turn["result"] as? JsonObject).stringValue("kind")) {
-                                    "available" -> "Work result available"
-                                    "failure" -> "Work failed"
-                                    else -> turn.stringValue("status") ?: "Work in progress"
-                                },
+                        summary = turn.conversationSummary(),
                         presentationClass = turn.stringValue("presentation_class"),
                         inputs =
                             (turn["inputs"] as? JsonArray).orEmpty().mapNotNull { inputElement ->
@@ -321,6 +314,28 @@ public data class HolonConversationSnapshot(
                 hasMore = raw["has_more"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
             )
         }
+    }
+}
+
+private fun JsonObject.conversationSummary(): String {
+    stringValue("title")?.let { return it }
+    stringValue("summary")?.let { return it }
+
+    val execution = this["execution"] as? JsonObject
+    val result = this["result"] as? JsonObject
+    val hasTerminalEvidence =
+        execution.stringValue("kind") == "terminal" ||
+            stringValue("completed_at") != null ||
+            this["settled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() == true
+    return when {
+        result.stringValue("kind") == "available" -> "Work result available"
+        hasTerminalEvidence ->
+            when (execution.stringValue("outcome")) {
+                "provider_failed_needs_recovery", "failure" -> "Work failed"
+                else -> "Work completed"
+            }
+        execution.stringValue("kind") == "active" -> "Work in progress"
+        else -> stringValue("status") ?: "Work status unavailable"
     }
 }
 

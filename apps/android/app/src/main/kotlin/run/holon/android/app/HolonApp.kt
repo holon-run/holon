@@ -726,25 +726,33 @@ private fun TurnCard(
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         } else {
-            Surface(
-                color = MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
+            Row(
+                modifier =
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onDetail)
+                        .padding(start = 14.dp, end = 2.dp, top = 4.dp, bottom = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text(turn.displaySummary(), style = MaterialTheme.typography.labelLarge)
+                if (turn.isRunning()) {
+                    Box(
+                        Modifier
+                            .size(6.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.65f), RoundedCornerShape(50)),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                turn.compactStatusText()?.let { status ->
                     Text(
-                        when (turn.executionKind) {
-                            "active" -> "完成后 brief 会直接显示在会话中。"
-                            "terminal" -> "没有可读 brief，可查看 assistant 与工具活动。"
-                            else -> "状态同步中。"
-                        },
+                        status,
+                        modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text("查看本轮过程  ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                }
+                } ?: Spacer(Modifier.weight(1f))
+                Text("查看过程  ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
     }
 }
@@ -760,12 +768,19 @@ internal fun ResultLinkRow(label: String, meta: String, onClick: () -> Unit) {
     }
 }
 
-private fun HolonConversationTurn.displaySummary(): String =
-    when (summary) {
-        "Work result available" -> "结果已生成"
-        "Work failed" -> "本轮失败"
-        "Work in progress" -> "正在处理"
-        else -> summary
+internal fun HolonConversationTurn.isRunning(): Boolean =
+    executionKind == "active" && completedAt == null && !settled
+
+internal fun HolonConversationTurn.compactStatusText(): String? =
+    when {
+        isRunning() -> "执行中"
+        terminalOutcome == "provider_failed_needs_recovery" ||
+            resultKind.contains("failure", true) -> "本轮失败"
+        terminalOutcome in setOf("aborted", "interrupted", "baseline_over_budget") -> "本轮未完成"
+        briefIds.isNotEmpty() || resultKind == "available" -> "结果载入中"
+        resultKind == "unavailable" -> "结果暂不可用"
+        resultKind == "none" -> "没有结果摘要"
+        else -> null
     }
 
 private fun HolonConversationTurn.exceptionStatus(): Pair<String, StatusTone>? =
@@ -797,7 +812,7 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
             val changed = observedActivityRevision != latestActivityRevision
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             if (firstObservation) {
-                if (turn.executionKind == "active") listState.scrollToItem(latestIndex)
+                if (turn.isRunning()) listState.scrollToItem(latestIndex)
                 unseenActivities = 0
             } else if (changed && lastVisible >= latestIndex - 1) {
                 listState.animateScrollToItem(latestIndex)
@@ -823,9 +838,9 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     Column(Modifier.weight(1f)) {
                         Text("本轮过程", style = MaterialTheme.typography.headlineSmall)
                         Text(
-                            if (turn.executionKind == "active") "实时更新" else "执行记录",
+                            if (turn.isRunning()) "实时更新" else "执行记录",
                             style = MaterialTheme.typography.labelSmall,
-                            color = if (turn.executionKind == "active") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (turn.isRunning()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
