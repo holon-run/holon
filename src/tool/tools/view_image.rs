@@ -210,10 +210,10 @@ fn render_view_image_result(result: &ViewImageResult) -> String {
         format!("Summary: {}", observation.summary),
     ];
 
-    // Expose the canonical workspace URI when available so the model can
-    // embed durable references in later markdown output.
+    // Keep the serialized compatibility field readable to models while
+    // making its new absolute-path meaning explicit.
     if let Some(uri) = &reference.workspace_uri {
-        lines.push(format!("Workspace URI: {uri}"));
+        lines.push(format!("Absolute path: {uri}"));
     }
 
     push_json_section(&mut lines, "OCR", &observation.ocr);
@@ -1217,7 +1217,8 @@ mod tests {
 
     #[test]
     fn renders_visual_observation_for_text_only_replay() {
-        let reference = test_visual_reference();
+        let mut reference = test_visual_reference();
+        reference.workspace_uri = Some("/tmp/image.png".to_string());
         let selection = test_vision_selection();
         let result = ViewImageResult {
             visual_reference: reference.clone(),
@@ -1250,6 +1251,8 @@ mod tests {
 
         assert!(rendered.starts_with("ViewImage visual observation"));
         assert!(rendered.contains("Reference: vis_test"));
+        assert!(rendered.contains("Absolute path: /tmp/image.png"));
+        assert!(!rendered.contains("Workspace URI:"));
         assert!(rendered.contains("Prompt: What is visible?"));
         assert!(rendered.contains("Summary: A red warning icon is visible."));
         assert!(rendered.contains(r#""text":"WARN""#));

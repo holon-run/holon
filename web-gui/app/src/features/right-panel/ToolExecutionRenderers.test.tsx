@@ -78,6 +78,30 @@ describe("ToolExecutionContent", () => {
     expect(html).toContain("openai/gpt-4o");
   });
 
+  it("routes absolute ViewImage paths through file resolution for preview", () => {
+    const html = renderTool({
+      tool_name: "ViewImage",
+      input: { path: "/tmp/layout.png" },
+      output: {
+        envelope: {
+          result: {
+            visual_reference: {
+              id: "img_absolute",
+              path: "/tmp/layout.png",
+              mime: "image/png",
+              byte_count: 12,
+              sha256: "def456",
+              size: { width: 32, height: 24 },
+            },
+          },
+        },
+      },
+    });
+
+    expect(html).toContain("Resolving /tmp/layout.png");
+    expect(html).toContain("Image preview");
+  });
+
   it("renders GenerateImage details with prompt and generated image URI", () => {
     const html = renderTool({
       tool_name: "GenerateImage",
