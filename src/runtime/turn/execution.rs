@@ -637,6 +637,48 @@ impl RuntimeHandle {
             terminal_tool_executions: Vec::new(),
         }))
     }
+    async fn append_provider_attempt_failure_events(
+        &self,
+        agent_id: &str,
+        round: usize,
+        timeline: &ProviderAttemptTimeline,
+    ) -> Result<()> {
+        let (turn_id, turn_index) = {
+            let guard = self.inner.agent.lock().await;
+            (guard.state.current_turn_id.clone(), guard.state.turn_index)
+        };
+        for attempt in &timeline.attempts {
+            if attempt.outcome == ProviderAttemptOutcome::Succeeded {
+                continue;
+            }
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "provider_attempt_failed",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "turn_id": turn_id,
+                    "turn_index": turn_index,
+                    "round": round,
+                    "provider": attempt.provider,
+                    "model_ref": attempt.model_ref,
+                    "attempt": attempt.attempt,
+                    "max_attempts": attempt.max_attempts,
+                    "started_at": attempt.started_at,
+                    "completed_at": attempt.completed_at,
+                    "duration_ms": attempt.duration_ms,
+                    "failure_kind": attempt.failure_kind,
+                    "disposition": attempt.disposition,
+                    "outcome": attempt.outcome,
+                    "advanced_to_fallback": attempt.advanced_to_fallback,
+                    "backoff_ms": attempt.backoff_ms,
+                    "backoff_source": attempt.backoff_source,
+                    "pending_fallback_model_ref": timeline.pending_fallback_model_ref,
+                    "pending_fallback_disposition": timeline.pending_fallback_disposition,
+                }),
+            ))?;
+        }
+        Ok(())
+    }
+
     pub(super) async fn complete_turn_with_abort(
         &self,
         provider: std::sync::Arc<dyn AgentProvider>,
@@ -2001,6 +2043,13 @@ impl TurnExecution<'_> {
                                 context_length_recovery_attempts += 1;
                                 continue 'provider_round;
                             }
+                            if let Some(timeline) = provider_attempt_timeline(&err) {
+                                runtime
+                                    .append_provider_attempt_failure_events(
+                                        agent_id, round, timeline,
+                                    )
+                                    .await?;
+                            }
                             if let Some(outcome) = runtime
                                 .maybe_handle_context_length_exceeded(
                                     agent_id,
@@ -2385,6 +2434,13 @@ impl TurnExecution<'_> {
                                 effective_prompt = recovered_prompt;
                                 context_length_recovery_attempts += 1;
                                 continue 'provider_round;
+                            }
+                            if let Some(timeline) = provider_attempt_timeline(&err) {
+                                runtime
+                                    .append_provider_attempt_failure_events(
+                                        agent_id, round, timeline,
+                                    )
+                                    .await?;
                             }
                             if let Some(outcome) = runtime
                                 .maybe_handle_context_length_exceeded(

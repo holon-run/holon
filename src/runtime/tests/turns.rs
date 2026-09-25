@@ -3330,6 +3330,32 @@ async fn provider_failure_before_output_defers_fallback_to_next_turn() {
     assert!(events
         .iter()
         .any(|event| event.kind == "lineage_retry_exhausted"));
+    let failed_attempts = events
+        .iter()
+        .filter(|event| event.kind == "provider_attempt_failed")
+        .collect::<Vec<_>>();
+    assert_eq!(failed_attempts.len(), 1);
+    let failed_attempt = failed_attempts[0];
+    assert_eq!(
+        failed_attempt.data["model_ref"].as_str(),
+        Some("openai/gpt-5.4")
+    );
+    assert_eq!(failed_attempt.data["attempt"].as_u64(), Some(3));
+    assert_eq!(
+        failed_attempt.data["failure_kind"].as_str(),
+        Some("server_error")
+    );
+    assert_eq!(
+        failed_attempt.data["outcome"].as_str(),
+        Some("retries_exhausted")
+    );
+    assert_eq!(
+        failed_attempt.data["pending_fallback_model_ref"].as_str(),
+        Some("anthropic/claude-sonnet-4-6")
+    );
+    let failed_attempt_json = failed_attempt.data.to_string();
+    assert!(!failed_attempt_json.contains("Authorization"));
+    assert!(!failed_attempt_json.contains("token"));
     let deferred = events
         .iter()
         .find(|event| event.kind == "deferred_to_fallback")
