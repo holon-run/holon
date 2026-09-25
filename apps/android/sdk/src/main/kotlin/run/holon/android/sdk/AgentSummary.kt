@@ -16,6 +16,9 @@ public data class AgentSummary(
     val waitingReason: String? = null,
     val currentWorkItemId: String? = null,
     val workspaceLabel: String? = null,
+    val workspaceId: String? = null,
+    val executionRootId: String? = null,
+    val workspaceProjectionKind: String? = null,
     val latestBrief: HolonLatestBrief? = null,
 )
 
@@ -34,4 +37,7 @@ internal fun AgentListEntry.toAgentSummary(): AgentSummary =
         waitingReason = waitingReason?.value,
         currentWorkItemId = schedulingPosture?.workItemId,
         workspaceLabel = activeWorkspaceEntry?.workspaceAnchor,
+        workspaceId = activeWorkspaceEntry?.workspaceId,
+        executionRootId = activeWorkspaceEntry?.executionRootId,
+        workspaceProjectionKind = activeWorkspaceEntry?.projectionKind?.value,
     )

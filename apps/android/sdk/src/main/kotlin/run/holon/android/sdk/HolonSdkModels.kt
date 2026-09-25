@@ -138,6 +138,18 @@ public data class HolonWorkItemSnapshot(
     public val workItemId: String,
     public val state: String,
     public val objective: String?,
+    public val readiness: String?,
+    public val schedulingState: String?,
+    public val focus: String?,
+    public val revision: Long?,
+    public val updatedAt: String?,
+    public val blockedBy: String?,
+    public val recheckAt: String?,
+    public val resultBriefId: String?,
+    public val resultSummary: String?,
+    public val planArtifact: HolonWorkItemPlanArtifact?,
+    public val todoList: List<HolonWorkItemTodo>,
+    public val workRefs: List<HolonWorkReference>,
     public val raw: JsonObject,
 ) {
     public companion object {
@@ -146,10 +158,67 @@ public data class HolonWorkItemSnapshot(
                 workItemId = raw.string("id") ?: raw.string("work_item_id") ?: "unknown-work-item",
                 state = raw.string("state") ?: raw.string("scheduling_state") ?: "unknown",
                 objective = raw.string("objective"),
+                readiness = raw.string("readiness"),
+                schedulingState = raw.string("scheduling_state"),
+                focus = raw.string("focus"),
+                revision = raw.long("revision"),
+                updatedAt = raw.string("updated_at"),
+                blockedBy = raw.string("blocked_by"),
+                recheckAt = raw.string("recheck_at"),
+                resultBriefId = raw.string("result_brief_id"),
+                resultSummary = raw.string("result_summary"),
+                planArtifact = (raw["plan_artifact"] as? JsonObject)?.let(HolonWorkItemPlanArtifact::from),
+                todoList =
+                    (raw["todo_list"] as? JsonArray).orEmpty().mapNotNull { element ->
+                        val item = element as? JsonObject ?: return@mapNotNull null
+                        HolonWorkItemTodo(
+                            text = item.string("text") ?: return@mapNotNull null,
+                            state = item.string("state") ?: "unknown",
+                        )
+                    },
+                workRefs =
+                    (raw["work_refs"] as? JsonArray).orEmpty().mapNotNull { element ->
+                        val item = element as? JsonObject ?: return@mapNotNull null
+                        HolonWorkReference(
+                            kind = item.string("kind") ?: "unknown",
+                            ref = item.string("ref") ?: return@mapNotNull null,
+                            title = item.string("title"),
+                            status = item.string("status"),
+                        )
+                    },
                 raw = raw,
             )
     }
 }
+
+public data class HolonWorkItemPlanArtifact(
+    public val workspaceId: String?,
+    public val relativePath: String?,
+    public val preview: String?,
+    public val previewComplete: Boolean,
+) {
+    internal companion object {
+        fun from(raw: JsonObject): HolonWorkItemPlanArtifact =
+            HolonWorkItemPlanArtifact(
+                workspaceId = raw.string("workspace_id"),
+                relativePath = raw.string("relative_path"),
+                preview = raw.string("preview"),
+                previewComplete = raw["preview_complete"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+            )
+    }
+}
+
+public data class HolonWorkItemTodo(
+    public val text: String,
+    public val state: String,
+)
+
+public data class HolonWorkReference(
+    public val kind: String,
+    public val ref: String,
+    public val title: String?,
+    public val status: String?,
+)
 
 public data class HolonArtifact(
     public val artifactIndex: Int,
@@ -260,6 +329,45 @@ public data class HolonConversationActivity(
     public val kind: String,
     public val summary: String,
     public val eventSeq: Long?,
+    public val revision: Long?,
+    public val raw: JsonObject,
+) {
+    public val toolExecutionId: String?
+        get() = id.takeIf { kind == "tool" && it.startsWith("tool:") }?.removePrefix("tool:")
+}
+
+public data class HolonConversationDetail(
+    public val activities: List<HolonConversationActivity>,
+    public val coverageKind: String,
+    public val coverageReason: String?,
+    public val hasMore: Boolean,
+    public val nextBeforeCursor: String?,
+    public val raw: JsonObject,
+)
+
+public data class HolonWorkspace(
+    public val workspaceId: String,
+    public val alias: String?,
+    public val label: String,
+    public val isActive: Boolean,
+    public val executionRootId: String?,
+    public val projectionKind: String?,
+)
+
+public data class HolonWorkspaceEntry(
+    public val name: String,
+    public val type: String,
+    public val size: Long,
+    public val modified: Long?,
+    public val mediaType: String?,
+)
+
+public data class HolonWorkspaceDirectory(
+    public val workspaceId: String,
+    public val executionRootId: String?,
+    public val path: String,
+    public val rootKind: String?,
+    public val entries: List<HolonWorkspaceEntry>,
 )
 
 public data class HolonBriefAttachment(
@@ -342,7 +450,7 @@ private fun JsonObject?.stringValue(name: String): String? =
 private fun JsonObject?.longValue(name: String): Long? =
     this?.get(name)?.jsonPrimitive?.longOrNull
 
-private fun String.displayTextPreview(): String {
+internal fun String.displayTextPreview(): String {
     if (!trimStart().startsWith('{')) return this
     val objectValue = runCatching {
         HolonWire.json.parseToJsonElement(this) as? JsonObject

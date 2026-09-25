@@ -418,6 +418,74 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `conversation detail keeps assistant text and tool identity`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """{"activities":[{"kind":"assistant","id":"assistant:a","revision":2,"summary":"done","key":{"event_seq":7}},{"kind":"tool","id":"tool:tool-1","revision":1,"summary":"Read · success","key":{"event_seq":8}}],"coverage":{"kind":"partial","reason":"unknown_activity_type"},"has_more":false,"next_before_cursor":null}""",
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val detail = client.conversationDetail("main", "turn-1", limit = 100)
+
+            assertEquals("done", detail.activities.first().summary)
+            assertEquals("tool-1", detail.activities.last().toolExecutionId)
+            assertEquals("partial", detail.coverageKind)
+            assertEquals("unknown_activity_type", detail.coverageReason)
+            assertEquals("/agents/main/turns/turn-1/activities?limit=100", server.takeRequest().path)
+        }
+    }
+
+    @Test
+    fun `agent workspaces preserve execution root identity and directory listing`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """{"workspace":{"workspaces":[{"workspace_id":"ws-1","repo_name":"holon","is_active":true,"execution_root_id":"root:one","projection_kind":"git_worktree_root"}]}}""",
+                ),
+            )
+            server.enqueue(
+                jsonResponse(
+                    """{"type":"directory","workspace_id":"ws-1","execution_root_id":"root:one","path":"apps","root_kind":"git_worktree_root","entries":[{"name":"android","type":"directory","size":0},{"name":"README.md","type":"file","size":42,"mime_type":"text/markdown"}]}""",
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val workspace = client.agentWorkspaces("main").single()
+            val listing = client.browseWorkspaceDirectory(workspace.workspaceId, "apps", workspace.executionRootId)
+
+            assertEquals("root:one", workspace.executionRootId)
+            assertEquals(listOf("android", "README.md"), listing.entries.map { it.name })
+            server.takeRequest()
+            assertEquals(
+                "/workspaces/ws-1/files/apps?execution_root_id=root%3Aone",
+                server.takeRequest().path,
+            )
+        }
+    }
+
+    @Test
+    fun `work item detail projects plan todos and result`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """{"id":"work-1","state":"completed","objective":"Ship Android","readiness":"completed","revision":3,"result_brief_id":"brief-1","result_summary":"green","plan_artifact":{"workspace_id":"ws-1","relative_path":"plan.md","preview":"steps","preview_complete":true},"todo_list":[{"text":"test","state":"completed"}],"work_refs":[{"kind":"file","ref":"README.md","title":"README","status":"active"}]}""",
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val item = client.workItemSnapshot("main", "work-1")
+
+            assertEquals("green", item.resultSummary)
+            assertEquals("steps", item.planArtifact?.preview)
+            assertEquals("test", item.todoList.single().text)
+            assertEquals("README.md", item.workRefs.single().ref)
+            assertEquals("/agents/main/work-items/work-1", server.takeRequest().path)
+        }
+    }
+
+    @Test
     fun `reconnecting conversation stream retries connection failures`() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))

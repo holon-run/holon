@@ -20,12 +20,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonBrief
+import run.holon.android.sdk.HolonConversationActivity
+import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonConversationStreamEvent
+import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonRosterSnapshot
 import run.holon.android.sdk.HolonSseConnection
+import run.holon.android.sdk.HolonToolExecutionSnapshot
 import run.holon.android.sdk.HolonWorkItemSnapshot
+import run.holon.android.sdk.HolonWorkspace
+import run.holon.android.sdk.HolonWorkspaceDirectory
 import run.holon.android.sdk.toConversationEvent
 
 internal enum class AppPhase {
@@ -38,6 +44,12 @@ internal enum class MainDestination(val route: String, val label: String) {
     Recent("recent", "最近"),
     Agents("agents", "Agents"),
     Settings("settings", "设置"),
+}
+
+internal enum class AgentSection(val label: String) {
+    Results("结果"),
+    Work("工作"),
+    Files("文件"),
 }
 
 internal data class HolonUiState(
@@ -56,8 +68,21 @@ internal data class HolonUiState(
     val outbox: List<OutboxEntity> = emptyList(),
     val draft: String = "",
     val attachments: List<StagedAttachment> = emptyList(),
+    val agentSection: AgentSection = AgentSection.Results,
+    val briefs: Map<String, HolonBrief> = emptyMap(),
     val selectedBrief: HolonBrief? = null,
+    val selectedTurn: HolonConversationTurn? = null,
+    val conversationDetail: HolonConversationDetail? = null,
+    val selectedActivity: HolonConversationActivity? = null,
+    val selectedToolExecution: HolonToolExecutionSnapshot? = null,
+    val detailBusy: Boolean = false,
     val workItems: List<HolonWorkItemSnapshot> = emptyList(),
+    val selectedWorkItem: HolonWorkItemSnapshot? = null,
+    val workItemsBusy: Boolean = false,
+    val workspaces: List<HolonWorkspace> = emptyList(),
+    val selectedWorkspace: HolonWorkspace? = null,
+    val workspaceDirectory: HolonWorkspaceDirectory? = null,
+    val workspaceBusy: Boolean = false,
     val preparedArtifact: PreparedArtifact? = null,
     val error: String? = null,
     val statusMessage: String? = null,
@@ -234,7 +259,18 @@ internal class HolonViewModel(
                 outbox = current.outbox.takeIf { sameConversation }.orEmpty(),
                 draft = current.draft.takeIf { sameConversation }.orEmpty(),
                 attachments = current.attachments.takeIf { sameConversation }.orEmpty(),
+                agentSection = current.agentSection.takeIf { sameConversation } ?: AgentSection.Results,
+                briefs = current.briefs.takeIf { sameConversation }.orEmpty(),
                 selectedBrief = current.selectedBrief.takeIf { sameConversation },
+                selectedTurn = current.selectedTurn.takeIf { sameConversation },
+                conversationDetail = current.conversationDetail.takeIf { sameConversation },
+                selectedActivity = current.selectedActivity.takeIf { sameConversation },
+                selectedToolExecution = current.selectedToolExecution.takeIf { sameConversation },
+                workItems = current.workItems.takeIf { sameConversation }.orEmpty(),
+                selectedWorkItem = current.selectedWorkItem.takeIf { sameConversation },
+                workspaces = current.workspaces.takeIf { sameConversation }.orEmpty(),
+                selectedWorkspace = current.selectedWorkspace.takeIf { sameConversation },
+                workspaceDirectory = current.workspaceDirectory.takeIf { sameConversation },
                 preparedArtifact = current.preparedArtifact.takeIf { sameConversation },
                 busy = true,
                 error = null,
@@ -259,6 +295,8 @@ internal class HolonViewModel(
                             online = true,
                         )
                     }
+                    hydrateBriefs(agent, bundle.snapshot)
+                    loadAgentWorkspace(agent)
                     startConversationStream(agent, bundle.snapshot.snapshotCursor)
                 }.onFailure { error ->
                     val cached = runCatching {
@@ -293,9 +331,22 @@ internal class HolonViewModel(
                 conversation = null,
                 outbox = emptyList(),
                 attachments = emptyList(),
+                agentSection = AgentSection.Results,
+                briefs = emptyMap(),
                 selectedBrief = null,
+                selectedTurn = null,
+                conversationDetail = null,
+                selectedActivity = null,
+                selectedToolExecution = null,
                 preparedArtifact = null,
                 workItems = emptyList(),
+                selectedWorkItem = null,
+                workspaces = emptyList(),
+                selectedWorkspace = null,
+                workspaceDirectory = null,
+                detailBusy = false,
+                workItemsBusy = false,
+                workspaceBusy = false,
                 error = null,
             )
         }
@@ -414,12 +465,158 @@ internal class HolonViewModel(
                     repository.brief(agent.id, briefId) to repository.workItems(agent.id)
                 }
             }.onSuccess { (brief, workItems) ->
-                mutableState.update { it.copy(selectedBrief = brief, workItems = workItems, busy = false) }
+                mutableState.update {
+                    it.copy(
+                        selectedBrief = brief,
+                        briefs = it.briefs + (brief.id to brief),
+                        workItems = workItems,
+                        busy = false,
+                    )
+                }
             }.onFailure(::handleRuntimeFailure)
         }
     }
 
-    fun closeBrief() = mutableState.update { it.copy(selectedBrief = null, workItems = emptyList()) }
+    fun closeBrief() = mutableState.update { it.copy(selectedBrief = null, preparedArtifact = null) }
+
+    fun selectAgentSection(section: AgentSection) {
+        mutableState.update {
+            it.copy(
+                agentSection = section,
+                selectedTurn = null,
+                conversationDetail = null,
+                selectedActivity = null,
+                selectedToolExecution = null,
+                selectedWorkItem = null,
+                preparedArtifact = null,
+            )
+        }
+    }
+
+    fun openTurn(turn: HolonConversationTurn) {
+        val agent = state.value.selectedAgent ?: return
+        mutableState.update {
+            it.copy(
+                selectedTurn = turn,
+                conversationDetail = null,
+                selectedActivity = null,
+                selectedToolExecution = null,
+                detailBusy = true,
+                error = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.conversationDetail(agent.id, turn.id) }
+            }.onSuccess { detail ->
+                if (state.value.selectedTurn?.id == turn.id) {
+                    mutableState.update { it.copy(conversationDetail = detail, detailBusy = false) }
+                }
+            }.onFailure { error ->
+                mutableState.update { it.copy(detailBusy = false, error = humanError(error)) }
+            }
+        }
+    }
+
+    fun closeTurn() =
+        mutableState.update {
+            it.copy(
+                selectedTurn = null,
+                conversationDetail = null,
+                selectedActivity = null,
+                selectedToolExecution = null,
+                detailBusy = false,
+            )
+        }
+
+    fun inspectActivity(activity: HolonConversationActivity) {
+        val agent = state.value.selectedAgent ?: return
+        val toolId = activity.toolExecutionId
+        mutableState.update {
+            it.copy(
+                selectedActivity = activity,
+                selectedToolExecution = null,
+                detailBusy = toolId != null,
+                error = null,
+            )
+        }
+        if (toolId == null) return
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.toolExecution(agent.id, toolId) }
+            }.onSuccess { detail ->
+                if (state.value.selectedActivity?.id == activity.id) {
+                    mutableState.update { it.copy(selectedToolExecution = detail, detailBusy = false) }
+                }
+            }.onFailure { error ->
+                mutableState.update { it.copy(detailBusy = false, error = humanError(error)) }
+            }
+        }
+    }
+
+    fun closeActivity() =
+        mutableState.update { it.copy(selectedActivity = null, selectedToolExecution = null, detailBusy = false) }
+
+    fun openWorkItem(item: HolonWorkItemSnapshot) {
+        val agent = state.value.selectedAgent ?: return
+        mutableState.update { it.copy(selectedWorkItem = item, workItemsBusy = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.workItem(agent.id, item.workItemId) }
+            }.onSuccess { detail ->
+                if (state.value.selectedWorkItem?.workItemId == item.workItemId) {
+                    mutableState.update { it.copy(selectedWorkItem = detail, workItemsBusy = false) }
+                }
+            }.onFailure { error ->
+                mutableState.update { it.copy(workItemsBusy = false, error = humanError(error)) }
+            }
+        }
+    }
+
+    fun closeWorkItem() = mutableState.update { it.copy(selectedWorkItem = null) }
+
+    fun selectWorkspace(workspace: HolonWorkspace) {
+        mutableState.update {
+            it.copy(
+                selectedWorkspace = workspace,
+                workspaceDirectory = null,
+                preparedArtifact = null,
+                workspaceBusy = true,
+                error = null,
+            )
+        }
+        browseWorkspace(workspace, "")
+    }
+
+    fun openWorkspaceEntry(name: String, directory: Boolean) {
+        val workspace = state.value.selectedWorkspace ?: return
+        val currentPath = state.value.workspaceDirectory?.path.orEmpty().trim('/')
+        val path = listOf(currentPath, name).filter(String::isNotBlank).joinToString("/")
+        if (directory) {
+            mutableState.update { it.copy(workspaceBusy = true, preparedArtifact = null, error = null) }
+            browseWorkspace(workspace, path)
+        } else {
+            mutableState.update { it.copy(workspaceBusy = true, preparedArtifact = null, error = null) }
+            viewModelScope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) { repository.prepareWorkspaceFile(workspace, path) }
+                }.onSuccess { artifact ->
+                    mutableState.update { it.copy(preparedArtifact = artifact, workspaceBusy = false) }
+                }.onFailure { error ->
+                    mutableState.update { it.copy(workspaceBusy = false, error = humanError(error)) }
+                }
+            }
+        }
+    }
+
+    fun navigateWorkspaceUp() {
+        val workspace = state.value.selectedWorkspace ?: return
+        val currentPath = state.value.workspaceDirectory?.path.orEmpty().trim('/')
+        if (currentPath.isEmpty()) return
+        val parent = currentPath.substringBeforeLast('/', "")
+        mutableState.update { it.copy(workspaceBusy = true, preparedArtifact = null, error = null) }
+        browseWorkspace(workspace, parent)
+    }
 
     fun prepareArtifact(locator: String, name: String) {
         mutableState.update { it.copy(busy = true, error = null, preparedArtifact = null) }
@@ -486,6 +683,7 @@ internal class HolonViewModel(
                                         reopenAfterReset = true
                                         break
                                     }
+                                    hydrateBriefs(agent, bundle.snapshot)
                                 }
                             }
                         } finally {
@@ -507,6 +705,91 @@ internal class HolonViewModel(
         conversationStream = null
         conversationStreamJob?.cancel()
         conversationStreamJob = null
+    }
+
+    private fun hydrateBriefs(agent: AgentSummary, snapshot: HolonConversationSnapshot) {
+        val briefIds = snapshot.turns.asReversed().flatMap(HolonConversationTurn::briefIds).distinct().take(20)
+        val missing = briefIds.filterNot(state.value.briefs::containsKey)
+        if (missing.isEmpty()) return
+        viewModelScope.launch {
+            missing.forEach { briefId ->
+                runCatching {
+                    withContext(Dispatchers.IO) { repository.brief(agent.id, briefId) }
+                }.onSuccess { brief ->
+                    if (state.value.selectedAgent?.id == agent.id) {
+                        mutableState.update { it.copy(briefs = it.briefs + (brief.id to brief)) }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun loadAgentWorkspace(agent: AgentSummary) {
+        val activeWorkspace =
+            agent.workspaceId?.let { workspaceId ->
+                HolonWorkspace(
+                    workspaceId = workspaceId,
+                    alias = null,
+                    label = agent.workspaceLabel?.trimEnd('/')?.substringAfterLast('/') ?: workspaceId,
+                    isActive = true,
+                    executionRootId = agent.executionRootId,
+                    projectionKind = agent.workspaceProjectionKind,
+                )
+            }
+        mutableState.update {
+            it.copy(
+                workItemsBusy = true,
+                workspaceBusy = activeWorkspace != null,
+                workspaces = activeWorkspace?.let(::listOf).orEmpty(),
+                selectedWorkspace = activeWorkspace,
+            )
+        }
+        activeWorkspace?.let { browseWorkspace(it, "") }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.workItems(agent.id) }
+            }.onSuccess { items ->
+                if (state.value.selectedAgent?.id == agent.id) {
+                    mutableState.update { it.copy(workItems = items, workItemsBusy = false) }
+                }
+            }.onFailure { mutableState.update { it.copy(workItemsBusy = false) } }
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.workspaces(agent.id) }
+            }.onSuccess { workspaces ->
+                if (state.value.selectedAgent?.id == agent.id) {
+                    val workspace = workspaces.firstOrNull { it.isActive } ?: workspaces.firstOrNull()
+                    val previous = state.value.selectedWorkspace
+                    mutableState.update {
+                        it.copy(
+                            workspaces = workspaces,
+                            selectedWorkspace = workspace,
+                            workspaceBusy = workspace != null && workspace != previous,
+                        )
+                    }
+                    if (workspace != null && workspace != previous) browseWorkspace(workspace, "")
+                }
+            }.onFailure {
+                if (activeWorkspace == null) mutableState.update { it.copy(workspaceBusy = false) }
+            }
+        }
+    }
+
+    private fun browseWorkspace(workspace: HolonWorkspace, path: String) {
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.browseWorkspace(workspace, path) }
+            }.onSuccess { directory ->
+                if (state.value.selectedWorkspace?.workspaceId == workspace.workspaceId &&
+                    state.value.selectedWorkspace?.executionRootId == workspace.executionRootId
+                ) {
+                    mutableState.update { it.copy(workspaceDirectory = directory, workspaceBusy = false) }
+                }
+            }.onFailure { error ->
+                mutableState.update { it.copy(workspaceBusy = false, error = humanError(error)) }
+            }
+        }
     }
 
     private fun handleRuntimeFailure(error: Throwable) {
