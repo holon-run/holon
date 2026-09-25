@@ -30,7 +30,6 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -52,6 +51,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -636,7 +636,8 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
             )
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding)) {
+        // Resize the timeline and composer together; padding only the composer leaves an IME-sized gap.
+        Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
             state.statusMessage?.let { Text(it, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             AgentSectionBar(state.agentSection, viewModel::selectAgentSection)
@@ -1821,41 +1822,73 @@ private fun Composer(
     onCamera: () -> Unit,
 ) {
     var attachmentMenuOpen by remember { mutableStateOf(false) }
+    val canStop = state.selectedAgent?.currentRunId != null
     Surface(
         color = MaterialTheme.colorScheme.surface,
         tonalElevation = 2.dp,
-        shadowElevation = 4.dp,
-        modifier = Modifier.fillMaxWidth().imePadding(),
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth(),
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp).navigationBarsPadding(),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            if (state.stagingAttachment) Text("正在准备附件…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (state.stagingAttachment) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Text("正在准备附件…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             if (state.attachments.isNotEmpty()) {
-                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
                     state.attachments.forEachIndexed { index, attachment ->
-                        Row(
-                            Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)).padding(9.dp),
-                            verticalAlignment = Alignment.CenterVertically,
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(10.dp),
                         ) {
-                            Text(if (attachment.kind == "image") "图片" else "文件", style = MaterialTheme.typography.labelSmall)
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                "${attachment.name} · ${formatBytes(attachment.size)}",
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            TextButton(
-                                onClick = { viewModel.removeAttachment(index) },
-                                enabled = !state.enqueueing && !state.stagingAttachment,
-                            ) { Text("移除") }
+                            Row(
+                                modifier = Modifier.padding(start = 10.dp, end = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                Icon(
+                                    if (attachment.kind == "image") Icons.Default.Image else Icons.Default.AttachFile,
+                                    contentDescription = if (attachment.kind == "image") "图片" else "文件",
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Text(
+                                    "${attachment.name} · ${formatBytes(attachment.size)}",
+                                    modifier = Modifier.widthIn(max = 200.dp),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                IconButton(
+                                    onClick = { viewModel.removeAttachment(index) },
+                                    enabled = !state.enqueueing && !state.stagingAttachment,
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "移除 ${attachment.name}", modifier = Modifier.size(18.dp))
+                                }
+                            }
                         }
                     }
                 }
             }
-            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            OutlinedTextField(
+                value = state.draft,
+                onValueChange = viewModel::updateDraft,
+                placeholder = { Text("给 Agent 发送消息…") },
+                minLines = 1,
+                maxLines = 6,
+                enabled = !state.enqueueing,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box {
                     IconButton(onClick = { attachmentMenuOpen = true }, enabled = !state.enqueueing && !state.stagingAttachment) {
                         Icon(Icons.Default.Add, contentDescription = "添加附件")
@@ -1878,36 +1911,26 @@ private fun Composer(
                         )
                     }
                 }
-                OutlinedTextField(
-                    value = state.draft,
-                    onValueChange = viewModel::updateDraft,
-                    placeholder = { Text("输入消息…") },
-                    minLines = 1,
-                    maxLines = 4,
-                    enabled = !state.enqueueing,
-                    modifier = Modifier.weight(1f),
-                )
-                val canStop = state.selectedAgent?.currentRunId != null
+                Spacer(Modifier.weight(1f))
+                if (canStop) {
+                    TextButton(onClick = viewModel::stopCurrentTurn, enabled = !state.abortingRun) {
+                        if (state.abortingRun) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        else Text("停止本轮")
+                    }
+                }
                 Button(
                     onClick = viewModel::send,
                     enabled = !state.enqueueing && !state.stagingAttachment && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
                     shape = RoundedCornerShape(12.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
-                    modifier = Modifier.size(48.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                 ) {
                     if (state.enqueueing) {
                         CircularProgressIndicator(Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                     } else {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
-                }
-                if (canStop) IconButton(
-                    onClick = viewModel::stopCurrentTurn,
-                    enabled = !state.abortingRun,
-                    modifier = Modifier.size(48.dp),
-                ) {
-                    if (state.abortingRun) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Icon(Icons.Default.Stop, contentDescription = "停止本轮")
+                    Spacer(Modifier.width(6.dp))
+                    Text(if (state.enqueueing) "发送中" else "发送")
                 }
             }
         }
