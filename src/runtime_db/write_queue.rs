@@ -14,8 +14,8 @@ use rusqlite::{Connection, Transaction};
 #[cfg(target_os = "linux")]
 use crate::runtime_db::connection::RuntimeDbSidecarGuard;
 use crate::runtime_db::connection::{
-    ensure_runtime_db_sidecars_are_consistent, is_retryable_db_error, next_runtime_db_retry_delay,
-    open_connection, run_transaction_on_connection,
+    ensure_runtime_db_sidecars_are_consistent, is_retryable_transaction_error,
+    next_runtime_db_retry_delay, open_connection, run_transaction_on_connection,
 };
 use crate::runtime_db::{
     RuntimeDbProtectionError, RuntimeDbProtectionState, RuntimeDbProtectionStatus,
@@ -156,7 +156,7 @@ impl RuntimeDbWriter {
                                 }
                                 break;
                             }
-                            Err(error) if is_retryable_db_error(&error) => {
+                            Err(error) if is_retryable_transaction_error(&error) => {
                                 tracing::warn!(
                                     error = %error,
                                     path = %thread_state.path.display(),
@@ -411,7 +411,7 @@ impl RuntimeDbWriterState {
                 |tx| f(tx),
             ) {
                 Ok(value) => return Ok(value),
-                Err(error) if is_retryable_db_error(&error) => {
+                Err(error) if is_retryable_transaction_error(&error) => {
                     retry_count += 1;
                     let elapsed = started_at.elapsed();
                     tracing::trace!(

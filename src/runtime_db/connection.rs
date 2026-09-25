@@ -26,8 +26,9 @@ use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 #[cfg(target_os = "linux")]
 use crate::runtime_db::RuntimeDbProtectionError;
 use crate::runtime_db::{
-    RuntimeDbRetryableError, RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL, RUNTIME_DB_BUSY_TIMEOUT,
-    RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY, RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
+    RuntimeDbRetryableError, RuntimeStateTransitionConflict, RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL,
+    RUNTIME_DB_BUSY_TIMEOUT, RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY,
+    RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
 };
 
 pub(crate) enum LockMode {
@@ -584,20 +585,38 @@ pub(crate) fn run_transaction_on_connection<T>(
         Err(error) => {
             let _ = transaction.rollback();
             let elapsed = started_at.elapsed();
-            tracing::warn!(
-                error = %error,
-                retryable = is_retryable_db_error(&error),
-                path = %path.display(),
-                operation = context.operation,
-                table = context.table,
-                mode = context.mode.as_str(),
-                queue_wait_ms = queue_wait.as_millis(),
-                mutex_wait_ms = mutex_wait.as_millis(),
-                begin_wait_ms = begin_wait.as_millis(),
-                begin_retry_count,
-                elapsed_ms = elapsed.as_millis(),
-                "runtime db write rolled back"
-            );
+            let retryable = is_retryable_db_error(&error);
+            if is_retryable_state_transition_conflict(&error) {
+                tracing::debug!(
+                    error = %error,
+                    retryable,
+                    path = %path.display(),
+                    operation = context.operation,
+                    table = context.table,
+                    mode = context.mode.as_str(),
+                    queue_wait_ms = queue_wait.as_millis(),
+                    mutex_wait_ms = mutex_wait.as_millis(),
+                    begin_wait_ms = begin_wait.as_millis(),
+                    begin_retry_count,
+                    elapsed_ms = elapsed.as_millis(),
+                    "runtime db write rolled back"
+                );
+            } else {
+                tracing::warn!(
+                    error = %error,
+                    retryable,
+                    path = %path.display(),
+                    operation = context.operation,
+                    table = context.table,
+                    mode = context.mode.as_str(),
+                    queue_wait_ms = queue_wait.as_millis(),
+                    mutex_wait_ms = mutex_wait.as_millis(),
+                    begin_wait_ms = begin_wait.as_millis(),
+                    begin_retry_count,
+                    elapsed_ms = elapsed.as_millis(),
+                    "runtime db write rolled back"
+                );
+            }
             Err(error)
         }
     }
@@ -684,16 +703,26 @@ pub fn is_sqlite_locked(error: &rusqlite::Error) -> bool {
     )
 }
 
-/// Check if an error is retryable (retryable DB error or SQLite locked).
-pub fn is_retryable_db_error(error: &anyhow::Error) -> bool {
+fn is_retryable_state_transition_conflict(error: &anyhow::Error) -> bool {
     error.chain().any(|source| {
         source
-            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-            .is_some()
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some_and(RuntimeStateTransitionConflict::retryable)
+    })
+}
+
+pub(crate) fn is_retryable_transaction_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source.downcast_ref::<RuntimeDbRetryableError>().is_some()
             || source
                 .downcast_ref::<rusqlite::Error>()
                 .is_some_and(is_sqlite_locked)
     })
+}
+
+/// Check if an error is retryable for runtime error classification and logging.
+pub fn is_retryable_db_error(error: &anyhow::Error) -> bool {
+    is_retryable_state_transition_conflict(error) || is_retryable_transaction_error(error)
 }
 
 #[cfg(unix)]

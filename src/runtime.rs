@@ -4515,11 +4515,31 @@ impl RuntimeHandle {
                 Err(error) => {
                     let can_retry = attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
                         && retryable_enqueue_conflict(&error, message.agent_id.as_str());
-                    if !can_retry
-                        || !self
-                            .refresh_enqueue_agent_state_baseline(&message.agent_id)
-                            .await?
+                    if !can_retry {
+                        if retryable_enqueue_conflict(&error, message.agent_id.as_str()) {
+                            tracing::warn!(
+                                error = %error,
+                                retryable = true,
+                                agent_id = %message.agent_id,
+                                attempt = attempt + 1,
+                                max_attempts = ENQUEUE_AGENT_STATE_MAX_ATTEMPTS,
+                                "runtime message enqueue OCC retries exhausted"
+                            );
+                        }
+                        return Err(error);
+                    }
+                    if !self
+                        .refresh_enqueue_agent_state_baseline(&message.agent_id)
+                        .await?
                     {
+                        tracing::warn!(
+                            error = %error,
+                            retryable = true,
+                            agent_id = %message.agent_id,
+                            attempt = attempt + 1,
+                            max_attempts = ENQUEUE_AGENT_STATE_MAX_ATTEMPTS,
+                            "runtime message enqueue OCC baseline refresh failed"
+                        );
                         return Err(error);
                     }
                 }
