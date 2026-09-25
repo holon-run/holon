@@ -15,6 +15,86 @@ fn live_config() -> Result<AppConfig> {
     AppConfig::load()
 }
 
+async fn live_turn_scoped_context_rounds(provider_name: &str, model: &str) -> Result<()> {
+    let config = live_config()?;
+    let provider_id = ProviderId::parse(provider_name)?;
+    let provider_config = config
+        .providers
+        .get(&provider_id)
+        .with_context(|| format!("missing {provider_name} provider config"))?;
+    let trace_home_dir = tempfile::tempdir()?;
+    let provider = AnthropicProvider::from_runtime_config(
+        provider_config,
+        model,
+        512,
+        trace_home_dir.path(),
+        true,
+    )?;
+    for marker in ["CURRENT_ALPHA_3225", "CURRENT_BETA_3225"] {
+        let context_blocks = vec![PromptContentBlock {
+            text: format!("The current marker is {marker}."),
+            stability: PromptStability::TurnScoped,
+            cache_breakpoint: false,
+        }];
+        let frame = ProviderPromptFrame::structured(
+            "Answer with only the current marker.",
+            vec![],
+            context_blocks.clone(),
+            None,
+        );
+        let mut conversation = vec![
+            ConversationMessage::UserBlocks(context_blocks),
+            ConversationMessage::UserText("What is the current marker?".into()),
+        ];
+        for round in 0..2 {
+            let response = provider
+                .complete_turn(ProviderTurnRequest {
+                    continuation_scope_id: None,
+                    prompt_frame: frame.clone(),
+                    conversation: conversation.clone(),
+                    tools: vec![],
+                    native_web_search: None,
+                    response_format: None,
+                })
+                .await?;
+            let text = response
+                .blocks
+                .iter()
+                .filter_map(|block| match block {
+                    ModelBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("");
+            assert!(
+                text.contains(marker),
+                "{provider_name} round {round}: {text:?}"
+            );
+            println!(
+                "{provider_name} turn={marker} round={round} input={} output={} cache={:?}",
+                response.input_tokens, response.output_tokens, response.cache_usage
+            );
+            conversation.push(ConversationMessage::AssistantBlocks(response.blocks));
+            conversation.push(ConversationMessage::UserText(
+                "Repeat the current marker, not any earlier one.".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires a configured BigModel credential and network access"]
+async fn live_bigmodel_turn_scoped_context_rounds() -> Result<()> {
+    live_turn_scoped_context_rounds("bigmodel", "glm-5.2").await
+}
+
+#[tokio::test]
+#[ignore = "requires a configured DeepSeek credential and network access"]
+async fn live_deepseek_turn_scoped_context_rounds() -> Result<()> {
+    live_turn_scoped_context_rounds("deepseek", "deepseek-flash").await
+}
+
 fn provider_model_env(provider: &str, default_model: &str) -> String {
     let env_name = format!(
         "HOLON_LIVE_{}_MODEL",
