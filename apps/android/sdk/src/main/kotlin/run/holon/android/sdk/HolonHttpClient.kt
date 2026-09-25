@@ -1,5 +1,6 @@
 package run.holon.android.sdk
 
+import java.io.File
 import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
@@ -273,6 +274,7 @@ public class HolonHttpClient internal constructor(
             activities = activities,
             coverageKind = coverage?.string("kind") ?: "unknown",
             coverageReason = coverage?.string("reason"),
+            eventLogEpoch = raw.string("event_log_epoch"),
             hasMore = raw["has_more"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
             nextBeforeCursor = raw.string("next_before_cursor"),
             raw = raw,
@@ -444,6 +446,18 @@ public class HolonHttpClient internal constructor(
      * workspace API's `execution_root_id` selector.
      */
     public fun downloadWorkspaceArtifact(locator: String): HolonDownloadedArtifact {
+        val target = parseWorkspaceLocator(locator)
+        return downloadWorkspaceFile(target.workspaceId, target.path, target.rootId)
+    }
+
+    public fun downloadWorkspaceArtifactToFile(locator: String, targetFile: File, maxBytes: Long): HolonDownloadedFile {
+        val target = parseWorkspaceLocator(locator)
+        return downloadWorkspaceFileToFile(target.workspaceId, target.path, targetFile, maxBytes, target.rootId)
+    }
+
+    private data class WorkspaceLocatorTarget(val workspaceId: String, val path: String, val rootId: String?)
+
+    private fun parseWorkspaceLocator(locator: String): WorkspaceLocatorTarget {
         val uri = runCatching { URI(locator) }
             .getOrElse { throw HolonProtocolException("Artifact locator is invalid", it) }
         require(uri.scheme == "workspace") { "Only workspace:// artifact locators are supported" }
@@ -465,7 +479,7 @@ public class HolonHttpClient internal constructor(
             }
             ?.firstOrNull()
             ?.takeIf(String::isNotBlank)
-        return downloadWorkspaceFile(workspaceId, segments.joinToString("/"), rootId)
+        return WorkspaceLocatorTarget(workspaceId, segments.joinToString("/"), rootId)
     }
 
     public fun browseWorkspaceDirectory(
@@ -534,6 +548,55 @@ public class HolonHttpClient internal constructor(
                 bytes = bytes,
                 mediaType = it.header("Content-Type")?.substringBefore(';') ?: "application/octet-stream",
                 fileName = safePath.substringAfterLast('/'),
+            )
+        }
+    }
+
+    public fun downloadWorkspaceFileToFile(
+        workspaceId: String,
+        path: String,
+        targetFile: File,
+        maxBytes: Long,
+        executionRootId: String? = null,
+    ): HolonDownloadedFile {
+        require(maxBytes > 0) { "文件大小上限必须大于零" }
+        val safePath = safeWorkspacePath(path)
+        require(safePath.isNotEmpty()) { "Workspace file path must not be empty" }
+        val response = try {
+            httpClient.newCall(
+                authorizedRequest(
+                    path = workspaceFilePath(workspaceId, safePath),
+                    query = buildMap {
+                        put("download", "true")
+                        executionRootId?.let { put("execution_root_id", it) }
+                    },
+                ).header("Accept", "application/octet-stream").get().build(),
+            ).execute()
+        } catch (error: IOException) {
+            throw HolonProtocolException("Holon workspace file request failed", error)
+        }
+        response.use {
+            val body = it.body
+            if (!it.isSuccessful) throw httpException(it.code, body?.string().orEmpty())
+            body ?: throw HolonProtocolException("Holon returned an empty artifact")
+            if (body.contentLength() > maxBytes) throw HolonProtocolException("文件超过本机读取上限（$maxBytes 字节）")
+            var copied = 0L
+            targetFile.outputStream().use { output ->
+                body.byteStream().use { input ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        copied += read
+                        if (copied > maxBytes) throw HolonProtocolException("文件超过本机读取上限（$maxBytes 字节）")
+                        output.write(buffer, 0, read)
+                    }
+                }
+            }
+            return HolonDownloadedFile(
+                mediaType = it.header("Content-Type")?.substringBefore(';') ?: "application/octet-stream",
+                fileName = safePath.substringAfterLast('/'),
+                size = copied,
             )
         }
     }

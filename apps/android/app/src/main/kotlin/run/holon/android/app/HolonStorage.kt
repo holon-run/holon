@@ -12,6 +12,8 @@ import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.first
 
 private val Context.holonDataStore by preferencesDataStore(name = "holon_connection")
@@ -75,6 +77,14 @@ internal data class DraftEntity(
     val updatedAt: Long,
 )
 
+@Entity(tableName = "composer_attachments", primaryKeys = ["scopeKey", "agentId"])
+internal data class ComposerAttachmentsEntity(
+    val scopeKey: String,
+    val agentId: String,
+    val attachmentsJson: String,
+    val updatedAt: Long,
+)
+
 @Entity(tableName = "outbox")
 internal data class OutboxEntity(
     @androidx.room.PrimaryKey val requestId: String,
@@ -127,6 +137,12 @@ internal interface HolonDao {
     suspend fun draft(scopeKey: String, agentId: String): String?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun putComposerAttachments(entry: ComposerAttachmentsEntity)
+
+    @Query("SELECT attachmentsJson FROM composer_attachments WHERE scopeKey = :scopeKey AND agentId = :agentId")
+    suspend fun composerAttachments(scopeKey: String, agentId: String): String?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putOutbox(entry: OutboxEntity)
 
     @Query("SELECT * FROM outbox WHERE scopeKey = :scopeKey AND agentId = :agentId ORDER BY createdAt")
@@ -147,11 +163,17 @@ internal interface HolonDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putReadCursor(entry: ReadCursorEntity)
 
+    @Query("SELECT * FROM read_cursors WHERE scopeKey = :scopeKey")
+    suspend fun readCursors(scopeKey: String): List<ReadCursorEntity>
+
     @Query("DELETE FROM conversation_cache WHERE scopeKey != :scopeKey")
     suspend fun purgeOtherConversationScopes(scopeKey: String)
 
     @Query("DELETE FROM drafts WHERE scopeKey != :scopeKey")
     suspend fun purgeOtherDraftScopes(scopeKey: String)
+
+    @Query("DELETE FROM composer_attachments WHERE scopeKey != :scopeKey")
+    suspend fun purgeOtherComposerScopes(scopeKey: String)
 
     @Query("DELETE FROM outbox WHERE scopeKey != :scopeKey")
     suspend fun purgeOtherOutboxScopes(scopeKey: String)
@@ -168,6 +190,9 @@ internal interface HolonDao {
     @Query("DELETE FROM drafts")
     suspend fun clearDrafts()
 
+    @Query("DELETE FROM composer_attachments")
+    suspend fun clearComposerAttachments()
+
     @Query("DELETE FROM outbox")
     suspend fun clearOutbox()
 
@@ -182,18 +207,27 @@ internal interface HolonDao {
     entities = [
         ConversationCacheEntity::class,
         DraftEntity::class,
+        ComposerAttachmentsEntity::class,
         OutboxEntity::class,
         BriefCacheEntity::class,
         ReadCursorEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = false,
 )
 internal abstract class HolonDatabase : RoomDatabase() {
     abstract fun holonDao(): HolonDao
 
     companion object {
+        private val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `composer_attachments` (`scopeKey` TEXT NOT NULL, `agentId` TEXT NOT NULL, `attachmentsJson` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`scopeKey`, `agentId`))")
+            }
+        }
+
         fun create(context: Context): HolonDatabase =
-            Room.databaseBuilder(context, HolonDatabase::class.java, "holon.db").build()
+            Room.databaseBuilder(context, HolonDatabase::class.java, "holon.db")
+                .addMigrations(MIGRATION_1_2)
+                .build()
     }
 }

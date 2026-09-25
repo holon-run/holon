@@ -28,6 +28,7 @@ import androidx.compose.material.icons.filled.PhotoLibrary
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.foundation.BorderStroke
@@ -57,13 +58,16 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -83,17 +87,23 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -102,13 +112,21 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.File
+import java.io.IOException
 import java.time.Duration
 import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationTurn
@@ -148,16 +166,18 @@ private fun StartingScreen() {
 @Composable
 private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val isInsecureHttp = state.baseUrl.trim().startsWith("http://", ignoreCase = true)
-    Box(
+    Column(
         Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .statusBarsPadding()
             .navigationBarsPadding()
+            .imePadding()
+            .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp),
-        contentAlignment = Alignment.Center,
+        verticalArrangement = Arrangement.Center,
     ) {
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -168,6 +188,7 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 }
             }
             Spacer(Modifier.height(4.dp))
+            Text("需要一台已运行的 Holon 主机，以及该主机提供的访问令牌。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(
                 value = state.baseUrl,
                 onValueChange = viewModel::setBaseUrl,
@@ -206,8 +227,8 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
             OutlinedTextField(
                 value = state.token,
                 onValueChange = viewModel::setToken,
-                label = { Text("token") },
-                supportingText = { Text("仅用于换取可撤销 session，不会保存在设备上") },
+                label = { Text("访问令牌（token）") },
+                supportingText = { Text("登录后只保存可撤销的会话，不保存原始令牌") },
                 trailingIcon = {
                     TextButton(onClick = viewModel::toggleToken) {
                         Text(if (state.showToken) "隐藏" else "显示")
@@ -279,6 +300,7 @@ private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
 private enum class AgentFilter(val label: String) {
     All("全部"),
     Attention("需回应"),
+    NewResults("新结果"),
     Active("工作中"),
 }
 
@@ -287,11 +309,13 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
     var filter by remember { mutableStateOf(AgentFilter.All) }
     var searchOpen by remember { mutableStateOf(state.search.isNotBlank()) }
     val attentionCount = state.agents.count { it.needsReply() }
+    val unreadCount = if (state.readBriefsLoaded) state.agents.count { it.hasUnreadBrief(state.readBriefIds) } else 0
     val activeCount = state.agents.count { it.isActive() }
     val filtered = state.filteredAgents.filter { agent ->
         when (filter) {
             AgentFilter.All -> true
             AgentFilter.Attention -> agent.needsReply()
+            AgentFilter.NewResults -> state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds)
             AgentFilter.Active -> agent.isActive()
         }
     }
@@ -304,7 +328,8 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     Column {
                         Text("Holon", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "${state.agents.size} 个 Agent · ${if (state.online) "在线" else "离线缓存"}",
+                            "${state.agents.size} 个 Agent · ${if (state.online) "已同步" else "离线缓存"}" +
+                                (state.lastSyncedAt?.let { " ${syncClock(it)}" } ?: ""),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -343,13 +368,14 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 )
             }
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 AgentFilter.entries.forEach { option ->
                     val count = when (option) {
                         AgentFilter.All -> state.agents.size
                         AgentFilter.Attention -> attentionCount
+                        AgentFilter.NewResults -> unreadCount
                         AgentFilter.Active -> activeCount
                     }
                     FilterChip(
@@ -361,7 +387,7 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
             }
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(filtered, key = AgentSummary::id) { agent ->
-                    AgentConversationRow(agent, onClick = { viewModel.openAgent(agent) })
+                    AgentConversationRow(agent, unread = state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds), onClick = { viewModel.openAgent(agent) })
                     HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 }
                 if (filtered.isEmpty()) item {
@@ -369,6 +395,8 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                         state.agents.isEmpty() -> EmptyPage("还没有 Agent", "连接成功后，Agent 会显示在这里。")
                         filter == AgentFilter.Attention && attentionCount == 0 ->
                             EmptyPage("目前没有需要回应的 Agent", "选择“全部”查看其他 Agent。")
+                        filter == AgentFilter.NewResults && unreadCount == 0 ->
+                            EmptyPage("目前没有未读结果", "选择“全部”查看其他 Agent。")
                         filter == AgentFilter.Active && activeCount == 0 ->
                             EmptyPage("目前没有工作中的 Agent", "选择“全部”查看其他 Agent。")
                         state.search.isNotBlank() ->
@@ -383,7 +411,7 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
 }
 
 @Composable
-internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false, onClick: () -> Unit) {
+internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false, unread: Boolean = false, onClick: () -> Unit) {
     val tone = agent.statusTone()
     val briefPreview = plainTextPreview(agent.latestBrief?.preview.orEmpty())
     val postureReason = agent.postureReason.orEmpty()
@@ -412,16 +440,19 @@ internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false,
                 style = MaterialTheme.typography.bodyMedium,
             )
             if (!compact) {
-                Text(
-                    listOfNotNull(
-                        agent.latestBrief?.createdAt?.let(::relativeTime),
-                        agent.currentWorkItemId?.let { "有进行中的 WorkItem" },
-                    ).joinToString(" · ").ifBlank { "尚无活动" },
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (unread) Text("新结果", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        listOfNotNull(
+                            agent.latestBrief?.createdAt?.let(::relativeTime),
+                            agent.currentWorkItemId?.let { "有进行中的 WorkItem" },
+                        ).joinToString(" · ").ifBlank { "尚无活动" },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
         }
     }
@@ -429,6 +460,22 @@ internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false,
 
 @Composable
 private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBack: () -> Unit) {
+    var showDiagnostics by remember { mutableStateOf(false) }
+    var pendingSignOut by remember { mutableStateOf<String?>(null) }
+    pendingSignOut?.let { action ->
+        AlertDialog(
+            onDismissRequest = { pendingSignOut = null },
+            title = { Text(if (action == "relogin") "重新登录当前主机？" else "退出并清除本机数据？") },
+            text = { Text("本机缓存、草稿和待发送附件会被清除。已发送给主机的工作不会撤回。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingSignOut = null
+                    if (action == "relogin") viewModel.relogin() else viewModel.logout()
+                }) { Text(if (action == "relogin") "重新登录" else "退出登录") }
+            },
+            dismissButton = { TextButton(onClick = { pendingSignOut = null }) { Text("取消") } },
+        )
+    }
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         containerColor = MaterialTheme.colorScheme.background,
@@ -454,21 +501,33 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                HolonSection("当前连接", eyebrow = "RUNTIME") {
+                HolonSection("当前连接") {
                     SettingsValue("地址", state.session?.baseUrl.orEmpty())
                     SettingsValue("状态", if (state.online) "已连接" else "离线缓存")
-                    SettingsValue("Runtime", state.session?.runtimeId.orEmpty())
+                    state.lastSyncedAt?.let { SettingsValue("上次同步", syncClock(it)) }
                 }
             }
             item {
-                HolonSection("身份", eyebrow = "SESSION") {
+                HolonSection("当前身份") {
                     SettingsValue("用户", state.session?.user?.displayName ?: state.session?.user?.userId.orEmpty())
-                    SettingsValue("认证", state.session?.user?.authMethod.orEmpty())
-                    Text("session 保存在 Android Keystore；原始 token 不会保存。", style = MaterialTheme.typography.bodySmall)
+                    Text("访问令牌不保存在设备上。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             item {
-                HolonSection("兼容性", eyebrow = "PROTOCOL") {
+                HolonSection("关于") {
+                    SettingsValue("App", BuildConfig.VERSION_NAME)
+                    Text("连接已有 Holon 主机的移动工作台。打开应用后同步最新状态。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            item {
+                TextButton(onClick = { showDiagnostics = !showDiagnostics }, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (showDiagnostics) "收起连接诊断" else "查看连接诊断")
+                }
+            }
+            if (showDiagnostics) item {
+                HolonSection("连接诊断") {
+                    SettingsValue("Runtime", state.session?.runtimeId.orEmpty())
+                    SettingsValue("认证", state.session?.user?.authMethod.orEmpty())
                     SettingsValue("协议", "holon-control/1")
                     SettingsValue("能力", state.session?.server?.capabilities?.size?.toString().orEmpty())
                     Text(
@@ -476,18 +535,22 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    val context = LocalContext.current
+                    TextButton(onClick = { shareDiagnostics(context, state) }) {
+                        Text("分享脱敏诊断信息")
+                    }
                 }
             }
             item {
                 OutlinedButton(
-                    onClick = viewModel::relogin,
+                    onClick = { pendingSignOut = "relogin" },
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("重新登录当前主机") }
             }
             item {
                 OutlinedButton(
-                    onClick = viewModel::logout,
+                    onClick = { pendingSignOut = "logout" },
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("退出并清除本机数据") }
@@ -495,6 +558,26 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
             item { Spacer(Modifier.height(16.dp)) }
         }
     }
+}
+
+private fun shareDiagnostics(context: Context, state: HolonUiState) {
+    val server = state.session?.server
+    val details = buildString {
+        appendLine("Holon Android ${BuildConfig.VERSION_NAME}")
+        appendLine("状态：${if (state.online) "已连接" else "离线缓存"}")
+        appendLine("协议：holon-control/1")
+        appendLine("认证方式：${server?.authMode ?: "未知"}")
+        appendLine("能力：${server?.capabilities?.sorted()?.joinToString(", ").orEmpty()}")
+        server?.limits?.let {
+            appendLine("附件限制：图片 ${it.promptImageAttachmentMaxBytes} B，文件 ${it.promptFileAttachmentMaxBytes} B")
+        }
+        append("不包含地址、用户、session、token 或会话正文。")
+    }
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, details)
+    }
+    context.startActivity(Intent.createChooser(intent, "分享连接诊断").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 @Composable
@@ -510,6 +593,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val agent = state.selectedAgent ?: return
     val timelinePosition = remember(agent.id) { ConversationTimelinePosition() }
     val workListState = remember(agent.id) { LazyListState() }
+    val filePosition = remember(agent.id) { FileBrowserPosition() }
     val context = LocalContext.current
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
@@ -554,10 +638,12 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
+            state.statusMessage?.let { Text(it, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             AgentSectionBar(state.agentSection, viewModel::selectAgentSection)
             BoxWithConstraints(Modifier.weight(1f)) {
                 val wideWorkLayout = maxWidth >= 720.dp && state.agentSection == AgentSection.Work
                 when {
+                    state.selectedBrief != null && state.selectedWorkItem == null -> BriefScreen(state, viewModel)
                     wideWorkLayout -> {
                         Row(Modifier.fillMaxSize()) {
                             WorkItemsScreen(state, viewModel, Modifier.width(340.dp).fillMaxHeight(), workListState)
@@ -571,7 +657,6 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                             }
                         }
                     }
-                    state.selectedBrief != null -> BriefScreen(state, viewModel)
                     state.selectedActivity != null && state.selectedTurn == null -> ActivityDetailScreen(state, viewModel)
                     state.selectedTurn != null -> TurnDetailScreen(state, viewModel)
                     state.selectedWorkItem != null -> WorkItemDetailScreen(state, viewModel)
@@ -590,7 +675,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                             )
                         }
                         AgentSection.Work -> WorkItemsScreen(state, viewModel, Modifier.fillMaxSize(), workListState)
-                        AgentSection.Files -> WorkspaceBrowserScreen(state, viewModel, Modifier.fillMaxSize())
+                        AgentSection.Files -> WorkspaceBrowserScreen(state, viewModel, Modifier.fillMaxSize(), filePosition)
                     }
                 }
             }
@@ -632,6 +717,7 @@ private class ConversationTimelinePosition {
     var positionedAtLatest by mutableStateOf(false)
     var previousItemCount by mutableStateOf(0)
     var previousOutboxCount by mutableStateOf(0)
+    var previousOlderTurnCount by mutableStateOf(0)
 }
 
 @Composable
@@ -643,20 +729,37 @@ private fun ConversationTimeline(
 ) {
     val snapshot = state.conversation
     val listState = position.listState
+    val recentIds = snapshot?.turns.orEmpty().mapTo(mutableSetOf(), HolonConversationTurn::id)
+    val turns = state.olderTurns.filterNot { it.id in recentIds } + snapshot?.turns.orEmpty()
     val pendingRows = if (snapshot?.pendingInputs?.isNotEmpty() == true) 1 else 0
-    val itemCount = pendingRows + snapshot?.turns.orEmpty().size + state.outbox.size
-    LaunchedEffect(snapshot?.snapshotCursor, itemCount, state.outbox.size) {
+    val historyRows = if (state.hasOlderTurns) 1 else 0
+    val itemCount = pendingRows + historyRows + turns.size + state.outbox.size
+    val agentId = state.selectedAgent?.id
+    val latestBriefId = state.selectedAgent?.latestBrief?.briefId
+    val latestBriefIndex = turns.indexOfLast { latestBriefId != null && latestBriefId in it.briefIds }
+    val latestBriefLoaded = latestBriefId != null && state.briefs.containsKey(latestBriefId)
+    val latestBriefRead = agentId != null && state.readBriefIds[agentId] == latestBriefId
+    LaunchedEffect(agentId, latestBriefId, latestBriefIndex, latestBriefLoaded, latestBriefRead, historyRows, pendingRows) {
+        if (agentId != null && latestBriefId != null && latestBriefLoaded && !latestBriefRead && latestBriefIndex >= 0) {
+            val itemIndex = historyRows + pendingRows + latestBriefIndex
+            snapshotFlow { listState.layoutInfo.visibleItemsInfo.any { it.index == itemIndex } }.first { it }
+            viewModel.markBriefRead(agentId, latestBriefId)
+        }
+    }
+    LaunchedEffect(snapshot?.snapshotCursor, itemCount, state.outbox.size, state.olderTurns.size) {
         if (snapshot != null && itemCount > 0) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
             val nearBottom = lastVisible?.let { it >= position.previousItemCount - 2 } ?: !position.positionedAtLatest
             val justSent = state.outbox.size > position.previousOutboxCount
-            if (!position.positionedAtLatest || nearBottom || justSent) {
+            val olderPageLoaded = state.olderTurns.size > position.previousOlderTurnCount
+            if (!olderPageLoaded && (!position.positionedAtLatest || nearBottom || justSent)) {
                 listState.animateScrollToItem(itemCount - 1)
             }
             position.positionedAtLatest = true
         }
         position.previousItemCount = itemCount
         position.previousOutboxCount = state.outbox.size
+        position.previousOlderTurnCount = state.olderTurns.size
     }
     if (state.busy && snapshot == null) {
         Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -668,6 +771,12 @@ private fun ConversationTimeline(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 14.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        if (state.hasOlderTurns) item(key = "load-older-turns") {
+            TextButton(onClick = viewModel::loadOlderTurns, enabled = !state.historyBusy && state.historyBeforeCursor != null) {
+                if (state.historyBusy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                else Text(if (state.historyBeforeCursor == null) "更早记录暂不可读取" else "加载更早记录")
+            }
+        }
         snapshot?.pendingInputs?.takeIf { it.isNotEmpty() }?.let { pending ->
             item {
                 Surface(
@@ -683,18 +792,31 @@ private fun ConversationTimeline(
                 }
             }
         }
-        items(snapshot?.turns.orEmpty(), key = HolonConversationTurn::id) { turn ->
-            TurnCard(
-                turn = turn,
-                brief = turn.briefIds.firstNotNullOfOrNull(state.briefs::get),
-                onRelatedContent = viewModel::openBrief,
-                onDetail = { viewModel.openTurn(turn) },
-            )
+        itemsIndexed(turns, key = { _, turn -> turn.id }) { index, turn ->
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                val day = turn.startedAt?.take(10)
+                val previousDay = turns.getOrNull(index - 1)?.startedAt?.take(10)
+                if (day != null && day != previousDay) {
+                    Text(day, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                TurnCard(
+                    turn = turn,
+                    brief = turn.briefIds.firstNotNullOfOrNull(state.briefs::get),
+                    onRelatedContent = viewModel::openBrief,
+                    onDetail = { viewModel.openTurn(turn) },
+                )
+            }
         }
         items(state.outbox, key = OutboxEntity::requestId) { message ->
-            LocalMessageCard(message, retryEnabled = !state.enqueueing, onRetry = { viewModel.retryMessage(message) })
+            LocalMessageCard(
+                message,
+                retryEnabled = !state.enqueueing,
+                onRetry = { viewModel.retryMessage(message) },
+                onEdit = { viewModel.editFailedMessage(message) },
+                onRemove = { viewModel.removeFailedMessage(message) },
+            )
         }
-        if (snapshot?.turns.isNullOrEmpty() && state.outbox.isEmpty()) {
+        if (turns.isEmpty() && state.outbox.isEmpty()) {
             item { EmptyPage("开始会话", "向 ${state.selectedAgent?.displayName} 说明你希望完成的工作。") }
         }
     }
@@ -707,6 +829,7 @@ private fun TurnCard(
     onRelatedContent: (String) -> Unit,
     onDetail: () -> Unit,
 ) {
+    val context = LocalContext.current
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         turn.inputs.filter {
             it.presentationClass == "operator" ||
@@ -719,7 +842,8 @@ private fun TurnCard(
                     modifier = Modifier.fillMaxWidth(0.92f),
                 ) {
                     Column(Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
-                        Text(input.preview.ifBlank { "已提交输入" })
+                        SelectionContainer { Text(input.preview.ifBlank { "已提交输入" }) }
+                        input.createdAt?.let { Text(relativeTime(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer) }
                         input.actorDisplayName?.let {
                             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
                         }
@@ -737,8 +861,16 @@ private fun TurnCard(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("结果", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            brief.createdAt.take(16).replace('T', ' '),
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                         turn.exceptionStatus()?.let { (label, tone) -> CompactStatus(label, tone) }
+                        IconButton(onClick = { shareBrief(context, brief.text) }, modifier = Modifier.size(40.dp)) {
+                            Icon(Icons.Default.Share, contentDescription = "分享结果", modifier = Modifier.size(18.dp))
+                        }
                     }
                     MarkdownText(brief.text.ifBlank { "结果没有文本说明" })
                     if (brief.attachments.isNotEmpty() || brief.workItemId != null) {
@@ -790,7 +922,7 @@ internal fun ResultLinkRow(label: String, meta: String, onClick: () -> Unit) {
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Text("$meta  ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
     }
 }
@@ -830,24 +962,31 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val latestActivityRevision = activities.lastOrNull()?.let { "${it.id}:${it.revision}" }
     var unseenActivities by remember(turn.id) { mutableStateOf(0) }
     var observedActivityRevision by remember(turn.id) { mutableStateOf<String?>(null) }
-    LaunchedEffect(turn.id, latestActivityRevision) {
+    var observedActivityIds by remember(turn.id) { mutableStateOf<Set<String>>(emptySet()) }
+    var observedLatestActivityId by remember(turn.id) { mutableStateOf<String?>(null) }
+    LaunchedEffect(turn.id, latestActivityRevision, activities.size) {
         if (activities.isNotEmpty() && latestActivityRevision != null) {
             val inputCount = turn.inputs.count { it.presentationClass != "internal" }
             val coverageCount = if (detail?.coverageKind != null && detail.coverageKind != "complete") 1 else 0
-            val latestIndex = 1 + inputCount + coverageCount + activities.lastIndex
+            val historyCount = if (detail?.hasMore == true) 1 else 0
+            val latestIndex = 1 + inputCount + coverageCount + historyCount + activities.lastIndex
             val firstObservation = observedActivityRevision == null
             val changed = observedActivityRevision != latestActivityRevision
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            val previousLatestIndex = activities.indexOfFirst { it.id == observedLatestActivityId }
+            val newlyAppended = if (previousLatestIndex < 0) 0 else activities.drop(previousLatestIndex + 1).count { it.id !in observedActivityIds }
             if (firstObservation) {
                 if (turn.isRunning()) listState.scrollToItem(latestIndex)
                 unseenActivities = 0
             } else if (changed && lastVisible >= latestIndex - 1) {
                 listState.animateScrollToItem(latestIndex)
                 unseenActivities = 0
-            } else if (changed) {
-                unseenActivities += 1
+            } else if (newlyAppended > 0) {
+                unseenActivities += newlyAppended
             }
             observedActivityRevision = latestActivityRevision
+            observedActivityIds = activities.mapTo(mutableSetOf(), HolonConversationActivity::id)
+            observedLatestActivityId = activities.lastOrNull()?.id
         }
     }
     Box(Modifier.fillMaxSize()) {
@@ -899,6 +1038,12 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
             }
             detail?.let {
+                if (detail.hasMore) item(key = "load-older-activities") {
+                    TextButton(onClick = viewModel::loadOlderActivities, enabled = !state.olderActivitiesBusy && detail.nextBeforeCursor != null) {
+                        if (state.olderActivitiesBusy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                        else Text(if (detail.nextBeforeCursor == null) "更早过程暂不可读取" else "加载更早过程")
+                    }
+                }
                 if (detail.coverageKind != "complete") {
                     item {
                         Text(
@@ -1029,9 +1174,11 @@ internal fun ActivityRow(
                                     if (detail.status in setOf("completed", "success", "succeeded")) StatusTone.Success else StatusTone.Neutral,
                                 )
                             }
-                            detail.summary?.takeIf(String::isNotBlank)?.let {
+                            detail.summary?.takeIf { it.isNotBlank() && it != activity.summary }?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall)
                             }
+                            detail.raw["input"]?.let { ToolPayloadPreview("输入", it.toString()) }
+                            detail.raw["output"]?.let { ToolPayloadPreview("输出", it.toString()) }
                             if (detail.artifactCount > 0) {
                                 Text(
                                     "产生 ${detail.artifactCount} 个产物",
@@ -1069,6 +1216,7 @@ internal fun ActivityRow(
 private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val activity = state.selectedActivity ?: return
     val tool = state.selectedToolExecution
+    var showRaw by remember(activity.id) { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -1093,21 +1241,34 @@ private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
         }
         tool?.let { detail ->
             item {
-                HolonSection(detail.toolName, eyebrow = "${detail.status} · TOOL") {
-                    detail.summary?.let { Text(it) }
-                    SettingsValue("产物", detail.artifactCount.toString())
+                HolonSection(detail.toolName) {
+                    detail.summary?.takeIf { it != activity.summary }?.let { Text(it) }
+                    if (detail.artifactCount > 0) SettingsValue("产物", detail.artifactCount.toString())
                 }
             }
-            item {
-                HolonSection("输入与输出", eyebrow = "RAW DETAIL") {
-                    Text(
-                        detail.raw.toString().take(16_000),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+            detail.raw["input"]?.let { input -> item { ToolPayloadPreview("输入", input.toString()) } }
+            detail.raw["output"]?.let { output -> item { ToolPayloadPreview("输出", output.toString()) } }
+            item { TextButton(onClick = { showRaw = !showRaw }) { Text(if (showRaw) "收起原始记录" else "查看原始记录") } }
+            if (showRaw) item { ToolPayloadPreview("原始记录", detail.raw.toString(), 16_000) }
+        }
+    }
+}
+
+@Composable
+private fun ToolPayloadPreview(title: String, payload: String, limit: Int = 2_000) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+            SelectionContainer {
+                Text(
+                    payload.take(limit),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(10.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                )
             }
         }
+        if (payload.length > limit) Text("预览已截断", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -1118,8 +1279,15 @@ private fun WorkItemsScreen(
     modifier: Modifier,
     listState: LazyListState,
 ) {
+    var filter by remember(state.selectedAgent?.id) { mutableStateOf("all") }
     val currentId = state.selectedAgent?.currentWorkItemId
-    val sorted = state.workItems.sortedWith(
+    val sorted = state.workItems.filter { item ->
+        when (filter) {
+            "open" -> item.state !in setOf("completed", "aborted", "failed")
+            "completed" -> item.state == "completed"
+            else -> true
+        }
+    }.sortedWith(
         compareByDescending<HolonWorkItemSnapshot> { it.workItemId == currentId }
             .thenBy { it.state == "completed" }
             .thenByDescending { it.updatedAt.orEmpty() },
@@ -1133,10 +1301,20 @@ private fun WorkItemsScreen(
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("工作记录", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "${sorted.count { it.state !in setOf("completed", "aborted", "failed") }} 项进行中 · ${sorted.count { it.state == "completed" }} 项已完成",
+                    "已加载 ${state.workItems.size} 项 · ${state.workItems.count { it.state !in setOf("completed", "aborted", "failed") }} 项进行中 · ${state.workItems.count { it.state == "completed" }} 项已完成",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
+            }
+        }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf("all" to "全部", "open" to "进行中", "completed" to "已完成").forEach { (value, label) ->
+                    FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(label) })
+                }
             }
         }
         if (state.workItemsBusy && sorted.isEmpty()) {
@@ -1183,7 +1361,18 @@ private fun WorkItemsScreen(
             }
             HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
         }
-        if (!state.workItemsBusy && sorted.isEmpty()) item { EmptyPage("还没有 WorkItem", "Agent 的工作计划和验收结果会显示在这里。") }
+        if (!state.workItemsBusy && sorted.isEmpty()) item {
+            EmptyPage(
+                if (state.workItems.isEmpty()) "还没有工作记录" else "当前筛选没有工作记录",
+                if (state.workItems.isEmpty()) "Agent 的工作计划和验收结果会显示在这里。" else "选择“全部”查看其他工作。",
+            )
+        }
+        if (state.workItemsHasMore) item {
+            TextButton(onClick = viewModel::loadMoreWorkItems, enabled = !state.workItemsLoadingMore, modifier = Modifier.fillMaxWidth()) {
+                if (state.workItemsLoadingMore) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                else Text("加载更多工作记录")
+            }
+        }
     }
 }
 
@@ -1335,33 +1524,83 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
 }
 
 @Composable
-private fun WorkspaceBrowserScreen(state: HolonUiState, viewModel: HolonViewModel, modifier: Modifier) {
+private fun WorkspaceBrowserScreen(
+    state: HolonUiState,
+    viewModel: HolonViewModel,
+    modifier: Modifier,
+    position: FileBrowserPosition,
+) {
     val context = LocalContext.current
     val prepared = state.preparedArtifact
-    val listState = rememberLazyListState()
-    val previewIndex = 2 + if (state.workspaces.size > 1) state.workspaces.size else 0
-    LaunchedEffect(prepared?.localPath) {
-        if (prepared != null) listState.animateScrollToItem(previewIndex)
+    val path = state.workspaceDirectory?.path.orEmpty()
+    LaunchedEffect(path) {
+        if (position.previousPath != path) {
+            position.previousPath = path
+            position.search = ""
+            position.listState.scrollToItem(0)
+        }
     }
     val saveFile = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
         val source = state.preparedArtifact ?: return@rememberLauncherForActivityResult
-        target?.let { uri ->
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { output ->
-                    File(source.localPath).inputStream().use { it.copyTo(output) }
-                } ?: error("无法写入所选位置")
+        target?.let { uri -> viewModel.saveArtifactToDevice(source, uri) }
+    }
+    if (prepared != null) {
+        Column(
+            modifier.verticalScroll(rememberScrollState()).padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            TextButton(onClick = viewModel::clearPreparedArtifact) { Text("‹ 返回文件列表") }
+            Text(prepared.fileName, style = MaterialTheme.typography.headlineSmall)
+            Text(prepared.mediaType, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            ArtifactPreview(prepared)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { saveFile.launch(prepared.fileName) }) { Text("保存到设备") }
+                TextButton(onClick = { shareArtifact(context, prepared) }) { Text("分享或打开") }
             }
         }
+        return
     }
+    val visibleEntries = state.workspaceDirectory?.entries.orEmpty()
+        .filter { entry ->
+            (position.showHidden || !entry.name.startsWith('.')) &&
+                (position.search.isBlank() || entry.name.contains(position.search, ignoreCase = true))
+        }
+        .sortedWith(
+            if (position.sortRecent) {
+                compareBy<HolonWorkspaceEntry> { it.type != "directory" }
+                    .thenByDescending { it.modified ?: Long.MIN_VALUE }
+                    .thenBy { it.name.lowercase() }
+            } else {
+                compareBy<HolonWorkspaceEntry> { it.type != "directory" }.thenBy { it.name.lowercase() }
+            },
+        )
+    val recentArtifacts = state.briefs.values.sortedByDescending { it.createdAt }
+        .flatMap { it.attachments }
+        .filter { it.uri?.startsWith("workspace://") == true }
+        .distinctBy { it.uri }
+        .take(3)
     LazyColumn(
-        state = listState,
+        state = position.listState,
         modifier = modifier.fillMaxWidth(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
     ) {
-        item {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("工作区文件", style = MaterialTheme.typography.headlineSmall)
-                Text("文件来自 Holon host 的受权工作区", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        if (recentArtifacts.isNotEmpty()) {
+            item {
+                Text(
+                    "最近产物",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+            items(recentArtifacts, key = { it.uri.orEmpty() }) { attachment ->
+                Box(Modifier.padding(horizontal = 16.dp)) {
+                    ResultLinkRow(
+                        label = attachment.name,
+                        meta = "预览",
+                        onClick = { attachment.uri?.let { viewModel.prepareArtifact(it, attachment.name) } },
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
         if (state.workspaces.size > 1) {
@@ -1388,31 +1627,43 @@ private fun WorkspaceBrowserScreen(state: HolonUiState, viewModel: HolonViewMode
         }
         state.selectedWorkspace?.let { workspace ->
             item {
-                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
-                    Text(workspace.label, modifier = Modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.labelMedium)
-                    WorkspaceBreadcrumbs(state.workspaceDirectory?.path.orEmpty(), viewModel::navigateWorkspaceTo)
-                }
+                WorkspaceBreadcrumbs(
+                    path = state.workspaceDirectory?.path.orEmpty(),
+                    rootLabel = workspace.label,
+                    onOpen = viewModel::navigateWorkspaceTo,
+                )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
+        }
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedTextField(
+                    value = position.search,
+                    onValueChange = { position.search = it },
+                    placeholder = { Text("查找当前文件夹") },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                FilterChip(
+                    selected = position.showHidden,
+                    onClick = { position.showHidden = !position.showHidden },
+                    label = { Text("隐藏文件") },
+                )
+                FilterChip(
+                    selected = position.sortRecent,
+                    onClick = { position.sortRecent = !position.sortRecent },
+                    label = { Text(if (position.sortRecent) "最新" else "名称") },
+                )
             }
         }
         if (state.workspaceBusy) {
             item { Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
         }
-        prepared?.let { artifact ->
-            item {
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
-                    HolonSection(artifact.fileName, eyebrow = artifact.mediaType) {
-                        ArtifactPreview(artifact)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            TextButton(onClick = { saveFile.launch(artifact.fileName) }) { Text("下载") }
-                            TextButton(onClick = { shareArtifact(context, artifact) }) { Text("分享") }
-                            TextButton(onClick = viewModel::clearPreparedArtifact) { Text("关闭") }
-                        }
-                    }
-                }
-            }
-        }
-        items(state.workspaceDirectory?.entries.orEmpty(), key = HolonWorkspaceEntry::name) { entry ->
+        items(visibleEntries, key = HolonWorkspaceEntry::name) { entry ->
             Surface(
                 color = MaterialTheme.colorScheme.background,
                 modifier = Modifier.fillMaxWidth().clickable { viewModel.openWorkspaceEntry(entry.name, entry.type == "directory") },
@@ -1429,7 +1680,6 @@ private fun WorkspaceBrowserScreen(state: HolonUiState, viewModel: HolonViewMode
                         Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (entry.type != "directory") Text(
                             listOfNotNull(
-                                entry.mediaType,
                                 formatBytes(entry.size),
                                 entry.modified?.let(::relativeFileTime),
                             ).joinToString(" · "),
@@ -1443,22 +1693,35 @@ private fun WorkspaceBrowserScreen(state: HolonUiState, viewModel: HolonViewMode
             HorizontalDivider(modifier = Modifier.padding(start = 52.dp), color = MaterialTheme.colorScheme.outlineVariant)
         }
         if (!state.workspaceBusy && state.workspaces.isEmpty()) item { EmptyPage("没有可浏览的 workspace", "Agent 尚未连接可访问的工作区。") }
-        if (!state.workspaceBusy && state.workspaces.isNotEmpty() && state.workspaceDirectory?.entries.isNullOrEmpty()) {
-            item { EmptyPage("这个文件夹是空的", "返回上一级继续浏览。") }
+        if (!state.workspaceBusy && state.workspaces.isNotEmpty() && visibleEntries.isEmpty()) {
+            item {
+                EmptyPage(
+                    if (state.workspaceDirectory?.entries.isNullOrEmpty()) "这个文件夹是空的" else "没有匹配的文件",
+                    if (state.workspaceDirectory?.entries.isNullOrEmpty()) "返回上一级继续浏览。" else "调整搜索或显示隐藏文件。",
+                )
+            }
         }
         item { Spacer(Modifier.height(20.dp)) }
     }
 }
 
+private class FileBrowserPosition {
+    val listState = LazyListState()
+    var previousPath: String? = null
+    var search by mutableStateOf("")
+    var showHidden by mutableStateOf(false)
+    var sortRecent by mutableStateOf(false)
+}
+
 @Composable
-private fun WorkspaceBreadcrumbs(path: String, onOpen: (String) -> Unit) {
+private fun WorkspaceBreadcrumbs(path: String, rootLabel: String, onOpen: (String) -> Unit) {
     val parts = path.trim('/').split('/').filter(String::isNotBlank)
     Row(
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        IconButton(onClick = { onOpen("") }) {
-            Icon(Icons.Default.Home, contentDescription = "工作区根目录", modifier = Modifier.size(20.dp))
+        TextButton(onClick = { onOpen("") }) {
+            Text(rootLabel, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         parts.forEachIndexed { index, part ->
             Text("/", color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1470,7 +1733,13 @@ private fun WorkspaceBreadcrumbs(path: String, onOpen: (String) -> Unit) {
 }
 
 @Composable
-private fun LocalMessageCard(message: OutboxEntity, retryEnabled: Boolean, onRetry: () -> Unit) {
+private fun LocalMessageCard(
+    message: OutboxEntity,
+    retryEnabled: Boolean,
+    onRetry: () -> Unit,
+    onEdit: () -> Unit,
+    onRemove: () -> Unit,
+) {
     val label =
         when (message.state) {
             "pending" -> "待发送"
@@ -1495,7 +1764,13 @@ private fun LocalMessageCard(message: OutboxEntity, retryEnabled: Boolean, onRet
                 )
                 message.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                 if (message.state in setOf("failed", "unknown")) {
-                    TextButton(onClick = onRetry, enabled = retryEnabled) { Text("重试发送") }
+                    Row {
+                        TextButton(onClick = onRetry, enabled = retryEnabled) { Text("重试") }
+                        if (message.state == "failed") {
+                            TextButton(onClick = onEdit, enabled = retryEnabled) { Text("编辑") }
+                            TextButton(onClick = onRemove, enabled = retryEnabled) { Text("本机移除") }
+                        }
+                    }
                 }
             }
         }
@@ -1521,6 +1796,7 @@ private fun Composer(
             Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp).navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            if (state.stagingAttachment) Text("正在准备附件…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (state.attachments.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                     state.attachments.forEachIndexed { index, attachment ->
@@ -1538,7 +1814,7 @@ private fun Composer(
                             )
                             TextButton(
                                 onClick = { viewModel.removeAttachment(index) },
-                                enabled = !state.enqueueing,
+                                enabled = !state.enqueueing && !state.stagingAttachment,
                             ) { Text("移除") }
                         }
                     }
@@ -1546,7 +1822,7 @@ private fun Composer(
             }
             Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 Box {
-                    IconButton(onClick = { attachmentMenuOpen = true }, enabled = !state.enqueueing) {
+                    IconButton(onClick = { attachmentMenuOpen = true }, enabled = !state.enqueueing && !state.stagingAttachment) {
                         Icon(Icons.Default.Add, contentDescription = "添加附件")
                     }
                     DropdownMenu(expanded = attachmentMenuOpen, onDismissRequest = { attachmentMenuOpen = false }) {
@@ -1579,7 +1855,7 @@ private fun Composer(
                 val canStop = state.selectedAgent?.currentRunId != null
                 Button(
                     onClick = viewModel::send,
-                    enabled = !state.enqueueing && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
+                    enabled = !state.enqueueing && !state.stagingAttachment && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                     modifier = Modifier.size(48.dp),
@@ -1610,13 +1886,7 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val prepared = state.preparedArtifact
     val saveArtifact = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { target ->
         val source = state.preparedArtifact ?: return@rememberLauncherForActivityResult
-        target?.let { uri ->
-            runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { output ->
-                    File(source.localPath).inputStream().use { it.copyTo(output) }
-                } ?: error("无法写入所选位置")
-            }
-        }
+        target?.let { uri -> viewModel.saveArtifactToDevice(source, uri) }
     }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1630,15 +1900,19 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     Text("产物与关联工作", style = MaterialTheme.typography.headlineSmall)
                     Text(brief.createdAt, style = MaterialTheme.typography.labelSmall)
                 }
+                IconButton(onClick = { shareBrief(context, brief.text) }) {
+                    Icon(Icons.Default.Share, contentDescription = "分享结果")
+                }
             }
         }
         brief.workItemId?.let { id ->
             item {
                 HolonSection("关联工作", eyebrow = "WORK ITEM") {
                     val item = state.workItems.firstOrNull { it.workItemId == id }
-                    SettingsValue("ID", id)
-                    SettingsValue("状态", item?.state ?: "未找到或无权限")
-                    item?.objective?.let { Text(it) }
+                    Text(item?.objective ?: "这项工作的详情可直接打开，不依赖工作列表是否已加载。")
+                    ResultLinkRow("查看工作详情", if (state.busy) "正在读取" else "打开") {
+                        viewModel.openRelatedWorkItem(id)
+                    }
                 }
             }
         }
@@ -1698,40 +1972,118 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
     }
 }
 
+private fun shareBrief(context: Context, text: String) {
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(intent, "分享结果").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
 @Composable
 private fun ArtifactPreview(artifact: PreparedArtifact) {
     val file = remember(artifact.localPath) { File(artifact.localPath) }
     when {
         artifact.mediaType.startsWith("image/") -> {
-            val bitmap = remember(artifact.localPath) { BitmapFactory.decodeFile(file.absolutePath) }
-            if (bitmap != null) {
+            val bitmap by produceState<Result<android.graphics.Bitmap?>?>(null, artifact.localPath) {
+                value = withContext(Dispatchers.IO) { runCatching { decodeSampledPreview(file) } }
+            }
+            if (bitmap?.getOrNull() != null) {
+                var expanded by remember(artifact.localPath) { mutableStateOf(false) }
+                val image = bitmap!!.getOrThrow()!!.asImageBitmap()
                 Image(
-                    bitmap = bitmap.asImageBitmap(),
-                    contentDescription = artifact.fileName,
-                    modifier = Modifier.fillMaxWidth().height(240.dp),
+                    bitmap = image,
+                    contentDescription = "${artifact.fileName}，点按放大",
+                    modifier = Modifier.fillMaxWidth().height(240.dp).clickable { expanded = true },
                 )
+                if (expanded) {
+                    var scale by remember { mutableFloatStateOf(1f) }
+                    var pan by remember { mutableStateOf(Offset.Zero) }
+                    Dialog(
+                        onDismissRequest = { expanded = false },
+                        properties = DialogProperties(usePlatformDefaultWidth = false),
+                    ) {
+                        Box(Modifier.fillMaxSize().background(Color.Black)) {
+                            Image(
+                                bitmap = image,
+                                contentDescription = artifact.fileName,
+                                modifier = Modifier.fillMaxSize()
+                                    .pointerInput(Unit) {
+                                        detectTransformGestures { _, drag, zoom, _ ->
+                                            scale = (scale * zoom).coerceIn(1f, 4f)
+                                            pan = if (scale == 1f) Offset.Zero else pan + drag
+                                        }
+                                    }
+                                    .graphicsLayer(
+                                        scaleX = scale,
+                                        scaleY = scale,
+                                        translationX = pan.x,
+                                        translationY = pan.y,
+                                    ),
+                            )
+                            IconButton(
+                                onClick = { expanded = false },
+                                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
+                            ) { Icon(Icons.Default.Close, contentDescription = "关闭图片预览", tint = Color.White) }
+                        }
+                    }
+                }
             } else {
-                EmptyHint("图片已不存在或无法解码")
+                EmptyHint(if (bitmap == null) "正在读取图片…" else "图片无法预览，可保存或分享后打开")
             }
         }
         artifact.mediaType.startsWith("text/") || artifact.mediaType == "application/json" -> {
-            val preview = remember(artifact.localPath) {
-                runCatching { file.bufferedReader().use { it.readText().take(20_000) } }
-                    .getOrElse { "无法读取文本预览" }
+            val preview by produceState<TextArtifactPreview?>(null, artifact.localPath) {
+                value = withContext(Dispatchers.IO) { readTextPreview(file) }
             }
-            if (artifact.mediaType == "text/markdown" || artifact.fileName.endsWith(".md", ignoreCase = true)) {
-                MarkdownText(preview)
+            if (preview == null) {
+                EmptyHint("正在读取文本预览…")
             } else {
-                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(12.dp)) {
-                        Text(preview, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                val text = preview!!
+                if (artifact.mediaType == "text/markdown" || artifact.fileName.endsWith(".md", ignoreCase = true)) {
+                    MarkdownText(text.body)
+                } else {
+                    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(12.dp)) {
+                            SelectionContainer {
+                                Text(text.body, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                            }
+                        }
                     }
                 }
+                if (text.truncated) Text("仅显示前 20,000 个字符；保存文件可查看完整内容", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         else -> EmptyHint("${artifact.mediaType} 不支持内置预览，可下载或分享后打开")
     }
 }
+
+private data class TextArtifactPreview(val body: String, val truncated: Boolean)
+
+private fun readTextPreview(file: File): TextArtifactPreview =
+    try {
+        file.bufferedReader().use { reader ->
+            val buffer = CharArray(20_001)
+            var count = 0
+            while (count < buffer.size) {
+                val read = reader.read(buffer, count, buffer.size - count)
+                if (read < 0) break
+                count += read
+            }
+            TextArtifactPreview(String(buffer, 0, count.coerceAtMost(20_000)), count > 20_000)
+        }
+    } catch (_: IOException) {
+        TextArtifactPreview("无法读取文本预览，请重新读取或保存后打开", false)
+    }
+
+private fun decodeSampledPreview(file: File): android.graphics.Bitmap? =
+    BitmapFactory.Options().run {
+        inJustDecodeBounds = true
+        BitmapFactory.decodeFile(file.absolutePath, this)
+        var sample = 1
+        while (maxOf(outWidth, outHeight) / sample > 2_048) sample *= 2
+        BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+    }
 
 @Composable
 internal fun ErrorBanner(message: String, onDismiss: (() -> Unit)?) {
@@ -1806,6 +2158,9 @@ private fun relativeTime(value: String): String {
         else -> value.take(10)
     }
 }
+
+private fun syncClock(epochMillis: Long): String =
+    Instant.ofEpochMilli(epochMillis).atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofPattern("HH:mm"))
 
 private fun relativeFileTime(value: Long): String {
     val epochMillis = if (value > 10_000_000_000L) value else value * 1_000L
