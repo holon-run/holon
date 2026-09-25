@@ -2615,11 +2615,9 @@ def preflight(args: argparse.Namespace) -> int:
                 and int(event["payload"].get("turn_index", 0)) > baseline
             ]
             require(provider_events, "provider_round_completed event is missing")
-            winning = (
-                provider_events[-1]["payload"]
-                .get("provider_attempt_timeline", {})
-                .get("winning_model_ref")
-            )
+            # Attempt timelines are durable-audit-only in public event
+            # payloads; the active model ref still names the served route.
+            winning = provider_events[-1]["payload"].get("active_model")
             require(
                 normalize_model_route(str(winning)) == normalize_model_route(model),
                 f"winning model mismatch: {winning}",

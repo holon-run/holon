@@ -2490,9 +2490,11 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
     ]
     require(provider_events, "provider_round_completed event is missing")
     provider = provider_events[-1]["payload"]
-    timeline = provider.get("provider_attempt_timeline") or {}
-    attempts = timeline.get("attempts") or []
-    require(len(attempts) == 1, f"expected one provider attempt: {timeline}")
+    # Provider attempt timelines stay in the durable audit record only: the
+    # public event contract strips provider-internal diagnostics (RFC
+    # runtime-event-stream-contract-v2). The public round payload still pins
+    # delivery to the configured route via fallback_active and the active
+    # model ref.
     require(
         provider.get("fallback_active") is False,
         f"provider fallback unexpectedly activated: {provider}",
@@ -2501,7 +2503,11 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         (provider.get("token_usage") or {}).get("total_tokens", 0) > 0,
         f"provider token usage is missing: {provider}",
     )
-    winning = timeline.get("winning_model_ref")
+    winning = provider.get("active_model")
+    require(
+        bool(winning),
+        f"provider round is missing the active model ref: {provider}",
+    )
     require_runtime_model_route(
         harness,
         "winning",
@@ -5574,6 +5580,9 @@ def collect_case_metrics(evidence: Path) -> dict[str, Any]:
             if event_type == "provider_round_completed":
                 provider_rounds += 1
                 payload = event.get("payload", {})
+                # Public event payloads strip attempt timelines, so public
+                # evidence reports zero attempts; counts only reflect
+                # evidence that still carries timelines.
                 provider_attempts += len(
                     (payload.get("provider_attempt_timeline") or {}).get("attempts")
                     or []
