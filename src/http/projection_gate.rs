@@ -19,7 +19,7 @@ const DEFAULT_TTL: Duration =
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum ProjectionKey {
-    AgentsList,
+    AgentsList(Option<String>),
     AgentsRosterSnapshot,
     AgentProjectionSnapshot(String),
     AgentState(String),
@@ -298,7 +298,7 @@ mod tests {
             let started = Arc::clone(&started);
             let release = Arc::clone(&release);
             requests.push(tokio::spawn(async move {
-                gate.run(ProjectionKey::AgentsList, || async move {
+                gate.run(ProjectionKey::AgentsList(None), || async move {
                     builds.fetch_add(1, Ordering::SeqCst);
                     started.notify_one();
                     release.notified().await;
@@ -327,14 +327,14 @@ mod tests {
         let builds = AtomicUsize::new(0);
 
         let first = gate
-            .run(ProjectionKey::AgentsList, || async {
+            .run(ProjectionKey::AgentsList(None), || async {
                 builds.fetch_add(1, Ordering::SeqCst);
                 Ok(Bytes::from_static(b"first"))
             })
             .await
             .unwrap();
         let cached = gate
-            .run(ProjectionKey::AgentsList, || async {
+            .run(ProjectionKey::AgentsList(None), || async {
                 builds.fetch_add(1, Ordering::SeqCst);
                 Ok(Bytes::from_static(b"unexpected"))
             })
@@ -342,7 +342,7 @@ mod tests {
             .unwrap();
         tokio::time::advance(Duration::from_millis(251)).await;
         let rebuilt = gate
-            .run(ProjectionKey::AgentsList, || async {
+            .run(ProjectionKey::AgentsList(None), || async {
                 builds.fetch_add(1, Ordering::SeqCst);
                 Ok(Bytes::from_static(b"rebuilt"))
             })
@@ -367,7 +367,7 @@ mod tests {
         .await
         .unwrap();
         tokio::time::advance(Duration::from_millis(251)).await;
-        gate.run(ProjectionKey::AgentsList, || async {
+        gate.run(ProjectionKey::AgentsList(None), || async {
             Ok(Bytes::from_static(b"agents"))
         })
         .await
@@ -375,14 +375,14 @@ mod tests {
 
         let entries = gate.entries.lock().unwrap();
         assert!(!entries.contains_key(&ProjectionKey::AgentState("removed-agent".into())));
-        assert!(entries.contains_key(&ProjectionKey::AgentsList));
+        assert!(entries.contains_key(&ProjectionKey::AgentsList(None)));
     }
 
     #[tokio::test]
     async fn distinct_projection_keys_do_not_share_results() {
         let gate = ProjectionGate::new(4, Duration::from_millis(250));
         let agents = gate
-            .run(ProjectionKey::AgentsList, || async {
+            .run(ProjectionKey::AgentsList(None), || async {
                 Ok(Bytes::from_static(b"agents"))
             })
             .await
@@ -403,6 +403,33 @@ mod tests {
         assert_eq!(agents, Bytes::from_static(b"agents"));
         assert_eq!(agent_a, Bytes::from_static(b"agent-a"));
         assert_eq!(agent_b, Bytes::from_static(b"agent-b"));
+    }
+
+    #[tokio::test]
+    async fn distinct_parent_filters_do_not_share_results() {
+        let gate = ProjectionGate::new(4, Duration::from_millis(250));
+        let main = gate
+            .run(ProjectionKey::AgentsList(Some("main".into())), || async {
+                Ok(Bytes::from_static(b"main-agents"))
+            })
+            .await
+            .unwrap();
+        let other = gate
+            .run(ProjectionKey::AgentsList(Some("other".into())), || async {
+                Ok(Bytes::from_static(b"other-agents"))
+            })
+            .await
+            .unwrap();
+        let unfiltered = gate
+            .run(ProjectionKey::AgentsList(None), || async {
+                Ok(Bytes::from_static(b"all-agents"))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(main, Bytes::from_static(b"main-agents"));
+        assert_eq!(other, Bytes::from_static(b"other-agents"));
+        assert_eq!(unfiltered, Bytes::from_static(b"all-agents"));
     }
 
     #[tokio::test]
@@ -465,7 +492,7 @@ mod tests {
             let started = Arc::clone(&started);
             let pending = Arc::clone(&pending);
             tokio::spawn(async move {
-                gate.run(ProjectionKey::AgentsList, || async move {
+                gate.run(ProjectionKey::AgentsList(None), || async move {
                     started.notify_one();
                     pending.notified().await;
                     Ok(Bytes::from_static(b"never"))
@@ -478,7 +505,7 @@ mod tests {
         let waiter = {
             let gate = Arc::clone(&gate);
             tokio::spawn(async move {
-                gate.run(ProjectionKey::AgentsList, || async {
+                gate.run(ProjectionKey::AgentsList(None), || async {
                     Ok(Bytes::from_static(b"unexpected"))
                 })
                 .await
@@ -492,7 +519,7 @@ mod tests {
         ));
 
         let retry = gate
-            .run(ProjectionKey::AgentsList, || async {
+            .run(ProjectionKey::AgentsList(None), || async {
                 Ok(Bytes::from_static(b"retry"))
             })
             .await
@@ -511,7 +538,7 @@ mod tests {
             let started = Arc::clone(&started);
             let release = Arc::clone(&release);
             tokio::spawn(async move {
-                gate.run(ProjectionKey::AgentsList, || async move {
+                gate.run(ProjectionKey::AgentsList(None), || async move {
                     started.notify_one();
                     release.notified().await;
                     Err(ProjectionFailure {
@@ -527,7 +554,7 @@ mod tests {
         let waiter = {
             let gate = Arc::clone(&gate);
             tokio::spawn(async move {
-                gate.run(ProjectionKey::AgentsList, || async {
+                gate.run(ProjectionKey::AgentsList(None), || async {
                     Ok(Bytes::from_static(b"unexpected"))
                 })
                 .await
@@ -546,7 +573,7 @@ mod tests {
         ));
 
         let retry = gate
-            .run(ProjectionKey::AgentsList, || async {
+            .run(ProjectionKey::AgentsList(None), || async {
                 Ok(Bytes::from_static(b"retry"))
             })
             .await

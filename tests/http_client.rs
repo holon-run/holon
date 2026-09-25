@@ -20,6 +20,7 @@ http_async_tests!(
     local_client_over_http_can_read_agent_state_snapshot,
     local_client_over_http_can_stream_events_with_cursor_query,
     local_client_over_http_stream_without_cursor_starts_at_tail,
+    agent_list_parent_filter_is_not_served_from_foreign_query_cache,
 );
 
 #[cfg(unix)]
