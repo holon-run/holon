@@ -8,6 +8,12 @@ session login, recent conversations, Agent browsing, offline caches, a durable
 prompt outbox, attachments, and brief/artifact viewing. Store signing and public
 distribution configuration are intentionally out of scope.
 
+The app UI supports English and Simplified Chinese. It follows the device or
+Android per-app language by default; the login and Settings screens also offer
+an app-language override (System default, English, 简体中文). The override stays
+on this device across sign-out. Agent messages, briefs, tool output, and file
+contents are displayed as authored, without translation.
+
 The generated transport sources remain owned by
 `packages/client-wire-kotlin`. Do not copy or edit those models in this
 directory.

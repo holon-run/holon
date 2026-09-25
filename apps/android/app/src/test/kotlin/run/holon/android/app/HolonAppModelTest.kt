@@ -93,11 +93,11 @@ class HolonAppModelTest {
         val terminal = turn(executionKind = "terminal", resultKind = "none", completedAt = "2026-09-25T08:00:00Z")
 
         assertEquals(true, active.isRunning())
-        assertEquals("执行中", active.compactStatusText())
+        assertEquals(ui("执行中"), active.compactStatusText())
         assertEquals(false, staleActive.isRunning())
         assertEquals(null, staleActive.compactStatusText())
         assertEquals(false, terminal.isRunning())
-        assertEquals("没有结果摘要", terminal.compactStatusText())
+        assertEquals(ui("没有结果摘要"), terminal.compactStatusText())
     }
 
     private fun agent(id: String, createdAt: String) =

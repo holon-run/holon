@@ -235,16 +235,16 @@ internal fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                block.language?.uppercase() ?: "代码",
+                                block.language?.uppercase() ?: ui("代码"),
                                 modifier = Modifier.weight(1f),
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.primary,
                             )
                             TextButton(onClick = {
                                 val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                clipboard.setPrimaryClip(ClipData.newPlainText("代码", block.text))
-                                Toast.makeText(context, "代码已复制", Toast.LENGTH_SHORT).show()
-                            }) { Text("复制代码") }
+                                clipboard.setPrimaryClip(ClipData.newPlainText(ui("代码"), block.text))
+                                Toast.makeText(context, ui("代码已复制"), Toast.LENGTH_SHORT).show()
+                            }) { Text(ui("复制代码")) }
                         }
                         Text(
                             block.text,
@@ -323,7 +323,7 @@ private fun inlineMarkdown(
                     val image = text.startsWith("![", cursor)
                     val target = markdownLinkAt(text, cursor)
                     if (target != null) {
-                        val label = target.label.ifBlank { if (image) "图片" else "链接" }
+                        val label = target.label.ifBlank { if (image) ui("图片") else ui("链接") }
                         val webLink = target.destination.startsWith("https://") ||
                             target.destination.startsWith("http://") || target.destination.startsWith("mailto:")
                         if (webLink) {
@@ -332,10 +332,10 @@ private fun inlineMarkdown(
                                     target.destination,
                                     TextLinkStyles(style = SpanStyle(color = primary, textDecoration = TextDecoration.Underline)),
                                 ),
-                            ) { append(if (image) "网页图片 · $label" else label) }
+                            ) { append(if (image) ui("网页图片 · $label") else label) }
                         } else {
                             val reference = classifyMessageFileReference(target.destination)
-                            val display = if (image) "图片 · $label" else label
+                            val display = if (image) ui("图片 · $label") else label
                             if (reference != null && onOpenFile != null) {
                                 withLink(
                                     LinkAnnotation.Clickable(

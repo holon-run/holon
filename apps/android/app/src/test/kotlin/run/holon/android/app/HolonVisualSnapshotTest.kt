@@ -17,6 +17,7 @@ import app.cash.paparazzi.Paparazzi
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Rule
+import org.junit.Before
 import org.junit.Test
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonConversationActivity
@@ -27,9 +28,13 @@ class HolonVisualSnapshotTest {
     @get:Rule
     val paparazzi =
         Paparazzi(
-            deviceConfig = DeviceConfig.PIXEL_5,
+            deviceConfig = DeviceConfig.PIXEL_5.copy(locale = "zh"),
             theme = "android:style/Theme.Material.Light.NoActionBar",
         )
+
+    @Before fun setChineseLocale() {
+        UiCopy.initialize(paparazzi.context)
+    }
 
     @Test
     fun workInboxLight() {
@@ -168,9 +173,13 @@ class HolonLargeTextVisualSnapshotTest {
     @get:Rule
     val paparazzi =
         Paparazzi(
-            deviceConfig = DeviceConfig.PIXEL_5.copy(fontScale = 1.3f),
+            deviceConfig = DeviceConfig.PIXEL_5.copy(fontScale = 1.3f, locale = "zh"),
             theme = "android:style/Theme.Material.Light.NoActionBar",
         )
+
+    @Before fun setChineseLocale() {
+        UiCopy.initialize(paparazzi.context)
+    }
 
     @Test
     fun briefAtLargeFontScale() {
