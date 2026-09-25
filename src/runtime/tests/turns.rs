@@ -1455,6 +1455,8 @@ async fn run_wait_for_final_report_test(
         calls: Mutex::new(0),
         scenario,
         silent_progress,
+        saw_settlement_error_follow_up: Mutex::new(false),
+        invalid_final_result_count: Mutex::new(0),
     });
     let runtime = RuntimeHandle::new(
         "default",
@@ -1513,12 +1515,15 @@ async fn run_wait_for_final_report_test(
     runtime.enqueue(message.clone()).await.unwrap();
     let settled = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            if !runtime
+            let wait_registered = !runtime
                 .storage()
                 .active_wait_conditions_for_agent("default")
                 .unwrap()
-                .is_empty()
-            {
+                .is_empty();
+            let settlement_error_recovered = scenario
+                == WaitForFinalReportScenario::SettlementErrorRecovery
+                && provider.call_count().await >= 3;
+            if wait_registered || settlement_error_recovered {
                 break;
             }
             if runtime_task.is_finished() {
@@ -1543,6 +1548,26 @@ async fn run_wait_for_final_report_test(
         );
     }
     runtime_task.abort();
+
+    if scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
+        assert_eq!(provider.call_count().await, 3);
+        assert!(*provider.saw_settlement_error_follow_up.lock().await);
+        assert_eq!(
+            *provider.invalid_final_result_count.lock().await,
+            0,
+            "final settlement errors must not inject a cross-round tool result"
+        );
+        let events = runtime.storage().read_recent_events(100).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.kind == "wait_report_error_follow_up_injected"));
+        let transcript = runtime.storage().read_recent_transcript(50).unwrap();
+        assert!(transcript.iter().any(|entry| {
+            entry.kind == TranscriptEntryKind::ContinuationPrompt
+                && entry.data["reason"] == "wait_report_error_follow_up"
+        }));
+        return;
+    }
 
     if let Some(original) = work_item {
         let updated = runtime
@@ -1588,6 +1613,7 @@ async fn run_wait_for_final_report_test(
             Some(true) => 2,
             None if scenario == WaitForFinalReportScenario::DisallowedToolCorrective => 3,
             None if scenario == WaitForFinalReportScenario::AllowedToolBudget => 4,
+            None if scenario == WaitForFinalReportScenario::SettlementErrorRecovery => 3,
             None => 2,
         }
     );
@@ -1685,6 +1711,9 @@ async fn run_wait_for_final_report_test(
             tools.iter().all(|tool| tool.tool_name != "GetAgent"),
             "the direct report path should not execute extra tools"
         ),
+        WaitForFinalReportScenario::SettlementErrorRecovery => {
+            unreachable!("settlement error recovery returns before successful wait assertions")
+        }
     }
     assert!(turn.produced_brief_ids.contains(&brief.id));
     assert!(turn.tool_execution_ids.contains(&wait_tool.id));
@@ -1721,6 +1750,16 @@ async fn wait_for_final_report_corrects_extra_tool_once_without_executing_it() {
 async fn wait_for_final_report_executes_allowed_tools_then_uses_text_only_fallback() {
     run_wait_for_final_report_test(WaitForFinalReportScenario::AllowedToolBudget, None, false)
         .await;
+}
+
+#[tokio::test]
+async fn wait_for_final_settlement_error_uses_text_follow_up_without_duplicate_tool_result() {
+    run_wait_for_final_report_test(
+        WaitForFinalReportScenario::SettlementErrorRecovery,
+        None,
+        false,
+    )
+    .await;
 }
 
 #[tokio::test]

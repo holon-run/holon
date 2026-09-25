@@ -3467,6 +3467,51 @@ impl TurnExecution<'_> {
                 continue;
             }
 
+            if let Some((tool_call_id, result, _record)) = pending_wait_report_error.take() {
+                let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
+                let continuation_text = format!(
+                    "The previous WaitFor final report request (tool call `{tool_call_id}`) \
+                     failed with a recoverable tool error: {result_content} \
+                     Reply with a new non-empty operator-facing final report as text only. \
+                     Do not repeat the failed WaitFor call."
+                );
+                let corrective_blocks = corrective_replay_blocks(&completed_round_assistant_blocks);
+                completed_rounds.push(TurnRoundRecord {
+                    round,
+                    estimated_tokens: build_round_estimated_tokens(
+                        &corrective_blocks,
+                        &[],
+                        std::slice::from_ref(&continuation_text),
+                    ),
+                    assistant_blocks: corrective_blocks,
+                    text_blocks,
+                    tool_calls: Vec::new(),
+                    tool_results: Vec::new(),
+                    tool_result_envelopes: Vec::new(),
+                    follow_up_user_texts: vec![continuation_text.clone()],
+                });
+                runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                    agent_id.to_string(),
+                    TranscriptEntryKind::ContinuationPrompt,
+                    Some(round),
+                    None,
+                    serde_json::json!({
+                        "text": continuation_text,
+                        "reason": "wait_report_error_follow_up",
+                        "tool_call_id": tool_call_id,
+                    }),
+                ))?;
+                runtime.inner.storage.append_event(&AuditEvent::legacy(
+                    "wait_report_error_follow_up_injected",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "tool_call_id": tool_call_id,
+                        "round": round,
+                    }),
+                ))?;
+                continue;
+            }
+
             if tool_calls.is_empty() {
                 if checkpoint_state.operator_delivery_pending() {
                     if combined_text.is_empty() {
