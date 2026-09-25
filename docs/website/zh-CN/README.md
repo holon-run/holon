@@ -147,7 +147,7 @@ order: 1
 
 先安装 Holon、配置模型并启动后台服务。然后打开 Web 界面 `http://localhost:7878`，或运行 `holon tui`。
 
-<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.44.1">v0.44.1</a></p>
+<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.45.0">v0.45.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南</a>
