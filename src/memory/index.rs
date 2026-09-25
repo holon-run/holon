@@ -2464,17 +2464,24 @@ impl MemoryIndex {
         let include_all_workspaces = include_all_workspaces as i64;
         let sql = format!(
             r#"
+            WITH candidates AS (
+                SELECT d.document_key, d.updated_at,
+                       bm25(memory_documents_fts) AS score
+                FROM memory_documents_fts
+                JOIN memory_documents d ON d.document_key = memory_documents_fts.document_key
+                WHERE memory_documents_fts MATCH ?1
+                  AND d.agent_id IN ({agent_filter})
+                  {source_kind_clause}
+                  AND (? OR d.scope_kind = 'agent' OR (? IS NOT NULL AND d.workspace_id = ?))
+                ORDER BY score ASC, d.updated_at DESC
+                LIMIT ?
+            )
             SELECT d.source_ref, d.source_kind, d.scope_kind, d.workspace_id, d.agent_id,
                    d.source_path, d.title, d.sanitized_excerpt, d.metadata_json,
-                   d.updated_at, bm25(memory_documents_fts) AS score
-            FROM memory_documents_fts
-            JOIN memory_documents d ON d.document_key = memory_documents_fts.document_key
-            WHERE memory_documents_fts MATCH ?1
-              AND d.agent_id IN ({agent_filter})
-              {source_kind_clause}
-              AND (? OR d.scope_kind = 'agent' OR (? IS NOT NULL AND d.workspace_id = ?))
-            ORDER BY score ASC, d.updated_at DESC
-            LIMIT ?
+                   candidates.updated_at, candidates.score
+            FROM candidates
+            JOIN memory_documents d ON d.document_key = candidates.document_key
+            ORDER BY candidates.score ASC, candidates.updated_at DESC
             "#,
         );
         let workspace_value = workspace_filter
@@ -6014,6 +6021,60 @@ mod tests {
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].source_ref, message.source_ref);
+    }
+
+    #[test]
+    fn workspace_filter_is_applied_before_search_limit() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        storage.write_agent(&AgentState::new("default")).unwrap();
+        let index = MemoryIndex::open(&storage).unwrap();
+        let query = "workspace filter limit sentinel";
+        let target = MemoryDocument {
+            source_ref: "brief:target".into(),
+            source_kind: "brief".into(),
+            scope_kind: "workspace".into(),
+            workspace_id: Some("target-workspace".into()),
+            agent_id: "default".into(),
+            source_path: None,
+            title: "target brief".into(),
+            body: format!("{query} {}", "low relevance filler ".repeat(200)),
+            sanitized_excerpt: "low relevance workspace excerpt".into(),
+            metadata: Value::Null,
+            updated_at: Utc::now() - chrono::Duration::seconds(1),
+        };
+        index.upsert_document(&target).unwrap();
+        let limit = 20;
+        for offset in 0..limit {
+            index
+                .upsert_document(&MemoryDocument {
+                    source_ref: format!("brief:other-{offset}"),
+                    source_kind: "brief".into(),
+                    scope_kind: "workspace".into(),
+                    workspace_id: Some("other-workspace".into()),
+                    agent_id: "default".into(),
+                    source_path: None,
+                    title: format!("{query} other workspace {offset}"),
+                    body: query.into(),
+                    sanitized_excerpt: query.into(),
+                    metadata: Value::Null,
+                    updated_at: Utc::now(),
+                })
+                .unwrap();
+        }
+
+        let results = index
+            .search(
+                query,
+                limit,
+                &["default".into()],
+                &[],
+                Some("target-workspace"),
+                false,
+            )
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source_ref, target.source_ref);
     }
 
     #[test]
