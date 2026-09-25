@@ -115,9 +115,11 @@ mod state;
 mod tasks;
 mod templates;
 mod types;
+mod unread;
 mod web;
 mod workspace_files;
 pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
+pub(crate) use unread::MarkBriefReadRequest;
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
@@ -467,6 +469,15 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/agents/{agent_id}/projection-snapshot",
             get(observer_sync::agent_projection_snapshot),
+        )
+        .route("/agents/brief-read-states", get(unread::brief_read_states))
+        .route(
+            "/agents/{agent_id}/brief-read-state",
+            get(unread::brief_read_state),
+        )
+        .route(
+            "/agents/{agent_id}/brief-read-cursor",
+            post(unread::mark_brief_read),
         )
         .route(
             "/agents/{agent_id}/conversation",

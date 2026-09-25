@@ -15,12 +15,12 @@ use crate::{
         ConversationReadQuery, ConversationShadowQuery, ConversationStreamMessage,
         ConversationSummaryResponse, CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest,
         DesktopCapabilities, EnqueueResponse, HandshakeResponse, HttpErrorEnvelope,
-        MemoryGetRequest, ModelConfigMigrationRequest, NativeSessionResponse, PickWorkItemRequest,
-        PickWorkItemResponse, ResolveFileReferencesRequest, ResolveFileReferencesResponse,
-        RevealFileRequest, RuntimeConfigReadResponse, RuntimeConfigUpdateRequest,
-        RuntimeConfigUpdateResponse, RuntimeDecisionTestRequest, RuntimeDecisionTestResponse,
-        SearchRequest, SearchResponse, SessionExchangeRequest, SessionResponse,
-        UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
+        MarkBriefReadRequest, MemoryGetRequest, ModelConfigMigrationRequest, NativeSessionResponse,
+        PickWorkItemRequest, PickWorkItemResponse, ResolveFileReferencesRequest,
+        ResolveFileReferencesResponse, RevealFileRequest, RuntimeConfigReadResponse,
+        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, RuntimeDecisionTestRequest,
+        RuntimeDecisionTestResponse, SearchRequest, SearchResponse, SessionExchangeRequest,
+        SessionResponse, UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -83,6 +83,9 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/models", "models", "discovery", "List available models", "Return model catalog entries and runtime availability.", None, AuthKind::RemoteAccess),
     route("post", "/models/refresh", "refreshModels", "discovery", "Refresh available models", "Discover models for providers with missing or expired caches, then return the model catalog and runtime availability.", None, AuthKind::RemoteAccess),
     aide_route_with_response("get", "/agents/list", "listAgents", "agents", "List agents", "Return lightweight public agent entries. Optional parent query parameter filters the public roster to direct children of that parent.", None, "AgentListResponse", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/brief-read-states", "briefReadStates", "agents", "Brief read states", "Return the authoritative per-Agent Brief read cursor and exact unread count for the current principal and visibility scope.", None, "BriefReadStates", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/brief-read-state", "briefReadState", "agents", "Brief read state", "Return the authoritative Brief read cursor and exact unread count for one visible public Agent.", None, "BriefReadState", AuthKind::RemoteAccess),
+    route_with_response("post", "/agents/{agent_id}/brief-read-cursor", "markBriefRead", "agents", "Mark Briefs read", "Advance one Agent's Brief read cursor monotonically. Requested cursors beyond the committed event head are clamped to that head.", Some("MarkBriefReadRequest"), "MarkBriefReadResult", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/snapshot", "agentsSnapshot", "agents", "Agent roster snapshot", "Authoritative roster snapshot (RFC: observer sync): all-or-nothing membership with per-Agent event windows and latest Brief anchors from one committed read view. Served only while the agents.roster-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentRosterSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/projection-snapshot", "agentProjectionSnapshot", "agents", "Agent projection snapshot", "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.", None, "AgentProjectionSnapshot", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/conversation", "agentConversation", "agents", "Conversation summary snapshot", "Bounded conversation turn summaries, active turns, pending inputs, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationSummaryResponse", AuthKind::RemoteAccess),
@@ -889,6 +892,56 @@ fn component_schemas() -> Value {
         component_schema::<WorkItemRecord>(),
     );
     schemas.insert("BriefRecord".into(), component_schema::<BriefRecord>());
+    schemas.insert(
+        "MarkBriefReadRequest".into(),
+        component_schema::<MarkBriefReadRequest>(),
+    );
+    schemas.insert(
+        "BriefReadState".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "agent_id": { "type": "string" },
+                "event_log_epoch": { "type": "string" },
+                "visibility_scope_id": { "type": "string" },
+                "event_head_seq": { "type": "integer", "format": "int64", "minimum": 0 },
+                "oldest_retained_seq": { "type": "integer", "format": "int64", "minimum": 0 },
+                "read_through_event_seq": { "type": "integer", "format": "int64", "minimum": 0 },
+                "unread_count": { "type": "integer", "format": "int64", "minimum": 0 },
+                "revision": { "type": "integer", "format": "int64", "minimum": 0 },
+                "reset_required": { "type": "boolean" },
+                "retention_gap": { "type": "boolean" }
+            },
+            "required": [
+                "agent_id", "event_log_epoch", "visibility_scope_id",
+                "event_head_seq", "oldest_retained_seq",
+                "read_through_event_seq", "unread_count", "revision",
+                "reset_required", "retention_gap"
+            ],
+            "additionalProperties": false
+        }),
+    );
+    schemas.insert(
+        "BriefReadStates".into(),
+        json!({
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/BriefReadState" }
+        }),
+    );
+    schemas.insert(
+        "MarkBriefReadResult".into(),
+        json!({
+            "type": "object",
+            "properties": {
+                "state": { "$ref": "#/components/schemas/BriefReadState" },
+                "applied_read_through_event_seq": {
+                    "type": "integer", "format": "int64", "minimum": 0
+                }
+            },
+            "required": ["state", "applied_read_through_event_seq"],
+            "additionalProperties": false
+        }),
+    );
     schemas.insert("TimerRecord".into(), component_schema::<TimerRecord>());
     schemas.insert(
         "PickWorkItemResponse".into(),

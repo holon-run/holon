@@ -71,6 +71,22 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/brief-read-states",
+    "handler": "brief_read_states",
+    "operation_id": "briefReadStates",
+    "tag": "agents",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/list",
     "handler": "list_agent_entries",
     "operation_id": "listAgents",
@@ -112,6 +128,28 @@
     "path": "/api/agents/{agent_id}",
     "handler": "get_agent",
     "operation_id": "getAgent",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/agents/{agent_id}/brief-read-state",
+    "handler": "brief_read_state",
+    "operation_id": "briefReadState",
     "tag": "agents",
     "parameters": [
       {
@@ -1407,6 +1445,28 @@
     "parameters": [],
     "request_schema": "RuntimeConfigUpdateRequest",
     "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/agents/{agent_id}/brief-read-cursor",
+    "handler": "mark_brief_read",
+    "operation_id": "markBriefRead",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "MarkBriefReadRequest",
+    "request_strict": null,
     "response_content_types": [
       "application/json"
     ],
