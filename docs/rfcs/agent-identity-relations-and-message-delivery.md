@@ -463,6 +463,8 @@ The recipient responds, when appropriate, by calling `SendAgentMessage` back to
 the sender. There is no `Reply` operation and no requirement to carry a waiting
 handle, request id, final flag, or result slot.
 
+`SendAgentMessage` messages do not carry a runtime reply expectation.
+
 ### 5.3 `InvokeAgent`
 
 `InvokeAgent` remains an asynchronous convenience operation with an explicit
@@ -488,6 +490,15 @@ agent's turn, WorkItem, lifecycle, or business task to become terminal.
 Recovery reuses the persisted delivery and boundary; if a crash happened
 before they were attached to the task, admission is retried with the task's
 same idempotency key.
+
+The runtime-owned envelope for this path also carries a reply expectation with
+the waiting task, request message, and delivery identifiers. The recipient sees
+this expectation in the runtime `current_input` context, separately from the
+message body, with an instruction that the sender is waiting for a reply.
+The first implementation retains the existing compatibility completion policy:
+the first later durable message from the target settles the wait. A future
+strict request/reply protocol may use the same identifiers for deterministic
+reply matching.
 
 For `new_subagent`, the same application-level operation:
 
