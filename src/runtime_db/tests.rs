@@ -285,6 +285,54 @@ mod tests {
     }
 
     #[test]
+    fn runtime_db_retryable_state_transition_conflict_classification_survives_context() {
+        let conflict = RuntimeStateTransitionConflict::revision(
+            "work-item-1",
+            "agent_state_revision_conflict",
+            Some(1),
+            Some(2),
+            true,
+        );
+        let error = anyhow::Error::new(conflict).context("processing message");
+        assert!(is_retryable_db_error(&error));
+        let non_retryable = anyhow::Error::new(RuntimeStateTransitionConflict::new(
+            "agent_state",
+            "agent-1",
+            "active",
+            "deleted",
+        ));
+        assert!(!is_retryable_db_error(&non_retryable));
+    }
+
+    #[test]
+    fn runtime_db_state_transition_conflict_does_not_trigger_storage_retry() -> Result<()> {
+        let runtime_db = test_support::TempRuntimeDb::new()?;
+        let attempts = std::cell::Cell::new(0);
+        let error = runtime_db
+            .db
+            .transaction(|_| {
+                attempts.set(attempts.get() + 1);
+                Err::<(), _>(
+                    RuntimeStateTransitionConflict::revision(
+                        "agent-1",
+                        "agent_state_revision_conflict",
+                        Some(1),
+                        Some(2),
+                        true,
+                    )
+                    .into(),
+                )
+            })
+            .expect_err("OCC conflict should be returned to the bounded caller retry");
+
+        assert_eq!(attempts.get(), 1);
+        assert!(error.chain().any(|source| source
+            .downcast_ref::<RuntimeStateTransitionConflict>()
+            .is_some()));
+        Ok(())
+    }
+
+    #[test]
     fn runtime_db_raw_sqlite_lock_errors_are_retryable() {
         let locked: anyhow::Error = rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error {

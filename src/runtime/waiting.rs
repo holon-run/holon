@@ -1686,11 +1686,32 @@ impl RuntimeHandle {
                 Err(error) => {
                     drop(guard);
                     let can_retry = attempt + 1 < super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
-                        && super::retryable_enqueue_conflict(&error, &record.agent_id)
-                        && self
-                            .refresh_enqueue_agent_state_baseline(&record.agent_id)
-                            .await?;
+                        && super::retryable_enqueue_conflict(&error, &record.agent_id);
                     if !can_retry {
+                        if super::retryable_enqueue_conflict(&error, &record.agent_id) {
+                            tracing::warn!(
+                                error = %error,
+                                retryable = true,
+                                timer_id = %timer.id,
+                                attempt = attempt + 1,
+                                max_attempts = super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS,
+                                "timer fire OCC retries exhausted"
+                            );
+                        }
+                        return Err(error);
+                    }
+                    if !self
+                        .refresh_enqueue_agent_state_baseline(&record.agent_id)
+                        .await?
+                    {
+                        tracing::warn!(
+                            error = %error,
+                            retryable = true,
+                            timer_id = %timer.id,
+                            attempt = attempt + 1,
+                            max_attempts = super::ENQUEUE_AGENT_STATE_MAX_ATTEMPTS,
+                            "timer fire OCC baseline refresh failed"
+                        );
                         return Err(error);
                     }
                 }
