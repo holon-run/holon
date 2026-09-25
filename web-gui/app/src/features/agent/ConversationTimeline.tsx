@@ -20,6 +20,7 @@ import {
   MessageSquare,
   Wrench,
   ExternalLink,
+  GitBranch,
 } from "lucide-react";
 import { Fragment, memo, useEffect, useMemo, useState, useRef, useId } from "react";
 import { useTranslation } from "react-i18next";
@@ -639,7 +640,7 @@ function ConversationActivityRow({
     () => summarizeActivity(activity),
     [activity],
   );
-  const icon = activityIcon(activity);
+  const icon = tool?.advisoryDecision ? <GitBranch size={12} /> : activityIcon(activity);
   const label = t(`agentPage.activityKind.${activity.kind === "operator" ? "input" : activity.kind}`);
   return (
     <li className={`conversation-activity is-${activity.kind}${selected ? " is-selected" : ""}`} data-activity-id={activity.id}
@@ -664,7 +665,40 @@ function ConversationActivityRow({
           disabled={!onInspectActivity}
           onClick={() => onInspectActivity?.(conversationActivityToInspectorActivity(activity))}>
           <span className="conversation-activity-icon">{icon}</span>
-          {tool ? (
+          {tool?.advisoryDecision ? (
+            <span className={`conversation-decision-content${tool.advisoryDecision.abstain ? " is-abstain" : " is-choice"}`}>
+              <span className="conversation-decision-header">
+                <span className="conversation-decision-eyebrow">{t("agentPage.advisoryDecision")}</span>
+                {tool.advisoryDecision.confidence != null ? (
+                  <span className="conversation-decision-confidence">
+                    {t("agentPage.advisoryConfidence", {
+                      value: Math.round((tool.advisoryDecision.confidence <= 1
+                        ? tool.advisoryDecision.confidence * 100
+                        : tool.advisoryDecision.confidence)),
+                    })}
+                  </span>
+                ) : null}
+              </span>
+              {tool.advisoryDecision.question ? (
+                <span className="conversation-decision-question">{tool.advisoryDecision.question}</span>
+              ) : null}
+              <span className="conversation-decision-outcome">
+                <span aria-hidden="true">{tool.advisoryDecision.abstain ? "—" : "→"}</span>
+                <strong>{tool.advisoryDecision.choice
+                  ?? tool.advisoryDecision.reason
+                  ?? t("agentPage.advisoryAbstained")}</strong>
+              </span>
+              <span className="conversation-tool-meta">
+                {[tool.advisoryDecision.provider, tool.advisoryDecision.model,
+                  tool.advisoryDecision.latencyMs ?? tool.durationMs]
+                  .filter((value) => value !== undefined && value !== "")
+                  .map((value) => typeof value === "number"
+                    ? (value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(1)}s`)
+                    : value)
+                  .join(" · ")}
+              </span>
+            </span>
+          ) : tool ? (
             <span className="conversation-tool-content">
               <span className={`conversation-activity-summary${tool.command ? " is-command" : ""}`}>{tool.text}</span>
               <span className="conversation-tool-meta">

@@ -668,9 +668,43 @@ function projectKnownToolExecution(
   if (toolName === "GetAgent") return projectGetAgentTool(payload);
   if (toolName === "ListModelProviders") return projectListModelProvidersTool(payload);
   if (toolName === "ListProviderModels") return projectListProviderModelsTool(payload);
+  if (toolName === "AdvisoryDecision") return projectAdvisoryDecisionTool(payload);
   if (toolName === "WaitFor") return projectWaitForTool(payload);
   if (isTimerTool(toolName)) return projectTimerTool(toolName, payload);
   return undefined;
+}
+
+function projectAdvisoryDecisionTool(payload: Record<string, unknown> | undefined): Pick<SessionItemDraft, "body" | "detail"> {
+  const result = unwrapToolResult(payload);
+  const input = asRecord(payload?.input);
+  const choice = stringField(result, "choice");
+  const outcome = stringField(result, "outcome");
+  const abstain = result.abstain === true || outcome === "abstain";
+  const confidence = numberField(result, "confidence");
+  const reason = stringField(result, "reason")?.replace(/^[a-z_]+:\s*/i, "");
+  const question = stringField(input, "question");
+  const provider = stringField(result, "provider");
+  const model = stringField(result, "model");
+  const confidenceLabel = confidence == null
+    ? undefined
+    : `${Math.round((confidence <= 1 ? confidence * 100 : confidence))}% confidence`;
+  const body = compactJoin([
+    abstain ? "No recommendation" : choice ? `Recommended: ${choice}` : "Advisory decision",
+    confidenceLabel,
+  ]);
+  const detail = [
+    question ? `Question: ${question}` : undefined,
+    choice ? `Choice: ${choice}` : undefined,
+    `Outcome: ${outcome ?? (abstain ? "abstain" : "unknown")}`,
+    confidenceLabel ? `Confidence: ${confidenceLabel.replace(" confidence", "")}` : undefined,
+    reason ? `Reason: ${reason}` : undefined,
+    provider ? `Provider: ${provider}` : undefined,
+    model ? `Model: ${model}` : undefined,
+  ].filter((line): line is string => Boolean(line));
+  return {
+    body,
+    detail: detail.length ? { label: "Advisory decision", text: detail.join("\n"), tone: "data" } : undefined,
+  };
 }
 
 function isWorkItemMutationTool(toolName: string): boolean {
@@ -1610,6 +1644,7 @@ function toolFriendlyLabel(toolName: string, failed: boolean): string {
   if (toolName === "GetAgent") return failed ? "Agent inspection failed" : "Inspected agent";
   if (toolName === "ListModelProviders") return failed ? "Provider list failed" : "Listed model providers";
   if (toolName === "ListProviderModels") return failed ? "Model list failed" : "Listed provider models";
+  if (toolName === "AdvisoryDecision") return failed ? "Advisory decision failed" : "Advisory decision";
   if (toolName === "CreateTimer") return failed ? "Timer creation failed" : "Created timer";
   if (toolName === "ListTimers") return failed ? "Timer list failed" : "Listed timers";
   if (toolName === "GetTimer") return failed ? "Timer lookup failed" : "Timer";

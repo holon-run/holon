@@ -33,4 +33,44 @@ describe("canonical tool execution presentation", () => {
     expect(text.endsWith("…")).toBe(true);
     expect(toolExecutionPresentation({ tool_name: "TaskStatus", input: { task_id: "task-1" }, duration_ms: 20 }).durationMs).toBeUndefined();
   });
+
+  it("presents advisory decisions as a choice instead of raw result JSON", () => {
+    expect(toolExecutionPresentation({
+      tool_name: "AdvisoryDecision",
+      status: "success",
+      input: { question: "Which recovery path should run?", options: ["Retry probe", "Ask operator"] },
+      output: { envelope: { result: {
+        outcome: "select", choice: "Retry probe", confidence: 0.86, abstain: false,
+        provider: "typesafe", model: "jev-latest", latency_ms: 142,
+      } } },
+    })).toMatchObject({
+      text: "Recommended: Retry probe · 86% confidence",
+      toolName: "AdvisoryDecision",
+      advisoryDecision: {
+        question: "Which recovery path should run?",
+        choice: "Retry probe",
+        confidence: 0.86,
+        abstain: false,
+        outcome: "select",
+        provider: "typesafe",
+        model: "jev-latest",
+        latencyMs: 142,
+      },
+    });
+  });
+
+  it("turns advisory abstentions into a readable reason", () => {
+    expect(toolExecutionPresentation({
+      tool_name: "AdvisoryDecision",
+      status: "success",
+      input: { question: "Which option?", options: ["A", "B"] },
+      output: { envelope: { result: {
+        outcome: "abstain", choice: null, confidence: 0.31, abstain: true,
+        reason: "low_confidence: provider confidence is below the threshold",
+      } } },
+    }).advisoryDecision).toMatchObject({
+      abstain: true,
+      reason: "provider confidence is below the threshold",
+    });
+  });
 });

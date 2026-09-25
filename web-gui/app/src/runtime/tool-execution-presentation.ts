@@ -1,9 +1,50 @@
 import { projectToolExecution } from "./session-reducer-core";
 import type { RuntimeToolExecutionRecord } from "./types";
 
+export interface AdvisoryDecisionToolPresentation {
+  question?: string;
+  choice?: string;
+  confidence?: number;
+  abstain: boolean;
+  reason?: string;
+  outcome?: string;
+  provider?: string;
+  model?: string;
+  latencyMs?: number;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined;
+}
+
+function stringValue(record: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = record?.[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function numberValue(record: Record<string, unknown> | undefined, key: string): number | undefined {
+  const value = record?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function advisoryDecisionPresentation(
+  input: Record<string, unknown> | undefined,
+  output: Record<string, unknown> | undefined,
+): AdvisoryDecisionToolPresentation {
+  const outcome = stringValue(output, "outcome");
+  const reason = stringValue(output, "reason")?.replace(/^[a-z_]+:\s*/i, "");
+  return {
+    question: stringValue(input, "question"),
+    choice: stringValue(output, "choice"),
+    confidence: numberValue(output, "confidence"),
+    abstain: output?.abstain === true || outcome === "abstain",
+    reason,
+    outcome,
+    provider: stringValue(output, "provider"),
+    model: stringValue(output, "model"),
+    latencyMs: numberValue(output, "latency_ms"),
+  };
 }
 
 /** Reuse the timeline's tool-specific summaries with canonical tool records. */
@@ -38,11 +79,15 @@ export function toolExecutionPresentation(record: RuntimeToolExecutionRecord) {
   const target = [input?.query, input?.path, input?.url].find((value): value is string => typeof value === "string" && value.trim().length > 0);
   const generic = projection.body === record.summary || projection.body === record.tool_name;
   const text = (generic && target ? `${record.tool_name} · ${target}` : projection.body).trim();
+  const advisoryDecision = record.tool_name === "AdvisoryDecision"
+    ? advisoryDecisionPresentation(input, output)
+    : undefined;
   return {
     text: text.length > 240 ? `${text.slice(0, 239)}…` : text,
     toolName: record.tool_name ?? "Tool",
     status: record.status ?? "unknown",
     durationMs: projection.executionMeta?.durationMs,
     command,
+    ...(advisoryDecision ? { advisoryDecision } : {}),
   };
 }
