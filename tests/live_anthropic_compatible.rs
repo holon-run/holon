@@ -89,6 +89,12 @@ async fn live_bigmodel_turn_scoped_context_rounds() -> Result<()> {
     live_turn_scoped_context_rounds("bigmodel", "glm-5.2").await
 }
 
+#[tokio::test]
+#[ignore = "requires a configured DeepSeek credential and network access"]
+async fn live_deepseek_turn_scoped_context_rounds() -> Result<()> {
+    live_turn_scoped_context_rounds("deepseek", "deepseek-flash").await
+}
+
 fn provider_model_env(provider: &str, default_model: &str) -> String {
     let env_name = format!(
         "HOLON_LIVE_{}_MODEL",
