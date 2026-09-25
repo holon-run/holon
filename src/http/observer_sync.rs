@@ -434,6 +434,20 @@ pub(crate) fn observer_visibility_scope(
     visibility_policy_generation: u64,
 ) -> String {
     let (principal, entitlement) = observer_scope_authority(state);
+    observer_visibility_scope_for(
+        runtime_id,
+        principal,
+        entitlement,
+        visibility_policy_generation,
+    )
+}
+
+pub(crate) fn observer_visibility_scope_for(
+    runtime_id: &str,
+    principal: &str,
+    entitlement: &str,
+    visibility_policy_generation: u64,
+) -> String {
     crate::ids::visibility_scope_id(
         runtime_id,
         principal,
@@ -636,6 +650,18 @@ mod tests {
         let raw = std::fs::read_to_string(&path)
             .unwrap_or_else(|err| panic!("failed to read {path}: {err}"));
         serde_json::from_str(&raw).unwrap_or_else(|err| panic!("invalid fixture {path}: {err}"))
+    }
+
+    #[test]
+    fn visibility_scope_for_isolated_principals() {
+        let user_a = observer_visibility_scope_for("runtime_fixture", "user-a", "control", 0);
+        let user_b = observer_visibility_scope_for("runtime_fixture", "user-b", "control", 0);
+
+        assert_ne!(user_a, user_b);
+        assert_eq!(
+            user_a,
+            observer_visibility_scope_for("runtime_fixture", "user-a", "control", 0)
+        );
     }
 
     fn assert_round_trip<T: serde::de::DeserializeOwned + Serialize>(name: &str) -> T {

@@ -5302,6 +5302,70 @@
         ],
         "type": "object"
       },
+      "BriefReadState": {
+        "additionalProperties": false,
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "event_head_seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "event_log_epoch": {
+            "type": "string"
+          },
+          "oldest_retained_seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "read_through_event_seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "reset_required": {
+            "type": "boolean"
+          },
+          "retention_gap": {
+            "type": "boolean"
+          },
+          "revision": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "unread_count": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "visibility_scope_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "event_log_epoch",
+          "visibility_scope_id",
+          "event_head_seq",
+          "oldest_retained_seq",
+          "read_through_event_seq",
+          "unread_count",
+          "revision",
+          "reset_required",
+          "retention_gap"
+        ],
+        "type": "object"
+      },
+      "BriefReadStates": {
+        "items": {
+          "$ref": "#/components/schemas/BriefReadState"
+        },
+        "type": "array"
+      },
       "BriefRecord": {
         "properties": {
           "agent_id": {
@@ -9469,6 +9533,38 @@
           "original_branch",
           "worktree_path",
           "worktree_branch"
+        ],
+        "type": "object"
+      },
+      "MarkBriefReadRequest": {
+        "properties": {
+          "read_through_event_seq": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "read_through_event_seq"
+        ],
+        "title": "MarkBriefReadRequest",
+        "type": "object"
+      },
+      "MarkBriefReadResult": {
+        "additionalProperties": false,
+        "properties": {
+          "applied_read_through_event_seq": {
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "$ref": "#/components/schemas/BriefReadState"
+          }
+        },
+        "required": [
+          "state",
+          "applied_read_through_event_seq"
         ],
         "type": "object"
       },
@@ -17888,6 +17984,54 @@
         ]
       }
     },
+    "/api/agents/brief-read-states": {
+      "get": {
+        "description": "Return the authoritative per-Agent Brief read cursor and exact unread count for the current principal and visibility scope.",
+        "operationId": "briefReadStates",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefReadStates"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Brief read states",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
     "/api/agents/list": {
       "get": {
         "description": "Return lightweight public agent entries. Optional parent query parameter filters the public roster to direct children of that parent.",
@@ -18053,6 +18197,132 @@
           "agents"
         ],
         "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+      }
+    },
+    "/api/agents/{agent_id}/brief-read-cursor": {
+      "post": {
+        "description": "Advance one Agent's Brief read cursor monotonically. Requested cursors beyond the committed event head are clamped to that head.",
+        "operationId": "markBriefRead",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MarkBriefReadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MarkBriefReadResult"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Mark Briefs read",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}/brief-read-state": {
+      "get": {
+        "description": "Return the authoritative Brief read cursor and exact unread count for one visible public Agent.",
+        "operationId": "briefReadState",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BriefReadState"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Brief read state",
+        "tags": [
+          "agents"
+        ]
       }
     },
     "/api/agents/{agent_id}/briefs": {

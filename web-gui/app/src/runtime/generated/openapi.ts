@@ -21,6 +21,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/brief-read-states": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Brief read states
+         * @description Return the authoritative per-Agent Brief read cursor and exact unread count for the current principal and visibility scope.
+         */
+        get: operations["briefReadStates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/list": {
         parameters: {
             query?: never;
@@ -73,6 +93,46 @@ export interface paths {
          * @description Return the canonical public AgentSummary read model.
          */
         get: operations["getAgent"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/brief-read-cursor": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Mark Briefs read
+         * @description Advance one Agent's Brief read cursor monotonically. Requested cursors beyond the committed event head are clamped to that head.
+         */
+        post: operations["markBriefRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/brief-read-state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Brief read state
+         * @description Return the authoritative Brief read cursor and exact unread count for one visible public Agent.
+         */
+        get: operations["briefReadState"];
         put?: never;
         post?: never;
         delete?: never;
@@ -3934,6 +3994,24 @@ export interface components {
             entries: components["schemas"]["JsonValue"][];
             missing_entry_ids?: string[];
         };
+        BriefReadState: {
+            agent_id: string;
+            /** Format: int64 */
+            event_head_seq: number;
+            event_log_epoch: string;
+            /** Format: int64 */
+            oldest_retained_seq: number;
+            /** Format: int64 */
+            read_through_event_seq: number;
+            reset_required: boolean;
+            retention_gap: boolean;
+            /** Format: int64 */
+            revision: number;
+            /** Format: int64 */
+            unread_count: number;
+            visibility_scope_id: string;
+        };
+        BriefReadStates: components["schemas"]["BriefReadState"][];
         /** BriefRecord */
         BriefRecord: {
             agent_id: string;
@@ -5060,6 +5138,16 @@ export interface components {
             original_cwd: string;
             worktree_branch: string;
             worktree_path: string;
+        };
+        /** MarkBriefReadRequest */
+        MarkBriefReadRequest: {
+            /** Format: uint64 */
+            read_through_event_seq: number;
+        };
+        MarkBriefReadResult: {
+            /** Format: int64 */
+            applied_read_through_event_seq: number;
+            state: components["schemas"]["BriefReadState"];
         };
         /** MemoryGetRequest */
         MemoryGetRequest: {
@@ -7499,6 +7587,44 @@ export interface operations {
             };
         };
     };
+    briefReadStates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefReadStates"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     listAgents: {
         parameters: {
             query?: {
@@ -7597,6 +7723,92 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    markBriefRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkBriefReadRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MarkBriefReadResult"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    briefReadState: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BriefReadState"];
                 };
             };
             /** @description Client error JSON response. */

@@ -138,24 +138,25 @@ impl crate::runtime_db::RuntimeDb {
         visibility_scope_id: &str,
         agent_id: &str,
     ) -> Result<Option<BriefReadState>> {
-        let connection = self.connection()?;
-        let public: Option<i64> = connection
-            .query_row(
-                "SELECT 1 FROM agent_identities
-                 WHERE agent_id = ?1 AND status = 'active' AND visibility = 'public'",
-                [agent_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if public.is_none() {
-            return Ok(None);
-        }
-        Ok(Some(state_for_connection(
-            &connection,
-            principal_id,
-            visibility_scope_id,
-            agent_id,
-        )?))
+        self.transaction(|transaction| {
+            let public: Option<i64> = transaction
+                .query_row(
+                    "SELECT 1 FROM agent_identities
+                     WHERE agent_id = ?1 AND status = 'active' AND visibility = 'public'",
+                    [agent_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if public.is_none() {
+                return Ok(None);
+            }
+            Ok(Some(state_for_connection(
+                transaction,
+                principal_id,
+                visibility_scope_id,
+                agent_id,
+            )?))
+        })
     }
 
     pub fn brief_read_states(
