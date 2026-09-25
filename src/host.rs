@@ -5101,7 +5101,7 @@ impl RuntimeHost {
             current_task_id: Some(task.id.clone()),
             current_work_item_id: task.work_item_id.clone(),
         };
-        let prepared = crate::runtime::AgentMessageDeliveryService::prepare(
+        let mut prepared = crate::runtime::AgentMessageDeliveryService::prepare(
             AgentMessageSendRequest {
                 target_agent_id: target_agent_id.to_string(),
                 content: MessageBody::Text { text: message_text },
@@ -5112,6 +5112,23 @@ impl RuntimeHost {
             },
             caller,
         )?;
+        prepared
+            .message
+            .metadata
+            .as_mut()
+            .and_then(Value::as_object_mut)
+            .expect("agent message delivery metadata is an object")
+            .insert(
+                "agent_message_reply_expectation".into(),
+                json!({
+                    "mode": "required",
+                    "sender_agent_id": task.agent_id,
+                    "waiting_task_id": task.id,
+                    "request_message_id": prepared.message.id,
+                    "request_delivery_id": prepared.record.delivery_id,
+                    "completion_policy": "first_followup_durable_message",
+                }),
+            );
         let admission = self
             .deliver_agent_message(&prepared, Some(&task.id))
             .await?;
@@ -8525,6 +8542,12 @@ mod tests {
         assert_eq!(terminal.status, TaskStatus::Completed);
         let detail = terminal.detail.as_ref().unwrap();
         let request_delivery_id = detail["request_delivery_id"].as_str().unwrap();
+        let request_record = host
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest(request_delivery_id)
+            .unwrap()
+            .unwrap();
         let request_rowid = host
             .runtime_db()
             .agent_message_deliveries()
@@ -8537,6 +8560,39 @@ mod tests {
             .rowid(&response.delivery_id)
             .unwrap()
             .unwrap();
+        let request_message = child
+            .storage()
+            .read_message_by_id(&request_record.message_id.unwrap())
+            .unwrap()
+            .unwrap();
+        let expectation = request_message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("agent_message_reply_expectation"))
+            .unwrap();
+        assert_eq!(expectation["mode"], "required");
+        assert_eq!(expectation["sender_agent_id"], parent_agent_id);
+        assert_eq!(expectation["waiting_task_id"], receipt.task_handle.task_id);
+        assert_eq!(expectation["request_message_id"], request_message.id);
+        assert_eq!(expectation["request_delivery_id"], request_delivery_id);
+        let response_message_id = host
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest(&response.delivery_id)
+            .unwrap()
+            .unwrap()
+            .message_id
+            .unwrap();
+        let response_message = parent
+            .storage()
+            .read_message_by_id(&response_message_id)
+            .unwrap()
+            .unwrap();
+        assert!(response_message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("agent_message_reply_expectation"))
+            .is_none());
         assert!(response_rowid > request_rowid);
         assert_eq!(detail["message_wait_after_delivery_rowid"], request_rowid);
         assert_eq!(detail["response_delivery_id"], response.delivery_id);

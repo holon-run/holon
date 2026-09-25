@@ -14,7 +14,7 @@ use planner::{
 use render::trust_label;
 use render::{
     body_preview, bounded_inline, enum_label, indent_block, message_body_text, message_header,
-    sanitize_inline, section, turn_section,
+    message_reply_expectation_context, sanitize_inline, section, turn_section,
 };
 
 use std::cmp::Ordering;
@@ -2019,11 +2019,14 @@ fn render_current_input_section(
         body_budget,
         wake_hint_fallback,
     );
+    let reply_expectation =
+        message_reply_expectation_context(current_message).map(|content| format!("{content}\n"));
     turn_section(
         "current_input",
         format!(
-            "Current input:\n- {}\n{}",
+            "Current input:\n- {}\n{}{}",
             message_header(current_message),
+            reply_expectation.unwrap_or_default(),
             indent_block(&current_input_body, 2),
         ),
     )
