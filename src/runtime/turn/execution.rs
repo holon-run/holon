@@ -91,6 +91,7 @@ struct PendingCompletionReport {
 
 struct PendingWaitReport {
     input: Value,
+    request_tool_call_id: String,
     tool_execution: ToolExecutionRecord,
     corrective_retry_attempted: bool,
     report_tool_rounds: usize,
@@ -2753,6 +2754,11 @@ impl TurnExecution<'_> {
                 }),
             ))?;
 
+            let mut pending_wait_report_error: Option<(
+                String,
+                crate::tool::ToolResult,
+                ToolExecutionRecord,
+            )> = None;
             if let Some(mut pending) = pending_wait_report.take() {
                 let disallowed_report_tool = tool_calls
                     .iter()
@@ -2837,90 +2843,126 @@ impl TurnExecution<'_> {
                         args,
                     )
                     .await?;
-                    let mut success_record = pending.tool_execution;
-                    let completed_at = Utc::now();
-                    success_record.completed_at = Some(completed_at);
-                    success_record.duration_ms = completed_at
-                        .signed_duration_since(success_record.created_at)
-                        .num_milliseconds()
-                        .max(0) as u64;
-                    success_record.status = ToolExecutionStatus::Success;
-                    success_record.output = serde_json::json!({
-                        "envelope": result.envelope,
-                        "is_error": false,
-                        "should_sleep": result.should_sleep,
-                        "sleep_duration_ms": result.sleep_duration_ms,
-                        "error": null,
-                    });
-                    success_record.summary =
-                        crate::tool::summary::tool_result_summary(&result.envelope);
-                    if let Some(mut prepared) = result.prepared_wait_for.take() {
-                        prepared.tool_execution = Some(success_record.clone());
-                        prepared.command.audit_events.push(AuditEvent::legacy(
-                            "wait_report_request_completed",
+                    if result.is_error() {
+                        let error = result.tool_error().cloned().ok_or_else(|| {
+                            anyhow::anyhow!("wait report error missing tool error")
+                        })?;
+                        let completed_at = Utc::now();
+                        let mut failed_record = pending.tool_execution;
+                        failed_record.completed_at = Some(completed_at);
+                        failed_record.duration_ms = completed_at
+                            .signed_duration_since(failed_record.created_at)
+                            .num_milliseconds()
+                            .max(0) as u64;
+                        failed_record.status = ToolExecutionStatus::Error;
+                        failed_record.output = serde_json::json!({
+                            "error": error.render(),
+                            "tool_error": &error,
+                        });
+                        failed_record.summary = format!("Failed: {}", failed_record.tool_name);
+                        runtime.persist_tool_execution_evidence(&failed_record)?;
+                        runtime.inner.storage.append_event(&AuditEvent::legacy(
+                            "wait_report_request_failed",
                             serde_json::json!({
                                 "agent_id": agent_id,
-                                "report_assistant_round_id": assistant_round_id,
-                                "source": "followup_final_text",
+                                "tool_call_id": pending.request_tool_call_id,
+                                "tool_execution_id": failed_record.id,
+                                "round": round,
+                                "error_kind": error.kind,
+                                "tool_error": error,
                             }),
-                        ));
-                        prepared_wait_for = Some(prepared);
+                        ))?;
+                        pending_wait_report_error =
+                            Some((pending.request_tool_call_id, result, failed_record));
                     } else {
-                        runtime.persist_tool_execution_evidence(&success_record)?;
-                    }
-                    if !result.should_sleep {
-                        completed_rounds.push(TurnRoundRecord {
-                            round,
-                            estimated_tokens: build_round_estimated_tokens(
-                                &completed_round_assistant_blocks,
-                                &[],
-                                &[],
-                            ),
-                            assistant_blocks: completed_round_assistant_blocks,
-                            text_blocks,
-                            tool_calls: Vec::new(),
-                            tool_results: Vec::new(),
-                            tool_result_envelopes: Vec::new(),
-                            follow_up_user_texts: Vec::new(),
+                        let mut success_record = pending.tool_execution;
+                        let completed_at = Utc::now();
+                        success_record.completed_at = Some(completed_at);
+                        success_record.duration_ms = completed_at
+                            .signed_duration_since(success_record.created_at)
+                            .num_milliseconds()
+                            .max(0) as u64;
+                        success_record.status = ToolExecutionStatus::Success;
+                        success_record.output = serde_json::json!({
+                            "envelope": result.envelope,
+                            "is_error": false,
+                            "should_sleep": result.should_sleep,
+                            "sleep_duration_ms": result.sleep_duration_ms,
+                            "error": null,
                         });
-                        continue;
-                    }
-                    let state = runtime.agent_state().await?;
-                    let final_text = combined_text;
-                    let atomic_wait_settlement = prepared_wait_for.is_some();
-                    let terminal = TurnTerminalRecord {
-                        turn_id: state
-                            .current_turn_id
-                            .clone()
-                            .filter(|turn_id| !turn_id.trim().is_empty())
-                            .unwrap_or_else(crate::ids::turn_id),
-                        turn_index,
-                        kind: TurnTerminalKind::Completed,
-                        reason: None,
-                        last_assistant_message: Some(final_text.clone()),
-                        no_brief_reason: None,
-                        checkpoint: terminal_checkpoint_from_state(&checkpoint_state, turn_index),
-                        completed_at: Utc::now(),
-                        duration_ms: turn_started_at.elapsed().as_millis() as u64,
-                    };
-                    return Ok(AgentLoopOutcome {
-                        final_text,
-                        final_citations: citation_blocks,
-                        final_text_source_assistant_round_id: Some(assistant_round_id),
-                        turn_index,
-                        terminal,
-                        should_sleep: true,
-                        sleep_duration_ms: result.sleep_duration_ms,
-                        allow_sleep_runnable_work_override: true,
-                        terminal_kind: TurnTerminalKind::Completed,
-                        prepared_work_item_completion: None,
-                        prepared_wait_for: prepared_wait_for.take(),
-                        terminal_tool_executions: if atomic_wait_settlement {
-                            Vec::new()
+                        success_record.summary =
+                            crate::tool::summary::tool_result_summary(&result.envelope);
+                        if let Some(mut prepared) = result.prepared_wait_for.take() {
+                            prepared.tool_execution = Some(success_record.clone());
+                            prepared.command.audit_events.push(AuditEvent::legacy(
+                                "wait_report_request_completed",
+                                serde_json::json!({
+                                    "agent_id": agent_id,
+                                    "report_assistant_round_id": assistant_round_id,
+                                    "source": "followup_final_text",
+                                }),
+                            ));
+                            prepared_wait_for = Some(prepared);
                         } else {
-                            vec![success_record]
-                        },
-                    });
+                            runtime.persist_tool_execution_evidence(&success_record)?;
+                        }
+                        if !result.should_sleep {
+                            completed_rounds.push(TurnRoundRecord {
+                                round,
+                                estimated_tokens: build_round_estimated_tokens(
+                                    &completed_round_assistant_blocks,
+                                    &[],
+                                    &[],
+                                ),
+                                assistant_blocks: completed_round_assistant_blocks,
+                                text_blocks,
+                                tool_calls: Vec::new(),
+                                tool_results: Vec::new(),
+                                tool_result_envelopes: Vec::new(),
+                                follow_up_user_texts: Vec::new(),
+                            });
+                            continue;
+                        }
+                        let state = runtime.agent_state().await?;
+                        let final_text = combined_text;
+                        let atomic_wait_settlement = prepared_wait_for.is_some();
+                        let terminal = TurnTerminalRecord {
+                            turn_id: state
+                                .current_turn_id
+                                .clone()
+                                .filter(|turn_id| !turn_id.trim().is_empty())
+                                .unwrap_or_else(crate::ids::turn_id),
+                            turn_index,
+                            kind: TurnTerminalKind::Completed,
+                            reason: None,
+                            last_assistant_message: Some(final_text.clone()),
+                            no_brief_reason: None,
+                            checkpoint: terminal_checkpoint_from_state(
+                                &checkpoint_state,
+                                turn_index,
+                            ),
+                            completed_at: Utc::now(),
+                            duration_ms: turn_started_at.elapsed().as_millis() as u64,
+                        };
+                        return Ok(AgentLoopOutcome {
+                            final_text,
+                            final_citations: citation_blocks,
+                            final_text_source_assistant_round_id: Some(assistant_round_id),
+                            turn_index,
+                            terminal,
+                            should_sleep: true,
+                            sleep_duration_ms: result.sleep_duration_ms,
+                            allow_sleep_runnable_work_override: true,
+                            terminal_kind: TurnTerminalKind::Completed,
+                            prepared_work_item_completion: None,
+                            prepared_wait_for: prepared_wait_for.take(),
+                            terminal_tool_executions: if atomic_wait_settlement {
+                                Vec::new()
+                            } else {
+                                vec![success_record]
+                            },
+                        });
+                    }
                 }
             }
 
@@ -3425,6 +3467,51 @@ impl TurnExecution<'_> {
                 continue;
             }
 
+            if let Some((tool_call_id, result, _record)) = pending_wait_report_error.take() {
+                let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
+                let continuation_text = format!(
+                    "The previous WaitFor final report request (tool call `{tool_call_id}`) \
+                     failed with a recoverable tool error: {result_content} \
+                     Reply with a new non-empty operator-facing final report as text only. \
+                     Do not repeat the failed WaitFor call."
+                );
+                let corrective_blocks = corrective_replay_blocks(&completed_round_assistant_blocks);
+                completed_rounds.push(TurnRoundRecord {
+                    round,
+                    estimated_tokens: build_round_estimated_tokens(
+                        &corrective_blocks,
+                        &[],
+                        std::slice::from_ref(&continuation_text),
+                    ),
+                    assistant_blocks: corrective_blocks,
+                    text_blocks,
+                    tool_calls: Vec::new(),
+                    tool_results: Vec::new(),
+                    tool_result_envelopes: Vec::new(),
+                    follow_up_user_texts: vec![continuation_text.clone()],
+                });
+                runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                    agent_id.to_string(),
+                    TranscriptEntryKind::ContinuationPrompt,
+                    Some(round),
+                    None,
+                    serde_json::json!({
+                        "text": continuation_text,
+                        "reason": "wait_report_error_follow_up",
+                        "tool_call_id": tool_call_id,
+                    }),
+                ))?;
+                runtime.inner.storage.append_event(&AuditEvent::legacy(
+                    "wait_report_error_follow_up_injected",
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "tool_call_id": tool_call_id,
+                        "round": round,
+                    }),
+                ))?;
+                continue;
+            }
+
             if tool_calls.is_empty() {
                 if checkpoint_state.operator_delivery_pending() {
                     if combined_text.is_empty() {
@@ -3488,6 +3575,23 @@ impl TurnExecution<'_> {
             let mut tool_result_envelopes = Vec::new();
             let mut tool_execution_refs: Vec<(String, String)> = Vec::new();
             let mut all_tool_results_should_sleep = !round_tool_calls.is_empty();
+            let wait_report_error_tool_call_id = pending_wait_report_error
+                .as_ref()
+                .map(|(tool_call_id, _, _)| tool_call_id.clone());
+            let wait_report_error_delivered = pending_wait_report_error.is_some();
+            if let Some((tool_call_id, result, record)) = pending_wait_report_error.take() {
+                tool_execution_refs.push((tool_call_id.clone(), record.id));
+                let result_content = crate::tool::tools::render_tool_result_for_model(&result)?;
+                let error = result.tool_error().cloned();
+                tool_result_envelopes.push(result.envelope);
+                tool_results.push(ToolResultBlock {
+                    tool_use_id: tool_call_id,
+                    content: result_content,
+                    is_error: true,
+                    error,
+                });
+                all_tool_results_should_sleep = false;
+            }
             let mut terminal_tool_transition = false;
             let mut execution_terminal_transition_seen = false;
             for (tool_call_index, call) in tool_calls.into_iter().enumerate() {
@@ -3507,6 +3611,9 @@ impl TurnExecution<'_> {
                 }
                 let tool_call_id = call.id.clone();
                 let tool_name = call.name.clone();
+                if wait_report_error_tool_call_id.as_deref() == Some(tool_call_id.as_str()) {
+                    continue;
+                }
                 if !allowed_tool_names.contains(&call.name)
                     && call.name != crate::tool::names::SLEEP
                 {
@@ -3964,6 +4071,7 @@ impl TurnExecution<'_> {
                             );
                             pending_wait_report = Some(PendingWaitReport {
                                 input: directive.input.clone(),
+                                request_tool_call_id: tool_call_id.clone(),
                                 tool_execution: record.clone(),
                                 corrective_retry_attempted: false,
                                 report_tool_rounds: 0,
@@ -4204,10 +4312,15 @@ impl TurnExecution<'_> {
             }
             completed_rounds.push(round_record);
 
+            if wait_report_error_delivered {
+                continue;
+            }
+
             if prepared_work_item_completion.is_some()
                 || ((all_tool_results_should_sleep || terminal_tool_transition)
                     && (!has_operator_interjections || terminal_tool_transition)
-                    && !checkpoint_state.operator_delivery_pending())
+                    && !checkpoint_state.operator_delivery_pending()
+                    && !wait_report_error_delivered)
             {
                 let terminal_assistant_message = if terminal_wait_without_text {
                     None

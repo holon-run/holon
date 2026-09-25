@@ -577,6 +577,8 @@ pub(crate) struct WaitForFinalReportProvider {
     pub(crate) calls: Mutex<usize>,
     pub(crate) scenario: WaitForFinalReportScenario,
     pub(crate) silent_progress: Option<bool>,
+    pub(crate) saw_settlement_error_follow_up: Mutex<bool>,
+    pub(crate) invalid_final_result_count: Mutex<usize>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -584,6 +586,7 @@ pub(crate) enum WaitForFinalReportScenario {
     Direct,
     DisallowedToolCorrective,
     AllowedToolBudget,
+    SettlementErrorRecovery,
 }
 
 impl WaitForFinalReportProvider {
@@ -1093,18 +1096,59 @@ impl AgentProvider for WaitForFinalReportProvider {
             blocks
         } else {
             match *calls {
-                1 => vec![ModelBlock::ToolUse {
-                    id: "wait-for-final".into(),
-                    name: "WaitFor".into(),
-                    input: serde_json::json!({
-                        "reason": "waiting for final verification",
-                        "wake": "external",
-                        "delivery": "final",
-                        "resource": "github:holon-run/holon#wait-final"
-                    }),
-                    kind: crate::provider::ModelToolCallKind::Function,
-                    provider_data: None,
-                }],
+                1 => {
+                    let (id, resource) =
+                        if self.scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
+                            ("wait-for-invalid-final", "missing-timer")
+                        } else {
+                            ("wait-for-final", "github:holon-run/holon#wait-final")
+                        };
+                    vec![ModelBlock::ToolUse {
+                        id: id.into(),
+                        name: "WaitFor".into(),
+                        input: serde_json::json!({
+                            "reason": "waiting for final verification",
+                            "wake": if self.scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
+                                "timer"
+                            } else {
+                                "external"
+                            },
+                            "delivery": "final",
+                            "resource": resource
+                        }),
+                        kind: crate::provider::ModelToolCallKind::Function,
+                        provider_data: None,
+                    }]
+                }
+                2 if self.scenario == WaitForFinalReportScenario::SettlementErrorRecovery => {
+                    vec![ModelBlock::Text {
+                        text: "The requested timer wait could not be completed.".into(),
+                    }]
+                }
+                3 if self.scenario == WaitForFinalReportScenario::SettlementErrorRecovery => {
+                    let follow_up = request.conversation.iter().any(|message| {
+                        matches!(
+                            message,
+                            ConversationMessage::UserText(text)
+                                if text.contains("recoverable tool error")
+                        )
+                    });
+                    let result_count = request
+                        .conversation
+                        .iter()
+                        .filter_map(|message| match message {
+                            ConversationMessage::UserToolResults(results) => Some(results),
+                            _ => None,
+                        })
+                        .flatten()
+                        .filter(|result| result.tool_use_id == "wait-for-invalid-final")
+                        .count();
+                    *self.saw_settlement_error_follow_up.lock().await = follow_up;
+                    *self.invalid_final_result_count.lock().await = result_count;
+                    vec![ModelBlock::Text {
+                        text: "The timer wait failed and no wait was registered.".into(),
+                    }]
+                }
                 2 if self.scenario == WaitForFinalReportScenario::DisallowedToolCorrective => {
                     vec![ModelBlock::ToolUse {
                         id: "forbidden-follow-up-tool".into(),

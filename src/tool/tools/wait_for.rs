@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Error, Result};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ use crate::{
     tool::{
         helpers::{invalid_tool_input, parse_tool_args, validate_non_empty},
         spec::{typed_spec, AwaitWaitReportDirective, ToolExecutionContext, ToolLoopDirective},
-        ToolResult,
+        ToolError, ToolResult,
     },
     types::{AuthorityClass, ToolCapabilityFamily, WaitConditionSummary},
 };
@@ -168,23 +168,26 @@ async fn settle_impl(
                 reason.clone(),
                 args.recheck_after_ms,
             )
-            .await?
+            .await
         {
-            crate::runtime::PrepareWaitForOutcome::Prepared(mut prepared) => {
-                prepared.delivery = args.delivery;
-                if prepared.command.task_result_admission.is_some() {
-                    let mut result = immediate_result(prepared.outcome(), &disclosure)?;
-                    result.prepared_wait_for = Some(prepared);
-                    return Ok(result);
+            Ok(outcome) => match outcome {
+                crate::runtime::PrepareWaitForOutcome::Prepared(mut prepared) => {
+                    prepared.delivery = args.delivery;
+                    if prepared.command.task_result_admission.is_some() {
+                        let mut result = immediate_result(prepared.outcome(), &disclosure)?;
+                        result.prepared_wait_for = Some(prepared);
+                        return Ok(result);
+                    }
+                    (prepared.registration.clone(), Some(prepared))
                 }
-                (prepared.registration.clone(), Some(prepared))
-            }
-            crate::runtime::PrepareWaitForOutcome::Immediate(outcome) => {
-                return immediate_result(outcome, &disclosure);
-            }
+                crate::runtime::PrepareWaitForOutcome::Immediate(outcome) => {
+                    return immediate_result(outcome, &disclosure);
+                }
+            },
+            Err(error) => return timer_wait_error_result(error),
         }
     } else {
-        let outcome = runtime
+        let outcome = match runtime
             .register_wait_for_outcome(
                 agent_id,
                 work_item_id.clone(),
@@ -193,7 +196,11 @@ async fn settle_impl(
                 reason.clone(),
                 args.recheck_after_ms,
             )
-            .await?;
+            .await
+        {
+            Ok(outcome) => outcome,
+            Err(error) => return timer_wait_error_result(error),
+        };
         match outcome {
             WaitForRegistrationOutcome::Registered { registration } => (registration, None),
             outcome => return immediate_result(outcome, &disclosure),
@@ -258,6 +265,48 @@ async fn settle_impl(
     result.terminal_transition = true;
     result.prepared_wait_for = prepared_wait_for;
     Ok(result)
+}
+
+fn timer_wait_error_result(error: Error) -> Result<ToolResult> {
+    let Some(runtime_error) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::runtime_error::RuntimeError>())
+    else {
+        return Err(error);
+    };
+    let code = runtime_error.descriptor().code.as_str();
+    if !matches!(
+        code,
+        "timer_not_found"
+            | "timer_agent_mismatch"
+            | "timer_invalid_state"
+            | "timer_wake_unavailable"
+            | "timer_cancelled"
+    ) {
+        return Err(error);
+    }
+
+    let recovery_hint = match code {
+        "timer_not_found" | "timer_agent_mismatch" | "timer_cancelled" => {
+            "call CreateTimer or ListTimers, then wait using an active timer_id owned by this agent"
+        }
+        "timer_wake_unavailable" => {
+            "create a new timer or use a timer_id whose completed wake has not been consumed"
+        }
+        "timer_invalid_state" => "create a new timer and wait using its returned timer_id",
+        _ => unreachable!("timer error code was checked above"),
+    };
+    Ok(ToolResult::error(
+        NAME,
+        ToolError::new("invalid_tool_input", runtime_error.to_string())
+            .with_domain(crate::runtime_error::RuntimeErrorDomain::Validation)
+            .with_details(json!({
+                "field": "resource",
+                "wake": "timer",
+                "code": code,
+            }))
+            .with_recovery_hint(recovery_hint),
+    ))
 }
 
 fn immediate_result(
