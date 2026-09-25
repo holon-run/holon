@@ -561,7 +561,7 @@ function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
 
   // Consume the canonical absolute path recorded when the tool ran. Keep the
   // legacy workspace URI fallback for historical tool results.
-  const imageUri = workspaceUri ?? (
+  const imageUri = workspaceUri || (
     displayPath && (displayPath.startsWith("/") || displayPath.startsWith("workspace://"))
       ? displayPath
       : undefined
