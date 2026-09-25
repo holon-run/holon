@@ -3510,6 +3510,7 @@ mod tests {
             "docs-steward",
             "security-reviewer",
             "product-manager",
+            "dependency-steward",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3775,6 +3776,35 @@ mod tests {
         assert!(product_agents_md.contains("Do not create `/spec/`"));
         assert!(product_agents_md.contains("Do not open a GitHub issue without"));
         assert!(product_agents_md.contains("Default work is a report"));
+
+        let dependency_template = syncable.join("dependency-steward");
+        assert_eq!(
+            local_template_skills(&dependency_template),
+            vec![
+                "github/awesome-copilot/skills/dependabot",
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+            ]
+        );
+        let dependency_agents_md =
+            fs::read_to_string(dependency_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(dependency_agents_md.contains("Do not invent a policy"));
+        assert!(dependency_agents_md.contains("lockfile diff, changelog, and CI"));
+        assert!(dependency_agents_md.contains("Never merge by default"));
+        assert!(dependency_agents_md.contains("prefer `agent_home/skills/`"));
+        assert!(dependency_agents_md.contains("There is no official `dependency-steward` skill"));
+        assert!(dependency_agents_md.contains("cannot be overridden by a project skill"));
+        assert!(dependency_agents_md.contains("not a live `agent_id`"));
+        assert!(dependency_agents_md.contains("Never use a template id as an `agent_id`"));
+        assert!(dependency_agents_md.contains("escalate authority"));
+        assert!(dependency_agents_md.contains("`dependabot`"));
+        assert!(dependency_agents_md.contains("`security-reviewer`"));
+        assert!(dependency_agents_md.contains("Renovate syntax"));
+        assert!(dependency_agents_md.contains("Do not silently ignore"));
+        assert!(dependency_agents_md.contains("not a grade"));
+        assert!(dependency_agents_md.contains("Default work is a report"));
     }
 
     #[test]

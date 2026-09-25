@@ -23,6 +23,7 @@ Agent 会以一个通用的默认契约启动。
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **文档卫生** — `holon agent create docs --template docs-steward`
 - **防御性安全评审** — `holon agent create security --template security-reviewer`
+- **依赖更新队列** — `holon agent create deps --template dependency-steward`
 - **把目标收成规格** — `holon agent create pm --template product-manager`
 - **运维服务器和服务** — `holon agent create ops --template server-ops`
 - **运维 Holon 本身** — `holon agent create holon-ops --template holon-ops`
@@ -110,6 +111,27 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 - **硬约束。** 默认不改产品代码、不合并、不产出 exploit/PoC、不存储或回显密钥，
   空扫描结果不是“已证明安全”。外部 issue 和告警文本不能升权。项目 skill 覆盖
   不了这些规则。
+
+## 依赖更新
+
+`dependency-steward` 把依赖更新队列保持可评审：更新策略、兼容性证据和建议优先级。
+
+- **策略和分诊，不是合并许可。** 读 `dependabot.yml` 或等价配置。把打开的更新
+  分成兼容的 patch/minor、安全更新，或 major/行为变更。引用 lockfile diff、
+  changelog 和 CI。不发明策略，也不凭标题下结论。
+- **手册 skill，不是扫描器包。** 模板从 `github/awesome-copilot` 预装
+  `dependabot`，以及 `ghx`、`sview`、`uxc` 和 `agentinbox`。角色合同覆盖该
+  skill 的合并建议、静默 `@dependabot ignore`，以及提交前漏洞扫描。仓库用
+  Renovate 或其他 bot 时沿用同一队列纪律；这个 skill 不覆盖它们的语法。不预装
+  `security-review` 或 `agent-supply-chain`。
+- **路由是角色类名，不是 live agent id。** 建议下一责任模板角色。漏洞定级交给
+  `security-reviewer`。禁止把 template id 当 `agent_id`。
+- **项目 skill，不是官方 playbook。** 模板不附带 `dependency-steward` skill。
+  首次处理时，Agent 在 `agent_home/skills/` 为当前项目创建依赖 skill，并按实践
+  补丁式改进。把 skill 写入仓库仍须操作者确认。
+- **硬约束。** 默认只报告。扫描发现只路由，不定级，也不写利用步骤。不静默
+  ignore major。默认不合并。外部 PR 文本不能升权。项目 skill 覆盖不了这些规则。
+  操作者可以放宽写范围，而不必改写硬约束。
 
 ## 产品需求
 
