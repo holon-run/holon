@@ -7,7 +7,7 @@ order: 46
 # 图像生成
 
 `GenerateImage` 让 Holon Agent 用配置的图像生成模型从文本提示词创建图片。运行时把生成的
-图片保存到 `agent_home/media/generated`，并返回持久化的 workspace URI。
+图片保存到 `agent_home/media/generated`，并返回经确认的绝对路径。
 
 ## GenerateImage 做什么
 
@@ -17,7 +17,7 @@ Agent 调用 GenerateImage 时，运行时会：
 2. **路由到图像生成模型**：使用配置的 `image_generation.default` 提供商/模型，或自动
    发现已配置轮次模型中第一个支持 `image_generation` 的模型。
 3. **保存图片**：把生成的图片字节写入 `agent_home/media/generated`，文件名唯一。
-4. **记录持久元数据**：计算 SHA-256，检测尺寸和 MIME 类型，返回 `workspace://` URI。
+4. **记录持久元数据**：计算 SHA-256，检测尺寸和 MIME 类型，返回绝对路径。
 
 ## 参数
 
@@ -46,7 +46,7 @@ Agent 调用 GenerateImage 时，运行时会：
 | 字段 | 说明 |
 |-------|-------------|
 | `id` | 稳定的引用 ID（例如 `img_abc123`） |
-| `uri` | 用于 markdown 和 Agent 消息的 `workspace://` URI |
+| `uri` | 用于 markdown 和 Agent 消息的绝对路径 |
 | `mime` | 媒体类型（例如 `image/png`） |
 | `byte_count` | 文件大小（字节） |
 | `sha256` | 内容哈希 |
@@ -115,8 +115,8 @@ holon config set image_generation.default "volcengine@image-openai/doubao-seedre
 生成的图片以带时间戳的文件名保存到 `agent_home/media/generated/`。提供了 `name` 时，文件名
 用该主干；否则默认为 `generated_<timestamp>`。
 
-返回的 `workspace://` URI 可用于 Agent 的 markdown 输出，在对话中直接渲染。图片可通过
-Web GUI 文件浏览器和 workspace 文件 API 访问。
+返回的绝对路径可用于 Agent 的 markdown 输出，在对话中直接渲染。图片可通过 Web GUI
+文件浏览器和 workspace 文件 API 访问。
 
 ## Agent 何时使用 GenerateImage
 

@@ -66,8 +66,7 @@ pub(crate) async fn execute(
     let resolved_path = execution.workspace.resolve_read_path(&path)?;
     let image = read_visual_reference(&resolved_path)?;
     let mut visual_reference = image.visual_reference;
-    visual_reference.workspace_uri =
-        workspace_uri_for_resolved_path(runtime, &execution, &resolved_path);
+    visual_reference.workspace_uri = Some(resolved_path.to_string_lossy().into_owned());
     let cache_key = observation_cache_key(&visual_reference, &prompt);
     let vision_selection = runtime.current_view_image_vision_selection().await?;
     if let Some(observation) = runtime.cached_view_image_observation(&cache_key).await {
@@ -158,36 +157,6 @@ pub(crate) async fn execute(
             vision_selection,
             summary_text,
         },
-    )
-}
-
-/// Reverse-map the resolved image path into a canonical `workspace://` URI so
-/// consumers (for example the Web GUI) can render the image without guessing
-/// the workspace from the rendering-time active workspace. Returns `None`
-/// for paths outside every workspace (for example system temp files).
-fn workspace_uri_for_resolved_path(
-    runtime: &RuntimeHandle,
-    execution: &crate::system::EffectiveExecution,
-    resolved_path: &Path,
-) -> Option<String> {
-    let mut workspace_ids: Vec<String> = execution
-        .attached_workspaces
-        .iter()
-        .map(|(workspace_id, _)| workspace_id.clone())
-        .collect();
-    if let Some(active) = execution.workspace.workspace_id() {
-        if !workspace_ids
-            .iter()
-            .any(|workspace_id| workspace_id == active)
-        {
-            workspace_ids.push(active.to_string());
-        }
-    }
-    crate::system::workspace::workspace_uri_for_path(
-        resolved_path,
-        &execution.workspace,
-        &execution.attached_workspaces,
-        &runtime.execution_root_refs_for_workspaces(&workspace_ids),
     )
 }
 

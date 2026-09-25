@@ -182,7 +182,7 @@ export function LinkField({ label, href, text }: { label: string; href: string; 
   );
 }
 
-/** Renders a workspace:// image URI as an actual preview when possible. */
+/** Renders a file reference as an actual preview when possible. */
 export function ImagePreview({ uri, alt }: { uri: string; alt?: string }) {
   const ref = parseWorkspaceImageRef(uri);
   if (!ref) {
@@ -501,11 +501,13 @@ function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
     : [];
   const summary = textField(result?.summary_text) || record.summary;
 
-  // Consume the canonical reference recorded when the tool ran. Never
-  // reconstruct one from the render-time active workspace: the agent may
-  // have switched workspaces since, and absolute local paths (e.g. /tmp
-  // screenshots) are not workspace-relative anyway.
-  const imageUri = workspaceUri ?? (displayPath?.startsWith("workspace://") ? displayPath : undefined);
+  // Consume the canonical absolute path recorded when the tool ran. Keep the
+  // legacy workspace URI fallback for historical tool results.
+  const imageUri = workspaceUri ?? (
+    displayPath && (displayPath.startsWith("/") || displayPath.startsWith("workspace://"))
+      ? displayPath
+      : undefined
+  );
 
   return (
     <>

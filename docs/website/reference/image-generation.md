@@ -8,7 +8,7 @@ order: 46
 
 `GenerateImage` lets Holon agents create images from text prompts using a
 configured image-generation model. The runtime saves generated images to
-`agent_home/media/generated` and returns durable workspace URIs.
+`agent_home/media/generated` and returns confirmed absolute paths.
 
 ## What GenerateImage does
 
@@ -22,7 +22,7 @@ When an agent calls GenerateImage, the runtime:
 3. **Saves the image** — writes the generated image bytes under
    `agent_home/media/generated` with a unique filename.
 4. **Records durable metadata** — computes SHA-256, detects dimensions and
-   MIME type, and returns a `workspace://` URI.
+   MIME type, and returns an absolute path.
 
 ## Parameters
 
@@ -51,7 +51,7 @@ Each generated image includes durable metadata:
 | Field | Description |
 |-------|-------------|
 | `id` | Stable reference ID (e.g., `img_abc123`) |
-| `uri` | `workspace://` URI for use in markdown and agent messages |
+| `uri` | Absolute path for use in markdown and agent messages |
 | `mime` | Media type (e.g., `image/png`) |
 | `byte_count` | File size in bytes |
 | `sha256` | Content hash |
@@ -127,7 +127,7 @@ Generated images are saved under `agent_home/media/generated/` with
 timestamped filenames. When a `name` is provided, the filename uses that
 stem; otherwise it defaults to `generated_<timestamp>`.
 
-The returned `workspace://` URI can be used in agent markdown output for
+The returned absolute path can be used in agent markdown output for
 in-conversation rendering. Images are accessible through the Web GUI file
 browser and workspace file API.
 

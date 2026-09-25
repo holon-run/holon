@@ -191,7 +191,7 @@ pub struct ExecutionSnapshot {
 }
 
 /// Lightweight reference to an execution root, used by the provider turn
-/// resolver to resolve `?root=` parameters in `workspace://` URIs.
+/// resolver to resolve historical `?root=` parameters in `workspace://` URIs.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ExecutionRootRef {
     pub execution_root_id: String,
