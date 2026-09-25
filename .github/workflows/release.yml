@@ -475,4 +475,19 @@ jobs:
             echo "CARGO_REGISTRY_TOKEN is not configured; skipping crates.io publish."
             exit 0
           fi
+          publish_if_needed() {
+            crate="$1"
+            version="$(awk -F '"' '/^version = / { print $2; exit }' "crates/${crate}/Cargo.toml")"
+            if curl -fsS -A "holon-release-workflow" "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
+              echo "${crate} ${version} is already published; skipping."
+              return 0
+            fi
+            echo "Publishing ${crate} ${version}..."
+            cargo publish --locked --manifest-path "crates/${crate}/Cargo.toml"
+            sleep 15
+          }
+          publish_if_needed decision-core
+          publish_if_needed decision-jev
+          publish_if_needed decision-openai
+          publish_if_needed decision-local-onnx
           cargo publish --locked
