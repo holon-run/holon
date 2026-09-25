@@ -2,6 +2,7 @@
 
 package run.holon.android.app
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
@@ -159,7 +160,7 @@ private fun StartingScreen() {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
             HolonMark()
             CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
-            Text("正在恢复 Holon…", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(ui("正在恢复 Holon…"), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -167,6 +168,8 @@ private fun StartingScreen() {
 @Composable
 private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val isInsecureHttp = state.baseUrl.trim().startsWith("http://", ignoreCase = true)
+    var showLanguagePicker by remember { mutableStateOf(false) }
+    if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
     Column(
         Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
@@ -177,6 +180,9 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
             .padding(horizontal = 24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
+        TextButton(onClick = { showLanguagePicker = true }, modifier = Modifier.align(Alignment.End)) {
+            Text(ui("语言"))
+        }
         Column(
             modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
@@ -184,24 +190,24 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 HolonMark()
                 Column {
-                    Text("连接 Holon", style = MaterialTheme.typography.headlineLarge)
-                    Text("继续你正在进行的工作", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(ui("连接 Holon"), style = MaterialTheme.typography.headlineLarge)
+                    Text(ui("继续你正在进行的工作"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Text("需要一台已运行的 Holon 主机，以及该主机提供的访问令牌。", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(ui("需要一台已运行的 Holon 主机，以及该主机提供的访问令牌。"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(
                 value = state.baseUrl,
                 onValueChange = viewModel::setBaseUrl,
-                label = { Text("Holon 地址") },
+                label = { Text(ui("Holon 地址")) },
                 supportingText = {
                     if (isInsecureHttp) {
                         Text(
-                            "HTTP 本身不加密；请只在可信局域网或 Tailscale 等加密隧道中使用",
+                            ui("HTTP 本身不加密；请只在可信局域网或 Tailscale 等加密隧道中使用"),
                             color = MaterialTheme.colorScheme.tertiary,
                         )
                     } else {
-                        Text("例如 https://holon.example.com 或 http://100.64.0.1:7878")
+                        Text(ui("例如 https://holon.example.com 或 http://100.64.0.1:7878"))
                     }
                 },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, imeAction = ImeAction.Next),
@@ -220,7 +226,7 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
                         enabled = !state.busy,
                     )
                     Text(
-                        "我确认此地址位于可信网络或加密隧道中",
+                        ui("我确认此地址位于可信网络或加密隧道中"),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
@@ -228,11 +234,11 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
             OutlinedTextField(
                 value = state.token,
                 onValueChange = viewModel::setToken,
-                label = { Text("访问令牌（token）") },
-                supportingText = { Text("登录后只保存可撤销的会话，不保存原始令牌") },
+                label = { Text(ui("访问令牌（token）")) },
+                supportingText = { Text(ui("登录后只保存可撤销的会话，不保存原始令牌")) },
                 trailingIcon = {
                     TextButton(onClick = viewModel::toggleToken) {
-                        Text(if (state.showToken) "隐藏" else "显示")
+                        Text(if (state.showToken) ui("隐藏") else ui("显示"))
                     }
                 },
                 visualTransformation = if (state.showToken) VisualTransformation.None else PasswordVisualTransformation(),
@@ -256,10 +262,10 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     CircularProgressIndicator(Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
                 }
-                Text(if (state.busy) "正在登录" else "登录")
+                Text(if (state.busy) ui("正在登录") else ui("登录"))
             }
             Text(
-                "HTTPS 默认安全；HTTP 需要逐次确认。浏览器登录和扫码配对将在后续版本提供。",
+                ui("HTTPS 默认安全；HTTP 需要逐次确认。浏览器登录和扫码配对将在后续版本提供。"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -282,7 +288,7 @@ private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
                         if (state.selectedAgent != null) {
                             ConversationScreen(state, viewModel)
                         } else {
-                            EmptyPage("选择一个 Agent", "结果、工作和文件将在这里打开。")
+                            EmptyPage(ui("选择一个 Agent"), ui("结果、工作和文件将在这里打开。"))
                         }
                     }
                 }
@@ -298,11 +304,14 @@ private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
     }
 }
 
-private enum class AgentFilter(val label: String) {
+private enum class AgentFilter(private val sourceLabel: String) {
     All("全部"),
     Attention("需回应"),
     NewResults("新结果"),
     Active("工作中"),
+    ;
+
+    val label: String get() = ui(sourceLabel)
 }
 
 @Composable
@@ -329,7 +338,7 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     Column {
                         Text("Holon", style = MaterialTheme.typography.titleMedium)
                         Text(
-                            "${state.agents.size} 个 Agent · ${if (state.online) "已同步" else "离线缓存"}" +
+                            ui("${state.agents.size} 个 Agent · ${if (state.online) "已同步" else "离线缓存"}") +
                                 (state.lastSyncedAt?.let { " ${syncClock(it)}" } ?: ""),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -341,27 +350,27 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                         if (searchOpen) viewModel.setSearch("")
                         searchOpen = !searchOpen
                     }) {
-                        Icon(if (searchOpen) Icons.Default.Close else Icons.Default.Search, contentDescription = if (searchOpen) "关闭搜索" else "搜索")
+                        Icon(if (searchOpen) Icons.Default.Close else Icons.Default.Search, contentDescription = if (searchOpen) ui("关闭搜索") else ui("搜索"))
                     }
                     IconButton(onClick = { viewModel.selectMainDestination(MainDestination.Settings) }) {
-                        Icon(Icons.Default.Settings, contentDescription = "设置")
+                        Icon(Icons.Default.Settings, contentDescription = ui("设置"))
                     }
                 },
             )
         },
     ) { padding ->
         Column(Modifier.fillMaxSize().padding(padding)) {
-            state.statusMessage?.let { Text(it, modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
+            state.statusMessage?.let { Text(ui(it), modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
             state.error?.let { ErrorBanner(it, null) }
             AnimatedVisibility(searchOpen) {
                 OutlinedTextField(
                     value = state.search,
                     onValueChange = viewModel::setSearch,
-                    placeholder = { Text("搜索名称或 ID") },
+                    placeholder = { Text(ui("搜索名称或 ID")) },
                     leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                     trailingIcon = {
                         if (state.search.isNotBlank()) IconButton(onClick = { viewModel.setSearch("") }) {
-                            Icon(Icons.Default.Close, contentDescription = "清除")
+                            Icon(Icons.Default.Close, contentDescription = ui("清除"))
                         }
                     },
                     singleLine = true,
@@ -393,16 +402,16 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 }
                 if (filtered.isEmpty()) item {
                     when {
-                        state.agents.isEmpty() -> EmptyPage("还没有 Agent", "连接成功后，Agent 会显示在这里。")
+                        state.agents.isEmpty() -> EmptyPage(ui("还没有 Agent"), ui("连接成功后，Agent 会显示在这里。"))
                         filter == AgentFilter.Attention && attentionCount == 0 ->
-                            EmptyPage("目前没有需要回应的 Agent", "选择“全部”查看其他 Agent。")
+                            EmptyPage(ui("目前没有需要回应的 Agent"), ui("选择“全部”查看其他 Agent。"))
                         filter == AgentFilter.NewResults && unreadCount == 0 ->
-                            EmptyPage("目前没有未读结果", "选择“全部”查看其他 Agent。")
+                            EmptyPage(ui("目前没有未读结果"), ui("选择“全部”查看其他 Agent。"))
                         filter == AgentFilter.Active && activeCount == 0 ->
-                            EmptyPage("目前没有工作中的 Agent", "选择“全部”查看其他 Agent。")
+                            EmptyPage(ui("目前没有工作中的 Agent"), ui("选择“全部”查看其他 Agent。"))
                         state.search.isNotBlank() ->
-                            EmptyPage("没有匹配的 Agent", "调整搜索词或筛选条件后再试。")
-                        else -> EmptyPage("这个筛选暂无 Agent", "选择“全部”查看所有 Agent。")
+                            EmptyPage(ui("没有匹配的 Agent"), ui("调整搜索词或筛选条件后再试。"))
+                        else -> EmptyPage(ui("这个筛选暂无 Agent"), ui("选择“全部”查看所有 Agent。"))
                     }
                 }
                 item { Spacer(Modifier.height(20.dp)) }
@@ -430,10 +439,10 @@ internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false,
             }
             Text(
                 when {
-                    agent.needsReply() -> "正在等你回应"
+                    agent.needsReply() -> ui("正在等你回应")
                     briefPreview.isNotBlank() -> briefPreview
                     postureReason.isNotBlank() -> plainTextPreview(postureReason)
-                    else -> "暂无新的工作摘要"
+                    else -> ui("暂无新的工作摘要")
                 },
                 maxLines = if (compact) 1 else 2,
                 overflow = TextOverflow.Ellipsis,
@@ -442,12 +451,12 @@ internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false,
             )
             if (!compact) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (unread) Text("新结果", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    if (unread) Text(ui("新结果"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
                     Text(
                         listOfNotNull(
                             agent.latestBrief?.createdAt?.let(::relativeTime),
-                            agent.currentWorkItemId?.let { "有进行中的 WorkItem" },
-                        ).joinToString(" · ").ifBlank { "尚无活动" },
+                            agent.currentWorkItemId?.let { ui("有进行中的 WorkItem") },
+                        ).joinToString(" · ").ifBlank { ui("尚无活动") },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelSmall,
@@ -462,19 +471,21 @@ internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false,
 @Composable
 private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBack: () -> Unit) {
     var showDiagnostics by remember { mutableStateOf(false) }
+    var showLanguagePicker by remember { mutableStateOf(false) }
     var pendingSignOut by remember { mutableStateOf<String?>(null) }
+    if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
     pendingSignOut?.let { action ->
         AlertDialog(
             onDismissRequest = { pendingSignOut = null },
-            title = { Text(if (action == "relogin") "重新登录当前主机？" else "退出并清除本机数据？") },
-            text = { Text("本机缓存、草稿和待发送附件会被清除。已发送给主机的工作不会撤回。") },
+            title = { Text(if (action == "relogin") ui("重新登录当前主机？") else ui("退出并清除本机数据？")) },
+            text = { Text(ui("本机缓存、草稿和待发送附件会被清除。已发送给主机的工作不会撤回。")) },
             confirmButton = {
                 TextButton(onClick = {
                     pendingSignOut = null
                     if (action == "relogin") viewModel.relogin() else viewModel.logout()
-                }) { Text(if (action == "relogin") "重新登录" else "退出登录") }
+                }) { Text(if (action == "relogin") ui("重新登录") else ui("退出登录")) }
             },
-            dismissButton = { TextButton(onClick = { pendingSignOut = null }) { Text("取消") } },
+            dismissButton = { TextButton(onClick = { pendingSignOut = null }) { Text(ui("取消")) } },
         )
     }
     Scaffold(
@@ -482,15 +493,15 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
             TopAppBar(
-                title = { Text("设置") },
+                title = { Text(ui("设置")) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = ui("返回"))
                     }
                 },
                 actions = {
                     IconButton(onClick = viewModel::refresh, enabled = !state.busy) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        Icon(Icons.Default.Refresh, contentDescription = ui("刷新"))
                     }
                 },
             )
@@ -502,35 +513,46 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                HolonSection("当前连接") {
-                    SettingsValue("地址", state.session?.baseUrl.orEmpty())
-                    SettingsValue("状态", if (state.online) "已连接" else "离线缓存")
-                    state.lastSyncedAt?.let { SettingsValue("上次同步", syncClock(it)) }
+                HolonSection(ui("当前连接")) {
+                    SettingsValue(ui("地址"), state.session?.baseUrl.orEmpty())
+                    SettingsValue(ui("状态"), if (state.online) ui("已连接") else ui("离线缓存"))
+                    state.lastSyncedAt?.let { SettingsValue(ui("上次同步"), syncClock(it)) }
                 }
             }
             item {
-                HolonSection("当前身份") {
-                    SettingsValue("用户", state.session?.user?.displayName ?: state.session?.user?.userId.orEmpty())
-                    Text("访问令牌不保存在设备上。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HolonSection(ui("当前身份")) {
+                    SettingsValue(ui("用户"), state.session?.user?.displayName ?: state.session?.user?.userId.orEmpty())
+                    Text(ui("访问令牌不保存在设备上。"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             item {
-                HolonSection("关于") {
-                    SettingsValue("App", BuildConfig.VERSION_NAME)
-                    Text("连接已有 Holon 主机的移动工作台。打开应用后同步最新状态。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HolonSection(ui("关于")) {
+                    SettingsValue(ui("App"), BuildConfig.VERSION_NAME)
+                    Text(ui("连接已有 Holon 主机的移动工作台。打开应用后同步最新状态。"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            item {
+                HolonSection(ui("语言")) {
+                    TextButton(onClick = { showLanguagePicker = true }) {
+                        Text(ui("应用语言") + " · " + when (UiCopy.preference()) {
+                            "en" -> "English"
+                            "zh" -> "简体中文"
+                            else -> ui("系统默认")
+                        })
+                    }
                 }
             }
             item {
                 TextButton(onClick = { showDiagnostics = !showDiagnostics }, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (showDiagnostics) "收起连接诊断" else "查看连接诊断")
+                    Text(if (showDiagnostics) ui("收起连接诊断") else ui("查看连接诊断"))
                 }
             }
             if (showDiagnostics) item {
-                HolonSection("连接诊断") {
-                    SettingsValue("Runtime", state.session?.runtimeId.orEmpty())
-                    SettingsValue("认证", state.session?.user?.authMethod.orEmpty())
-                    SettingsValue("协议", "holon-control/1")
-                    SettingsValue("能力", state.session?.server?.capabilities?.size?.toString().orEmpty())
+                HolonSection(ui("连接诊断")) {
+                    SettingsValue(ui("Runtime"), state.session?.runtimeId.orEmpty())
+                    SettingsValue(ui("认证"), state.session?.user?.authMethod.orEmpty())
+                    SettingsValue(ui("协议"), "holon-control/1")
+                    SettingsValue(ui("能力"), state.session?.server?.capabilities?.size?.toString().orEmpty())
                     Text(
                         state.session?.server?.capabilities?.sorted()?.joinToString("\n").orEmpty(),
                         style = MaterialTheme.typography.labelSmall,
@@ -538,7 +560,7 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                     )
                     val context = LocalContext.current
                     TextButton(onClick = { shareDiagnostics(context, state) }) {
-                        Text("分享脱敏诊断信息")
+                        Text(ui("分享脱敏诊断信息"))
                     }
                 }
             }
@@ -547,38 +569,59 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                     onClick = { pendingSignOut = "relogin" },
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("重新登录当前主机") }
+                ) { Text(ui("重新登录当前主机")) }
             }
             item {
                 OutlinedButton(
                     onClick = { pendingSignOut = "logout" },
                     enabled = !state.busy,
                     modifier = Modifier.fillMaxWidth(),
-                ) { Text("退出并清除本机数据") }
+                ) { Text(ui("退出并清除本机数据")) }
             }
             item { Spacer(Modifier.height(16.dp)) }
         }
     }
 }
 
+@Composable
+private fun AppLanguagePicker(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(ui("应用语言")) },
+        text = {
+            Column {
+                listOf(null to ui("系统默认"), "en" to "English", "zh" to "简体中文").forEach { (language, label) ->
+                    TextButton(onClick = {
+                        UiCopy.select(context, language)
+                        onDismiss()
+                        (context as? Activity)?.recreate()
+                    }) { Text(label) }
+                }
+            }
+        },
+        confirmButton = {},
+    )
+}
+
 private fun shareDiagnostics(context: Context, state: HolonUiState) {
     val server = state.session?.server
     val details = buildString {
         appendLine("Holon Android ${BuildConfig.VERSION_NAME}")
-        appendLine("状态：${if (state.online) "已连接" else "离线缓存"}")
-        appendLine("协议：holon-control/1")
-        appendLine("认证方式：${server?.authMode ?: "未知"}")
-        appendLine("能力：${server?.capabilities?.sorted()?.joinToString(", ").orEmpty()}")
+        appendLine(ui("状态：${if (state.online) "已连接" else "离线缓存"}"))
+        appendLine(ui("协议：holon-control/1"))
+        appendLine(ui("认证方式：${server?.authMode ?: "未知"}"))
+        appendLine(ui("能力：${server?.capabilities?.sorted()?.joinToString(", ").orEmpty()}"))
         server?.limits?.let {
-            appendLine("附件限制：图片 ${it.promptImageAttachmentMaxBytes} B，文件 ${it.promptFileAttachmentMaxBytes} B")
+            appendLine(ui("附件限制：图片 ${it.promptImageAttachmentMaxBytes} B，文件 ${it.promptFileAttachmentMaxBytes} B"))
         }
-        append("不包含地址、用户、session、token 或会话正文。")
+        append(ui("不包含地址、用户、session、token 或会话正文。"))
     }
     val intent = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_TEXT, details)
     }
-    context.startActivity(Intent.createChooser(intent, "分享连接诊断").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    context.startActivity(Intent.createChooser(intent, ui("分享连接诊断")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 @Composable
@@ -616,7 +659,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     Column {
                         Text(agent.displayName, style = MaterialTheme.typography.titleMedium)
                         Text(
-                            if (agent.currentWorkItemId != null) "有进行中的 WorkItem" else agent.statusLabel(),
+                            if (agent.currentWorkItemId != null) ui("有进行中的 WorkItem") else agent.statusLabel(),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             maxLines = 1,
@@ -626,12 +669,12 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 },
                 navigationIcon = {
                     IconButton(onClick = { viewModel.handleSystemBack() }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回上一级")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = ui("返回上一级"))
                     }
                 },
                 actions = {
                     IconButton(onClick = viewModel::refresh, enabled = !state.busy) {
-                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                        Icon(Icons.Default.Refresh, contentDescription = ui("刷新"))
                     }
                 },
             )
@@ -641,14 +684,14 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
         // Resize the timeline and composer together; padding only the composer leaves an IME-sized gap.
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
-            state.statusMessage?.let { Text(it, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            state.statusMessage?.let { Text(ui(it), modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             AgentSectionBar(state.agentSection, viewModel::selectAgentSection)
             BoxWithConstraints(Modifier.weight(1f)) {
                 val wideWorkLayout = maxWidth >= 720.dp && state.agentSection == AgentSection.Work
                 when {
                     state.planFile != null -> FileReaderScreen(
                         artifact = state.planFile,
-                        title = "完整计划",
+                        title = ui("完整计划"),
                         onBack = viewModel::closePlanFile,
                         onSave = viewModel::saveArtifactToDevice,
                         onShare = { shareArtifact(context, state.planFile) },
@@ -662,7 +705,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                                 if (state.selectedWorkItem != null) {
                                     WorkItemDetailScreen(state, viewModel, showBack = false)
                                 } else {
-                                    EmptyPage("选择一个 WorkItem", "目标、进度、结果与关联产物将在这里打开。")
+                                    EmptyPage(ui("选择一个 WorkItem"), ui("目标、进度、结果与关联产物将在这里打开。"))
                                 }
                             }
                         }
@@ -785,7 +828,7 @@ private fun ConversationTimeline(
         if (state.hasOlderTurns) item(key = "load-older-turns") {
             TextButton(onClick = viewModel::loadOlderTurns, enabled = !state.historyBusy && state.historyBeforeCursor != null) {
                 if (state.historyBusy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                else Text(if (state.historyBeforeCursor == null) "更早记录暂不可读取" else "加载更早记录")
+                else Text(if (state.historyBeforeCursor == null) ui("更早记录暂不可读取") else ui("加载更早记录"))
             }
         }
         snapshot?.pendingInputs?.takeIf { it.isNotEmpty() }?.let { pending ->
@@ -796,7 +839,7 @@ private fun ConversationTimeline(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        "${pending.size} 条输入正在排队",
+                        ui("${pending.size} 条输入正在排队"),
                         modifier = Modifier.padding(12.dp),
                         color = MaterialTheme.colorScheme.onPrimaryContainer,
                     )
@@ -828,7 +871,7 @@ private fun ConversationTimeline(
             )
         }
         if (turns.isEmpty() && state.outbox.isEmpty()) {
-            item { EmptyPage("开始会话", "向 ${state.selectedAgent?.displayName} 说明你希望完成的工作。") }
+            item { EmptyPage(ui("开始会话"), ui("向 ${state.selectedAgent?.displayName} 说明你希望完成的工作。")) }
         }
     }
 }
@@ -853,7 +896,7 @@ private fun TurnCard(
                     modifier = Modifier.fillMaxWidth(0.92f),
                 ) {
                     Column(Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
-                        MarkdownText(input.preview.ifBlank { "已提交输入" })
+                        MarkdownText(input.preview.ifBlank { ui("已提交输入") })
                         input.createdAt?.let { Text(relativeTime(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer) }
                         input.actorDisplayName?.let {
                             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -880,18 +923,18 @@ private fun TurnCard(
                         )
                         turn.exceptionStatus()?.let { (label, tone) -> CompactStatus(label, tone) }
                         IconButton(onClick = { shareBrief(context, brief.text) }, modifier = Modifier.size(40.dp)) {
-                            Icon(Icons.Default.Share, contentDescription = "分享结果", modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.Share, contentDescription = ui("分享结果"), modifier = Modifier.size(18.dp))
                         }
                     }
-                    MarkdownText(brief.text.ifBlank { "结果没有文本说明" })
+                    MarkdownText(brief.text.ifBlank { ui("结果没有文本说明") })
                     if (brief.attachments.isNotEmpty() || brief.workItemId != null) {
                         ResultLinkRow(
-                            label = "产物与关联工作",
+                            label = ui("产物与关联工作"),
                             meta = (brief.attachments.size + if (brief.workItemId != null) 1 else 0).toString(),
                             onClick = { onRelatedContent(brief.id) },
                         )
                     }
-                    ResultLinkRow(label = "本轮过程", meta = "查看", onClick = onDetail)
+                    ResultLinkRow(label = ui("本轮过程"), meta = ui("查看"), onClick = onDetail)
                 }
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -920,7 +963,7 @@ private fun TurnCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 } ?: Spacer(Modifier.weight(1f))
-                Text("查看过程  ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text(ui("查看过程  ›"), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             }
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }
@@ -943,20 +986,20 @@ internal fun HolonConversationTurn.isRunning(): Boolean =
 
 internal fun HolonConversationTurn.compactStatusText(): String? =
     when {
-        isRunning() -> "执行中"
+        isRunning() -> ui("执行中")
         terminalOutcome == "provider_failed_needs_recovery" ||
-            resultKind.contains("failure", true) -> "本轮失败"
-        terminalOutcome in setOf("aborted", "interrupted", "baseline_over_budget") -> "本轮未完成"
-        briefIds.isNotEmpty() || resultKind == "available" -> "结果载入中"
-        resultKind == "unavailable" -> "结果暂不可用"
-        resultKind == "none" -> "没有结果摘要"
+            resultKind.contains("failure", true) -> ui("本轮失败")
+        terminalOutcome in setOf("aborted", "interrupted", "baseline_over_budget") -> ui("本轮未完成")
+        briefIds.isNotEmpty() || resultKind == "available" -> ui("结果载入中")
+        resultKind == "unavailable" -> ui("结果暂不可用")
+        resultKind == "none" -> ui("没有结果摘要")
         else -> null
     }
 
 private fun HolonConversationTurn.exceptionStatus(): Pair<String, StatusTone>? =
     when {
-        attentionKind != null -> "需注意" to StatusTone.Warning
-        resultKind.contains("failure", true) || terminalOutcome == "failure" -> "失败" to StatusTone.Danger
+        attentionKind != null -> ui("需注意") to StatusTone.Warning
+        resultKind.contains("failure", true) || terminalOutcome == "failure" -> ui("失败") to StatusTone.Danger
         else -> null
     }
 
@@ -1010,12 +1053,12 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
             item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = viewModel::closeTurn) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回结果")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = ui("返回结果"))
                     }
                     Column(Modifier.weight(1f)) {
-                        Text("本轮过程", style = MaterialTheme.typography.headlineSmall)
+                        Text(ui("本轮过程"), style = MaterialTheme.typography.headlineSmall)
                         Text(
-                            if (turn.isRunning()) "实时更新" else "执行记录",
+                            if (turn.isRunning()) ui("实时更新") else ui("执行记录"),
                             style = MaterialTheme.typography.labelSmall,
                             color = if (turn.isRunning()) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -1031,12 +1074,12 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     ) {
                         Column(Modifier.padding(horizontal = 13.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(
-                                if (input.presentationClass == "operator") "你的要求" else "触发输入",
+                                if (input.presentationClass == "operator") ui("你的要求") else ui("触发输入"),
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             Text(
-                                input.preview.ifBlank { "已提交输入" },
+                                input.preview.ifBlank { ui("已提交输入") },
                                 style = MaterialTheme.typography.bodyMedium,
                                 maxLines = 8,
                                 overflow = TextOverflow.Ellipsis,
@@ -1052,7 +1095,7 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 if (detail.hasMore) item(key = "load-older-activities") {
                     TextButton(onClick = viewModel::loadOlderActivities, enabled = !state.olderActivitiesBusy && detail.nextBeforeCursor != null) {
                         if (state.olderActivitiesBusy) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                        else Text(if (detail.nextBeforeCursor == null) "更早过程暂不可读取" else "加载更早过程")
+                        else Text(if (detail.nextBeforeCursor == null) ui("更早过程暂不可读取") else ui("加载更早过程"))
                     }
                 }
                 if (detail.coverageKind != "complete") {
@@ -1093,7 +1136,7 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 shape = RoundedCornerShape(999.dp),
                 shadowElevation = 4.dp,
             ) {
-                Text("$unseenActivities 条新活动", modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp))
+                Text(ui("$unseenActivities 条新活动"), modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp))
             }
         }
     }
@@ -1102,13 +1145,13 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
 private fun detailCoverageMessage(kind: String, reason: String?): String {
     val detail =
         when (reason) {
-            "retention_gap" -> "较早的执行活动已超出保留窗口"
-            "legacy_ownership" -> "旧版会话无法完整关联到本轮"
-            "unknown_activity_type" -> "部分执行活动暂不支持展示"
-            "missing_canonical_linkage" -> "部分执行活动缺少本轮关联"
-            else -> if (kind == "unavailable") "本轮执行过程不可用" else "本轮仅保留了部分执行过程"
+            "retention_gap" -> ui("较早的执行活动已超出保留窗口")
+            "legacy_ownership" -> ui("旧版会话无法完整关联到本轮")
+            "unknown_activity_type" -> ui("部分执行活动暂不支持展示")
+            "missing_canonical_linkage" -> ui("部分执行活动缺少本轮关联")
+            else -> if (kind == "unavailable") ui("本轮执行过程不可用") else ui("本轮仅保留了部分执行过程")
         }
-    return if (kind == "unavailable") detail else "过程可能不完整 · $detail"
+    return if (kind == "unavailable") detail else ui("过程可能不完整 · $detail")
 }
 
 @Composable
@@ -1135,14 +1178,14 @@ internal fun ActivityRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    if (isTool) "工具调用" else "Assistant",
+                    if (isTool) ui("工具调用") else "Assistant",
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.labelMedium,
                     color = if (isTool) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (isTool) {
                     Text(
-                        if (expanded) "收起  ⌃" else "展开  ›",
+                        if (expanded) ui("收起  ⌃") else ui("展开  ›"),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                     )
@@ -1150,14 +1193,14 @@ internal fun ActivityRow(
             }
             if (isTool) {
                 Text(
-                    activity.summary.ifBlank { "打开查看工具输入与输出" },
+                    activity.summary.ifBlank { ui("打开查看工具输入与输出") },
                     modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = 6.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
             } else {
-                MarkdownText(activity.summary.ifBlank { "（空消息）" })
+                MarkdownText(activity.summary.ifBlank { ui("（空消息）") })
             }
             AnimatedVisibility(visible = isTool && expanded) {
                 Surface(
@@ -1188,17 +1231,17 @@ internal fun ActivityRow(
                             detail.summary?.takeIf { it.isNotBlank() && it != activity.summary }?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall)
                             }
-                            detail.raw["input"]?.let { ToolPayloadPreview("输入", it.toString()) }
-                            detail.raw["output"]?.let { ToolPayloadPreview("输出", it.toString()) }
+                            detail.raw["input"]?.let { ToolPayloadPreview(ui("输入"), it.toString()) }
+                            detail.raw["output"]?.let { ToolPayloadPreview(ui("输出"), it.toString()) }
                             if (detail.artifactCount > 0) {
                                 Text(
-                                    "产生 ${detail.artifactCount} 个产物",
+                                    ui("产生 ${detail.artifactCount} 个产物"),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
                             TextButton(onClick = { showRaw = !showRaw }) {
-                                Text(if (showRaw) "收起原始记录" else "查看原始记录")
+                                Text(if (showRaw) ui("收起原始记录") else ui("查看原始记录"))
                             }
                             if (showRaw) SelectionContainer {
                                 Text(
@@ -1211,7 +1254,7 @@ internal fun ActivityRow(
                             }
                         }
                         else -> Text(
-                            "没有可读取的工具输入或输出。",
+                            ui("没有可读取的工具输入或输出。"),
                             modifier = Modifier.padding(12.dp),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1235,16 +1278,16 @@ private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = viewModel::closeActivity) { Text("‹ 本轮") }
+                TextButton(onClick = viewModel::closeActivity) { Text(ui("‹ 本轮")) }
                 Column(Modifier.weight(1f)) {
-                    Text(if (activity.kind == "tool") "工具调用" else "Assistant 文本", style = MaterialTheme.typography.headlineSmall)
+                    Text(if (activity.kind == "tool") ui("工具调用") else ui("Assistant 文本"), style = MaterialTheme.typography.headlineSmall)
                     Text(activity.id, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
         item {
-            HolonSection("摘要", eyebrow = activity.kind.uppercase()) {
-                Text(activity.summary.ifBlank { "没有摘要" })
+            HolonSection(ui("摘要"), eyebrow = activity.kind.uppercase()) {
+                Text(activity.summary.ifBlank { ui("没有摘要") })
             }
         }
         if (state.detailBusy && tool == null) {
@@ -1254,13 +1297,13 @@ private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
             item {
                 HolonSection(detail.toolName) {
                     detail.summary?.takeIf { it != activity.summary }?.let { Text(it) }
-                    if (detail.artifactCount > 0) SettingsValue("产物", detail.artifactCount.toString())
+                    if (detail.artifactCount > 0) SettingsValue(ui("产物"), detail.artifactCount.toString())
                 }
             }
-            detail.raw["input"]?.let { input -> item { ToolPayloadPreview("输入", input.toString()) } }
-            detail.raw["output"]?.let { output -> item { ToolPayloadPreview("输出", output.toString()) } }
-            item { TextButton(onClick = { showRaw = !showRaw }) { Text(if (showRaw) "收起原始记录" else "查看原始记录") } }
-            if (showRaw) item { ToolPayloadPreview("原始记录", detail.raw.toString(), 16_000) }
+            detail.raw["input"]?.let { input -> item { ToolPayloadPreview(ui("输入"), input.toString()) } }
+            detail.raw["output"]?.let { output -> item { ToolPayloadPreview(ui("输出"), output.toString()) } }
+            item { TextButton(onClick = { showRaw = !showRaw }) { Text(if (showRaw) ui("收起原始记录") else ui("查看原始记录")) } }
+            if (showRaw) item { ToolPayloadPreview(ui("原始记录"), detail.raw.toString(), 16_000) }
         }
     }
 }
@@ -1279,7 +1322,7 @@ private fun ToolPayloadPreview(title: String, payload: String, limit: Int = 2_00
                 )
             }
         }
-        if (payload.length > limit) Text("预览已截断", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (payload.length > limit) Text(ui("预览已截断"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
@@ -1310,9 +1353,9 @@ private fun WorkItemsScreen(
     ) {
         item {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("工作记录", style = MaterialTheme.typography.headlineSmall)
+                Text(ui("工作记录"), style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "已加载 ${state.workItems.size} 项 · ${state.workItems.count { it.state !in setOf("completed", "aborted", "failed") }} 项进行中 · ${state.workItems.count { it.state == "completed" }} 项已完成",
+                    ui("已加载 ${state.workItems.size} 项 · ${state.workItems.count { it.state !in setOf("completed", "aborted", "failed") }} 项进行中 · ${state.workItems.count { it.state == "completed" }} 项已完成"),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -1323,7 +1366,7 @@ private fun WorkItemsScreen(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                listOf("all" to "全部", "open" to "进行中", "completed" to "已完成").forEach { (value, label) ->
+                listOf("all" to ui("全部"), "open" to ui("进行中"), "completed" to ui("已完成")).forEach { (value, label) ->
                     FilterChip(selected = filter == value, onClick = { filter = value }, label = { Text(label) })
                 }
             }
@@ -1358,10 +1401,10 @@ private fun WorkItemsScreen(
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             listOfNotNull(
-                                if (item.workItemId == currentId) "当前工作" else null,
+                                if (item.workItemId == currentId) ui("当前工作") else null,
                                 item.updatedAt?.let(::relativeTime),
-                                item.todoList.takeIf { it.isNotEmpty() }?.let { "$done/${it.size} 步" },
-                            ).joinToString(" · ").ifBlank { "等待更多信息" },
+                                item.todoList.takeIf { it.isNotEmpty() }?.let { ui("$done/${it.size} 步") },
+                            ).joinToString(" · ").ifBlank { ui("等待更多信息") },
                             modifier = Modifier.weight(1f),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1374,14 +1417,14 @@ private fun WorkItemsScreen(
         }
         if (!state.workItemsBusy && sorted.isEmpty()) item {
             EmptyPage(
-                if (state.workItems.isEmpty()) "还没有工作记录" else "当前筛选没有工作记录",
-                if (state.workItems.isEmpty()) "Agent 的工作计划和验收结果会显示在这里。" else "选择“全部”查看其他工作。",
+                if (state.workItems.isEmpty()) ui("还没有工作记录") else ui("当前筛选没有工作记录"),
+                if (state.workItems.isEmpty()) ui("Agent 的工作计划和验收结果会显示在这里。") else ui("选择“全部”查看其他工作。"),
             )
         }
         if (state.workItemsHasMore) item {
             TextButton(onClick = viewModel::loadMoreWorkItems, enabled = !state.workItemsLoadingMore, modifier = Modifier.fillMaxWidth()) {
                 if (state.workItemsLoadingMore) CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                else Text("加载更多工作记录")
+                else Text(ui("加载更多工作记录"))
             }
         }
     }
@@ -1404,11 +1447,11 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (showBack) {
                     IconButton(onClick = viewModel::closeWorkItem) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回工作列表")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = ui("返回工作列表"))
                     }
                 }
                 Column(Modifier.weight(1f)) {
-                    Text("工作详情", style = MaterialTheme.typography.headlineSmall)
+                    Text(ui("工作详情"), style = MaterialTheme.typography.headlineSmall)
                     if (!finished) item.focus?.takeUnless { it.equals(item.state, ignoreCase = true) }?.let {
                         Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -1417,30 +1460,30 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
             }
         }
         item {
-            HolonSection("目标") {
-                Text(item.objective ?: "没有目标说明", style = MaterialTheme.typography.bodyLarge)
+            HolonSection(ui("目标")) {
+                Text(item.objective ?: ui("没有目标说明"), style = MaterialTheme.typography.bodyLarge)
             }
         }
         item.blockedBy?.let { blocker ->
-            item { HolonSection("需要处理", eyebrow = "BLOCKED") { Text(blocker, color = MaterialTheme.colorScheme.error) } }
+            item { HolonSection(ui("需要处理"), eyebrow = ui("BLOCKED")) { Text(blocker, color = MaterialTheme.colorScheme.error) } }
         }
         if (finished) {
             item {
-                HolonSection("结果") {
+                HolonSection(ui("结果")) {
                     item.resultSummary?.takeIf(String::isNotBlank)?.let { MarkdownText(it) }
-                        ?: EmptyHint("这项工作没有独立的结果摘要。")
+                        ?: EmptyHint(ui("这项工作没有独立的结果摘要。"))
                     item.resultBriefId?.let { briefId ->
-                        ResultLinkRow("查看关联 brief", "查看") { viewModel.openBrief(briefId) }
+                        ResultLinkRow(ui("查看关联 brief"), ui("查看")) { viewModel.openBrief(briefId) }
                     }
-                    ResultLinkRow("查看 Agent 结果", "打开") { viewModel.selectAgentSection(AgentSection.Results) }
+                    ResultLinkRow(ui("查看 Agent 结果"), ui("打开")) { viewModel.selectAgentSection(AgentSection.Results) }
                 }
             }
         }
         if (!finished && (item.focus != null || item.schedulingState != null || item.recheckAt != null)) {
             item {
-                HolonSection("当前步骤") {
-                    Text(item.focus ?: "等待下一次调度")
-                    item.recheckAt?.let { SettingsValue("再次检查", it) }
+                HolonSection(ui("当前步骤")) {
+                    Text(item.focus ?: ui("等待下一次调度"))
+                    item.recheckAt?.let { SettingsValue(ui("再次检查"), it) }
                 }
             }
         }
@@ -1448,11 +1491,11 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
             item {
                 if (finished) {
                     TextButton(onClick = { showSteps = !showSteps }, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (showSteps) "收起步骤记录" else "查看步骤记录 · $completed/${item.todoList.size}")
+                        Text(if (showSteps) ui("收起步骤记录") else ui("查看步骤记录 · $completed/${item.todoList.size}"))
                     }
                 }
                 if (showSteps) {
-                    HolonSection(if (finished) "步骤记录" else "进度", eyebrow = "$completed/${item.todoList.size}") {
+                    HolonSection(if (finished) ui("步骤记录") else ui("进度"), eyebrow = "$completed/${item.todoList.size}") {
                         if (!finished) LinearProgressIndicator(
                             progress = { completed.toFloat() / item.todoList.size.toFloat() },
                             modifier = Modifier.fillMaxWidth(),
@@ -1474,10 +1517,10 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
         }
         if (!finished) item.resultSummary?.takeIf(String::isNotBlank)?.let { result ->
             item {
-                HolonSection("结果") {
+                HolonSection(ui("结果")) {
                     MarkdownText(result)
                     item.resultBriefId?.let { briefId ->
-                        ResultLinkRow("查看关联 brief", "查看") { viewModel.openBrief(briefId) }
+                        ResultLinkRow(ui("查看关联 brief"), ui("查看")) { viewModel.openBrief(briefId) }
                     }
                 }
             }
@@ -1490,32 +1533,32 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
                         enabled = !state.workItemsBusy && !plan.workspaceId.isNullOrBlank() && !plan.relativePath.isNullOrBlank(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
-                        Text(if (state.workItemsBusy) "正在读取计划…" else "打开完整计划")
+                        Text(if (state.workItemsBusy) ui("正在读取计划…") else ui("打开完整计划"))
                     }
                     TextButton(onClick = { showPlan = !showPlan }, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (showPlan) "收起计划预览" else "查看计划预览")
+                        Text(if (showPlan) ui("收起计划预览") else ui("查看计划预览"))
                     }
                 }
-                if (showPlan) HolonSection(if (finished) "计划预览" else "计划") {
+                if (showPlan) HolonSection(if (finished) ui("计划预览") else ui("计划")) {
                     if (!finished) {
                         TextButton(
                             onClick = viewModel::openWorkItemPlan,
                             enabled = !state.workItemsBusy && !plan.workspaceId.isNullOrBlank() && !plan.relativePath.isNullOrBlank(),
                         ) {
-                            Text(if (state.workItemsBusy) "正在读取计划…" else "打开完整计划")
+                            Text(if (state.workItemsBusy) ui("正在读取计划…") else ui("打开完整计划"))
                         }
                     }
                     if (plan.workspaceId.isNullOrBlank() || plan.relativePath.isNullOrBlank()) {
-                        Text("此 Holon 版本未提供计划文件的读取位置", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(ui("此 Holon 版本未提供计划文件的读取位置"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    MarkdownText(plan.preview ?: "计划文件可用，但没有内联预览。")
-                    if (!plan.previewComplete) Text("此处只显示计划开头", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    MarkdownText(plan.preview ?: ui("计划文件可用，但没有内联预览。"))
+                    if (!plan.previewComplete) Text(ui("此处只显示计划开头"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
         if (item.workRefs.isNotEmpty()) {
             item {
-                HolonSection("相关工作", eyebrow = item.workRefs.size.toString()) {
+                HolonSection(ui("相关工作"), eyebrow = item.workRefs.size.toString()) {
                     item.workRefs.take(20).forEach { ref ->
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
@@ -1535,16 +1578,16 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
             TextButton(onClick = { showDetails = !showDetails }, modifier = Modifier.fillMaxWidth()) {
                 Icon(if (showDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text(if (showDetails) "收起技术详情" else "技术详情")
+                Text(if (showDetails) ui("收起技术详情") else ui("技术详情"))
             }
         }
         if (showDetails) {
             item {
-                HolonSection("技术详情") {
+                HolonSection(ui("技术详情")) {
                     SettingsValue("ID", item.workItemId)
-                    SettingsValue("状态", item.state)
-                    item.updatedAt?.let { SettingsValue("更新", it) }
-                    item.revision?.let { SettingsValue("版本", it.toString()) }
+                    SettingsValue(ui("状态"), item.state)
+                    item.updatedAt?.let { SettingsValue(ui("更新"), it) }
+                    item.revision?.let { SettingsValue(ui("版本"), it.toString()) }
                 }
             }
         }
@@ -1577,9 +1620,9 @@ private fun WorkspaceBrowserScreen(
         if (isReadableTextFile(prepared.mediaType, prepared.fileName)) {
             FileReaderScreen(
                 artifact = prepared,
-                title = "文件",
+                title = ui("文件"),
                 onBack = viewModel::returnFromMessageFile,
-                backLabel = if (state.fileLinkOrigin != null) "消息" else "文件列表",
+                backLabel = if (state.fileLinkOrigin != null) ui("消息") else ui("文件列表"),
                 onSave = viewModel::saveArtifactToDevice,
                 onShare = { shareArtifact(context, prepared) },
             )
@@ -1590,14 +1633,14 @@ private fun WorkspaceBrowserScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             TextButton(onClick = viewModel::returnFromMessageFile) {
-                Text(if (state.fileLinkOrigin != null) "‹ 返回消息" else "‹ 返回文件列表")
+                Text(if (state.fileLinkOrigin != null) ui("‹ 返回消息") else ui("‹ 返回文件列表"))
             }
             Text(prepared.fileName, style = MaterialTheme.typography.headlineSmall)
             Text(prepared.mediaType, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ArtifactPreview(prepared)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { saveFile.launch(prepared.fileName) }) { Text("保存到设备") }
-                TextButton(onClick = { shareArtifact(context, prepared) }) { Text("分享或打开") }
+                OutlinedButton(onClick = { saveFile.launch(prepared.fileName) }) { Text(ui("保存到设备")) }
+                TextButton(onClick = { shareArtifact(context, prepared) }) { Text(ui("分享或打开")) }
             }
         }
         return
@@ -1629,7 +1672,7 @@ private fun WorkspaceBrowserScreen(
         if (recentArtifacts.isNotEmpty()) {
             item {
                 Text(
-                    "最近产物",
+                    ui("最近产物"),
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                     style = MaterialTheme.typography.titleMedium,
                 )
@@ -1638,7 +1681,7 @@ private fun WorkspaceBrowserScreen(
                 Box(Modifier.padding(horizontal = 16.dp)) {
                     ResultLinkRow(
                         label = attachment.name,
-                        meta = "预览",
+                        meta = ui("预览"),
                         onClick = { attachment.uri?.let { viewModel.prepareArtifact(it, attachment.name) } },
                     )
                 }
@@ -1657,7 +1700,7 @@ private fun WorkspaceBrowserScreen(
                             onClick = { viewModel.selectWorkspace(workspace) },
                             label = {
                                 Text(
-                                    "${if (workspace.isActive) "当前 · " else ""}${workspace.label}",
+                                    ui("${if (workspace.isActive) "当前 · " else ""}${workspace.label}"),
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                 )
@@ -1686,19 +1729,19 @@ private fun WorkspaceBrowserScreen(
                 OutlinedTextField(
                     value = position.search,
                     onValueChange = { position.search = it },
-                    placeholder = { Text("查找当前文件夹") },
+                    placeholder = { Text(ui("查找当前文件夹")) },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                 )
                 FilterChip(
                     selected = position.showHidden,
                     onClick = { position.showHidden = !position.showHidden },
-                    label = { Text("隐藏文件") },
+                    label = { Text(ui("隐藏文件")) },
                 )
                 FilterChip(
                     selected = position.sortRecent,
                     onClick = { position.sortRecent = !position.sortRecent },
-                    label = { Text(if (position.sortRecent) "最新" else "名称") },
+                    label = { Text(if (position.sortRecent) ui("最新") else ui("名称")) },
                 )
             }
         }
@@ -1734,12 +1777,12 @@ private fun WorkspaceBrowserScreen(
             }
             HorizontalDivider(modifier = Modifier.padding(start = 52.dp), color = MaterialTheme.colorScheme.outlineVariant)
         }
-        if (!state.workspaceBusy && state.workspaces.isEmpty()) item { EmptyPage("没有可浏览的 workspace", "Agent 尚未连接可访问的工作区。") }
+        if (!state.workspaceBusy && state.workspaces.isEmpty()) item { EmptyPage(ui("没有可浏览的 workspace"), ui("Agent 尚未连接可访问的工作区。")) }
         if (!state.workspaceBusy && state.workspaces.isNotEmpty() && visibleEntries.isEmpty()) {
             item {
                 EmptyPage(
-                    if (state.workspaceDirectory?.entries.isNullOrEmpty()) "这个文件夹是空的" else "没有匹配的文件",
-                    if (state.workspaceDirectory?.entries.isNullOrEmpty()) "返回上一级继续浏览。" else "调整搜索或显示隐藏文件。",
+                    if (state.workspaceDirectory?.entries.isNullOrEmpty()) ui("这个文件夹是空的") else ui("没有匹配的文件"),
+                    if (state.workspaceDirectory?.entries.isNullOrEmpty()) ui("返回上一级继续浏览。") else ui("调整搜索或显示隐藏文件。"),
                 )
             }
         }
@@ -1784,11 +1827,11 @@ private fun LocalMessageCard(
 ) {
     val label =
         when (message.state) {
-            "pending" -> "待发送"
-            "sending" -> "发送中"
-            "received" -> "已接收"
-            "unknown" -> "结果未知 · 将安全重试"
-            "failed" -> "发送失败"
+            "pending" -> ui("待发送")
+            "sending" -> ui("发送中")
+            "received" -> ui("已接收")
+            "unknown" -> ui("结果未知 · 将安全重试")
+            "failed" -> ui("发送失败")
             else -> message.state
         }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
@@ -1798,19 +1841,19 @@ private fun LocalMessageCard(
             modifier = Modifier.fillMaxWidth(0.88f),
         ) {
             Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text(message.text.ifBlank { "附件" })
+                Text(message.text.ifBlank { ui("附件") })
                 Text(
                     label,
                     style = MaterialTheme.typography.labelSmall,
                     color = if (message.state == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer,
                 )
-                message.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                message.error?.let { Text(ui(it), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                 if (message.state in setOf("failed", "unknown")) {
                     Row {
-                        TextButton(onClick = onRetry, enabled = retryEnabled) { Text("重试") }
+                        TextButton(onClick = onRetry, enabled = retryEnabled) { Text(ui("重试")) }
                         if (message.state == "failed") {
-                            TextButton(onClick = onEdit, enabled = retryEnabled) { Text("编辑") }
-                            TextButton(onClick = onRemove, enabled = retryEnabled) { Text("本机移除") }
+                            TextButton(onClick = onEdit, enabled = retryEnabled) { Text(ui("编辑")) }
+                            TextButton(onClick = onRemove, enabled = retryEnabled) { Text(ui("本机移除")) }
                         }
                     }
                 }
@@ -1842,7 +1885,7 @@ private fun Composer(
             if (state.stagingAttachment) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    Text("正在准备附件…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(ui("正在准备附件…"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (state.attachments.isNotEmpty()) {
@@ -1862,7 +1905,7 @@ private fun Composer(
                             ) {
                                 Icon(
                                     if (attachment.kind == "image") Icons.Default.Image else Icons.Default.AttachFile,
-                                    contentDescription = if (attachment.kind == "image") "图片" else "文件",
+                                    contentDescription = if (attachment.kind == "image") ui("图片") else ui("文件"),
                                     modifier = Modifier.size(18.dp),
                                 )
                                 Text(
@@ -1877,7 +1920,7 @@ private fun Composer(
                                     enabled = !state.enqueueing && !state.stagingAttachment,
                                     modifier = Modifier.size(40.dp),
                                 ) {
-                                    Icon(Icons.Default.Close, contentDescription = "移除 ${attachment.name}", modifier = Modifier.size(18.dp))
+                                    Icon(Icons.Default.Close, contentDescription = ui("移除 ${attachment.name}"), modifier = Modifier.size(18.dp))
                                 }
                             }
                         }
@@ -1887,7 +1930,7 @@ private fun Composer(
             OutlinedTextField(
                 value = state.draft,
                 onValueChange = viewModel::updateDraft,
-                placeholder = { Text("给 Agent 发送消息…") },
+                placeholder = { Text(ui("给 Agent 发送消息…")) },
                 minLines = 1,
                 maxLines = 6,
                 enabled = !state.enqueueing,
@@ -1897,21 +1940,21 @@ private fun Composer(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Box {
                     IconButton(onClick = { attachmentMenuOpen = true }, enabled = !state.enqueueing && !state.stagingAttachment) {
-                        Icon(Icons.Default.Add, contentDescription = "添加附件")
+                        Icon(Icons.Default.Add, contentDescription = ui("添加附件"))
                     }
                     DropdownMenu(expanded = attachmentMenuOpen, onDismissRequest = { attachmentMenuOpen = false }) {
                         DropdownMenuItem(
-                            text = { Text("从相册选择") },
+                            text = { Text(ui("从相册选择")) },
                             leadingIcon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
                             onClick = { attachmentMenuOpen = false; onImage() },
                         )
                         DropdownMenuItem(
-                            text = { Text("拍照") },
+                            text = { Text(ui("拍照")) },
                             leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null) },
                             onClick = { attachmentMenuOpen = false; onCamera() },
                         )
                         DropdownMenuItem(
-                            text = { Text("选择文件") },
+                            text = { Text(ui("选择文件")) },
                             leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) },
                             onClick = { attachmentMenuOpen = false; onFile() },
                         )
@@ -1921,7 +1964,7 @@ private fun Composer(
                 if (canStop) {
                     TextButton(onClick = viewModel::stopCurrentTurn, enabled = !state.abortingRun) {
                         if (state.abortingRun) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                        else Text("停止本轮")
+                        else Text(ui("停止本轮"))
                     }
                 }
                 Button(
@@ -1936,7 +1979,7 @@ private fun Composer(
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     Spacer(Modifier.width(6.dp))
-                    Text(if (state.enqueueing) "发送中" else "发送")
+                    Text(if (state.enqueueing) ui("发送中") else ui("发送"))
                 }
             }
         }
@@ -1959,22 +2002,22 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = viewModel::closeBrief) { Text("‹ 会话") }
+                TextButton(onClick = viewModel::closeBrief) { Text(ui("‹ 会话")) }
                 Column(Modifier.weight(1f)) {
-                    Text("产物与关联工作", style = MaterialTheme.typography.headlineSmall)
+                    Text(ui("产物与关联工作"), style = MaterialTheme.typography.headlineSmall)
                     Text(brief.createdAt, style = MaterialTheme.typography.labelSmall)
                 }
                 IconButton(onClick = { shareBrief(context, brief.text) }) {
-                    Icon(Icons.Default.Share, contentDescription = "分享结果")
+                    Icon(Icons.Default.Share, contentDescription = ui("分享结果"))
                 }
             }
         }
         brief.workItemId?.let { id ->
             item {
-                HolonSection("关联工作", eyebrow = "WORK ITEM") {
+                HolonSection(ui("关联工作"), eyebrow = ui("WORK ITEM")) {
                     val item = state.workItems.firstOrNull { it.workItemId == id }
-                    Text(item?.objective ?: "这项工作的详情可直接打开，不依赖工作列表是否已加载。")
-                    ResultLinkRow("查看工作详情", if (state.busy) "正在读取" else "打开") {
+                    Text(item?.objective ?: ui("这项工作的详情可直接打开，不依赖工作列表是否已加载。"))
+                    ResultLinkRow(ui("查看工作详情"), if (state.busy) ui("正在读取") else ui("打开")) {
                         viewModel.openRelatedWorkItem(id)
                     }
                 }
@@ -1982,7 +2025,7 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
         }
         if (brief.attachments.isNotEmpty()) {
             item {
-                Text("产物", style = MaterialTheme.typography.headlineSmall)
+                Text(ui("产物"), style = MaterialTheme.typography.headlineSmall)
             }
             itemsIndexed(brief.attachments) { _, attachment ->
                 Surface(
@@ -1996,9 +2039,9 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
                         Text(attachment.kind, style = MaterialTheme.typography.labelSmall)
                         Text(
                             when {
-                                attachment.uri == null -> "此产物没有可读取 locator"
-                                attachment.uri?.startsWith("workspace://") == true -> "受保护的工作区产物，可通过当前 session 读取"
-                                else -> "不支持的产物 locator"
+                                attachment.uri == null -> ui("此产物没有可读取 locator")
+                                attachment.uri?.startsWith("workspace://") == true -> ui("受保护的工作区产物，可通过当前 session 读取")
+                                else -> ui("不支持的产物 locator")
                             },
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             style = MaterialTheme.typography.bodySmall,
@@ -2017,14 +2060,14 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
                                 onClick = { viewModel.prepareArtifact(locator, attachment.name) },
                                 enabled = !state.busy,
                             ) {
-                                Text(if (state.busy) "正在读取…" else "预览产物")
+                                Text(if (state.busy) ui("正在读取…") else ui("预览产物"))
                             }
                             if (prepared?.locator == locator) {
                                 ArtifactPreview(prepared)
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    TextButton(onClick = { saveArtifact.launch(prepared.fileName) }) { Text("下载") }
-                                    TextButton(onClick = { shareArtifact(context, prepared) }) { Text("分享") }
-                                    TextButton(onClick = viewModel::clearPreparedArtifact) { Text("关闭预览") }
+                                    TextButton(onClick = { saveArtifact.launch(prepared.fileName) }) { Text(ui("下载")) }
+                                    TextButton(onClick = { shareArtifact(context, prepared) }) { Text(ui("分享")) }
+                                    TextButton(onClick = viewModel::clearPreparedArtifact) { Text(ui("关闭预览")) }
                                 }
                             }
                         }
@@ -2041,7 +2084,7 @@ private fun shareBrief(context: Context, text: String) {
         type = "text/plain"
         putExtra(Intent.EXTRA_TEXT, text)
     }
-    context.startActivity(Intent.createChooser(intent, "分享结果").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    context.startActivity(Intent.createChooser(intent, ui("分享结果")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 @Composable
@@ -2057,7 +2100,7 @@ private fun ArtifactPreview(artifact: PreparedArtifact) {
                 val image = bitmap!!.getOrThrow()!!.asImageBitmap()
                 Image(
                     bitmap = image,
-                    contentDescription = "${artifact.fileName}，点按放大",
+                    contentDescription = ui("${artifact.fileName}，点按放大"),
                     modifier = Modifier.fillMaxWidth().height(240.dp).clickable { expanded = true },
                 )
                 if (expanded) {
@@ -2088,12 +2131,12 @@ private fun ArtifactPreview(artifact: PreparedArtifact) {
                             IconButton(
                                 onClick = { expanded = false },
                                 modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
-                            ) { Icon(Icons.Default.Close, contentDescription = "关闭图片预览", tint = Color.White) }
+                            ) { Icon(Icons.Default.Close, contentDescription = ui("关闭图片预览"), tint = Color.White) }
                         }
                     }
                 }
             } else {
-                EmptyHint(if (bitmap == null) "正在读取图片…" else "图片无法预览，可保存或分享后打开")
+                EmptyHint(if (bitmap == null) ui("正在读取图片…") else ui("图片无法预览，可保存或分享后打开"))
             }
         }
         artifact.mediaType.startsWith("text/") || artifact.mediaType == "application/json" -> {
@@ -2101,7 +2144,7 @@ private fun ArtifactPreview(artifact: PreparedArtifact) {
                 value = withContext(Dispatchers.IO) { readTextPreview(file) }
             }
             if (preview == null) {
-                EmptyHint("正在读取文本预览…")
+                EmptyHint(ui("正在读取文本预览…"))
             } else {
                 val text = preview!!
                 if (artifact.mediaType == "text/markdown" || artifact.fileName.endsWith(".md", ignoreCase = true)) {
@@ -2115,10 +2158,10 @@ private fun ArtifactPreview(artifact: PreparedArtifact) {
                         }
                     }
                 }
-                if (text.truncated) Text("仅显示前 20,000 个字符；保存文件可查看完整内容", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (text.truncated) Text(ui("仅显示前 20,000 个字符；保存文件可查看完整内容"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
-        else -> EmptyHint("${artifact.mediaType} 不支持内置预览，可下载或分享后打开")
+        else -> EmptyHint(ui("${artifact.mediaType} 不支持内置预览，可下载或分享后打开"))
     }
 }
 
@@ -2137,7 +2180,7 @@ private fun readTextPreview(file: File): TextArtifactPreview =
             TextArtifactPreview(String(buffer, 0, count.coerceAtMost(20_000)), count > 20_000)
         }
     } catch (_: IOException) {
-        TextArtifactPreview("无法读取文本预览，请重新读取或保存后打开", false)
+        TextArtifactPreview(ui("无法读取文本预览，请重新读取或保存后打开"), false)
     }
 
 private fun decodeSampledPreview(file: File): android.graphics.Bitmap? =
@@ -2159,7 +2202,7 @@ internal fun ErrorBanner(message: String, onDismiss: (() -> Unit)?) {
     ) {
         Row(Modifier.padding(horizontal = 12.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(
-                message,
+                ui(message),
                 modifier = Modifier.weight(1f),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onErrorContainer,
@@ -2169,7 +2212,7 @@ internal fun ErrorBanner(message: String, onDismiss: (() -> Unit)?) {
                     onClick = it,
                     colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onErrorContainer),
                 ) {
-                    Text("关闭")
+                    Text(ui("关闭"))
                 }
             }
         }
@@ -2215,10 +2258,10 @@ private fun relativeTime(value: String): String {
     val duration = runCatching { Duration.between(Instant.parse(value), Instant.now()) }.getOrNull() ?: return value
     val seconds = duration.seconds.coerceAtLeast(0)
     return when {
-        seconds < 60 -> "刚刚"
-        seconds < 3_600 -> "${seconds / 60} 分钟前"
-        seconds < 86_400 -> "${seconds / 3_600} 小时前"
-        seconds < 604_800 -> "${seconds / 86_400} 天前"
+        seconds < 60 -> ui("刚刚")
+        seconds < 3_600 -> ui("${seconds / 60} 分钟前")
+        seconds < 86_400 -> ui("${seconds / 3_600} 小时前")
+        seconds < 604_800 -> ui("${seconds / 86_400} 天前")
         else -> value.take(10)
     }
 }
@@ -2231,26 +2274,26 @@ private fun relativeFileTime(value: Long): String {
     val duration = Duration.between(Instant.ofEpochMilli(epochMillis), Instant.now())
     val seconds = duration.seconds.coerceAtLeast(0)
     return when {
-        seconds < 60 -> "刚刚"
-        seconds < 3_600 -> "${seconds / 60} 分钟前"
-        seconds < 86_400 -> "${seconds / 3_600} 小时前"
-        seconds < 604_800 -> "${seconds / 86_400} 天前"
-        else -> "${seconds / 604_800} 周前"
+        seconds < 60 -> ui("刚刚")
+        seconds < 3_600 -> ui("${seconds / 60} 分钟前")
+        seconds < 86_400 -> ui("${seconds / 3_600} 小时前")
+        seconds < 604_800 -> ui("${seconds / 86_400} 天前")
+        else -> ui("${seconds / 604_800} 周前")
     }
 }
 
 private fun workItemStatusLabel(item: HolonWorkItemSnapshot): String =
     when {
-        item.blockedBy != null -> "受阻"
-        item.state == "completed" -> "已完成"
-        item.readiness == "ready" -> "可继续"
-        item.schedulingState == "waiting" -> "等待中"
+        item.blockedBy != null -> ui("受阻")
+        item.state == "completed" -> ui("已完成")
+        item.readiness == "ready" -> ui("可继续")
+        item.schedulingState == "waiting" -> ui("等待中")
         else -> item.readiness ?: item.state
     }
 
 private fun HolonWorkItemSnapshot.listSummary(): String =
     if (state == "completed") {
-        resultSummary?.takeIf(String::isNotBlank)?.let(::plainTextPreview) ?: "查看工作详情"
+        resultSummary?.takeIf(String::isNotBlank)?.let(::plainTextPreview) ?: ui("查看工作详情")
     } else {
         focus
             ?.takeUnless {
@@ -2259,7 +2302,7 @@ private fun HolonWorkItemSnapshot.listSummary(): String =
                     it.equals(schedulingState, ignoreCase = true)
             }
             ?: resultSummary?.takeIf(String::isNotBlank)?.let(::plainTextPreview)
-            ?: "等待更多信息"
+            ?: ui("等待更多信息")
     }
 
 private fun workItemTone(item: HolonWorkItemSnapshot): StatusTone =
@@ -2289,15 +2332,15 @@ private fun AgentSummary.statusTone(): StatusTone =
 
 private fun AgentSummary.statusLabel(): String =
     when {
-        needsReply() -> "等你回应"
-        schedulingPosture == "active_turn" -> "工作中"
-        schedulingPosture == "has_queued_input" -> "已排队"
-        schedulingPosture == "has_runnable_work" -> "待运行"
-        schedulingPosture == "waiting_for_external" -> "等外部变化"
-        schedulingPosture == "waiting_for_task" -> "等任务结果"
-        schedulingPosture == "blocked" -> "受阻"
-        schedulingPosture == "idle" -> "空闲"
-        runtimeStatus.lowercase() == "offline" -> "离线缓存"
+        needsReply() -> ui("等你回应")
+        schedulingPosture == "active_turn" -> ui("工作中")
+        schedulingPosture == "has_queued_input" -> ui("已排队")
+        schedulingPosture == "has_runnable_work" -> ui("待运行")
+        schedulingPosture == "waiting_for_external" -> ui("等外部变化")
+        schedulingPosture == "waiting_for_task" -> ui("等任务结果")
+        schedulingPosture == "blocked" -> ui("受阻")
+        schedulingPosture == "idle" -> ui("空闲")
+        runtimeStatus.lowercase() == "offline" -> ui("离线缓存")
         else -> runtimeStatus
     }
 
@@ -2329,7 +2372,7 @@ private fun shareArtifact(context: Context, artifact: PreparedArtifact) {
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-    context.startActivity(Intent.createChooser(intent, "分享 ${artifact.fileName}").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    context.startActivity(Intent.createChooser(intent, ui("分享 ${artifact.fileName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 private fun formatBytes(value: Long): String =

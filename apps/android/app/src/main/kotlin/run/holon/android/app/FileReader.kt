@@ -129,7 +129,7 @@ internal fun FileReaderScreen(
     artifact: PreparedArtifact,
     title: String,
     onBack: () -> Unit,
-    backLabel: String = if (title == "完整计划") "工作详情" else "文件列表",
+    backLabel: String = if (title == ui("完整计划")) ui("工作详情") else ui("文件列表"),
     onSave: (PreparedArtifact, Uri) -> Unit,
     onShare: () -> Unit,
 ) {
@@ -157,28 +157,28 @@ internal fun FileReaderScreen(
     ) {
         item {
             Column(Modifier.padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                TextButton(onClick = onBack) { Text("‹ 返回$backLabel") }
+                TextButton(onClick = onBack) { Text(ui("‹ 返回$backLabel")) }
                 Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 Text(artifact.fileName, style = MaterialTheme.typography.headlineSmall)
                 Text("${readerFileSize(file.length())} · ${artifact.mediaType}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { saveFile.launch(artifact.fileName) }) { Text("保存") }
-                    TextButton(onClick = onShare) { Text("分享或打开") }
+                    TextButton(onClick = { saveFile.launch(artifact.fileName) }) { Text(ui("保存")) }
+                    TextButton(onClick = onShare) { Text(ui("分享或打开")) }
                 }
                 if (isMarkdown || language != null) {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (canRenderMarkdown) {
-                            FilterChip(selected = renderedMarkdown, onClick = { renderedMarkdown = !renderedMarkdown }, label = { Text("排版") })
+                            FilterChip(selected = renderedMarkdown, onClick = { renderedMarkdown = !renderedMarkdown }, label = { Text(ui("排版")) })
                         }
                         if (canHighlight) {
-                            FilterChip(selected = highlighted, onClick = { highlighted = !highlighted }, label = { Text("代码高亮") })
+                            FilterChip(selected = highlighted, onClick = { highlighted = !highlighted }, label = { Text(ui("代码高亮")) })
                         }
-                        FilterChip(selected = wrapLines, onClick = { wrapLines = !wrapLines }, label = { Text("自动换行") })
+                        FilterChip(selected = wrapLines, onClick = { wrapLines = !wrapLines }, label = { Text(ui("自动换行")) })
                     }
                     if (isMarkdown && !canRenderMarkdown) {
-                        Text("文件较大，使用源码模式连续阅读", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(ui("文件较大，使用源码模式连续阅读"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else if (language != null && !canHighlight) {
-                        Text("文件较大，已关闭高亮以保持滚动流畅", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(ui("文件较大，已关闭高亮以保持滚动流畅"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
@@ -186,19 +186,19 @@ internal fun FileReaderScreen(
         when {
             index == null -> item { CircularProgressIndicator(modifier = Modifier.padding(8.dp)) }
             index?.isFailure == true -> item {
-                Text("无法读取文件：${index?.exceptionOrNull()?.message ?: "文件已不可用"}", color = MaterialTheme.colorScheme.error)
+                Text(ui("无法读取文件：${index?.exceptionOrNull()?.message ?: "文件已不可用"}"), color = MaterialTheme.colorScheme.error)
             }
             renderedMarkdown -> item { MarkdownFileBody(file) }
             else -> {
                 val indexed = index!!.getOrThrow()
-                if (indexed.pages.isEmpty()) item { Text("文件为空", color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                if (indexed.pages.isEmpty()) item { Text(ui("文件为空"), color = MaterialTheme.colorScheme.onSurfaceVariant) }
                 items(indexed.pages.size, key = { it }) { pageIndex ->
                     TextFilePage(indexed, pageIndex, language.takeIf { highlighted }, wrapLines)
                 }
             }
         }
         if (index?.isSuccess == true) item {
-            Text("全文可滚动查看", modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(ui("全文可滚动查看"), modifier = Modifier.padding(top = 12.dp), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -210,7 +210,7 @@ private fun MarkdownFileBody(file: File) {
     }
     when {
         body == null -> CircularProgressIndicator(modifier = Modifier.padding(8.dp))
-        body?.isFailure == true -> Text("无法读取 Markdown：${body?.exceptionOrNull()?.message ?: "文件已不可用"}", color = MaterialTheme.colorScheme.error)
+        body?.isFailure == true -> Text(ui("无法读取 Markdown：${body?.exceptionOrNull()?.message ?: "文件已不可用"}"), color = MaterialTheme.colorScheme.error)
         else -> MarkdownText(body!!.getOrThrow())
     }
 }
@@ -225,7 +225,7 @@ private fun TextFilePage(indexed: IndexedTextFile, index: Int, language: String?
         SelectionContainer {
             when {
                 page == null -> CircularProgressIndicator(modifier = Modifier.padding(8.dp))
-                page?.isFailure == true -> Text("这一段无法读取", color = MaterialTheme.colorScheme.error)
+                page?.isFailure == true -> Text(ui("这一段无法读取"), color = MaterialTheme.colorScheme.error)
                 language != null -> HighlightedCodePage(page!!.getOrThrow(), language, horizontal, wrapLines)
                 else -> Text(
                     page!!.getOrThrow(),

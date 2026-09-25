@@ -45,15 +45,21 @@ internal enum class AppPhase {
     Ready,
 }
 
-internal enum class MainDestination(val label: String) {
+internal enum class MainDestination(private val sourceLabel: String) {
     Agents("Agents"),
     Settings("设置"),
+    ;
+
+    val label: String get() = ui(sourceLabel)
 }
 
-internal enum class AgentSection(val label: String) {
+internal enum class AgentSection(private val sourceLabel: String) {
     Results("结果"),
     Work("工作"),
     Files("文件"),
+    ;
+
+    val label: String get() = ui(sourceLabel)
 }
 
 internal data class FileLinkOrigin(

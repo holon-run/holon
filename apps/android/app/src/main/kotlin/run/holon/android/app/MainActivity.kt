@@ -20,6 +20,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        UiCopy.initialize(this)
         enableEdgeToEdge()
         lifecycle.addObserver(
             LifecycleEventObserver { _, event ->
@@ -34,7 +35,7 @@ class MainActivity : ComponentActivity() {
                     finish()
                 } else {
                     lastExitRequestAt = now
-                    Toast.makeText(this@MainActivity, "再按一次返回桌面", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, ui("再按一次返回桌面"), Toast.LENGTH_SHORT).show()
                 }
             }
         }
