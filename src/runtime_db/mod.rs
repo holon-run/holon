@@ -28,6 +28,7 @@ pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
 pub mod turn_settlement_repair;
 pub mod types;
+pub mod unread;
 pub mod write_queue;
 
 pub mod observer_sync;

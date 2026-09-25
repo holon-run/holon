@@ -3694,6 +3694,25 @@ CREATE INDEX idx_agent_deletion_jobs_status_retry_created
         name: WORK_ITEM_AGENT_UPDATED_INDEX_NAME,
         sql: "",
     },
+    Migration {
+        version: 73,
+        name: "per_agent_brief_read_cursors",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_brief_read_cursors (
+  principal_id TEXT NOT NULL,
+  visibility_scope_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  event_log_epoch TEXT NOT NULL,
+  read_through_event_seq INTEGER NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (principal_id, visibility_scope_id, agent_id, event_log_epoch)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_brief_read_cursors_agent
+  ON agent_brief_read_cursors(agent_id, updated_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

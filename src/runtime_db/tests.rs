@@ -798,6 +798,74 @@ mod tests {
     }
 
     #[test]
+    fn brief_read_cursor_counts_new_briefs_and_is_monotonic_across_reopen() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities()
+            .upsert(&agent_identity("agent-a", 0))?;
+
+        let initial = db
+            .brief_read_state("principal-1", "scope-1", "agent-a")?
+            .expect("active public agent");
+        assert_eq!(initial.event_head_seq, 0);
+        assert_eq!(initial.read_through_event_seq, 0);
+        assert_eq!(initial.unread_count, 0);
+
+        let append = |db: &RuntimeDb, text: &str| -> Result<u64> {
+            let brief =
+                BriefRecord::new("agent-a", crate::types::BriefKind::Result, text, None, None);
+            let event = crate::types::brief_created_event_for(&brief)?;
+            Ok(db
+                .evidence()
+                .append_brief_with_created_event(Some("agent-a"), &brief, &event, &[])?
+                .event
+                .event_seq)
+        };
+        let first_seq = append(&db, "first")?;
+        let second_seq = append(&db, "second")?;
+        assert!(second_seq > first_seq);
+
+        let unread = db
+            .brief_read_state("principal-1", "scope-1", "agent-a")?
+            .expect("active public agent");
+        assert_eq!(unread.read_through_event_seq, 0);
+        assert_eq!(unread.unread_count, 2);
+
+        let first_mark = db
+            .mark_brief_read("principal-1", "scope-1", "agent-a", first_seq)?
+            .expect("active public agent");
+        assert_eq!(first_mark.applied_read_through_event_seq, first_seq);
+        assert_eq!(first_mark.state.unread_count, 1);
+        let revision = first_mark.state.revision;
+
+        // Repeated and out-of-order requests are no-ops, including revision.
+        let stale_mark = db
+            .mark_brief_read("principal-1", "scope-1", "agent-a", 0)?
+            .expect("active public agent");
+        assert_eq!(
+            stale_mark.applied_read_through_event_seq,
+            first_mark.applied_read_through_event_seq
+        );
+        assert_eq!(stale_mark.state.revision, revision);
+        assert_eq!(stale_mark.state.unread_count, 1);
+
+        let all_mark = db
+            .mark_brief_read("principal-1", "scope-1", "agent-a", u64::MAX)?
+            .expect("active public agent");
+        assert_eq!(all_mark.applied_read_through_event_seq, second_seq);
+        assert_eq!(all_mark.state.unread_count, 0);
+
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let persisted = reopened
+            .brief_read_state("principal-1", "scope-1", "agent-a")?
+            .expect("active public agent");
+        assert_eq!(persisted.read_through_event_seq, second_seq);
+        assert_eq!(persisted.unread_count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn append_brief_with_created_event_rejects_conflicting_relink_and_rolls_back() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
