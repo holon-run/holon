@@ -70,6 +70,7 @@ fn state_for_connection(
     principal_id: &str,
     visibility_scope_id: &str,
     agent_id: &str,
+    initialize_cursor: bool,
 ) -> Result<BriefReadState> {
     let epoch: String = connection.query_row(
         "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
@@ -78,28 +79,36 @@ fn state_for_connection(
     )?;
     let head = event_head(connection, agent_id)?;
     let oldest = oldest_retained(connection, agent_id)?;
-    connection.execute(
-        "INSERT OR IGNORE INTO agent_brief_read_cursors (
-            principal_id, visibility_scope_id, agent_id, event_log_epoch,
-            read_through_event_seq, revision, updated_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
-        params![
-            principal_id,
-            visibility_scope_id,
-            agent_id,
-            epoch,
-            i64::try_from(head).context("event head exceeds SQLite integer range")?,
-            timestamp(),
-        ],
-    )?;
-    let (cursor, revision): (i64, i64) = connection.query_row(
-        "SELECT read_through_event_seq, revision
+    if initialize_cursor {
+        connection.execute(
+            "INSERT OR IGNORE INTO agent_brief_read_cursors (
+                principal_id, visibility_scope_id, agent_id, event_log_epoch,
+                read_through_event_seq, revision, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6)",
+            params![
+                principal_id,
+                visibility_scope_id,
+                agent_id,
+                epoch,
+                i64::try_from(head).context("event head exceeds SQLite integer range")?,
+                timestamp(),
+            ],
+        )?;
+    }
+    let cursor_row: Option<(i64, i64)> = connection
+        .query_row(
+            "SELECT read_through_event_seq, revision
          FROM agent_brief_read_cursors
          WHERE principal_id = ?1 AND visibility_scope_id = ?2
            AND agent_id = ?3 AND event_log_epoch = ?4",
-        params![principal_id, visibility_scope_id, agent_id, epoch],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+            params![principal_id, visibility_scope_id, agent_id, epoch],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let (cursor, revision) = cursor_row.unwrap_or((
+        i64::try_from(head).context("event head exceeds SQLite integer range")?,
+        0,
+    ));
     let cursor = as_u64(cursor, "read cursor")?;
     let revision = as_u64(revision, "cursor revision")?;
     let retention_gap = oldest > 0 && cursor.saturating_add(1) < oldest;
@@ -155,6 +164,7 @@ impl crate::runtime_db::RuntimeDb {
                 principal_id,
                 visibility_scope_id,
                 agent_id,
+                true,
             )?))
         })
     }
@@ -178,7 +188,13 @@ impl crate::runtime_db::RuntimeDb {
         let states = agent_ids
             .iter()
             .map(|agent_id| {
-                state_for_connection(&transaction, principal_id, visibility_scope_id, agent_id)
+                state_for_connection(
+                    &transaction,
+                    principal_id,
+                    visibility_scope_id,
+                    agent_id,
+                    false,
+                )
             })
             .collect::<Result<Vec<_>>>()?;
         transaction.commit()?;
@@ -204,8 +220,13 @@ impl crate::runtime_db::RuntimeDb {
             if public.is_none() {
                 return Ok(None);
             }
-            let state =
-                state_for_connection(transaction, principal_id, visibility_scope_id, agent_id)?;
+            let state = state_for_connection(
+                transaction,
+                principal_id,
+                visibility_scope_id,
+                agent_id,
+                true,
+            )?;
             let applied = requested_cursor.min(state.event_head_seq);
             transaction.execute(
                 "UPDATE agent_brief_read_cursors
@@ -225,8 +246,13 @@ impl crate::runtime_db::RuntimeDb {
                     state.event_log_epoch,
                 ],
             )?;
-            let state =
-                state_for_connection(transaction, principal_id, visibility_scope_id, agent_id)?;
+            let state = state_for_connection(
+                transaction,
+                principal_id,
+                visibility_scope_id,
+                agent_id,
+                true,
+            )?;
             Ok(Some(MarkBriefReadResult {
                 applied_read_through_event_seq: state.read_through_event_seq,
                 state,

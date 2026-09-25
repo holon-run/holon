@@ -914,6 +914,31 @@ mod tests {
     }
 
     #[test]
+    fn brief_read_states_does_not_create_missing_cursors() -> Result<()> {
+        let (_temp_dir, db_path, lock_path) = temp_paths()?;
+        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.agent_identities()
+            .upsert(&agent_identity("agent-a", 0))?;
+
+        let state = db
+            .brief_read_states("principal-1", "scope-1")?
+            .into_iter()
+            .find(|state| state.agent_id == "agent-a")
+            .expect("active public agent");
+        assert_eq!(state.read_through_event_seq, state.event_head_seq);
+        assert_eq!(state.revision, 0);
+        assert_eq!(state.unread_count, 0);
+
+        let connection = rusqlite::Connection::open(&db_path)?;
+        let cursor_count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM agent_brief_read_cursors", [], |row| {
+                row.get(0)
+            })?;
+        assert_eq!(cursor_count, 0);
+        Ok(())
+    }
+
+    #[test]
     fn append_brief_with_created_event_rejects_conflicting_relink_and_rolls_back() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
