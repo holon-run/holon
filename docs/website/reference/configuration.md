@@ -3,7 +3,7 @@ title: Configuration
 summary: Holon configuration files, keys, credentials, environment variables, and diagnostics.
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.44.1. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.45.0. -->
 
 # Configuration Reference
 
@@ -165,6 +165,44 @@ schema without triggering cleanup; other current-binary commands cannot.
 Holon v0.31.1 is the rollback release for deployments that still require the
 legacy scheduler. Use it only with a pre-migration database backup; a database
 migrated by the follow-up schema cleanup is not downgrade-compatible.
+
+### Decision Subsystem Settings
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `decision.enabled` | boolean | `false` | Enable the optional Decision provider subsystem |
+| `decision.model` | model_route_ref | unset | Shared provider model route used by Decision; must explicitly advertise Decision capability |
+| `decision.local_onnx.enabled` | boolean | `false` | Enable the embedded local ONNX Decision provider |
+| `decision.local_onnx.preset` | string | `jev-selector-q4f16` | Built-in local ONNX model preset name |
+| `decision.local_onnx.model_dir` | string | unset | Local directory containing ONNX model files and manifest |
+| `decision.local_onnx.variant` | string | `q4f16` | Model quantization or variant identifier |
+| `decision.local_onnx.num_threads` | integer | `1` | CPU thread count for local ONNX inference |
+| `decision.local_onnx.checksum` | string | unset | Optional SHA-256 verification digest for the model directory |
+| `decision.timeout_ms` | integer | unset | Provider deadline in milliseconds |
+| `decision.max_tokens` | integer | unset | Maximum output tokens for Decision responses |
+| `decision.concurrency` | integer | unset | Maximum concurrent Decision provider requests |
+| `decision.queue_capacity` | integer | unset | Maximum queued Decision provider requests |
+| `decision.tools.enabled` | boolean | `false` | Expose the advisory Decision tool (`AdvisoryDecision`) to agents |
+| `decision.tools.max_calls_per_turn` | integer | unset | Maximum advisory tool calls allowed in one turn (unset means unlimited) |
+| `decision.tools.timeout_ms` | integer | unset | Advisory tool timeout in milliseconds |
+| `decision.tools.min_confidence` | float | unset | Minimum confidence threshold (0.0 to 1.0); decisions below this threshold abstain |
+
+```bash
+# Enable the Decision subsystem and advisory tool
+holon config set decision.enabled true
+holon config set decision.tools.enabled true
+
+# Route decisions to a dedicated provider model
+holon config set decision.model "typesafe@default/typesafe-ai/jev"
+
+# Or enable the zero-egress local ONNX provider
+holon config set decision.local_onnx.enabled true
+holon config set decision.local_onnx.preset "jev-selector-q4f16"
+
+# Set safety guardrails
+holon config set decision.tools.max_calls_per_turn 3
+holon config set decision.tools.min_confidence 0.65
+```
 
 ## Credential Management
 
@@ -530,6 +568,18 @@ different network interface than the default localhost address.
 `HOLON_CALLBACK_BASE_URL` environment variable. This keeps same-host
 webhook callbacks working even when `advertise_url` is set to a remote
 address.
+
+## Decision Subsystem
+
+The Decision subsystem provides non-authoritative advisory second opinions to agents facing high-ambiguity choices. It is isolated from the primary conversation loop:
+
+- **Advisory by design:** Results from `AdvisoryDecision` provide structured evidence (ranked options, choice, confidence, reasoning). They never grant permissions, bypass execution gates, or alter lifecycle state.
+- **Provider options:** Holon supports three Decision provider kinds:
+  - **Local ONNX:** Embedded zero-egress inference using the `local-onnx` feature, pre-packaged presets (such as `jev-selector-q4f16`), and question-tail encoding.
+  - **Native Jev:** Direct HTTP integration with TypeSafe Jev endpoints.
+  - **OpenAI-compatible:** Standard remote model endpoints advertising Decision capability.
+- **Route isolation:** Decision models require explicit capability advertisement and dedicated routes, preventing decision traffic from competing with primary agent context.
+- **Defensive guardrails:** Configure `decision.tools.max_calls_per_turn` to cap per-turn invocations and `decision.tools.min_confidence` to force explicit abstentions when confidence is low.
 
 ## See Also
 

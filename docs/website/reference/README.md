@@ -43,7 +43,7 @@ baselines are refreshed from source instead of edited here.
 <!-- INDEX:START -->
 
 - [CLI reference](./cli.md)
-  Holon's command-line interface — verified against holon --help (v0.44.1).
+  Holon's command-line interface — verified against holon --help (v0.45.0).
   <!-- mdorigin:index kind=article -->
 
 - [CLI contract inventory](./cli-contract-inventory.md)

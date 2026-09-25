@@ -77,4 +77,12 @@ how to confirm success.
   Work through a stalled, failing, or silent task to a concrete next step.
   <!-- mdorigin:index kind=article -->
 
+- [Configure advisory decisions](./configure-decision-subsystem.md)
+  Set up a dedicated Decision provider and enable the AdvisoryDecision tool to give agents non-authoritative second opinions.
+  <!-- mdorigin:index kind=article -->
+
+- [Connect with the Android client](./connect-android-client.md)
+  Set up the native Android client, connect to a running Holon daemon, and manage agents from mobile.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

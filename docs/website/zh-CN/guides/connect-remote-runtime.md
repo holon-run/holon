@@ -125,6 +125,11 @@ holon tui --connect https://office:8787 --token-profile office
 holon tui --connect https://home:8787 --token-profile home
 ```
 
+### 通过 Android 客户端进行移动端访问
+
+你也可以使用原生的 Holon Android 客户端在手机或平板上连接远程运行时。输入远程 HTTPS 基础 URL 和访问凭据即可建立经过系统 Keystore 加密的移动端会话。详见[连接 Android 客户端](/zh-CN/guides/connect-android-client.md)。
+
+
 ## Daemon 管理
 
 daemon 启动后，常规管理命令都能远程使用：
@@ -152,3 +157,4 @@ holon daemon stop
 - [排查 Holon 任务问题](/zh-CN/guides/troubleshooting.md) — 连接问题
 - [通过 HTTP 自动化 Holon](/zh-CN/guides/automate-over-http.md) — 用代码驱动 Holon
 - [配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md) — 单点登录与审计归属
+- [连接 Android 客户端](/zh-CN/guides/connect-android-client.md) — 在移动设备上管理 Agent

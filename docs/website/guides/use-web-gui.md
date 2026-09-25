@@ -216,6 +216,7 @@ Configure Holon from the browser:
 - **Control plane & bearer token** — configure and store Bearer authentication tokens directly in the UI when connecting to remote or authenticated Holon instances.
 - **Runtime configuration** — view the current execution environment,
   attached workspaces, and policy snapshot.
+- **Decision settings** — configure decision routes and providers directly from the browser. Switch between remote endpoints (such as TypeSafe Jev or OpenAI-compatible models) and zero-egress local ONNX presets, view decision telemetry, and toggle advisory tool access.
 
 ### Internationalization (i18n)
 

@@ -3,7 +3,7 @@ title: CLI stability policy
 summary: Support policy for Holon's command-line surfaces and machine-readable output contracts.
 order: 12
 ---
-<!-- maintenance: hand-written policy page; review when CLI stability levels or change policy change. Last reviewed against v0.44.1. -->
+<!-- maintenance: hand-written policy page; review when CLI stability levels or change policy change. Last reviewed against v0.45.0. -->
 
 # CLI stability policy
 

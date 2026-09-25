@@ -45,7 +45,7 @@ order: 26
 
 | 家族 | 说明 | 示例工具 |
 |--------|-------------|---------------|
-| `CoreAgent` | 核心 agent 操作（状态、消息、记忆、工作项、调度、CLI/配置内省） | SendAgentMessage, MemorySearch, WaitFor, ListWorkItems |
+| `CoreAgent` | 核心 agent 操作（状态、消息、记忆、工作项、调度、CLI/配置内省） | SendAgentMessage, MemorySearch, WaitFor, ListWorkItems, AdvisoryDecision |
 | `LocalEnvironment` | 工作区本地操作 | ExecCommand, ApplyPatch, ViewImage, GetWorkspaceState, SwitchWorkspace, CreateWorktree |
 | `Web` | 公共 Web 访问 | WebFetch, WebSearch |
 | `AgentCreation` | agent 创建与受监督调用 | CreateAgent, InvokeAgent |

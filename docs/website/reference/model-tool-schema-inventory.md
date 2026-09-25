@@ -47,7 +47,7 @@ families in `src/types.rs` (`ToolCapabilityFamily`):
 
 | Family | Description | Example tools |
 |--------|-------------|---------------|
-| `CoreAgent` | Core agent operations (state, messaging, memory, work items, scheduling, CLI/config introspection) | SendAgentMessage, MemorySearch, WaitFor, ListWorkItems |
+| `CoreAgent` | Core agent operations (state, messaging, memory, work items, scheduling, CLI/config introspection) | SendAgentMessage, MemorySearch, WaitFor, ListWorkItems, AdvisoryDecision |
 | `LocalEnvironment` | Workspace-local operations | ExecCommand, ApplyPatch, ViewImage, GetWorkspaceState, SwitchWorkspace, CreateWorktree |
 | `Web` | Public web access | WebFetch, WebSearch |
 | `AgentCreation` | Agent creation and supervised invocation | CreateAgent, InvokeAgent |

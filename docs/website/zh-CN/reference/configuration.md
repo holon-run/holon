@@ -3,7 +3,7 @@ title: 配置
 summary: Holon 的配置文件、配置键、凭据、环境变量与诊断。
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.44.1. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.45.0. -->
 
 # 配置参考
 
@@ -154,6 +154,44 @@ holon config set api.cors.max_age_seconds 600
 
 对于仍需要旧调度器的部署，Holon v0.31.1 是回滚版本。仅在拥有迁移前数据库备份时使用它；
 经后续 schema 清理迁移过的数据库不支持降级。
+
+### Decision 子系统配置
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|---------|-------------|
+| `decision.enabled` | boolean | `false` | 启用可选的 Decision 提供者子系统 |
+| `decision.model` | model_route_ref | unset | Decision 使用的共享提供者模型路由；所选模型必须显式声明 Decision 能力 |
+| `decision.local_onnx.enabled` | boolean | `false` | 启用嵌入式本地 ONNX 决策提供者 |
+| `decision.local_onnx.preset` | string | `jev-selector-q4f16` | 内置本地 ONNX 模型预设名称 |
+| `decision.local_onnx.model_dir` | string | unset | 包含 ONNX 模型文件和 manifest 的本地目录 |
+| `decision.local_onnx.variant` | string | `q4f16` | 模型量化或变体标识 |
+| `decision.local_onnx.num_threads` | integer | `1` | 本地 ONNX 推理使用的 CPU 线程数 |
+| `decision.local_onnx.checksum` | string | unset | 模型目录的可选 SHA-256 校验和 |
+| `decision.timeout_ms` | integer | unset | 提供者请求超时时间（毫秒） |
+| `decision.max_tokens` | integer | unset | Decision 响应的最大输出 Token 数 |
+| `decision.concurrency` | integer | unset | 最大并发 Decision 请求数 |
+| `decision.queue_capacity` | integer | unset | 最大排队 Decision 请求数 |
+| `decision.tools.enabled` | boolean | `false` | 向 Agent 暴露非权威决策工具（`AdvisoryDecision`） |
+| `decision.tools.max_calls_per_turn` | integer | unset | 单轮对话允许的最大咨询工具调用次数（未设置表示不限） |
+| `decision.tools.timeout_ms` | integer | unset | 咨询工具超时时间（毫秒） |
+| `decision.tools.min_confidence` | float | unset | 最小置信度阈值（0.0 至 1.0）；低于该阈值时显式弃权（abstain） |
+
+```bash
+# 启用 Decision 子系统与咨询工具
+holon config set decision.enabled true
+holon config set decision.tools.enabled true
+
+# 将决策路由至专用模型
+holon config set decision.model "typesafe@default/typesafe-ai/jev"
+
+# 或启用零外发的本地 ONNX 决策提供者
+holon config set decision.local_onnx.enabled true
+holon config set decision.local_onnx.preset "jev-selector-q4f16"
+
+# 设置安全防护上限
+holon config set decision.tools.max_calls_per_turn 3
+holon config set decision.tools.min_confidence 0.65
+```
 
 ## 凭据管理
 
@@ -502,6 +540,18 @@ Holon 把**监听地址**和**通告地址**分开：
 `callback_base_url` 始终由监听端口推导为 `http://127.0.0.1:<port>`，除非通过
 `HOLON_CALLBACK_BASE_URL` 环境变量覆盖。这样即便 `advertise_url` 指向远程地址，同主机
 webhook 回调仍可正常工作。
+
+## Decision 子系统
+
+Decision 子系统在 Agent 面临高歧义选择时提供非权威的咨询性第二意见（advisory second opinion），并与主对话模型解耦：
+
+- **设计上非权威：** `AdvisoryDecision` 的结果属于结构化证据（排序选项、建议选择、置信度与推理摘要）。它绝不授予权限、不绕过执行门禁，也不改变生命周期状态。
+- **提供者类型：** Holon 支持三种 Decision 提供者：
+  - **本地 ONNX：** 基于 `local-onnx` feature 的嵌入式零网络外发推理，采用内置预设（如 `jev-selector-q4f16`）与 question-tail 尾部编码。
+  - **原生 Jev：** 直接对接 TypeSafe Jev 协议的 HTTP 端点。
+  - **OpenAI 兼容：** 显式声明 Decision 能力的标准远程模型端点。
+- **路由隔离：** Decision 模型需要显式能力声明与独立路由，避免决策流量与主 Agent 对话上下文产生资源争用。
+- **防御性防护：** 可配置 `decision.tools.max_calls_per_turn` 限制每轮最大调用次数，并通过 `decision.tools.min_confidence` 在置信度不足时强制弃权。
 
 ## 另请参阅
 

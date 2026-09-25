@@ -132,6 +132,11 @@ holon tui --connect https://office:8787 --token-profile office
 holon tui --connect https://home:8787 --token-profile home
 ```
 
+### Mobile Access via Android Client
+
+You can also connect to remote runtimes from an Android phone or tablet using the native Holon Android client. Provide your remote HTTPS base URL and token to start an encrypted mobile session. See [Connect with the Android client](/guides/connect-android-client.md).
+
+
 ## Daemon Management
 
 Once the daemon is running, standard management commands work remotely:
@@ -166,4 +171,5 @@ holon daemon stop
 - [HTTP control plane](/reference/http-control-plane.md) — API reference for programmatic access
 - [Troubleshoot a Holon task](/guides/troubleshooting.md) — connection problems
 - [Automate Holon over HTTP](/guides/automate-over-http.md) — drive Holon from code
+- [Connect with the Android client](/guides/connect-android-client.md) — manage agents from mobile devices
 - [Configure OIDC authentication](/guides/configure-oidc-authentication.md) — single sign-on and audit trails
