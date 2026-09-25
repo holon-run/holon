@@ -29,6 +29,25 @@ agent_home/
     cache/
 ```
 
+Host-scoped shared memory projections live beside the host runtime state rather
+than under an agent home:
+
+```text
+holon_home/
+  state/
+  diagnostics.sqlite
+  indexes/
+    memory.v2.sqlite3
+  agents/
+    <agent-id>/
+      .holon/
+        indexes/   # agent-local indexes, when present
+```
+
+`holon_home/indexes/` is the canonical shared index directory. It is distinct
+from each agent's `.holon/indexes/` directory and must not be derived by
+appending the per-storage-root `.holon` runtime segment to `holon_home`.
+
 Visible top-level files and directories are the agent-maintained workspace
 surface. `.holon/` is runtime-owned state and must not be treated as ordinary
 agent notes or Markdown memory.
@@ -257,6 +276,13 @@ not replace it.
 Indexes must be rebuildable from stronger sources such as ledgers, memory
 files, workspace profiles, and instruction files. They should not be treated
 as the source of truth.
+
+The host-level shared projection follows the same rebuildable-index contract,
+but is stored at `holon_home/indexes/` and is shared by agent storages on that
+host. During upgrade, an existing legacy shared-index directory may be moved
+to the canonical location only when the canonical location has no data. If
+both locations contain data, startup must stop and report the conflict rather
+than merge or silently choose one.
 
 ### `.holon/cache/`
 
