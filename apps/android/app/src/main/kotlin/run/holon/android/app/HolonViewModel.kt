@@ -94,6 +94,7 @@ internal data class HolonUiState(
     val workItemsLoadingMore: Boolean = false,
     val selectedWorkItem: HolonWorkItemSnapshot? = null,
     val workItemsBusy: Boolean = false,
+    val planFile: PreparedArtifact? = null,
     val workspaces: List<HolonWorkspace> = emptyList(),
     val selectedWorkspace: HolonWorkspace? = null,
     val workspaceDirectory: HolonWorkspaceDirectory? = null,
@@ -455,6 +456,7 @@ internal class HolonViewModel(
                 workItemsHasMore = false,
                 workItemsLoadingMore = false,
                 selectedWorkItem = null,
+                planFile = null,
                 workspaces = emptyList(),
                 selectedWorkspace = null,
                 workspaceDirectory = null,
@@ -715,6 +717,7 @@ internal class HolonViewModel(
                 selectedActivity = null,
                 selectedToolExecution = null,
                 selectedWorkItem = null,
+                planFile = null,
                 preparedArtifact = null,
             )
         }
@@ -859,7 +862,7 @@ internal class HolonViewModel(
 
     fun openWorkItem(item: HolonWorkItemSnapshot) {
         val agent = state.value.selectedAgent ?: return
-        mutableState.update { it.copy(selectedWorkItem = item, workItemsBusy = true, error = null) }
+        mutableState.update { it.copy(selectedWorkItem = item, planFile = null, workItemsBusy = true, error = null) }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) { repository.workItem(agent.id, item.workItemId) }
@@ -886,6 +889,7 @@ internal class HolonViewModel(
                         it.copy(
                             agentSection = AgentSection.Work,
                             selectedWorkItem = detail,
+                            planFile = null,
                             busy = false,
                         )
                     }
@@ -898,7 +902,35 @@ internal class HolonViewModel(
         }
     }
 
-    fun closeWorkItem() = mutableState.update { it.copy(selectedWorkItem = null) }
+    fun openWorkItemPlan() {
+        val agent = state.value.selectedAgent ?: return
+        val item = state.value.selectedWorkItem ?: return
+        val plan = item.planArtifact ?: return
+        if (state.value.workItemsBusy) return
+        mutableState.update { it.copy(workItemsBusy = true, planFile = null, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.prepareWorkItemPlan(agent.id, plan) }
+            }.onSuccess { file ->
+                if (state.value.selectedAgent?.id == agent.id && state.value.selectedWorkItem?.workItemId == item.workItemId) {
+                    mutableState.update { it.copy(planFile = file, workItemsBusy = false) }
+                }
+            }.onFailure { error ->
+                mutableState.update { it.copy(workItemsBusy = false) }
+                if ((error is HolonHttpException && error.statusCode in setOf(401, 403)) ||
+                    error is SessionScopeChangedException
+                ) {
+                    handleRuntimeFailure(error)
+                } else {
+                    mutableState.update { it.copy(error = "无法打开计划：${humanError(error)}") }
+                }
+            }
+        }
+    }
+
+    fun closePlanFile() = mutableState.update { it.copy(planFile = null) }
+
+    fun closeWorkItem() = mutableState.update { it.copy(selectedWorkItem = null, planFile = null) }
 
     fun loadMoreWorkItems() {
         val current = state.value
@@ -1030,6 +1062,10 @@ internal class HolonViewModel(
     fun handleSystemBack(): Boolean {
         val current = state.value
         return when {
+            current.planFile != null -> {
+                closePlanFile()
+                true
+            }
             current.preparedArtifact != null -> {
                 clearPreparedArtifact()
                 true

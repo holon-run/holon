@@ -193,16 +193,20 @@ public data class HolonWorkItemSnapshot(
 }
 
 public data class HolonWorkItemPlanArtifact(
+    public val ownerAgentId: String?,
     public val workspaceId: String?,
     public val relativePath: String?,
+    public val bytes: Long?,
     public val preview: String?,
     public val previewComplete: Boolean,
 ) {
     internal companion object {
         fun from(raw: JsonObject): HolonWorkItemPlanArtifact =
             HolonWorkItemPlanArtifact(
+                ownerAgentId = raw.string("owner_agent_id"),
                 workspaceId = raw.string("workspace_id"),
                 relativePath = raw.string("relative_path"),
+                bytes = raw.long("bytes"),
                 preview = raw.string("preview"),
                 previewComplete = raw["preview_complete"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
             )

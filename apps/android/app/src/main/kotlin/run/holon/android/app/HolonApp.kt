@@ -643,6 +643,13 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
             BoxWithConstraints(Modifier.weight(1f)) {
                 val wideWorkLayout = maxWidth >= 720.dp && state.agentSection == AgentSection.Work
                 when {
+                    state.planFile != null -> FileReaderScreen(
+                        artifact = state.planFile,
+                        title = "完整计划",
+                        onBack = viewModel::closePlanFile,
+                        onSave = viewModel::saveArtifactToDevice,
+                        onShare = { shareArtifact(context, state.planFile) },
+                    )
                     state.selectedBrief != null && state.selectedWorkItem == null -> BriefScreen(state, viewModel)
                     wideWorkLayout -> {
                         Row(Modifier.fillMaxSize()) {
@@ -1474,13 +1481,31 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
         item.planArtifact?.let { plan ->
             item {
                 if (finished) {
+                    TextButton(
+                        onClick = viewModel::openWorkItemPlan,
+                        enabled = !state.workItemsBusy && !plan.workspaceId.isNullOrBlank() && !plan.relativePath.isNullOrBlank(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(if (state.workItemsBusy) "正在读取计划…" else "打开完整计划")
+                    }
                     TextButton(onClick = { showPlan = !showPlan }, modifier = Modifier.fillMaxWidth()) {
-                        Text(if (showPlan) "收起计划" else "查看计划")
+                        Text(if (showPlan) "收起计划预览" else "查看计划预览")
                     }
                 }
-                if (showPlan) HolonSection("计划") {
+                if (showPlan) HolonSection(if (finished) "计划预览" else "计划") {
+                    if (!finished) {
+                        TextButton(
+                            onClick = viewModel::openWorkItemPlan,
+                            enabled = !state.workItemsBusy && !plan.workspaceId.isNullOrBlank() && !plan.relativePath.isNullOrBlank(),
+                        ) {
+                            Text(if (state.workItemsBusy) "正在读取计划…" else "打开完整计划")
+                        }
+                    }
+                    if (plan.workspaceId.isNullOrBlank() || plan.relativePath.isNullOrBlank()) {
+                        Text("此 Holon 版本未提供计划文件的读取位置", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     MarkdownText(plan.preview ?: "计划文件可用，但没有内联预览。")
-                    if (!plan.previewComplete) Text("预览已截断", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (!plan.previewComplete) Text("此处只显示计划开头", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
         }
@@ -1545,6 +1570,16 @@ private fun WorkspaceBrowserScreen(
         target?.let { uri -> viewModel.saveArtifactToDevice(source, uri) }
     }
     if (prepared != null) {
+        if (isReadableTextFile(prepared.mediaType, prepared.fileName)) {
+            FileReaderScreen(
+                artifact = prepared,
+                title = "文件",
+                onBack = viewModel::clearPreparedArtifact,
+                onSave = viewModel::saveArtifactToDevice,
+                onShare = { shareArtifact(context, prepared) },
+            )
+            return
+        }
         Column(
             modifier.verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),

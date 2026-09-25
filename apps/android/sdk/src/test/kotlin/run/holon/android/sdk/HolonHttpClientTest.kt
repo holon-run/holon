@@ -513,7 +513,7 @@ class HolonHttpClientTest {
         MockWebServer().use { server ->
             server.enqueue(
                 jsonResponse(
-                    """{"id":"work-1","state":"completed","objective":"Ship Android","readiness":"completed","revision":3,"result_brief_id":"brief-1","result_summary":"green","plan_artifact":{"workspace_id":"ws-1","relative_path":"plan.md","preview":"steps","preview_complete":true},"todo_list":[{"text":"test","state":"completed"}],"work_refs":[{"kind":"file","ref":"README.md","title":"README","status":"active"}]}""",
+                    """{"id":"work-1","state":"completed","objective":"Ship Android","readiness":"completed","revision":3,"result_brief_id":"brief-1","result_summary":"green","plan_artifact":{"owner_agent_id":"main","workspace_id":"agent_home:main","relative_path":"work-items/work-1/plan.md","bytes":4096,"preview":"steps","preview_complete":false},"todo_list":[{"text":"test","state":"completed"}],"work_refs":[{"kind":"file","ref":"README.md","title":"README","status":"active"}]}""",
                 ),
             )
             val client = HolonHttpClient(server.url("/").toString())
@@ -522,6 +522,11 @@ class HolonHttpClientTest {
 
             assertEquals("green", item.resultSummary)
             assertEquals("steps", item.planArtifact?.preview)
+            assertEquals("main", item.planArtifact?.ownerAgentId)
+            assertEquals("agent_home:main", item.planArtifact?.workspaceId)
+            assertEquals("work-items/work-1/plan.md", item.planArtifact?.relativePath)
+            assertEquals(4096, item.planArtifact?.bytes)
+            assertEquals(false, item.planArtifact?.previewComplete)
             assertEquals("test", item.todoList.single().text)
             assertEquals("README.md", item.workRefs.single().ref)
             assertEquals("/agents/main/work-items/work-1", server.takeRequest().path)

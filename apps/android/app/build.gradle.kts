@@ -56,6 +56,7 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.5")
     kapt("androidx.room:room-compiler:2.8.5")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
+    implementation("app.nekogram.prism4j:prism4j:2.1.0")
     testImplementation(kotlin("test-junit"))
     debugImplementation("androidx.compose.ui:ui-tooling")
 
