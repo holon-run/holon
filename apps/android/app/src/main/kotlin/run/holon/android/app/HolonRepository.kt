@@ -23,6 +23,7 @@ import run.holon.android.sdk.HolonBriefAttachment
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonCurrentUser
+import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonDownloadedFile
 import run.holon.android.sdk.HolonHttpClient
 import run.holon.android.sdk.HolonHttpException
@@ -31,6 +32,7 @@ import run.holon.android.sdk.HolonProtocolException
 import run.holon.android.sdk.HolonRosterSnapshot
 import run.holon.android.sdk.HolonServerInfo
 import run.holon.android.sdk.HolonSseConnection
+import run.holon.android.sdk.SseReconnectPolicy
 import run.holon.android.sdk.HolonToolExecutionSnapshot
 import run.holon.android.sdk.HolonWorkItemSnapshot
 import run.holon.android.sdk.HolonWorkspace
@@ -462,6 +464,21 @@ internal class HolonRepository(
 
     fun openConversationStream(agentId: String, after: String?): HolonSseConnection =
         requireClient().conversationStream(agentId = agentId, after = after, limit = 60, activityLimit = 30)
+
+    fun reconnectingRosterHints(policy: SseReconnectPolicy = SseReconnectPolicy()): Sequence<String> =
+        requireClient().reconnectingRosterHints(policy)
+
+    fun reconnectingAgentEvents(
+        agentId: String,
+        afterSeq: Long?,
+        policy: SseReconnectPolicy = SseReconnectPolicy(),
+    ): Sequence<HolonAgentEvent> =
+        requireClient().reconnectingAgentEvents(
+            agentId = agentId,
+            afterSeq = afterSeq,
+            limit = 100,
+            policy = policy,
+        )
 
     suspend fun brief(agentId: String, briefId: String): HolonBrief {
         val session = requireSession()

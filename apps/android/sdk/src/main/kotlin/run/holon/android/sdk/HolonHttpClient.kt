@@ -147,6 +147,56 @@ public class HolonHttpClient internal constructor(
         )
     }
 
+    public fun globalEventStream(): HolonSseConnection =
+        openSse(path = "events/stream", deduplicate = false)
+
+    public fun reconnectingRosterHints(
+        policy: SseReconnectPolicy = SseReconnectPolicy(),
+    ): Sequence<String> =
+        reconnectingSse(
+            path = "events/stream",
+            query = emptyMap(),
+            policy = policy,
+        ).mapNotNull { event ->
+            if (event.event != "agent_roster_hint") {
+                null
+            } else {
+                ((event.json() as? JsonObject)?.string("agent_id"))
+                    ?.takeIf(String::isNotBlank)
+            }
+        }
+
+    public fun agentEventStream(
+        agentId: String,
+        afterSeq: Long? = null,
+        limit: Int? = null,
+    ): HolonSseConnection =
+        openSse(
+            path = "agents/${agentId.pathSegment()}/events/stream",
+            query =
+                buildMap {
+                    afterSeq?.let { put("after_seq", it.toString()) }
+                    limit?.let { put("limit", it.toString()) }
+                },
+            deduplicate = false,
+        )
+
+    public fun reconnectingAgentEvents(
+        agentId: String,
+        afterSeq: Long? = null,
+        limit: Int? = null,
+        policy: SseReconnectPolicy = SseReconnectPolicy(),
+    ): Sequence<HolonAgentEvent> =
+        reconnectingSse(
+            path = "agents/${agentId.pathSegment()}/events/stream",
+            query =
+                buildMap {
+                    afterSeq?.let { put("after_seq", it.toString()) }
+                    limit?.let { put("limit", it.toString()) }
+                },
+            policy = policy,
+        ).map(HolonAgentEvent::from)
+
     /**
      * Exchanges a bootstrap/control credential for a revocable session credential.
      *
