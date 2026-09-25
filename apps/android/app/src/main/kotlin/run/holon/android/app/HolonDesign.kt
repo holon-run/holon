@@ -96,10 +96,10 @@ private val HolonTypography =
         headlineLarge =
             Typography().headlineLarge.copy(
                 fontFamily = FontFamily.SansSerif,
-                fontSize = 30.sp,
-                lineHeight = 34.sp,
-                fontWeight = FontWeight.Light,
-                letterSpacing = (-0.6).sp,
+                fontSize = 27.sp,
+                lineHeight = 32.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = (-0.35).sp,
             ),
         headlineSmall =
             Typography().headlineSmall.copy(
@@ -111,8 +111,8 @@ private val HolonTypography =
             ),
         titleMedium =
             Typography().titleMedium.copy(
-                fontSize = 15.sp,
-                lineHeight = 21.sp,
+                fontSize = 16.sp,
+                lineHeight = 22.sp,
                 fontWeight = FontWeight.SemiBold,
             ),
         bodyLarge =
@@ -133,18 +133,19 @@ private val HolonTypography =
             ),
         labelMedium =
             Typography().labelMedium.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 12.sp,
                 lineHeight = 16.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.2.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.sp,
             ),
         labelSmall =
             Typography().labelSmall.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 10.sp,
-                lineHeight = 14.sp,
-                letterSpacing = 0.4.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.sp,
             ),
     )
 
@@ -247,9 +248,9 @@ internal fun HolonSection(
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        shadowElevation = 1.dp,
+        shadowElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 15.dp),

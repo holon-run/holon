@@ -1,3 +1,5 @@
+@file:OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+
 package run.holon.android.app
 
 import android.content.Context
@@ -7,11 +9,34 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.PhotoCamera
+import androidx.compose.material.icons.filled.PhotoLibrary
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -31,6 +56,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -38,27 +64,35 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -69,7 +103,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.File
+import java.time.Duration
+import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.launch
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationTurn
@@ -208,145 +245,195 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
 
 @Composable
 private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
-    val showConversation = state.selectedAgent != null
-    val showBottomBar = !showConversation
-
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        containerColor = MaterialTheme.colorScheme.background,
-        bottomBar = {
-            if (showBottomBar) {
-                NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                    MainDestination.entries.forEach { destination ->
-                        NavigationBarItem(
-                            selected = state.mainDestination == destination,
-                            onClick = { viewModel.selectMainDestination(destination) },
-                            icon = { Text(if (state.mainDestination == destination) "●" else "○") },
-                            label = { Text(destination.label) },
-                        )
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val useListDetail = maxWidth >= 840.dp && state.mainDestination == MainDestination.Agents
+        when {
+            useListDetail -> {
+                Row(Modifier.fillMaxSize()) {
+                    Box(Modifier.width(380.dp).fillMaxHeight()) {
+                        AgentsScreen(state, viewModel)
+                    }
+                    Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+                    Box(Modifier.weight(1f).fillMaxHeight()) {
+                        if (state.selectedAgent != null) {
+                            ConversationScreen(state, viewModel, viewModel::closeConversation)
+                        } else {
+                            EmptyPage("选择一个 Agent", "结果、工作和文件将在这里打开。")
+                        }
                     }
                 }
             }
-        },
-    ) { padding ->
-        if (showConversation) {
-            ConversationScreen(
+            state.selectedAgent != null -> ConversationScreen(state, viewModel, viewModel::closeConversation)
+            state.mainDestination == MainDestination.Settings -> SettingsScreen(
                 state = state,
                 viewModel = viewModel,
-                onBack = viewModel::closeConversation,
+                onBack = { viewModel.selectMainDestination(MainDestination.Agents) },
             )
-        } else {
-            Box(Modifier.fillMaxSize().padding(padding)) {
-                when (state.mainDestination) {
-                    MainDestination.Agents -> AgentsScreen(state, viewModel)
-                    MainDestination.Settings -> SettingsScreen(state, viewModel)
-                }
-            }
+            else -> AgentsScreen(state, viewModel)
         }
     }
 }
 
-@Composable
-private fun PageHeader(title: String, subtitle: String, state: HolonUiState, onRefresh: (() -> Unit)? = null) {
-    Column(
-        modifier = Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 16.dp),
-        verticalArrangement = Arrangement.spacedBy(7.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.headlineLarge)
-                Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
-            }
-            StatusPill(if (state.online) "在线" else "离线", if (state.online) StatusTone.Success else StatusTone.Warning)
-            onRefresh?.let {
-                Spacer(Modifier.width(6.dp))
-                TextButton(onClick = it, enabled = !state.busy) { Text("刷新") }
-            }
-        }
-        state.statusMessage?.let { Text(it, color = MaterialTheme.colorScheme.tertiary, style = MaterialTheme.typography.bodySmall) }
-        state.error?.let { ErrorBanner(it, null) }
-    }
+private enum class AgentFilter(val label: String) {
+    All("全部"),
+    Attention("需回应"),
+    Active("工作中"),
 }
 
 @Composable
 private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
-    Column(Modifier.fillMaxSize()) {
-        PageHeader("Agents", "${state.agents.size} 个 Agent · 需回应和最近活动优先", state) { viewModel.refresh() }
-        OutlinedTextField(
-            value = state.search,
-            onValueChange = viewModel::setSearch,
-            label = { Text("搜索 Agent") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-        )
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(9.dp),
-        ) {
-            items(state.filteredAgents, key = AgentSummary::id) { agent ->
-                AgentConversationRow(agent, onClick = { viewModel.openAgent(agent) })
-            }
-            if (state.filteredAgents.isEmpty()) item { EmptyPage("没有匹配的 Agent", "换一个名称或 ID 再试。") }
+    var filter by remember { mutableStateOf(AgentFilter.All) }
+    var searchOpen by remember { mutableStateOf(state.search.isNotBlank()) }
+    val attentionCount = state.agents.count { it.needsReply() }
+    val activeCount = state.agents.count { it.isActive() }
+    val filtered = state.filteredAgents.filter { agent ->
+        when (filter) {
+            AgentFilter.All -> true
+            AgentFilter.Attention -> agent.needsReply()
+            AgentFilter.Active -> agent.isActive()
         }
     }
-}
-
-@Composable
-private fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false, onClick: () -> Unit) {
-    val tone = agent.statusTone()
-    val briefPreview = agent.latestBrief?.preview.orEmpty()
-    val postureReason = agent.postureReason.orEmpty()
-    Surface(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(12.dp),
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-    ) {
-        Row {
-            Box(
-                Modifier.width(4.dp).height(if (compact) 86.dp else 108.dp)
-                    .background(toneColor(tone), RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp)),
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text("Holon", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "${state.agents.size} 个 Agent · ${if (state.online) "在线" else "离线缓存"}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { searchOpen = !searchOpen }) {
+                        Icon(if (searchOpen) Icons.Default.Close else Icons.Default.Search, contentDescription = if (searchOpen) "关闭搜索" else "搜索")
+                    }
+                    IconButton(onClick = { viewModel.selectMainDestination(MainDestination.Settings) }) {
+                        Icon(Icons.Default.Settings, contentDescription = "设置")
+                    }
+                },
             )
-            Column(
-                modifier = Modifier.weight(1f).padding(horizontal = 14.dp, vertical = 13.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(agent.displayName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-                    StatusPill(agent.statusLabel(), tone)
-                }
-                Text(
-                    when {
-                        agent.needsReply() -> "正在等你回应"
-                        briefPreview.isNotBlank() -> briefPreview
-                        postureReason.isNotBlank() -> postureReason
-                        else -> "暂无新的工作摘要"
+        },
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            state.statusMessage?.let { Text(it, modifier = Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall) }
+            state.error?.let { ErrorBanner(it, null) }
+            AnimatedVisibility(searchOpen) {
+                OutlinedTextField(
+                    value = state.search,
+                    onValueChange = viewModel::setSearch,
+                    placeholder = { Text("搜索名称或 ID") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                    trailingIcon = {
+                        if (state.search.isNotBlank()) IconButton(onClick = { viewModel.setSearch("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "清除")
+                        }
                     },
-                    maxLines = if (compact) 1 else 2,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodyMedium,
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                 )
-                if (!compact) {
-                    Text(
-                        listOfNotNull(agent.id, agent.currentWorkItemId?.let { "work $it" }).joinToString(" · "),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                AgentFilter.entries.forEach { option ->
+                    val count = when (option) {
+                        AgentFilter.All -> state.agents.size
+                        AgentFilter.Attention -> attentionCount
+                        AgentFilter.Active -> activeCount
+                    }
+                    FilterChip(
+                        selected = filter == option,
+                        onClick = { filter = option },
+                        label = { Text("${option.label} $count") },
                     )
                 }
             }
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(filtered, key = AgentSummary::id) { agent ->
+                    AgentConversationRow(agent, onClick = { viewModel.openAgent(agent) })
+                    HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
+                }
+                if (filtered.isEmpty()) item { EmptyPage("这里还没有 Agent", "调整筛选或搜索条件后再试。") }
+                item { Spacer(Modifier.height(20.dp)) }
+            }
         }
     }
 }
 
 @Composable
-private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel) {
-    Column(Modifier.fillMaxSize()) {
-        PageHeader("设置", "连接、身份与兼容信息", state) { viewModel.refresh() }
+internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false, onClick: () -> Unit) {
+    val tone = agent.statusTone()
+    val briefPreview = plainTextPreview(agent.latestBrief?.preview.orEmpty())
+    val postureReason = agent.postureReason.orEmpty()
+    Surface(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
+        color = MaterialTheme.colorScheme.background,
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = if (compact) 10.dp else 12.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(agent.displayName, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                CompactStatus(agent.statusLabel(), tone)
+            }
+            Text(
+                when {
+                    agent.needsReply() -> "正在等你回应"
+                    briefPreview.isNotBlank() -> briefPreview
+                    postureReason.isNotBlank() -> plainTextPreview(postureReason)
+                    else -> "暂无新的工作摘要"
+                },
+                maxLines = if (compact) 1 else 2,
+                overflow = TextOverflow.Ellipsis,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            if (!compact) {
+                Text(
+                    listOfNotNull(
+                        agent.latestBrief?.createdAt?.let(::relativeTime),
+                        agent.currentWorkItemId?.let { "有进行中的 WorkItem" },
+                    ).joinToString(" · ").ifBlank { "尚无活动" },
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBack: () -> Unit) {
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = { Text("设置") },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回")
+                    }
+                },
+                actions = {
+                    IconButton(onClick = viewModel::refresh, enabled = !state.busy) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                    }
+                },
+            )
+        },
+    ) { padding ->
         LazyColumn(
+            modifier = Modifier.padding(padding),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 4.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -417,52 +504,78 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, o
         if (saved) cameraUri?.let { viewModel.addAttachment(it, "image") }
     }
 
-    Column(Modifier.fillMaxSize().statusBarsPadding()) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("‹ 返回") }
-            Column(Modifier.weight(1f)) {
-                Text(agent.displayName, style = MaterialTheme.typography.titleMedium)
-                Text(
-                    agent.currentWorkItemId?.let { "当前工作 · $it" } ?: agent.statusLabel(),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            StatusPill(agent.statusLabel(), agent.statusTone())
-        }
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-        state.error?.let { ErrorBanner(it, viewModel::clearError) }
-        AgentSectionBar(state.agentSection, viewModel::selectAgentSection)
-        if (state.selectedBrief != null) {
-            BriefScreen(state, viewModel)
-        } else if (state.selectedActivity != null) {
-            ActivityDetailScreen(state, viewModel)
-        } else if (state.selectedTurn != null) {
-            TurnDetailScreen(state, viewModel)
-        } else if (state.selectedWorkItem != null) {
-            WorkItemDetailScreen(state, viewModel)
-        } else {
-            when (state.agentSection) {
-                AgentSection.Results -> {
-                    ConversationTimeline(state, viewModel, Modifier.weight(1f))
-                    Composer(
-                        state = state,
-                        viewModel = viewModel,
-                        onImage = { imagePicker.launch(arrayOf("image/*")) },
-                        onFile = { filePicker.launch(arrayOf("*/*")) },
-                        onCamera = {
-                            cameraUri = createCameraUri(context)
-                            cameraUri?.let(camera::launch)
-                        },
-                    )
+    Scaffold(
+        modifier = Modifier.fillMaxSize(),
+        containerColor = MaterialTheme.colorScheme.background,
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
+                        Text(agent.displayName, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (agent.currentWorkItemId != null) "有进行中的 WorkItem" else agent.statusLabel(),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                },
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回 Agent 列表")
+                    }
+                },
+                actions = {
+                    CompactStatus(agent.statusLabel(), agent.statusTone())
+                    IconButton(onClick = viewModel::refresh, enabled = !state.busy) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新")
+                    }
+                },
+            )
+        },
+    ) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding)) {
+            state.error?.let { ErrorBanner(it, viewModel::clearError) }
+            AgentSectionBar(state.agentSection, viewModel::selectAgentSection)
+            BoxWithConstraints(Modifier.weight(1f)) {
+                val wideWorkLayout = maxWidth >= 720.dp && state.agentSection == AgentSection.Work
+                when {
+                    wideWorkLayout -> {
+                        Row(Modifier.fillMaxSize()) {
+                            WorkItemsScreen(state, viewModel, Modifier.width(340.dp).fillMaxHeight())
+                            Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
+                            Box(Modifier.weight(1f).fillMaxHeight()) {
+                                if (state.selectedWorkItem != null) {
+                                    WorkItemDetailScreen(state, viewModel, showBack = false)
+                                } else {
+                                    EmptyPage("选择一个 WorkItem", "目标、进度、结果与关联产物将在这里打开。")
+                                }
+                            }
+                        }
+                    }
+                    state.selectedBrief != null -> BriefScreen(state, viewModel)
+                    state.selectedActivity != null && state.selectedTurn == null -> ActivityDetailScreen(state, viewModel)
+                    state.selectedTurn != null -> TurnDetailScreen(state, viewModel)
+                    state.selectedWorkItem != null -> WorkItemDetailScreen(state, viewModel)
+                    else -> when (state.agentSection) {
+                        AgentSection.Results -> Column(Modifier.fillMaxSize()) {
+                            ConversationTimeline(state, viewModel, Modifier.weight(1f))
+                            Composer(
+                                state = state,
+                                viewModel = viewModel,
+                                onImage = { imagePicker.launch(arrayOf("image/*")) },
+                                onFile = { filePicker.launch(arrayOf("*/*")) },
+                                onCamera = {
+                                    cameraUri = createCameraUri(context)
+                                    cameraUri?.let(camera::launch)
+                                },
+                            )
+                        }
+                        AgentSection.Work -> WorkItemsScreen(state, viewModel, Modifier.fillMaxSize())
+                        AgentSection.Files -> WorkspaceBrowserScreen(state, viewModel, Modifier.fillMaxSize())
+                    }
                 }
-                AgentSection.Work -> WorkItemsScreen(state, viewModel, Modifier.weight(1f))
-                AgentSection.Files -> WorkspaceBrowserScreen(state, viewModel, Modifier.weight(1f))
             }
         }
     }
@@ -471,24 +584,26 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, o
 @Composable
 private fun AgentSectionBar(selected: AgentSection, onSelect: (AgentSection) -> Unit) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        Modifier.fillMaxWidth().height(48.dp),
     ) {
         AgentSection.entries.forEach { section ->
             val active = section == selected
-            if (active) {
-                Button(
-                    onClick = { onSelect(section) },
-                    modifier = Modifier.weight(1f),
-                    shape = RoundedCornerShape(9.dp),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
-                ) { Text(section.label) }
-            } else {
-                TextButton(
-                    onClick = { onSelect(section) },
-                    modifier = Modifier.weight(1f),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
-                ) { Text(section.label, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            Column(
+                modifier = Modifier.weight(1f).fillMaxHeight().clickable { onSelect(section) },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Bottom,
+            ) {
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                    Text(
+                        section.label,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Box(
+                    Modifier.width(30.dp).height(2.dp)
+                        .background(if (active) MaterialTheme.colorScheme.primary else Color.Transparent),
+                )
             }
         }
     }
@@ -500,13 +615,22 @@ private fun ConversationTimeline(state: HolonUiState, viewModel: HolonViewModel,
     val snapshot = state.conversation
     val listState = rememberLazyListState()
     var positionedAtLatest by remember(state.selectedAgent?.id) { mutableStateOf(false) }
-    LaunchedEffect(snapshot?.turns?.size, state.outbox.size) {
-        if (!positionedAtLatest && snapshot != null) {
-            val pendingRows = if (snapshot.pendingInputs.isNotEmpty()) 1 else 0
-            val itemCount = pendingRows + snapshot.turns.size + state.outbox.size
-            if (itemCount > 0) listState.scrollToItem(itemCount - 1)
+    var previousItemCount by remember(state.selectedAgent?.id) { mutableStateOf(0) }
+    var previousOutboxCount by remember(state.selectedAgent?.id) { mutableStateOf(0) }
+    val pendingRows = if (snapshot?.pendingInputs?.isNotEmpty() == true) 1 else 0
+    val itemCount = pendingRows + snapshot?.turns.orEmpty().size + state.outbox.size
+    LaunchedEffect(snapshot?.snapshotCursor, itemCount, state.outbox.size) {
+        if (snapshot != null && itemCount > 0) {
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+            val nearBottom = lastVisible == null || lastVisible >= previousItemCount - 2
+            val justSent = state.outbox.size > previousOutboxCount
+            if (!positionedAtLatest || nearBottom || justSent) {
+                listState.animateScrollToItem(itemCount - 1)
+            }
             positionedAtLatest = true
         }
+        previousItemCount = itemCount
+        previousOutboxCount = state.outbox.size
     }
     if (state.busy && snapshot == null) {
         Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -557,7 +681,7 @@ private fun TurnCard(
     onRelatedContent: (String) -> Unit,
     onDetail: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         turn.inputs.filter {
             it.presentationClass == "operator" ||
                 (it.presentationClass == null && turn.presentationClass == "operator")
@@ -565,10 +689,10 @@ private fun TurnCard(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 Surface(
                     color = MaterialTheme.colorScheme.primaryContainer,
-                    shape = RoundedCornerShape(14.dp, 14.dp, 3.dp, 14.dp),
-                    modifier = Modifier.fillMaxWidth(0.88f),
+                    shape = RoundedCornerShape(14.dp, 14.dp, 4.dp, 14.dp),
+                    modifier = Modifier.fillMaxWidth(0.92f),
                 ) {
-                    Column(Modifier.padding(12.dp)) {
+                    Column(Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
                         Text(input.preview.ifBlank { "已提交输入" })
                         input.actorDisplayName?.let {
                             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -577,42 +701,46 @@ private fun TurnCard(
                 }
             }
         }
-        Surface(
-            color = if (brief != null) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant,
-            border = BorderStroke(1.dp, if (brief != null) MaterialTheme.colorScheme.primary.copy(alpha = 0.28f) else MaterialTheme.colorScheme.outlineVariant),
-            shape = RoundedCornerShape(4.dp, 12.dp, 12.dp, 4.dp),
-            modifier = Modifier.fillMaxWidth(),
-        ) {
-            Row(Modifier.height(IntrinsicSize.Min)) {
+        if (brief != null) {
+            Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min)) {
                 Box(
-                    Modifier.width(3.dp).fillMaxHeight()
-                        .background(if (brief != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline),
+                    Modifier.width(2.dp).fillMaxHeight().background(MaterialTheme.colorScheme.primary),
                 )
-                Column(Modifier.weight(1f).padding(13.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        if (brief != null) "工作结果" else turn.displaySummary(),
-                        modifier = Modifier.weight(1f),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = if (brief != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                    )
-                    StatusPill(turn.resultLabel(), turn.resultTone())
-                }
-                if (brief != null) {
-                    MarkdownText(brief.text.ifBlank { "结果没有文本说明" })
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        if (brief.attachments.isNotEmpty() || brief.workItemId != null) {
-                            TextButton(
-                                onClick = { onRelatedContent(brief.id) },
-                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
-                            ) { Text("产物与关联工作") }
-                        }
-                        TextButton(
-                            onClick = onDetail,
-                            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
-                        ) { Text("本轮过程") }
+                Column(
+                    Modifier.weight(1f).padding(start = 14.dp, end = 2.dp, top = 2.dp, bottom = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "工作结果",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.titleMedium,
+                        )
+                        CompactStatus(turn.resultLabel(), turn.resultTone())
                     }
-                } else {
+                    MarkdownText(brief.text.ifBlank { "结果没有文本说明" })
+                    if (brief.attachments.isNotEmpty() || brief.workItemId != null) {
+                        ResultLinkRow(
+                            label = "产物与关联工作",
+                            meta = (brief.attachments.size + if (brief.workItemId != null) 1 else 0).toString(),
+                            onClick = { onRelatedContent(brief.id) },
+                        )
+                    }
+                    ResultLinkRow(label = "本轮过程", meta = "查看", onClick = onDetail)
+                }
+            }
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        } else {
+            Surface(
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(10.dp),
+                modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
+            ) {
+                Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(turn.displaySummary(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+                        CompactStatus(turn.resultLabel(), turn.resultTone())
+                    }
                     Text(
                         when (turn.executionKind) {
                             "active" -> "Agent 正在处理；完成后结果会出现在这里。"
@@ -622,14 +750,21 @@ private fun TurnCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    TextButton(
-                        onClick = onDetail,
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
-                    ) { Text("查看本轮过程") }
-                }
+                    Text("查看本轮过程  ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun ResultLinkRow(label: String, meta: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+        Text("$meta  ›", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
     }
 }
 
@@ -645,75 +780,126 @@ private fun HolonConversationTurn.displaySummary(): String =
 private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val turn = state.selectedTurn ?: return
     val listState = rememberLazyListState()
+    val scope = rememberCoroutineScope()
     val detail = state.conversationDetail
     val activities =
         detail?.activities.orEmpty().filter {
             it.kind != "operator" && !(it.kind == "assistant" && it.summary.isBlank())
         }
     val latestActivityRevision = activities.lastOrNull()?.let { "${it.id}:${it.revision}" }
+    var unseenActivities by remember(turn.id) { mutableStateOf(0) }
+    var observedActivityRevision by remember(turn.id) { mutableStateOf<String?>(null) }
     LaunchedEffect(turn.id, latestActivityRevision) {
-        if (activities.isNotEmpty()) {
+        if (activities.isNotEmpty() && latestActivityRevision != null) {
             val inputCount = turn.inputs.count { it.presentationClass != "internal" }
             val coverageCount = if (detail?.coverageKind != null && detail.coverageKind != "complete") 1 else 0
             val latestIndex = 1 + inputCount + coverageCount + activities.lastIndex
-            listState.animateScrollToItem(latestIndex)
+            val firstObservation = observedActivityRevision == null
+            val changed = observedActivityRevision != latestActivityRevision
+            val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            if (firstObservation) {
+                if (turn.executionKind == "active") listState.scrollToItem(latestIndex)
+                unseenActivities = 0
+            } else if (changed && lastVisible >= latestIndex - 1) {
+                listState.animateScrollToItem(latestIndex)
+                unseenActivities = 0
+            } else if (changed) {
+                unseenActivities += 1
+            }
+            observedActivityRevision = latestActivityRevision
         }
     }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = viewModel::closeTurn) { Text("‹ 结果") }
-                Column(Modifier.weight(1f)) {
-                    Text("本轮过程", style = MaterialTheme.typography.headlineSmall)
-                    Text(
-                        if (turn.executionKind == "active") "实时更新 · 新活动自动跟随" else turn.id,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                StatusPill(if (turn.executionKind == "active") "实时" else turn.resultLabel(), turn.resultTone())
-            }
-        }
-        turn.inputs.filter { it.presentationClass != "internal" }.forEach { input ->
-            item(key = input.messageId) {
-                HolonSection(
-                    if (input.presentationClass == "operator") "Operator 输入" else "触发输入",
-                    eyebrow = input.presentationClass?.uppercase() ?: "INPUT",
-                ) {
-                    Text(
-                        input.preview.ifBlank { "已提交输入" },
-                        maxLines = 20,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = viewModel::closeTurn) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回结果")
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text("本轮过程", style = MaterialTheme.typography.headlineSmall)
+                        Text(
+                            if (turn.executionKind == "active") "实时更新" else "已完成",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    CompactStatus(if (turn.executionKind == "active") "实时" else turn.resultLabel(), turn.resultTone())
                 }
             }
-        }
-        if (state.detailBusy && state.conversationDetail == null) {
-            item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
-        }
-        detail?.let {
-            if (detail.coverageKind != "complete") {
-                item {
-                    Text(
-                        detailCoverageMessage(detail.coverageKind, detail.coverageReason),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            turn.inputs.filter { it.presentationClass != "internal" }.forEach { input ->
+                item(key = input.messageId) {
+                    Surface(
+                        color = MaterialTheme.colorScheme.surfaceVariant,
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.padding(horizontal = 13.dp, vertical = 11.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                if (input.presentationClass == "operator") "你的要求" else "触发输入",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                input.preview.ifBlank { "已提交输入" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 8,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+            if (state.detailBusy && state.conversationDetail == null) {
+                item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
+            }
+            detail?.let {
+                if (detail.coverageKind != "complete") {
+                    item {
+                        Text(
+                            detailCoverageMessage(detail.coverageKind, detail.coverageReason),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                items(activities, key = HolonConversationActivity::id) { activity ->
+                    val expanded = state.selectedActivity?.id == activity.id
+                    ActivityRow(
+                        activity = activity,
+                        expanded = expanded,
+                        detail = state.selectedToolExecution.takeIf { expanded },
+                        loading = expanded && state.detailBusy,
+                        onOpen = {
+                            if (expanded) viewModel.closeActivity() else viewModel.inspectActivity(activity)
+                        },
                     )
                 }
             }
-            items(
-                activities,
-                key = HolonConversationActivity::id,
-            ) { activity ->
-                ActivityRow(activity) { viewModel.inspectActivity(activity) }
+            item { Spacer(Modifier.height(24.dp)) }
+        }
+        if (unseenActivities > 0) {
+            Surface(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp).clickable {
+                    unseenActivities = 0
+                    scope.launch {
+                        val lastIndex = listState.layoutInfo.totalItemsCount - 1
+                        if (lastIndex >= 0) listState.animateScrollToItem(lastIndex)
+                    }
+                },
+                color = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary,
+                shape = RoundedCornerShape(999.dp),
+                shadowElevation = 4.dp,
+            ) {
+                Text("$unseenActivities 条新活动", modifier = Modifier.padding(horizontal = 14.dp, vertical = 9.dp))
             }
         }
-        item { Spacer(Modifier.height(24.dp)) }
     }
 }
 
@@ -730,31 +916,104 @@ private fun detailCoverageMessage(kind: String, reason: String?): String {
 }
 
 @Composable
-private fun ActivityRow(activity: HolonConversationActivity, onOpen: () -> Unit) {
+internal fun ActivityRow(
+    activity: HolonConversationActivity,
+    expanded: Boolean = false,
+    detail: run.holon.android.sdk.HolonToolExecutionSnapshot? = null,
+    loading: Boolean = false,
+    onOpen: () -> Unit,
+) {
     val isTool = activity.kind == "tool"
-    Surface(
-        color = if (isTool) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        shape = RoundedCornerShape(10.dp),
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen),
+    Row(
+        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(
-                when (activity.kind) {
-                    "assistant" -> "ASSISTANT"
-                    "tool" -> "工具调用"
-                    else -> activity.kind.uppercase()
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (isTool) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
-                activity.summary.ifBlank { if (isTool) "打开查看工具输入与输出" else "（空消息）" },
-                style = if (isTool) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
-                maxLines = if (isTool) 3 else 12,
-                overflow = TextOverflow.Ellipsis,
-            )
-            if (isTool) Text("查看详情 ›", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxHeight().width(16.dp)) {
+            Box(Modifier.size(8.dp).background(if (isTool) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline, RoundedCornerShape(99.dp)))
+            Box(Modifier.width(1.dp).weight(1f).background(MaterialTheme.colorScheme.outlineVariant))
+        }
+        Column(Modifier.weight(1f).padding(bottom = 13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(
+                modifier = if (isTool) Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = 2.dp) else Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (isTool) "工具调用" else "Assistant",
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (isTool) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (isTool) {
+                    Text(
+                        if (expanded) "收起  ⌃" else "展开  ›",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
+            }
+            if (isTool) {
+                Text(
+                    activity.summary.ifBlank { "打开查看工具输入与输出" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                MarkdownText(activity.summary.ifBlank { "（空消息）" })
+            }
+            AnimatedVisibility(visible = isTool && expanded) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surfaceVariant,
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    when {
+                        loading -> Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        }
+                        detail != null -> Column(
+                            Modifier.fillMaxWidth().padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    detail.toolName,
+                                    modifier = Modifier.weight(1f),
+                                    style = MaterialTheme.typography.labelLarge,
+                                    fontFamily = FontFamily.Monospace,
+                                )
+                                CompactStatus(
+                                    detail.status,
+                                    if (detail.status in setOf("completed", "success", "succeeded")) StatusTone.Success else StatusTone.Neutral,
+                                )
+                            }
+                            detail.summary?.takeIf(String::isNotBlank)?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (detail.artifactCount > 0) {
+                                Text(
+                                    "产生 ${detail.artifactCount} 个产物",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(
+                                detail.raw.toString().take(16_000),
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        else -> Text(
+                            "没有可读取的工具输入或输出。",
+                            modifier = Modifier.padding(12.dp),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -815,52 +1074,71 @@ private fun WorkItemsScreen(state: HolonUiState, viewModel: HolonViewModel, modi
     )
     LazyColumn(
         modifier = modifier.fillMaxWidth(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
-        verticalArrangement = Arrangement.spacedBy(9.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
     ) {
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text("WorkItems", style = MaterialTheme.typography.headlineSmall)
-                Text("计划、进度、等待与最终结果", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("工作记录", style = MaterialTheme.typography.headlineSmall)
+                Text(
+                    "${sorted.count { it.state != "completed" }} 项进行中 · ${sorted.count { it.state == "completed" }} 项已完成",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
             }
         }
         if (state.workItemsBusy && sorted.isEmpty()) {
             item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
         }
         items(sorted, key = HolonWorkItemSnapshot::workItemId) { item ->
+            val done = item.todoList.count { it.state == "completed" }
             Surface(
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, if (item.workItemId == currentId) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(10.dp),
+                color = if (item.workItemId == currentId) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.36f) else MaterialTheme.colorScheme.background,
                 modifier = Modifier.fillMaxWidth().clickable { viewModel.openWorkItem(item) },
             ) {
-                Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
                             item.objective ?: item.workItemId,
                             modifier = Modifier.weight(1f),
-                            maxLines = 3,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis,
                             fontWeight = FontWeight.SemiBold,
                         )
-                        StatusPill(item.readiness ?: item.state, if (item.state == "completed") StatusTone.Success else StatusTone.Accent)
+                        CompactStatus(workItemStatusLabel(item), workItemTone(item))
                     }
                     Text(
-                        listOfNotNull(if (item.workItemId == currentId) "当前" else null, item.focus, item.schedulingState).joinToString(" · "),
-                        style = MaterialTheme.typography.labelSmall,
+                        item.listSummary(),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Text(item.workItemId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            listOfNotNull(
+                                if (item.workItemId == currentId) "当前工作" else null,
+                                item.updatedAt?.let(::relativeTime),
+                                item.todoList.takeIf { it.isNotEmpty() }?.let { "$done/${it.size} 步" },
+                            ).joinToString(" · ").ifBlank { "等待更多信息" },
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
+            HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
         }
         if (!state.workItemsBusy && sorted.isEmpty()) item { EmptyPage("还没有 WorkItem", "Agent 的工作计划和验收结果会显示在这里。") }
     }
 }
 
 @Composable
-private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
+private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel, showBack: Boolean = true) {
     val item = state.selectedWorkItem ?: return
+    val completed = item.todoList.count { it.state == "completed" }
+    var showDetails by remember(item.workItemId) { mutableStateOf(false) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -868,58 +1146,106 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
     ) {
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = viewModel::closeWorkItem) { Text("‹ 工作") }
+                if (showBack) {
+                    IconButton(onClick = viewModel::closeWorkItem) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回工作列表")
+                    }
+                }
                 Column(Modifier.weight(1f)) {
                     Text("WorkItem", style = MaterialTheme.typography.headlineSmall)
-                    Text(item.workItemId, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(item.focus ?: "持续工作记录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                StatusPill(item.readiness ?: item.state, if (item.state == "completed") StatusTone.Success else StatusTone.Accent)
+                CompactStatus(workItemStatusLabel(item), workItemTone(item))
             }
         }
         item {
-            HolonSection("目标", eyebrow = item.focus ?: "WORK") {
+            HolonSection("目标") {
                 Text(item.objective ?: "没有目标说明", style = MaterialTheme.typography.bodyLarge)
-                item.updatedAt?.let { SettingsValue("更新", it) }
-                item.revision?.let { SettingsValue("版本", it.toString()) }
             }
         }
-        item.resultSummary?.let { result ->
-            item { HolonSection("结果", eyebrow = "RESULT") { Text(result) } }
-        }
         item.blockedBy?.let { blocker ->
-            item { HolonSection("阻塞", eyebrow = "NEEDS INPUT") { Text(blocker, color = MaterialTheme.colorScheme.error) } }
+            item { HolonSection("需要处理", eyebrow = "BLOCKED") { Text(blocker, color = MaterialTheme.colorScheme.error) } }
         }
-        item.planArtifact?.let { plan ->
+        if (item.focus != null || item.schedulingState != null || item.recheckAt != null) {
             item {
-                HolonSection("计划", eyebrow = plan.relativePath ?: "PLAN") {
-                    Text(
-                        plan.preview ?: "计划文件可用，但没有内联预览。",
-                        maxLines = 20,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (!plan.previewComplete) Text("预览已截断", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                HolonSection("当前步骤", eyebrow = item.schedulingState) {
+                    Text(item.focus ?: "等待下一次调度")
+                    item.recheckAt?.let { SettingsValue("再次检查", it) }
                 }
             }
         }
         if (item.todoList.isNotEmpty()) {
             item {
-                HolonSection("待办", eyebrow = "${item.todoList.count { it.state == "completed" }}/${item.todoList.size}") {
+                HolonSection("进度", eyebrow = "$completed/${item.todoList.size}") {
+                    LinearProgressIndicator(
+                        progress = { completed.toFloat() / item.todoList.size.toFloat() },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                     item.todoList.forEach { todo ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(if (todo.state == "completed") "✓" else "○", color = if (todo.state == "completed") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(todo.text, modifier = Modifier.weight(1f))
+                        Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+                            Icon(
+                                imageVector = if (todo.state == "completed") Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                contentDescription = null,
+                                tint = if (todo.state == "completed") HolonSuccess else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                            Text(todo.text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
                         }
                     }
                 }
             }
         }
+        item.resultSummary?.let { result ->
+            item {
+                HolonSection("结果", eyebrow = "RESULT") {
+                    MarkdownText(result)
+                    item.resultBriefId?.let { briefId ->
+                        ResultLinkRow("打开完整结果", "查看") { viewModel.openBrief(briefId) }
+                    }
+                }
+            }
+        }
+        item.planArtifact?.let { plan ->
+            item {
+                HolonSection("计划", eyebrow = plan.relativePath ?: "PLAN") {
+                    MarkdownText(plan.preview ?: "计划文件可用，但没有内联预览。")
+                    if (!plan.previewComplete) Text("预览已截断", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         if (item.workRefs.isNotEmpty()) {
             item {
-                HolonSection("相关工作", eyebrow = "${item.workRefs.size} REFS") {
+                HolonSection("相关工作", eyebrow = item.workRefs.size.toString()) {
                     item.workRefs.take(20).forEach { ref ->
-                        Text(ref.title ?: ref.ref, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                        Text(ref.kind, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(ref.title ?: ref.ref, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    listOfNotNull(ref.kind, ref.status).joinToString(" · "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
+                }
+            }
+        }
+        item {
+            TextButton(onClick = { showDetails = !showDetails }, modifier = Modifier.fillMaxWidth()) {
+                Icon(if (showDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text(if (showDetails) "收起技术详情" else "技术详情")
+            }
+        }
+        if (showDetails) {
+            item {
+                HolonSection("技术详情") {
+                    SettingsValue("ID", item.workItemId)
+                    SettingsValue("状态", item.state)
+                    item.updatedAt?.let { SettingsValue("更新", it) }
+                    item.revision?.let { SettingsValue("版本", it.toString()) }
                 }
             }
         }
@@ -949,38 +1275,43 @@ private fun WorkspaceBrowserScreen(state: HolonUiState, viewModel: HolonViewMode
     LazyColumn(
         state = listState,
         modifier = modifier.fillMaxWidth(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(14.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
     ) {
         item {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("文件", style = MaterialTheme.typography.headlineSmall)
-                Text("从 Holon host 的受权 workspace 读取", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("工作区文件", style = MaterialTheme.typography.headlineSmall)
+                Text("文件来自 Holon host 的受权工作区", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             }
         }
         if (state.workspaces.size > 1) {
-            items(state.workspaces, key = { "${it.workspaceId}:${it.executionRootId}" }) { workspace ->
-                val selected = workspace == state.selectedWorkspace
-                OutlinedButton(
-                    onClick = { viewModel.selectWorkspace(workspace) },
-                    modifier = Modifier.fillMaxWidth(),
-                    border = BorderStroke(1.dp, if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("${if (workspace.isActive) "当前 · " else ""}${workspace.label}", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    state.workspaces.forEach { workspace ->
+                        FilterChip(
+                            selected = workspace == state.selectedWorkspace,
+                            onClick = { viewModel.selectWorkspace(workspace) },
+                            label = {
+                                Text(
+                                    "${if (workspace.isActive) "当前 · " else ""}${workspace.label}",
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            },
+                        )
+                    }
                 }
             }
         }
         state.selectedWorkspace?.let { workspace ->
             item {
-                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = viewModel::navigateWorkspaceUp, enabled = !state.workspaceDirectory?.path.isNullOrBlank()) { Text("↑ 上级") }
-                        Column(Modifier.weight(1f)) {
-                            Text(workspace.label, style = MaterialTheme.typography.labelLarge)
-                            Text("/${state.workspaceDirectory?.path.orEmpty()}", style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        }
-                    }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    Text(workspace.label, modifier = Modifier.padding(horizontal = 4.dp), style = MaterialTheme.typography.labelMedium)
+                    WorkspaceBreadcrumbs(state.workspaceDirectory?.path.orEmpty(), viewModel::navigateWorkspaceTo)
                 }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
         if (state.workspaceBusy) {
@@ -988,39 +1319,72 @@ private fun WorkspaceBrowserScreen(state: HolonUiState, viewModel: HolonViewMode
         }
         prepared?.let { artifact ->
             item {
-                HolonSection(artifact.fileName, eyebrow = artifact.mediaType) {
-                    ArtifactPreview(artifact)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { saveFile.launch(artifact.fileName) }) { Text("下载") }
-                        TextButton(onClick = { shareArtifact(context, artifact) }) { Text("分享") }
-                        TextButton(onClick = viewModel::clearPreparedArtifact) { Text("关闭") }
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    HolonSection(artifact.fileName, eyebrow = artifact.mediaType) {
+                        ArtifactPreview(artifact)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            TextButton(onClick = { saveFile.launch(artifact.fileName) }) { Text("下载") }
+                            TextButton(onClick = { shareArtifact(context, artifact) }) { Text("分享") }
+                            TextButton(onClick = viewModel::clearPreparedArtifact) { Text("关闭") }
+                        }
                     }
                 }
             }
         }
         items(state.workspaceDirectory?.entries.orEmpty(), key = HolonWorkspaceEntry::name) { entry ->
             Surface(
-                color = MaterialTheme.colorScheme.surface,
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.background,
                 modifier = Modifier.fillMaxWidth().clickable { viewModel.openWorkspaceEntry(entry.name, entry.type == "directory") },
             ) {
-                Row(Modifier.padding(horizontal = 12.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(if (entry.type == "directory") "▸" else "·", color = MaterialTheme.colorScheme.primary, modifier = Modifier.width(22.dp))
+                Row(Modifier.padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = fileIcon(entry),
+                        contentDescription = null,
+                        tint = if (entry.type == "directory") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp),
+                    )
+                    Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(entry.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         if (entry.type != "directory") Text(
-                            listOfNotNull(entry.mediaType, formatBytes(entry.size)).joinToString(" · "),
+                            listOfNotNull(
+                                entry.mediaType,
+                                formatBytes(entry.size),
+                                entry.modified?.let(::relativeFileTime),
+                            ).joinToString(" · "),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    Text(if (entry.type == "directory") "›" else "预览", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(if (entry.type == "directory") "›" else "", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+            HorizontalDivider(modifier = Modifier.padding(start = 52.dp), color = MaterialTheme.colorScheme.outlineVariant)
         }
         if (!state.workspaceBusy && state.workspaces.isEmpty()) item { EmptyPage("没有可浏览的 workspace", "Agent 尚未连接可访问的工作区。") }
+        if (!state.workspaceBusy && state.workspaces.isNotEmpty() && state.workspaceDirectory?.entries.isNullOrEmpty()) {
+            item { EmptyPage("这个文件夹是空的", "返回上一级继续浏览。") }
+        }
         item { Spacer(Modifier.height(20.dp)) }
+    }
+}
+
+@Composable
+private fun WorkspaceBreadcrumbs(path: String, onOpen: (String) -> Unit) {
+    val parts = path.trim('/').split('/').filter(String::isNotBlank)
+    Row(
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onClick = { onOpen("") }) {
+            Icon(Icons.Default.Home, contentDescription = "工作区根目录", modifier = Modifier.size(20.dp))
+        }
+        parts.forEachIndexed { index, part ->
+            Text("/", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            TextButton(onClick = { onOpen(parts.take(index + 1).joinToString("/")) }) {
+                Text(part, maxLines = 1)
+            }
+        }
     }
 }
 
@@ -1062,14 +1426,16 @@ private fun Composer(
     onFile: () -> Unit,
     onCamera: () -> Unit,
 ) {
+    var attachmentMenuOpen by remember { mutableStateOf(false) }
     Surface(
         color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 10.dp,
+        tonalElevation = 2.dp,
+        shadowElevation = 4.dp,
         modifier = Modifier.fillMaxWidth().imePadding(),
     ) {
         Column(
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp).navigationBarsPadding(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp).navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             if (state.attachments.isNotEmpty()) {
                 Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -1094,27 +1460,55 @@ private fun Composer(
                     }
                 }
             }
-            OutlinedTextField(
-                value = state.draft,
-                onValueChange = viewModel::updateDraft,
-                placeholder = { Text("输入消息…") },
-                minLines = 1,
-                maxLines = 4,
-                enabled = !state.enqueueing,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onImage, enabled = !state.enqueueing) { Text("相册") }
-                TextButton(onClick = onCamera, enabled = !state.enqueueing) { Text("拍照") }
-                TextButton(onClick = onFile, enabled = !state.enqueueing) { Text("文件") }
-                Spacer(Modifier.weight(1f))
+            Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box {
+                    IconButton(onClick = { attachmentMenuOpen = true }, enabled = !state.enqueueing) {
+                        Icon(Icons.Default.Add, contentDescription = "添加附件")
+                    }
+                    DropdownMenu(expanded = attachmentMenuOpen, onDismissRequest = { attachmentMenuOpen = false }) {
+                        DropdownMenuItem(
+                            text = { Text("从相册选择") },
+                            leadingIcon = { Icon(Icons.Default.PhotoLibrary, contentDescription = null) },
+                            onClick = { attachmentMenuOpen = false; onImage() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("拍照") },
+                            leadingIcon = { Icon(Icons.Default.PhotoCamera, contentDescription = null) },
+                            onClick = { attachmentMenuOpen = false; onCamera() },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("选择文件") },
+                            leadingIcon = { Icon(Icons.Default.AttachFile, contentDescription = null) },
+                            onClick = { attachmentMenuOpen = false; onFile() },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = state.draft,
+                    onValueChange = viewModel::updateDraft,
+                    placeholder = { Text("输入消息…") },
+                    minLines = 1,
+                    maxLines = 4,
+                    enabled = !state.enqueueing,
+                    modifier = Modifier.weight(1f),
+                )
+                val canStop = state.selectedAgent?.currentRunId != null
                 Button(
-                    onClick = viewModel::send,
-                    enabled =
-                        !state.enqueueing &&
-                            (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
-                    shape = RoundedCornerShape(9.dp),
-                ) { Text("发送") }
+                    onClick = if (canStop) viewModel::stopCurrentTurn else viewModel::send,
+                    enabled = if (canStop) !state.abortingRun else
+                        !state.enqueueing && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    if (state.enqueueing || state.abortingRun) {
+                        CircularProgressIndicator(Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
+                    } else if (canStop) {
+                        Icon(Icons.Default.Stop, contentDescription = "停止本轮")
+                    } else {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
+                    }
+                }
             }
         }
     }
@@ -1237,8 +1631,14 @@ private fun ArtifactPreview(artifact: PreparedArtifact) {
                 runCatching { file.bufferedReader().use { it.readText().take(20_000) } }
                     .getOrElse { "无法读取文本预览" }
             }
-            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
-                Text(preview, modifier = Modifier.fillMaxWidth().padding(10.dp), style = MaterialTheme.typography.bodySmall)
+            if (artifact.mediaType == "text/markdown" || artifact.fileName.endsWith(".md", ignoreCase = true)) {
+                MarkdownText(preview)
+            } else {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(12.dp)) {
+                        Text(preview, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    }
+                }
             }
         }
         else -> EmptyHint("${artifact.mediaType} 不支持内置预览，可下载或分享后打开")
@@ -1246,7 +1646,7 @@ private fun ArtifactPreview(artifact: PreparedArtifact) {
 }
 
 @Composable
-private fun ErrorBanner(message: String, onDismiss: (() -> Unit)?) {
+internal fun ErrorBanner(message: String, onDismiss: (() -> Unit)?) {
     Surface(
         color = MaterialTheme.colorScheme.errorContainer,
         contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -1273,7 +1673,7 @@ private fun ErrorBanner(message: String, onDismiss: (() -> Unit)?) {
 }
 
 @Composable
-private fun EmptyPage(title: String, text: String) {
+internal fun EmptyPage(title: String, text: String) {
     Box(Modifier.fillMaxWidth().padding(28.dp), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Text(title, style = MaterialTheme.typography.titleMedium)
@@ -1281,6 +1681,91 @@ private fun EmptyPage(title: String, text: String) {
         }
     }
 }
+
+@Composable
+internal fun CompactStatus(label: String, tone: StatusTone) {
+    val color = toneColor(tone)
+    Row(
+        modifier = Modifier.padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(7.dp).background(color, RoundedCornerShape(99.dp)))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = color)
+    }
+}
+
+private fun AgentSummary.isActive(): Boolean =
+    schedulingPosture in setOf("active_turn", "has_queued_input", "has_runnable_work") ||
+        runtimeStatus.lowercase() in setOf("running", "active")
+
+private fun plainTextPreview(markdown: String): String =
+    markdown
+        .replace(Regex("\\[([^]]+)]\\([^)]*\\)"), "${'$'}1")
+        .replace(Regex("(?m)^\\s{0,3}#{1,6}\\s+"), "")
+        .replace(Regex("[`*_~>]"), "")
+        .replace(Regex("\\s+"), " ")
+        .trim()
+
+private fun relativeTime(value: String): String {
+    val duration = runCatching { Duration.between(Instant.parse(value), Instant.now()) }.getOrNull() ?: return value
+    val seconds = duration.seconds.coerceAtLeast(0)
+    return when {
+        seconds < 60 -> "刚刚"
+        seconds < 3_600 -> "${seconds / 60} 分钟前"
+        seconds < 86_400 -> "${seconds / 3_600} 小时前"
+        seconds < 604_800 -> "${seconds / 86_400} 天前"
+        else -> value.take(10)
+    }
+}
+
+private fun relativeFileTime(value: Long): String {
+    val epochMillis = if (value > 10_000_000_000L) value else value * 1_000L
+    val duration = Duration.between(Instant.ofEpochMilli(epochMillis), Instant.now())
+    val seconds = duration.seconds.coerceAtLeast(0)
+    return when {
+        seconds < 60 -> "刚刚"
+        seconds < 3_600 -> "${seconds / 60} 分钟前"
+        seconds < 86_400 -> "${seconds / 3_600} 小时前"
+        seconds < 604_800 -> "${seconds / 86_400} 天前"
+        else -> "${seconds / 604_800} 周前"
+    }
+}
+
+private fun workItemStatusLabel(item: HolonWorkItemSnapshot): String =
+    when {
+        item.blockedBy != null -> "受阻"
+        item.state == "completed" -> "已完成"
+        item.readiness == "ready" -> "可继续"
+        item.schedulingState == "waiting" -> "等待中"
+        else -> item.readiness ?: item.state
+    }
+
+private fun HolonWorkItemSnapshot.listSummary(): String =
+    focus
+        ?.takeUnless {
+            it.equals(state, ignoreCase = true) ||
+                it.equals(readiness, ignoreCase = true) ||
+                it.equals(schedulingState, ignoreCase = true)
+        }
+        ?: resultSummary?.takeIf(String::isNotBlank)
+        ?: if (state == "completed") "已完成，打开查看结果" else "等待更多信息"
+
+private fun workItemTone(item: HolonWorkItemSnapshot): StatusTone =
+    when {
+        item.blockedBy != null -> StatusTone.Danger
+        item.state == "completed" -> StatusTone.Success
+        item.schedulingState == "waiting" -> StatusTone.Neutral
+        else -> StatusTone.Accent
+    }
+
+private fun fileIcon(entry: HolonWorkspaceEntry): ImageVector =
+    when {
+        entry.type == "directory" -> Icons.Default.Folder
+        entry.mediaType?.startsWith("image/") == true -> Icons.Default.Image
+        entry.mediaType?.startsWith("text/") == true || entry.name.endsWith(".md", true) -> Icons.Default.Description
+        else -> Icons.AutoMirrored.Filled.InsertDriveFile
+    }
 
 private fun AgentSummary.statusTone(): StatusTone =
     when {

@@ -399,6 +399,10 @@ internal class HolonRepository(
     suspend fun toolExecution(agentId: String, toolExecutionId: String): HolonToolExecutionSnapshot =
         requireClient().toolExecutionSnapshot(agentId, toolExecutionId)
 
+    suspend fun abortCurrentRun(agentId: String, runId: String) {
+        requireClient().abortCurrentRun(agentId, runId)
+    }
+
     suspend fun workspaces(agentId: String): List<HolonWorkspace> =
         requireClient().agentWorkspaces(agentId)
 

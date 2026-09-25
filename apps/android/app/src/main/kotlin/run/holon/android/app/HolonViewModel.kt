@@ -61,6 +61,7 @@ internal data class HolonUiState(
     val mainDestination: MainDestination = MainDestination.Agents,
     val busy: Boolean = false,
     val enqueueing: Boolean = false,
+    val abortingRun: Boolean = false,
     val online: Boolean = false,
     val session: ActiveSession? = null,
     val agents: List<AgentSummary> = emptyList(),
@@ -444,6 +445,8 @@ internal class HolonViewModel(
                         )
                     }
                     openAgent(agent)
+                    delay(250)
+                    refresh(showProgress = false)
                 }.onFailure(::handleRuntimeFailure)
             }.onFailure { error ->
                 mutableState.update { it.copy(enqueueing = false, error = humanError(error)) }
@@ -609,8 +612,13 @@ internal class HolonViewModel(
         val currentPath = state.value.workspaceDirectory?.path.orEmpty().trim('/')
         if (currentPath.isEmpty()) return
         val parent = currentPath.substringBeforeLast('/', "")
+        navigateWorkspaceTo(parent)
+    }
+
+    fun navigateWorkspaceTo(path: String) {
+        val workspace = state.value.selectedWorkspace ?: return
         mutableState.update { it.copy(workspaceBusy = true, preparedArtifact = null, error = null) }
-        browseWorkspace(workspace, parent)
+        browseWorkspace(workspace, path.trim('/'))
     }
 
     fun prepareArtifact(locator: String, name: String) {
@@ -621,6 +629,24 @@ internal class HolonViewModel(
             }.onSuccess { artifact ->
                 mutableState.update { it.copy(preparedArtifact = artifact, busy = false) }
             }.onFailure(::handleRuntimeFailure)
+        }
+    }
+
+    fun stopCurrentTurn() {
+        val agent = state.value.selectedAgent ?: return
+        val runId = agent.currentRunId ?: return
+        if (state.value.abortingRun) return
+        mutableState.update { it.copy(abortingRun = true, error = null) }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.abortCurrentRun(agent.id, runId) }
+            }.onSuccess {
+                mutableState.update { it.copy(abortingRun = false, statusMessage = "正在停止本轮…") }
+                delay(250)
+                refresh(showProgress = false)
+            }.onFailure { error ->
+                mutableState.update { it.copy(abortingRun = false, error = humanError(error)) }
+            }
         }
     }
 

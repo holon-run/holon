@@ -486,6 +486,26 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `abort current run keeps the agent available for the next prompt`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("{}"))
+            val client = HolonHttpClient(server.url("/api/").toString())
+
+            client.abortCurrentRun("holon tester", "run-42")
+
+            val request = server.takeRequest()
+            assertEquals(
+                "/api/control/agents/holon%20tester/current-run/abort",
+                request.path,
+            )
+            assertEquals(
+                """{"run_id":"run-42","mode":"idle_after_abort","authority_class":"operator_instruction"}""",
+                request.body.readUtf8(),
+            )
+        }
+    }
+
+    @Test
     fun `reconnecting conversation stream retries connection failures`() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))

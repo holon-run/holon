@@ -647,6 +647,19 @@ public class HolonHttpClient internal constructor(
             body,
         )
 
+    public fun abortCurrentRun(
+        agentId: String,
+        runId: String,
+    ): HolonJsonDocument =
+        postJson(
+            "control/agents/${agentId.pathSegment()}/current-run/abort",
+            buildJsonObject {
+                put("run_id", runId)
+                put("mode", "idle_after_abort")
+                put("authority_class", "operator_instruction")
+            },
+        )
+
     public fun openSse(
         path: String,
         query: Map<String, String> = emptyMap(),
