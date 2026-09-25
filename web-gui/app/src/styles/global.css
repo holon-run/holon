@@ -6929,8 +6929,8 @@ code {
 }
 .conversation-input-line .markdown-content,
 .conversation-pending-chip .markdown-content { font-size: 15px; line-height: 1.65; }
-.conversation-input-line .markdown-content,
-.conversation-pending-chip .markdown-content { white-space: pre-wrap; }
+.conversation-input-line .markdown-content p,
+.conversation-pending-chip .markdown-content p { white-space: pre-wrap; }
 .conversation-input-sender { display: flex; align-items: center; gap: 5px; margin-bottom: 5px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .conversation-input-sender svg { flex-shrink: 0; }
 .conversation-input-sender span { min-width: 0; }

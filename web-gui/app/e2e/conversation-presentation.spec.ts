@@ -508,6 +508,40 @@ test("a byte-truncated operator input renders as readable text instead of intern
   await expect(input).not.toContainText('{"type":"text"');
 });
 
+test("operator input preserves line breaks without adding an extra blank line", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "operator-input-line-breaks");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  expect((await request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [turn("operator-input-line-breaks", 1, { inputs: [
+      { message_id: "operator-input-soft-break", preview: "First line\nSecond line", presentation_class: "operator" },
+      { message_id: "operator-input-paragraph-break", preview: "First paragraph\n\nSecond paragraph", presentation_class: "operator" },
+    ] })],
+  } })).ok()).toBe(true);
+
+  await page.goto(`/agents/${agentId}/conversation`);
+  const softBreak = page.locator('[data-conversation-anchor="input:operator-input-soft-break"] .markdown-content p');
+  await expect(softBreak).toHaveCount(1);
+  const softBreakLayout = await softBreak.evaluate((paragraph) => ({
+    height: paragraph.getBoundingClientRect().height,
+    lineHeight: Number.parseFloat(getComputedStyle(paragraph).lineHeight),
+  }));
+  expect(softBreakLayout.height).toBeGreaterThan(softBreakLayout.lineHeight * 1.5);
+  expect(softBreakLayout.height).toBeLessThan(softBreakLayout.lineHeight * 2.5);
+
+  const paragraphBreak = page.locator('[data-conversation-anchor="input:operator-input-paragraph-break"] .markdown-content');
+  await expect(paragraphBreak.locator("p")).toHaveCount(2);
+  const paragraphBreakLayout = await paragraphBreak.locator("p").evaluateAll((paragraphs) => {
+    const first = paragraphs[0].getBoundingClientRect();
+    const second = paragraphs[1].getBoundingClientRect();
+    return {
+      gap: second.top - first.bottom,
+      lineHeight: Number.parseFloat(getComputedStyle(paragraphs[0]).lineHeight),
+    };
+  });
+  expect(paragraphBreakLayout.gap).toBeLessThan(paragraphBreakLayout.lineHeight);
+});
+
 test("unmatched historical input opens complete text and does not repeat represented input after completion or reload", async ({ page, context, request }, info) => {
   const session = sessionFor(info, "long-input");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
