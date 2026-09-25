@@ -2011,25 +2011,46 @@ fn render_current_input_body_with_budget(
 
 fn render_current_input_section(
     current_message: &MessageEnvelope,
-    body_budget: usize,
+    section_budget: usize,
     wake_hint_fallback: Option<&str>,
 ) -> PromptSection {
-    let current_input_body = render_current_input_body_with_budget(
-        &current_message.body,
-        body_budget,
-        wake_hint_fallback,
-    );
     let reply_expectation =
         message_reply_expectation_context(current_message).map(|content| format!("{content}\n"));
-    turn_section(
-        "current_input",
-        format!(
-            "Current input:\n- {}\n{}{}",
-            message_header(current_message),
-            reply_expectation.unwrap_or_default(),
-            indent_block(&current_input_body, 2),
-        ),
-    )
+    let full_prefix = format!(
+        "Current input:\n- {}\n{}",
+        message_header(current_message),
+        reply_expectation.as_deref().unwrap_or_default()
+    );
+    let compact_prefix = reply_expectation
+        .as_ref()
+        .map(|_| {
+            "Current input:\n- ".to_string()
+                + &message_header(current_message)
+                + "\nRuntime message contract: sender is waiting for a reply; use SendAgentMessage.\n"
+        })
+        .unwrap_or_else(|| format!("Current input:\n- {}\n", message_header(current_message)));
+    let section_header_budget = estimate_text_tokens("[current_input]\n");
+    let prefix =
+        if estimate_text_tokens(&format!("[current_input]\n{full_prefix}")) <= section_budget {
+            full_prefix
+        } else {
+            compact_prefix
+        };
+    let current_input_body = render_current_input_body_with_budget(
+        &current_message.body,
+        usize::MAX,
+        wake_hint_fallback,
+    );
+    let body_budget = section_budget
+        .saturating_sub(section_header_budget)
+        .saturating_sub(estimate_text_tokens(&prefix));
+    let current_input_body = truncate_section_content(
+        "",
+        &indent_block(&current_input_body, 2),
+        body_budget,
+        Some("\n[truncated current input body]"),
+    );
+    turn_section("current_input", format!("{prefix}{current_input_body}"))
 }
 
 fn render_continuation_anchor(
@@ -3669,6 +3690,50 @@ mod tests {
             storage.data_dir(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn compact_current_input_budget_includes_reply_expectation() {
+        let mut message = MessageEnvelope::new(
+            "target",
+            MessageKind::InternalFollowup,
+            MessageOrigin::Task {
+                task_id: "task-1".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "request body that should be truncated to the compact budget".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.correlation_id = Some("task-1".into());
+        message.metadata = Some(json!({
+            "agent_message_delivery": {
+                "delivery_id": "delivery-1",
+                "caller_agent_id": "sender"
+            },
+            "agent_message_reply_expectation": {
+                "mode": "required",
+                "sender_agent_id": "sender",
+                "waiting_task_id": "task-1",
+                "request_message_id": message.id,
+                "request_delivery_id": "delivery-1"
+            }
+        }));
+
+        let compact = render_current_input_section(&message, 48, None);
+
+        assert!(
+            estimate_section_tokens(&compact) <= 48,
+            "tokens={} content={:?}",
+            estimate_section_tokens(&compact),
+            compact.content
+        );
+        assert!(compact.content.contains("sender is waiting for a reply"));
     }
 
     #[test]
