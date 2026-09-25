@@ -1757,6 +1757,32 @@ async fn wait_for_timer_validation_returns_recoverable_tool_errors() {
         missing_error.details.as_ref().unwrap()["code"],
         "timer_not_found"
     );
+    let missing_final = crate::tool::tools::wait_for::prepare_settlement(
+        &runtime,
+        &agent_id,
+        &AuthorityClass::OperatorInstruction,
+        crate::tool::tools::wait_for::WaitForArgs {
+            reason: "wait for timer in final delivery".into(),
+            wake: crate::tool::tools::wait_for::WaitForWakeArg::Timer,
+            delivery: crate::tool::tools::wait_for::WaitForDeliveryArg::Final,
+            work_item_id: None,
+            resource: Some("timer-does-not-exist".into()),
+            recheck_after_ms: None,
+        },
+    )
+    .await
+    .expect("invalid final timer should be a recoverable tool result");
+    assert_eq!(
+        missing_final
+            .envelope
+            .error
+            .as_ref()
+            .unwrap()
+            .details
+            .as_ref()
+            .unwrap()["code"],
+        "timer_not_found"
+    );
 
     runtime
         .storage()
