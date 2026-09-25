@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
@@ -237,7 +238,15 @@ public class HolonHttpClient internal constructor(
         turnId: String,
         limit: Int? = null,
         before: String? = null,
-    ): List<HolonConversationActivity> {
+    ): List<HolonConversationActivity> =
+        conversationDetail(agentId, turnId, limit, before).activities
+
+    public fun conversationDetail(
+        agentId: String,
+        turnId: String,
+        limit: Int? = null,
+        before: String? = null,
+    ): HolonConversationDetail {
         val raw =
             getJson(
                 path = "agents/${agentId.pathSegment()}/turns/${turnId.pathSegment()}/activities",
@@ -246,16 +255,28 @@ public class HolonHttpClient internal constructor(
                     before?.let { put("before", it) }
                 },
             ).objectOrNull ?: throw HolonProtocolException("Holon activity response is not an object")
-        return (raw["activities"] as? JsonArray).orEmpty().mapIndexedNotNull { index, element ->
-            val activity = element as? JsonObject
-                ?: throw HolonProtocolException("Holon activity $index is not an object")
-            HolonConversationActivity(
-                id = activity.string("id") ?: return@mapIndexedNotNull null,
-                kind = activity.string("kind") ?: "unknown",
-                summary = activity.string("summary").orEmpty(),
-                eventSeq = (activity["key"] as? JsonObject)?.long("event_seq"),
-            )
-        }
+        val activities =
+            (raw["activities"] as? JsonArray).orEmpty().mapIndexedNotNull { index, element ->
+                val activity = element as? JsonObject
+                    ?: throw HolonProtocolException("Holon activity $index is not an object")
+                HolonConversationActivity(
+                    id = activity.string("id") ?: return@mapIndexedNotNull null,
+                    kind = activity.string("kind") ?: "unknown",
+                    summary = activity.string("summary").orEmpty().displayTextPreview(),
+                    eventSeq = (activity["key"] as? JsonObject)?.long("event_seq"),
+                    revision = activity.long("revision"),
+                    raw = activity,
+                )
+            }
+        val coverage = raw["coverage"] as? JsonObject
+        return HolonConversationDetail(
+            activities = activities,
+            coverageKind = coverage?.string("kind") ?: "unknown",
+            coverageReason = coverage?.string("reason"),
+            hasMore = raw["has_more"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+            nextBeforeCursor = raw.string("next_before_cursor"),
+            raw = raw,
+        )
     }
 
     public fun brief(agentId: String, briefId: String): HolonBrief {
@@ -285,6 +306,27 @@ public class HolonHttpClient internal constructor(
 
     public fun agentState(agentId: String): HolonJsonDocument =
         getJson("agents/${agentId.pathSegment()}/state")
+
+    public fun agentWorkspaces(agentId: String): List<HolonWorkspace> {
+        val raw = agentState(agentId).objectOrNull
+            ?: throw HolonProtocolException("Holon agent state is not an object")
+        val workspace = raw["workspace"] as? JsonObject
+            ?: throw HolonProtocolException("Holon agent state is missing workspace snapshot")
+        return (workspace["workspaces"] as? JsonArray).orEmpty().mapIndexed { index, element ->
+            val item = element as? JsonObject
+                ?: throw HolonProtocolException("Holon workspace $index is not an object")
+            val workspaceId = item.string("workspace_id")
+                ?: throw HolonProtocolException("Holon workspace $index is missing workspace_id")
+            HolonWorkspace(
+                workspaceId = workspaceId,
+                alias = item.string("workspace_alias"),
+                label = item.string("repo_name") ?: item.string("workspace_alias") ?: workspaceId,
+                isActive = item["is_active"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+                executionRootId = item.string("execution_root_id"),
+                projectionKind = item.string("projection_kind"),
+            )
+        }
+    }
 
     public fun projectionSnapshot(agentId: String): HolonJsonDocument =
         getJson("agents/${agentId.pathSegment()}/projection-snapshot")
@@ -423,26 +465,64 @@ public class HolonHttpClient internal constructor(
             }
             ?.firstOrNull()
             ?.takeIf(String::isNotBlank)
-        val path =
-            buildString {
-                append("workspaces/")
-                append(workspaceId.pathSegment())
-                append("/files/")
-                append(segments.joinToString("/") { encodePathSegment(it) })
-            }
+        return downloadWorkspaceFile(workspaceId, segments.joinToString("/"), rootId)
+    }
+
+    public fun browseWorkspaceDirectory(
+        workspaceId: String,
+        path: String = "",
+        executionRootId: String? = null,
+    ): HolonWorkspaceDirectory {
+        val safePath = safeWorkspacePath(path)
+        val endpoint = workspaceFilePath(workspaceId, safePath)
+        val raw = getJson(
+            endpoint,
+            executionRootId?.let { mapOf("execution_root_id" to it) } ?: emptyMap(),
+        ).objectOrNull ?: throw HolonProtocolException("Holon workspace listing is not an object")
+        if (raw.string("type") != "directory") {
+            throw HolonProtocolException("Holon workspace path is not a directory")
+        }
+        val entries = (raw["entries"] as? JsonArray).orEmpty().mapIndexed { index, element ->
+            val entry = element as? JsonObject
+                ?: throw HolonProtocolException("Holon workspace entry $index is not an object")
+            HolonWorkspaceEntry(
+                name = entry.string("name")
+                    ?: throw HolonProtocolException("Holon workspace entry $index is missing name"),
+                type = entry.string("type") ?: "unknown",
+                size = entry.long("size") ?: 0,
+                modified = entry.long("modified"),
+                mediaType = entry.string("mime_type"),
+            )
+        }
+        return HolonWorkspaceDirectory(
+            workspaceId = raw.string("workspace_id") ?: workspaceId,
+            executionRootId = raw.string("execution_root_id") ?: executionRootId,
+            path = raw.string("path") ?: safePath,
+            rootKind = raw.string("root_kind"),
+            entries = entries,
+        )
+    }
+
+    public fun downloadWorkspaceFile(
+        workspaceId: String,
+        path: String,
+        executionRootId: String? = null,
+    ): HolonDownloadedArtifact {
+        val safePath = safeWorkspacePath(path)
+        require(safePath.isNotEmpty()) { "Workspace file path must not be empty" }
         val response =
             try {
                 httpClient.newCall(
                     authorizedRequest(
-                        path = path,
+                        path = workspaceFilePath(workspaceId, safePath),
                         query = buildMap {
                             put("download", "true")
-                            rootId?.let { put("execution_root_id", it) }
+                            executionRootId?.let { put("execution_root_id", it) }
                         },
                     ).header("Accept", "application/octet-stream").get().build(),
                 ).execute()
             } catch (error: IOException) {
-                throw HolonProtocolException("Holon artifact request failed", error)
+                throw HolonProtocolException("Holon workspace file request failed", error)
             }
         response.use {
             val body = it.body
@@ -453,7 +533,7 @@ public class HolonHttpClient internal constructor(
             return HolonDownloadedArtifact(
                 bytes = bytes,
                 mediaType = it.header("Content-Type")?.substringBefore(';') ?: "application/octet-stream",
-                fileName = segments.last(),
+                fileName = safePath.substringAfterLast('/'),
             )
         }
     }
@@ -537,6 +617,13 @@ public class HolonHttpClient internal constructor(
         }
     }
 
+    public fun workItemSnapshot(agentId: String, workItemId: String): HolonWorkItemSnapshot {
+        val raw = getJson(
+            "agents/${agentId.pathSegment()}/work-items/${workItemId.pathSegment()}",
+        ).objectOrNull ?: throw HolonProtocolException("Holon work item response is not an object")
+        return HolonWorkItemSnapshot.from(raw)
+    }
+
     public fun createCommandTask(agentId: String, body: JsonObject): HolonJsonDocument =
         postJson("control/agents/${agentId.pathSegment()}/tasks", body)
 
@@ -560,6 +647,19 @@ public class HolonHttpClient internal constructor(
             body,
         )
 
+    public fun abortCurrentRun(
+        agentId: String,
+        runId: String,
+    ): HolonJsonDocument =
+        postJson(
+            "control/agents/${agentId.pathSegment()}/current-run/abort",
+            buildJsonObject {
+                put("run_id", runId)
+                put("mode", "idle_after_abort")
+                put("authority_class", "operator_instruction")
+            },
+        )
+
     public fun openSse(
         path: String,
         query: Map<String, String> = emptyMap(),
@@ -576,7 +676,8 @@ public class HolonHttpClient internal constructor(
                 }
                 .get()
                 .build()
-        val response = sseHttpClient.newCall(request).execute()
+        val call = sseHttpClient.newCall(request)
+        val response = call.execute()
         if (!response.isSuccessful) {
             val body = response.body?.string().orEmpty()
             val statusCode = response.code
@@ -592,6 +693,7 @@ public class HolonHttpClient internal constructor(
         return HolonSseConnection(
             body = body,
             deduplicator = if (deduplicate) HolonSseDeduplicator() else null,
+            cancelCall = call::cancel,
         )
     }
 
@@ -883,6 +985,25 @@ public class HolonHttpClient internal constructor(
                 }
             }
             .build()
+    }
+
+    private fun workspaceFilePath(workspaceId: String, path: String): String =
+        buildString {
+            append("workspaces/")
+            append(workspaceId.pathSegment())
+            append("/files")
+            if (path.isNotEmpty()) {
+                append('/')
+                append(path.split('/').joinToString("/") { encodePathSegment(it) })
+            }
+        }
+
+    private fun safeWorkspacePath(path: String): String {
+        val segments = path.trim('/').split('/').filter(String::isNotEmpty)
+        require(segments.none { it == "." || it == ".." }) {
+            "Workspace path must not contain dot segments"
+        }
+        return segments.joinToString("/")
     }
 
     private fun String.pathSegment(): String {

@@ -2,7 +2,6 @@ package run.holon.android.app
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -96,10 +95,10 @@ private val HolonTypography =
         headlineLarge =
             Typography().headlineLarge.copy(
                 fontFamily = FontFamily.SansSerif,
-                fontSize = 30.sp,
-                lineHeight = 34.sp,
-                fontWeight = FontWeight.Light,
-                letterSpacing = (-0.6).sp,
+                fontSize = 27.sp,
+                lineHeight = 32.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = (-0.35).sp,
             ),
         headlineSmall =
             Typography().headlineSmall.copy(
@@ -111,8 +110,8 @@ private val HolonTypography =
             ),
         titleMedium =
             Typography().titleMedium.copy(
-                fontSize = 15.sp,
-                lineHeight = 21.sp,
+                fontSize = 16.sp,
+                lineHeight = 22.sp,
                 fontWeight = FontWeight.SemiBold,
             ),
         bodyLarge =
@@ -133,18 +132,19 @@ private val HolonTypography =
             ),
         labelMedium =
             Typography().labelMedium.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 11.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 12.sp,
                 lineHeight = 16.sp,
-                fontWeight = FontWeight.Medium,
-                letterSpacing = 0.2.sp,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.sp,
             ),
         labelSmall =
             Typography().labelSmall.copy(
-                fontFamily = FontFamily.Monospace,
-                fontSize = 10.sp,
-                lineHeight = 14.sp,
-                letterSpacing = 0.4.sp,
+                fontFamily = FontFamily.SansSerif,
+                fontSize = 11.sp,
+                lineHeight = 15.sp,
+                fontWeight = FontWeight.Medium,
+                letterSpacing = 0.sp,
             ),
     )
 
@@ -202,42 +202,6 @@ internal enum class StatusTone {
 }
 
 @Composable
-internal fun StatusPill(
-    label: String,
-    tone: StatusTone,
-    modifier: Modifier = Modifier,
-) {
-    val color =
-        when (tone) {
-            StatusTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
-            StatusTone.Accent -> MaterialTheme.colorScheme.primary
-            StatusTone.Success -> HolonSuccess
-            StatusTone.Warning -> HolonWarning
-            StatusTone.Danger -> HolonDanger
-        }
-    Row(
-        modifier =
-            modifier
-                .background(color.copy(alpha = 0.09f), RoundedCornerShape(999.dp))
-                .border(1.dp, color.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
-                .padding(horizontal = 9.dp, vertical = 5.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(6.dp)
-                .background(color, RoundedCornerShape(999.dp)),
-        )
-        Text(
-            text = label,
-            color = color,
-            style = MaterialTheme.typography.labelSmall,
-        )
-    }
-}
-
-@Composable
 internal fun HolonSection(
     title: String,
     modifier: Modifier = Modifier,
@@ -247,9 +211,9 @@ internal fun HolonSection(
     Surface(
         modifier = modifier.fillMaxWidth(),
         color = MaterialTheme.colorScheme.surface,
-        shape = RoundedCornerShape(12.dp),
+        shape = RoundedCornerShape(10.dp),
         border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        shadowElevation = 1.dp,
+        shadowElevation = 0.dp,
     ) {
         Column(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 15.dp),

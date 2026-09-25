@@ -3,7 +3,9 @@ package run.holon.android.app
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlinx.serialization.json.buildJsonObject
 import run.holon.android.sdk.AgentSummary
+import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonLatestBrief
 
 class HolonAppModelTest {
@@ -68,6 +70,20 @@ class HolonAppModelTest {
         )
     }
 
+    @Test
+    fun `only an unfinished active turn is shown as executing`() {
+        val active = turn(executionKind = "active")
+        val staleActive = turn(executionKind = "active", completedAt = "2026-09-25T08:00:00Z")
+        val terminal = turn(executionKind = "terminal", resultKind = "none", completedAt = "2026-09-25T08:00:00Z")
+
+        assertEquals(true, active.isRunning())
+        assertEquals("执行中", active.compactStatusText())
+        assertEquals(false, staleActive.isRunning())
+        assertEquals(null, staleActive.compactStatusText())
+        assertEquals(false, terminal.isRunning())
+        assertEquals("没有结果摘要", terminal.compactStatusText())
+    }
+
     private fun agent(id: String, createdAt: String) =
         AgentSummary(
             id = id,
@@ -80,5 +96,26 @@ class HolonAppModelTest {
             currentRunId = null,
             schedulingPosture = "idle",
             latestBrief = HolonLatestBrief("brief-$id", createdAt, "done", 1),
+        )
+
+    private fun turn(
+        executionKind: String,
+        resultKind: String = "pending",
+        completedAt: String? = null,
+    ) =
+        HolonConversationTurn(
+            id = "turn-1",
+            summary = "",
+            presentationClass = "operator",
+            inputs = emptyList(),
+            executionKind = executionKind,
+            terminalOutcome = if (executionKind == "terminal") "completed" else null,
+            resultKind = resultKind,
+            attentionKind = null,
+            briefIds = emptyList(),
+            startedAt = "2026-09-25T07:59:00Z",
+            completedAt = completedAt,
+            settled = false,
+            raw = buildJsonObject {},
         )
 }

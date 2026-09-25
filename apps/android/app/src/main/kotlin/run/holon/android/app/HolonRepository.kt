@@ -18,6 +18,7 @@ import run.holon.android.sdk.BearerTokenProvider
 import run.holon.android.sdk.CompatibilityResult
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefAttachment
+import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonCurrentUser
 import run.holon.android.sdk.HolonHttpClient
@@ -27,7 +28,10 @@ import run.holon.android.sdk.HolonProtocolException
 import run.holon.android.sdk.HolonRosterSnapshot
 import run.holon.android.sdk.HolonServerInfo
 import run.holon.android.sdk.HolonSseConnection
+import run.holon.android.sdk.HolonToolExecutionSnapshot
 import run.holon.android.sdk.HolonWorkItemSnapshot
+import run.holon.android.sdk.HolonWorkspace
+import run.holon.android.sdk.HolonWorkspaceDirectory
 import run.holon.android.sdk.SessionCredentialStore
 
 internal val REQUIRED_CAPABILITIES =
@@ -386,13 +390,63 @@ internal class HolonRepository(
     suspend fun workItems(agentId: String): List<HolonWorkItemSnapshot> =
         requireClient().workItemSnapshots(agentId, limit = 30)
 
+    suspend fun workItem(agentId: String, workItemId: String): HolonWorkItemSnapshot =
+        requireClient().workItemSnapshot(agentId, workItemId)
+
+    suspend fun conversationDetail(agentId: String, turnId: String): HolonConversationDetail =
+        requireClient().conversationDetail(agentId, turnId, limit = 100)
+
+    suspend fun toolExecution(agentId: String, toolExecutionId: String): HolonToolExecutionSnapshot =
+        requireClient().toolExecutionSnapshot(agentId, toolExecutionId)
+
+    suspend fun abortCurrentRun(agentId: String, runId: String) {
+        requireClient().abortCurrentRun(agentId, runId)
+    }
+
+    suspend fun workspaces(agentId: String): List<HolonWorkspace> =
+        requireClient().agentWorkspaces(agentId)
+
+    suspend fun browseWorkspace(
+        workspace: HolonWorkspace,
+        path: String = "",
+    ): HolonWorkspaceDirectory =
+        requireClient().browseWorkspaceDirectory(
+            workspaceId = workspace.workspaceId,
+            path = path,
+            executionRootId = workspace.executionRootId,
+        )
+
     suspend fun prepareArtifact(locator: String, preferredName: String): PreparedArtifact {
         val downloaded = requireClient().downloadWorkspaceArtifact(locator)
+        return cacheDownloadedArtifact(locator, preferredName, downloaded.bytes, downloaded.mediaType, downloaded.fileName)
+    }
+
+    suspend fun prepareWorkspaceFile(
+        workspace: HolonWorkspace,
+        path: String,
+    ): PreparedArtifact {
+        val downloaded =
+            requireClient().downloadWorkspaceFile(
+                workspaceId = workspace.workspaceId,
+                path = path,
+                executionRootId = workspace.executionRootId,
+            )
+        val sourceKey = listOf(workspace.workspaceId, workspace.executionRootId.orEmpty(), path).joinToString("|")
+        return cacheDownloadedArtifact(sourceKey, downloaded.fileName, downloaded.bytes, downloaded.mediaType, downloaded.fileName)
+    }
+
+    private fun cacheDownloadedArtifact(
+        locator: String,
+        preferredName: String,
+        bytes: ByteArray,
+        mediaType: String,
+        fallbackName: String,
+    ): PreparedArtifact {
         val directory = File(context.cacheDir, "shared-artifacts").apply { mkdirs() }
-        val name = safeFileName(preferredName.ifBlank { downloaded.fileName })
-        val target = File(directory, name)
-        target.writeBytes(downloaded.bytes)
-        return PreparedArtifact(locator, target.absolutePath, downloaded.mediaType, name)
+        val name = safeFileName(preferredName.ifBlank { fallbackName })
+        val target = File(directory, "${UUID.randomUUID()}-$name")
+        target.writeBytes(bytes)
+        return PreparedArtifact(locator, target.absolutePath, mediaType, name)
     }
 
     suspend fun logout() {
