@@ -11,6 +11,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -40,10 +41,9 @@ internal enum class AppPhase {
     Ready,
 }
 
-internal enum class MainDestination(val route: String, val label: String) {
-    Recent("recent", "最近"),
-    Agents("agents", "Agents"),
-    Settings("settings", "设置"),
+internal enum class MainDestination(val label: String) {
+    Agents("Agents"),
+    Settings("设置"),
 }
 
 internal enum class AgentSection(val label: String) {
@@ -58,6 +58,7 @@ internal data class HolonUiState(
     val token: String = "",
     val showToken: Boolean = false,
     val allowInsecureHttp: Boolean = false,
+    val mainDestination: MainDestination = MainDestination.Agents,
     val busy: Boolean = false,
     val enqueueing: Boolean = false,
     val online: Boolean = false,
@@ -98,11 +99,11 @@ internal data class HolonUiState(
 
     val filteredAgents: List<AgentSummary>
         get() =
-            agents.filter {
+            recentAgents.filter {
                 search.isBlank() ||
                     it.displayName.contains(search, ignoreCase = true) ||
                     it.id.contains(search, ignoreCase = true)
-            }.sortedBy { it.displayName.lowercase() }
+            }
 }
 
 internal class AppContainer(context: Context) {
@@ -125,6 +126,7 @@ internal class HolonViewModel(
     private var conversationJob: Job? = null
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
+    private var detailRefreshJob: Job? = null
     private val draftSaveJobs = mutableMapOf<String, Job>()
     private var draftRevision = 0L
 
@@ -323,6 +325,7 @@ internal class HolonViewModel(
     fun closeConversation() {
         if (state.value.enqueueing) return
         conversationJob?.cancel()
+        detailRefreshJob?.cancel()
         stopConversationStream()
         val abandonedAttachments = state.value.attachments
         mutableState.update {
@@ -505,20 +508,11 @@ internal class HolonViewModel(
                 error = null,
             )
         }
-        viewModelScope.launch {
-            runCatching {
-                withContext(Dispatchers.IO) { repository.conversationDetail(agent.id, turn.id) }
-            }.onSuccess { detail ->
-                if (state.value.selectedTurn?.id == turn.id) {
-                    mutableState.update { it.copy(conversationDetail = detail, detailBusy = false) }
-                }
-            }.onFailure { error ->
-                mutableState.update { it.copy(detailBusy = false, error = humanError(error)) }
-            }
-        }
+        scheduleTurnDetailRefresh(agent, turn.id, delayMillis = 0)
     }
 
-    fun closeTurn() =
+    fun closeTurn() {
+        detailRefreshJob?.cancel()
         mutableState.update {
             it.copy(
                 selectedTurn = null,
@@ -528,6 +522,7 @@ internal class HolonViewModel(
                 detailBusy = false,
             )
         }
+    }
 
     fun inspectActivity(activity: HolonConversationActivity) {
         val agent = state.value.selectedAgent ?: return
@@ -631,6 +626,45 @@ internal class HolonViewModel(
 
     fun clearPreparedArtifact() = mutableState.update { it.copy(preparedArtifact = null) }
 
+    fun selectMainDestination(destination: MainDestination) {
+        mutableState.update { it.copy(mainDestination = destination) }
+    }
+
+    fun handleSystemBack(): Boolean {
+        val current = state.value
+        return when {
+            current.preparedArtifact != null -> {
+                clearPreparedArtifact()
+                true
+            }
+            current.selectedActivity != null -> {
+                closeActivity()
+                true
+            }
+            current.selectedBrief != null -> {
+                closeBrief()
+                true
+            }
+            current.selectedTurn != null -> {
+                closeTurn()
+                true
+            }
+            current.selectedWorkItem != null -> {
+                closeWorkItem()
+                true
+            }
+            current.selectedAgent != null -> {
+                closeConversation()
+                true
+            }
+            current.mainDestination != MainDestination.Agents -> {
+                selectMainDestination(MainDestination.Agents)
+                true
+            }
+            else -> false
+        }
+    }
+
     fun relogin() = endSession(keepCurrentHost = true)
 
     fun logout() = endSession(keepCurrentHost = false)
@@ -661,6 +695,13 @@ internal class HolonViewModel(
                         try {
                             for (event in connection.events()) {
                                 val change = event.toConversationEvent()
+                                if (change is HolonConversationStreamEvent.Mutation &&
+                                    change.type in setOf("activity_upsert", "detail_invalidated", "turn_summary_upsert")
+                                ) {
+                                    state.value.selectedTurn?.id?.let { turnId ->
+                                        scheduleTurnDetailRefresh(agent, turnId)
+                                    }
+                                }
                                 if (change is HolonConversationStreamEvent.Checkpoint ||
                                     change is HolonConversationStreamEvent.ResetRequired
                                 ) {
@@ -669,8 +710,13 @@ internal class HolonViewModel(
                                     withContext(Dispatchers.Main) {
                                         if (state.value.selectedAgent?.id == agent.id) {
                                             mutableState.update {
+                                                val selectedTurnId = it.selectedTurn?.id
                                                 it.copy(
                                                     conversation = bundle.snapshot,
+                                                    selectedTurn =
+                                                        selectedTurnId?.let { id ->
+                                                            bundle.snapshot.turns.firstOrNull { turn -> turn.id == id }
+                                                        } ?: it.selectedTurn,
                                                     outbox = bundle.outbox,
                                                     draft = bundle.draft,
                                                     online = true,
@@ -678,6 +724,9 @@ internal class HolonViewModel(
                                                 )
                                             }
                                         }
+                                    }
+                                    state.value.selectedTurn?.id?.let { turnId ->
+                                        scheduleTurnDetailRefresh(agent, turnId)
                                     }
                                     if (change is HolonConversationStreamEvent.ResetRequired) {
                                         reopenAfterReset = true
@@ -696,6 +745,29 @@ internal class HolonViewModel(
                     // Closing the foreground-only stream is an expected lifecycle transition.
                 } catch (error: Throwable) {
                     withContext(Dispatchers.Main) { handleRuntimeFailure(error) }
+                }
+            }
+    }
+
+    private fun scheduleTurnDetailRefresh(
+        agent: AgentSummary,
+        turnId: String,
+        delayMillis: Long = 180,
+    ) {
+        detailRefreshJob?.cancel()
+        detailRefreshJob =
+            viewModelScope.launch {
+                if (delayMillis > 0) delay(delayMillis)
+                runCatching {
+                    withContext(Dispatchers.IO) { repository.conversationDetail(agent.id, turnId) }
+                }.onSuccess { detail ->
+                    if (state.value.selectedAgent?.id == agent.id && state.value.selectedTurn?.id == turnId) {
+                        mutableState.update { it.copy(conversationDetail = detail, detailBusy = false) }
+                    }
+                }.onFailure { error ->
+                    if (state.value.selectedTurn?.id == turnId) {
+                        mutableState.update { it.copy(detailBusy = false, error = humanError(error)) }
+                    }
                 }
             }
     }

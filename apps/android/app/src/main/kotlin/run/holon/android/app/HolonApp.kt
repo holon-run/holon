@@ -68,11 +68,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import androidx.navigation.NavHostController
-import androidx.navigation.compose.NavHost
-import androidx.navigation.compose.composable
-import androidx.navigation.compose.currentBackStackEntryAsState
-import androidx.navigation.compose.rememberNavController
 import java.io.File
 import java.util.UUID
 import run.holon.android.sdk.AgentSummary
@@ -213,14 +208,8 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
 
 @Composable
 private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
-    val navController = rememberNavController()
-    val entry by navController.currentBackStackEntryAsState()
-    val route = entry?.destination?.route
-    val showBottomBar = route != "conversation"
-
-    LaunchedEffect(state.selectedAgent?.id) {
-        if (state.selectedAgent != null && route != "conversation") navController.navigate("conversation")
-    }
+    val showConversation = state.selectedAgent != null
+    val showBottomBar = !showConversation
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -230,15 +219,9 @@ private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
                 NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
                     MainDestination.entries.forEach { destination ->
                         NavigationBarItem(
-                            selected = route == destination.route,
-                            onClick = {
-                                navController.navigate(destination.route) {
-                                    popUpTo(MainDestination.Recent.route) { saveState = true }
-                                    launchSingleTop = true
-                                    restoreState = true
-                                }
-                            },
-                            icon = { Text(if (route == destination.route) "●" else "○") },
+                            selected = state.mainDestination == destination,
+                            onClick = { viewModel.selectMainDestination(destination) },
+                            icon = { Text(if (state.mainDestination == destination) "●" else "○") },
                             label = { Text(destination.label) },
                         )
                     }
@@ -246,23 +229,18 @@ private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
             }
         },
     ) { padding ->
-        NavHost(
-            navController = navController,
-            startDestination = MainDestination.Recent.route,
-            modifier = Modifier.padding(padding),
-        ) {
-            composable(MainDestination.Recent.route) { RecentScreen(state, viewModel) }
-            composable(MainDestination.Agents.route) { AgentsScreen(state, viewModel) }
-            composable(MainDestination.Settings.route) { SettingsScreen(state, viewModel) }
-            composable("conversation") {
-                ConversationScreen(
-                    state = state,
-                    viewModel = viewModel,
-                    onBack = {
-                        viewModel.closeConversation()
-                        navController.popBackStack()
-                    },
-                )
+        if (showConversation) {
+            ConversationScreen(
+                state = state,
+                viewModel = viewModel,
+                onBack = viewModel::closeConversation,
+            )
+        } else {
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                when (state.mainDestination) {
+                    MainDestination.Agents -> AgentsScreen(state, viewModel)
+                    MainDestination.Settings -> SettingsScreen(state, viewModel)
+                }
             }
         }
     }
@@ -291,33 +269,9 @@ private fun PageHeader(title: String, subtitle: String, state: HolonUiState, onR
 }
 
 @Composable
-private fun RecentScreen(state: HolonUiState, viewModel: HolonViewModel) {
-    Column(Modifier.fillMaxSize()) {
-        PageHeader("最近", "需要你回应的会话会优先出现", state) { viewModel.refresh() }
-        val recent = state.recentAgents.filter {
-            it.needsReply() || it.latestBrief != null || it.schedulingPosture !in setOf("idle", "stopped", "unknown")
-        }.ifEmpty { state.recentAgents }
-        if (recent.isEmpty()) {
-            EmptyPage("还没有会话", "Agent 有新活动后会出现在这里。你也可以从 Agents 开始。")
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                items(recent, key = AgentSummary::id) { agent ->
-                    AgentConversationRow(agent, onClick = { viewModel.openAgent(agent) })
-                }
-                item { Spacer(Modifier.height(12.dp)) }
-            }
-        }
-    }
-}
-
-@Composable
 private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
     Column(Modifier.fillMaxSize()) {
-        PageHeader("Agents", "${state.agents.size} 个可见 Agent", state) { viewModel.refresh() }
+        PageHeader("Agents", "${state.agents.size} 个 Agent · 需回应和最近活动优先", state) { viewModel.refresh() }
         OutlinedTextField(
             value = state.search,
             onValueChange = viewModel::setSearch,
@@ -331,8 +285,9 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
             verticalArrangement = Arrangement.spacedBy(9.dp),
         ) {
             items(state.filteredAgents, key = AgentSummary::id) { agent ->
-                AgentConversationRow(agent, compact = true, onClick = { viewModel.openAgent(agent) })
+                AgentConversationRow(agent, onClick = { viewModel.openAgent(agent) })
             }
+            if (state.filteredAgents.isEmpty()) item { EmptyPage("没有匹配的 Agent", "换一个名称或 ID 再试。") }
         }
     }
 }
@@ -582,7 +537,7 @@ private fun ConversationTimeline(state: HolonUiState, viewModel: HolonViewModel,
             TurnCard(
                 turn = turn,
                 brief = turn.briefIds.firstNotNullOfOrNull(state.briefs::get),
-                onBrief = viewModel::openBrief,
+                onRelatedContent = viewModel::openBrief,
                 onDetail = { viewModel.openTurn(turn) },
             )
         }
@@ -599,7 +554,7 @@ private fun ConversationTimeline(state: HolonUiState, viewModel: HolonViewModel,
 private fun TurnCard(
     turn: HolonConversationTurn,
     brief: run.holon.android.sdk.HolonBrief?,
-    onBrief: (String) -> Unit,
+    onRelatedContent: (String) -> Unit,
     onDetail: () -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -644,18 +599,18 @@ private fun TurnCard(
                     StatusPill(turn.resultLabel(), turn.resultTone())
                 }
                 if (brief != null) {
-                    Text(
-                        brief.text.ifBlank { "结果没有文本说明" },
-                        maxLines = 8,
-                        overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.bodyLarge,
-                    )
+                    MarkdownText(brief.text.ifBlank { "结果没有文本说明" })
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (brief.attachments.isNotEmpty() || brief.workItemId != null) {
+                            TextButton(
+                                onClick = { onRelatedContent(brief.id) },
+                                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
+                            ) { Text("产物与关联工作") }
+                        }
                         TextButton(
-                            onClick = { onBrief(brief.id) },
+                            onClick = onDetail,
                             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 0.dp),
-                        ) { Text("查看完整结果") }
-                        TextButton(onClick = onDetail) { Text("查看本轮过程") }
+                        ) { Text("本轮过程") }
                     }
                 } else {
                     Text(
@@ -689,7 +644,23 @@ private fun HolonConversationTurn.displaySummary(): String =
 @Composable
 private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val turn = state.selectedTurn ?: return
+    val listState = rememberLazyListState()
+    val detail = state.conversationDetail
+    val activities =
+        detail?.activities.orEmpty().filter {
+            it.kind != "operator" && !(it.kind == "assistant" && it.summary.isBlank())
+        }
+    val latestActivityRevision = activities.lastOrNull()?.let { "${it.id}:${it.revision}" }
+    LaunchedEffect(turn.id, latestActivityRevision) {
+        if (activities.isNotEmpty()) {
+            val inputCount = turn.inputs.count { it.presentationClass != "internal" }
+            val coverageCount = if (detail?.coverageKind != null && detail.coverageKind != "complete") 1 else 0
+            val latestIndex = 1 + inputCount + coverageCount + activities.lastIndex
+            listState.animateScrollToItem(latestIndex)
+        }
+    }
     LazyColumn(
+        state = listState,
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -699,9 +670,13 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 TextButton(onClick = viewModel::closeTurn) { Text("‹ 结果") }
                 Column(Modifier.weight(1f)) {
                     Text("本轮过程", style = MaterialTheme.typography.headlineSmall)
-                    Text(turn.id, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        if (turn.executionKind == "active") "实时更新 · 新活动自动跟随" else turn.id,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
-                StatusPill(turn.resultLabel(), turn.resultTone())
+                StatusPill(if (turn.executionKind == "active") "实时" else turn.resultLabel(), turn.resultTone())
             }
         }
         turn.inputs.filter { it.presentationClass != "internal" }.forEach { input ->
@@ -721,7 +696,7 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
         if (state.detailBusy && state.conversationDetail == null) {
             item { Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
         }
-        state.conversationDetail?.let { detail ->
+        detail?.let {
             if (detail.coverageKind != "complete") {
                 item {
                     Text(
@@ -732,9 +707,7 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 }
             }
             items(
-                detail.activities.filter {
-                    it.kind != "operator" && !(it.kind == "assistant" && it.summary.isBlank())
-                },
+                activities,
                 key = HolonConversationActivity::id,
             ) { activity ->
                 ActivityRow(activity) { viewModel.inspectActivity(activity) }
@@ -1171,15 +1144,10 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = viewModel::closeBrief) { Text("‹ 会话") }
                 Column(Modifier.weight(1f)) {
-                    Text("工作结果", style = MaterialTheme.typography.headlineSmall)
+                    Text("产物与关联工作", style = MaterialTheme.typography.headlineSmall)
                     Text(brief.createdAt, style = MaterialTheme.typography.labelSmall)
                 }
-                StatusPill("brief", StatusTone.Success)
-            }
-        }
-        item {
-            HolonSection("结果", eyebrow = brief.kind) {
-                Text(brief.text.ifBlank { "结果没有文本说明" }, style = MaterialTheme.typography.bodyLarge)
+                StatusPill("结果", StatusTone.Success)
             }
         }
         brief.workItemId?.let { id ->

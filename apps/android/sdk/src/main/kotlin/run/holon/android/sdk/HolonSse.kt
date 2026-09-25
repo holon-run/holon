@@ -3,6 +3,7 @@ package run.holon.android.sdk
 import java.io.Closeable
 import java.io.IOException
 import java.util.LinkedHashSet
+import java.util.concurrent.atomic.AtomicReference
 import okhttp3.ResponseBody
 import okio.BufferedSource
 import okio.buffer
@@ -105,14 +106,26 @@ public class HolonSseDeduplicator(
 public class HolonSseConnection internal constructor(
     private val body: ResponseBody,
     private val deduplicator: HolonSseDeduplicator?,
+    private val cancelCall: () -> Unit,
 ) : Closeable {
-    private var consumed: Boolean = false
+    private enum class State {
+        NEW,
+        CLAIMED,
+        READING,
+        CLOSED,
+    }
+
+    private val state = AtomicReference(State.NEW)
 
     public fun events(): Sequence<HolonSseEvent> {
-        check(!consumed) { "SSE connection has already been consumed" }
-        consumed = true
+        check(state.compareAndSet(State.NEW, State.CLAIMED)) {
+            "SSE connection has already been consumed or closed"
+        }
         return HolonSseParser.parse(body).let { events ->
             sequence {
+                check(state.compareAndSet(State.CLAIMED, State.READING)) {
+                    "SSE connection was closed before it could be read"
+                }
                 try {
                     for (event in events) {
                         if (deduplicator == null || deduplicator.accept(event)) {
@@ -120,14 +133,22 @@ public class HolonSseConnection internal constructor(
                         }
                     }
                 } finally {
-                    close()
+                    state.set(State.CLOSED)
+                    body.close()
                 }
             }
         }
     }
 
     override fun close() {
-        body.close()
+        val previous = state.getAndSet(State.CLOSED)
+        if (previous == State.CLOSED) {
+            return
+        }
+        cancelCall()
+        if (previous == State.NEW || previous == State.CLAIMED) {
+            body.close()
+        }
     }
 }
 

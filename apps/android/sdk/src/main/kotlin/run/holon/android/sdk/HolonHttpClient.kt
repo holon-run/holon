@@ -663,7 +663,8 @@ public class HolonHttpClient internal constructor(
                 }
                 .get()
                 .build()
-        val response = sseHttpClient.newCall(request).execute()
+        val call = sseHttpClient.newCall(request)
+        val response = call.execute()
         if (!response.isSuccessful) {
             val body = response.body?.string().orEmpty()
             val statusCode = response.code
@@ -679,6 +680,7 @@ public class HolonHttpClient internal constructor(
         return HolonSseConnection(
             body = body,
             deduplicator = if (deduplicate) HolonSseDeduplicator() else null,
+            cancelCall = call::cancel,
         )
     }
 
