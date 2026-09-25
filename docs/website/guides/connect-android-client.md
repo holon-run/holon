@@ -41,11 +41,9 @@ USB or emulator access, localhost is sufficient:
 holon daemon start
 ```
 
-If your daemon requires authentication, generate or copy a bearer token:
-
-```bash
-holon config get auth.token
-```
+If your daemon requires authentication, have your access token ready. This can
+be the bearer token configured when starting the daemon (`--token <TOKEN>` or
+`--token-file <PATH>`) or a bootstrap token generated during setup.
 
 ## Step 2: Configure Port Forwarding for USB Devices
 
@@ -68,9 +66,9 @@ You do not need this step when using the standard Android emulator.
 3. Enter your auth token or bootstrap secret.
 4. Tap **Connect**.
 
-The app exchanges your token with the daemon's session endpoint, creates an
-encrypted session stored securely in Android Keystore, and discards the input
-token from memory.
+The app exchanges your token via the daemon's `/api/auth/session/exchange`
+endpoint, creates an encrypted session stored securely in Android Keystore, and
+discards the input token from memory.
 
 ## Step 4: Interact with Agents
 

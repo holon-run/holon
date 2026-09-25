@@ -36,11 +36,9 @@ order: 37
 holon daemon start
 ```
 
-如果守护进程开启了认证，准备好访问凭据（Bearer Token 或临时 Bootstrap Token）：
-
-```bash
-holon config get auth.token
-```
+如果守护进程开启了认证，准备好访问凭据。这可以是启动守护进程时通过
+`--token <TOKEN>` 或 `--token-file <PATH>` 指定的 Bearer Token，也可以是初始化引导流程生成的
+Bootstrap Token。
 
 ## 第二步：配置 USB 端口反向代理（物理机测试）
 
@@ -62,7 +60,7 @@ adb reverse tcp:7878 tcp:7878
 3. 输入认证 Token。
 4. 点击 **连接**。
 
-客户端会向服务端的 `/api/auth/session` 端点请求兑换，将生成的会话安全存入系统底层的 Android Keystore，同时从内存中抹除原始 Token。
+客户端会向服务端的 `/api/auth/session/exchange` 端点请求兑换，将生成的会话安全存入系统底层的 Android Keystore，同时从内存中抹除原始 Token。
 
 ## 第四步：在移动端与 Agent 交互
 

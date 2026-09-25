@@ -84,7 +84,7 @@ holon run "评估 PostgreSQL 中 50 行小表查询应使用索引扫描还是�
 检查执行过程或最近记录：
 
 ```bash
-holon transcript --last
+holon transcript
 ```
 
 你将在工具调用流中看到 `AdvisoryDecision`：

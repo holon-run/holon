@@ -95,7 +95,7 @@ holon run "Evaluate whether to use an index scan or table scan for 50 rows in Po
 Inspect the output or run transcript:
 
 ```bash
-holon transcript --last
+holon transcript
 ```
 
 You will see an `AdvisoryDecision` tool invocation containing:
