@@ -43,18 +43,18 @@ assembly.
 
 The lowering preserves prompt stability boundaries. Stable and agent-scoped
 system/context blocks remain in the cacheable system prefix, while turn-scoped
-system/context blocks ride the conversation tail (see below). The rolling
-conversation marker follows the latest cacheable content block, including
-Anthropic `tool_result` blocks after tool-only rounds; the runtime
+context blocks are placed ahead of wire history (see the #3225 update below).
+The rolling conversation marker follows the latest cacheable content block,
+including Anthropic `tool_result` blocks after tool-only rounds; the runtime
 conversation is not mutated.
 
 ## Context layout update (2026-09-22, #3175/#3176)
 
 Live probes against real Anthropic-compatible endpoints (dashscope, deepseek,
 bigmodel) showed that keeping turn-scoped context in the initial user message
-still invalidated the conversation history prefix on every turn (a changed
-head breaks prefix matching for everything after it). Both cache strategies now
-share one context layout:
+invalidated the conversation history prefix on every turn (a changed
+head breaks prefix matching for everything after it). At that time, both cache
+strategies shared this context layout:
 
 - Non-TurnScoped context blocks ride the system prefix on both strategies
   (including `messages_native`, which previously relied on upper-layer
@@ -66,6 +66,18 @@ share one context layout:
   marker stays on the last history block, so per-turn context changes stay
   outside the cached prefix.
 
-Diagnostics expose `turn_scoped_context_tail_blocks` so the layout is
-observable per request; per-request cache read/create tokens remain in usage
-records.
+## Same-turn continuation layout (2026-09-25, #3225)
+
+The tail layout avoided cross-turn history invalidation, but repeated the
+TurnScoped context as uncached input on every provider round within a turn.
+Both strategies now strip the materialized head and insert TurnScoped blocks
+at the start of wire history, with an explicit breakpoint on the last block
+when the four-breakpoint budget permits. The rolling history marker follows
+later blocks, allowing subsequent rounds in the *same turn* to reuse the
+context. Stable and agent-scoped blocks remain in system; the runtime
+conversation remains unchanged. A changed TurnScoped context on the next turn
+can invalidate cached history, so real provider usage and net cost across
+turns must be checked rather than assuming a global saving.
+
+Diagnostics expose `turn_scoped_context_prefix_blocks`; per-request cache
+read/create tokens remain in usage records.

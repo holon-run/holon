@@ -346,10 +346,9 @@ pub struct AnthropicPromptCacheDiagnostics {
     pub rolling_marker_lag_messages: usize,
     #[serde(default)]
     pub rolling_marker_at_tail: bool,
-    /// TurnScoped context blocks re-attached at the conversation tail
-    /// (outside the cached prefix).
+    /// TurnScoped context blocks re-attached before conversation history.
     #[serde(default)]
-    pub turn_scoped_context_tail_blocks: usize,
+    pub turn_scoped_context_prefix_blocks: usize,
     pub cache_breakpoints: Vec<CacheBreakpointInfo>,
     pub tokens_before_last_breakpoint: u64,
     pub tokens_after_last_breakpoint: u64,

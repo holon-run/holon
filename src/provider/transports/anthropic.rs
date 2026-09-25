@@ -315,13 +315,13 @@ impl AgentProvider for AnthropicProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let cache_strategy = self.context_management.cache_strategy;
         let cache_control = self.context_management.cache_capabilities.cache_control;
-        let wire_conversation = build_anthropic_wire_conversation(&request);
-        let turn_scoped_tail = turn_scoped_context_blocks(&request);
+        let system = build_anthropic_system(&request, cache_strategy, cache_control);
+        let mark_context = can_mark_turn_scoped_context(&system, cache_control);
+        let wire_conversation = build_anthropic_wire_conversation(&request, mark_context);
         let rolling_cache_marker =
             rolling_conversation_cache_marker(&wire_conversation, cache_strategy, cache_control);
         let mut messages =
             build_anthropic_messages(&wire_conversation, rolling_cache_marker, cache_control);
-        append_turn_scoped_context_tail(&mut messages, &turn_scoped_tail);
         if needs_placeholder_user_text(&self.route_provider) {
             ensure_placeholder_user_text(&mut messages);
         }
@@ -338,7 +338,7 @@ impl AgentProvider for AnthropicProvider {
             thinking,
             output_config,
             stream: true,
-            system: build_anthropic_system(&request, cache_strategy, cache_control),
+            system,
             messages,
             tools: build_anthropic_tools(&request),
             tool_choice: response_format_tool_choice,
@@ -571,13 +571,58 @@ impl AgentProvider for AnthropicProvider {
     }
 }
 
+fn can_mark_turn_scoped_context(system: &Value, cache_control: bool) -> bool {
+    // Reserve one breakpoint for the rolling history marker (Anthropic
+    // permits at most four explicit breakpoints per request).
+    let system_breakpoints = system
+        .as_array()
+        .map(|blocks| {
+            blocks
+                .iter()
+                .filter(|block| block.get("cache_control").is_some())
+                .count()
+        })
+        .unwrap_or(0);
+    cache_control && system_breakpoints < 3
+}
+
 /// Wire conversation for both cache strategies: history without the
 /// materialized context head. Non-TurnScoped context is carried by the
-/// system prefix and TurnScoped context is re-attached at the message tail
-/// (`append_turn_scoped_context_tail`), so per-turn context changes never
-/// invalidate the conversation history cache prefix.
-fn build_anthropic_wire_conversation(request: &ProviderTurnRequest) -> Vec<ConversationMessage> {
-    strip_initial_context_message(request)
+/// system prefix; TurnScoped context precedes history so subsequent rounds of
+/// the same turn can reuse it at a fixed cache breakpoint.
+fn build_anthropic_wire_conversation(
+    request: &ProviderTurnRequest,
+    mark_context: bool,
+) -> Vec<ConversationMessage> {
+    let mut conversation = strip_initial_context_message(request);
+    let mut blocks = turn_scoped_context_blocks(request);
+    if blocks.is_empty() {
+        return conversation;
+    }
+    for block in &mut blocks {
+        block.cache_breakpoint = false;
+    }
+    if mark_context {
+        if let Some(last) = blocks.last_mut() {
+            last.cache_breakpoint = true;
+        }
+    }
+    match conversation.first_mut() {
+        Some(ConversationMessage::UserBlocks(existing)) => {
+            blocks.append(existing);
+            *existing = blocks;
+        }
+        Some(ConversationMessage::UserText(text)) => {
+            blocks.push(PromptContentBlock {
+                text: text.clone(),
+                stability: PromptStability::TurnScoped,
+                cache_breakpoint: false,
+            });
+            conversation[0] = ConversationMessage::UserBlocks(blocks);
+        }
+        _ => conversation.insert(0, ConversationMessage::UserBlocks(blocks)),
+    }
+    conversation
 }
 
 fn anthropic_response_is_sse(response: &Response) -> bool {
@@ -1278,10 +1323,8 @@ fn merge_anthropic_usage(target: &mut ApiUsage, update: ApiUsage) {
 /// context on the wire instead of relying on upper-layer materialization:
 /// non-TurnScoped context moves into the system prefix
 /// (`claude_code_prompt_cache_anthropic_system` / `current_anthropic_system`)
-/// and TurnScoped context is re-attached at the conversation tail
-/// (`append_turn_scoped_context_tail`), so unmaterialized frames lose no
-/// context on either path and per-turn context stays out of the cached
-/// history prefix.
+/// and TurnScoped context is re-attached ahead of history, so unmaterialized
+/// frames lose no context on either path.
 fn strip_initial_context_message(request: &ProviderTurnRequest) -> Vec<ConversationMessage> {
     let mut conversation = request.conversation.clone();
     if matches!(
@@ -1313,41 +1356,6 @@ fn turn_scoped_context_blocks(request: &ProviderTurnRequest) -> Vec<PromptConten
         .filter(|block| block.stability == PromptStability::TurnScoped)
         .cloned()
         .collect()
-}
-
-/// Appends TurnScoped context blocks to the tail of the wire message list.
-///
-/// Blocks land after the latest tool result inside the final user message
-/// (mirroring Claude Code system-reminder placement) or as a new trailing
-/// user message. They are never marked with `cache_control`: the rolling
-/// marker stays on the last history block so per-turn context changes stay
-/// outside the cached prefix.
-fn append_turn_scoped_context_tail(messages: &mut Vec<ApiMessage>, blocks: &[PromptContentBlock]) {
-    if blocks.is_empty() {
-        return;
-    }
-    let tail_blocks: Vec<Value> = blocks
-        .iter()
-        .map(|block| json!({ "type": "text", "text": block.text }))
-        .collect();
-    match messages.last_mut() {
-        Some(message) if message.role == "user" => match &mut message.content {
-            Value::Array(content) => content.extend(tail_blocks),
-            Value::String(text) => {
-                let mut content = vec![json!({ "type": "text", "text": text.clone() })];
-                content.extend(tail_blocks);
-                message.content = Value::Array(content);
-            }
-            _ => messages.push(ApiMessage {
-                role: "user",
-                content: Value::Array(tail_blocks),
-            }),
-        },
-        _ => messages.push(ApiMessage {
-            role: "user",
-            content: Value::Array(tail_blocks),
-        }),
-    }
 }
 
 fn build_anthropic_system(
@@ -2401,7 +2409,7 @@ fn collect_anthropic_cache_diagnostics(
     let (rolling_marker_lag_messages, rolling_marker_at_tail) =
         rolling_marker_diagnostics(conversation, rolling_cache_marker);
 
-    let turn_scoped_context_tail_blocks = request
+    let turn_scoped_context_prefix_blocks = request
         .prompt_frame
         .context_blocks
         .iter()
@@ -2424,7 +2432,7 @@ fn collect_anthropic_cache_diagnostics(
         message_cache_control_count,
         rolling_marker_lag_messages,
         rolling_marker_at_tail,
-        turn_scoped_context_tail_blocks,
+        turn_scoped_context_prefix_blocks,
         cache_breakpoints,
         tokens_before_last_breakpoint,
         tokens_after_last_breakpoint,
@@ -3331,24 +3339,27 @@ mod tests {
     }
 
     #[test]
-    fn turn_scoped_context_lands_after_latest_tool_result_for_both_strategies() {
+    fn turn_scoped_context_precedes_history_for_both_strategies() {
         let request = turn_scoped_tail_request();
         for strategy in [
             AnthropicCacheStrategy::MessagesNative,
             AnthropicCacheStrategy::ClaudeCodePromptCache,
         ] {
-            let wire_conversation = build_anthropic_wire_conversation(&request);
+            let wire_conversation = build_anthropic_wire_conversation(&request, true);
             let rolling_cache_marker =
                 rolling_conversation_cache_marker(&wire_conversation, strategy, true);
-            let mut messages =
-                build_anthropic_messages(&wire_conversation, rolling_cache_marker, true);
-            append_turn_scoped_context_tail(&mut messages, &turn_scoped_context_blocks(&request));
+            let messages = build_anthropic_messages(&wire_conversation, rolling_cache_marker, true);
 
             // The stripped history starts with an assistant round, so the
             // transport keeps a leading user placeholder.
             assert_eq!(messages[0].role, "user");
+            assert_eq!(messages[0].content[0]["text"], json!("current turn"));
             assert_eq!(
-                messages[0].content[0]["text"],
+                messages[0].content[0]["cache_control"],
+                json!({"type":"ephemeral"})
+            );
+            assert_eq!(
+                messages[0].content[1]["text"],
                 json!("Continue using the context above.")
             );
             // The rolling marker stays on the latest tool result.
@@ -3356,10 +3367,7 @@ mod tests {
                 messages[2].content[0]["cache_control"],
                 json!({ "type": "ephemeral" })
             );
-            // TurnScoped context follows the tool result in the same user
-            // message, outside the marked prefix.
-            assert_eq!(messages[2].content[1]["text"], json!("current turn"));
-            assert!(messages[2].content[1].get("cache_control").is_none());
+            assert_eq!(messages[2].content.as_array().unwrap().len(), 1);
 
             // Both strategies carry non-TurnScoped context in the system
             // prefix, never TurnScoped content.
@@ -3374,6 +3382,124 @@ mod tests {
             assert!(system_text.contains("agent context"));
             assert!(!system_text.contains("current turn"));
         }
+    }
+
+    #[test]
+    fn turn_scoped_prefix_is_reusable_across_provider_rounds() {
+        for strategy in [
+            AnthropicCacheStrategy::MessagesNative,
+            AnthropicCacheStrategy::ClaudeCodePromptCache,
+        ] {
+            let mut request = turn_scoped_tail_request();
+            for round in 0..4 {
+                let conversation = build_anthropic_wire_conversation(&request, true);
+                let marker = rolling_conversation_cache_marker(&conversation, strategy, true);
+                let messages = build_anthropic_messages(&conversation, marker, true);
+                let payload = json!({
+                    "system": build_anthropic_system(&request, strategy, true),
+                    "messages": messages,
+                });
+                assert_eq!(count_payload_cache_controls(&payload), (2, 2));
+                assert_eq!(messages[0].content[0]["text"], "current turn");
+                assert_eq!(messages[0].content[0]["cache_control"]["type"], "ephemeral");
+                assert_eq!(
+                    payload["messages"]
+                        .to_string()
+                        .matches("current turn")
+                        .count(),
+                    1
+                );
+                let (marker_message, marker_block) = marker.unwrap();
+                assert_eq!(
+                    messages[marker_message].content[marker_block]["cache_control"]["type"],
+                    "ephemeral"
+                );
+                request
+                    .conversation
+                    .push(ConversationMessage::AssistantBlocks(vec![
+                        ModelBlock::Text {
+                            text: format!("round {round}"),
+                        },
+                    ]));
+                request
+                    .conversation
+                    .push(ConversationMessage::UserText(format!("continue {round}")));
+                let next = build_anthropic_wire_conversation(&request, true);
+                let next_messages = build_anthropic_messages(
+                    &next,
+                    rolling_conversation_cache_marker(&next, strategy, true),
+                    true,
+                );
+                assert_eq!(messages[0].content, next_messages[0].content);
+                // The old history, except its moving tail marker, is a
+                // prefix of the next request.
+                for (old, new) in messages.iter().zip(&next_messages).take(messages.len() - 1) {
+                    assert_eq!(old.role, new.role);
+                    assert_eq!(old.content, new.content);
+                }
+            }
+
+            request.prompt_frame.context_blocks[1].text = "next turn".into();
+            if let ConversationMessage::UserBlocks(blocks) = &mut request.conversation[0] {
+                blocks[1].text = "next turn".into();
+            }
+            let next = build_anthropic_wire_conversation(&request, true);
+            let next_messages = build_anthropic_messages(
+                &next,
+                rolling_conversation_cache_marker(&next, strategy, true),
+                true,
+            );
+            assert_eq!(next_messages[0].content[0]["text"], "next turn");
+            assert!(!serde_json::to_string(&next_messages)
+                .unwrap()
+                .contains("current turn"));
+        }
+    }
+
+    #[test]
+    fn turn_scoped_prefix_handles_unmaterialized_and_cache_disabled() {
+        let mut request = turn_scoped_tail_request();
+        request.conversation = vec![ConversationMessage::UserText("hello".into())];
+        let uncached = build_anthropic_wire_conversation(&request, false);
+        let messages = build_anthropic_messages(&uncached, None, false);
+        assert_eq!(messages[0].content[0]["text"], "current turn");
+        assert!(messages[0].content[0].get("cache_control").is_none());
+        assert_eq!(messages[0].content[1]["text"], "hello");
+        assert_eq!(messages[0].content.as_array().unwrap().len(), 2);
+
+        request.conversation.clear();
+        let empty = build_anthropic_wire_conversation(&request, true);
+        let messages = build_anthropic_messages(&empty, None, true);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].content[0]["text"], "current turn");
+    }
+
+    #[test]
+    fn turn_scoped_prefix_reserves_rolling_breakpoint_budget() {
+        let request = turn_scoped_tail_request();
+        let mut system =
+            build_anthropic_system(&request, AnthropicCacheStrategy::MessagesNative, true);
+        assert!(can_mark_turn_scoped_context(&system, true));
+        system
+            .as_array_mut()
+            .unwrap()
+            .push(cacheable_text_block("third system marker"));
+        assert!(!can_mark_turn_scoped_context(&system, true));
+        assert!(!can_mark_turn_scoped_context(&system, false));
+
+        let conversation = build_anthropic_wire_conversation(
+            &request,
+            can_mark_turn_scoped_context(&system, true),
+        );
+        let marker = rolling_conversation_cache_marker(
+            &conversation,
+            AnthropicCacheStrategy::MessagesNative,
+            true,
+        );
+        let messages = build_anthropic_messages(&conversation, marker, true);
+        assert!(messages[0].content[0].get("cache_control").is_none());
+        let payload = json!({"system": system, "messages": messages});
+        assert_eq!(count_payload_cache_controls(&payload), (3, 1));
     }
 
     #[test]
@@ -3394,19 +3520,19 @@ mod tests {
 
         // An unmaterialized conversation no longer silently drops context on
         // the native path: the stable part rides the system prefix and the
-        // TurnScoped part rides the message tail.
-        let mut messages = build_anthropic_messages(
-            &request.conversation,
+        // TurnScoped part rides the message prefix.
+        let conversation = build_anthropic_wire_conversation(&request, true);
+        let messages = build_anthropic_messages(
+            &conversation,
             rolling_conversation_cache_marker(
-                &request.conversation,
+                &conversation,
                 AnthropicCacheStrategy::MessagesNative,
                 true,
             ),
             true,
         );
-        append_turn_scoped_context_tail(&mut messages, &turn_scoped_context_blocks(&request));
-        assert_eq!(messages[0].content[0]["text"], json!("hi"));
-        assert_eq!(messages[0].content[1]["text"], json!("current turn"));
+        assert_eq!(messages[0].content[0]["text"], json!("current turn"));
+        assert_eq!(messages[0].content[1]["text"], json!("hi"));
     }
 
     #[test]
@@ -3418,7 +3544,7 @@ mod tests {
         }
 
         assert!(turn_scoped_context_blocks(&request).is_empty());
-        let wire_conversation = build_anthropic_wire_conversation(&request);
+        let wire_conversation = build_anthropic_wire_conversation(&request, true);
         assert!(matches!(
             wire_conversation.first(),
             Some(ConversationMessage::UserText(text)) if text == "Continue using the context above."
