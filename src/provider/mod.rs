@@ -346,6 +346,9 @@ pub struct AnthropicPromptCacheDiagnostics {
     pub rolling_marker_lag_messages: usize,
     #[serde(default)]
     pub rolling_marker_at_tail: bool,
+    /// Retained for persisted diagnostics and older readers; new requests have no tail blocks.
+    #[serde(default)]
+    pub turn_scoped_context_tail_blocks: usize,
     /// TurnScoped context blocks re-attached before conversation history.
     #[serde(default)]
     pub turn_scoped_context_prefix_blocks: usize,

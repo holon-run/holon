@@ -2432,6 +2432,7 @@ fn collect_anthropic_cache_diagnostics(
         message_cache_control_count,
         rolling_marker_lag_messages,
         rolling_marker_at_tail,
+        turn_scoped_context_tail_blocks: 0,
         turn_scoped_context_prefix_blocks,
         cache_breakpoints,
         tokens_before_last_breakpoint,
@@ -4149,6 +4150,20 @@ mod tests {
         assert_eq!(diagnostics.tokens_after_last_breakpoint, 0);
         assert_eq!(diagnostics.rolling_marker_lag_messages, 0);
         assert!(diagnostics.rolling_marker_at_tail);
+        let serialized = serde_json::to_value(&diagnostics).unwrap();
+        assert_eq!(serialized["turn_scoped_context_tail_blocks"], 0);
+        assert_eq!(serialized["turn_scoped_context_prefix_blocks"], 0);
+
+        let mut previous_record = serialized;
+        previous_record
+            .as_object_mut()
+            .unwrap()
+            .remove("turn_scoped_context_prefix_blocks");
+        previous_record["turn_scoped_context_tail_blocks"] = json!(2);
+        let restored: AnthropicPromptCacheDiagnostics =
+            serde_json::from_value(previous_record).unwrap();
+        assert_eq!(restored.turn_scoped_context_tail_blocks, 2);
+        assert_eq!(restored.turn_scoped_context_prefix_blocks, 0);
     }
 
     #[test]
