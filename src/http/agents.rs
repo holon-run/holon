@@ -344,9 +344,11 @@ pub async fn list_agent_entries(
     if let Err(error) = authorize_remote_access(&headers, &state) {
         return auth_required(error.to_string()).into_response();
     }
+    // The projection cache key must distinguish parent filters; otherwise a
+    // cached list built for one query would be served for every other query.
     let result = state
         .projection_gate
-        .run(ProjectionKey::AgentsList, || async {
+        .run(ProjectionKey::AgentsList(query.parent.clone()), || async {
             let projection_started = std::time::Instant::now();
             let agents = state
                 .host

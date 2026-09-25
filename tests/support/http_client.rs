@@ -190,6 +190,36 @@ pub async fn local_client_unix_event_stream_failure_does_not_retry_over_http() -
     Ok(())
 }
 
+pub async fn agent_list_parent_filter_is_not_served_from_foreign_query_cache() -> Result<()> {
+    let (_host, base, _server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let unfiltered: Vec<serde_json::Value> = client
+        .get(format!("{base}/api/agents/list"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(
+        !unfiltered.is_empty(),
+        "spawn_server should expose at least one agent entry"
+    );
+
+    // Regression: /agents/list projections must be cached per parent filter.
+    // The unfiltered request above must not be served to a different query.
+    let unknown_parent: Vec<serde_json::Value> = client
+        .get(format!("{base}/api/agents/list?parent=__no_such_parent__"))
+        .send()
+        .await?
+        .json()
+        .await?;
+    assert!(
+        unknown_parent.is_empty(),
+        "agents/list with an unknown parent filter must not be served from another query's cached projection"
+    );
+    Ok(())
+}
+
 pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
