@@ -527,7 +527,6 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, o
                     }
                 },
                 actions = {
-                    CompactStatus(agent.statusLabel(), agent.statusTone())
                     IconButton(onClick = viewModel::refresh, enabled = !state.busy) {
                         Icon(Icons.Default.Refresh, contentDescription = "刷新")
                     }
@@ -711,12 +710,8 @@ private fun TurnCard(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "工作结果",
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        CompactStatus(turn.resultLabel(), turn.resultTone())
+                        Text("结果", modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+                        turn.exceptionStatus()?.let { (label, tone) -> CompactStatus(label, tone) }
                     }
                     MarkdownText(brief.text.ifBlank { "结果没有文本说明" })
                     if (brief.attachments.isNotEmpty() || brief.workItemId != null) {
@@ -737,15 +732,12 @@ private fun TurnCard(
                 modifier = Modifier.fillMaxWidth().clickable(onClick = onDetail),
             ) {
                 Column(Modifier.padding(13.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(turn.displaySummary(), modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
-                        CompactStatus(turn.resultLabel(), turn.resultTone())
-                    }
+                    Text(turn.displaySummary(), style = MaterialTheme.typography.labelLarge)
                     Text(
                         when (turn.executionKind) {
-                            "active" -> "Agent 正在处理；完成后结果会出现在这里。"
-                            "terminal" -> "本轮没有可读 brief，可查看 assistant 与工具活动。"
-                            else -> "正在同步本轮状态。"
+                            "active" -> "完成后 brief 会直接显示在会话中。"
+                            "terminal" -> "没有可读 brief，可查看 assistant 与工具活动。"
+                            else -> "状态同步中。"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -770,10 +762,17 @@ internal fun ResultLinkRow(label: String, meta: String, onClick: () -> Unit) {
 
 private fun HolonConversationTurn.displaySummary(): String =
     when (summary) {
-        "Work result available" -> "已有工作结果"
-        "Work failed" -> "工作失败"
-        "Work in progress" -> "工作进行中"
+        "Work result available" -> "结果已生成"
+        "Work failed" -> "本轮失败"
+        "Work in progress" -> "正在处理"
         else -> summary
+    }
+
+private fun HolonConversationTurn.exceptionStatus(): Pair<String, StatusTone>? =
+    when {
+        attentionKind != null -> "需注意" to StatusTone.Warning
+        resultKind.contains("failure", true) || terminalOutcome == "failure" -> "失败" to StatusTone.Danger
+        else -> null
     }
 
 @Composable
@@ -824,12 +823,11 @@ private fun TurnDetailScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     Column(Modifier.weight(1f)) {
                         Text("本轮过程", style = MaterialTheme.typography.headlineSmall)
                         Text(
-                            if (turn.executionKind == "active") "实时更新" else "已完成",
+                            if (turn.executionKind == "active") "实时更新" else "执行记录",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (turn.executionKind == "active") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    CompactStatus(if (turn.executionKind == "active") "实时" else turn.resultLabel(), turn.resultTone())
                 }
             }
             turn.inputs.filter { it.presentationClass != "internal" }.forEach { input ->
@@ -1541,7 +1539,6 @@ private fun BriefScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     Text("产物与关联工作", style = MaterialTheme.typography.headlineSmall)
                     Text(brief.createdAt, style = MaterialTheme.typography.labelSmall)
                 }
-                StatusPill("结果", StatusTone.Success)
             }
         }
         brief.workItemId?.let { id ->
@@ -1788,24 +1785,6 @@ private fun AgentSummary.statusLabel(): String =
         schedulingPosture == "idle" -> "空闲"
         runtimeStatus.lowercase() == "offline" -> "离线缓存"
         else -> runtimeStatus
-    }
-
-private fun HolonConversationTurn.resultLabel(): String =
-    when {
-        attentionKind != null -> "需注意"
-        resultKind.contains("failure", true) || terminalOutcome == "failure" -> "失败"
-        resultKind == "available" -> "结果可用"
-        settled -> "已完成"
-        executionKind.contains("active", true) -> "执行中"
-        else -> "进行中"
-    }
-
-private fun HolonConversationTurn.resultTone(): StatusTone =
-    when (resultLabel()) {
-        "需注意" -> StatusTone.Warning
-        "失败" -> StatusTone.Danger
-        "已完成", "结果可用" -> StatusTone.Success
-        else -> StatusTone.Accent
     }
 
 @Composable

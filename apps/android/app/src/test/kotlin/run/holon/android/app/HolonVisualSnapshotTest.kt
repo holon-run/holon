@@ -83,7 +83,7 @@ class HolonVisualSnapshotTest {
             )
         paparazzi.snapshot {
             PreviewFrame {
-                Text("工作结果", style = MaterialTheme.typography.headlineSmall)
+                Text("结果", style = MaterialTheme.typography.headlineSmall)
                 MarkdownText(
                     """
                     ## Android 验收完成
@@ -176,7 +176,7 @@ class HolonLargeTextVisualSnapshotTest {
     fun briefAtLargeFontScale() {
         paparazzi.snapshot {
             PreviewFrame {
-                Text("工作结果", style = MaterialTheme.typography.headlineSmall)
+                Text("结果", style = MaterialTheme.typography.headlineSmall)
                 MarkdownText(
                     """
                     ## 结果清晰可读

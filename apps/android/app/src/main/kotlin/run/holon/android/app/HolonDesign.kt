@@ -2,7 +2,6 @@ package run.holon.android.app
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -200,42 +199,6 @@ internal enum class StatusTone {
     Success,
     Warning,
     Danger,
-}
-
-@Composable
-internal fun StatusPill(
-    label: String,
-    tone: StatusTone,
-    modifier: Modifier = Modifier,
-) {
-    val color =
-        when (tone) {
-            StatusTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
-            StatusTone.Accent -> MaterialTheme.colorScheme.primary
-            StatusTone.Success -> HolonSuccess
-            StatusTone.Warning -> HolonWarning
-            StatusTone.Danger -> HolonDanger
-        }
-    Row(
-        modifier =
-            modifier
-                .background(color.copy(alpha = 0.09f), RoundedCornerShape(999.dp))
-                .border(1.dp, color.copy(alpha = 0.22f), RoundedCornerShape(999.dp))
-                .padding(horizontal = 9.dp, vertical = 5.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            Modifier
-                .size(6.dp)
-                .background(color, RoundedCornerShape(999.dp)),
-        )
-        Text(
-            text = label,
-            color = color,
-            style = MaterialTheme.typography.labelSmall,
-        )
-    }
 }
 
 @Composable
