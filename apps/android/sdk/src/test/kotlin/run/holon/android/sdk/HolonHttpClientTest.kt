@@ -16,6 +16,39 @@ import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
     @Test
+    fun `file references resolve through the authorized daemon and preserve root identity`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("""{"results":[{"status":"resolved","location":{"workspace_id":"ws-1","execution_root_id":"root:old","path":"reports/final.md","absolute_path":"/host/reports/final.md","kind":"file","root_kind":"git_worktree_root"}}]}"""))
+            server.enqueue(jsonResponse("""{"results":[{"status":"unresolved","reason":"not_found","message":"path does not exist"}]}"""))
+            val client = HolonHttpClient(
+                server.url("/api/").toString(),
+                bearerTokenProvider = BearerTokenProvider { "session" },
+            )
+
+            val resolved = assertIs<HolonFileReferenceResult.Resolved>(
+                client.resolveFileReference(HolonFileReference.WorkspaceUri("workspace://ws-1/reports/final.md?root=root%3Aold")),
+            )
+            assertEquals("root:old", resolved.location.executionRootId)
+            assertEquals("reports/final.md", resolved.location.path)
+            val request = server.takeRequest()
+            assertEquals("/api/file-references/resolve", request.path)
+            assertEquals("Bearer session", request.getHeader("Authorization"))
+            assertEquals(
+                """{"references":[{"type":"workspace_uri","workspace_uri":"workspace://ws-1/reports/final.md?root=root%3Aold"}]}""",
+                request.body.readUtf8(),
+            )
+
+            assertIs<HolonFileReferenceResult.Unresolved>(
+                client.resolveFileReference(HolonFileReference.AbsolutePath("/missing.txt")),
+            )
+            assertEquals(
+                """{"references":[{"type":"absolute_path","absolute_path":"/missing.txt"}]}""",
+                server.takeRequest().body.readUtf8(),
+            )
+        }
+    }
+
+    @Test
     fun `default client uses the bounded total call timeout`() {
         assertEquals(30_000, HolonHttpClient.defaultHttpClient().callTimeoutMillis)
     }

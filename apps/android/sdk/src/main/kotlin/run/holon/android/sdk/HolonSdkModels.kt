@@ -400,6 +400,28 @@ public data class HolonWorkspaceDirectory(
     public val entries: List<HolonWorkspaceEntry>,
 )
 
+/** A file reference is resolved by the daemon, never against the phone's filesystem. */
+public sealed interface HolonFileReference {
+    public data class AbsolutePath(val path: String) : HolonFileReference
+
+    public data class WorkspaceUri(val uri: String) : HolonFileReference
+}
+
+public data class HolonResolvedFileLocation(
+    val workspaceId: String,
+    val executionRootId: String,
+    val path: String,
+    val absolutePath: String,
+    val kind: String,
+    val rootKind: String,
+)
+
+public sealed interface HolonFileReferenceResult {
+    public data class Resolved(val location: HolonResolvedFileLocation) : HolonFileReferenceResult
+
+    public data class Unresolved(val reason: String, val message: String) : HolonFileReferenceResult
+}
+
 public data class HolonBriefAttachment(
     public val kind: String,
     public val name: String,

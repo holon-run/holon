@@ -3,8 +3,44 @@ package run.holon.android.app
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import run.holon.android.sdk.HolonFileReference
 
 class MarkdownTextTest {
+    @Test
+    fun classifiesMessageFilesWithoutGuessingAWorkspaceRoot() {
+        assertEquals(
+            MessageFileReference(HolonFileReference.AbsolutePath("/host/a b.md"), "section"),
+            classifyMessageFileReference("file:///host/a%20b.md#section"),
+        )
+        assertEquals(
+            MessageFileReference(HolonFileReference.WorkspaceUri("workspace://ws/reports/a.md?root=old%3Aroot")),
+            classifyMessageFileReference("workspace://ws/reports/a.md?root=old%3Aroot"),
+        )
+        assertEquals(
+            MessageFileReference(HolonFileReference.AbsolutePath("/host/100%25.txt")),
+            classifyMessageFileReference("/host/100%25.txt", literal = true),
+        )
+        assertNull(classifyMessageFileReference("docs/report.md"))
+        assertNull(classifyMessageFileReference("workspace://ws/a.md?root=x&root=y"))
+        assertNull(classifyMessageFileReference("file://remote/host/a.md"))
+        assertNull(classifyMessageFileReference("/host/file.md?download=true"))
+    }
+
+    @Test
+    fun findsBarePathsInBriefTextButNotWebUrlsOrRelativeProse() {
+        val brief = "文件：/home/jolestar/tmp/result.txt，详情见 https://example.test/a/b 和 docs/readme.md"
+        val start = brief.indexOf("/home")
+        assertEquals(
+            BareMessageFileReference(
+                "/home/jolestar/tmp/result.txt",
+                MessageFileReference(HolonFileReference.AbsolutePath("/home/jolestar/tmp/result.txt")),
+            ),
+            bareMessageFileReferenceAt(brief, start),
+        )
+        assertNull(bareMessageFileReferenceAt(brief, brief.indexOf("//example") + 1))
+        assertNull(bareMessageFileReferenceAt(brief, brief.indexOf("/readme")))
+    }
+
     @Test
     fun parsesBriefMarkdownIntoTypedBlocks() {
         val blocks =

@@ -86,6 +86,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
@@ -636,6 +637,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
             )
         },
     ) { padding ->
+        CompositionLocalProvider(LocalOpenMessageFile provides viewModel::openMessageFile) {
         // Resize the timeline and composer together; padding only the composer leaves an IME-sized gap.
         Column(Modifier.fillMaxSize().padding(padding).imePadding()) {
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
@@ -687,6 +689,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     }
                 }
             }
+        }
         }
     }
 }
@@ -850,7 +853,7 @@ private fun TurnCard(
                     modifier = Modifier.fillMaxWidth(0.92f),
                 ) {
                     Column(Modifier.padding(horizontal = 13.dp, vertical = 10.dp)) {
-                        SelectionContainer { Text(input.preview.ifBlank { "已提交输入" }) }
+                        MarkdownText(input.preview.ifBlank { "已提交输入" })
                         input.createdAt?.let { Text(relativeTime(it), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer) }
                         input.actorDisplayName?.let {
                             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onPrimaryContainer)
@@ -1575,7 +1578,8 @@ private fun WorkspaceBrowserScreen(
             FileReaderScreen(
                 artifact = prepared,
                 title = "文件",
-                onBack = viewModel::clearPreparedArtifact,
+                onBack = viewModel::returnFromMessageFile,
+                backLabel = if (state.fileLinkOrigin != null) "消息" else "文件列表",
                 onSave = viewModel::saveArtifactToDevice,
                 onShare = { shareArtifact(context, prepared) },
             )
@@ -1585,7 +1589,9 @@ private fun WorkspaceBrowserScreen(
             modifier.verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            TextButton(onClick = viewModel::clearPreparedArtifact) { Text("‹ 返回文件列表") }
+            TextButton(onClick = viewModel::returnFromMessageFile) {
+                Text(if (state.fileLinkOrigin != null) "‹ 返回消息" else "‹ 返回文件列表")
+            }
             Text(prepared.fileName, style = MaterialTheme.typography.headlineSmall)
             Text(prepared.mediaType, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             ArtifactPreview(prepared)

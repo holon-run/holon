@@ -24,6 +24,8 @@ import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonCurrentUser
 import run.holon.android.sdk.HolonDownloadedFile
+import run.holon.android.sdk.HolonFileReference
+import run.holon.android.sdk.HolonFileReferenceResult
 import run.holon.android.sdk.HolonHttpClient
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonPromptAttachment
@@ -518,6 +520,9 @@ internal class HolonRepository(
             path = path,
             executionRootId = workspace.executionRootId,
         )
+
+    suspend fun resolveFileReference(reference: HolonFileReference): HolonFileReferenceResult =
+        requireClient().resolveFileReference(reference)
 
     suspend fun prepareArtifact(locator: String, preferredName: String): PreparedArtifact {
         val client = requireClient()

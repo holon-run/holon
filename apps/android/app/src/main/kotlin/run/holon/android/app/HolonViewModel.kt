@@ -27,6 +27,7 @@ import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonConversationStreamEvent
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonHttpException
+import run.holon.android.sdk.HolonFileReferenceResult
 import run.holon.android.sdk.HolonRosterSnapshot
 import run.holon.android.sdk.HolonSseConnection
 import run.holon.android.sdk.HolonToolExecutionSnapshot
@@ -51,6 +52,17 @@ internal enum class AgentSection(val label: String) {
     Work("工作"),
     Files("文件"),
 }
+
+internal data class FileLinkOrigin(
+    val section: AgentSection,
+    val brief: HolonBrief?,
+    val turn: HolonConversationTurn?,
+    val activity: HolonConversationActivity?,
+    val workItem: HolonWorkItemSnapshot?,
+    val planFile: PreparedArtifact?,
+    val workspace: HolonWorkspace?,
+    val directory: HolonWorkspaceDirectory?,
+)
 
 internal data class HolonUiState(
     val phase: AppPhase = AppPhase.Starting,
@@ -100,6 +112,7 @@ internal data class HolonUiState(
     val workspaceDirectory: HolonWorkspaceDirectory? = null,
     val workspaceBusy: Boolean = false,
     val preparedArtifact: PreparedArtifact? = null,
+    val fileLinkOrigin: FileLinkOrigin? = null,
     val error: String? = null,
     val statusMessage: String? = null,
     val search: String = "",
@@ -451,6 +464,7 @@ internal class HolonViewModel(
                 selectedActivity = null,
                 selectedToolExecution = null,
                 preparedArtifact = null,
+                fileLinkOrigin = null,
                 workItems = emptyList(),
                 workItemsLimit = 30,
                 workItemsHasMore = false,
@@ -719,6 +733,7 @@ internal class HolonViewModel(
                 selectedWorkItem = null,
                 planFile = null,
                 preparedArtifact = null,
+                fileLinkOrigin = null,
             )
         }
     }
@@ -971,6 +986,90 @@ internal class HolonViewModel(
         browseWorkspace(workspace, "")
     }
 
+    fun openMessageFile(reference: MessageFileReference) {
+        val agentId = state.value.selectedAgent?.id ?: return
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.resolveFileReference(reference.reference) }
+            }.onSuccess { result ->
+                if (state.value.selectedAgent?.id != agentId) return@onSuccess
+                when (result) {
+                    is HolonFileReferenceResult.Unresolved -> mutableState.update {
+                        it.copy(error = "文件无法打开：${result.message}")
+                    }
+                    is HolonFileReferenceResult.Resolved -> {
+                        val location = result.location
+                        if (location.kind !in setOf("file", "directory")) {
+                            mutableState.update { it.copy(error = "不支持的文件类型：${location.kind}") }
+                            return@onSuccess
+                        }
+                        val workspace = state.value.workspaces.firstOrNull {
+                            it.workspaceId == location.workspaceId && it.executionRootId == location.executionRootId
+                        } ?: HolonWorkspace(
+                            workspaceId = location.workspaceId,
+                            alias = null,
+                            label = location.workspaceId,
+                            isActive = false,
+                            executionRootId = location.executionRootId,
+                            projectionKind = location.rootKind,
+                        )
+                        val directory = if (location.kind == "directory") location.path else location.path.substringBeforeLast('/', "")
+                        mutableState.update {
+                            it.copy(
+                                fileLinkOrigin = it.fileLinkOrigin ?: FileLinkOrigin(
+                                    section = it.agentSection,
+                                    brief = it.selectedBrief,
+                                    turn = it.selectedTurn,
+                                    activity = it.selectedActivity,
+                                    workItem = it.selectedWorkItem,
+                                    planFile = it.planFile,
+                                    workspace = it.selectedWorkspace,
+                                    directory = it.workspaceDirectory,
+                                ),
+                                agentSection = AgentSection.Files,
+                                selectedBrief = null,
+                                selectedTurn = null,
+                                selectedActivity = null,
+                                selectedWorkItem = null,
+                                planFile = null,
+                                preparedArtifact = null,
+                                selectedWorkspace = workspace,
+                                workspaces = if (workspace in it.workspaces) it.workspaces else it.workspaces + workspace,
+                                workspaceDirectory = null,
+                                workspaceBusy = true,
+                                error = null,
+                                statusMessage = if (reference.fragment != null) "已打开文件；段落定位暂不可用" else null,
+                            )
+                        }
+                        browseWorkspace(workspace, directory)
+                        if (location.kind == "file") {
+                            viewModelScope.launch {
+                                runCatching {
+                                    withContext(Dispatchers.IO) { repository.prepareWorkspaceFile(workspace, location.path) }
+                                }.onSuccess { artifact ->
+                                    if (state.value.selectedAgent?.id == agentId && state.value.fileLinkOrigin != null &&
+                                        state.value.agentSection == AgentSection.Files && state.value.selectedWorkspace == workspace
+                                    ) {
+                                        mutableState.update { it.copy(preparedArtifact = artifact, workspaceBusy = false) }
+                                    }
+                                }.onFailure { error ->
+                                    if (state.value.fileLinkOrigin != null) {
+                                        if (error is HolonHttpException && error.statusCode in setOf(401, 403)) handleRuntimeFailure(error)
+                                        else mutableState.update { it.copy(workspaceBusy = false, error = humanError(error)) }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }.onFailure { error ->
+                if (state.value.selectedAgent?.id != agentId) return@onFailure
+                if (error is HolonHttpException && error.statusCode in setOf(401, 403)) handleRuntimeFailure(error)
+                else mutableState.update { it.copy(error = humanError(error)) }
+            }
+        }
+    }
+
     fun openWorkspaceEntry(name: String, directory: Boolean) {
         val workspace = state.value.selectedWorkspace ?: return
         val currentPath = state.value.workspaceDirectory?.path.orEmpty().trim('/')
@@ -1037,6 +1136,31 @@ internal class HolonViewModel(
 
     fun clearPreparedArtifact() = mutableState.update { it.copy(preparedArtifact = null) }
 
+    fun returnFromMessageFile() {
+        val origin = state.value.fileLinkOrigin
+        if (origin == null) {
+            clearPreparedArtifact()
+            return
+        }
+        workspaceBrowseJob?.cancel()
+        mutableState.update {
+            it.copy(
+                agentSection = origin.section,
+                selectedBrief = origin.brief,
+                selectedTurn = origin.turn,
+                selectedActivity = origin.activity,
+                selectedWorkItem = origin.workItem,
+                planFile = origin.planFile,
+                selectedWorkspace = origin.workspace,
+                workspaceDirectory = origin.directory,
+                workspaceBusy = false,
+                preparedArtifact = null,
+                fileLinkOrigin = null,
+                statusMessage = null,
+            )
+        }
+    }
+
     fun saveArtifactToDevice(artifact: PreparedArtifact, destination: Uri) {
         mutableState.update { it.copy(statusMessage = "正在保存 ${artifact.fileName}…", error = null) }
         viewModelScope.launch {
@@ -1062,6 +1186,10 @@ internal class HolonViewModel(
     fun handleSystemBack(): Boolean {
         val current = state.value
         return when {
+            current.fileLinkOrigin != null -> {
+                returnFromMessageFile()
+                true
+            }
             current.planFile != null -> {
                 closePlanFile()
                 true

@@ -129,6 +129,7 @@ internal fun FileReaderScreen(
     artifact: PreparedArtifact,
     title: String,
     onBack: () -> Unit,
+    backLabel: String = if (title == "完整计划") "工作详情" else "文件列表",
     onSave: (PreparedArtifact, Uri) -> Unit,
     onShare: () -> Unit,
 ) {
@@ -156,7 +157,7 @@ internal fun FileReaderScreen(
     ) {
         item {
             Column(Modifier.padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                TextButton(onClick = onBack) { Text("‹ 返回${if (title == "完整计划") "工作详情" else "文件列表"}") }
+                TextButton(onClick = onBack) { Text("‹ 返回$backLabel") }
                 Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 Text(artifact.fileName, style = MaterialTheme.typography.headlineSmall)
                 Text("${readerFileSize(file.length())} · ${artifact.mediaType}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)

@@ -517,6 +517,52 @@ public class HolonHttpClient internal constructor(
         )
     }
 
+    public fun resolveFileReference(reference: HolonFileReference): HolonFileReferenceResult {
+        val input = buildJsonObject {
+            when (reference) {
+                is HolonFileReference.AbsolutePath -> {
+                    put("type", "absolute_path")
+                    put("absolute_path", reference.path)
+                }
+                is HolonFileReference.WorkspaceUri -> {
+                    put("type", "workspace_uri")
+                    put("workspace_uri", reference.uri)
+                }
+            }
+        }
+        val response = postJson(
+            "file-references/resolve",
+            buildJsonObject { put("references", JsonArray(listOf(input))) },
+        ).objectOrNull ?: throw HolonProtocolException("Holon file reference response is not an object")
+        val result = (response["results"] as? JsonArray)?.singleOrNull() as? JsonObject
+            ?: throw HolonProtocolException("Holon file reference response has no result")
+        return when (result.string("status")) {
+            "resolved" -> {
+                val location = result["location"] as? JsonObject
+                    ?: throw HolonProtocolException("Holon resolved file has no location")
+                HolonFileReferenceResult.Resolved(
+                    HolonResolvedFileLocation(
+                        workspaceId = location.string("workspace_id")?.takeIf(String::isNotBlank)
+                            ?: throw HolonProtocolException("Holon resolved file has no workspace identity"),
+                        executionRootId = location.string("execution_root_id")?.takeIf(String::isNotBlank)
+                            ?: throw HolonProtocolException("Holon resolved file has no execution root identity"),
+                        path = location.string("path") ?: throw HolonProtocolException("Holon resolved file has no path"),
+                        absolutePath = location.string("absolute_path")
+                            ?: throw HolonProtocolException("Holon resolved file has no absolute path"),
+                        kind = location.string("kind") ?: throw HolonProtocolException("Holon resolved file has no kind"),
+                        rootKind = location.string("root_kind")
+                            ?: throw HolonProtocolException("Holon resolved file has no root kind"),
+                    ),
+                )
+            }
+            "unresolved" -> HolonFileReferenceResult.Unresolved(
+                reason = result.string("reason") ?: "unknown",
+                message = result.string("message") ?: "文件位置无法解析",
+            )
+            else -> throw HolonProtocolException("Holon returned an unknown file reference status")
+        }
+    }
+
     public fun downloadWorkspaceFile(
         workspaceId: String,
         path: String,
