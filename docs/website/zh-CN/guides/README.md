@@ -74,4 +74,12 @@ order: 30
   把卡住、失败或无输出的任务定位到一个明确的下一步。
   <!-- mdorigin:index kind=article -->
 
+- [配置决策子系统](./configure-decision-subsystem.md)
+  配置专用的 Decision 提供者并启用 AdvisoryDecision 工具，让 Agent 获取非权威的咨询第二意见。
+  <!-- mdorigin:index kind=article -->
+
+- [连接 Android 客户端](./connect-android-client.md)
+  配置并连接原生 Android 客户端，在移动设备上管理 Holon Agent 与查看任务交付物。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

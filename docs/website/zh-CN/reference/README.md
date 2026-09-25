@@ -42,7 +42,7 @@ order: 40
 <!-- INDEX:START -->
 
 - [CLI 参考](./cli.md)
-  Holon 命令行界面——基于 holon --help 验证（v0.44.1）。
+  Holon 命令行界面——基于 holon --help 验证（v0.45.0）。
   <!-- mdorigin:index kind=article -->
 
 - [CLI 契约清单](./cli-contract-inventory.md)

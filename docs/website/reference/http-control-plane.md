@@ -3,7 +3,7 @@ title: HTTP control plane
 summary: How to think about Holon's headless integration surface.
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.44.1. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.45.0. -->
 
 # HTTP control plane
 

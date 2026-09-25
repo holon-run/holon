@@ -3,7 +3,7 @@ title: CLI 退出码
 summary: Holon 命令行界面的退出码与流路由契约。
 order: 13
 ---
-<!-- maintenance: hand-written; keep in sync with the top-level error renderer in `src/main.rs`. Last reviewed against v0.44.1. -->
+<!-- maintenance: hand-written; keep in sync with the top-level error renderer in `src/main.rs`. Last reviewed against v0.45.0. -->
 
 # CLI 退出码
 
