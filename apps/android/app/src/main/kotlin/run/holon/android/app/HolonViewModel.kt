@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -144,8 +145,8 @@ internal class HolonViewModel(
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
     private var globalEventStreamJob: Job? = null
-    private val agentEventStreamJobs = mutableMapOf<String, Job>()
-    private val agentEventCursors = mutableMapOf<String, Long>()
+    private val agentEventStreamJobs = ConcurrentHashMap<String, Job>()
+    private val agentEventCursors = ConcurrentHashMap<String, Long>()
     private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
     private var workspaceBrowseJob: Job? = null
@@ -383,7 +384,7 @@ internal class HolonViewModel(
                                 policy = SseReconnectPolicy(maxAttempts = 8),
                             ).forEach { event ->
                                 if (!isActive || !foreground) return@forEach
-                                agentEventCursors[event.agentId] = event.eventSeq
+                                agentEventCursors[agent.id] = event.eventSeq
                                 scheduleLiveRosterRefresh()
                             }
                             delay(500)
