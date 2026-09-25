@@ -88,6 +88,11 @@
       "icon": "github",
       "label": "GitHub",
       "href": "https://github.com/holon-run/holon"
+    },
+    {
+      "icon": "x",
+      "label": "X",
+      "href": "https://x.com/holonrun"
     }
   ],
   "editLink": {
