@@ -171,6 +171,49 @@ test("an invalidated active process refreshes before its brief and opens the exi
   await expect(page.locator(".side-panel").getByText("Starting the live check.", { exact: true }).first()).toBeVisible();
 });
 
+test("advisory decisions emphasize the question and recommendation instead of tool JSON", async ({ page, context, request }, info) => {
+  const session = sessionFor(info, "advisory-decision");
+  const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
+  await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
+  const tools: ConversationActivity[] = ["choice", "abstain"].map((id, index) => ({
+    kind: "tool", id: `tool:decision-${id}`,
+    key: { event_seq: index + 1, activity_id: `tool:decision-${id}` }, revision: 1,
+    summary: "AdvisoryDecision · success",
+  }));
+  await request.post(control("/__e2e__/configure"), { data: { toolExecutionsById: {
+    "decision-choice": {
+      id: "decision-choice", tool_name: "AdvisoryDecision", status: "success",
+      input: { question: "Which recovery path should run?", options: ["Retry probe", "Ask operator"] },
+      output: { envelope: { result: { outcome: "select", choice: "Retry probe", confidence: 0.86,
+        abstain: false, provider: "typesafe", model: "jev-latest", latency_ms: 142 } } },
+    },
+    "decision-abstain": {
+      id: "decision-abstain", tool_name: "AdvisoryDecision", status: "success",
+      input: { question: "Should the runtime continue automatically?", options: ["Continue", "Pause"] },
+      output: { envelope: { result: { outcome: "abstain", choice: null, confidence: 0.31, abstain: true,
+        reason: "low_confidence: provider confidence is below the threshold", provider: "typesafe", model: "jev-latest" } } },
+    },
+  } } });
+  await request.post(control("/__e2e__/conversation"), { data: {
+    agentId, turns: [turn("advisory-decision", 1)], activitiesByTurnId: { "advisory-decision": tools },
+  } });
+
+  await page.goto(`/agents/${agentId}/conversation`);
+  const choice = page.locator('[data-activity-id="tool:decision-choice"]');
+  await expect(choice.locator(".conversation-decision-content")).toHaveClass(/is-choice/);
+  await expect(choice).toContainText("Advisory decision");
+  await expect(choice).toContainText("Which recovery path should run?");
+  await expect(choice).toContainText("Retry probe");
+  await expect(choice).toContainText("86% confidence");
+  await expect(choice).toContainText("typesafe · jev-latest · 142ms");
+  await expect(choice).not.toContainText("AdvisoryDecision · success");
+
+  const abstain = page.locator('[data-activity-id="tool:decision-abstain"]');
+  await expect(abstain.locator(".conversation-decision-content")).toHaveClass(/is-abstain/);
+  await expect(abstain).toContainText("Should the runtime continue automatically?");
+  await expect(abstain).toContainText("provider confidence is below the threshold");
+});
+
 test("tool summaries load only for visible expanded rows and failed loads remain inspectable", async ({ page, context, request }, info) => {
   const session = sessionFor(info, "tool-preview");
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;

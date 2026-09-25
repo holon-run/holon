@@ -7051,6 +7051,42 @@ code {
 .conversation-tool-content .conversation-activity-summary { color: var(--text); line-height: 1.5; }
 .conversation-tool-content .is-command { font-family: var(--mono); font-size: 12px; white-space: pre-wrap; }
 .conversation-tool-meta { color: var(--muted); font-size: 11px; line-height: 1.4; }
+.conversation-decision-content {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 9px 11px 9px 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+  color: var(--text);
+}
+.conversation-decision-content::before {
+  content: "";
+  position: absolute;
+  inset: 8px auto 8px 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.conversation-decision-content.is-abstain {
+  border-color: var(--line);
+  background: var(--surface-soft);
+}
+.conversation-decision-content.is-abstain::before { background: var(--muted); }
+.conversation-decision-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.conversation-decision-eyebrow { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.conversation-decision-confidence { flex: none; padding: 1px 6px; border-radius: 999px; background: color-mix(in srgb, var(--accent) 10%, transparent); color: var(--accent); font-size: 10px; font-variant-numeric: tabular-nums; }
+.conversation-decision-content.is-abstain .conversation-decision-confidence { background: color-mix(in srgb, var(--muted) 10%, transparent); color: var(--muted); }
+.conversation-decision-question { color: var(--muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.conversation-decision-outcome { display: flex; align-items: baseline; gap: 7px; min-width: 0; line-height: 1.45; }
+.conversation-decision-outcome > span { flex: none; color: var(--accent); font-weight: 700; }
+.conversation-decision-content.is-abstain .conversation-decision-outcome > span { color: var(--muted); }
+.conversation-decision-outcome strong { min-width: 0; overflow-wrap: anywhere; font-size: 13px; font-weight: 650; }
+.conversation-decision-content .conversation-tool-meta:empty { display: none; }
 .conversation-activity-row > svg { flex: none; margin-top: 3px; }
 .conversation-activity.is-error .conversation-activity-row { color: var(--danger); }
 .conversation-progress-text { position: relative; padding-right: 24px; }
