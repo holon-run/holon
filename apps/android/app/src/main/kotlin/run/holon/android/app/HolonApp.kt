@@ -53,10 +53,12 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -256,14 +258,14 @@ private fun MainShell(state: HolonUiState, viewModel: HolonViewModel) {
                     Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
                     Box(Modifier.weight(1f).fillMaxHeight()) {
                         if (state.selectedAgent != null) {
-                            ConversationScreen(state, viewModel, viewModel::closeConversation)
+                            ConversationScreen(state, viewModel)
                         } else {
                             EmptyPage("选择一个 Agent", "结果、工作和文件将在这里打开。")
                         }
                     }
                 }
             }
-            state.selectedAgent != null -> ConversationScreen(state, viewModel, viewModel::closeConversation)
+            state.selectedAgent != null -> ConversationScreen(state, viewModel)
             state.mainDestination == MainDestination.Settings -> SettingsScreen(
                 state = state,
                 viewModel = viewModel,
@@ -309,7 +311,10 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { searchOpen = !searchOpen }) {
+                    IconButton(onClick = {
+                        if (searchOpen) viewModel.setSearch("")
+                        searchOpen = !searchOpen
+                    }) {
                         Icon(if (searchOpen) Icons.Default.Close else Icons.Default.Search, contentDescription = if (searchOpen) "关闭搜索" else "搜索")
                     }
                     IconButton(onClick = { viewModel.selectMainDestination(MainDestination.Settings) }) {
@@ -359,7 +364,18 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     AgentConversationRow(agent, onClick = { viewModel.openAgent(agent) })
                     HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 }
-                if (filtered.isEmpty()) item { EmptyPage("这里还没有 Agent", "调整筛选或搜索条件后再试。") }
+                if (filtered.isEmpty()) item {
+                    when {
+                        state.agents.isEmpty() -> EmptyPage("还没有 Agent", "连接成功后，Agent 会显示在这里。")
+                        filter == AgentFilter.Attention && attentionCount == 0 ->
+                            EmptyPage("目前没有需要回应的 Agent", "选择“全部”查看其他 Agent。")
+                        filter == AgentFilter.Active && activeCount == 0 ->
+                            EmptyPage("目前没有工作中的 Agent", "选择“全部”查看其他 Agent。")
+                        state.search.isNotBlank() ->
+                            EmptyPage("没有匹配的 Agent", "调整搜索词或筛选条件后再试。")
+                        else -> EmptyPage("这个筛选暂无 Agent", "选择“全部”查看所有 Agent。")
+                    }
+                }
                 item { Spacer(Modifier.height(20.dp)) }
             }
         }
@@ -490,8 +506,10 @@ private fun SettingsValue(label: String, value: String) {
 }
 
 @Composable
-private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, onBack: () -> Unit) {
+private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val agent = state.selectedAgent ?: return
+    val timelinePosition = remember(agent.id) { ConversationTimelinePosition() }
+    val workListState = remember(agent.id) { LazyListState() }
     val context = LocalContext.current
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
@@ -522,8 +540,8 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, o
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回 Agent 列表")
+                    IconButton(onClick = { viewModel.handleSystemBack() }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "返回上一级")
                     }
                 },
                 actions = {
@@ -542,7 +560,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, o
                 when {
                     wideWorkLayout -> {
                         Row(Modifier.fillMaxSize()) {
-                            WorkItemsScreen(state, viewModel, Modifier.width(340.dp).fillMaxHeight())
+                            WorkItemsScreen(state, viewModel, Modifier.width(340.dp).fillMaxHeight(), workListState)
                             Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
                             Box(Modifier.weight(1f).fillMaxHeight()) {
                                 if (state.selectedWorkItem != null) {
@@ -559,7 +577,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, o
                     state.selectedWorkItem != null -> WorkItemDetailScreen(state, viewModel)
                     else -> when (state.agentSection) {
                         AgentSection.Results -> Column(Modifier.fillMaxSize()) {
-                            ConversationTimeline(state, viewModel, Modifier.weight(1f))
+                            ConversationTimeline(state, viewModel, Modifier.weight(1f), timelinePosition)
                             Composer(
                                 state = state,
                                 viewModel = viewModel,
@@ -571,7 +589,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel, o
                                 },
                             )
                         }
-                        AgentSection.Work -> WorkItemsScreen(state, viewModel, Modifier.fillMaxSize())
+                        AgentSection.Work -> WorkItemsScreen(state, viewModel, Modifier.fillMaxSize(), workListState)
                         AgentSection.Files -> WorkspaceBrowserScreen(state, viewModel, Modifier.fillMaxSize())
                     }
                 }
@@ -609,27 +627,36 @@ private fun AgentSectionBar(selected: AgentSection, onSelect: (AgentSection) -> 
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }
 
+private class ConversationTimelinePosition {
+    val listState = LazyListState()
+    var positionedAtLatest by mutableStateOf(false)
+    var previousItemCount by mutableStateOf(0)
+    var previousOutboxCount by mutableStateOf(0)
+}
+
 @Composable
-private fun ConversationTimeline(state: HolonUiState, viewModel: HolonViewModel, modifier: Modifier) {
+private fun ConversationTimeline(
+    state: HolonUiState,
+    viewModel: HolonViewModel,
+    modifier: Modifier,
+    position: ConversationTimelinePosition,
+) {
     val snapshot = state.conversation
-    val listState = rememberLazyListState()
-    var positionedAtLatest by remember(state.selectedAgent?.id) { mutableStateOf(false) }
-    var previousItemCount by remember(state.selectedAgent?.id) { mutableStateOf(0) }
-    var previousOutboxCount by remember(state.selectedAgent?.id) { mutableStateOf(0) }
+    val listState = position.listState
     val pendingRows = if (snapshot?.pendingInputs?.isNotEmpty() == true) 1 else 0
     val itemCount = pendingRows + snapshot?.turns.orEmpty().size + state.outbox.size
     LaunchedEffect(snapshot?.snapshotCursor, itemCount, state.outbox.size) {
         if (snapshot != null && itemCount > 0) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
-            val nearBottom = lastVisible == null || lastVisible >= previousItemCount - 2
-            val justSent = state.outbox.size > previousOutboxCount
-            if (!positionedAtLatest || nearBottom || justSent) {
+            val nearBottom = lastVisible?.let { it >= position.previousItemCount - 2 } ?: !position.positionedAtLatest
+            val justSent = state.outbox.size > position.previousOutboxCount
+            if (!position.positionedAtLatest || nearBottom || justSent) {
                 listState.animateScrollToItem(itemCount - 1)
             }
-            positionedAtLatest = true
+            position.positionedAtLatest = true
         }
-        previousItemCount = itemCount
-        previousOutboxCount = state.outbox.size
+        position.previousItemCount = itemCount
+        position.previousOutboxCount = state.outbox.size
     }
     if (state.busy && snapshot == null) {
         Box(modifier.fillMaxWidth(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
@@ -665,7 +692,7 @@ private fun ConversationTimeline(state: HolonUiState, viewModel: HolonViewModel,
             )
         }
         items(state.outbox, key = OutboxEntity::requestId) { message ->
-            LocalMessageCard(message)
+            LocalMessageCard(message, retryEnabled = !state.enqueueing, onRetry = { viewModel.retryMessage(message) })
         }
         if (snapshot?.turns.isNullOrEmpty() && state.outbox.isEmpty()) {
             item { EmptyPage("开始会话", "向 ${state.selectedAgent?.displayName} 说明你希望完成的工作。") }
@@ -937,6 +964,7 @@ internal fun ActivityRow(
     onOpen: () -> Unit,
 ) {
     val isTool = activity.kind == "tool"
+    var showRaw by remember(activity.id) { mutableStateOf(false) }
     Row(
         modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -967,6 +995,7 @@ internal fun ActivityRow(
             if (isTool) {
                 Text(
                     activity.summary.ifBlank { "打开查看工具输入与输出" },
+                    modifier = Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(vertical = 6.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
@@ -1010,13 +1039,18 @@ internal fun ActivityRow(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            Text(
-                                detail.raw.toString().take(16_000),
-                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
+                            TextButton(onClick = { showRaw = !showRaw }) {
+                                Text(if (showRaw) "收起原始记录" else "查看原始记录")
+                            }
+                            if (showRaw) SelectionContainer {
+                                Text(
+                                    detail.raw.toString().take(16_000),
+                                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                         }
                         else -> Text(
                             "没有可读取的工具输入或输出。",
@@ -1078,7 +1112,12 @@ private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
 }
 
 @Composable
-private fun WorkItemsScreen(state: HolonUiState, viewModel: HolonViewModel, modifier: Modifier) {
+private fun WorkItemsScreen(
+    state: HolonUiState,
+    viewModel: HolonViewModel,
+    modifier: Modifier,
+    listState: LazyListState,
+) {
     val currentId = state.selectedAgent?.currentWorkItemId
     val sorted = state.workItems.sortedWith(
         compareByDescending<HolonWorkItemSnapshot> { it.workItemId == currentId }
@@ -1086,6 +1125,7 @@ private fun WorkItemsScreen(state: HolonUiState, viewModel: HolonViewModel, modi
             .thenByDescending { it.updatedAt.orEmpty() },
     )
     LazyColumn(
+        state = listState,
         modifier = modifier.fillMaxWidth(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
     ) {
@@ -1093,7 +1133,7 @@ private fun WorkItemsScreen(state: HolonUiState, viewModel: HolonViewModel, modi
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text("工作记录", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "${sorted.count { it.state != "completed" }} 项进行中 · ${sorted.count { it.state == "completed" }} 项已完成",
+                    "${sorted.count { it.state !in setOf("completed", "aborted", "failed") }} 项进行中 · ${sorted.count { it.state == "completed" }} 项已完成",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -1150,8 +1190,11 @@ private fun WorkItemsScreen(state: HolonUiState, viewModel: HolonViewModel, modi
 @Composable
 private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel, showBack: Boolean = true) {
     val item = state.selectedWorkItem ?: return
+    val finished = item.state == "completed"
     val completed = item.todoList.count { it.state == "completed" }
     var showDetails by remember(item.workItemId) { mutableStateOf(false) }
+    var showSteps by remember(item.workItemId, finished) { mutableStateOf(!finished) }
+    var showPlan by remember(item.workItemId, finished) { mutableStateOf(!finished) }
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -1165,8 +1208,10 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
                     }
                 }
                 Column(Modifier.weight(1f)) {
-                    Text("WorkItem", style = MaterialTheme.typography.headlineSmall)
-                    Text(item.focus ?: "持续工作记录", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("工作详情", style = MaterialTheme.typography.headlineSmall)
+                    if (!finished) item.focus?.takeUnless { it.equals(item.state, ignoreCase = true) }?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 CompactStatus(workItemStatusLabel(item), workItemTone(item))
             }
@@ -1179,9 +1224,21 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
         item.blockedBy?.let { blocker ->
             item { HolonSection("需要处理", eyebrow = "BLOCKED") { Text(blocker, color = MaterialTheme.colorScheme.error) } }
         }
-        if (item.focus != null || item.schedulingState != null || item.recheckAt != null) {
+        if (finished) {
             item {
-                HolonSection("当前步骤", eyebrow = item.schedulingState) {
+                HolonSection("结果") {
+                    item.resultSummary?.takeIf(String::isNotBlank)?.let { MarkdownText(it) }
+                        ?: EmptyHint("这项工作没有独立的结果摘要。")
+                    item.resultBriefId?.let { briefId ->
+                        ResultLinkRow("查看关联 brief", "查看") { viewModel.openBrief(briefId) }
+                    }
+                    ResultLinkRow("查看 Agent 结果", "打开") { viewModel.selectAgentSection(AgentSection.Results) }
+                }
+            }
+        }
+        if (!finished && (item.focus != null || item.schedulingState != null || item.recheckAt != null)) {
+            item {
+                HolonSection("当前步骤") {
                     Text(item.focus ?: "等待下一次调度")
                     item.recheckAt?.let { SettingsValue("再次检查", it) }
                 }
@@ -1189,38 +1246,50 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
         }
         if (item.todoList.isNotEmpty()) {
             item {
-                HolonSection("进度", eyebrow = "$completed/${item.todoList.size}") {
-                    LinearProgressIndicator(
-                        progress = { completed.toFloat() / item.todoList.size.toFloat() },
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    item.todoList.forEach { todo ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
-                            Icon(
-                                imageVector = if (todo.state == "completed") Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
-                                contentDescription = null,
-                                tint = if (todo.state == "completed") HolonSuccess else MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(todo.text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                if (finished) {
+                    TextButton(onClick = { showSteps = !showSteps }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (showSteps) "收起步骤记录" else "查看步骤记录 · $completed/${item.todoList.size}")
+                    }
+                }
+                if (showSteps) {
+                    HolonSection(if (finished) "步骤记录" else "进度", eyebrow = "$completed/${item.todoList.size}") {
+                        if (!finished) LinearProgressIndicator(
+                            progress = { completed.toFloat() / item.todoList.size.toFloat() },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        item.todoList.forEach { todo ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.Top) {
+                                Icon(
+                                    imageVector = if (todo.state == "completed") Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                    contentDescription = null,
+                                    tint = if (todo.state == "completed") HolonSuccess else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                                Text(todo.text, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                            }
                         }
                     }
                 }
             }
         }
-        item.resultSummary?.let { result ->
+        if (!finished) item.resultSummary?.takeIf(String::isNotBlank)?.let { result ->
             item {
-                HolonSection("结果", eyebrow = "RESULT") {
+                HolonSection("结果") {
                     MarkdownText(result)
                     item.resultBriefId?.let { briefId ->
-                        ResultLinkRow("打开完整结果", "查看") { viewModel.openBrief(briefId) }
+                        ResultLinkRow("查看关联 brief", "查看") { viewModel.openBrief(briefId) }
                     }
                 }
             }
         }
         item.planArtifact?.let { plan ->
             item {
-                HolonSection("计划", eyebrow = plan.relativePath ?: "PLAN") {
+                if (finished) {
+                    TextButton(onClick = { showPlan = !showPlan }, modifier = Modifier.fillMaxWidth()) {
+                        Text(if (showPlan) "收起计划" else "查看计划")
+                    }
+                }
+                if (showPlan) HolonSection("计划") {
                     MarkdownText(plan.preview ?: "计划文件可用，但没有内联预览。")
                     if (!plan.previewComplete) Text("预览已截断", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -1239,7 +1308,6 @@ private fun WorkItemDetailScreen(state: HolonUiState, viewModel: HolonViewModel,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -1402,7 +1470,7 @@ private fun WorkspaceBreadcrumbs(path: String, onOpen: (String) -> Unit) {
 }
 
 @Composable
-private fun LocalMessageCard(message: OutboxEntity) {
+private fun LocalMessageCard(message: OutboxEntity, retryEnabled: Boolean, onRetry: () -> Unit) {
     val label =
         when (message.state) {
             "pending" -> "待发送"
@@ -1426,6 +1494,9 @@ private fun LocalMessageCard(message: OutboxEntity) {
                     color = if (message.state == "failed") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onPrimaryContainer,
                 )
                 message.error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                if (message.state in setOf("failed", "unknown")) {
+                    TextButton(onClick = onRetry, enabled = retryEnabled) { Text("重试发送") }
+                }
             }
         }
     }
@@ -1507,20 +1578,25 @@ private fun Composer(
                 )
                 val canStop = state.selectedAgent?.currentRunId != null
                 Button(
-                    onClick = if (canStop) viewModel::stopCurrentTurn else viewModel::send,
-                    enabled = if (canStop) !state.abortingRun else
-                        !state.enqueueing && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
+                    onClick = viewModel::send,
+                    enabled = !state.enqueueing && (state.draft.isNotBlank() || state.attachments.isNotEmpty()),
                     shape = RoundedCornerShape(12.dp),
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
                     modifier = Modifier.size(48.dp),
                 ) {
-                    if (state.enqueueing || state.abortingRun) {
+                    if (state.enqueueing) {
                         CircularProgressIndicator(Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                    } else if (canStop) {
-                        Icon(Icons.Default.Stop, contentDescription = "停止本轮")
                     } else {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
                     }
+                }
+                if (canStop) IconButton(
+                    onClick = viewModel::stopCurrentTurn,
+                    enabled = !state.abortingRun,
+                    modifier = Modifier.size(48.dp),
+                ) {
+                    if (state.abortingRun) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    else Icon(Icons.Default.Stop, contentDescription = "停止本轮")
                 }
             }
         }
@@ -1754,14 +1830,18 @@ private fun workItemStatusLabel(item: HolonWorkItemSnapshot): String =
     }
 
 private fun HolonWorkItemSnapshot.listSummary(): String =
-    focus
-        ?.takeUnless {
-            it.equals(state, ignoreCase = true) ||
-                it.equals(readiness, ignoreCase = true) ||
-                it.equals(schedulingState, ignoreCase = true)
-        }
-        ?: resultSummary?.takeIf(String::isNotBlank)
-        ?: if (state == "completed") "已完成，打开查看结果" else "等待更多信息"
+    if (state == "completed") {
+        resultSummary?.takeIf(String::isNotBlank)?.let(::plainTextPreview) ?: "查看工作详情"
+    } else {
+        focus
+            ?.takeUnless {
+                it.equals(state, ignoreCase = true) ||
+                    it.equals(readiness, ignoreCase = true) ||
+                    it.equals(schedulingState, ignoreCase = true)
+            }
+            ?: resultSummary?.takeIf(String::isNotBlank)?.let(::plainTextPreview)
+            ?: "等待更多信息"
+    }
 
 private fun workItemTone(item: HolonWorkItemSnapshot): StatusTone =
     when {
@@ -1784,8 +1864,8 @@ private fun AgentSummary.statusTone(): StatusTone =
         needsReply() -> StatusTone.Warning
         schedulingPosture == "blocked" -> StatusTone.Danger
         schedulingPosture == "active_turn" || runtimeStatus.lowercase() in setOf("running", "active") -> StatusTone.Accent
-        schedulingPosture in setOf("waiting_for_external", "waiting_for_task") -> StatusTone.Neutral
-        else -> StatusTone.Success
+        schedulingPosture in setOf("has_queued_input", "has_runnable_work") -> StatusTone.Accent
+        else -> StatusTone.Neutral
     }
 
 private fun AgentSummary.statusLabel(): String =
@@ -1805,7 +1885,7 @@ private fun AgentSummary.statusLabel(): String =
 @Composable
 private fun toneColor(tone: StatusTone): Color =
     when (tone) {
-        StatusTone.Neutral -> MaterialTheme.colorScheme.outline
+        StatusTone.Neutral -> MaterialTheme.colorScheme.onSurfaceVariant
         StatusTone.Accent -> MaterialTheme.colorScheme.primary
         StatusTone.Success -> HolonSuccess
         StatusTone.Warning -> HolonWarning

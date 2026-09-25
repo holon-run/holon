@@ -454,6 +454,44 @@ internal class HolonViewModel(
         }
     }
 
+    fun retryMessage(message: OutboxEntity) {
+        val current = state.value
+        val agent = current.selectedAgent ?: return
+        if (current.enqueueing || message.agentId != agent.id ||
+            message.state !in setOf("failed", "unknown") ||
+            current.outbox.none { it.requestId == message.requestId }
+        ) return
+        mutableState.update {
+            it.copy(
+                enqueueing = true,
+                outbox = it.outbox.map { pending ->
+                    if (pending.requestId == message.requestId) pending.copy(state = "sending", error = null) else pending
+                },
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) { repository.deliverOutbox(message) }
+            }.onSuccess { result ->
+                mutableState.update { value ->
+                    value.copy(
+                        enqueueing = false,
+                        outbox = value.outbox.map { if (it.requestId == result.requestId) result else it },
+                    )
+                }
+                if (result.state == "received") refresh(showProgress = false)
+            }.onFailure { error ->
+                mutableState.update { value ->
+                    value.copy(
+                        enqueueing = false,
+                        outbox = value.outbox.map { if (it.requestId == message.requestId) message else it },
+                    )
+                }
+                handleRuntimeFailure(error)
+            }
+        }
+    }
+
     private fun removeSentAttachments(
         current: List<StagedAttachment>,
         sent: List<StagedAttachment>,
@@ -677,6 +715,12 @@ internal class HolonViewModel(
             }
             current.selectedWorkItem != null -> {
                 closeWorkItem()
+                true
+            }
+            current.selectedAgent != null &&
+                current.agentSection == AgentSection.Files &&
+                !current.workspaceDirectory?.path.isNullOrBlank() -> {
+                navigateWorkspaceUp()
                 true
             }
             current.selectedAgent != null -> {
