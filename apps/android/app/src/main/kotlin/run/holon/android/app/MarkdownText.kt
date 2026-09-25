@@ -25,12 +25,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.LinkInteractionListener
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.TextStyle
@@ -58,6 +60,8 @@ internal sealed interface MarkdownBlock {
 
     data object Divider : MarkdownBlock
 }
+
+internal val LocalOpenMessageFile = staticCompositionLocalOf<((MessageFileReference) -> Unit)?> { null }
 
 internal fun parseMarkdown(source: String): List<MarkdownBlock> {
     val blocks = mutableListOf<MarkdownBlock>()
@@ -260,7 +264,10 @@ internal fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
 private fun InlineMarkdownText(text: String, style: TextStyle, modifier: Modifier = Modifier) {
     val primary = MaterialTheme.colorScheme.primary
     val codeBackground = MaterialTheme.colorScheme.surfaceVariant
-    val annotated = remember(text, primary, codeBackground) { inlineMarkdown(text, primary, codeBackground) }
+    val onOpenFile = LocalOpenMessageFile.current
+    val annotated = remember(text, primary, codeBackground, onOpenFile) {
+        inlineMarkdown(text, primary, codeBackground, onOpenFile)
+    }
     Text(annotated, modifier = modifier, style = style)
 }
 
@@ -298,7 +305,12 @@ internal fun markdownLinkAt(text: String, start: Int): MarkdownLinkTarget? {
     return MarkdownLinkTarget(label, destination, cursor)
 }
 
-private fun inlineMarkdown(text: String, primary: Color, codeBackground: Color): AnnotatedString =
+private fun inlineMarkdown(
+    text: String,
+    primary: Color,
+    codeBackground: Color,
+    onOpenFile: ((MessageFileReference) -> Unit)?,
+): AnnotatedString =
     buildAnnotatedString {
         var cursor = 0
         while (cursor < text.length) {
@@ -322,7 +334,19 @@ private fun inlineMarkdown(text: String, primary: Color, codeBackground: Color):
                                 ),
                             ) { append(if (image) "网页图片 · $label" else label) }
                         } else {
-                            append(if (image) "图片 · $label（在文件页查看）" else "$label（在文件页查看）")
+                            val reference = classifyMessageFileReference(target.destination)
+                            val display = if (image) "图片 · $label" else label
+                            if (reference != null && onOpenFile != null) {
+                                withLink(
+                                    LinkAnnotation.Clickable(
+                                        tag = target.destination,
+                                        styles = TextLinkStyles(style = SpanStyle(color = primary, textDecoration = TextDecoration.Underline)),
+                                        linkInteractionListener = LinkInteractionListener { onOpenFile(reference) },
+                                    ),
+                                ) { append(display) }
+                            } else {
+                                append(display)
+                            }
                         }
                         cursor = target.next
                     } else {
@@ -353,8 +377,21 @@ private fun inlineMarkdown(text: String, primary: Color, codeBackground: Color):
                 text[cursor] == '`' -> {
                     val end = text.indexOf('`', cursor + 1)
                     if (end >= 0) {
+                        val value = text.substring(cursor + 1, end)
+                        val reference = value.takeIf(::isInlineMessageFileReference)
+                            ?.let { classifyMessageFileReference(it, literal = true) }
                         withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBackground)) {
-                            append(text.substring(cursor + 1, end))
+                            if (reference != null && onOpenFile != null) {
+                                withLink(
+                                    LinkAnnotation.Clickable(
+                                        tag = value,
+                                        styles = TextLinkStyles(style = SpanStyle(color = primary, textDecoration = TextDecoration.Underline)),
+                                        linkInteractionListener = LinkInteractionListener { onOpenFile(reference) },
+                                    ),
+                                ) { append(value) }
+                            } else {
+                                append(value)
+                            }
                         }
                         cursor = end + 1
                     } else {
@@ -373,9 +410,27 @@ private fun inlineMarkdown(text: String, primary: Color, codeBackground: Color):
                         cursor += 1
                     }
                 }
+                bareMessageFileReferenceAt(text, cursor) != null -> {
+                    val bare = requireNotNull(bareMessageFileReferenceAt(text, cursor))
+                    if (onOpenFile != null) {
+                        withLink(
+                            LinkAnnotation.Clickable(
+                                tag = bare.text,
+                                styles = TextLinkStyles(style = SpanStyle(color = primary, textDecoration = TextDecoration.Underline)),
+                                linkInteractionListener = LinkInteractionListener { onOpenFile(bare.reference) },
+                            ),
+                        ) { append(bare.text) }
+                    } else {
+                        append(bare.text)
+                    }
+                    cursor += bare.text.length
+                }
                 else -> {
                     val next = listOf(
                         text.indexOf('[', cursor),
+                        text.indexOf("workspace://", cursor),
+                        text.indexOf("file://", cursor),
+                        text.indexOf('/', cursor),
                         text.indexOf('*', cursor),
                         text.indexOf('_', cursor),
                         text.indexOf('`', cursor),

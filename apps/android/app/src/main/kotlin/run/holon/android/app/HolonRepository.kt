@@ -25,6 +25,8 @@ import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonCurrentUser
 import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonDownloadedFile
+import run.holon.android.sdk.HolonFileReference
+import run.holon.android.sdk.HolonFileReferenceResult
 import run.holon.android.sdk.HolonHttpClient
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonPromptAttachment
@@ -35,6 +37,7 @@ import run.holon.android.sdk.HolonSseConnection
 import run.holon.android.sdk.SseReconnectPolicy
 import run.holon.android.sdk.HolonToolExecutionSnapshot
 import run.holon.android.sdk.HolonWorkItemSnapshot
+import run.holon.android.sdk.HolonWorkItemPlanArtifact
 import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
 import run.holon.android.sdk.SessionCredentialStore
@@ -535,6 +538,9 @@ internal class HolonRepository(
             executionRootId = workspace.executionRootId,
         )
 
+    suspend fun resolveFileReference(reference: HolonFileReference): HolonFileReferenceResult =
+        requireClient().resolveFileReference(reference)
+
     suspend fun prepareArtifact(locator: String, preferredName: String): PreparedArtifact {
         val client = requireClient()
         return cacheDownloadedArtifact(locator, preferredName) { target ->
@@ -555,6 +561,23 @@ internal class HolonRepository(
                 targetFile = target,
                 maxBytes = MAX_ARTIFACT_CACHE_BYTES,
                 executionRootId = workspace.executionRootId,
+            )
+        }
+    }
+
+    suspend fun prepareWorkItemPlan(agentId: String, plan: HolonWorkItemPlanArtifact): PreparedArtifact {
+        require(plan.ownerAgentId == null || plan.ownerAgentId == agentId) { "计划不属于当前 Agent" }
+        val workspaceId = plan.workspaceId?.takeIf(String::isNotBlank)
+            ?: throw IllegalArgumentException("服务端没有提供计划的工作区标识")
+        val relativePath = plan.relativePath?.takeIf(String::isNotBlank)
+            ?: throw IllegalArgumentException("服务端没有提供计划文件位置")
+        val client = requireClient()
+        return cacheDownloadedArtifact("plan|$workspaceId|$relativePath", "plan.md") { target ->
+            client.downloadWorkspaceFileToFile(
+                workspaceId = workspaceId,
+                path = relativePath,
+                targetFile = target,
+                maxBytes = MAX_ARTIFACT_CACHE_BYTES,
             )
         }
     }
