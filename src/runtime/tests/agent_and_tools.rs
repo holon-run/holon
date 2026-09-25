@@ -1720,6 +1720,101 @@ async fn timer_tools_manage_only_the_current_agent_lifecycle() {
 }
 
 #[tokio::test]
+async fn wait_for_timer_validation_returns_recoverable_tool_errors() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let agent_id = runtime.agent_state().await.unwrap().id;
+
+    let wait_for = |id: &'static str, resource: String| {
+        let call = crate::tool::ToolCall {
+            id: id.into(),
+            name: "WaitFor".into(),
+            input: serde_json::json!({
+                "wake": "timer",
+                "resource": resource,
+                "reason": "wait for timer",
+                "delivery": "silent"
+            }),
+        };
+        let runtime = runtime.clone();
+        let agent_id = agent_id.clone();
+        async move {
+            crate::tool::tools::execute_builtin_tool(
+                &runtime,
+                &agent_id,
+                &AuthorityClass::OperatorInstruction,
+                &call,
+            )
+            .await
+        }
+    };
+
+    let missing = wait_for("wait-missing-timer", "timer-does-not-exist".into())
+        .await
+        .expect("missing timer should be a tool result");
+    let missing_error = missing.envelope.error.expect("missing timer error");
+    assert_eq!(missing_error.kind, "invalid_tool_input");
+    assert_eq!(
+        missing_error.details.as_ref().unwrap()["code"],
+        "timer_not_found"
+    );
+
+    runtime
+        .storage()
+        .append_timer(&TimerRecord {
+            id: "foreign-timer".into(),
+            agent_id: "other-agent".into(),
+            created_at: Utc::now(),
+            duration_ms: 60_000,
+            interval_ms: None,
+            repeat: false,
+            status: TimerStatus::Active,
+            summary: Some("foreign timer".into()),
+            next_fire_at: Some(Utc::now() + chrono::Duration::minutes(1)),
+            last_fired_at: None,
+            fire_count: 0,
+        })
+        .unwrap();
+    let foreign = wait_for("wait-foreign-timer", "foreign-timer".into())
+        .await
+        .expect("foreign timer should be a tool result");
+    let foreign_error = foreign.envelope.error.expect("foreign timer error");
+    assert_eq!(foreign_error.kind, "invalid_tool_input");
+    assert_eq!(
+        foreign_error.details.as_ref().unwrap()["code"],
+        "timer_agent_mismatch"
+    );
+    assert!(
+        !foreign_error.message.contains("other-agent"),
+        "cross-agent timer details must not be disclosed"
+    );
+
+    let cancelled_timer = runtime
+        .schedule_timer(60_000, None, Some("cancelled timer".into()))
+        .await
+        .unwrap();
+    runtime.cancel_timer(&cancelled_timer.id).await.unwrap();
+    let cancelled = wait_for("wait-cancelled-timer", cancelled_timer.id.clone())
+        .await
+        .expect("cancelled timer should be a tool result");
+    let cancelled_error = cancelled.envelope.error.expect("cancelled timer error");
+    assert_eq!(cancelled_error.kind, "invalid_tool_input");
+    assert_eq!(
+        cancelled_error.details.as_ref().unwrap()["code"],
+        "timer_cancelled"
+    );
+
+    let active_timer = runtime
+        .schedule_timer(60_000, None, Some("active timer".into()))
+        .await
+        .unwrap();
+    let active = wait_for("wait-active-timer", active_timer.id)
+        .await
+        .expect("active timer should register successfully");
+    assert!(!active.is_error());
+    assert!(active.should_sleep);
+}
+
+#[tokio::test]
 async fn get_agent_with_agent_id_returns_requested_agent() {
     use crate::types::{
         AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,

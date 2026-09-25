@@ -411,41 +411,56 @@ impl RuntimeHandle {
 
         let now = self.now();
         let mut pending_timer_wake = None;
-        let timer_wake_at =
-            if wake == WaitForWakeKind::Timer {
-                let timer_id = wait_resource_required(wake, resource.clone())?;
-                let timer = self
-                    .inner
-                    .storage
-                    .latest_timer_record(&timer_id)?
-                    .ok_or_else(|| anyhow!("wait_for timer does not exist: {timer_id}"))?;
-                if timer.agent_id != agent_id {
-                    return Err(anyhow!("wait_for timer agent mismatch: {timer_id}"));
+        let timer_wake_at = if wake == WaitForWakeKind::Timer {
+            let timer_id = wait_resource_required(wake, resource.clone())?;
+            let timer = self
+                .inner
+                .storage
+                .latest_timer_record(&timer_id)?
+                .ok_or_else(|| {
+                    RuntimeError::not_found("timer_not_found", "wait_for timer does not exist")
+                })?;
+            if timer.agent_id != agent_id {
+                return Err(RuntimeError::policy(
+                    "timer_agent_mismatch",
+                    "wait_for timer is not owned by this agent",
+                )
+                .into());
+            }
+            match timer.status {
+                TimerStatus::Active => Some(timer.next_fire_at.ok_or_else(|| {
+                    RuntimeError::validation(
+                        "timer_invalid_state",
+                        "wait_for timer has no next fire time",
+                    )
+                })?),
+                TimerStatus::Completed => {
+                    let timer_wake = self
+                        .inner
+                        .runtime_db
+                        .timers()
+                        .pending_wake(&timer_id)?
+                        .ok_or_else(|| {
+                            RuntimeError::validation(
+                                "timer_wake_unavailable",
+                                "wait_for timer wake is unavailable",
+                            )
+                        })?;
+                    let wake_at = timer_wake.created_at;
+                    pending_timer_wake = Some(timer_wake);
+                    Some(wake_at)
                 }
-                match timer.status {
-                    TimerStatus::Active => Some(timer.next_fire_at.ok_or_else(|| {
-                        anyhow!("wait_for timer has no next fire time: {timer_id}")
-                    })?),
-                    TimerStatus::Completed => {
-                        let timer_wake = self
-                            .inner
-                            .runtime_db
-                            .timers()
-                            .pending_wake(&timer_id)?
-                            .ok_or_else(|| {
-                                anyhow!("wait_for timer wake was already consumed: {timer_id}")
-                            })?;
-                        let wake_at = timer_wake.created_at;
-                        pending_timer_wake = Some(timer_wake);
-                        Some(wake_at)
-                    }
-                    TimerStatus::Cancelled => {
-                        return Err(anyhow!("wait_for timer is cancelled: {timer_id}"))
-                    }
+                TimerStatus::Cancelled => {
+                    return Err(RuntimeError::validation(
+                        "timer_cancelled",
+                        "wait_for timer is cancelled",
+                    )
+                    .into())
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
         let external_trigger_id = if wake == WaitForWakeKind::External {
             self.inner
                 .runtime_db
