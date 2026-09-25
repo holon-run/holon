@@ -160,7 +160,7 @@ class HolonVisualSnapshotTest {
             schedulingPosture = posture,
             waitingReason = waitingReason,
             currentWorkItemId = workItemId,
-            latestBrief = HolonLatestBrief("brief-$id", "2026-09-25T08:00:00Z", preview, 0),
+            latestBrief = HolonLatestBrief("brief-$id", "2025-01-01T08:00:00Z", preview, 0),
         )
 }
 

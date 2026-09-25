@@ -53,6 +53,7 @@ public data class HolonTurnInput(
     public val preview: String,
     public val actorDisplayName: String?,
     public val presentationClass: String?,
+    public val createdAt: String? = null,
 )
 
 /** A forward-compatible JSON response from a Holon route. */
@@ -232,6 +233,12 @@ public data class HolonDownloadedArtifact(
     public val fileName: String,
 )
 
+public data class HolonDownloadedFile(
+    public val mediaType: String,
+    public val fileName: String,
+    public val size: Long,
+)
+
 public data class HolonConversationTurn(
     public val id: String,
     public val summary: String,
@@ -256,6 +263,7 @@ public data class HolonConversationSnapshot(
     public val runtimeId: String?,
     public val eventLogEpoch: String?,
     public val hasMore: Boolean,
+    public val nextBeforeCursor: String?,
 ) {
     public companion object {
         public fun from(document: HolonJsonDocument): HolonConversationSnapshot {
@@ -278,6 +286,7 @@ public data class HolonConversationSnapshot(
                                     preview = input.stringValue("preview").orEmpty().displayTextPreview(),
                                     actorDisplayName = input.stringValue("actor_display_name"),
                                     presentationClass = input.stringValue("presentation_class"),
+                                    createdAt = input.stringValue("created_at"),
                                 )
                             },
                         executionKind = (turn["execution"] as? JsonObject).stringValue("kind") ?: "unknown",
@@ -312,6 +321,7 @@ public data class HolonConversationSnapshot(
                 runtimeId = raw.stringValue("runtime_id"),
                 eventLogEpoch = raw.stringValue("event_log_epoch"),
                 hasMore = raw["has_more"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false,
+                nextBeforeCursor = raw.stringValue("next_before_cursor"),
             )
         }
     }
@@ -355,6 +365,7 @@ public data class HolonConversationDetail(
     public val activities: List<HolonConversationActivity>,
     public val coverageKind: String,
     public val coverageReason: String?,
+    public val eventLogEpoch: String?,
     public val hasMore: Boolean,
     public val nextBeforeCursor: String?,
     public val raw: JsonObject,

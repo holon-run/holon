@@ -12,6 +12,7 @@ import kotlin.test.assertContentEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
     @Test
@@ -414,6 +415,48 @@ class HolonHttpClientTest {
                 request.path,
             )
             assertEquals("Bearer session", request.getHeader("Authorization"))
+        }
+    }
+
+    @Test
+    fun `workspace artifact streams to a file without buffering the response`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setHeader("Content-Type", "text/plain").setChunkedBody("finished", 2))
+            val client = HolonHttpClient(
+                baseUrl = server.url("/").toString(),
+                sessionCredentialStore = FakeSessionCredentialStore("session"),
+            )
+            val target = kotlin.io.path.createTempFile("holon-artifact", ".txt").toFile()
+            try {
+                val downloaded = client.downloadWorkspaceArtifactToFile(
+                    "workspace://ws-one/reports/final.txt?root=root%3Aws-one",
+                    target,
+                    maxBytes = 16,
+                )
+                assertEquals("finished", target.readText())
+                assertEquals(8, downloaded.size)
+                assertEquals("text/plain", downloaded.mediaType)
+                assertEquals("Bearer session", server.takeRequest().getHeader("Authorization"))
+            } finally {
+                target.delete()
+            }
+        }
+    }
+
+    @Test
+    fun `workspace artifact stream stops at the configured byte limit`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setChunkedBody("finished", 2))
+            val client = HolonHttpClient(server.url("/").toString())
+            val target = kotlin.io.path.createTempFile("holon-artifact-limit", ".txt").toFile()
+            try {
+                assertFailsWith<HolonProtocolException> {
+                    client.downloadWorkspaceFileToFile("ws-one", "report.txt", target, maxBytes = 4)
+                }
+                assertTrue(target.length() <= 4)
+            } finally {
+                target.delete()
+            }
         }
     }
 

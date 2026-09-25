@@ -2,6 +2,7 @@ package run.holon.android.app
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class MarkdownTextTest {
     @Test
@@ -46,5 +47,42 @@ class MarkdownTextTest {
             ),
             parseMarkdown("line one\nline two\n\n```\nunfinished"),
         )
+    }
+
+    @Test
+    fun parsesTablesNestedListsAndReadOnlyTasks() {
+        val blocks = parseMarkdown(
+            """
+            | Name | Status |
+            | :--- | ---: |
+            | Report | Done |
+
+            - [x] Inspect report
+              - [ ] Share result
+            """.trimIndent(),
+        )
+
+        assertEquals(
+            listOf(
+                MarkdownBlock.Table(listOf("Name", "Status"), listOf(listOf("Report", "Done"))),
+                MarkdownBlock.ListItem("•", "Inspect report", checked = true),
+                MarkdownBlock.ListItem("•", "Share result", depth = 1, checked = false),
+            ),
+            blocks,
+        )
+    }
+
+    @Test
+    fun parsesBalancedAndEscapedLinkDestinationsWithoutGuessing() {
+        val source = "See [report](https://example.test/a_(b)) and [file](docs/a\\)b.md)"
+        assertEquals(
+            MarkdownLinkTarget("report", "https://example.test/a_(b)", source.indexOf(" and")),
+            markdownLinkAt(source, source.indexOf('[')),
+        )
+        assertEquals(
+            MarkdownLinkTarget("file", "docs/a)b.md", source.length),
+            markdownLinkAt(source, source.lastIndexOf('[')),
+        )
+        assertNull(markdownLinkAt("[broken](path", 0))
     }
 }

@@ -102,6 +102,21 @@ class SdkFoundationTest {
     }
 
     @Test
+    fun `conversation exposes the server supplied history cursor`() {
+        val snapshot = HolonConversationSnapshot.from(
+            HolonJsonDocument(
+                HolonWire.json.parseToJsonElement(
+                    """{"turns":[],"pending_inputs":[],"has_more":true,"next_before_cursor":"before-older","event_log_epoch":"epoch-1"}""",
+                ),
+            ),
+        )
+
+        assertEquals(true, snapshot.hasMore)
+        assertEquals("before-older", snapshot.nextBeforeCursor)
+        assertEquals("epoch-1", snapshot.eventLogEpoch)
+    }
+
+    @Test
     fun `terminal turn without result is not projected as work in progress`() {
         val snapshot =
             HolonConversationSnapshot.from(
