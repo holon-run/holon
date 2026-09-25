@@ -8,6 +8,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -20,10 +21,12 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
+import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
+import run.holon.android.sdk.SseReconnectPolicy
 import run.holon.android.sdk.HolonConversationStreamEvent
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonHttpException
@@ -141,6 +144,10 @@ internal class HolonViewModel(
     private var conversationJob: Job? = null
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
+    private var globalEventStreamJob: Job? = null
+    private val agentEventStreamJobs = ConcurrentHashMap<String, Job>()
+    private val agentEventCursors = ConcurrentHashMap<String, Long>()
+    private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
     private var workspaceBrowseJob: Job? = null
     private var refreshJob: Job? = null
@@ -167,6 +174,7 @@ internal class HolonViewModel(
                         )
                     }
                     loadReadBriefIds()
+                    startLiveSync(result.roster.agents)
                     viewModelScope.launch(Dispatchers.IO) { runCatching { repository.retryOutbox() } }
                 }
                 is ResumeResult.Offline -> {
@@ -264,6 +272,7 @@ internal class HolonViewModel(
                     )
                 }
                 loadReadBriefIds()
+                startLiveSync(roster.agents)
             }.onFailure { error ->
                 tokenChars.fill('\u0000')
                 mutableState.update {
@@ -276,12 +285,14 @@ internal class HolonViewModel(
     fun onForeground() {
         foreground = true
         if (state.value.phase != AppPhase.Ready || state.value.busy) return
+        startLiveSync(state.value.agents)
         refresh(showProgress = false)
     }
 
     fun onBackground() {
         foreground = false
         stopConversationStream()
+        stopLiveSync()
     }
 
     fun refresh(showProgress: Boolean = true) {
@@ -304,6 +315,7 @@ internal class HolonViewModel(
                         statusMessage = null,
                     )
                 }
+                startLiveSync(roster.agents)
                 state.value.selectedAgent?.let(::openAgent)
                 viewModelScope.launch {
                     runCatching {
@@ -328,6 +340,98 @@ internal class HolonViewModel(
                 }
             }
         }
+    }
+
+    private fun startLiveSync(agents: List<AgentSummary>) {
+        if (!foreground || state.value.phase != AppPhase.Ready) return
+        if (globalEventStreamJob?.isActive != true) {
+            globalEventStreamJob =
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        while (isActive && foreground) {
+                            repository.reconnectingRosterHints(
+                                policy = SseReconnectPolicy(maxAttempts = 8),
+                            ).forEach {
+                                if (isActive && foreground) scheduleLiveRosterRefresh()
+                            }
+                            delay(500)
+                        }
+                    }.onFailure { error ->
+                        if (isActive && foreground) {
+                            mutableState.update {
+                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
+                            }
+                        }
+                    }
+                }
+        }
+        val ids = agents.mapTo(mutableSetOf()) { it.id }
+        agentEventStreamJobs.keys.toList()
+            .filter { it !in ids }
+            .forEach { agentId ->
+                agentEventStreamJobs.remove(agentId)?.cancel()
+                agentEventCursors.remove(agentId)
+            }
+        agents.forEach { agent ->
+            if (agentEventStreamJobs[agent.id]?.isActive == true) return@forEach
+            agentEventStreamJobs[agent.id] =
+                viewModelScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        while (isActive && foreground) {
+                            repository.reconnectingAgentEvents(
+                                agentId = agent.id,
+                                afterSeq = agentEventCursors[agent.id],
+                                policy = SseReconnectPolicy(maxAttempts = 8),
+                            ).forEach { event ->
+                                if (!isActive || !foreground) return@forEach
+                                agentEventCursors[agent.id] = event.eventSeq
+                                scheduleLiveRosterRefresh()
+                            }
+                            delay(500)
+                        }
+                    }.onFailure { error ->
+                        if (isActive && foreground) {
+                            mutableState.update {
+                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
+                            }
+                        }
+                    }
+                }
+        }
+    }
+
+    private fun stopLiveSync() {
+        globalEventStreamJob?.cancel()
+        globalEventStreamJob = null
+        agentEventStreamJobs.values.forEach(Job::cancel)
+        agentEventStreamJobs.clear()
+        liveRosterRefreshJob?.cancel()
+        liveRosterRefreshJob = null
+    }
+
+    private fun scheduleLiveRosterRefresh() {
+        if (!foreground || state.value.phase != AppPhase.Ready) return
+        liveRosterRefreshJob?.cancel()
+        liveRosterRefreshJob =
+            viewModelScope.launch {
+                delay(250)
+                runCatching {
+                    withContext(Dispatchers.IO) { repository.refreshSessionAndRoster() }
+                }.onSuccess { (session, roster) ->
+                    if (!foreground || state.value.phase != AppPhase.Ready) return@onSuccess
+                    mutableState.update {
+                        it.copy(
+                            session = session,
+                            agents = roster.agents,
+                            online = true,
+                            lastSyncedAt = System.currentTimeMillis(),
+                            statusMessage = null,
+                        )
+                    }
+                    loadReadBriefIds()
+                    startLiveSync(roster.agents)
+                }.onFailure(::handleRuntimeFailure)
+            }
     }
 
     fun openAgent(agent: AgentSummary) {

@@ -508,6 +508,39 @@ public data class HolonSseEvent(
                 ?.let { element -> (element as? JsonObject)?.get("event_seq")?.jsonPrimitive?.longOrNull }
 }
 
+public data class HolonAgentEvent(
+    public val id: String?,
+    public val eventSeq: Long,
+    public val eventLogEpoch: String,
+    public val agentId: String,
+    public val type: String,
+    public val payload: JsonElement?,
+    public val raw: JsonObject,
+) {
+    public companion object {
+        public fun from(event: HolonSseEvent): HolonAgentEvent {
+            val raw =
+                event.json() as? JsonObject
+                    ?: throw HolonProtocolException("Holon agent event is not an object")
+            return HolonAgentEvent(
+                id = event.id,
+                eventSeq =
+                    raw.long("event_seq")
+                        ?: throw HolonProtocolException("Holon agent event is missing event_seq"),
+                eventLogEpoch = raw.string("event_log_epoch").orEmpty(),
+                agentId =
+                    raw.string("agent_id")
+                        ?: throw HolonProtocolException("Holon agent event is missing agent_id"),
+                type =
+                    raw.string("type")
+                        ?: throw HolonProtocolException("Holon agent event is missing type"),
+                payload = raw["payload"],
+                raw = raw,
+            )
+        }
+    }
+}
+
 public data class SseReconnectPolicy(
     public val maxAttempts: Int = 5,
     public val initialDelayMillis: Long = 250,
