@@ -155,16 +155,8 @@ export function App() {
     if (activeAgentId && !panelLayout.full) markAgentConversationRead(activeAgentId);
   }, [
     activeAgentId,
-    activeAgentLedgerUnread,
-    discoveryFreshness,
-    activeAgentId ? ledgerReadinessRevisionByAgentId[activeAgentId] : undefined,
     markAgentConversationRead,
     panelLayout.full,
-    selectedAgentSession?.briefHydrationById,
-    selectedAgentSession?.gaps.length,
-    selectedAgentSession?.liveStatus,
-    selectedAgentSession?.loading,
-    selectedAgentSession?.syncStatus,
   ]);
   const selectedAgentTimelineEvents = useRuntimeStore((state) =>
     sidePanelAgentId ? state.timelineEventsByAgentId[sidePanelAgentId] : undefined,
