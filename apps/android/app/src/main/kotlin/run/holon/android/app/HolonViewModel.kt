@@ -170,6 +170,8 @@ internal class HolonViewModel(
     private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
     private var workspaceBrowseJob: Job? = null
+    private var workspaceBrowseGeneration = 0L
+    private var workspaceBrowseRequest: WorkspaceBrowseRequest? = null
     private var refreshJob: Job? = null
     @Volatile private var foreground = true
     private val draftSaveJobs = mutableMapOf<String, Job>()
@@ -1621,17 +1623,25 @@ internal class HolonViewModel(
 
     private fun browseWorkspace(workspace: HolonWorkspace, path: String) {
         workspaceBrowseJob?.cancel()
+        val request =
+            WorkspaceBrowseRequest(
+                generation = ++workspaceBrowseGeneration,
+                workspaceId = workspace.workspaceId,
+                executionRootId = workspace.executionRootId,
+                path = path,
+            )
+        workspaceBrowseRequest = request
         workspaceBrowseJob = viewModelScope.launch {
-            runCatching {
+            executeWorkspaceBrowseRequest {
                 withContext(Dispatchers.IO) { repository.browseWorkspace(workspace, path) }
             }.onSuccess { directory ->
-                if (state.value.selectedWorkspace?.workspaceId == workspace.workspaceId &&
-                    state.value.selectedWorkspace?.executionRootId == workspace.executionRootId
-                ) {
+                if (request.appliesTo(workspaceBrowseRequest, state.value.selectedWorkspace)) {
                     mutableState.update { it.copy(workspaceDirectory = directory, workspaceBusy = false) }
                 }
             }.onFailure { error ->
-                mutableState.update { it.copy(workspaceBusy = false, error = humanError(error)) }
+                if (request.appliesTo(workspaceBrowseRequest, state.value.selectedWorkspace)) {
+                    mutableState.update { it.copy(workspaceBusy = false, error = humanError(error)) }
+                }
             }
         }
     }
@@ -1665,6 +1675,30 @@ internal class HolonViewModel(
             }
     }
 }
+
+internal data class WorkspaceBrowseRequest(
+    val generation: Long,
+    val workspaceId: String,
+    val executionRootId: String?,
+    val path: String,
+)
+
+internal fun WorkspaceBrowseRequest.appliesTo(
+    currentRequest: WorkspaceBrowseRequest?,
+    selectedWorkspace: HolonWorkspace?,
+): Boolean =
+    currentRequest == this &&
+        selectedWorkspace?.workspaceId == workspaceId &&
+        selectedWorkspace.executionRootId == executionRootId
+
+internal suspend fun <T> executeWorkspaceBrowseRequest(block: suspend () -> T): Result<T> =
+    try {
+        Result.success(block())
+    } catch (error: CancellationException) {
+        throw error
+    } catch (error: Throwable) {
+        Result.failure(error)
+    }
 
 private fun ConversationCacheEntity.toAgentSummary(): AgentSummary =
     AgentSummary(
