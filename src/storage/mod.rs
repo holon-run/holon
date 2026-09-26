@@ -4,7 +4,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
@@ -13,7 +13,7 @@ use tokio::sync::Notify;
 use crate::{
     runtime_db::{
         transitions::{PostCommitEffects, PostCommitWarning},
-        RuntimeDb, RuntimeDbLock, RuntimeIndexChange,
+        RuntimeDb, RuntimeIndexChange,
     },
     types::{
         AgentIdentityRecord, AgentPostureProjection, AgentState, AuditEvent, BriefRecord,
@@ -29,8 +29,8 @@ use crate::{
 const RUNTIME_DIR: &str = ".holon";
 const RUNTIME_STATE_DIR: &str = "state";
 const RUNTIME_LEDGER_DIR: &str = "ledger";
-const RUNTIME_INDEXES_DIR: &str = "indexes";
 const RUNTIME_CACHE_DIR: &str = "cache";
+const SHARED_INDEXES_DIR: &str = "indexes";
 
 mod activity;
 mod events;
@@ -192,11 +192,9 @@ impl AppStorage {
         if mode == StorageOpenMode::ReadWrite {
             fs::create_dir_all(&data_dir)
                 .with_context(|| format!("failed to create {}", data_dir.display()))?;
-            migrate_legacy_shared_indexes(&data_dir, agent_id.is_some(), &shared_indexes_dir)?;
             for dir in [
                 &state_dir,
                 &ledger_dir,
-                &runtime_dir.join(RUNTIME_INDEXES_DIR),
                 &runtime_dir.join(RUNTIME_CACHE_DIR),
             ] {
                 fs::create_dir_all(dir)
@@ -293,10 +291,6 @@ impl AppStorage {
 
     pub fn ledger_dir(&self) -> PathBuf {
         self.runtime_dir().join(RUNTIME_LEDGER_DIR)
-    }
-
-    pub fn indexes_dir(&self) -> PathBuf {
-        self.runtime_dir().join(RUNTIME_INDEXES_DIR)
     }
 
     // Shared search projections live at host data scope. They are rebuildable
@@ -1281,7 +1275,7 @@ fn infer_agent_id_from_data_dir(data_dir: &Path) -> Option<String> {
 }
 
 fn shared_indexes_dir_for(data_dir: &Path, agent_scoped: bool) -> PathBuf {
-    shared_indexes_host_dir_for(data_dir, agent_scoped).join(RUNTIME_INDEXES_DIR)
+    shared_indexes_host_dir_for(data_dir, agent_scoped).join(SHARED_INDEXES_DIR)
 }
 
 fn shared_indexes_host_dir_for(data_dir: &Path, agent_scoped: bool) -> PathBuf {
@@ -1300,85 +1294,6 @@ fn shared_indexes_host_dir_for(data_dir: &Path, agent_scoped: bool) -> PathBuf {
             .map(Path::to_path_buf)
             .unwrap_or_else(|| data_dir.to_path_buf())
     }
-}
-
-fn legacy_shared_indexes_dir_for(data_dir: &Path, agent_scoped: bool) -> PathBuf {
-    let legacy_root = if agent_scoped {
-        shared_indexes_host_dir_for(data_dir, true)
-    } else {
-        data_dir.to_path_buf()
-    };
-    legacy_root.join(RUNTIME_DIR).join(RUNTIME_INDEXES_DIR)
-}
-
-fn migrate_legacy_shared_indexes(
-    data_dir: &Path,
-    agent_scoped: bool,
-    canonical_dir: &Path,
-) -> Result<()> {
-    let legacy_dir = legacy_shared_indexes_dir_for(data_dir, agent_scoped);
-    if legacy_dir == canonical_dir || !legacy_dir.exists() {
-        return Ok(());
-    }
-
-    let host_dir = shared_indexes_host_dir_for(data_dir, agent_scoped);
-    let lock_path = host_dir.join(".shared-indexes-migration.lock");
-    let _migration_lock = RuntimeDbLock::lock(&lock_path)
-        .with_context(|| format!("locking shared index migration {}", lock_path.display()))?;
-
-    let legacy_has_data = directory_has_entries(&legacy_dir)?;
-    if !legacy_has_data {
-        return Ok(());
-    }
-    if !legacy_dir.is_dir() {
-        bail!(
-            "legacy shared index path is not a directory: {}",
-            legacy_dir.display()
-        );
-    }
-
-    if canonical_dir.exists() {
-        if directory_has_entries(canonical_dir)? {
-            bail!(
-                "shared index migration conflict: both canonical {} and legacy {} contain data",
-                canonical_dir.display(),
-                legacy_dir.display()
-            );
-        }
-        fs::remove_dir(canonical_dir).with_context(|| {
-            format!(
-                "removing empty canonical shared index directory {} before migration",
-                canonical_dir.display()
-            )
-        })?;
-    }
-
-    fs::create_dir_all(
-        canonical_dir
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("canonical shared index path has no parent"))?,
-    )
-    .with_context(|| format!("creating shared index parent {}", canonical_dir.display()))?;
-    fs::rename(&legacy_dir, canonical_dir).with_context(|| {
-        format!(
-            "migrating legacy shared indexes {} to {}",
-            legacy_dir.display(),
-            canonical_dir.display()
-        )
-    })?;
-    Ok(())
-}
-
-fn directory_has_entries(path: &Path) -> Result<bool> {
-    if !path.is_dir() {
-        return Ok(true);
-    }
-    fs::read_dir(path)
-        .with_context(|| format!("reading shared index directory {}", path.display()))?
-        .next()
-        .transpose()
-        .with_context(|| format!("reading shared index directory {}", path.display()))
-        .map(|entry| entry.is_some())
 }
 
 pub(crate) fn is_active_task_status(status: &TaskStatus) -> bool {
@@ -3204,7 +3119,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let dirty_path = storage.indexes_dir().join("memory.default.dirty");
+        let dirty_path = storage.shared_indexes_dir().join("memory.default.dirty");
 
         storage.mark_memory_index_dirty().unwrap();
         fs::write(&dirty_path, b"already dirty").unwrap();
@@ -3359,7 +3274,6 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].kind, TranscriptEntryKind::IncomingMessage);
         assert_eq!(restored[0].related_message_id.as_deref(), Some("message-1"));
-        assert!(storage.indexes_dir().is_dir());
         assert!(storage.cache_dir().is_dir());
     }
 
@@ -5500,7 +5414,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_indexes_use_host_root_without_nested_runtime_directory() {
+    fn shared_indexes_use_canonical_host_root_without_nested_runtime_directory() {
         let dir = tempdir().unwrap();
         let agent_storage =
             AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-a"), "agent-a")
@@ -5518,56 +5432,20 @@ mod tests {
     }
 
     #[test]
-    fn shared_indexes_migrate_nonempty_legacy_directory_atomically() {
+    fn shared_indexes_leave_legacy_directory_untouched() {
         let dir = tempdir().unwrap();
-        let legacy = dir.path().join(".holon/indexes");
+        let legacy = dir.path().join("host/.holon/indexes");
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("memory.v2.sqlite3"), b"legacy").unwrap();
 
-        let storage =
-            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-a"), "agent-a")
-                .unwrap();
+        let storage = AppStorage::new_global_for_test(dir.path().join("host")).unwrap();
         let canonical = dir.path().join("indexes");
 
         assert_eq!(storage.shared_indexes_dir(), canonical);
         assert_eq!(
-            std::fs::read(canonical.join("memory.v2.sqlite3")).unwrap(),
+            std::fs::read(legacy.join("memory.v2.sqlite3")).unwrap(),
             b"legacy"
         );
-        assert!(!legacy.exists(), "legacy directory should be renamed");
-    }
-
-    #[test]
-    fn shared_indexes_reject_conflicting_canonical_and_legacy_data() {
-        let dir = tempdir().unwrap();
-        let canonical = dir.path().join("indexes");
-        let legacy = dir.path().join(".holon/indexes");
-        std::fs::create_dir_all(&canonical).unwrap();
-        std::fs::create_dir_all(&legacy).unwrap();
-        std::fs::write(canonical.join("memory.v2.sqlite3"), b"canonical").unwrap();
-        std::fs::write(legacy.join("memory.v2.sqlite3"), b"legacy").unwrap();
-
-        let error =
-            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-a"), "agent-a")
-                .unwrap_err();
-
-        assert!(error.to_string().contains("migration conflict"));
-        assert!(canonical.join("memory.v2.sqlite3").is_file());
-        assert!(legacy.join("memory.v2.sqlite3").is_file());
-    }
-
-    #[test]
-    fn shared_indexes_reject_malformed_legacy_path_without_removing_it() {
-        let dir = tempdir().unwrap();
-        let legacy = dir.path().join(".holon/indexes");
-        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-        std::fs::write(&legacy, b"not a directory").unwrap();
-
-        let error =
-            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-a"), "agent-a")
-                .unwrap_err();
-
-        assert!(error.to_string().contains("not a directory"));
-        assert!(legacy.is_file());
+        assert!(legacy.is_dir(), "legacy directory should remain untouched");
     }
 }

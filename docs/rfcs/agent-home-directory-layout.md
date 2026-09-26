@@ -25,7 +25,6 @@ agent_home/
   .holon/
     state/
     ledger/
-    indexes/
     cache/
 ```
 
@@ -41,12 +40,18 @@ holon_home/
   agents/
     <agent-id>/
       .holon/
-        indexes/   # agent-local indexes, when present
+        state/
+        ledger/
+        cache/
 ```
 
 `holon_home/indexes/` is the canonical shared index directory. It is distinct
 from each agent's `.holon/indexes/` directory and must not be derived by
 appending the per-storage-root `.holon` runtime segment to `holon_home`.
+Opening global storage at `holon_home/host` must not create, scan, or migrate
+`holon_home/host/.holon/indexes`; that path is legacy and is not part of the
+runtime layout. Shared index creation and lookup use only
+`holon_home/indexes/`.
 
 Visible top-level files and directories are the agent-maintained workspace
 surface. `.holon/` is runtime-owned state and must not be treated as ordinary
@@ -106,7 +111,6 @@ The hidden `.holon/` zone is runtime-owned:
 
 - `.holon/state/`
 - `.holon/ledger/`
-- `.holon/indexes/`
 - `.holon/cache/`
 
 An agent may read runtime-owned state through approved tools or debug
@@ -279,10 +283,12 @@ as the source of truth.
 
 The host-level shared projection follows the same rebuildable-index contract,
 but is stored at `holon_home/indexes/` and is shared by agent storages on that
-host. During upgrade, an existing legacy shared-index directory may be moved
-to the canonical location only when the canonical location has no data. If
-both locations contain data, startup must stop and report the conflict rather
-than merge or silently choose one.
+host. Older releases could create a mistaken nested path such as
+`holon_home/host/.holon/indexes` (or another nested `.holon/indexes` path).
+Current releases do not inspect, migrate, or recreate those legacy paths.
+Because indexes are rebuildable projections rather than canonical state,
+operators should stop Holon, back up any legacy index directory that contains
+data, and rebuild the canonical index before removing the obsolete path.
 
 ### `.holon/cache/`
 
