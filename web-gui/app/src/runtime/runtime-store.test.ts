@@ -1110,20 +1110,9 @@ describe("server brief read state", () => {
     expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/agents/brief-read-states"), expect.anything());
   });
 
-  it("optimistically clears unread state, posts the head cursor, and retries after failure", async () => {
-    let markAttempts = 0;
+  it("keeps unread state until the durable ledger is ready", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST") {
-        markAttempts += 1;
-        if (markAttempts === 1) return Promise.reject(new Error("offline"));
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({ state: state({ read_through_event_seq: 8, unread_count: 0 }) }),
-            { status: 200 },
-          ),
-        );
-      }
       return Promise.resolve(
         new Response(
           url.includes("/agents/brief-read-states") ? JSON.stringify([state()]) : JSON.stringify({}),
@@ -1135,13 +1124,26 @@ describe("server brief read state", () => {
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     await useRuntimeStore.getState().refreshBriefReadStates();
 
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: {
+        ...useRuntimeStore.getState().discovery,
+        freshness: "fresh",
+      },
+    });
+    seedReadyConversationScope("agent-a");
     useRuntimeStore.getState().markAgentConversationRead("agent-a");
-    await vi.waitFor(() => expect(useRuntimeStore.getState().briefReadStatesError).toBe("offline"));
-    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(0);
-
-    useRuntimeStore.getState().markAgentConversationRead("agent-a");
-    await vi.waitFor(() => expect(useRuntimeStore.getState().briefReadStatesError).toBeUndefined());
-    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/agents/agent-a/brief-read-cursor"), expect.objectContaining({ method: "POST" }));
+    await vi.waitFor(() =>
+      expect(useRuntimeStore.getState().briefReadStatesError).toBeUndefined(),
+    );
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(5);
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST",
+      ),
+    ).toBe(false);
   });
 
   it("keeps repeated refreshes consistent with the server response", async () => {
