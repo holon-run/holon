@@ -24,7 +24,7 @@ import {
   useRuntimeStore,
   writeStoredRuntimeConnectionConfig,
 } from "./runtime-store";
-import type { StreamEventEnvelopeDto } from "./client";
+import type { BriefReadStateDto, StreamEventEnvelopeDto } from "./client";
 import { AgentSessionRepository } from "./agent-session-repository";
 import {
   getRuntimeTraceRecords,
@@ -1069,6 +1069,7 @@ describe("agent deletion cache cleanup", () => {
 describe("server brief read state", () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     useRuntimeStore.setState({
       currentUser: undefined,
@@ -1081,12 +1082,17 @@ describe("server brief read state", () => {
     });
   });
 
-  const state = (overrides: Record<string, unknown> = {}) => ({
+  const state = (overrides: Partial<BriefReadStateDto> = {}): BriefReadStateDto => ({
     agent_id: "agent-a",
+    event_log_epoch: "epoch-1",
+    visibility_scope_id: "scope-1",
+    oldest_retained_seq: 0,
     read_through_event_seq: 3,
     event_head_seq: 8,
+    reset_required: false,
+    retention_gap: false,
+    revision: 1,
     unread_count: 5,
-    updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
   });
 
@@ -1137,13 +1143,126 @@ describe("server brief read state", () => {
     await vi.waitFor(() =>
       expect(useRuntimeStore.getState().briefReadStatesError).toBeUndefined(),
     );
-    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(5);
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(0);
     expect(
       fetchMock.mock.calls.some(
         ([input, init]) =>
           String(input).includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST",
       ),
     ).toBe(false);
+  });
+
+  it("does not let a stale refresh restore an optimistic read", async () => {
+    let resolveStaleRefresh!: (response: Response) => void;
+    let briefReadStatesRequestCount = 0;
+    const staleRefresh = new Promise<Response>((resolve) => {
+      resolveStaleRefresh = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/agents/brief-read-states")) {
+        briefReadStatesRequestCount += 1;
+        return briefReadStatesRequestCount === 2
+          ? staleRefresh
+          : Promise.resolve(new Response(JSON.stringify([state()]), { status: 200 }));
+      }
+      if (url.includes("/brief-read-cursor") && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ state: state({ read_through_event_seq: 8, unread_count: 0 }) }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: {
+        ...useRuntimeStore.getState().discovery,
+        freshness: "fresh",
+      },
+    });
+    seedReadyConversationScope("agent-a");
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
+      readyThroughSeq: 8,
+      ingestedThroughSeq: 8,
+      observedHeadSeq: 8,
+    });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+
+    const refreshPromise = useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    resolveStaleRefresh(new Response(JSON.stringify([state()]), { status: 200 }));
+    await refreshPromise;
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([input, init]) =>
+            String(input).includes("/brief-read-cursor") && init?.method === "POST",
+        ),
+      ).toHaveLength(1),
+    );
+
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
+      read_through_event_seq: 8,
+      unread_count: 0,
+    });
+  });
+
+  it("retries a failed read cursor advance with backoff", async () => {
+    vi.useFakeTimers();
+    let markAttempts = 0;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/agents/brief-read-states")) {
+        return Promise.resolve(new Response(JSON.stringify([state()]), { status: 200 }));
+      }
+      if (url.includes("/brief-read-cursor") && init?.method === "POST") {
+        markAttempts += 1;
+        if (markAttempts === 1) return Promise.reject(new Error("offline"));
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ state: state({ read_through_event_seq: 8, unread_count: 0 }) }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: {
+        ...useRuntimeStore.getState().discovery,
+        freshness: "fresh",
+      },
+    });
+    seedReadyConversationScope("agent-a");
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
+      readyThroughSeq: 8,
+      ingestedThroughSeq: 8,
+      observedHeadSeq: 8,
+    });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    await vi.waitFor(() => expect(markAttempts).toBe(1));
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => expect(markAttempts).toBe(2));
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
+      read_through_event_seq: 8,
+      unread_count: 0,
+    });
   });
 
   it("keeps repeated refreshes consistent with the server response", async () => {
