@@ -3123,7 +3123,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
         storage.write_agent(&AgentState::new("default")).unwrap();
-        let dirty_path = storage.indexes_dir().join("memory.default.dirty");
+        let dirty_path = storage.shared_indexes_dir().join("memory.default.dirty");
 
         storage.mark_memory_index_dirty().unwrap();
         fs::write(&dirty_path, b"already dirty").unwrap();
