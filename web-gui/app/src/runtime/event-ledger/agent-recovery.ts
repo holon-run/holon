@@ -3,23 +3,20 @@
  *
  * Owns the observer-sync recovery decisions above the ingestion pipeline:
  * - a newly visible Agent bootstraps from its authoritative projection
- *   snapshot: install, boundary cursors, fresh unread baseline, replay
- *   beyond the boundary, then live;
+ *   snapshot, replays beyond the boundary, then enters live mode;
  * - an Agent with a contiguous cache catches up by replaying pages after
  *   its contiguous cursor until the observed head;
  * - reset reasons are independent and explicit: retained-prefix gap,
  *   replay-budget exhaustion, cursor error, immutable content conflict,
  *   hydration divergence, epoch change, and visibility scope change;
- * - same-scope resets rebuild the Agent cache and keep the read-state
- *   record, marking truncation; epoch and visibility resets clear the old
- *   runtime scope entirely and never migrate read markers;
+ * - same-scope resets rebuild the Agent cache; epoch and visibility resets
+ *   clear the old runtime scope entirely;
  * - live stream envelopes that arrive while recovery is in flight are
  *   buffered hints: they replay through the same ingest path when
  *   recovery settles and never bypass the state machine.
  */
 
 import type { LedgerIngestionPipeline, LedgerIngestionStatus } from "./ingestion-pipeline";
-import type { LedgerReadStateRecord } from "./ledger";
 import { LedgerIdentityConflictError } from "./errors";
 import { remoteScopeKeyParts } from "./keys";
 import type {
@@ -172,12 +169,6 @@ function serializedPageBytes(page: RecoveryEventPage): number {
   } catch {
     return Number.POSITIVE_INFINITY;
   }
-}
-
-/** Effective local read boundary above which unread is counted. */
-function effectiveReadBoundary(record: LedgerReadStateRecord | undefined): number {
-  if (!record) return 0;
-  return Math.max(record.unreadBaselineSeq ?? 0, record.readThroughEventSeq ?? 0);
 }
 
 function sameRemoteScope(
@@ -388,8 +379,8 @@ export class AgentRecoveryCoordinator {
     };
 
     // Identity resets: clear whole runtime scopes that no longer match the
-    // server's identity before any new data becomes visible. Read markers
-    // never migrate across scopes, and buffered hints from the old scope
+    // server's identity before any new data becomes visible. Buffered hints
+    // from the old scope
     // are dropped instead of joined with the new one.
     const stale = await this.dependencies.pipeline.findAgentSessions(
       this.dependencies.remoteKey,
@@ -432,38 +423,6 @@ export class AgentRecoveryCoordinator {
       (sameScopeReset ? hint.oldestRetainedSeq ?? null : null);
     const floor = reportedFloor != null && reportedFloor > 0 ? reportedFloor : undefined;
     const budgetReset = reset === "replay_budget_exceeded";
-    const truncationBoundary = budgetReset ? snapshot.snapshotThroughSeq + 1 : floor;
-    let readState: Partial<LedgerReadStateRecord> | undefined;
-    if (sameScopeReset) {
-      const preserved = await this.dependencies.pipeline.readStateOf(scope);
-      if (!preserved) {
-        // A forced reset that landed on a scope with no preserved marker
-        // (for example a divergence reset that also rotated identity)
-        // establishes a fresh baseline instead of a half-empty record.
-        readState = {
-          unreadBaselineSeq: snapshot.snapshotThroughSeq,
-          certainty: budgetReset ? "truncated" : "exact",
-          historyTruncatedBeforeSeq: truncationBoundary,
-        };
-      } else {
-        const boundary = effectiveReadBoundary(preserved);
-        const recordedTruncation = Math.max(
-          preserved.historyTruncatedBeforeSeq ?? 0,
-          truncationBoundary ?? 0,
-        );
-        readState = {
-          historyTruncatedBeforeSeq: recordedTruncation || undefined,
-          certainty:
-            budgetReset || (floor != null && boundary < floor - 1)
-              ? "truncated"
-              : preserved.certainty ?? "exact",
-        };
-      }
-    } else {
-      // Fresh visible agent or identity reset: new scope, fresh baseline.
-      readState = { unreadBaselineSeq: snapshot.snapshotThroughSeq, certainty: "exact" };
-    }
-
     state.phase = "installing";
     state.scope = scope;
     this.emit(state, { agentId, scope, phase: "installing", resetReason: reset ?? identityReset });
@@ -479,11 +438,7 @@ export class AgentRecoveryCoordinator {
           hydrationTombstones: snapshot.hydrationTombstones,
         },
         {
-          clearFirst:
-            reset != null || identityReset != null
-              ? { preserveReadState: sameScopeReset }
-              : undefined,
-          readState,
+          clearFirst: reset != null || identityReset != null,
         },
       );
     } catch (error) {

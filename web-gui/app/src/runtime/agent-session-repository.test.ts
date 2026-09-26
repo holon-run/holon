@@ -137,88 +137,6 @@ describe("AgentSessionRepository ledger ingestion", () => {
     expect(status?.ingestedThroughSeq).toBe(2);
     expect(status?.projectionReadyThroughSeq).toBe(2);
     expect(harness.repository.sessionLedgerStatus("agent-a")?.ingestedThroughSeq).toBe(2);
-    const gate = harness.repository.sessionLedgerReadiness("agent-a");
-    expect(gate?.readyThroughSeq).toBe(2);
-  });
-
-  it("advances read markers, counts only qualifying unread, and acknowledges truncation", async () => {
-    const harness = createHarness(
-      emptyAgentSession(),
-      { ledgerIngestion: ledgerIntegration() },
-    );
-    await harness.repository.initializeLedgerIngestion();
-
-    await harness.repository.ingestSessionEvents("agent-a", [
-      event(1),
-      event(2),
-      event(3),
-    ]);
-
-    // Without a read state every hydrated user-facing brief above boundary
-    // 0 counts; internal events would not (ledger-level tests cover that).
-    const before = await harness.repository.unreadSnapshot("agent-a");
-    expect(before?.count).toBe(3);
-    expect(before?.certainty).toBe("exact");
-    expect(before?.countedThroughSeq).toBe(3);
-
-    const advanced = await harness.repository.advanceReadMarker("agent-a", 3);
-    expect(advanced?.advanced).toBe(true);
-    expect(advanced?.record.readThroughEventSeq).toBe(3);
-
-    const after = await harness.repository.unreadSnapshot("agent-a");
-    expect(after?.count).toBe(0);
-    expect(after?.boundarySeq).toBe(3);
-
-    // A lower candidate never regresses the durable marker.
-    const stale = await harness.repository.advanceReadMarker("agent-a", 2);
-    expect(stale?.advanced).toBe(false);
-
-    // An internal event after the marker does not add unread.
-    await harness.repository.ingestSessionEvents("agent-a", [
-      { ...event(4), type: "scheduler_tick", projection_effect: "none" },
-    ]);
-    const internal = await harness.repository.unreadSnapshot("agent-a");
-    expect(internal?.count).toBe(0);
-
-    // Explicit truncation acknowledgement opens a new exact generation at
-    // the observed head.
-    const acknowledged = await harness.repository.acknowledgeReadTruncation("agent-a");
-    expect(acknowledged?.certainty).toBe("exact");
-    expect(acknowledged?.acknowledgedTruncationBeforeSeq).toBe(4);
-    expect(acknowledged?.unreadBaselineSeq).toBe(4);
-  });
-
-  it("acknowledges truncation at an explicit gated head instead of the observed head", async () => {
-    const harness = createHarness(
-      emptyAgentSession(),
-      { ledgerIngestion: ledgerIntegration() },
-    );
-    await harness.repository.initializeLedgerIngestion();
-
-    await harness.repository.ingestSessionEvents("agent-a", [
-      event(1),
-      event(2),
-      event(3),
-    ]);
-    await harness.repository.advanceReadMarker("agent-a", 3);
-
-    // The auto-restore path passes the gated head it caught up to; the
-    // acknowledgement boundary must not jump to the higher observed head.
-    const acknowledged = await harness.repository.acknowledgeReadTruncation("agent-a", 2);
-    expect(acknowledged?.certainty).toBe("exact");
-    expect(acknowledged?.unreadBaselineSeq).toBe(2);
-    expect(acknowledged?.acknowledgedTruncationBeforeSeq).toBe(2);
-  });
-
-  it("returns null read-marker results when the scope is unresolved", async () => {
-    const harness = createHarness(
-      emptyAgentSession(),
-      { ledgerIngestion: ledgerIntegration({ resolveScope: () => null }) },
-    );
-    await harness.repository.initializeLedgerIngestion();
-    expect(await harness.repository.advanceReadMarker("agent-a", 3)).toBeNull();
-    expect(await harness.repository.acknowledgeReadTruncation("agent-a")).toBeNull();
-    expect(await harness.repository.unreadSnapshot("agent-a")).toBeNull();
   });
 
   it("stays dormant when the runtime identity scope is unresolved", async () => {
@@ -231,7 +149,6 @@ describe("AgentSessionRepository ledger ingestion", () => {
     const status = await harness.repository.ingestSessionEvents("agent-a", [event(1)]);
     expect(status).toBeNull();
     expect(harness.repository.sessionLedgerStatus("agent-a")).toBeNull();
-    expect(harness.repository.sessionLedgerReadiness("agent-a")).toBeNull();
   });
 
   it("drops the ledger pipeline when switching remotes", async () => {

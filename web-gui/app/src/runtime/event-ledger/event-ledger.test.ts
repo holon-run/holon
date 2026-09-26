@@ -20,9 +20,7 @@ import {
 import {
   LEGACY_DB_NAME,
   deleteLegacyDatabase,
-  hasUnreadMigrationNoticeBeenShown,
   initializeFreshBaseline,
-  markUnreadMigrationNoticeShown,
 } from "./migration";
 
 function makeScope(overrides: Partial<LedgerScopeKey> = {}): LedgerScopeKey {
@@ -223,49 +221,6 @@ describe("event ledger atomic transactions", () => {
   afterEach(async () => {
     vi.restoreAllMocks();
     await deleteRaw(LEDGER_DB_NAME);
-  });
-
-  it("commits envelope, classification, hydration, records, cursor, and read state atomically", async () => {
-    const ledger = await openLedger();
-    const scope = makeScope();
-
-    await ledger
-      .beginWrite()
-      .putRawEvent(scope, 1, envelope(1, { text: "hello" }), {
-        projectionEffect: "display_invalidation",
-        envelopeContractVersion: 3,
-      })
-      .putRawEvent(scope, 2, envelope(2, { ref: "msg-2" }), { projectionEffect: "none" })
-      .putHydrationJob(scope, makeJob(scope, 2))
-      .putCanonicalRecord(scope, "message", "msg-1", { id: "msg-1", text: "hello" }, "rev-1")
-      .applyProjectionChange(scope, { projectionRevision: 7, projection: { items: 1 } })
-      .advanceIngestionCursor(scope, 2)
-      .putReadState(scope, { lastReadDeliverySeq: 1, lastUnreadDeliverySeq: 2 })
-      .putRuntimeScope(remoteScopeOf(scope), { eventHeadSeq: 2 })
-      .commit();
-
-    const event1 = await ledger.getRawEvent(scope, 1);
-    expect(event1?.classification.projectionEffect).toBe("display_invalidation");
-    expect(event1?.classification.envelopeContractVersion).toBe(3);
-    expect(event1?.identityFingerprint).toBeTruthy();
-
-    const jobs = await ledger.getPendingHydrationJobs(scope);
-    expect(jobs.map((j) => j.jobId)).toEqual(["job-2"]);
-
-    const record = await ledger.getCanonicalRecord(scope, "message", "msg-1");
-    expect(record?.revision).toBe("rev-1");
-
-    const session = await ledger.getAgentSession(scope);
-    expect(session?.ingestedThroughSeq).toBe(2);
-    expect(session?.projectionRevision).toBe(7);
-
-    const readState = await ledger.getReadState(scope);
-    expect(readState?.lastReadDeliverySeq).toBe(1);
-    expect(readState?.lastUnreadDeliverySeq).toBe(2);
-
-    const runtimeScope = await ledger.getRuntimeScope(remoteScopeOf(scope));
-    expect(runtimeScope?.eventHeadSeq).toBe(2);
-    ledger.close();
   });
 
   it("merges multiple patches to the same session in one batch instead of overwriting", async () => {
@@ -592,8 +547,7 @@ describe("event ledger scope partitioning", () => {
     for (const scope of [otherRemote, otherRuntime, otherVisibility, otherEpoch, otherAgent]) {
       expect(await ledger.getRawEvents(scope)).toEqual([]);
       expect(await ledger.getAgentSession(scope)).toBeUndefined();
-      expect(await ledger.getReadState(scope)).toBeUndefined();
-      expect(await ledger.getPendingHydrationJobs(scope)).toEqual([]);
+        expect(await ledger.getPendingHydrationJobs(scope)).toEqual([]);
     }
 
     // Different epochs of the same remote/runtime/visibility are separate
@@ -667,7 +621,6 @@ describe("event ledger legacy baseline", () => {
         agentId: "agent-1",
         schemaVersion: 5,
         eventsBySeq: { 1: { seq: 1 } },
-        readState: { lastReadDeliverySeq: 42, lastUnreadDeliverySeq: 43 },
       });
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -683,7 +636,6 @@ describe("event ledger legacy baseline", () => {
     const scope = makeScope(); // same remoteKey/agentId as the legacy entry
     expect(await ledger.getRawEvents(scope)).toEqual([]);
     expect(await ledger.getAgentSession(scope)).toBeUndefined();
-    expect(await ledger.getReadState(scope)).toBeUndefined();
 
     // The legacy database itself must remain untouched for rollback.
     expect(await countRows(legacy, "sessions")).toBe(1);
@@ -693,18 +645,6 @@ describe("event ledger legacy baseline", () => {
     const again = await initializeFreshBaseline(ledger);
     expect(again.decidedAt).toBe(meta.decidedAt);
     ledger.close();
-  });
-
-  it("tracks the one-time unread migration notice across reopen", async () => {
-    const first = await openLedger();
-    expect(await hasUnreadMigrationNoticeBeenShown(first)).toBe(false);
-    await markUnreadMigrationNoticeShown(first);
-    expect(await hasUnreadMigrationNoticeBeenShown(first)).toBe(true);
-    first.close();
-
-    const second = await openLedger();
-    expect(await hasUnreadMigrationNoticeBeenShown(second)).toBe(true);
-    second.close();
   });
 
   it("reports legacy cleanup outcomes without throwing", async () => {

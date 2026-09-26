@@ -9,7 +9,7 @@
  * - reference events create durable hydration jobs; deletes complete via
  *   canonical tombstones; self-contained events are satisfied by ingestion;
  * - `projectionReadyThroughSeq` advances only when every display-affecting
- *   event below it is satisfied, so read markers (W5) can gate on it;
+   *   event below it is satisfied, so projection readiness remains explicit;
  * - `resume()` is the restart scan: it rebuilds cursors from the ledger and
  *   drains pending hydration before readiness may advance again;
  * - bounded hydration retries escalate to projection snapshot repair, then
@@ -22,15 +22,8 @@ import {
   EventLedger,
   type EventLedgerWriteBatch,
   type LedgerHydrationJobRecord,
-  type LedgerReadStateRecord,
 } from "./ledger";
 import type { EventLedgerOpenResult } from "./ledger";
-import {
-  readMarkerBoundary,
-  unreadSnapshotFromRecord,
-  type LedgerUnreadSnapshot,
-  type ReadMarkerAdvanceResult,
-} from "./read-markers";
 import type { LedgerDurability } from "./errors";
 import {
   classifyEnvelope,
@@ -106,20 +99,9 @@ export interface ProjectionSnapshotInstall {
   }>;
 }
 
-/** Read-state fields installable with a snapshot in the same transaction. */
-export type ProjectionInstallReadState = Partial<{
-  unreadBaselineSeq: number;
-  readThroughEventSeq: number;
-  certainty: "exact" | "truncated";
-  historyTruncatedBeforeSeq: number;
-  acknowledgedTruncationBeforeSeq: number;
-}>;
-
 export interface ProjectionInstallOptions {
   /** Discard the agent's raw/projection cache first (reset path). */
-  clearFirst?: { preserveReadState?: boolean };
-  /** Browser-local read-state patch committed atomically with the install. */
-  readState?: ProjectionInstallReadState;
+  clearFirst?: boolean;
 }
 
 export type LedgerIngestionState =
@@ -517,8 +499,8 @@ export class LedgerIngestionPipeline {
   /**
    * Atomically install an authoritative projection snapshot (W3 bootstrap):
    * canonical records, tombstones, boundary hydration jobs, both cursors at
-   * the snapshot boundary, the observed event head, and the browser-local
-   * read baseline land in one transaction. An optional `clearFirst` discards
+   * the snapshot boundary, and the observed event head land in one
+   * transaction. An optional `clearFirst` discards
    * a previous cache for the same scope key inside the same transaction, so
    * a reset followed by the install is all-or-nothing.
    */
@@ -534,7 +516,7 @@ export class LedgerIngestionPipeline {
     const now = Date.now();
     const batch = ledger.beginWrite();
     if (options.clearFirst) {
-      batch.clearAgentScope(scope, { preserveReadState: options.clearFirst.preserveReadState });
+      batch.clearAgentScope(scope);
     }
     for (const record of install.canonicalRecords) {
       batch.putCanonicalRecord(
@@ -573,9 +555,6 @@ export class LedgerIngestionPipeline {
       projectionReadyThroughSeq: install.snapshotThroughSeq,
     });
     batch.putRuntimeScope(remoteScopeOf(scope), { eventHeadSeq: install.eventHeadSeq });
-    if (options.readState) {
-      batch.putReadState(scope, options.readState);
-    }
     try {
       await batch.commit();
     } catch (error) {
@@ -601,7 +580,7 @@ export class LedgerIngestionPipeline {
    * Clear an entire runtime scope durably (epoch or visibility reset) and
    * forget its in-memory trackers. Old-scope data must never join the new
    * scope's projection, so this removes sessions, raw events, jobs,
-   * canonical records, and read states in one transaction.
+   * canonical records in one transaction.
    */
   async clearRuntimeScope(remoteScope: LedgerRemoteScopeKey): Promise<void> {
     if (!(await this.ensureExactHandle())) return;
@@ -634,61 +613,6 @@ export class LedgerIngestionPipeline {
   /** Forget the in-memory tracker of one agent scope (after a clear). */
   forgetAgentScope(scope: LedgerScopeKey): void {
     this.trackers.delete(this.trackerKey(scope));
-  }
-
-  /** Browser-local read state of one scope, if recorded. */
-  async readStateOf(scope: LedgerScopeKey): Promise<LedgerReadStateRecord | undefined> {
-    if (!(await this.ensureExactHandle())) return undefined;
-    return this.ledger!.getReadState(scope);
-  }
-
-  /**
-   * Advance the browser-local read marker as a monotonic maximum. Returns
-   * null on memory-only durability (never claims a durable advance there).
-   */
-  async advanceReadMarker(
-    scope: LedgerScopeKey,
-    candidateSeq: number,
-  ): Promise<ReadMarkerAdvanceResult | null> {
-    if (!(await this.ensureExactHandle())) return null;
-    return this.ledger!.advanceReadMarker(scope, candidateSeq);
-  }
-
-  /**
-   * Record an explicit truncation acknowledgement at the current observed
-   * event head. Null on memory-only durability or when no read state exists.
-   * An explicit `headSeq` (the gated head a read marker caught up to)
-   * overrides the observed head so the auto-restore path never claims a
-   * boundary beyond what the marker actually reached.
-   */
-  async acknowledgeReadTruncation(
-    scope: LedgerScopeKey,
-    headSeq?: number,
-  ): Promise<LedgerReadStateRecord | null> {
-    if (!(await this.ensureExactHandle())) return null;
-    const head = headSeq ?? this.status(scope)?.observedEventHeadSeq;
-    if (head == null) return null;
-    return this.ledger!.acknowledgeReadTruncation(scope, head);
-  }
-
-  /**
-   * Unread snapshot for one scope: qualifying brief events between the read
-   * boundary and the projection readiness cursor. The count is exact up to
-   * `countedThroughSeq`; a `truncated` certainty makes it a lower bound
-   * because older history was lost to retention. Null on memory-only.
-   */
-  async unreadSnapshot(scope: LedgerScopeKey): Promise<LedgerUnreadSnapshot | null> {
-    if (!(await this.ensureExactHandle())) return null;
-    const record = await this.ledger!.getReadState(scope);
-    const gate = this.readinessGate(scope);
-    const through = Math.max(0, gate.readyThroughSeq);
-    const boundary = readMarkerBoundary(record);
-    const count = await this.ledger!.countQualifyingUnreadEvents(scope, boundary, through);
-    return unreadSnapshotFromRecord(
-      record,
-      count,
-      through,
-    );
   }
 
   /**
@@ -1068,33 +992,6 @@ export class LedgerIngestionPipeline {
   status(scope: LedgerScopeKey): LedgerIngestionStatus | null {
     const tracker = this.trackers.get(this.trackerKey(scope));
     return tracker ? this.statusFor(scope, tracker) : null;
-  }
-
-  /**
-   * Read-marker gate (W5): the highest delivery seq a read state may claim,
-   * plus the seq and reason readiness is currently blocked at.
-   */
-  readinessGate(
-    scope: LedgerScopeKey,
-  ): {
-    readyThroughSeq: number;
-    ingestedThroughSeq: number;
-    observedHeadSeq?: number;
-    blockedByEventSeq?: number;
-    blockedReason?: "pending_hydration" | "unknown_envelope_version";
-  } {
-    const tracker = this.trackers.get(this.trackerKey(scope)) ?? this.freshTracker();
-    const blockedSeq = Math.min(
-      ...(tracker.blockers.size > 0 ? Array.from(tracker.blockers.keys()) : [Infinity]),
-    );
-    const blocker = Number.isFinite(blockedSeq) ? tracker.blockers.get(blockedSeq) : undefined;
-    return {
-      readyThroughSeq: tracker.readyThrough,
-      ingestedThroughSeq: tracker.contiguousThrough,
-      observedHeadSeq: Math.max(tracker.observedHead, tracker.contiguousThrough) || undefined,
-      blockedByEventSeq: Number.isFinite(blockedSeq) ? blockedSeq : undefined,
-      blockedReason: blocker?.kind,
-    };
   }
 
   /** Explicitly rebuild a degraded handle and verify it before reuse. */

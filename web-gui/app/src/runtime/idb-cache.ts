@@ -40,12 +40,6 @@ export interface CachedSemanticHistoryState {
   hasOlder: boolean;
 }
 
-export interface CachedAgentReadState {
-  unreadCount?: number;
-  lastUnreadDeliverySeq?: number;
-  lastReadDeliverySeq?: number;
-}
-
 export interface CachedAgentSession {
   remoteKey: string;
   agentId: string;
@@ -62,7 +56,6 @@ export interface CachedAgentSession {
   oldestSeq?: number;
   syncCoverage?: CachedSyncCoverage;
   semanticHistoryByDisplayLevel?: Record<string, CachedSemanticHistoryState>;
-  readState?: CachedAgentReadState;
   cachedAt: number;
 }
 

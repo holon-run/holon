@@ -1,17 +1,11 @@
 import type { StreamEventEnvelopeDto } from "./client";
-import type { CachedAgentReadState } from "./idb-cache";
-import { briefIdsForProjectionHydration } from "./session-projection";
 import { canApplySessionEvent } from "./session-events";
-import type { AgentSessionState } from "./runtime-store-helpers";
 
 const ROSTER_ACTIVITY_STORAGE_KEY = "holon.webGui.rosterActivityByRemote.v1";
 
 export interface AgentRosterActivity {
   operatorAt?: string;
   briefAt?: string;
-  unreadCount?: number;
-  lastUnreadDeliverySeq?: number;
-  lastReadDeliverySeq?: number;
 }
 
 export interface ConversationReadContext {
@@ -63,150 +57,6 @@ export function writeStoredRosterActivity(
   }
 }
 
-export function mergeCachedReadState(
-  current: AgentRosterActivity | undefined,
-  cached: CachedAgentReadState | undefined,
-): AgentRosterActivity | undefined {
-  if (!cached) return current;
-  const currentHasReadState =
-    current?.unreadCount != null ||
-    current?.lastUnreadDeliverySeq != null ||
-    current?.lastReadDeliverySeq != null;
-  if (currentHasReadState) return current;
-  return {
-    ...current,
-    ...cached,
-  };
-}
-
-export function mergeCachedReadStates(
-  current: Record<string, AgentRosterActivity>,
-  cached: Record<string, CachedAgentReadState>,
-): Record<string, AgentRosterActivity> {
-  let merged = current;
-  for (const [agentId, readState] of Object.entries(cached)) {
-    const activity = mergeCachedReadState(merged[agentId], readState);
-    if (!activity || activity === merged[agentId]) continue;
-    if (merged === current) merged = { ...current };
-    merged[agentId] = activity;
-  }
-  return merged;
-}
-
-export function cachedReadState(
-  activity: AgentRosterActivity | undefined,
-): CachedAgentReadState | undefined {
-  if (!activity) return undefined;
-  const readState: CachedAgentReadState = {};
-  if (activity.unreadCount != null) readState.unreadCount = activity.unreadCount;
-  if (activity.lastUnreadDeliverySeq != null) {
-    readState.lastUnreadDeliverySeq = activity.lastUnreadDeliverySeq;
-  }
-  if (activity.lastReadDeliverySeq != null) {
-    readState.lastReadDeliverySeq = activity.lastReadDeliverySeq;
-  }
-  return Object.keys(readState).length ? readState : undefined;
-}
-
-/**
- * Unread display modes (W5). `exact` and `truncated` are ledger-backed;
- * `stale_sync_error` means the sync layer is failing and any count would be
- * misleading.
- */
-export type LedgerUnreadMode = "exact" | "truncated" | "stale_sync_error";
-
-export interface LedgerUnreadView {
-  mode: LedgerUnreadMode;
-  /**
-   * Qualifying unread briefs. Exact in `exact` mode, a lower bound in
-   * `truncated` mode, unreliable in `stale_sync_error` mode.
-   */
-  count: number;
-}
-
-/** Inputs of the ledger read-marker advance gate. */
-export interface LedgerReadMarkerGateInput extends ConversationReadContext {
-  /** Authoritative discovery settled fresh (W4 roster snapshot). */
-  discoveryFresh: boolean;
-  /** False when the context panel covers the conversation. */
-  conversationVisible?: boolean;
-  /** Durable readiness gate; null when the ledger path is unavailable. */
-  readiness: {
-    readyThroughSeq: number;
-    ingestedThroughSeq: number;
-    observedHeadSeq?: number;
-    blockedByEventSeq?: number;
-  } | null;
-}
-
-export type ReadMarkerGateReason =
-  | "not_selected"
-  | "conversation_covered"
-  | "document_hidden"
-  | "session_not_ready"
-  | "discovery_stale"
-  | "ledger_unavailable"
-  | "no_observed_head"
-  | "not_caught_up"
-  | "blocked_by_invalidation";
-
-export interface ReadMarkerDecision {
-  mayAdvance: boolean;
-  candidateSeq?: number;
-  reason?: ReadMarkerGateReason;
-}
-
-/**
- * Evaluate whether the browser-local read marker may advance (RFC
- * observer-sync): selected, visible, timeline at the read boundary (checked
- * by the caller's trigger), discovery fresh, projection contiguous through
- * the observed head, and readiness covering the candidate. Unresolved
- * display invalidations block the marker.
- */
-export function evaluateLedgerReadMarkerGate(
-  input: LedgerReadMarkerGateInput,
-  agentId: string,
-): ReadMarkerDecision {
-  if (input.route !== "agent" || input.selectedAgentId !== agentId) {
-    return { mayAdvance: false, reason: "not_selected" };
-  }
-  if (input.conversationVisible === false) return { mayAdvance: false, reason: "conversation_covered" };
-  if (!input.documentVisible) return { mayAdvance: false, reason: "document_hidden" };
-  if (!canMarkConversationRead(input, agentId)) {
-    return { mayAdvance: false, reason: "session_not_ready" };
-  }
-  if (!input.discoveryFresh) return { mayAdvance: false, reason: "discovery_stale" };
-  if (!input.readiness) return { mayAdvance: false, reason: "ledger_unavailable" };
-  const head = input.readiness.observedHeadSeq;
-  if (head == null || head <= 0) return { mayAdvance: false, reason: "no_observed_head" };
-  if (input.readiness.ingestedThroughSeq < head) {
-    return { mayAdvance: false, reason: "not_caught_up" };
-  }
-  if (input.readiness.readyThroughSeq < head) {
-    return { mayAdvance: false, reason: "blocked_by_invalidation" };
-  }
-  // Mirrors the restart-scan rule: blockers at or below the readiness
-  // cursor are satisfied by definition, so only unresolved demand above it
-  // can block the marker. Already-read history below the boundary cannot
-  // affect unread exactness.
-  const blockedAt = input.readiness.blockedByEventSeq;
-  if (blockedAt != null && blockedAt > input.readiness.readyThroughSeq) {
-    return { mayAdvance: false, reason: "blocked_by_invalidation" };
-  }
-  return { mayAdvance: true, candidateSeq: head };
-}
-
-/**
- * Render unread only from the durable ledger view. Roster activity remains
- * useful for ordering but is not a correctness fallback for unread.
- */
-export function unreadBadgeView(
-  _legacyCount: number | undefined,
-  ledger: LedgerUnreadView | undefined,
-): LedgerUnreadView | null {
-  return ledger ?? null;
-}
-
 export function touchRosterActivity(
   current: Record<string, AgentRosterActivity>,
   agentId: string,
@@ -226,28 +76,6 @@ export function touchRosterActivity(
   };
 }
 
-export function markAgentDeliveriesRead(
-  current: Record<string, AgentRosterActivity>,
-  agentId: string,
-  deliverySeq: number,
-): Record<string, AgentRosterActivity> {
-  const existing = current[agentId];
-  const lastReadDeliverySeq = Math.max(
-    deliverySeq,
-    existing?.lastUnreadDeliverySeq ?? 0,
-    existing?.lastReadDeliverySeq ?? 0,
-  );
-  if (!existing?.unreadCount && existing?.lastReadDeliverySeq === lastReadDeliverySeq) return current;
-  return {
-    ...current,
-    [agentId]: {
-      ...existing,
-      unreadCount: 0,
-      lastReadDeliverySeq,
-    },
-  };
-}
-
 export function touchRosterActivityFromEvent(
   current: Record<string, AgentRosterActivity>,
   agentId: string,
@@ -262,73 +90,15 @@ export function touchRosterActivityFromEvent(
   if (event.type === "message_enqueued" && messageOrigin(event.payload) === "operator") {
     next = touchRosterActivity(next, agentId, "operator", eventTimestamp(event));
   }
-  if (event.type === "brief_created") {
-    next = incrementUnreadFromEvent(next, agentId, event);
-  }
   return next;
 }
 
-export function latestBriefDeliverySeq(session: AgentSessionState): number | undefined {
-  for (let index = session.eventSeqs.length - 1; index >= 0; index -= 1) {
-    const seq = session.eventSeqs[index];
-    if (session.eventsBySeq[seq]?.type === "brief_created") return seq;
-  }
-  return undefined;
-}
-
-export function canMarkConversationRead({
-  route,
-  selectedAgentId,
-  documentVisible,
-  conversationReady,
-}: ConversationReadContext, agentId: string): boolean {
-  return Boolean(
-    route === "agent" &&
-    selectedAgentId === agentId &&
-    documentVisible &&
-    conversationReady
-  );
-}
-
 function coerceRosterActivity(value: unknown): AgentRosterActivity | undefined {
-  const parsed = value as Partial<AgentRosterActivity> & {
-    lastUnreadSeq?: number;
-    lastReadSeq?: number;
-  };
+  const parsed = value as Partial<AgentRosterActivity>;
   const activity: AgentRosterActivity = {};
   if (typeof parsed.operatorAt === "string") activity.operatorAt = parsed.operatorAt;
   if (typeof parsed.briefAt === "string") activity.briefAt = parsed.briefAt;
-  if (typeof parsed.unreadCount === "number" && Number.isFinite(parsed.unreadCount) && parsed.unreadCount > 0) {
-    activity.unreadCount = Math.floor(parsed.unreadCount);
-  }
-  const lastUnreadDeliverySeq = parsed.lastUnreadDeliverySeq ?? parsed.lastUnreadSeq;
-  if (typeof lastUnreadDeliverySeq === "number" && Number.isFinite(lastUnreadDeliverySeq)) {
-    activity.lastUnreadDeliverySeq = Math.floor(lastUnreadDeliverySeq);
-  }
-  const lastReadDeliverySeq = parsed.lastReadDeliverySeq ?? parsed.lastReadSeq;
-  if (typeof lastReadDeliverySeq === "number" && Number.isFinite(lastReadDeliverySeq)) {
-    activity.lastReadDeliverySeq = Math.floor(lastReadDeliverySeq);
-  }
   return Object.keys(activity).length ? activity : undefined;
-}
-
-function incrementUnreadFromEvent(
-  current: Record<string, AgentRosterActivity>,
-  agentId: string,
-  event: StreamEventEnvelopeDto,
-): Record<string, AgentRosterActivity> {
-  const existing = current[agentId];
-  const seq = event.event_seq;
-  if (seq != null && existing?.lastReadDeliverySeq != null && seq <= existing.lastReadDeliverySeq) return current;
-  if (seq != null && existing?.lastUnreadDeliverySeq != null && seq <= existing.lastUnreadDeliverySeq) return current;
-  return {
-    ...current,
-    [agentId]: {
-      ...existing,
-      unreadCount: (existing?.unreadCount ?? 0) + 1,
-      lastUnreadDeliverySeq: seq ?? existing?.lastUnreadDeliverySeq,
-    },
-  };
 }
 
 function eventTimestamp(event: StreamEventEnvelopeDto): string | undefined {

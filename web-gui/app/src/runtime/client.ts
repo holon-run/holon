@@ -236,6 +236,9 @@ type AgentDetailDto = components["schemas"]["AgentDetail"];
 type SlimWorkItemDto = components["schemas"]["SlimWorkItemDto"];
 type WorkItemDto = components["schemas"]["WorkItemRecord"];
 type WorkItemTransportDto = SlimWorkItemDto | WorkItemDto;
+export type BriefReadStateDto = components["schemas"]["BriefReadState"];
+type BriefReadStatesDto = components["schemas"]["BriefReadStates"];
+type MarkBriefReadResultDto = components["schemas"]["MarkBriefReadResult"];
 
 type BriefRecordDto = RuntimeBriefRecord;
 type AgentRosterSnapshotGeneratedDto = components["schemas"]["AgentRosterSnapshot"];
@@ -923,6 +926,30 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         const message = error instanceof Error ? error.message : String(error);
         return buildDisconnectedBootstrap(baseUrl, message, connectionMode, hasToken, isAuthRequiredError(error));
       }
+    },
+    async getBriefReadStates(): Promise<BriefReadStatesDto> {
+      if (!baseUrl) {
+        throw new Error("Brief read state requires a runtime connection.");
+      }
+      return getJson<BriefReadStatesDto>(
+        fetchImpl,
+        baseUrl,
+        "/agents/brief-read-states",
+        { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
+      );
+    },
+    async markBriefRead(agentId: string, readThroughEventSeq: number): Promise<MarkBriefReadResultDto> {
+      if (!baseUrl) {
+        throw new Error("Brief read state requires a runtime connection.");
+      }
+      return postJson<MarkBriefReadResultDto>(
+        fetchImpl,
+        baseUrl,
+        `/agents/${encodeURIComponent(agentId)}/brief-read-cursor`,
+        { read_through_event_seq: readThroughEventSeq },
+        requestHeaders,
+        { timeoutMs: USER_ACTION_TIMEOUT_MS },
+      );
     },
     async getCurrentUser(): Promise<CurrentUser | null> {
       if (!baseUrl) {

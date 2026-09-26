@@ -2,11 +2,10 @@
  * Legacy-baseline migration policy for the event ledger (W1).
  *
  * The legacy `holon-webgui-cache` database is NOT imported:
- * - its event/session cache, cursors, and read markers are not authoritative
+ * - its event/session cache and cursors are not authoritative
  *   for the new correctness keys and must not seed the new database;
  * - the authoritative baseline comes only from server roster/projection
- *   snapshots, event catch-up, and read markers produced by this browser in
- *   the new database;
+ *   snapshots and event catch-up;
  * - the legacy database stays untouched until the W6 soak and Web rollback
  *   window complete; only then is it deleted (cleanup failures are
  *   diagnostics only and must never pollute the new database).
@@ -17,7 +16,6 @@ import type { EventLedger } from "./ledger";
 export const LEGACY_DB_NAME = "holon-webgui-cache";
 
 export const LEGACY_BASELINE_META_KEY = "legacy_baseline_v1";
-export const UNREAD_MIGRATION_NOTICE_META_KEY = "unread_state_migration_notice_v1";
 
 export interface LegacyBaselineMeta {
   metaKey: typeof LEGACY_BASELINE_META_KEY;
@@ -25,11 +23,6 @@ export interface LegacyBaselineMeta {
   legacyDbName: typeof LEGACY_DB_NAME;
   legacyImported: false;
   decidedAt: number;
-}
-
-export interface UnreadMigrationNoticeMeta {
-  metaKey: typeof UNREAD_MIGRATION_NOTICE_META_KEY;
-  shownAt: number;
 }
 
 /**
@@ -54,24 +47,6 @@ export async function initializeFreshBaseline(
   };
   await ledger.putMigrationMeta(LEGACY_BASELINE_META_KEY, meta);
   return meta;
-}
-
-/** One-time local unread-state migration notice state (display-only). */
-export async function hasUnreadMigrationNoticeBeenShown(
-  ledger: EventLedger,
-): Promise<boolean> {
-  const meta = await ledger.getMigrationMeta<UnreadMigrationNoticeMeta>(
-    UNREAD_MIGRATION_NOTICE_META_KEY,
-  );
-  return meta?.metaKey === UNREAD_MIGRATION_NOTICE_META_KEY;
-}
-
-export async function markUnreadMigrationNoticeShown(ledger: EventLedger): Promise<void> {
-  const meta: UnreadMigrationNoticeMeta = {
-    metaKey: UNREAD_MIGRATION_NOTICE_META_KEY,
-    shownAt: Date.now(),
-  };
-  await ledger.putMigrationMeta(UNREAD_MIGRATION_NOTICE_META_KEY, meta);
 }
 
 /**

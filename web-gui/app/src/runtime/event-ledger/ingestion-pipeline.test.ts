@@ -301,10 +301,6 @@ describe("ledger ingestion pipeline", () => {
     expect(status.blockedByEventSeq).toBe(2);
     expect(status.blockedReason).toBe("pending_hydration");
 
-    const gate = pipeline.readinessGate(scope);
-    expect(gate.readyThroughSeq).toBe(1);
-    expect(gate.blockedByEventSeq).toBe(2);
-
     const ledger = await openLedgerHandle();
     const jobs = await ledger.getPendingHydrationJobs(scope);
     expect(jobs.map((job) => job.jobId)).toEqual(["brief:brief-1"]);
@@ -628,9 +624,6 @@ describe("ledger ingestion pipeline", () => {
     );
     expect(pipeline.status(scope)!.projectionReadyThroughSeq).toBe(2);
     expect(repairFetch.mock.calls.length).toBeGreaterThanOrEqual(1);
-
-    const gate = pipeline.readinessGate(scope);
-    expect(gate.blockedByEventSeq).toBeUndefined();
 
     const ledger = await openLedgerHandle();
     expect(await ledger.getPendingHydrationJobs(scope)).toEqual([]);

@@ -152,10 +152,6 @@ describe("agent recovery coordinator", () => {
     const session = await ledger.getAgentSession(makeScope());
     expect(session?.ingestedThroughSeq).toBe(8);
     expect(session?.projectionReadyThroughSeq).toBe(8);
-    const readState = await ledger.getReadState(makeScope());
-    expect(readState?.unreadBaselineSeq).toBe(5);
-    expect(readState?.certainty).toBe("exact");
-    expect(readState?.readThroughEventSeq).toBeUndefined();
     const brief = await ledger.getCanonicalRecord(makeScope(), "brief", "brief-5");
     expect(brief?.revision).toBe(5);
     const gone = await ledger.getCanonicalRecord(makeScope(), "message", "msg-gone");
@@ -240,7 +236,6 @@ describe("agent recovery coordinator", () => {
     expect(source.requests).toEqual([5, 7]);
     // A plain catch-up never installs a read baseline.
     const ledger = await openLedgerHandle();
-    expect(await ledger.getReadState(scope)).toBeUndefined();
     ledger.close();
   });
 
@@ -277,13 +272,6 @@ describe("agent recovery coordinator", () => {
     await pipeline.open();
     const scope = makeScope();
     await pipeline.ingest(scope, [envelope(1), envelope(2), envelope(3), envelope(4), envelope(5)]);
-    const ledger = await openLedgerHandle();
-    await ledger
-      .beginWrite()
-      .putReadState(scope, { unreadBaselineSeq: 3, readThroughEventSeq: 4 })
-      .commit();
-    ledger.close();
-
     let snapshotFetches = 0;
     const source = pageSource({
       95: page([envelope(96), envelope(97), envelope(98), envelope(99), envelope(100)]),
@@ -311,11 +299,6 @@ describe("agent recovery coordinator", () => {
     expect((await verify.getRawEvents(scope)).map((event) => event.eventSeq)).toEqual([
       96, 97, 98, 99, 100,
     ]);
-    const readState = await verify.getReadState(scope);
-    expect(readState?.readThroughEventSeq).toBe(4);
-    expect(readState?.unreadBaselineSeq).toBe(3);
-    expect(readState?.historyTruncatedBeforeSeq).toBe(96);
-    expect(readState?.certainty).toBe("truncated");
     verify.close();
   });
 
@@ -325,7 +308,6 @@ describe("agent recovery coordinator", () => {
     const scope = makeScope();
     await pipeline.ingest(scope, [envelope(1), envelope(2)]);
     const ledger = await openLedgerHandle();
-    await ledger.beginWrite().putReadState(scope, { readThroughEventSeq: 2 }).commit();
     ledger.close();
 
     let snapshotFetches = 0;
@@ -350,7 +332,6 @@ describe("agent recovery coordinator", () => {
     expect(source.requests).toEqual([2, 5]);
     const verify = await openLedgerHandle();
     expect((await verify.getAgentSession(scope))?.ingestedThroughSeq).toBe(6);
-    expect((await verify.getReadState(scope))?.certainty).toBe("truncated");
     verify.close();
   });
 
@@ -443,13 +424,6 @@ describe("agent recovery coordinator", () => {
     await pipeline.open();
     const scope = makeScope();
     await pipeline.ingest(scope, [envelope(1), envelope(2), envelope(3), envelope(4), envelope(5)]);
-    const ledger = await openLedgerHandle();
-    await ledger
-      .beginWrite()
-      .putReadState(scope, { unreadBaselineSeq: 3, readThroughEventSeq: 4 })
-      .commit();
-    ledger.close();
-
     const source = pageSource({ 8: page([]) });
     const coordinator = makeCoordinator(
       pipeline,
@@ -462,13 +436,6 @@ describe("agent recovery coordinator", () => {
     expect(update.resetReason).toBe("retained_prefix_gap");
 
     const verify = await openLedgerHandle();
-    const readState = await verify.getReadState(scope);
-    // Marker survives; truncation is recorded; certainty drops to truncated
-    // because the effective boundary (4) is below the floor - 1 (6).
-    expect(readState?.readThroughEventSeq).toBe(4);
-    expect(readState?.unreadBaselineSeq).toBe(3);
-    expect(readState?.historyTruncatedBeforeSeq).toBe(7);
-    expect(readState?.certainty).toBe("truncated");
     expect(await verify.getRawEvents(scope)).toEqual([]);
     expect((await verify.getAgentSession(scope))?.ingestedThroughSeq).toBe(8);
     verify.close();
@@ -479,13 +446,6 @@ describe("agent recovery coordinator", () => {
     await pipeline.open();
     const oldScope = makeScope();
     await pipeline.ingest(oldScope, [envelope(1), envelope(2)]);
-    const ledger = await openLedgerHandle();
-    await ledger
-      .beginWrite()
-      .putReadState(oldScope, { unreadBaselineSeq: 1, readThroughEventSeq: 2 })
-      .commit();
-    ledger.close();
-
     // Catch-up pages reveal a rotated epoch before any data is applied.
     const source = pageSource({
       2: page([], { eventLogEpoch: "epoch-2", eventHeadSeq: 6 }),
@@ -503,7 +463,6 @@ describe("agent recovery coordinator", () => {
 
     const verify = await openLedgerHandle();
     expect(await verify.getAgentSession(oldScope)).toBeUndefined();
-    expect(await verify.getReadState(oldScope)).toBeUndefined();
     expect(await verify.getRawEvents(oldScope)).toEqual([]);
     expect(
       await verify.getRuntimeScope({
@@ -514,10 +473,6 @@ describe("agent recovery coordinator", () => {
       }),
     ).toBeUndefined();
     const newScope = makeScope({ eventLogEpoch: "epoch-2" });
-    const readState = await verify.getReadState(newScope);
-    expect(readState?.unreadBaselineSeq).toBe(6);
-    expect(readState?.readThroughEventSeq).toBeUndefined();
-    expect(readState?.certainty).toBe("exact");
     expect((await verify.getAgentSession(newScope))?.ingestedThroughSeq).toBe(6);
     verify.close();
   });
@@ -528,7 +483,6 @@ describe("agent recovery coordinator", () => {
     const oldScope = makeScope();
     await pipeline.ingest(oldScope, [envelope(1)]);
     const ledger = await openLedgerHandle();
-    await ledger.beginWrite().putReadState(oldScope, { unreadBaselineSeq: 1 }).commit();
     ledger.close();
 
     const coordinator = makeCoordinator(
@@ -548,26 +502,17 @@ describe("agent recovery coordinator", () => {
     const verify = await openLedgerHandle();
     // Old scope's accessible cache is gone before new data is visible.
     expect(await verify.getAgentSession(oldScope)).toBeUndefined();
-    expect(await verify.getReadState(oldScope)).toBeUndefined();
     expect(await verify.getRawEvents(oldScope)).toEqual([]);
     const newScope = makeScope({ visibilityScopeId: "vis_other" });
     expect((await verify.getAgentSession(newScope))?.ingestedThroughSeq).toBe(4);
-    expect((await verify.getReadState(newScope))?.unreadBaselineSeq).toBe(4);
     verify.close();
   });
 
-  it("does not preserve read state when a budget reset discovers a new scope", async () => {
+  it("does not preserve old scope data when a budget reset discovers a new scope", async () => {
     const pipeline = new LedgerIngestionPipeline({ fetchers: emptyFetchers() });
     await pipeline.open();
     const oldScope = makeScope();
     await pipeline.ingest(oldScope, [envelope(1), envelope(2)]);
-    const ledger = await openLedgerHandle();
-    await ledger
-      .beginWrite()
-      .putReadState(oldScope, { unreadBaselineSeq: 1, readThroughEventSeq: 2 })
-      .commit();
-    ledger.close();
-
     const coordinator = makeCoordinator(
       pipeline,
       async () =>
@@ -585,13 +530,7 @@ describe("agent recovery coordinator", () => {
     expect(update.resetReason).toBe("visibility_scope_change");
 
     const verify = await openLedgerHandle();
-    expect(await verify.getReadState(oldScope)).toBeUndefined();
     const newScope = makeScope({ visibilityScopeId: "vis_other" });
-    const readState = await verify.getReadState(newScope);
-    expect(readState?.unreadBaselineSeq).toBe(100);
-    expect(readState?.readThroughEventSeq).toBeUndefined();
-    expect(readState?.historyTruncatedBeforeSeq).toBeUndefined();
-    expect(readState?.certainty).toBe("exact");
     verify.close();
   });
 
@@ -627,10 +566,6 @@ describe("agent recovery coordinator", () => {
     const verify = await openLedgerHandle();
     // No marker existed before the reset, so the rebuilt generation gets a
     // fresh exact baseline while the truncation boundary stays recorded.
-    const readState = await verify.getReadState(scope);
-    expect(readState?.historyTruncatedBeforeSeq).toBe(6);
-    expect(readState?.certainty).toBe("exact");
-    expect(readState?.unreadBaselineSeq).toBe(9);
     expect((await verify.getAgentSession(scope))?.ingestedThroughSeq).toBe(9);
     verify.close();
   });

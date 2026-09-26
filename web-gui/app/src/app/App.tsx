@@ -51,7 +51,6 @@ import {
   subscribeRuntimeTrace,
 } from "../runtime/runtime-trace";
 import { selectSelectedAgent } from "../runtime/runtime-selectors";
-import { unreadBadgeView, type LedgerUnreadView } from "../runtime/read-state";
 import {
   clearStoredRuntimeConnectionToken,
   skillDetailCacheKey,
@@ -117,7 +116,6 @@ export function App() {
   const setRoute = useRuntimeStore((state) => state.setRoute);
   const openAgent = useRuntimeStore((state) => state.openAgent);
   const markAgentConversationRead = useRuntimeStore((state) => state.markAgentConversationRead);
-  const acknowledgeAgentTruncation = useRuntimeStore((state) => state.acknowledgeAgentTruncation);
   const openSkill = useRuntimeStore((state) => state.openSkill);
   const openTemplate = useRuntimeStore((state) => state.openTemplate);
   const disableDeveloperDiagnosticsUi = useRuntimeStore((state) => state.disableDeveloperDiagnosticsUi);
@@ -138,14 +136,11 @@ export function App() {
   const toggleNavCollapsed = useRuntimeStore((state) => state.toggleNavCollapsed);
   const selectedAgent = useRuntimeStore(selectSelectedAgent);
   const rosterActivityByAgentId = useRuntimeStore((state) => state.rosterActivityByAgentId);
-  const ledgerUnreadByAgentId = useRuntimeStore((state) => state.ledgerUnreadByAgentId);
-  const ledgerReadinessRevisionByAgentId = useRuntimeStore(
-    (state) => state.ledgerReadinessRevisionByAgentId,
-  );
+  const briefReadStateByAgentId = useRuntimeStore((state) => state.briefReadStateByAgentId);
   const discoveryFreshness = useRuntimeStore((state) => state.discovery.freshness);
   const activeAgentId = route === "agent" ? selectedAgent?.id ?? selectedAgentId : undefined;
-  const activeAgentLedgerUnread = activeAgentId
-    ? ledgerUnreadByAgentId[activeAgentId]
+  const activeAgentBriefReadState = activeAgentId
+    ? briefReadStateByAgentId[activeAgentId]
     : undefined;
   const sidePanelAgentId = selectedAgent?.id ?? selectedAgentId;
   const selectedAgentSession = useRuntimeStore((state) =>
@@ -155,9 +150,8 @@ export function App() {
     if (activeAgentId && !panelLayout.full) markAgentConversationRead(activeAgentId);
   }, [
     activeAgentId,
-    activeAgentLedgerUnread,
+    activeAgentBriefReadState,
     discoveryFreshness,
-    activeAgentId ? ledgerReadinessRevisionByAgentId[activeAgentId] : undefined,
     markAgentConversationRead,
     panelLayout.full,
     selectedAgentSession?.briefHydrationById,
@@ -622,10 +616,9 @@ export function App() {
                 const status = deriveAgentDisplayStatus(agent, t);
                 const workSummary = agent.currentWork?.objective;
                 const secondaryText = workSummary || (agent.name && agent.name !== agent.id ? agent.id : undefined);
-                const unreadView = unreadBadgeView(
-                  rosterActivityByAgentId[agent.id]?.unreadCount,
-                  ledgerUnreadByAgentId[agent.id],
-                );
+                const unreadView = briefReadStateByAgentId[agent.id]
+                  ? { mode: "exact" as const, count: briefReadStateByAgentId[agent.id].unread_count }
+                  : null;
 
                 return (
                   <div className="agent-list-entry" key={agent.id}>
@@ -647,17 +640,13 @@ export function App() {
                         ) : null}
                       </span>
                       <span className="agent-row-indicators">
-                        {unreadView?.mode === "stale_sync_error" ? (
-                          <span className="agent-row-unread is-stale" aria-label={t("app.unreadSyncError")} title={t("app.unreadSyncError")}>
-                            !
-                          </span>
-                        ) : unreadView && unreadView.count > 0 ? (
+                        {unreadView && unreadView.count > 0 ? (
                           <span
-                            className={`agent-row-unread ${unreadView.mode === "truncated" ? "is-truncated" : ""}`}
-                            aria-label={unreadTitle(unreadView, t)}
-                            title={unreadTitle(unreadView, t)}
+                            className="agent-row-unread"
+                            aria-label={unreadTitle(unreadView.count, t)}
+                            title={unreadTitle(unreadView.count, t)}
                           >
-                            {formatUnreadBadge(unreadView.count, unreadView.mode === "truncated")}
+                            {formatUnreadBadge(unreadView.count, false)}
                           </span>
                         ) : null}
                         <span className={`agent-row-status-dot ${status.tone}`} aria-label={status.title} title={status.title}>
@@ -816,10 +805,7 @@ export function App() {
             modelCatalogError={selectedAgentSession?.modelError ?? modelCatalogError}
             syncError={selectedAgentSession?.syncError}
             syncRetryAttempt={selectedAgentSession?.syncRetryAttempt}
-            historyTruncated={ledgerUnreadByAgentId[activeAgent.id]?.mode === "truncated"}
-            onAcknowledgeTruncation={() => {
-              void acknowledgeAgentTruncation(activeAgent.id);
-            }}
+            historyTruncated={false}
             onRefreshModels={refreshModelCatalog}
             onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, reasoningEffort)}
             onClearModel={() => clearAgentModel(activeAgent.id)}
@@ -1235,12 +1221,10 @@ function MissingAgentPage({ agentId, loading }: { agentId: string; loading: bool
 }
 
 function unreadTitle(
-  view: LedgerUnreadView,
+  count: number,
   t: (key: string, options?: { count?: number }) => string,
 ): string {
-  if (view.mode === "truncated") return t("app.unreadTruncated", { count: view.count });
-  if (view.mode === "stale_sync_error") return t("app.unreadSyncError");
-  return t("app.unreadUpdates", { count: view.count });
+  return t("app.unreadUpdates", { count });
 }
 export function formatUnreadBadge(count: number, truncated: boolean): string {
   if (count > 99) return "99+";

@@ -2148,8 +2148,7 @@ export function SettingsPage({
 }
 
 function ObserverSyncDiagnosticsCard() {
-  useRuntimeStore((state) => state.ledgerReadinessRevisionByAgentId);
-  useRuntimeStore((state) => state.ledgerUnreadByAgentId);
+  useRuntimeStore((state) => state.briefReadStateByAgentId);
   const diagnostics = observerSyncDiagnostics();
   const { t } = useTranslation();
 
