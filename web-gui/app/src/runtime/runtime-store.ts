@@ -12,6 +12,7 @@ import {
   isTimeoutAbortError,
   projectRosterAgents,
   RuntimeHttpError,
+  type BriefReadStateDto,
   type AgentEventStreamSubscription,
   type OperatorPromptAttachment,
   type AgentRosterSnapshotDto,
@@ -38,19 +39,15 @@ import {
   runWithConcurrencyLimit,
   streamEventFromBackfill,
 } from "./global-sync-coordinator";
+import { ReadStateBus } from "./event-ledger/read-state-bus";
 import {
-  cachedReadState,
-  evaluateLedgerReadMarkerGate,
-  mergeCachedReadState,
-  mergeCachedReadStates,
   readStoredRosterActivity,
   touchRosterActivity,
   touchRosterActivityFromEvent,
   writeStoredRosterActivity,
+  evaluateLedgerReadMarkerGate,
   type AgentRosterActivity,
-  type LedgerUnreadView,
 } from "./read-state";
-import { ReadStateBus, shouldAutoRestoreExactCertainty } from "./event-ledger";
 import {
   CACHE_SCHEMA_VERSION,
   cacheGetModelCatalog,
@@ -139,7 +136,6 @@ export {
   sessionForEventLogEpoch,
 } from "./conversation-store";
 export {
-  mergeCachedReadState,
   readStoredRosterActivity,
   touchRosterActivityFromEvent,
 } from "./read-state";
@@ -375,10 +371,10 @@ export interface RuntimeStoreState {
   searchResultContentLoadingBySourceRef: Record<string, boolean>;
   searchResultContentErrorBySourceRef: Record<string, string | undefined>;
   rosterActivityByAgentId: Record<string, AgentRosterActivity>;
-  /** Ledger-backed unread views (W5); absent entries use the legacy path. */
-  ledgerUnreadByAgentId: Record<string, LedgerUnreadView>;
-  /** Monotonic signal for durable ledger readiness transitions. */
-  ledgerReadinessRevisionByAgentId: Record<string, number>;
+  /** Server-authoritative unread state keyed by public agent id. */
+  briefReadStateByAgentId: Record<string, BriefReadStateDto>;
+  briefReadStatesLoading: boolean;
+  briefReadStatesError?: string;
   sessionsByAgentId: Record<string, AgentSessionState>;
   skillInstallJobs: SkillInstallJob[];
   resumeRevision: number;
@@ -386,8 +382,7 @@ export interface RuntimeStoreState {
   setRoute: (route: RouteKey) => void;
   openAgent: (agentId: string) => void;
   markAgentConversationRead: (agentId: string) => void;
-  refreshLedgerUnread: (agentId: string) => Promise<void>;
-  acknowledgeAgentTruncation: (agentId: string) => Promise<void>;
+  refreshBriefReadStates: () => Promise<void>;
   openSkill: (skillId: string, agentId?: string) => void;
   openTemplate: (catalogId: string) => void;
   disableDeveloperDiagnosticsUi: () => void;
@@ -940,11 +935,11 @@ async function applyRosterSnapshotToStore(
     if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
       writeStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig), rosterActivityByAgentId);
     }
-    const ledgerUnreadByAgentId = dropIds.size
+    const briefReadStateByAgentId = dropIds.size
       ? Object.fromEntries(
-          Object.entries(state.ledgerUnreadByAgentId).filter(([id]) => !dropIds.has(id)),
+          Object.entries(state.briefReadStateByAgentId).filter(([id]) => !dropIds.has(id)),
         )
-      : state.ledgerUnreadByAgentId;
+      : state.briefReadStateByAgentId;
     const timelineEventsByAgentId = dropIds.size
       ? Object.fromEntries(
           Object.entries(state.timelineEventsByAgentId).filter(([id]) => !dropIds.has(id)),
@@ -968,7 +963,7 @@ async function applyRosterSnapshotToStore(
       },
       sessionsByAgentId,
       rosterActivityByAgentId,
-      ledgerUnreadByAgentId,
+      briefReadStateByAgentId,
       timelineEventsByAgentId,
     };
   });
@@ -1067,122 +1062,73 @@ export function observerSyncDiagnostics(): ObserverSyncDiagnostics {
         pendingHydrationJobs: status?.pendingHydrationJobs ?? 0,
         failedHydrationJobs: status?.failedHydrationJobs ?? 0,
         resetReason: agentSessionRepository.sessionLedgerResetReason(agent.id),
-        readCertainty: state.ledgerUnreadByAgentId[agent.id]?.mode ?? "unavailable",
+        readCertainty: state.briefReadStateByAgentId[agent.id] ? "exact" : "unavailable",
       };
     }),
   };
 }
 
-/**
- * Cross-tab read-state invalidation (W5). The IndexedDB record is the
- * source of truth; the BroadcastChannel only nudges sibling tabs of the
- * same browser profile to re-read it.
- */
+let briefReadStatesRefreshInFlight: Promise<void> | undefined;
+let briefReadStatesRefreshGeneration: number | undefined;
+const pendingReadMarkerAgentIds = new Set<string>();
+const readMarkerAdvanceInFlight = new Set<string>();
+const readMarkerAdvanceQueued = new Set<string>();
 let readStateBus: ReadStateBus | null = null;
 
 function ensureReadStateBus(): ReadStateBus {
   if (!readStateBus) {
     readStateBus = new ReadStateBus((message) => {
       if (message.remoteKey !== currentRemoteKey(runtimeConnectionConfig)) return;
-      void refreshLedgerUnreadInView(message.agentId);
+      void refreshBriefReadStatesInView().then(() => refreshBriefReadStatesInView());
     });
   }
   return readStateBus;
 }
 
-function publishReadStateInvalidation(agentId: string): void {
+function publishReadStateRevalidation(agentId: string): void {
   ensureReadStateBus().publish({
-    kind: "read_state_changed",
+    kind: "server_revalidation_required",
     remoteKey: currentRemoteKey(runtimeConnectionConfig),
     agentId,
   });
 }
 
-const unreadRefreshInFlight = new Set<string>();
-const unreadRefreshQueued = new Set<string>();
-const pendingReadMarkerAgentIds = new Set<string>();
-const readMarkerAdvanceInFlight = new Set<string>();
-const readMarkerAdvanceQueued = new Set<string>();
-
-/**
- * Recompute one agent's ledger-backed unread view from durable state.
- * Coalesces concurrent refreshes so status bursts produce one read per
- * agent, with one queued re-run when state changed mid-flight.
- */
-async function refreshLedgerUnreadInView(agentId: string): Promise<void> {
-  if (unreadRefreshInFlight.has(agentId)) {
-    unreadRefreshQueued.add(agentId);
-    return;
-  }
-  unreadRefreshInFlight.add(agentId);
+async function refreshBriefReadStatesInView(): Promise<void> {
+  // The initial local connection uses the module-level runtime config and
+  // does not pass through setRuntimeConnection. Ensure dashboard-only tabs
+  // subscribe before another tab publishes a read-state revalidation hint.
+  ensureReadStateBus();
   const generation = clientGeneration;
-  try {
-    const snapshot = await agentSessionRepository
-      .unreadSnapshot(agentId)
-      .catch(() => null);
-    if (!isCurrentClientGeneration(generation)) return;
-    const state = useRuntimeStore.getState();
-    const existing = state.ledgerUnreadByAgentId[agentId];
-    if (!snapshot) {
-      if (existing) {
-        useRuntimeStore.setState((current) => {
-          const next = { ...current.ledgerUnreadByAgentId };
-          delete next[agentId];
-          return { ledgerUnreadByAgentId: next };
-        });
-      }
-      return;
-    }
-    const status = agentSessionRepository.sessionLedgerStatus(agentId);
-    const session = state.sessionsByAgentId[agentId];
-    const stale =
-      status?.state === "sync_error" ||
-      session?.syncStatus === "stale" ||
-      session?.syncStatus === "error";
-    const view: LedgerUnreadView = {
-      mode: stale
-        ? "stale_sync_error"
-        : snapshot.certainty === "truncated"
-          ? "truncated"
-          : "exact",
-      count: snapshot.count,
-    };
-    if (existing?.mode === view.mode && existing.count === view.count) return;
-    useRuntimeStore.setState((current) => ({
-      ledgerUnreadByAgentId: { ...current.ledgerUnreadByAgentId, [agentId]: view },
-    }));
-  } finally {
-    unreadRefreshInFlight.delete(agentId);
-    if (unreadRefreshQueued.delete(agentId)) {
-      void refreshLedgerUnreadInView(agentId);
-    }
+  if (briefReadStatesRefreshInFlight && briefReadStatesRefreshGeneration === generation) {
+    return briefReadStatesRefreshInFlight;
   }
-}
-
-export function ledgerReadMarkerDecision(agentId: string) {
-  const state = useRuntimeStore.getState();
-  const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
-  const scopeKey = resolveConversationScopeKey(
-    currentRemoteKey(runtimeConnectionConfig),
-    agentId,
-    state.currentUser,
-  );
-  const scope = conversationScopeSnapshot(scopeKey);
-  const covered = state.rightPanelOpen && (state.rightPanelMode === "expanded"
-    || (typeof window !== "undefined" && panelLayout(window.innerWidth, true, false, state.navCollapsed, PANEL_DEFAULT).full));
-  return evaluateLedgerReadMarkerGate(
-    {
-      route: state.route,
-      selectedAgentId: state.selectedAgentId,
-      documentVisible:
-        typeof document !== "undefined" && document.visibilityState === "visible",
-      conversationReady: scope.status.kind === "ready" && scope.view?.scope != null && scope.view.reset_reason === null,
-      conversationVisible: !covered,
-      discoveryFresh: state.discovery.freshness === "fresh",
-      readiness,
-    },
-    agentId,
-  );
+  let request!: Promise<void>;
+  request = (async () => {
+    useRuntimeStore.setState({ briefReadStatesLoading: true, briefReadStatesError: undefined });
+    try {
+      const states = await runtimeClient.getBriefReadStates();
+      if (!isCurrentClientGeneration(generation)) return;
+      useRuntimeStore.setState({
+        briefReadStateByAgentId: Object.fromEntries(states.map((state) => [state.agent_id, state])),
+        briefReadStatesLoading: false,
+        briefReadStatesError: undefined,
+      });
+    } catch (error) {
+      if (!isCurrentClientGeneration(generation)) return;
+      useRuntimeStore.setState({
+        briefReadStatesLoading: false,
+        briefReadStatesError: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      if (briefReadStatesRefreshInFlight === request) {
+        briefReadStatesRefreshInFlight = undefined;
+        briefReadStatesRefreshGeneration = undefined;
+      }
+    }
+  })();
+  briefReadStatesRefreshInFlight = request;
+  briefReadStatesRefreshGeneration = generation;
+  return request;
 }
 
 export async function retryPendingReadMarker(agentId: string): Promise<void> {
@@ -1196,7 +1142,39 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
     trigger: "conversation.read",
   });
   const span = startRuntimeSpan(trace, "read_marker.advance");
-  const decision = ledgerReadMarkerDecision(agentId);
+  const generation = clientGeneration;
+  const state = useRuntimeStore.getState();
+  const candidateSeq = state.briefReadStateByAgentId[agentId]?.event_head_seq;
+  if (candidateSeq == null) {
+    span.end("skipped", { reason: "candidate_unavailable" });
+    return;
+  }
+  const scopeKey = resolveConversationScopeKey(
+    currentRemoteKey(runtimeConnectionConfig),
+    agentId,
+    state.currentUser,
+  );
+  const scope = conversationScopeSnapshot(scopeKey);
+  const covered = state.rightPanelOpen && (
+    state.rightPanelMode === "expanded" ||
+    (typeof window !== "undefined" &&
+      panelLayout(window.innerWidth, true, false, state.navCollapsed, PANEL_DEFAULT).full)
+  );
+  const decision = evaluateLedgerReadMarkerGate(
+    {
+      route: state.route,
+      selectedAgentId: state.selectedAgentId,
+      documentVisible: typeof document !== "undefined" && document.visibilityState === "visible",
+      conversationReady:
+        scope.status.kind === "ready" &&
+        scope.view?.scope != null &&
+        scope.view.reset_reason === null,
+      conversationVisible: !covered,
+      discoveryFresh: state.discovery.freshness === "fresh",
+      readiness: agentSessionRepository.sessionLedgerReadiness(agentId),
+    },
+    agentId,
+  );
   if (!decision.mayAdvance || decision.candidateSeq == null) {
     if (decision.reason === "not_selected") {
       pendingReadMarkerAgentIds.delete(agentId);
@@ -1207,42 +1185,30 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
 
   readMarkerAdvanceInFlight.add(agentId);
   try {
-    const result = await agentSessionRepository.advanceReadMarker(
-      agentId,
-      decision.candidateSeq,
-    );
-    if (!result) {
-      span.end("skipped", {
-        candidateSeq: decision.candidateSeq,
-        reason: "ledger_unavailable",
-      });
-      return;
+    const result = await runtimeClient.markBriefRead(agentId, decision.candidateSeq);
+    if (!isCurrentClientGeneration(generation)) return;
+    if (result.state.read_through_event_seq >= result.state.event_head_seq) {
+      pendingReadMarkerAgentIds.delete(agentId);
     }
-    pendingReadMarkerAgentIds.delete(agentId);
-    if (result.advanced) publishReadStateInvalidation(agentId);
-    // A marker that reached the gated observed head makes every event
-    // above it known from here on, so the truncated generation retires
-    // itself instead of waiting for the manual acknowledgement (RFC
-    // LocalReadState). Acknowledging at the gated candidate keeps the
-    // new boundary at what the marker actually reached.
-    const restored = shouldAutoRestoreExactCertainty(result.record, decision.candidateSeq)
-      ? await agentSessionRepository
-          .acknowledgeReadTruncation(agentId, decision.candidateSeq)
-          .catch(() => null)
-      : null;
-    if (restored) publishReadStateInvalidation(agentId);
-    await refreshLedgerUnreadInView(agentId);
+    useRuntimeStore.setState((current) => ({
+      briefReadStateByAgentId: {
+        ...current.briefReadStateByAgentId,
+        [agentId]: result.state,
+      },
+      briefReadStatesError: undefined,
+    }));
+    publishReadStateRevalidation(agentId);
     span.end("ok", {
-      advanced: result.advanced,
-      autoRestoreExact: Boolean(restored),
-      candidateSeq: decision.candidateSeq,
+      candidateSeq,
     });
   } catch (error) {
     span.end("error", {
-      candidateSeq: decision.candidateSeq,
+      candidateSeq,
       error: error instanceof Error ? error.message : String(error),
     });
-    console.warn(`Failed to advance read marker for ${agentId}.`, error);
+    useRuntimeStore.setState({
+      briefReadStatesError: error instanceof Error ? error.message : String(error),
+    });
   } finally {
     readMarkerAdvanceInFlight.delete(agentId);
     if (readMarkerAdvanceQueued.delete(agentId)) {
@@ -1312,15 +1278,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
         },
       },
       onStatus: (status) => {
-        // W5: unread counts refresh from durable readiness transitions.
-        set((state) => ({
-          ledgerReadinessRevisionByAgentId: {
-            ...state.ledgerReadinessRevisionByAgentId,
-            [status.scope.agentId]:
-              (state.ledgerReadinessRevisionByAgentId[status.scope.agentId] ?? 0) + 1,
-          },
-        }));
-        void refreshLedgerUnreadInView(status.scope.agentId);
+        void refreshBriefReadStatesInView();
         void retryPendingReadMarker(status.scope.agentId);
       },
     },
@@ -1381,8 +1339,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
   credentialStoreError: undefined,
   codexDeviceLogin: { status: "idle" as const },
   rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(runtimeConnectionConfig)),
-  ledgerUnreadByAgentId: {},
-  ledgerReadinessRevisionByAgentId: {},
+  briefReadStateByAgentId: {},
+  briefReadStatesLoading: false,
+  briefReadStatesError: undefined,
   sessionsByAgentId: {},
   skillInstallJobs: loadSkillInstallJobs(),
   resumeRevision: 0,
@@ -1404,35 +1363,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     pendingReadMarkerAgentIds.add(agentId);
     void retryPendingReadMarker(agentId);
   },
-  refreshLedgerUnread: async (agentId) => {
-    await refreshLedgerUnreadInView(agentId);
-  },
-  /**
-   * Explicitly acknowledge that truncated history is unknown (W5). Allowed
-   * only after the conversation is open and catch-up reached the observed
-   * head; opens a new exact generation without rewriting history facts.
-   */
-  acknowledgeAgentTruncation: async (agentId) => {
-    const state = get();
-    const session = state.sessionsByAgentId[agentId];
-    if (!session) return;
-    const status = agentSessionRepository.sessionLedgerStatus(agentId);
-    const readiness = agentSessionRepository.sessionLedgerReadiness(agentId);
-    const head = status?.observedEventHeadSeq;
-    if (
-      !readiness ||
-      head == null ||
-      readiness.ingestedThroughSeq < head ||
-      readiness.readyThroughSeq < head
-    ) {
-      return;
-    }
-    const record = await agentSessionRepository
-      .acknowledgeReadTruncation(agentId)
-      .catch(() => null);
-    if (!record) return;
-    publishReadStateInvalidation(agentId);
-    await refreshLedgerUnreadInView(agentId);
+  refreshBriefReadStates: async () => {
+    await refreshBriefReadStatesInView();
   },
   disableDeveloperDiagnosticsUi: () =>
     set((state) => {
@@ -1736,8 +1668,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const normalizedConfig = sameOriginConnection(config);
     runtimeConnectionConfig = normalizedConfig;
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
+    ensureReadStateBus();
     writeStoredRuntimeConnectionConfig(normalizedConfig);
     bootstrapRefreshInFlight = undefined;
+    briefReadStatesRefreshInFlight = undefined;
+    briefReadStatesRefreshGeneration = undefined;
     resumeReconciliationInFlight = undefined;
     for (const subscription of activeEventStreams.values()) subscription.close();
     activeEventStreams.clear();
@@ -1796,7 +1731,9 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       searchResultContentErrorBySourceRef: {},
       sessionsByAgentId: {},
       rosterActivityByAgentId: readStoredRosterActivity(currentRemoteKey(normalizedConfig)),
-      ledgerUnreadByAgentId: {},
+      briefReadStateByAgentId: {},
+      briefReadStatesLoading: false,
+      briefReadStatesError: undefined,
       selectedAgentId: "",
       selectedSkillId: "",
       selectedSkillAgentId: "",
@@ -1884,6 +1821,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           );
           return updated ? { sessionsByAgentId: updated } : {};
         });
+        void refreshBriefReadStatesInView();
         if (options.syncEvents !== false) {
           if (get().discovery.mode === "authoritative") {
             globalSyncCoordinator.refreshRoster(get, set);
@@ -4626,8 +4564,6 @@ function formatTime(value: string | null | undefined): string {
   return new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" }).format(date);
 }
 
-// Subscribe before the first read: a dashboard-only tab must hear sibling reads.
-if (typeof window !== "undefined") ensureReadStateBus();
 useRuntimeStore.subscribe((state, previous) => {
   if (state.rightPanelView !== previous.rightPanelView) rememberPanelView(state.rightPanelView);
   if (state.rightPanelOpen !== previous.rightPanelOpen || state.rightPanelMode !== previous.rightPanelMode) {

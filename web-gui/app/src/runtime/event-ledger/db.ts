@@ -16,7 +16,6 @@ export const AGENT_SESSIONS_STORE = "agent_sessions";
 export const RAW_EVENTS_STORE = "raw_events";
 export const PENDING_HYDRATION_STORE = "pending_hydration";
 export const CANONICAL_RECORDS_STORE = "canonical_records";
-export const READ_STATES_STORE = "read_states";
 export const MIGRATION_META_STORE = "migration_meta";
 
 export const LEDGER_STORES = [
@@ -25,7 +24,6 @@ export const LEDGER_STORES = [
   RAW_EVENTS_STORE,
   PENDING_HYDRATION_STORE,
   CANONICAL_RECORDS_STORE,
-  READ_STATES_STORE,
   MIGRATION_META_STORE,
 ] as const;
 
@@ -101,14 +99,6 @@ export function applyLedgerUpgrade(
       { unique: false },
     );
 
-    const readStates = db.createObjectStore(READ_STATES_STORE, {
-      keyPath: ["remoteKey", "runtimeId", "visibilityScopeId", "eventLogEpoch", "agentId"],
-    });
-    readStates.createIndex(
-      BY_SCOPE_INDEX,
-      ["remoteKey", "runtimeId", "visibilityScopeId", "eventLogEpoch", "agentId"],
-      { unique: true },
-    );
 
     db.createObjectStore(MIGRATION_META_STORE, { keyPath: "metaKey" });
   }

@@ -1,6 +1,5 @@
 import {
   getRuntimeConnectionConfig,
-  ledgerReadMarkerDecision,
   ledgerStatusForDiagnostics,
   useRuntimeStore,
 } from "../runtime/runtime-store";
@@ -15,13 +14,11 @@ import {
   LEDGER_DB_VERSION,
   PENDING_HYDRATION_STORE,
   RAW_EVENTS_STORE,
-  READ_STATES_STORE,
 } from "../runtime/event-ledger/db";
 import type {
   LedgerAgentSessionRecord,
   LedgerHydrationJobRecord,
   LedgerRawEventRecord,
-  LedgerReadStateRecord,
 } from "../runtime/event-ledger/ledger";
 
 export interface HolonE2eSnapshot {
@@ -88,24 +85,7 @@ export interface HolonE2eLedgerSnapshot {
   readThroughEventSeq?: number;
   certainty?: "exact" | "truncated";
   historyTruncatedBeforeSeq?: number;
-  acknowledgedTruncationBeforeSeq?: number;
   unreadCount?: number;
-  readGateDecision: {
-    mayAdvance: boolean;
-    candidateSeq?: number;
-    reason?: string;
-  };
-  readGateContext: {
-    route: string;
-    selectedAgentId: string;
-    documentVisible: boolean;
-    discoveryFreshness: string;
-    sessionLoading?: boolean;
-    sessionSyncStatus?: string;
-    sessionLiveStatus?: string;
-    sessionGapCount?: number;
-    pendingProjectionHydrationCount?: number;
-  };
 }
 
 declare global {
@@ -175,7 +155,7 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
   const db = await requestResult(indexedDB.open(LEDGER_DB_NAME, LEDGER_DB_VERSION));
   try {
     const transaction = db.transaction(
-      [AGENT_SESSIONS_STORE, PENDING_HYDRATION_STORE, READ_STATES_STORE],
+      [AGENT_SESSIONS_STORE, PENDING_HYDRATION_STORE],
       "readonly",
     );
     const sessions = await requestResult(
@@ -195,13 +175,10 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
     const jobs = await requestResult(
       transaction.objectStore(PENDING_HYDRATION_STORE).index("byScope").getAll(scope),
     ) as LedgerHydrationJobRecord[];
-    const readState = await requestResult(
-      transaction.objectStore(READ_STATES_STORE).get(scope),
-    ) as LedgerReadStateRecord | undefined;
     const pending = jobs.filter((job) => job.state !== "failed");
     const storeState = useRuntimeStore.getState();
-    const runtimeSession = storeState.sessionsByAgentId[agentId];
     const status = ledgerStatusForDiagnostics(agentId);
+    const readState = storeState.briefReadStateByAgentId[agentId];
     return {
       agentId,
       runtimeId: session.runtimeId,
@@ -219,27 +196,12 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
         ? Math.min(...pending.map((job) => job.createdByEventSeq))
         : undefined,
       blockedReason: pending.length ? "pending_hydration" : undefined,
-      readThroughEventSeq: readState?.readThroughEventSeq,
-      certainty: readState?.certainty,
-      historyTruncatedBeforeSeq: readState?.historyTruncatedBeforeSeq,
-      acknowledgedTruncationBeforeSeq: readState?.acknowledgedTruncationBeforeSeq,
-      unreadCount: storeState.ledgerUnreadByAgentId[agentId]?.count,
-      readGateDecision: ledgerReadMarkerDecision(agentId),
-      readGateContext: {
-        route: storeState.route,
-        selectedAgentId: storeState.selectedAgentId,
-        documentVisible: document.visibilityState === "visible",
-        discoveryFreshness: storeState.discovery.freshness,
-        sessionLoading: runtimeSession?.loading,
-        sessionSyncStatus: runtimeSession?.syncStatus,
-        sessionLiveStatus: runtimeSession?.liveStatus,
-        sessionGapCount: runtimeSession?.gaps.length,
-        pendingProjectionHydrationCount: runtimeSession
-          ? Object.values(runtimeSession.briefHydrationById).filter(
-            (hydration) => hydration.status === "loading",
-          ).length
-          : undefined,
-      },
+      readThroughEventSeq: readState?.read_through_event_seq,
+      certainty: readState?.retention_gap ? "truncated" : readState ? "exact" : undefined,
+      historyTruncatedBeforeSeq: readState?.retention_gap
+        ? readState.oldest_retained_seq
+        : undefined,
+      unreadCount: readState?.unread_count,
     };
   } finally {
     db.close();
@@ -250,7 +212,7 @@ async function ledgerPartitions(agentId: string): Promise<HolonE2eLedgerPartitio
   const db = await requestResult(indexedDB.open(LEDGER_DB_NAME, LEDGER_DB_VERSION));
   try {
     const transaction = db.transaction(
-      [AGENT_SESSIONS_STORE, RAW_EVENTS_STORE, READ_STATES_STORE],
+      [AGENT_SESSIONS_STORE, RAW_EVENTS_STORE],
       "readonly",
     );
     const sessions = (await requestResult(
@@ -259,9 +221,7 @@ async function ledgerPartitions(agentId: string): Promise<HolonE2eLedgerPartitio
     const rawEvents = await requestResult(
       transaction.objectStore(RAW_EVENTS_STORE).getAll(),
     ) as LedgerRawEventRecord[];
-    const readStates = await requestResult(
-      transaction.objectStore(READ_STATES_STORE).getAll(),
-    ) as LedgerReadStateRecord[];
+    const readState = useRuntimeStore.getState().briefReadStateByAgentId[agentId];
     return sessions.map((session) => {
       const sameScope = (candidate: {
         remoteKey: string;
@@ -275,15 +235,14 @@ async function ledgerPartitions(agentId: string): Promise<HolonE2eLedgerPartitio
         && candidate.visibilityScopeId === session.visibilityScopeId
         && candidate.eventLogEpoch === session.eventLogEpoch
         && candidate.agentId === session.agentId;
-      const readState = readStates.find(sameScope);
       return {
         runtimeId: session.runtimeId,
         visibilityScopeId: session.visibilityScopeId,
         eventLogEpoch: session.eventLogEpoch,
         eventSeqs: rawEvents.filter(sameScope).map((event) => event.eventSeq).sort((a, b) => a - b),
         observedHeadSeq: session.observedHeadSeq ?? session.ingestedThroughSeq,
-        readThroughEventSeq: readState?.readThroughEventSeq,
-        certainty: readState?.certainty,
+        readThroughEventSeq: readState?.read_through_event_seq,
+        certainty: readState?.retention_gap ? "truncated" : readState ? "exact" : undefined,
       };
     });
   } finally {

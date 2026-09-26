@@ -63,7 +63,6 @@ export {
   type LedgerCanonicalRecord,
   type LedgerHydrationJobRecord,
   type LedgerRawEventRecord,
-  type LedgerReadStateRecord,
   type LedgerRuntimeScopeRecord,
   type RawEventClassification,
 } from "./ledger";
@@ -82,25 +81,6 @@ export {
 export {
   LEGACY_DB_NAME,
   deleteLegacyDatabase,
-  hasUnreadMigrationNoticeBeenShown,
   initializeFreshBaseline,
-  markUnreadMigrationNoticeShown,
   type LegacyBaselineMeta,
-  type UnreadMigrationNoticeMeta,
 } from "./migration";
-export {
-  isQualifyingUnreadEnvelope,
-  mergeReadMarkerCandidate,
-  mergeTruncationAcknowledgement,
-  readMarkerBoundary,
-  shouldAutoRestoreExactCertainty,
-  unreadSnapshotFromRecord,
-  type LedgerUnreadSnapshot,
-  type ReadCertainty,
-  type ReadMarkerAdvanceResult,
-} from "./read-markers";
-export {
-  READ_STATE_BUS_CHANNEL,
-  ReadStateBus,
-  type ReadStateBusMessage,
-} from "./read-state-bus";

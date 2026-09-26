@@ -15,7 +15,6 @@ import {
   modelCatalogCacheKey,
   observerSyncDiagnostics,
   clearStoredRuntimeConnectionToken,
-  retryPendingReadMarker,
   resetSessionsForResume,
   resetTransientRuntimeStateForResume,
   readStoredRuntimeConnectionConfig,
@@ -634,7 +633,6 @@ describe("observerSyncDiagnostics", () => {
       sessionsByAgentId: {
         "hidden-agent": sessionState(),
       },
-      ledgerUnreadByAgentId: {},
     });
 
     const diagnostics = observerSyncDiagnostics();
@@ -1052,9 +1050,6 @@ describe("agent deletion cache cleanup", () => {
       },
       rosterActivityByAgentId: {
         "agent-a": {
-          unreadCount: 2,
-          lastUnreadDeliverySeq: 3,
-          lastReadDeliverySeq: 1,
         },
       },
     });
@@ -1071,296 +1066,107 @@ describe("agent deletion cache cleanup", () => {
   });
 });
 
-describe("roster activity unread state", () => {
+describe("server brief read state", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    setRuntimeTraceEnabled(false, { clear: true });
     useRuntimeStore.setState({
       currentUser: undefined,
       route: "dashboard",
       selectedAgentId: "",
       sessionsByAgentId: {},
-      ledgerUnreadByAgentId: {},
+      briefReadStateByAgentId: {},
+      briefReadStatesLoading: false,
+      briefReadStatesError: undefined,
     });
   });
 
-  it.each([undefined, { authMethod: "oidc", userId: "reader" }])("retries a pending read marker for identity %j after ledger readiness becomes available", async (currentUser) => {
-    useRuntimeStore.setState({ currentUser });
-    vi.stubGlobal("document", { visibilityState: "visible" });
-    let ready = false;
-    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness")
-      .mockImplementation(() => ready
-        ? { readyThroughSeq: 12, ingestedThroughSeq: 12, observedHeadSeq: 12 }
-        : null);
-    const advanceReadMarker = vi
-      .spyOn(AgentSessionRepository.prototype, "advanceReadMarker")
-      .mockResolvedValue({
-        advanced: true,
-        record: {
-          remoteKey: "local",
-          runtimeId: "runtime-1",
-          visibilityScopeId: "scope-1",
-          eventLogEpoch: "epoch-1",
-          agentId: "agent-retry",
-          readThroughEventSeq: 12,
-          updatedAt: 1,
-        },
-      });
-    const acknowledgeReadTruncation = vi
-      .spyOn(AgentSessionRepository.prototype, "acknowledgeReadTruncation")
-      .mockResolvedValue(null);
-    vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
-      scopeAgentId: "agent-retry",
-      boundarySeq: 12,
-      countedThroughSeq: 12,
-      certainty: "exact",
-      count: 0,
-      historyTruncatedBeforeSeq: null,
-      acknowledgedTruncationBeforeSeq: null,
-    });
-    useRuntimeStore.setState({
-      route: "agent",
-      selectedAgentId: "agent-retry",
-      discovery: {
-        mode: "authoritative",
-        freshness: "fresh",
-        retryAttempt: 0,
-      },
-      sessionsByAgentId: {
-        "agent-retry": sessionState(),
-      },
-      ledgerUnreadByAgentId: {
-        "agent-retry": { mode: "exact", count: 2 },
-      },
-    });
-    seedReadyConversationScope("agent-retry");
-
-    useRuntimeStore.getState().markAgentConversationRead("agent-retry");
-    await Promise.resolve();
-    expect(advanceReadMarker).not.toHaveBeenCalled();
-
-    ready = true;
-    await retryPendingReadMarker("agent-retry");
-
-    expect(advanceReadMarker).toHaveBeenCalledWith("agent-retry", 12);
-    // An exact record never triggers the auto-restore acknowledgement.
-    expect(acknowledgeReadTruncation).not.toHaveBeenCalled();
-    expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-retry"]).toEqual({
-      mode: "exact",
-      count: 0,
-    });
+  const state = (overrides: Record<string, unknown> = {}) => ({
+    agent_id: "agent-a",
+    read_through_event_seq: 3,
+    event_head_seq: 8,
+    unread_count: 5,
+    updated_at: "2026-01-01T00:00:00Z",
+    ...overrides,
   });
 
-  it("auto-restores exact certainty when a sticky truncated marker already covers the head", async () => {
-    vi.stubGlobal("document", { visibilityState: "visible" });
-    let ready = false;
-    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness")
-      .mockImplementation(() => ready
-        ? { readyThroughSeq: 12, ingestedThroughSeq: 12, observedHeadSeq: 12 }
-        : null);
-    // Pre-fix durable state: the marker already reached the head, so the
-    // monotonic advance is a no-op while certainty stays truncated.
-    const advanceReadMarker = vi
-      .spyOn(AgentSessionRepository.prototype, "advanceReadMarker")
-      .mockResolvedValue({
-      advanced: false,
-      record: {
-        remoteKey: "local",
-        runtimeId: "runtime-1",
-        visibilityScopeId: "scope-1",
-        eventLogEpoch: "epoch-1",
-        agentId: "agent-auto",
-        readThroughEventSeq: 12,
-        certainty: "truncated",
-        updatedAt: 1,
-      },
-    });
-    const acknowledgeReadTruncation = vi
-      .spyOn(AgentSessionRepository.prototype, "acknowledgeReadTruncation")
-      .mockResolvedValue({
-        remoteKey: "local",
-        runtimeId: "runtime-1",
-        visibilityScopeId: "scope-1",
-        eventLogEpoch: "epoch-1",
-        agentId: "agent-auto",
-        readThroughEventSeq: 12,
-        unreadBaselineSeq: 12,
-        acknowledgedTruncationBeforeSeq: 12,
-        certainty: "exact",
-        updatedAt: 2,
-      });
-    vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
-      scopeAgentId: "agent-auto",
-      boundarySeq: 12,
-      countedThroughSeq: 12,
-      certainty: "exact",
-      count: 0,
-      historyTruncatedBeforeSeq: 5,
-      acknowledgedTruncationBeforeSeq: 12,
-    });
-    useRuntimeStore.setState({
-      route: "agent",
-      selectedAgentId: "agent-auto",
-      discovery: {
-        mode: "authoritative",
-        freshness: "fresh",
-        retryAttempt: 0,
-      },
-      sessionsByAgentId: {
-        "agent-auto": sessionState(),
-      },
-      ledgerUnreadByAgentId: {
-        "agent-auto": { mode: "truncated", count: 2 },
-      },
-    });
-    seedReadyConversationScope("agent-auto");
-
-    useRuntimeStore.getState().markAgentConversationRead("agent-auto");
-    await Promise.resolve();
-    expect(advanceReadMarker).not.toHaveBeenCalled();
-
-    ready = true;
-    await retryPendingReadMarker("agent-auto");
-
-    // Auto-restore retires the truncated generation at the gated head the
-    // marker already covers, flipping the badge back to exact.
-    expect(acknowledgeReadTruncation).toHaveBeenCalledWith("agent-auto", 12);
-    expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-auto"]).toEqual({
-      mode: "exact",
-      count: 0,
-    });
-  });
-
-  it("refreshes a stale unread view after a monotonic read-marker no-op", async () => {
-    vi.stubGlobal("document", { visibilityState: "visible" });
-    setRuntimeTraceEnabled(true, { clear: true });
-    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
-      readyThroughSeq: 12,
-      ingestedThroughSeq: 12,
-      observedHeadSeq: 12,
-    });
-    vi.spyOn(AgentSessionRepository.prototype, "advanceReadMarker").mockResolvedValue({
-      advanced: false,
-      record: {
-        remoteKey: "local",
-        runtimeId: "runtime-1",
-        visibilityScopeId: "scope-1",
-        eventLogEpoch: "epoch-1",
-        agentId: "agent-noop",
-        readThroughEventSeq: 12,
-        updatedAt: 1,
-      },
-    });
-    vi.spyOn(AgentSessionRepository.prototype, "unreadSnapshot").mockResolvedValue({
-      scopeAgentId: "agent-noop",
-      boundarySeq: 12,
-      countedThroughSeq: 12,
-      certainty: "exact",
-      count: 0,
-      historyTruncatedBeforeSeq: null,
-      acknowledgedTruncationBeforeSeq: null,
-    });
-    useRuntimeStore.setState({
-      route: "agent",
-      selectedAgentId: "agent-noop",
-      discovery: {
-        mode: "authoritative",
-        freshness: "fresh",
-        retryAttempt: 0,
-      },
-      sessionsByAgentId: {
-        "agent-noop": sessionState(),
-      },
-      ledgerUnreadByAgentId: {
-        "agent-noop": { mode: "exact", count: 2 },
-      },
-    });
-    seedReadyConversationScope("agent-noop");
-
-    useRuntimeStore.getState().markAgentConversationRead("agent-noop");
-    await vi.waitFor(() => {
-      expect(useRuntimeStore.getState().ledgerUnreadByAgentId["agent-noop"]?.count).toBe(0);
-    });
-    expect(getRuntimeTraceRecords({ agentId: "agent-noop" }).at(-1)).toMatchObject({
-      name: "read_marker.advance",
-      outcome: "ok",
-      attributes: { advanced: false, candidateSeq: 12 },
-    });
-  });
-
-  it("does not mutate legacy roster activity when marking a conversation read", async () => {
-    const { touchRosterActivityFromEvent } = await import("./runtime-store");
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let activity: Record<string, any> = {
-      "agent-a": { unreadCount: 0, lastUnreadDeliverySeq: 7, lastReadDeliverySeq: 7 },
-    };
-    for (const seq of [8, 9, 10]) {
-      activity = touchRosterActivityFromEvent(
-        activity,
-        "agent-a",
-        { agent_id: "agent-a", event_seq: seq, ts: `2026-01-01T00:00:0${seq}.000Z`, type: "brief_created", payload: {} },
-        "agent-a",
+  it("pulls server brief read states into the store", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      return Promise.resolve(
+        new Response(
+          url.includes("/agents/brief-read-states")
+            ? JSON.stringify([state()])
+            : JSON.stringify({}),
+          { status: 200 },
+        ),
       );
-    }
-    expect(activity["agent-a"]?.unreadCount).toBe(3);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
 
-    vi.stubGlobal("document", { visibilityState: "visible" });
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject(state());
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/agents/brief-read-states"), expect.anything());
+  });
+
+  it("keeps unread state until the durable ledger is ready", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      return Promise.resolve(
+        new Response(
+          url.includes("/agents/brief-read-states") ? JSON.stringify([state()]) : JSON.stringify({}),
+          { status: 200 },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+
     useRuntimeStore.setState({
       route: "agent",
       selectedAgentId: "agent-a",
-      rosterActivityByAgentId: activity,
-      sessionsByAgentId: {
-        "agent-a": sessionState({
-          contentStatus: "available",
-          syncStatus: "streaming",
-          liveStatus: "recovering",
-          eventsBySeq: {
-            8: { agent_id: "agent-a", event_seq: 8, type: "brief_created", payload: {} },
-            9: { agent_id: "agent-a", event_seq: 9, type: "brief_created", payload: {} },
-            10: { agent_id: "agent-a", event_seq: 10, type: "brief_created", payload: {} },
-          },
-          eventSeqs: [8, 9, 10],
-        }),
+      discovery: {
+        ...useRuntimeStore.getState().discovery,
+        freshness: "fresh",
       },
     });
+    seedReadyConversationScope("agent-a");
     useRuntimeStore.getState().markAgentConversationRead("agent-a");
-    expect(useRuntimeStore.getState().rosterActivityByAgentId["agent-a"]?.unreadCount).toBe(3);
-    useRuntimeStore.setState((state) => ({
-      sessionsByAgentId: {
-        ...state.sessionsByAgentId,
-        "agent-a": {
-          ...state.sessionsByAgentId["agent-a"],
-          liveStatus: "streaming",
-        },
-      },
-    }));
-    useRuntimeStore.getState().markAgentConversationRead("agent-a");
-    activity = useRuntimeStore.getState().rosterActivityByAgentId;
-    expect(activity["agent-a"]?.unreadCount).toBe(3);
-    expect(activity["agent-a"]?.lastReadDeliverySeq).toBe(7);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let replayed: Record<string, any> = activity;
-    for (const seq of [8, 9, 10]) {
-      replayed = touchRosterActivityFromEvent(
-        replayed,
-        "agent-a",
-        { agent_id: "agent-a", event_seq: seq, ts: `2026-01-01T00:00:0${seq}.000Z`, type: "brief_created", payload: {} },
-        "agent-b",
-      );
-    }
-    expect(replayed["agent-a"]?.unreadCount).toBe(3);
-
-    // A genuinely new event (seq 11) should still be counted.
-    replayed = touchRosterActivityFromEvent(
-      replayed,
-      "agent-a",
-      { agent_id: "agent-a", event_seq: 11, ts: "2026-01-01T00:00:11.000Z", type: "brief_created", payload: {} },
-      "agent-b",
+    await vi.waitFor(() =>
+      expect(useRuntimeStore.getState().briefReadStatesError).toBeUndefined(),
     );
-    expect(replayed["agent-a"]?.unreadCount).toBe(4);
-    expect(replayed["agent-a"]?.lastUnreadDeliverySeq).toBe(11);
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(5);
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps repeated refreshes consistent with the server response", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      return Promise.resolve(
+        new Response(
+          url.includes("/agents/brief-read-states")
+            ? JSON.stringify([state({ unread_count: 2 })])
+            : JSON.stringify({}),
+          { status: 200 },
+        ),
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    const first = useRuntimeStore.getState().briefReadStateByAgentId;
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    expect(useRuntimeStore.getState().briefReadStateByAgentId).toEqual(first);
+    expect(
+      fetchMock.mock.calls.filter(([input]) => String(input).includes("/agents/brief-read-states")),
+    ).toHaveLength(2);
   });
 });
 

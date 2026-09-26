@@ -29,6 +29,7 @@ export interface UseConversationSessionResult {
   readonly model: ConversationSessionModel;
   readonly scopeKey: string | null;
   readonly controller: ConversationController | null;
+  readonly conversationReady: boolean;
   retry: () => void;
   loadOlderHistory: () => void;
   loadDetail: (turnId: string) => void;
@@ -99,10 +100,7 @@ export function useConversationSession(
   const version = snapshot.version;
   const conversationReady = snapshot.status.kind === "ready" && snapshot.view?.scope != null && snapshot.view.reset_reason === null;
 
-  // A scope that becomes ready can unblock a pending read marker that was
-  // gated on conversation readiness (e.g. truncated generation acknowledged
-  // while the read model was degraded). The gate itself re-checks route,
-  // visibility, and ledger readiness, so this only re-attempts the advance.
+  // A scope that becomes ready can retry a pending server read-state update.
   useEffect(() => {
     if (!conversationReady || agentId === undefined) return;
     void retryPendingReadMarker(agentId);
@@ -205,6 +203,7 @@ export function useConversationSession(
     model,
     scopeKey,
     controller,
+    conversationReady,
     retry,
     loadOlderHistory,
     loadDetail,

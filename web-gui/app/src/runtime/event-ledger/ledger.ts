@@ -5,7 +5,7 @@
  * Correctness contract:
  * - One `commit()` is one IndexedDB readwrite transaction covering every
  *   touched store. Either all of envelope/classification, hydration jobs,
- *   canonical records, projection change, read state, and the contiguous
+ *   canonical records, projection change, and the contiguous
  *   ingestion cursor land, or none do.
  * - A raw event with an existing correctness key and a different identity
  *   fingerprint is a protocol error (hard fail), never an overwrite.
@@ -24,7 +24,6 @@ import {
   MIGRATION_META_STORE,
   PENDING_HYDRATION_STORE,
   RAW_EVENTS_STORE,
-  READ_STATES_STORE,
   RUNTIME_SCOPES_STORE,
   deleteLedgerDatabase,
   openLedgerDatabase,
@@ -54,13 +53,6 @@ import {
   type LedgerRemoteScopeKey,
   type LedgerScopeKey,
 } from "./keys";
-import {
-  isQualifyingUnreadEnvelope,
-  mergeReadMarkerCandidate,
-  mergeTruncationAcknowledgement,
-  type ReadMarkerAdvanceResult,
-} from "./read-markers";
-
 /** Classification attached to a stored raw event (S2 contract). */
 export interface RawEventClassification {
   projectionEffect: "none" | "display_invalidation";
@@ -149,31 +141,6 @@ export interface LedgerRuntimeScopeRecord {
   updatedAt: number;
 }
 
-export interface LedgerReadStateRecord {
-  remoteKey: string;
-  runtimeId: string;
-  visibilityScopeId: string;
-  eventLogEpoch: string;
-  agentId: string;
-  lastReadDeliverySeq?: number;
-  lastUnreadDeliverySeq?: number;
-  /**
-   * RFC LocalReadState (observer sync): fresh unread baseline established
-   * at bootstrap. Unread is counted from qualifying brief events above
-   * `max(unreadBaselineSeq, readThroughEventSeq ?? 0)`.
-   */
-  unreadBaselineSeq?: number;
-  /** Highest delivery seq the reader has consumed; absent until first read. */
-  readThroughEventSeq?: number;
-  /** Whether unread counts above the boundary are exact or a lower bound. */
-  certainty?: "exact" | "truncated";
-  /** Boundary of history skipped by the last retention or replay-budget reset. */
-  historyTruncatedBeforeSeq?: number;
-  /** User acknowledgement of unknown history after a truncation (W5 action). */
-  acknowledgedTruncationBeforeSeq?: number;
-  updatedAt: number;
-}
-
 export type EventLedgerOpenResult =
   | { kind: "available"; ledger: EventLedger }
   | { kind: "memory_only"; reason: "no_indexeddb" | "open_error"; error?: unknown };
@@ -184,10 +151,6 @@ type AgentSessionPatch = Partial<
 type RuntimeScopePatch = Partial<
   Omit<LedgerRuntimeScopeRecord, keyof LedgerRemoteScopeKey | "updatedAt">
 >;
-type ReadStatePatch = Partial<
-  Omit<LedgerReadStateRecord, keyof LedgerScopeKey | "updatedAt">
->;
-
 type WriteOperation =
   | {
       kind: "raw_event";
@@ -208,13 +171,11 @@ type WriteOperation =
     }
   | { kind: "agent_session"; scope: LedgerScopeKey; patch: AgentSessionPatch }
   | { kind: "runtime_scope"; scope: LedgerRemoteScopeKey; patch: RuntimeScopePatch }
-  | { kind: "read_state"; scope: LedgerScopeKey; patch: ReadStatePatch }
   /**
    * Discard every durable record of one agent scope (raw events, hydration
-   * jobs, canonical records, session). Read state survives when preserved:
-   * retention resets keep the marker to record truncation against it.
+   * jobs, canonical records, session).
    */
-  | { kind: "clear_agent_scope"; scope: LedgerScopeKey; preserveReadState: boolean }
+  | { kind: "clear_agent_scope"; scope: LedgerScopeKey }
   /** Discard every agent scope and the runtime scope record itself. */
   | { kind: "clear_runtime_scope"; scope: LedgerRemoteScopeKey };
 
@@ -311,13 +272,6 @@ export class EventLedgerWriteBatch {
     return this;
   }
 
-  /** Patch browser-local read marker state. */
-  putReadState(scope: LedgerScopeKey, patch: ReadStatePatch): this {
-    this.assertNotCommitted();
-    this.ops.push({ kind: "read_state", scope, patch });
-    return this;
-  }
-
   /**
    * Clear one agent scope: raw events, hydration jobs, canonical records,
    * and the agent session land in one transaction with everything else in
@@ -325,16 +279,9 @@ export class EventLedgerWriteBatch {
    * state is preserved for retention resets and discarded for identity
    * resets, which must not migrate markers.
    */
-  clearAgentScope(
-    scope: LedgerScopeKey,
-    options: { preserveReadState?: boolean } = {},
-  ): this {
+  clearAgentScope(scope: LedgerScopeKey): this {
     this.assertNotCommitted();
-    this.ops.push({
-      kind: "clear_agent_scope",
-      scope,
-      preserveReadState: options.preserveReadState ?? false,
-    });
+    this.ops.push({ kind: "clear_agent_scope", scope });
     return this;
   }
 
@@ -385,22 +332,17 @@ export class EventLedgerWriteBatch {
         case "runtime_scope":
           storeNames.add(RUNTIME_SCOPES_STORE);
           break;
-        case "read_state":
-          storeNames.add(READ_STATES_STORE);
-          break;
         case "clear_agent_scope":
           storeNames.add(RAW_EVENTS_STORE);
           storeNames.add(PENDING_HYDRATION_STORE);
           storeNames.add(CANONICAL_RECORDS_STORE);
           storeNames.add(AGENT_SESSIONS_STORE);
-          storeNames.add(READ_STATES_STORE);
           break;
         case "clear_runtime_scope":
           storeNames.add(RAW_EVENTS_STORE);
           storeNames.add(PENDING_HYDRATION_STORE);
           storeNames.add(CANONICAL_RECORDS_STORE);
           storeNames.add(AGENT_SESSIONS_STORE);
-          storeNames.add(READ_STATES_STORE);
           storeNames.add(RUNTIME_SCOPES_STORE);
           break;
       }
@@ -416,7 +358,6 @@ export class EventLedgerWriteBatch {
       string,
       { scope: LedgerRemoteScopeKey; patch: RuntimeScopePatch }
     >();
-    const readStatePatches = new Map<string, { scope: LedgerScopeKey; patch: ReadStatePatch }>();
     for (const op of this.ops) {
       if (op.kind === "agent_session") {
         const id = scopeKeyParts(op.scope).join("\u0000");
@@ -434,13 +375,6 @@ export class EventLedgerWriteBatch {
         ].join("\u0000");
         const entry = runtimeScopePatches.get(id);
         runtimeScopePatches.set(id, {
-          scope: op.scope,
-          patch: { ...(entry?.patch ?? {}), ...op.patch },
-        });
-      } else if (op.kind === "read_state") {
-        const id = scopeKeyParts(op.scope).join("\u0000");
-        const entry = readStatePatches.get(id);
-        readStatePatches.set(id, {
           scope: op.scope,
           patch: { ...(entry?.patch ?? {}), ...op.patch },
         });
@@ -616,22 +550,12 @@ export class EventLedgerWriteBatch {
           failure =
             failure ?? (sessionDelete.error ?? new Error("agent session clear failed"));
         });
-        if (!op.preserveReadState) {
-          const stateDelete = issue(() =>
-            tx.objectStore(READ_STATES_STORE).delete(agentRecordKey(op.scope)),
-          );
-          stateDelete?.addEventListener("error", () => {
-            failure =
-              failure ?? (stateDelete.error ?? new Error("read state clear failed"));
-          });
-        }
       } else if (op.kind === "clear_runtime_scope") {
         const scopeRange = agentScopeRange(op.scope);
         deleteByScopeRange(RAW_EVENTS_STORE, scopeRange);
         deleteByScopeRange(PENDING_HYDRATION_STORE, scopeRange);
         deleteByScopeRange(CANONICAL_RECORDS_STORE, scopeRange);
         deleteByScopeRange(AGENT_SESSIONS_STORE, scopeRange);
-        deleteByScopeRange(READ_STATES_STORE, scopeRange);
         const runtimeDelete = issue(() =>
           tx.objectStore(RUNTIME_SCOPES_STORE).delete(remoteScopeRecordKey(op.scope)),
         );
@@ -724,30 +648,6 @@ export class EventLedgerWriteBatch {
       };
       get.addEventListener("error", () => {
         failure = failure ?? (get.error ?? new Error("runtime scope get failed"));
-      });
-    }
-
-    // Read states: one read-modify-write per coalesced agent scope.
-    for (const entry of readStatePatches.values()) {
-      const states = tx.objectStore(READ_STATES_STORE);
-      const get = issue<LedgerReadStateRecord | undefined>(() =>
-        states.get(agentRecordKey(entry.scope)),
-      );
-      if (!get) continue;
-      get.onsuccess = () => {
-        const merged: LedgerReadStateRecord = {
-          ...(get.result ?? {}),
-          ...entry.scope,
-          ...entry.patch,
-          updatedAt: now,
-        };
-        const put = issue(() => states.put(merged));
-        put?.addEventListener("error", () => {
-          failure = failure ?? (put.error ?? new Error("read state put failed"));
-        });
-      };
-      get.addEventListener("error", () => {
-        failure = failure ?? (get.error ?? new Error("read state get failed"));
       });
     }
 
@@ -952,183 +852,6 @@ export class EventLedger {
       BY_AGENT_INDEX,
       IDBKeyRange.only([remoteKey, agentId]),
     );
-  }
-
-  async getReadState(scope: LedgerScopeKey): Promise<LedgerReadStateRecord | undefined> {
-    const db = this.requireOpenDb();
-    return runGet(db, READ_STATES_STORE, (store) => store.get(agentRecordKey(scope)));
-  }
-
-  /**
-   * Advance `readThroughEventSeq` to `candidateSeq` as a monotonic maximum
-   * inside one transaction. Tabs race this concurrently; the stored value
-   * can only move forward. Returns whether a write happened.
-   */
-  async advanceReadMarker(
-    scope: LedgerScopeKey,
-    candidateSeq: number,
-  ): Promise<ReadMarkerAdvanceResult> {
-    if (!Number.isInteger(candidateSeq) || candidateSeq < 0) {
-      throw new Error("read marker candidate must be a non-negative integer");
-    }
-    const db = this.requireOpenDb();
-    return new Promise<ReadMarkerAdvanceResult>((resolve, reject) => {
-      let settled = false;
-      let result: ReadMarkerAdvanceResult | null = null;
-      const tx = db.transaction(READ_STATES_STORE, "readwrite");
-      const store = tx.objectStore(READ_STATES_STORE);
-      const get = store.get(agentRecordKey(scope));
-      get.onsuccess = () => {
-        const current = get.result as LedgerReadStateRecord | undefined;
-        const merged = mergeReadMarkerCandidate(
-          current,
-          scope,
-          candidateSeq,
-          Date.now(),
-        );
-        result = merged;
-        if (!merged.advanced) return;
-        const put = store.put(merged.record);
-        put.onerror = () => {
-          if (settled) return;
-          settled = true;
-          reject(put.error ?? new Error("read state put failed"));
-        };
-      };
-      get.onerror = () => {
-        if (settled) return;
-        settled = true;
-        reject(get.error ?? new Error("read state get failed"));
-      };
-      tx.oncomplete = () => {
-        if (settled) return;
-        settled = true;
-        if (!result) {
-          reject(new Error("read state transaction completed without a result"));
-          return;
-        }
-        resolve(result);
-      };
-      tx.onerror = () => {
-        if (!settled) {
-          settled = true;
-          reject(tx.error ?? new Error("read state transaction failed"));
-        }
-      };
-      tx.onabort = () => {
-        if (!settled) {
-          settled = true;
-          reject(tx.error ?? new Error("read state transaction aborted"));
-        }
-      };
-    });
-  }
-
-  /**
-   * Record an explicit truncation acknowledgement at `headSeq`: open a new
-   * exact generation while keeping the truncation facts. Returns null when
-   * no read state exists yet (nothing to acknowledge).
-   */
-  async acknowledgeReadTruncation(
-    scope: LedgerScopeKey,
-    headSeq: number,
-  ): Promise<LedgerReadStateRecord | null> {
-    if (!Number.isInteger(headSeq) || headSeq < 0) {
-      throw new Error("truncation acknowledgement head must be a non-negative integer");
-    }
-    const db = this.requireOpenDb();
-    return new Promise<LedgerReadStateRecord | null>((resolve, reject) => {
-      let settled = false;
-      let result: LedgerReadStateRecord | null = null;
-      const tx = db.transaction(READ_STATES_STORE, "readwrite");
-      const store = tx.objectStore(READ_STATES_STORE);
-      const get = store.get(agentRecordKey(scope));
-      get.onsuccess = () => {
-        const current = get.result as LedgerReadStateRecord | undefined;
-        if (!current) return;
-        result = mergeTruncationAcknowledgement(current, headSeq, Date.now());
-        const put = store.put(result);
-        put.onerror = () => {
-          if (settled) return;
-          settled = true;
-          reject(put.error ?? new Error("read state put failed"));
-        };
-      };
-      get.onerror = () => {
-        if (settled) return;
-        settled = true;
-        reject(get.error ?? new Error("read state get failed"));
-      };
-      tx.oncomplete = () => {
-        if (settled) return;
-        settled = true;
-        resolve(result);
-      };
-      tx.onerror = () => {
-        if (!settled) {
-          settled = true;
-          reject(tx.error ?? new Error("read state transaction failed"));
-        }
-      };
-      tx.onabort = () => {
-        if (!settled) {
-          settled = true;
-          reject(tx.error ?? new Error("read state transaction aborted"));
-        }
-      };
-    });
-  }
-
-  /**
-   * Count qualifying unread envelopes in (boundaryExclusive, throughSeq].
-   * Uses a cursor so an unbounded backlog above the boundary is not
-   * materialized. Hydration is guaranteed by the caller bounding
-   * `throughSeq` at the projection readiness cursor.
-   */
-  async countQualifyingUnreadEvents(
-    scope: LedgerScopeKey,
-    boundaryExclusive: number,
-    throughSeq: number,
-  ): Promise<number> {
-    if (throughSeq <= boundaryExclusive) return 0;
-    const db = this.requireOpenDb();
-    return new Promise<number>((resolve, reject) => {
-      let settled = false;
-      let count = 0;
-      const tx = db.transaction(RAW_EVENTS_STORE, "readonly");
-      const range = rawEventRangeBetween(scope, boundaryExclusive + 1, throughSeq);
-      const request = tx.objectStore(RAW_EVENTS_STORE).openCursor(range);
-      request.onsuccess = () => {
-        const cursor = request.result;
-        if (!cursor) return;
-        if (isQualifyingUnreadEnvelope((cursor.value as LedgerRawEventRecord).envelope)) {
-          count += 1;
-        }
-        cursor.continue();
-      };
-      request.onerror = () => {
-        if (settled) return;
-        settled = true;
-        reject(request.error ?? new Error("unread count cursor failed"));
-      };
-      tx.oncomplete = () => {
-        if (settled) return;
-        settled = true;
-        resolve(count);
-      };
-      tx.onerror = () => {
-        if (!settled) {
-          settled = true;
-          reject(tx.error ?? new Error("unread count transaction failed"));
-        }
-      };
-      tx.onabort = () => {
-        if (!settled) {
-          settled = true;
-          reject(tx.error ?? new Error("unread count transaction aborted"));
-        }
-      };
-    });
   }
 
   async getMigrationMeta<T extends { metaKey: string }>(

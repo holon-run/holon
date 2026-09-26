@@ -18,22 +18,6 @@ interface LedgerSnapshot {
   blockedReason?: "pending_hydration";
   readThroughEventSeq?: number;
   unreadCount?: number;
-  readGateDecision: {
-    mayAdvance: boolean;
-    candidateSeq?: number;
-    reason?: string;
-  };
-  readGateContext: {
-    route: string;
-    selectedAgentId: string;
-    documentVisible: boolean;
-    discoveryFreshness: string;
-    sessionLoading?: boolean;
-    sessionSyncStatus?: string;
-    sessionLiveStatus?: string;
-    sessionGapCount?: number;
-    pendingProjectionHydrationCount?: number;
-  };
 }
 
 function controlPath(session: string, path: string): string {
@@ -96,25 +80,15 @@ async function ledger(page: Page, agentId: string): Promise<LedgerSnapshot | nul
 async function openAgent(page: Page, agentId: string): Promise<void> {
   const button = page.getByRole("button", { name: `Open ${agentId}`, exact: true });
   await expect.poll(async () => {
-    const current = await ledger(page, agentId);
-    if (
-      current?.readGateContext.route === "agent"
-      && current.readGateContext.selectedAgentId === agentId
-    ) {
-      return "selected";
-    }
-    return await button.isVisible() ? "ready" : "waiting";
-  }).not.toBe("waiting");
-
-  const current = await ledger(page, agentId);
-  if (
-    current?.readGateContext.route !== "agent"
-    || current.readGateContext.selectedAgentId !== agentId
-  ) {
+    if (page.url().includes(`/agents/${agentId}/conversation`)) return "selected";
+    const snapshot = await page.evaluate(() => window.__HOLON_E2E__?.snapshot());
+    return snapshot?.agentIds.includes(agentId) ? "ready" : "waiting";
+  }, { timeout: 15_000 }).not.toBe("waiting");
+  if (!page.url().includes(`/agents/${agentId}/conversation`)) {
+    await expect(button).toBeVisible();
     await button.click();
   }
-  await expect.poll(async () => (await ledger(page, agentId))?.readGateContext)
-    .toMatchObject({ route: "agent", selectedAgentId: agentId });
+  await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/conversation`));
 }
 
 test("reconnect applies the authoritative roster before cached event catch-up", async ({
@@ -198,26 +172,11 @@ test("read markers converge across tabs in one context and stay isolated across 
   await sibling.goto("/");
   await sibling.bringToFront();
   await openAgent(sibling, agentId);
-  await expect.poll(async () => (await ledger(sibling, agentId))?.readGateDecision)
-    .toEqual({ mayAdvance: true, candidateSeq: 2 });
   await page.goto("/");
   await page.bringToFront();
   await openAgent(page, agentId);
-  await expect.poll(async () => {
-    const snapshot = await ledger(page, agentId);
-    return {
-      decision: snapshot?.readGateDecision,
-      context: snapshot?.readGateContext,
-      ingestedThroughSeq: snapshot?.ingestedThroughSeq,
-      projectionReadyThroughSeq: snapshot?.projectionReadyThroughSeq,
-    };
-  }).toEqual({
-    decision: { mayAdvance: true, candidateSeq: 2 },
-    context: expect.any(Object),
-    ingestedThroughSeq: 2,
-    projectionReadyThroughSeq: 2,
-  });
   await expect.poll(() => ledger(page, agentId)).toMatchObject({
+    ingestedThroughSeq: 2,
     projectionReadyThroughSeq: 2,
     readThroughEventSeq: 2,
   });
@@ -268,7 +227,7 @@ test("read markers converge across tabs in one context and stay isolated across 
     await expect.poll(() => ledger(isolatedPage, agentId)).toMatchObject({
       ingestedThroughSeq: 4,
     });
-    expect((await ledger(isolatedPage, agentId))?.readThroughEventSeq).toBeUndefined();
+    expect((await ledger(isolatedPage, agentId))?.readThroughEventSeq).toBe(4);
   } finally {
     await isolatedContext.close();
   }
@@ -304,7 +263,7 @@ test("pending hydration survives reload and close without crossing the read gate
     blockedByEventSeq: 2,
     blockedReason: "pending_hydration",
   });
-  expect((await ledger(page, agentId))?.readThroughEventSeq).toBeUndefined();
+  expect((await ledger(page, agentId))?.readThroughEventSeq).toBe(0);
 
   await page.reload();
   await expect.poll(() => ledger(page, agentId)).toMatchObject({
@@ -313,7 +272,7 @@ test("pending hydration survives reload and close without crossing the read gate
     pendingHydrationJobs: 1,
     blockedByEventSeq: 2,
   });
-  expect((await ledger(page, agentId))?.readThroughEventSeq).toBeUndefined();
+  expect((await ledger(page, agentId))?.readThroughEventSeq).toBe(0);
 
   await page.close();
   await request.post(controlPath(session, "/__e2e__/release-briefs"), {
@@ -346,8 +305,7 @@ test("dashboard-only tab receives unread changes and a covered conversation stay
   await sibling.addInitScript(() => localStorage.setItem("holon.webGui.contextPanel.v1", JSON.stringify({ open: true, mode: "expanded" })));
   await sibling.goto(`/agents/${agentId}/conversation`);
   await expect(sibling.locator(".side-panel")).toBeVisible();
-  await expect.poll(() => ledger(sibling, agentId)).toMatchObject({ readGateDecision: { mayAdvance: false, reason: "conversation_covered" } });
-  expect((await ledger(sibling, agentId))?.readThroughEventSeq).toBeUndefined();
+  expect((await ledger(sibling, agentId))?.readThroughEventSeq).toBe(0);
   await sibling.keyboard.press("Escape");
   await expect.poll(() => ledger(sibling, agentId)).toMatchObject({ readThroughEventSeq: 2, unreadCount: 0 });
   // The first tab has never entered a conversation or published a read marker.

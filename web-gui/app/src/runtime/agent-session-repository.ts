@@ -22,11 +22,8 @@ import {
   LedgerIngestionPipeline,
   type LedgerHydrationFetchers,
   type LedgerIngestionStatus,
-  type LedgerReadStateRecord,
   type LedgerScopeKey,
-  type LedgerUnreadSnapshot,
   type ProjectionSnapshotRepairSource,
-  type ReadMarkerAdvanceResult,
 } from "./event-ledger";
 import type { AgentSessionState } from "./runtime-store-helpers";
 import type {
@@ -393,81 +390,25 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     return scope ? this.ledgerPipeline.status(scope) : null;
   }
 
-  sessionLedgerResetReason(agentId: string): string | undefined {
-    return this.recoveryCoordinator?.lastResetReasonOf(agentId);
-  }
-
-  /**
-   * Read-marker gate: the highest delivery seq a read state may claim for
-   * this agent without crossing unsatisfied display demand.
-   */
   sessionLedgerReadiness(agentId: string): {
     readyThroughSeq: number;
     ingestedThroughSeq: number;
     observedHeadSeq?: number;
     blockedByEventSeq?: number;
-    blockedReason?: "pending_hydration" | "unknown_envelope_version";
   } | null {
-    const integration = this.dependencies.ledgerIngestion;
-    if (!integration || !this.ledgerPipeline) return null;
-    const scope = integration.resolveScope(agentId);
-    return scope ? this.ledgerPipeline.readinessGate(scope) : null;
+    const status = this.sessionLedgerStatus(agentId);
+    if (!status) return null;
+    return {
+      readyThroughSeq: status.projectionReadyThroughSeq ?? 0,
+      ingestedThroughSeq: status.ingestedThroughSeq ?? 0,
+      observedHeadSeq: status.observedEventHeadSeq,
+      blockedByEventSeq: status.blockedByEventSeq,
+    };
   }
 
-  /**
-   * Advance the browser-local read marker for one agent as a monotonic
-   * maximum. Null when the ledger path is unavailable (no scope, no
-   * pipeline, or memory-only durability).
-   */
-  async advanceReadMarker(
-    agentId: string,
-    candidateSeq: number,
-  ): Promise<ReadMarkerAdvanceResult | null> {
-    await this.initializeLedgerIngestion();
-    const pipeline = this.ledgerPipeline;
-    const scope =
-      this.dependencies.ledgerIngestion?.resolveScope(agentId) ??
-      this.knownLedgerScope(agentId);
-    if (!pipeline || !scope) return null;
-    return pipeline.advanceReadMarker(scope, candidateSeq);
+  sessionLedgerResetReason(agentId: string): string | undefined {
+    return this.recoveryCoordinator?.lastResetReasonOf(agentId);
   }
-
-  /**
-   * Record an explicit acknowledgement that truncated history is unknown.
-   * Opens a new exact generation while preserving the recorded truncation
-   * facts. Null when unavailable; false-y records when nothing changed. An
-   * explicit `headSeq` acknowledges at the gated head a read marker caught
-   * up to instead of the current observed head.
-   */
-  async acknowledgeReadTruncation(
-    agentId: string,
-    headSeq?: number,
-  ): Promise<LedgerReadStateRecord | null> {
-    await this.initializeLedgerIngestion();
-    const pipeline = this.ledgerPipeline;
-    const scope =
-      this.dependencies.ledgerIngestion?.resolveScope(agentId) ??
-      this.knownLedgerScope(agentId);
-    if (!pipeline || !scope) return null;
-    return pipeline.acknowledgeReadTruncation(scope, headSeq);
-  }
-
-  /**
-   * Unread snapshot for one agent from the durable ledger: qualifying
-   * user-facing brief events above the read boundary and below the
-   * projection readiness cursor. Null when the ledger path is unavailable;
-   * callers fall back to the legacy in-memory display.
-   */
-  async unreadSnapshot(agentId: string): Promise<LedgerUnreadSnapshot | null> {
-    await this.initializeLedgerIngestion();
-    const pipeline = this.ledgerPipeline;
-    const scope =
-      this.dependencies.ledgerIngestion?.resolveScope(agentId) ??
-      this.knownLedgerScope(agentId);
-    if (!pipeline || !scope) return null;
-    return pipeline.unreadSnapshot(scope);
-  }
-
 
   /**
    * Trigger durable ledger recovery for one agent at most once per

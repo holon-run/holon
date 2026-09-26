@@ -1,15 +1,15 @@
 /**
- * Cross-tab invalidation hint for browser-local read state.
+ * Cross-tab server revalidation notification.
  *
- * The IndexedDB record is the source of truth between tabs; this channel
- * only nudges other tabs of the same browser profile to re-read it. Tabs in
- * different browser profiles never share the channel or the database.
+ * This channel is only a best-effort hint that another tab changed server
+ * state. It is not a local state source; subscribers must revalidate through
+ * the server API after receiving a notification.
  */
 
 export const READ_STATE_BUS_CHANNEL = "holon.webGui.eventLedger.readStates.v1";
 
 export interface ReadStateBusMessage {
-  kind: "read_state_changed";
+  kind: "server_revalidation_required";
   remoteKey: string;
   agentId: string;
 }
@@ -18,7 +18,7 @@ function isReadStateBusMessage(value: unknown): value is ReadStateBusMessage {
   if (typeof value !== "object" || value === null) return false;
   const message = value as { kind?: unknown; remoteKey?: unknown; agentId?: unknown };
   return (
-    message.kind === "read_state_changed" &&
+    message.kind === "server_revalidation_required" &&
     typeof message.remoteKey === "string" &&
     typeof message.agentId === "string" &&
     message.remoteKey.length > 0 &&
@@ -46,14 +46,13 @@ export class ReadStateBus {
     return this.channel != null;
   }
 
-  /** Broadcast a refresh hint; delivery is best-effort. */
+  /** Broadcast a best-effort hint that subscribers should revalidate via API. */
   publish(message: ReadStateBusMessage): void {
     if (this.disposed) return;
     try {
       this.channel?.postMessage(message);
     } catch {
- // A closed or failed channel only costs the hint; tabs still converge on
- // the database during their next refresh.
+      // A failed channel only loses the hint; API refresh remains authoritative.
     }
   }
 
