@@ -1,5 +1,4 @@
 use std::{
-    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
@@ -185,21 +184,10 @@ impl AppStorage {
         runtime_db: RuntimeDb,
     ) -> Result<Self> {
         let data_dir = data_dir.into();
-        let runtime_dir = data_dir.join(RUNTIME_DIR);
-        let state_dir = runtime_dir.join(RUNTIME_STATE_DIR);
-        let ledger_dir = runtime_dir.join(RUNTIME_LEDGER_DIR);
         let shared_indexes_dir = shared_indexes_dir_for(&data_dir, agent_id.is_some());
         if mode == StorageOpenMode::ReadWrite {
-            fs::create_dir_all(&data_dir)
+            std::fs::create_dir_all(&data_dir)
                 .with_context(|| format!("failed to create {}", data_dir.display()))?;
-            for dir in [
-                &state_dir,
-                &ledger_dir,
-                &runtime_dir.join(RUNTIME_CACHE_DIR),
-            ] {
-                fs::create_dir_all(dir)
-                    .with_context(|| format!("failed to create {}", dir.display()))?;
-            }
         }
 
         let read_only = mode == StorageOpenMode::ReadOnly;
@@ -1309,6 +1297,8 @@ pub fn to_json_value<T: Serialize>(value: &T) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use tempfile::tempdir;
     use tokio::sync::{broadcast, Notify};
 
@@ -3274,7 +3264,27 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].kind, TranscriptEntryKind::IncomingMessage);
         assert_eq!(restored[0].related_message_id.as_deref(), Some("message-1"));
-        assert!(storage.cache_dir().is_dir());
+        assert!(!storage.cache_dir().exists());
+        assert!(!storage.ledger_dir().exists());
+    }
+
+    #[test]
+    fn global_storage_does_not_create_legacy_runtime_directories() {
+        let home = tempdir().unwrap();
+        let runtime_state_dir = home.path().join("state");
+        let runtime_db = RuntimeDb::open_and_migrate(
+            runtime_state_dir.join("runtime.sqlite"),
+            runtime_state_dir.join("runtime.lock"),
+        )
+        .unwrap();
+        let host_dir = home.path().join("host");
+
+        let storage = AppStorage::new_global(&host_dir, runtime_db).unwrap();
+
+        assert!(host_dir.is_dir());
+        assert!(!storage.state_dir().exists());
+        assert!(!storage.ledger_dir().exists());
+        assert!(!storage.cache_dir().exists());
     }
 
     #[test]
