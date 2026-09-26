@@ -2963,19 +2963,40 @@ impl TurnExecution<'_> {
                             runtime.persist_tool_execution_evidence(&success_record)?;
                         }
                         if !result.should_sleep {
+                            // The task result may have been consumed or claimed while
+                            // the report was being written. Resume with the new receipt,
+                            // not the obsolete deferred-report instruction.
+                            let result_content =
+                                crate::tool::tools::render_tool_result_for_model(&result)?;
+                            let continuation_text = format!(
+                                "The previous WaitFor final report request now resolves as \
+                                 {result_content}. No wait was registered and no waiting report \
+                                 was published. Continue the current turn; the pending-report \
+                                 restriction no longer applies."
+                            );
+                            runtime.persist_transcript_evidence(&TranscriptEntry::new(
+                                agent_id.to_string(),
+                                TranscriptEntryKind::ContinuationPrompt,
+                                Some(round),
+                                None,
+                                serde_json::json!({
+                                    "text": continuation_text,
+                                    "reason": "wait_report_continue_turn",
+                                }),
+                            ))?;
                             completed_rounds.push(TurnRoundRecord {
                                 round,
                                 estimated_tokens: build_round_estimated_tokens(
                                     &completed_round_assistant_blocks,
                                     &[],
-                                    &[],
+                                    std::slice::from_ref(&continuation_text),
                                 ),
                                 assistant_blocks: completed_round_assistant_blocks,
                                 text_blocks,
                                 tool_calls: Vec::new(),
                                 tool_results: Vec::new(),
                                 tool_result_envelopes: Vec::new(),
-                                follow_up_user_texts: Vec::new(),
+                                follow_up_user_texts: vec![continuation_text],
                             });
                             continue;
                         }

@@ -262,7 +262,19 @@ Completed WorkItems do not participate in scheduling.
 
 ## Agent-facing `WaitFor`
 
-`WaitFor` records explicit waiting state and yields the turn.
+`WaitFor` classifies the requested wait before deciding whether to yield.
+Successful receipts expose `result.continuation`:
+
+| Outcome | Continuation | Effect |
+| --- | --- | --- |
+| Registered wait | `yield_and_wait` | Yield until the wake arrives. |
+| Exact terminal task result queued | `yield_and_reenter` | Yield, then reenter the model through the existing exact-result admission. |
+| Task result already consumed or claimed by another waiter | `continue_turn` | Continue useful work in the same turn; no new wait, duplicate result admission, or waiting report. |
+
+These fields describe the existing lifecycle outcome, not a new scheduling
+authority. Internal `should_sleep` and `terminal_transition` still control the
+tool loop. Errors retain the error envelope rather than claiming a successful
+continuation.
 
 ```text
 WaitFor {
@@ -278,9 +290,12 @@ WaitFor {
 Rules:
 
 - `reason` is required and must be non-empty.
-- `delivery` is required. `final` defers registration until the model produces
-  one non-empty operator-facing assistant final; the follow-up accepts text
-  only, with at most one corrective retry for empty text or an extra tool call.
+- `delivery` is required. Only yielding outcomes request a report for `final`.
+  Immediate `continue_turn` outcomes bypass the report protocol for both
+  delivery modes. For yielding outcomes, `final` defers registration until the model produces
+  one non-empty operator-facing assistant final; the follow-up allows read-only
+  fact-checking tools and final text, with at most one corrective retry for empty
+  text or a disallowed tool call.
   `silent` performs no follow-up model round and publishes no new Brief. It
   records typed no-brief settlement only when the Turn has no earlier Brief.
 - `reason` is scheduling metadata, not operator-facing assistant text.
@@ -307,6 +322,21 @@ evidence, execution protocol, Turn terminal, and queue terminal together. If a
 wake, task completion, interjection, cancellation, or provider failure
 invalidates that preparation, the runtime must not publish an obsolete
 "still waiting" brief or leave a partially registered wait.
+
+For `final` without an available report, the tool first performs a side-effect-free
+prepare/classification. Only a yielding preparation returns the deferred
+`awaiting_final_report` directive, which has no successful `continuation` yet.
+The report continuation prepares again against current state; the resulting
+preparation remains subject to the atomic terminal validation above. If the
+result was consumed or claimed during report generation, the continuation
+records the updated receipt, lifts the report restriction, and continues the
+same turn without publishing an obsolete waiting brief. Preparation never
+registers a wait merely to obtain a final report.
+
+Durable tool execution envelopes retain the same continuation as model-facing
+receipts. `wait_condition_registered` and `late_task_result_queued` audit payloads
+also record the yielding continuation. Immediate no-op outcomes create no wait
+event; their successful tool evidence records `continue_turn`.
 
 For `delivery=final`, that same transaction binds the result brief to the
 canonical Turn and source assistant round, commits exactly one new deterministic

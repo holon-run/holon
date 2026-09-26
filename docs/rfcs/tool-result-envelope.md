@@ -67,6 +67,16 @@ bad options:
 - let each tool family retain its own typed `result` shape
 - let each tool family define a stable model-visible rendering convention
 
+### WaitFor continuation receipts
+
+`WaitFor` successful result payloads carry a stable `continuation` value:
+`continue_turn`, `yield_and_wait`, or `yield_and_reenter`. Preserve it, the
+existing disposition, and exact task/result identities in budgeted receipts
+and durable tool evidence. This describes the lifecycle result; it does not
+replace runtime scheduling gates. A deferred `awaiting_final_report` is not a
+settled wait and does not assert a successful continuation. See
+[scheduler wait state](scheduler-wait-state.md#agent-facing-waitfor).
+
 ## Non-goals
 
 - do not make every tool's inner `result` payload identical

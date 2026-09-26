@@ -579,6 +579,7 @@ pub(crate) struct WaitForFinalReportProvider {
     pub(crate) silent_progress: Option<bool>,
     pub(crate) saw_settlement_error_follow_up: Mutex<bool>,
     pub(crate) invalid_final_result_count: Mutex<usize>,
+    pub(crate) settlement_timer: Mutex<Option<(RuntimeHandle, String)>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1097,9 +1098,13 @@ impl AgentProvider for WaitForFinalReportProvider {
         } else {
             match *calls {
                 1 => {
+                    let settlement_timer = self.settlement_timer.lock().await;
                     let (id, resource) =
                         if self.scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
-                            ("wait-for-invalid-final", "missing-timer")
+                            (
+                                "wait-for-invalid-final",
+                                settlement_timer.as_ref().unwrap().1.as_str(),
+                            )
                         } else {
                             ("wait-for-final", "github:holon-run/holon#wait-final")
                         };
@@ -1121,6 +1126,8 @@ impl AgentProvider for WaitForFinalReportProvider {
                     }]
                 }
                 2 if self.scenario == WaitForFinalReportScenario::SettlementErrorRecovery => {
+                    let (runtime, timer_id) = self.settlement_timer.lock().await.take().unwrap();
+                    runtime.cancel_timer(&timer_id).await?;
                     vec![ModelBlock::Text {
                         text: "The requested timer wait could not be completed.".into(),
                     }]

@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::{
-    runtime::{RuntimeHandle, WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind},
+    runtime::{
+        RuntimeHandle, WaitForContinuation, WaitForRegistrationOutcome, WaitForScope,
+        WaitForWakeKind,
+    },
     tool::{
         helpers::{invalid_tool_input, parse_tool_args, validate_non_empty},
         spec::{typed_spec, AwaitWaitReportDirective, ToolExecutionContext, ToolLoopDirective},
@@ -61,6 +64,7 @@ pub(crate) enum WaitForOwner {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct WaitForResult {
+    pub(crate) continuation: WaitForContinuation,
     pub(crate) scope: WaitForScope,
     pub(crate) owner: WaitForOwner,
     pub(crate) reason: String,
@@ -102,7 +106,12 @@ pub(crate) async fn execute(
 ) -> Result<ToolResult> {
     let args = parse_wait_for_args(input)?;
     validate_wait_for_args(&args)?;
-    if args.delivery == WaitForDeliveryArg::Final && context.completion_report_candidate.is_none() {
+    let needs_report =
+        args.delivery == WaitForDeliveryArg::Final && context.completion_report_candidate.is_none();
+    // Classification is side-effect free. Only a yielding outcome needs a report;
+    // the report continuation re-prepares and the terminal transaction revalidates.
+    let result = prepare_settlement(runtime, agent_id, authority_class, args).await?;
+    if needs_report && result.should_sleep {
         return Ok(ToolResult::deferred(
             NAME,
             json!({
@@ -116,7 +125,7 @@ pub(crate) async fn execute(
             }),
         ));
     }
-    prepare_settlement(runtime, agent_id, authority_class, args).await
+    Ok(result)
 }
 
 pub(crate) async fn prepare_settlement(
@@ -239,6 +248,7 @@ async fn settle_impl(
             agent_id: agent_id.to_string(),
         });
     let result = WaitForResult {
+        continuation: WaitForContinuation::YieldAndWait,
         scope: registration.scope,
         owner,
         reason: reason.clone(),
@@ -255,8 +265,8 @@ async fn settle_impl(
     };
     let value = serde_json::to_value(&result)?;
     let mut summary = match result.scope {
-        WaitForScope::WorkItem => format!("waiting on work item: {reason}"),
-        WaitForScope::Agent => format!("waiting at agent scope: {reason}"),
+        WaitForScope::WorkItem => format!("yield and wait on work item: {reason}"),
+        WaitForScope::Agent => format!("yield and wait at agent scope: {reason}"),
     };
     if let Some(note) = disclosure.ignore_note() {
         summary = format!("{summary}; {note}");
@@ -320,7 +330,7 @@ fn immediate_result(
             wait_condition_id,
         } => {
             let mut summary = format!(
-                "task result already completed; queued exact result message {result_message_id} and registered the triggered wait"
+                "yield and reenter for exact task result message {result_message_id}; the triggered wait preserves result admission"
             );
             if let Some(note) = disclosure.ignore_note() {
                 summary = format!("{summary}; {note}");
@@ -329,6 +339,7 @@ fn immediate_result(
                 NAME,
                 json!({
                     "disposition": "task_result_queued",
+                    "continuation": WaitForContinuation::YieldAndReenter,
                     "task_id": task_id,
                     "result_message_id": result_message_id,
                     "wait_condition_id": wait_condition_id,
@@ -346,7 +357,9 @@ fn immediate_result(
             task_id,
             result_message_id,
         } => {
-            let mut summary = format!("task result was already consumed: {result_message_id}");
+            let mut summary = format!(
+                "continue the current turn; task result was already consumed: {result_message_id}; no wait registered"
+            );
             if let Some(note) = disclosure.ignore_note() {
                 summary = format!("{summary}; {note}");
             }
@@ -354,6 +367,7 @@ fn immediate_result(
                 NAME,
                 json!({
                     "disposition": "task_result_already_consumed",
+                    "continuation": WaitForContinuation::ContinueTurn,
                     "task_id": task_id,
                     "result_message_id": result_message_id,
                     "waiter_work_item_id": disclosure.waiter_work_item_id,
@@ -374,7 +388,7 @@ fn immediate_result(
                 None => "agent lifecycle".to_string(),
             };
             let mut summary = format!(
-                "task result {result_message_id} was already claimed by another waiter ({claimed_by}); no duplicate wake registered"
+                "continue the current turn; task result {result_message_id} was already claimed by another waiter ({claimed_by}); no duplicate wake registered"
             );
             if let Some(note) = disclosure.ignore_note() {
                 summary = format!("{summary}; {note}");
@@ -383,6 +397,7 @@ fn immediate_result(
                 NAME,
                 json!({
                     "disposition": "task_result_claimed_by_other_waiter",
+                    "continuation": WaitForContinuation::ContinueTurn,
                     "task_id": task_id,
                     "result_message_id": result_message_id,
                     "wait_condition_id": wait_condition_id,

@@ -97,6 +97,14 @@ pub(crate) struct WaitForRegistration {
     pub(crate) cancelled_wait_condition_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WaitForContinuation {
+    ContinueTurn,
+    YieldAndWait,
+    YieldAndReenter,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "disposition", rename_all = "snake_case")]
 pub(crate) enum WaitForRegistrationOutcome {
@@ -640,6 +648,7 @@ impl RuntimeHandle {
                 "work_item_id": work_item_id,
                 "wait_condition_id": condition.id,
                 "source": "WaitFor",
+                "continuation": WaitForContinuation::YieldAndWait,
                 "kind": &condition.kind,
                 "subject_ref": &condition.subject_ref,
                 "waiting_for": &condition.waiting_for,
@@ -892,6 +901,7 @@ impl RuntimeHandle {
                 "wake_sources": &condition.wake_sources,
                 "cancelled_wait_condition_ids": &cancelled_wait_condition_ids,
                 "initial_status": "triggered",
+                "continuation": WaitForContinuation::YieldAndReenter,
                 "trigger_message_id": result_message_id,
             }),
         )];
@@ -935,6 +945,7 @@ impl RuntimeHandle {
         audit_events.push(AuditEvent::legacy(
             "late_task_result_queued",
             serde_json::json!({
+                "continuation": WaitForContinuation::YieldAndReenter,
                 "agent_id": task.agent_id,
                 "task_id": task.id,
                 "result_message_id": result_message_id,
