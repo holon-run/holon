@@ -279,10 +279,12 @@ as the source of truth.
 
 The host-level shared projection follows the same rebuildable-index contract,
 but is stored at `holon_home/indexes/` and is shared by agent storages on that
-host. During upgrade, an existing legacy shared-index directory may be moved
-to the canonical location only when the canonical location has no data. If
-both locations contain data, startup must stop and report the conflict rather
-than merge or silently choose one.
+host. Older releases could create a mistaken nested path such as
+`holon_home/host/.holon/indexes` (or another nested `.holon/indexes` path).
+Current releases do not inspect, migrate, or recreate those legacy paths.
+Because indexes are rebuildable projections rather than canonical state,
+operators should stop Holon, back up any legacy index directory that contains
+data, and rebuild the canonical index before removing the obsolete path.
 
 ### `.holon/cache/`
 
