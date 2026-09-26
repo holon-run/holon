@@ -58,6 +58,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
     implementation("app.nekogram.prism4j:prism4j:2.1.0")
     testImplementation(kotlin("test-junit"))
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     val composeBom = platform("androidx.compose:compose-bom:2025.02.00")
