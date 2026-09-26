@@ -1197,9 +1197,8 @@ pub async fn control_prompt(
     let semantic_content = serde_json::to_value(&request)
         .map_err(anyhow::Error::from)
         .map_err(error_response)?;
-    let materialized =
-        control_prompt_text_with_attachments(&agent_id, &runtime.agent_home(), request)
-            .map_err(|err| bad_request(err.to_string()))?;
+    let materialized = control_prompt_text_with_attachments(&runtime.agent_home(), request)
+        .map_err(|err| bad_request(err.to_string()))?;
     let text = materialized.text;
     let created_attachment_paths = materialized.created_paths;
     let admission_context = control_admission_context(&state);
@@ -1324,7 +1323,6 @@ struct MaterializedControlPrompt {
 }
 
 fn control_prompt_text_with_attachments(
-    agent_id: &str,
     agent_home: &std::path::Path,
     request: ControlPromptRequest,
 ) -> Result<MaterializedControlPrompt> {
@@ -1371,11 +1369,10 @@ fn control_prompt_text_with_attachments(
                     created_paths.extend(written.created_path);
                     append_attachment_separator(&mut text);
                     text.push_str(&format!(
-                        "\n![{}](workspace://{}/media/inbox/{})",
+                        "\n![{}]({})",
                         markdown_alt_text(name.as_deref())
                             .unwrap_or_else(|| format!("image {}", position)),
-                        crate::types::agent_home_workspace_id(agent_id),
-                        percent_encode_path_segment(&written.file_name)
+                        markdown_absolute_path(&inbox.join(&written.file_name))
                     ));
                 }
                 ControlPromptAttachment::File(ControlPromptFileAttachment {
@@ -1402,11 +1399,10 @@ fn control_prompt_text_with_attachments(
                     created_paths.extend(written.created_path);
                     append_attachment_separator(&mut text);
                     text.push_str(&format!(
-                        "\n[{}](workspace://{}/media/inbox/{})",
+                        "\n[{}]({})",
                         markdown_alt_text(name.as_deref())
                             .unwrap_or_else(|| format!("file {}", position)),
-                        crate::types::agent_home_workspace_id(agent_id),
-                        percent_encode_path_segment(&written.file_name)
+                        markdown_absolute_path(&inbox.join(&written.file_name))
                     ));
                 }
             }
@@ -1614,6 +1610,14 @@ fn percent_encode_path_segment(segment: &str) -> String {
     percent_encoding::utf8_percent_encode(segment, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
+fn markdown_absolute_path(path: &std::path::Path) -> String {
+    path.to_string_lossy()
+        .split('/')
+        .map(percent_encode_path_segment)
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1733,7 +1737,6 @@ mod tests {
     fn image_attachment_still_generates_markdown_preview() {
         let home = tempfile::tempdir().unwrap();
         let text = control_prompt_text_with_attachments(
-            "agent-one",
             home.path(),
             ControlPromptRequest {
                 text: "look".into(),
@@ -1754,17 +1757,17 @@ mod tests {
         let files = inbox_files(home.path());
         assert_eq!(files.len(), 1);
         assert!(files[0].ends_with("-diagram.png"));
-        assert!(
-            text.contains("look\n\n![diagram.png](workspace://agent_home:agent-one/media/inbox/")
-        );
-        assert!(text.contains(&percent_encode_path_segment(&files[0])));
+        let absolute_path = home.path().join("media").join("inbox").join(&files[0]);
+        assert!(text.contains(&format!(
+            "look\n\n![diagram.png]({})",
+            markdown_absolute_path(&absolute_path)
+        )));
     }
 
     #[test]
-    fn file_attachment_generates_plain_workspace_link_and_file() {
+    fn file_attachment_generates_plain_absolute_link_and_file() {
         let home = tempfile::tempdir().unwrap();
         let text = control_prompt_text_with_attachments(
-            "agent-one",
             home.path(),
             ControlPromptRequest {
                 text: "read this".into(),
@@ -1787,8 +1790,11 @@ mod tests {
             std::fs::read(home.path().join("media").join("inbox").join(&files[0])).unwrap(),
             b"%PDF-1.7"
         );
-        assert!(text
-            .contains("read this\n\n[report.pdf](workspace://agent_home:agent-one/media/inbox/"));
+        let absolute_path = home.path().join("media").join("inbox").join(&files[0]);
+        assert!(text.contains(&format!(
+            "read this\n\n[report.pdf]({})",
+            markdown_absolute_path(&absolute_path)
+        )));
         assert!(!text.contains("![report.pdf]"));
     }
 
@@ -1812,7 +1818,6 @@ mod tests {
     fn file_attachment_rejects_empty_content() {
         let home = tempfile::tempdir().unwrap();
         let error = control_prompt_text_with_attachments(
-            "agent-one",
             home.path(),
             ControlPromptRequest {
                 text: String::new(),
@@ -1834,7 +1839,6 @@ mod tests {
     fn dangerous_file_names_stay_inside_inbox() {
         let home = tempfile::tempdir().unwrap();
         let _ = control_prompt_text_with_attachments(
-            "agent-one",
             home.path(),
             ControlPromptRequest {
                 text: String::new(),

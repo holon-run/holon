@@ -1491,8 +1491,8 @@ impl RuntimeHandle {
         let worktree_cleanup_session = worktree_session.clone();
 
         // Register the execution root in the durable registry so that
-        // workspace:// URIs with ?root= can resolve even after the agent
-        // switches to a different root.
+        // historical workspace:// URIs with ?root= can resolve even after
+        // the agent switches to a different root.
         let execution_root_repo = self.inner.runtime_db.execution_root_entries();
         let existing_execution_root = execution_root_repo.get(&execution_root_id).ok().flatten();
         if let Err(error) = execution_root_repo.upsert(&ExecutionRootEntry {

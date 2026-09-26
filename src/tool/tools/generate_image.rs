@@ -133,11 +133,7 @@ pub(crate) async fn execute(
             path.file_name()
                 .ok_or_else(|| anyhow!("generated image path has no filename"))?,
         );
-        let uri = format!(
-            "workspace://{}/{}",
-            workspace_id,
-            relative_path.to_string_lossy()
-        );
+        let uri = path.to_string_lossy().into_owned();
         images.push(GeneratedImageReference {
             kind: "generated_image".to_string(),
             id: format!("img_{}", &reference.sha256[..16]),

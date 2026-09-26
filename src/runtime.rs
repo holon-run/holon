@@ -3800,8 +3800,8 @@ impl RuntimeHandle {
     }
 
     /// Registered execution roots for the given workspaces. Used to populate
-    /// execution snapshots and to reverse-map resolved paths (for example
-    /// ViewImage results) into `workspace://` URIs with `?root=` parameters.
+    /// execution snapshots so historical `workspace://` references with
+    /// `?root=` parameters can still be resolved.
     pub(crate) fn execution_root_refs_for_workspaces(
         &self,
         workspace_ids: &[String],
@@ -3840,7 +3840,7 @@ impl RuntimeHandle {
         );
         // Populate execution_roots from the runtime DB registry for all
         // attached workspaces, so the provider turn resolver can resolve
-        // `?root=` parameters in workspace:// URIs.
+        // historical `?root=` parameters in workspace:// URIs.
         snapshot.execution_roots = self.execution_root_refs_for_workspaces(attached_workspace_ids);
         snapshot
     }

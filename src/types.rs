@@ -4231,11 +4231,8 @@ pub struct ViewImageVisualReference {
     pub kind: String,
     pub id: String,
     pub path: PathBuf,
-    /// Canonical `workspace://` URI for the image when the resolved path maps
-    /// into an attached workspace or registered execution root (worktree
-    /// references carry `?root=`). Serialized as `null` when the path is
-    /// outside every workspace so consumers can distinguish "unmappable" from
-    /// legacy records that predate the field.
+    /// Absolute filesystem path for the image. The historical field name is
+    /// retained for serialized compatibility with older tool results.
     #[serde(default)]
     pub workspace_uri: Option<String>,
     pub sha256: String,

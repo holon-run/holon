@@ -5,7 +5,7 @@ import { formatToolExecutionDetail } from "../inspector/ActivityInspectorPanel";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import { parseWorkspaceImageRef, WorkspaceImage } from "../../components/MarkdownContent";
-import type { RuntimeToolExecutionRecord } from "../../runtime/types";
+import type { ResolvedFileLocation, RuntimeToolExecutionRecord } from "../../runtime/types";
 
 // Utility helpers (mirrors the private helpers in ActivityInspectorPanel)
 
@@ -182,21 +182,79 @@ export function LinkField({ label, href, text }: { label: string; href: string; 
   );
 }
 
-/** Renders a workspace:// image URI as an actual preview when possible. */
+/** Renders a file reference as an actual preview when possible. */
 export function ImagePreview({ uri, alt }: { uri: string; alt?: string }) {
   const ref = parseWorkspaceImageRef(uri);
-  if (!ref) {
-    return <SimpleField label="Image" value={uri} />;
+  if (ref) {
+    return (
+      <section className="tool-detail-field">
+        <h3 className="tool-detail-field-label">Image preview</h3>
+        <div className="tool-detail-image-preview">
+          <WorkspaceImage
+            workspaceId={ref.workspaceId}
+            path={ref.path}
+            executionRootId={ref.executionRootId}
+            alt={alt ?? ref.path}
+          />
+        </div>
+      </section>
+    );
+  }
+  if (uri.startsWith("/")) {
+    return <AbsoluteImagePreview path={uri} alt={alt} />;
+  }
+  return <SimpleField label="Image" value={uri} />;
+}
+
+function AbsoluteImagePreview({ path, alt }: { path: string; alt?: string }) {
+  const resolveFileReferences = useRuntimeStore((state) => state.resolveFileReferences);
+  const [state, setState] = useState<
+    { status: "loading" } |
+    { status: "resolved"; location: ResolvedFileLocation } |
+    { status: "error"; message: string }
+  >({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading" });
+    void resolveFileReferences([{ type: "absolute_path", absolutePath: path }])
+      .then((response) => {
+        if (cancelled) return;
+        const result = response.results[0];
+        if (!result || result.status !== "resolved") {
+          setState({
+            status: "error",
+            message: result?.status === "unresolved" ? result.message : "image path could not be resolved",
+          });
+          return;
+        }
+        setState({ status: "resolved", location: result.location });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [path, resolveFileReferences]);
+
+  if (state.status === "error") {
+    return <SimpleField label="Image" value={`${path} (${state.message})`} />;
+  }
+  if (state.status === "loading") {
+    return <SimpleField label="Image preview" value={`Resolving ${path}`} />;
   }
   return (
     <section className="tool-detail-field">
       <h3 className="tool-detail-field-label">Image preview</h3>
       <div className="tool-detail-image-preview">
         <WorkspaceImage
-          workspaceId={ref.workspaceId}
-          path={ref.path}
-          executionRootId={ref.executionRootId}
-          alt={alt ?? ref.path}
+          workspaceId={state.location.workspaceId}
+          path={state.location.path}
+          executionRootId={state.location.executionRootId}
+          alt={alt ?? path}
         />
       </div>
     </section>
@@ -501,11 +559,13 @@ function ViewImageRenderer({ record }: { record: RuntimeToolExecutionRecord }) {
     : [];
   const summary = textField(result?.summary_text) || record.summary;
 
-  // Consume the canonical reference recorded when the tool ran. Never
-  // reconstruct one from the render-time active workspace: the agent may
-  // have switched workspaces since, and absolute local paths (e.g. /tmp
-  // screenshots) are not workspace-relative anyway.
-  const imageUri = workspaceUri ?? (displayPath?.startsWith("workspace://") ? displayPath : undefined);
+  // Consume the canonical absolute path recorded when the tool ran. Keep the
+  // legacy workspace URI fallback for historical tool results.
+  const imageUri = workspaceUri || (
+    displayPath && (displayPath.startsWith("/") || displayPath.startsWith("workspace://"))
+      ? displayPath
+      : undefined
+  );
 
   return (
     <>
