@@ -5,6 +5,7 @@ enum HolonDaemonLifecycleState: String, Codable, Sendable {
     case degraded
     case stopped
     case stale
+    case unresponsive
     case versionMismatch = "version_mismatch"
 
     var title: String {

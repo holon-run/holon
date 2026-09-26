@@ -41,7 +41,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 pub const PRE_SERVER_PREPARED_ENV: &str = "HOLON_PRE_SERVER_RUNTIME_PREPARED";
 pub const DAEMON_SERVE_ARGS_ENV: &str = "HOLON_DAEMON_SERVE_ARGS";
 pub const DAEMON_START_TIMEOUT_ENV: &str = "HOLON_DAEMON_START_TIMEOUT_SECS";
-const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const UNIX_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(crate) fn web_url(http_addr: &str) -> String {
     if http_addr.starts_with("http://") || http_addr.starts_with("https://") {
@@ -83,10 +83,17 @@ static PREPARE_RUNTIME_BEFORE_SERVER_HOOK: std::sync::Mutex<
 > = std::sync::Mutex::new(None);
 
 pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
+    daemon_status_with_probe_timeout(config, UNIX_PROBE_TIMEOUT).await
+}
+
+pub(crate) async fn daemon_status_with_probe_timeout(
+    config: &AppConfig,
+    probe_timeout: Duration,
+) -> Result<DaemonStatusView> {
     let fingerprint = config_fingerprint(config)?;
     let metadata = load_daemon_metadata(config).ok().flatten();
     let persisted_failure = latest_known_runtime_failure(config).ok().flatten();
-    match probe_runtime(config).await {
+    match probe_runtime_with_timeout(config, probe_timeout).await {
         ProbeRuntime::Running(status) => Ok(DaemonStatusView {
             ok: true,
             state: if status.healthy {
@@ -166,6 +173,34 @@ pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
                 message,
             })
         }
+        ProbeRuntime::Unresponsive { details } => Ok(DaemonStatusView {
+            ok: true,
+            state: DaemonLifecycleState::Unresponsive,
+            healthy: false,
+            home_dir: config.home_dir.clone(),
+            socket_path: config.socket_path.clone(),
+            http_addr: config.http_addr.clone(),
+            web_url: web_url(&config.http_addr),
+            product_version: metadata
+                .as_ref()
+                .and_then(|record| optional_nonempty(record.product_version.clone())),
+            control_protocol_version: metadata
+                .as_ref()
+                .and_then(|record| optional_nonzero(record.control_protocol_version)),
+            lifecycle_owner: metadata.as_ref().map(|record| record.lifecycle_owner),
+            executable_path: metadata
+                .as_ref()
+                .and_then(|record| optional_path(record.executable_path.clone())),
+            desired_running: load_daemon_desired_running(config)?.unwrap_or(false),
+            pid: metadata.as_ref().map(|record| record.pid),
+            control_connectivity: false,
+            runtime_config_fingerprint: metadata.map(|record| record.config_fingerprint),
+            config_fingerprint_match: None,
+            activity: None,
+            last_failure: persisted_failure,
+            stale_files: stale_files(config),
+            message: details,
+        }),
         ProbeRuntime::Incompatible { details } => Ok(DaemonStatusView {
             ok: true,
             state: DaemonLifecycleState::VersionMismatch,
@@ -262,6 +297,11 @@ async fn daemon_start_unlocked(
         ProbeRuntime::Stopped {
             occupied_socket: false,
         } => {}
+        ProbeRuntime::Unresponsive { details } => {
+            return Err(anyhow!(
+                "runtime is unresponsive during readiness probe: {details}; use explicit stop after confirming the runtime identity"
+            ));
+        }
         ProbeRuntime::Incompatible { details } => {
             return Err(anyhow!(
                 "runtime is already running but incompatible with the daemon lifecycle contract: {details}; use explicit restart after stopping it"
@@ -360,6 +400,24 @@ async fn daemon_start_unlocked(
             }
             ProbeRuntime::Running(_) => {}
             ProbeRuntime::Stopped { .. } => {}
+            ProbeRuntime::Unresponsive { details } => {
+                best_effort_cleanup_spawned_start(config, &mut child).await;
+                let _ = persist_daemon_lifecycle_failure(
+                    config,
+                    &RuntimeFailureSummary {
+                        occurred_at: Utc::now(),
+                        summary: format!(
+                            "daemon start failed because runtime became unresponsive during startup stabilization: {details}"
+                        ),
+                        phase: RuntimeFailurePhase::Startup,
+                        detail_hint: Some(daemon_log_hint()),
+                        failure_artifact: None,
+                    },
+                );
+                return Err(anyhow!(
+                    "runtime became unresponsive during startup stabilization: {details}"
+                ));
+            }
             ProbeRuntime::Incompatible { details } => {
                 best_effort_cleanup_spawned_start(config, &mut child).await;
                 let _ = persist_daemon_lifecycle_failure(
@@ -502,6 +560,23 @@ async fn daemon_stop_unlocked(config: &AppConfig) -> Result<DaemonLifecycleResul
             return Err(anyhow!(
                 "control socket {} is occupied by a non-Holon process; refusing to clean it up",
                 config.socket_path.display()
+            ));
+        }
+        ProbeRuntime::Unresponsive { details } => {
+            let _ = persist_daemon_lifecycle_failure(
+                config,
+                &RuntimeFailureSummary {
+                    occurred_at: Utc::now(),
+                    summary: format!(
+                        "daemon stop refused because runtime was unresponsive during readiness probe: {details}"
+                    ),
+                    phase: RuntimeFailurePhase::Shutdown,
+                    detail_hint: Some(daemon_log_hint()),
+                    failure_artifact: None,
+                },
+            );
+            return Err(anyhow!(
+                "cannot stop runtime safely: readiness probe timed out or became unresponsive: {details}; refusing to clean it up"
             ));
         }
         ProbeRuntime::Incompatible { details } => {
@@ -880,6 +955,9 @@ pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
             cleanup_daemon_state(config)?;
             Ok(())
         }
+        ProbeRuntime::Unresponsive { details } => Err(anyhow!(
+            "runtime is unresponsive during daemon serve preflight: {details}; refusing to clean up the control socket"
+        )),
         ProbeRuntime::Incompatible { details } => Err(anyhow!(
             "runtime is already running but incompatible with the daemon lifecycle contract: {details}; stop or restart it explicitly"
         )),
@@ -955,6 +1033,13 @@ async fn best_effort_cleanup_spawned_start(config: &AppConfig, child: &mut Child
                 return;
             }
         }
+        ProbeRuntime::Unresponsive { .. } => {
+            if let Ok(None) = child.try_wait() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+            return;
+        }
     }
 
     if let Ok(None) = child.try_wait() {
@@ -1028,6 +1113,11 @@ where
                     }
                 ));
             }
+            ProbeRuntime::Unresponsive { details } => {
+                return Err(anyhow!(
+                    "runtime became unresponsive during startup stabilization: {details}"
+                ));
+            }
             ProbeRuntime::Incompatible { details } => {
                 return Err(anyhow!(
                     "runtime became incompatible during startup stabilization: {details}"
@@ -1055,6 +1145,11 @@ async fn wait_for_shutdown(config: &AppConfig, timeout: Duration) -> Result<()> 
         match probe_runtime(config).await {
             ProbeRuntime::Running(_) => {}
             ProbeRuntime::Stopped { .. } => return Ok(()),
+            ProbeRuntime::Unresponsive { details } => {
+                return Err(anyhow!(
+                    "runtime remained reachable but unresponsive during shutdown: {details}"
+                ));
+            }
             ProbeRuntime::Incompatible { details } => {
                 return Err(anyhow!(
                     "runtime remained reachable but incompatible during shutdown: {details}"
@@ -1236,10 +1331,18 @@ fn send_signal(pid: u32, signal: i32, signal_name: &str) -> Result<SignalOutcome
 pub(crate) enum ProbeRuntime {
     Running(Box<RuntimeStatusResponse>),
     Stopped { occupied_socket: bool },
+    Unresponsive { details: String },
     Incompatible { details: String },
 }
 
 pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
+    probe_runtime_with_timeout(config, UNIX_PROBE_TIMEOUT).await
+}
+
+pub(crate) async fn probe_runtime_with_timeout(
+    config: &AppConfig,
+    probe_timeout: Duration,
+) -> ProbeRuntime {
     #[cfg(unix)]
     if config.socket_path.exists() {
         if let Ok(metadata) = fs::symlink_metadata(&config.socket_path) {
@@ -1257,7 +1360,7 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
                 }
             }
         };
-        match tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_readiness_unix_only()).await {
+        match tokio::time::timeout(probe_timeout, client.runtime_readiness_unix_only()).await {
             Ok(Ok(status)) => return compatible_runtime(status),
             Ok(Err(err)) => {
                 return match unix_probe_stopped_socket_occupancy(err.root_cause()) {
@@ -1275,8 +1378,8 @@ pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
                 };
             }
             Err(_) => {
-                return ProbeRuntime::Stopped {
-                    occupied_socket: true,
+                return ProbeRuntime::Unresponsive {
+                    details: format!("unix readiness probe timed out after {probe_timeout:?}"),
                 };
             }
         }

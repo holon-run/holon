@@ -1,8 +1,9 @@
 use super::lifecycle::{
-    effective_config_mismatch_summary, lifecycle_lock, probe_runtime,
-    runtime_status_matches_metadata, set_prepare_runtime_before_server_hook,
-    should_retry_startup_stability_probe, validate_incompatible_runtime_identity_with_executable,
-    wait_for_startup_stability_with_probe, web_url, ProbeRuntime,
+    daemon_status_with_probe_timeout, effective_config_mismatch_summary, lifecycle_lock,
+    probe_runtime, probe_runtime_with_timeout, runtime_status_matches_metadata,
+    set_prepare_runtime_before_server_hook, should_retry_startup_stability_probe,
+    validate_incompatible_runtime_identity_with_executable, wait_for_startup_stability_with_probe,
+    web_url, ProbeRuntime,
 };
 use super::state::{
     persist_last_runtime_failure, DAEMON_LOG_TAIL_LINE_CHAR_LIMIT, DAEMON_LOG_TAIL_READ_BYTE_LIMIT,
@@ -844,7 +845,43 @@ async fn probe_runtime_treats_non_socket_path_as_stale() {
         ProbeRuntime::Incompatible { details } => {
             panic!("expected stale runtime probe, got incompatible: {details}")
         }
+        ProbeRuntime::Unresponsive { details } => {
+            panic!("expected stale runtime probe, got unresponsive: {details}")
+        }
     }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn probe_runtime_reports_unresponsive_when_readiness_times_out() {
+    let config = test_config();
+    fs::create_dir_all(config.run_dir()).unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                drop(stream);
+            });
+        }
+    });
+
+    match probe_runtime_with_timeout(&config, std::time::Duration::from_millis(50)).await {
+        ProbeRuntime::Unresponsive { details } => {
+            assert!(details.contains("unix readiness probe timed out"));
+        }
+        other => panic!("expected unresponsive runtime probe, got {:?}", other),
+    }
+
+    let status = daemon_status_with_probe_timeout(&config, std::time::Duration::from_millis(50))
+        .await
+        .unwrap();
+    assert_eq!(status.state, DaemonLifecycleState::Unresponsive);
+    assert!(!status.healthy);
+    assert!(!status.control_connectivity);
+    assert!(status.message.contains("unix readiness probe timed out"));
+    assert!(!status.message.contains("non-Holon process"));
 }
 
 #[cfg(unix)]
