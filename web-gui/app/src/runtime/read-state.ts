@@ -16,6 +16,73 @@ export interface ConversationReadContext {
   conversationReady: boolean;
 }
 
+export interface LedgerReadMarkerGateInput extends ConversationReadContext {
+  conversationVisible?: boolean;
+  discoveryFresh: boolean;
+  readiness: {
+    readyThroughSeq: number;
+    ingestedThroughSeq: number;
+    observedHeadSeq?: number;
+    blockedByEventSeq?: number;
+  } | null;
+}
+
+export type ReadMarkerGateReason =
+  | "not_selected"
+  | "conversation_covered"
+  | "document_hidden"
+  | "session_not_ready"
+  | "discovery_stale"
+  | "ledger_unavailable"
+  | "no_observed_head"
+  | "not_caught_up"
+  | "blocked_by_invalidation";
+
+export interface ReadMarkerDecision {
+  mayAdvance: boolean;
+  candidateSeq?: number;
+  reason?: ReadMarkerGateReason;
+}
+
+export function evaluateLedgerReadMarkerGate(
+  input: LedgerReadMarkerGateInput,
+  agentId: string,
+): ReadMarkerDecision {
+  if (input.route !== "agent" || input.selectedAgentId !== agentId) {
+    return { mayAdvance: false, reason: "not_selected" };
+  }
+  if (input.conversationVisible === false) {
+    return { mayAdvance: false, reason: "conversation_covered" };
+  }
+  if (!input.documentVisible) {
+    return { mayAdvance: false, reason: "document_hidden" };
+  }
+  if (!input.conversationReady) {
+    return { mayAdvance: false, reason: "session_not_ready" };
+  }
+  if (!input.discoveryFresh) {
+    return { mayAdvance: false, reason: "discovery_stale" };
+  }
+  if (!input.readiness) {
+    return { mayAdvance: false, reason: "ledger_unavailable" };
+  }
+  const head = input.readiness.observedHeadSeq;
+  if (head == null || head <= 0) {
+    return { mayAdvance: false, reason: "no_observed_head" };
+  }
+  if (input.readiness.ingestedThroughSeq < head) {
+    return { mayAdvance: false, reason: "not_caught_up" };
+  }
+  if (input.readiness.readyThroughSeq < head) {
+    return { mayAdvance: false, reason: "blocked_by_invalidation" };
+  }
+  const blockedAt = input.readiness.blockedByEventSeq;
+  if (blockedAt != null && blockedAt > input.readiness.readyThroughSeq) {
+    return { mayAdvance: false, reason: "blocked_by_invalidation" };
+  }
+  return { mayAdvance: true, candidateSeq: head };
+}
+
 export function readStoredRosterActivity(
   remoteKey: string,
   storage: Storage | undefined = typeof window === "undefined" ? undefined : window.localStorage,

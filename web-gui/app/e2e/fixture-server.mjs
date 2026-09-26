@@ -53,6 +53,7 @@ function sessionFor(req, url) {
       briefsById: new Map(),
       toolExecutionsById: new Map(),
       blockedBriefIds: new Set(),
+      briefReadCursors: new Map(),
       failConversationByAgentId: new Set(),
       streamGeneration: 0,
       runtimeId: "e2e-runtime",
@@ -130,6 +131,34 @@ function eventHead(session, agentId) {
     0,
     ...(session.eventsByAgentId.get(agentId) ?? []).map((event) => event.event_seq),
   );
+}
+
+function briefReadState(session, agentId) {
+  const key = [
+    session.runtimeId,
+    session.visibilityScopeId,
+    session.eventLogEpoch,
+    agentId,
+  ].join("\u0000");
+  const readThroughEventSeq = session.briefReadCursors.get(key) ?? 0;
+  const eventHeadSeq = eventHead(session, agentId);
+  const oldestRetainedSeq = session.oldestRetainedSeqByAgentId.get(agentId) ?? 0;
+  const retentionGap = oldestRetainedSeq > 0 && readThroughEventSeq < oldestRetainedSeq - 1;
+  const unreadCount = (session.eventsByAgentId.get(agentId) ?? [])
+    .filter((event) => event.type === "brief_created" && event.event_seq > readThroughEventSeq)
+    .length;
+  return {
+    agent_id: agentId,
+    event_head_seq: eventHeadSeq,
+    event_log_epoch: session.eventLogEpoch,
+    oldest_retained_seq: oldestRetainedSeq,
+    read_through_event_seq: readThroughEventSeq,
+    reset_required: false,
+    retention_gap: retentionGap,
+    revision: session.briefReadCursors.has(key) ? 1 : 0,
+    unread_count: unreadCount,
+    visibility_scope_id: session.visibilityScopeId,
+  };
 }
 
 function listEntry(agentId, session) {
@@ -501,6 +530,32 @@ async function handleApi(req, res, url) {
   const stateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/state$/);
   if (stateMatch) {
     json(res, agentState(decodeURIComponent(stateMatch[1]), session));
+    return true;
+  }
+  if (url.pathname === "/api/agents/brief-read-states" && req.method === "GET") {
+    json(res, session.visibleAgentIds.map((agentId) => briefReadState(session, agentId)));
+    return true;
+  }
+  const briefReadCursorMatch = url.pathname.match(
+    /^\/api\/agents\/([^/]+)\/brief-read-cursor$/,
+  );
+  if (briefReadCursorMatch && req.method === "POST") {
+    const agentId = decodeURIComponent(briefReadCursorMatch[1]);
+    const body = await requestBody(req);
+    const candidate = Number(body.read_through_event_seq);
+    if (!Number.isFinite(candidate) || candidate < 0) {
+      json(res, { error: "read_through_event_seq must be a non-negative number" }, 400);
+      return true;
+    }
+    const key = [
+      session.runtimeId,
+      session.visibilityScopeId,
+      session.eventLogEpoch,
+      agentId,
+    ].join("\u0000");
+    const current = session.briefReadCursors.get(key) ?? 0;
+    session.briefReadCursors.set(key, Math.max(current, candidate));
+    json(res, { state: briefReadState(session, agentId) });
     return true;
   }
   if (url.pathname === "/api/events/stream") {

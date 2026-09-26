@@ -29,6 +29,7 @@ export interface UseConversationSessionResult {
   readonly model: ConversationSessionModel;
   readonly scopeKey: string | null;
   readonly controller: ConversationController | null;
+  readonly conversationReady: boolean;
   retry: () => void;
   loadOlderHistory: () => void;
   loadDetail: (turnId: string) => void;
@@ -202,6 +203,7 @@ export function useConversationSession(
     model,
     scopeKey,
     controller,
+    conversationReady,
     retry,
     loadOlderHistory,
     loadDetail,

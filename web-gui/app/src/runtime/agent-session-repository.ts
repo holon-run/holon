@@ -390,6 +390,22 @@ export class AgentSessionRepository<State extends AgentSessionRepositoryState> {
     return scope ? this.ledgerPipeline.status(scope) : null;
   }
 
+  sessionLedgerReadiness(agentId: string): {
+    readyThroughSeq: number;
+    ingestedThroughSeq: number;
+    observedHeadSeq?: number;
+    blockedByEventSeq?: number;
+  } | null {
+    const status = this.sessionLedgerStatus(agentId);
+    if (!status) return null;
+    return {
+      readyThroughSeq: status.projectionReadyThroughSeq ?? 0,
+      ingestedThroughSeq: status.ingestedThroughSeq ?? 0,
+      observedHeadSeq: status.observedEventHeadSeq,
+      blockedByEventSeq: status.blockedByEventSeq,
+    };
+  }
+
   sessionLedgerResetReason(agentId: string): string | undefined {
     return this.recoveryCoordinator?.lastResetReasonOf(agentId);
   }

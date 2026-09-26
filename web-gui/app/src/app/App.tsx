@@ -146,20 +146,6 @@ export function App() {
   const selectedAgentSession = useRuntimeStore((state) =>
     sidePanelAgentId ? state.sessionsByAgentId[sidePanelAgentId] : undefined,
   );
-  const markSelectedAgentConversationRead = useCallback(() => {
-    if (activeAgentId && !panelLayout.full) markAgentConversationRead(activeAgentId);
-  }, [
-    activeAgentId,
-    activeAgentBriefReadState,
-    discoveryFreshness,
-    markAgentConversationRead,
-    panelLayout.full,
-    selectedAgentSession?.briefHydrationById,
-    selectedAgentSession?.gaps.length,
-    selectedAgentSession?.liveStatus,
-    selectedAgentSession?.loading,
-    selectedAgentSession?.syncStatus,
-  ]);
   const selectedAgentTimelineEvents = useRuntimeStore((state) =>
     sidePanelAgentId ? state.timelineEventsByAgentId[sidePanelAgentId] : undefined,
   );
@@ -264,6 +250,15 @@ export function App() {
   const conversationSession = useConversationSession(
     route === "agent" ? activeAgentId : undefined,
   );
+  const markSelectedAgentConversationRead = useCallback(() => {
+    if (!activeAgentId || panelLayout.full) return false;
+    markAgentConversationRead(activeAgentId);
+    return true;
+  }, [
+    activeAgentId,
+    markAgentConversationRead,
+    panelLayout.full,
+  ]);
   const activeAgent = selectedAgent ?? selectedAgentDetail?.agent;
   const selectedAgentLiveStatus = selectedAgentSession?.liveStatus ?? "idle";
   const selectedAgentLiveTitle = liveStatusTitle(selectedAgentLiveStatus, t, selectedAgentSession?.lastStreamActivityAt, selectedAgentSession?.error);
@@ -806,6 +801,7 @@ export function App() {
             syncError={selectedAgentSession?.syncError}
             syncRetryAttempt={selectedAgentSession?.syncRetryAttempt}
             historyTruncated={false}
+            conversationReady={conversationSession.conversationReady}
             onRefreshModels={refreshModelCatalog}
             onSetModel={(model, reasoningEffort) => setAgentModel(activeAgent.id, model, reasoningEffort)}
             onClearModel={() => clearAgentModel(activeAgent.id)}

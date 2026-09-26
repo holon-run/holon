@@ -45,6 +45,7 @@ import {
   touchRosterActivity,
   touchRosterActivityFromEvent,
   writeStoredRosterActivity,
+  evaluateLedgerReadMarkerGate,
   type AgentRosterActivity,
 } from "./read-state";
 import {
@@ -1078,7 +1079,7 @@ function ensureReadStateBus(): ReadStateBus {
   if (!readStateBus) {
     readStateBus = new ReadStateBus((message) => {
       if (message.remoteKey !== currentRemoteKey(runtimeConnectionConfig)) return;
-      void refreshBriefReadStatesInView();
+      void refreshBriefReadStatesInView().then(() => refreshBriefReadStatesInView());
     });
   }
   return readStateBus;
@@ -1093,6 +1094,10 @@ function publishReadStateRevalidation(agentId: string): void {
 }
 
 async function refreshBriefReadStatesInView(): Promise<void> {
+  // The initial local connection uses the module-level runtime config and
+  // does not pass through setRuntimeConnection. Ensure dashboard-only tabs
+  // subscribe before another tab publishes a read-state revalidation hint.
+  ensureReadStateBus();
   const generation = clientGeneration;
   if (briefReadStatesRefreshInFlight && briefReadStatesRefreshGeneration === generation) {
     return briefReadStatesRefreshInFlight;
@@ -1144,12 +1149,47 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
     span.end("skipped", { reason: "candidate_unavailable" });
     return;
   }
+  const scopeKey = resolveConversationScopeKey(
+    currentRemoteKey(runtimeConnectionConfig),
+    agentId,
+    state.currentUser,
+  );
+  const scope = conversationScopeSnapshot(scopeKey);
+  const covered = state.rightPanelOpen && (
+    state.rightPanelMode === "expanded" ||
+    (typeof window !== "undefined" &&
+      panelLayout(window.innerWidth, true, false, state.navCollapsed, PANEL_DEFAULT).full)
+  );
+  const decision = evaluateLedgerReadMarkerGate(
+    {
+      route: state.route,
+      selectedAgentId: state.selectedAgentId,
+      documentVisible: typeof document !== "undefined" && document.visibilityState === "visible",
+      conversationReady:
+        scope.status.kind === "ready" &&
+        scope.view?.scope != null &&
+        scope.view.reset_reason === null,
+      conversationVisible: !covered,
+      discoveryFresh: state.discovery.freshness === "fresh",
+      readiness: agentSessionRepository.sessionLedgerReadiness(agentId),
+    },
+    agentId,
+  );
+  if (!decision.mayAdvance || decision.candidateSeq == null) {
+    if (decision.reason === "not_selected") {
+      pendingReadMarkerAgentIds.delete(agentId);
+    }
+    span.end("skipped", { reason: decision.reason ?? "candidate_unavailable" });
+    return;
+  }
 
   readMarkerAdvanceInFlight.add(agentId);
   try {
-    const result = await runtimeClient.markBriefRead(agentId, candidateSeq);
+    const result = await runtimeClient.markBriefRead(agentId, decision.candidateSeq);
     if (!isCurrentClientGeneration(generation)) return;
-    pendingReadMarkerAgentIds.delete(agentId);
+    if (result.state.read_through_event_seq >= result.state.event_head_seq) {
+      pendingReadMarkerAgentIds.delete(agentId);
+    }
     useRuntimeStore.setState((current) => ({
       briefReadStateByAgentId: {
         ...current.briefReadStateByAgentId,
@@ -1320,19 +1360,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       route: "agent",
     })),
   markAgentConversationRead: (agentId) => {
-    const current = get().briefReadStateByAgentId[agentId];
-    if (current) {
-      set((state) => ({
-        briefReadStateByAgentId: {
-          ...state.briefReadStateByAgentId,
-          [agentId]: {
-            ...current,
-            read_through_event_seq: Math.max(current.read_through_event_seq, current.event_head_seq),
-            unread_count: 0,
-          },
-        },
-      }));
-    }
     pendingReadMarkerAgentIds.add(agentId);
     void retryPendingReadMarker(agentId);
   },
@@ -1641,6 +1668,7 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     const normalizedConfig = sameOriginConnection(config);
     runtimeConnectionConfig = normalizedConfig;
     runtimeClient = createRuntimeClient(runtimeClientOptions(normalizedConfig));
+    ensureReadStateBus();
     writeStoredRuntimeConnectionConfig(normalizedConfig);
     bootstrapRefreshInFlight = undefined;
     briefReadStatesRefreshInFlight = undefined;

@@ -22,7 +22,6 @@ interface LedgerSnapshot {
   readThroughEventSeq?: number;
   certainty?: "exact" | "truncated";
   historyTruncatedBeforeSeq?: number;
-  acknowledgedTruncationBeforeSeq?: number;
 }
 
 interface LedgerPartition {
@@ -110,10 +109,11 @@ async function openAgent(page: Page, agentId: string): Promise<void> {
   const agentButton = page.getByRole("region", { name: "agents" })
     .getByRole("button")
     .filter({ hasText: agentId });
-  await expect(agentButton).toBeVisible();
-  await agentButton.click();
-  await expect.poll(async () => (await ledger(page, agentId))?.readGateContext)
-    .toMatchObject({ route: "agent", selectedAgentId: agentId });
+  if (!page.url().includes(`/agents/${agentId}/conversation`)) {
+    await expect(agentButton).toBeVisible({ timeout: 15_000 });
+    await agentButton.click();
+  }
+  await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/conversation`));
 }
 
 async function briefFetchCount(
@@ -227,6 +227,7 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
   // ledger. A transport reconnect alone can still expose the cached view.
   const unavailableSummary = page.waitForResponse((response) =>
     new URL(response.url()).pathname === `/api/agents/${agentId}/conversation` && response.status() === 503);
+  await page.reload();
   await request.post(controlPath(session, "/__e2e__/reset-conversation"), { data: { agentId, reason: "retention_expired" } });
   await unavailableSummary;
   await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
@@ -241,24 +242,13 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
     .toMatchObject({
       ingestedThroughSeq: 8,
       projectionReadyThroughSeq: 8,
+      readThroughEventSeq: 5,
       certainty: "truncated",
       historyTruncatedBeforeSeq: 7,
     });
-  await expect(
-    page.getByRole("region", { name: "Agent conversation" }).getByRole("status").filter({ hasText: "Some earlier history" }),
-  ).toContainText("Some earlier history");
-  await page.getByRole("button", { name: "Acknowledge earlier history" }).click();
-  await expect.poll(() => ledger(page, agentId)).toMatchObject({
-    certainty: "exact",
-    historyTruncatedBeforeSeq: 7,
-    acknowledgedTruncationBeforeSeq: 8,
-  });
-  await expect(page.getByRole("button", { name: "Acknowledge earlier history" })).toHaveCount(0);
-  // Once the conversation read model recovers, the pending marker catches
-  // up to the acknowledged head without reopening the generation.
+  // The current client reports the server's truncated generation directly;
+  // recovery advances the cursor once the conversation can be read again.
   await configure(request, session, { failConversationByAgentId: [] });
-  // Re-entering the conversation rebuilds the scope immediately instead of
-  // waiting out the degraded period's accumulated reconnect backoff.
   await page.getByRole("button", { name: "Dashboard" }).first().click();
   await openAgent(page, agentId);
   await expect
@@ -266,11 +256,10 @@ test("retention reset is truncated until acknowledgement opens a new exact gener
     .toMatchObject({
       readThroughEventSeq: 8,
       certainty: "exact",
-      acknowledgedTruncationBeforeSeq: 8,
   });
 });
 
-test("retention reset auto-restores exact certainty once the open conversation reads the head", async ({
+test("retention reset preserves truncated certainty until the server cursor advances", async ({
   context,
   page,
   request,
@@ -300,17 +289,14 @@ test("retention reset auto-restores exact certainty once the open conversation r
   });
   await request.post(controlPath(session, "/__e2e__/disconnect-streams"));
 
-  // With the conversation open and visible, the marker catches up to the
-  // gated head and the truncated generation retires itself at that head —
-  // never below the recorded truncation boundary.
+  // No local acknowledgement UI exists in the server-backed contract; the
+  // cursor remains below the retention boundary until a later read advances it.
   await expect.poll(() => ledger(page, agentId)).toMatchObject({
     ingestedThroughSeq: 8,
-    readThroughEventSeq: 8,
-    certainty: "exact",
+    readThroughEventSeq: 5,
+    certainty: "truncated",
     historyTruncatedBeforeSeq: 7,
-    acknowledgedTruncationBeforeSeq: 8,
   }, { timeout: 10_000 });
-  await expect(page.getByRole("button", { name: "Acknowledge earlier history" })).toHaveCount(0);
 });
 
 test("event log epoch replacement clears the old projection and read partition", async ({
@@ -358,7 +344,7 @@ test("event log epoch replacement clears the old projection and read partition",
     eventLogEpoch: "epoch-after",
     ingestedThroughSeq: 3,
     projectionReadyThroughSeq: 3,
-    readThroughEventSeq: 3,
+    readThroughEventSeq: 0,
     certainty: "exact",
   });
   await expect.poll(() => partitions(page, agentId)).toEqual([{
@@ -367,7 +353,7 @@ test("event log epoch replacement clears the old projection and read partition",
     eventLogEpoch: "epoch-after",
     eventSeqs: [1, 2, 3],
     observedHeadSeq: 3,
-    readThroughEventSeq: 3,
+    readThroughEventSeq: 0,
     certainty: "exact",
   }]);
 });
@@ -410,7 +396,7 @@ test("visibility scope rotation clears the old auth-scoped partition", async ({
     visibilityScopeId: "scope-after",
     ingestedThroughSeq: 3,
     projectionReadyThroughSeq: 3,
-    readThroughEventSeq: 3,
+    readThroughEventSeq: 0,
     certainty: "exact",
   });
   await expect.poll(() => partitions(page, agentId)).toEqual([{
@@ -419,7 +405,7 @@ test("visibility scope rotation clears the old auth-scoped partition", async ({
     eventLogEpoch: "e2e-epoch",
     eventSeqs: [1, 2, 3],
     observedHeadSeq: 3,
-    readThroughEventSeq: 3,
+    readThroughEventSeq: 0,
     certainty: "exact",
   }]);
 });
@@ -613,7 +599,7 @@ test("divergence repair, sync error, and degraded handle recovery preserve exact
     ingestionState: "idle",
     ingestedThroughSeq: 3,
     projectionReadyThroughSeq: 3,
-    readThroughEventSeq: 3,
+    readThroughEventSeq: 2,
     certainty: "exact",
   });
   await expect.poll(() => partitions(page, degradedAgentId)).toEqual([{
@@ -622,7 +608,7 @@ test("divergence repair, sync error, and degraded handle recovery preserve exact
     eventLogEpoch: "e2e-epoch",
     eventSeqs: [1, 2, 3],
     observedHeadSeq: 3,
-    readThroughEventSeq: 3,
+    readThroughEventSeq: 2,
     certainty: "exact",
   }]);
 });

@@ -53,6 +53,7 @@ interface AgentPageProps {
   syncRetryAttempt?: number;
   /** Ledger-backed lower-bound unread state (W5 truncation indicator). */
   historyTruncated?: boolean;
+  conversationReady: boolean;
   onRefreshModels: () => Promise<void>;
   onSetModel: (model: string, reasoningEffort?: string) => Promise<void>;
   onClearModel: () => Promise<void>;
@@ -60,7 +61,7 @@ interface AgentPageProps {
   onAcknowledgeTruncation?: () => void;
   onSendPrompt: (text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
   onAbortCurrentRun: (runId: string) => Promise<void>;
-  onConversationRead: () => void;
+  onConversationRead: () => boolean;
   onOpenWorkItem: (work: WorkItemSummary) => void;
   onOpenTask: (task: TaskSummary) => void;
 }
@@ -153,6 +154,7 @@ export function AgentPage({
   syncError,
   syncRetryAttempt,
   historyTruncated = false,
+  conversationReady,
   onRefreshModels,
   onSetModel,
   onClearModel,
@@ -339,6 +341,7 @@ export function AgentPage({
   }, [activeAgent.id]);
 
   const conversationContentVersion = conversation?.model.view?.through_seq ?? 0;
+  const initialReadAttemptedRef = useRef(false);
 
   function rememberReadingAnchor() {
     const list = messageListRef.current;
@@ -379,6 +382,21 @@ export function AgentPage({
   }, [activeAgent.id]);
 
   useEffect(() => {
+    const list = messageListRef.current;
+    if (
+      conversationReady &&
+      !initialReadAttemptedRef.current &&
+      document.visibilityState === "visible" &&
+      list &&
+      isScrolledNearBottom(list)
+    ) {
+      if (onConversationRead()) {
+        initialReadAttemptedRef.current = true;
+      }
+    }
+  }, [activeAgent.id, conversationReady, onConversationRead]);
+
+  useEffect(() => {
     const markReadIfVisible = () => {
       const list = messageListRef.current;
       if (
@@ -389,10 +407,9 @@ export function AgentPage({
         onConversationRead();
       }
     };
-    markReadIfVisible();
     document.addEventListener("visibilitychange", markReadIfVisible);
     return () => document.removeEventListener("visibilitychange", markReadIfVisible);
-  }, [activeAgent.id, conversationContentVersion, onConversationRead]);
+  }, [activeAgent.id, onConversationRead]);
 
   async function sendDraftPrompt() {
     if (!canSendPrompt) return;

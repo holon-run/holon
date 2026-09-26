@@ -63,6 +63,8 @@ export interface HolonE2eLedgerPartition {
   eventLogEpoch: string;
   eventSeqs: number[];
   observedHeadSeq?: number;
+  readThroughEventSeq?: number;
+  certainty?: "exact" | "truncated";
 }
 
 export interface HolonE2eLedgerSnapshot {
@@ -80,6 +82,10 @@ export interface HolonE2eLedgerSnapshot {
   failedHydrationJobs: number;
   blockedByEventSeq?: number;
   blockedReason?: "pending_hydration";
+  readThroughEventSeq?: number;
+  certainty?: "exact" | "truncated";
+  historyTruncatedBeforeSeq?: number;
+  unreadCount?: number;
 }
 
 declare global {
@@ -171,8 +177,8 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
     ) as LedgerHydrationJobRecord[];
     const pending = jobs.filter((job) => job.state !== "failed");
     const storeState = useRuntimeStore.getState();
-    const runtimeSession = storeState.sessionsByAgentId[agentId];
     const status = ledgerStatusForDiagnostics(agentId);
+    const readState = storeState.briefReadStateByAgentId[agentId];
     return {
       agentId,
       runtimeId: session.runtimeId,
@@ -190,6 +196,12 @@ async function ledgerSnapshot(agentId: string): Promise<HolonE2eLedgerSnapshot |
         ? Math.min(...pending.map((job) => job.createdByEventSeq))
         : undefined,
       blockedReason: pending.length ? "pending_hydration" : undefined,
+      readThroughEventSeq: readState?.read_through_event_seq,
+      certainty: readState?.retention_gap ? "truncated" : readState ? "exact" : undefined,
+      historyTruncatedBeforeSeq: readState?.retention_gap
+        ? readState.oldest_retained_seq
+        : undefined,
+      unreadCount: readState?.unread_count,
     };
   } finally {
     db.close();
@@ -209,6 +221,7 @@ async function ledgerPartitions(agentId: string): Promise<HolonE2eLedgerPartitio
     const rawEvents = await requestResult(
       transaction.objectStore(RAW_EVENTS_STORE).getAll(),
     ) as LedgerRawEventRecord[];
+    const readState = useRuntimeStore.getState().briefReadStateByAgentId[agentId];
     return sessions.map((session) => {
       const sameScope = (candidate: {
         remoteKey: string;
@@ -228,6 +241,8 @@ async function ledgerPartitions(agentId: string): Promise<HolonE2eLedgerPartitio
         eventLogEpoch: session.eventLogEpoch,
         eventSeqs: rawEvents.filter(sameScope).map((event) => event.eventSeq).sort((a, b) => a - b),
         observedHeadSeq: session.observedHeadSeq ?? session.ingestedThroughSeq,
+        readThroughEventSeq: readState?.read_through_event_seq,
+        certainty: readState?.retention_gap ? "truncated" : readState ? "exact" : undefined,
       };
     });
   } finally {
