@@ -1173,6 +1173,33 @@ async function refreshBriefReadStatesInView(): Promise<void> {
   return request;
 }
 
+function evaluateReadMarkerGate(
+  agentId: string,
+  state: RuntimeStoreState,
+  scope: ReturnType<typeof conversationScopeSnapshot>,
+) {
+  const covered = state.rightPanelOpen && (
+    state.rightPanelMode === "expanded" ||
+    (typeof window !== "undefined" &&
+      panelLayout(window.innerWidth, true, false, state.navCollapsed, PANEL_DEFAULT).full)
+  );
+  return evaluateLedgerReadMarkerGate(
+    {
+      route: state.route,
+      selectedAgentId: state.selectedAgentId,
+      documentVisible: typeof document !== "undefined" && document.visibilityState === "visible",
+      conversationReady:
+        scope.status.kind === "ready" &&
+        scope.view?.scope != null &&
+        scope.view.reset_reason === null,
+      conversationVisible: !covered,
+      discoveryFresh: state.discovery.freshness === "fresh",
+      readiness: agentSessionRepository.sessionLedgerReadiness(agentId),
+    },
+    agentId,
+  );
+}
+
 export async function retryPendingReadMarker(agentId: string): Promise<void> {
   if (!pendingReadMarkerAgentIds.has(agentId)) return;
   if (readMarkerAdvanceInFlight.has(agentId)) {
@@ -1197,26 +1224,7 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
     state.currentUser,
   );
   const scope = conversationScopeSnapshot(scopeKey);
-  const covered = state.rightPanelOpen && (
-    state.rightPanelMode === "expanded" ||
-    (typeof window !== "undefined" &&
-      panelLayout(window.innerWidth, true, false, state.navCollapsed, PANEL_DEFAULT).full)
-  );
-  const decision = evaluateLedgerReadMarkerGate(
-    {
-      route: state.route,
-      selectedAgentId: state.selectedAgentId,
-      documentVisible: typeof document !== "undefined" && document.visibilityState === "visible",
-      conversationReady:
-        scope.status.kind === "ready" &&
-        scope.view?.scope != null &&
-        scope.view.reset_reason === null,
-      conversationVisible: !covered,
-      discoveryFresh: state.discovery.freshness === "fresh",
-      readiness: agentSessionRepository.sessionLedgerReadiness(agentId),
-    },
-    agentId,
-  );
+  const decision = evaluateReadMarkerGate(agentId, state, scope);
   if (!decision.mayAdvance || decision.candidateSeq == null) {
     if (decision.reason === "not_selected") {
       pendingReadMarkerAgentIds.delete(agentId);
@@ -1421,17 +1429,28 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     })),
   markAgentConversationRead: (agentId) => {
     const current = get().briefReadStateByAgentId[agentId];
-    if (current) {
+    const state = get();
+    const scopeKey = resolveConversationScopeKey(
+      currentRemoteKey(runtimeConnectionConfig),
+      agentId,
+      state.currentUser,
+    );
+    const decision = evaluateReadMarkerGate(
+      agentId,
+      state,
+      conversationScopeSnapshot(scopeKey),
+    );
+    if (current && decision.mayAdvance && decision.candidateSeq != null) {
       pendingReadMarkerCursorByAgentId.set(
         agentId,
-        Math.max(pendingReadMarkerCursorByAgentId.get(agentId) ?? 0, current.event_head_seq),
+        Math.max(pendingReadMarkerCursorByAgentId.get(agentId) ?? 0, decision.candidateSeq),
       );
       set((state) => ({
         briefReadStateByAgentId: {
           ...state.briefReadStateByAgentId,
           [agentId]: {
             ...current,
-            read_through_event_seq: Math.max(current.read_through_event_seq, current.event_head_seq),
+            read_through_event_seq: Math.max(current.read_through_event_seq, decision.candidateSeq!),
             unread_count: 0,
           },
         },

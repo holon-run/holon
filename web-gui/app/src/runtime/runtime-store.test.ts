@@ -19,6 +19,7 @@ import {
   resetTransientRuntimeStateForResume,
   readStoredRuntimeConnectionConfig,
   runWithConcurrencyLimit,
+  retryPendingReadMarker,
   skillDetailCacheKey,
   streamEventFromBackfill,
   useRuntimeStore,
@@ -1143,13 +1144,83 @@ describe("server brief read state", () => {
     await vi.waitFor(() =>
       expect(useRuntimeStore.getState().briefReadStatesError).toBeUndefined(),
     );
-    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(0);
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]?.unread_count).toBe(5);
     expect(
       fetchMock.mock.calls.some(
         ([input, init]) =>
           String(input).includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST",
       ),
     ).toBe(false);
+  });
+
+  it("does not optimistically clear unread state while hydration blocks the read gate", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("/agents/brief-read-states")) {
+        return Promise.resolve(new Response(JSON.stringify([state({
+          read_through_event_seq: 0,
+          event_head_seq: 3,
+          unread_count: 2,
+        })]), { status: 200 }));
+      }
+      if (url.includes("/brief-read-cursor") && init?.method === "POST") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ state: state({ read_through_event_seq: 3, event_head_seq: 3, unread_count: 0 }) }),
+            { status: 200 },
+          ),
+        );
+      }
+      return Promise.resolve(new Response(JSON.stringify({}), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    await useRuntimeStore.getState().refreshBriefReadStates();
+    useRuntimeStore.setState({
+      route: "agent",
+      selectedAgentId: "agent-a",
+      discovery: {
+        ...useRuntimeStore.getState().discovery,
+        freshness: "fresh",
+      },
+    });
+    seedReadyConversationScope("agent-a");
+    vi.spyOn(AgentSessionRepository.prototype, "sessionLedgerReadiness").mockReturnValue({
+      readyThroughSeq: 1,
+      ingestedThroughSeq: 3,
+      observedHeadSeq: 3,
+      blockedByEventSeq: 2,
+    });
+    vi.stubGlobal("document", { visibilityState: "visible" });
+
+    useRuntimeStore.getState().markAgentConversationRead("agent-a");
+    await Promise.resolve();
+
+    expect(useRuntimeStore.getState().briefReadStateByAgentId["agent-a"]).toMatchObject({
+      read_through_event_seq: 0,
+      unread_count: 2,
+    });
+    expect(
+      fetchMock.mock.calls.some(
+        ([input, init]) =>
+          String(input).includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST",
+      ),
+    ).toBe(false);
+
+    vi.mocked(AgentSessionRepository.prototype.sessionLedgerReadiness).mockReturnValue({
+      readyThroughSeq: 3,
+      ingestedThroughSeq: 3,
+      observedHeadSeq: 3,
+    });
+    await retryPendingReadMarker("agent-a");
+    await vi.waitFor(() =>
+      expect(
+        fetchMock.mock.calls.filter(
+          ([input, init]) =>
+            String(input).includes("/agents/agent-a/brief-read-cursor") && init?.method === "POST",
+        ),
+      ).toHaveLength(1),
+    );
   });
 
   it("does not let a stale refresh restore an optimistic read", async () => {
