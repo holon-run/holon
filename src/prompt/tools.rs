@@ -716,7 +716,11 @@ mod tests {
         assert!(section
             .content
             .contains("without first creating or picking a WorkItem"));
-        assert!(section.content.contains("`terminal_transition`"));
+        assert!(section.content.contains("`result.continuation`"));
+        assert!(section.content.contains("`continue_turn`"));
+        assert!(section.content.contains("`yield_and_wait`"));
+        assert!(section.content.contains("`yield_and_reenter`"));
+        assert!(section.content.contains("requires no waiting report"));
         assert!(!section.content.contains("To wait on another WorkItem"));
         assert!(section
             .content

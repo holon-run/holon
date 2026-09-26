@@ -60,7 +60,7 @@ pub use tasks::{
 };
 pub(crate) use waiting::{
     PrepareWaitForOutcome, PreparedWaitForSettlement, WaitForBriefPublicationScope,
-    WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind,
+    WaitForContinuation, WaitForRegistrationOutcome, WaitForScope, WaitForWakeKind,
 };
 pub(crate) use worktree::format_worktree_task_summary;
 

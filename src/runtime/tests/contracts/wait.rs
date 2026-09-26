@@ -493,6 +493,133 @@ async fn late_task_result_queue_and_execution_settlement_are_atomic() {
 }
 
 #[tokio::test]
+async fn invalid_final_wait_returns_error_without_requesting_report() {
+    let harness = LifecycleHarness::new();
+    let before = harness.snapshot();
+    let result = crate::tool::tools::wait_for::execute(
+        harness.runtime(),
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &serde_json::json!({
+            "wake": "timer",
+            "resource": "missing-timer",
+            "reason": "invalid wait must not request a report",
+            "delivery": "final",
+        }),
+        &crate::tool::spec::ToolExecutionContext::default(),
+    )
+    .await
+    .unwrap();
+    assert!(result.is_error());
+    assert!(!result.should_sleep);
+    assert!(!result.terminal_transition);
+    assert!(result.loop_directive.is_none());
+    assert!(result.prepared_wait_for.is_none());
+    harness.assert_unchanged(&before);
+}
+
+#[tokio::test]
+async fn wait_tool_classifies_before_requesting_final_report_without_mutation() {
+    for completed in [false, true] {
+        let harness = LifecycleHarness::new();
+        let work_item = harness
+            .runtime()
+            .create_work_item("classify wait".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let running = running_task("task-classify", &work_item.id, harness.now());
+        harness
+            .runtime()
+            .persist_task_transition(&running, "task_created")
+            .await
+            .unwrap();
+        if completed {
+            let message = late_task_result_message(&running.id, &work_item.id);
+            let terminal = terminal_task_with_result(&running, &message, harness.now());
+            harness
+                .runtime()
+                .persist_task_transition_with_message(&terminal, "task_status_updated", &message)
+                .await
+                .unwrap();
+        }
+        let before = harness.snapshot();
+        for delivery in ["silent", "final"] {
+            let input = serde_json::json!({
+                "wake": "task_result",
+                "resource": running.id,
+                "work_item_id": work_item.id,
+                "reason": "classify without committing",
+                "delivery": delivery,
+            });
+            let result = crate::tool::tools::wait_for::execute(
+                harness.runtime(),
+                "default",
+                &AuthorityClass::OperatorInstruction,
+                &input,
+                &crate::tool::spec::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+            harness.assert_unchanged(&before);
+            let result = if delivery == "final" {
+                assert_eq!(
+                    result.envelope.result.as_ref().unwrap()["disposition"],
+                    "awaiting_final_report"
+                );
+                assert!(result
+                    .envelope
+                    .result
+                    .as_ref()
+                    .unwrap()
+                    .get("continuation")
+                    .is_none());
+                assert!(!result.should_sleep);
+                assert!(!result.terminal_transition);
+                assert!(result.prepared_wait_for.is_none());
+                assert!(matches!(
+                    result.loop_directive,
+                    Some(crate::tool::spec::ToolLoopDirective::AwaitWaitReport(_))
+                ));
+                // Report completion prepares again; it still must not commit.
+                crate::tool::tools::wait_for::prepare_settlement(
+                    harness.runtime(),
+                    "default",
+                    &AuthorityClass::OperatorInstruction,
+                    crate::tool::tools::wait_for::parse_wait_for_args(&input).unwrap(),
+                )
+                .await
+                .unwrap()
+            } else {
+                result
+            };
+            assert_eq!(
+                result.envelope.result.as_ref().unwrap()["continuation"],
+                if completed {
+                    "yield_and_reenter"
+                } else {
+                    "yield_and_wait"
+                }
+            );
+            assert!(result.should_sleep);
+            assert!(result.terminal_transition);
+            let prepared = result.prepared_wait_for.as_ref().unwrap();
+            let registered = prepared
+                .command
+                .audit_events
+                .iter()
+                .find(|event| event.kind == "wait_condition_registered")
+                .unwrap();
+            assert_eq!(
+                registered.data["continuation"],
+                result.envelope.result.as_ref().unwrap()["continuation"]
+            );
+            assert!(result.loop_directive.is_none());
+            harness.assert_unchanged(&before);
+        }
+    }
+}
+
+#[tokio::test]
 async fn late_task_result_terminal_queue_states_are_already_consumed() {
     for status in [
         QueueEntryStatus::Dequeued,
@@ -551,6 +678,32 @@ async fn late_task_result_terminal_queue_states_are_already_consumed() {
             } if task_id == terminal.id && result_message_id == result_message.id
         ));
         harness.assert_unchanged(&before);
+        for delivery in ["silent", "final"] {
+            let result = crate::tool::tools::wait_for::execute(
+                harness.runtime(),
+                "default",
+                &AuthorityClass::OperatorInstruction,
+                &serde_json::json!({
+                    "wake": "task_result",
+                    "resource": terminal.id,
+                    "work_item_id": work_item.id,
+                    "reason": "already consumed",
+                    "delivery": delivery,
+                }),
+                &crate::tool::spec::ToolExecutionContext::default(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                result.envelope.result.as_ref().unwrap()["continuation"],
+                "continue_turn"
+            );
+            assert!(!result.should_sleep);
+            assert!(!result.terminal_transition);
+            assert!(result.loop_directive.is_none());
+            assert!(result.prepared_wait_for.is_none());
+            harness.assert_unchanged(&before);
+        }
     }
 }
 
@@ -1030,6 +1183,32 @@ async fn second_terminal_waiter_reports_claimed_waiter_without_duplicate_trigger
     assert_eq!(claimed_result_message_id, result_message.id);
 
     let after = harness.snapshot();
+    for delivery in ["silent", "final"] {
+        let result = crate::tool::tools::wait_for::execute(
+            harness.runtime(),
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &serde_json::json!({
+                "wake": "task_result",
+                "resource": terminal.id,
+                "work_item_id": second_waiter.id,
+                "reason": "already claimed",
+                "delivery": delivery,
+            }),
+            &crate::tool::spec::ToolExecutionContext::default(),
+        )
+        .await
+        .unwrap();
+        let value = result.envelope.result.as_ref().unwrap();
+        assert_eq!(value["continuation"], "continue_turn");
+        assert_eq!(value["disposition"], "task_result_claimed_by_other_waiter");
+        assert_eq!(value["wait_condition_id"], first_condition_id);
+        assert!(!result.should_sleep);
+        assert!(!result.terminal_transition);
+        assert!(result.loop_directive.is_none());
+        assert!(result.prepared_wait_for.is_none());
+        harness.assert_unchanged(&after);
+    }
     let triggered: Vec<_> = after
         .wait_conditions
         .iter()

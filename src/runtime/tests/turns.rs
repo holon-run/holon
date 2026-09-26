@@ -9,6 +9,294 @@ struct PickThenExecProvider {
     target_work_item_id: String,
 }
 
+struct ImmediateWaitContinuationProvider {
+    calls: Mutex<usize>,
+    delivery: &'static str,
+    disposition: &'static str,
+    pending_runtime: Mutex<Option<RuntimeHandle>>,
+}
+
+#[async_trait]
+impl AgentProvider for ImmediateWaitContinuationProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let mut calls = self.calls.lock().await;
+        *calls += 1;
+        let pending_runtime = self.pending_runtime.lock().await;
+        if *calls == 2 {
+            if let Some(runtime) = pending_runtime.as_ref() {
+                assert!(!request
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == "CreateWorkItem"));
+                complete_immediate_wait_dependency(runtime, false).await;
+                return Ok(ProviderTurnResponse {
+                    blocks: vec![ModelBlock::Text {
+                        text: "Obsolete waiting report.".into(),
+                    }],
+                    stop_reason: None,
+                    input_tokens: 10,
+                    output_tokens: 10,
+                    cache_usage: None,
+                    provider_message_id: None,
+                    provider_request_id: None,
+                    request_diagnostics: None,
+                });
+            }
+        }
+        let round = *calls - usize::from(pending_runtime.is_some() && *calls > 2);
+        let tool = |id: &str, name: &str, input| ModelBlock::ToolUse {
+            id: id.into(),
+            name: name.into(),
+            input,
+            kind: crate::provider::ModelToolCallKind::Function,
+            provider_data: None,
+        };
+        let blocks = match round {
+            1 => vec![tool(
+                "immediate-wait",
+                "WaitFor",
+                serde_json::json!({
+                    "wake": "task_result",
+                    "resource": "task-immediate-continuation",
+                    "delivery": self.delivery,
+                    "reason": "continue if this result cannot be claimed",
+                }),
+            )],
+            2 => {
+                if pending_runtime.is_some() {
+                    assert!(request.conversation.iter().any(|message| matches!(
+                        message,
+                        ConversationMessage::UserText(text)
+                            if text.contains("\"continuation\":\"continue_turn\"")
+                                && text.contains(self.disposition)
+                                && text.contains("no waiting report")
+                    )));
+                } else {
+                    let receipt = request
+                        .conversation
+                        .iter()
+                        .filter_map(|message| match message {
+                            ConversationMessage::UserToolResults(results) => Some(results),
+                            _ => None,
+                        })
+                        .flatten()
+                        .find(|result| result.tool_use_id == "immediate-wait")
+                        .expect("WaitFor receipt must reach the next model round");
+                    assert!(!receipt.is_error, "{}", receipt.content);
+                    let receipt: serde_json::Value =
+                        serde_json::from_str(&receipt.content).unwrap();
+                    assert_eq!(receipt["result"]["continuation"], "continue_turn");
+                    assert_eq!(receipt["result"]["disposition"], self.disposition);
+                }
+                // A pending final report restricts tools to read-only inspection.
+                assert!(request
+                    .tools
+                    .iter()
+                    .any(|tool| tool.name == "CreateWorkItem"));
+                vec![tool(
+                    "continue-create",
+                    "CreateWorkItem",
+                    serde_json::json!({"objective": "progress after immediate wait"}),
+                )]
+            }
+            3 => {
+                let result = request
+                    .conversation
+                    .iter()
+                    .filter_map(|message| match message {
+                        ConversationMessage::UserToolResults(results) => Some(results),
+                        _ => None,
+                    })
+                    .flatten()
+                    .find(|result| result.tool_use_id == "continue-create")
+                    .expect("the next mutating tool must execute in the same turn");
+                assert!(!result.is_error, "{}", result.content);
+                vec![ModelBlock::Text {
+                    text: "Continued in the same turn.".into(),
+                }]
+            }
+            _ => panic!(
+                "immediate wait must not request an extra final report: {:?}",
+                request.conversation
+            ),
+        };
+        Ok(ProviderTurnResponse {
+            blocks,
+            stop_reason: None,
+            input_tokens: 10,
+            output_tokens: 10,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+}
+
+async fn run_immediate_wait_continuation(delivery: &'static str, claimed: bool, pending: bool) {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(ImmediateWaitContinuationProvider {
+        calls: Mutex::new(0),
+        delivery,
+        disposition: if claimed {
+            "task_result_claimed_by_other_waiter"
+        } else {
+            "task_result_already_consumed"
+        },
+        pending_runtime: Mutex::new(None),
+    });
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider.clone(),
+        "default".into(),
+        ContextConfig {
+            prompt_budget_estimated_tokens: 128_000,
+            turn_projection_min_budget: 128_000,
+            turn_projection_max_budget: 128_000,
+            compaction_trigger_estimated_tokens: 128_000,
+            ..context_config()
+        },
+    )
+    .unwrap();
+    let task_id = "task-immediate-continuation";
+    mark_blocking_task(&runtime, task_id).await;
+    if pending {
+        *provider.pending_runtime.lock().await = Some(runtime.clone());
+    } else {
+        complete_immediate_wait_dependency(&runtime, claimed).await;
+    }
+    let waits_before = runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")
+        .unwrap();
+    let queue_before = runtime.storage().read_recent_queue_entries(100).unwrap();
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(*provider.calls.lock().await, if pending { 4 } else { 3 });
+    assert!(outcome.prepared_wait_for.is_none());
+    assert_eq!(outcome.final_text, "Continued in the same turn.");
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_wait_conditions_for_agent("default")
+            .unwrap(),
+        waits_before
+    );
+    if !pending {
+        assert_eq!(
+            runtime.storage().read_recent_queue_entries(100).unwrap(),
+            queue_before
+        );
+    }
+    let tools = runtime.storage().read_recent_tool_executions(10).unwrap();
+    assert_eq!(tools.len(), 2);
+    // This fixture invokes one loop directly, without a persisted turn record.
+    // Both tools must finish before that invocation returns its final text.
+    assert!(tools
+        .iter()
+        .all(|tool| tool.status == ToolExecutionStatus::Success));
+    // Break the provider/runtime cycle used by the report-race fixture.
+    *provider.pending_runtime.lock().await = None;
+}
+
+async fn complete_immediate_wait_dependency(runtime: &RuntimeHandle, claimed: bool) {
+    let task_id = "task-immediate-continuation";
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: task_id.into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "completed dependency".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::TaskRejoin,
+        AdmissionContext::RuntimeOwned,
+    );
+    let mut task = runtime.task_record(task_id).await.unwrap().unwrap();
+    task.status = TaskStatus::Completed;
+    task.parent_message_id = Some(message.id.clone());
+    runtime
+        .persist_task_transition_with_message(&task, "task_status_updated", &message)
+        .await
+        .unwrap();
+    if claimed {
+        let claimant = runtime
+            .create_work_item("original waiter".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        let outcome = runtime
+            .register_wait_for_outcome(
+                "default",
+                Some(claimant.id),
+                WaitForWakeKind::TaskResult,
+                Some(task_id.into()),
+                "original dependency".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            WaitForRegistrationOutcome::TaskResultQueued { .. }
+        ));
+    } else {
+        runtime
+            .storage()
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: message.id.clone(),
+                agent_id: "default".into(),
+                priority: message.priority.clone(),
+                status: QueueEntryStatus::Processed,
+                created_at: message.created_at,
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+    }
+}
+
+#[tokio::test]
+async fn wait_for_consumed_silent_continues_same_turn() {
+    run_immediate_wait_continuation("silent", false, false).await;
+}
+
+#[tokio::test]
+async fn wait_for_consumed_final_continues_same_turn() {
+    run_immediate_wait_continuation("final", false, false).await;
+}
+
+#[tokio::test]
+async fn wait_for_claimed_silent_continues_same_turn() {
+    run_immediate_wait_continuation("silent", true, false).await;
+}
+
+#[tokio::test]
+async fn wait_for_claimed_final_continues_same_turn() {
+    run_immediate_wait_continuation("final", true, false).await;
+}
+
+#[tokio::test]
+async fn wait_for_consumed_during_final_report_continues_same_turn() {
+    run_immediate_wait_continuation("final", false, true).await;
+}
+
 #[tokio::test]
 async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
     let dir = tempdir().unwrap();
@@ -1457,6 +1745,7 @@ async fn run_wait_for_final_report_test(
         silent_progress,
         saw_settlement_error_follow_up: Mutex::new(false),
         invalid_final_result_count: Mutex::new(0),
+        settlement_timer: Mutex::new(None),
     });
     let runtime = RuntimeHandle::new(
         "default",
@@ -1480,6 +1769,13 @@ async fn run_wait_for_final_report_test(
         .await
         .state
         .active_workspace_entry = None;
+    if scenario == WaitForFinalReportScenario::SettlementErrorRecovery {
+        let timer = runtime
+            .schedule_timer(60_000, None, Some("final settlement race".into()))
+            .await
+            .unwrap();
+        *provider.settlement_timer.lock().await = Some((runtime.clone(), timer.id));
+    }
     let work_item = if work_item_owned {
         Some(
             runtime

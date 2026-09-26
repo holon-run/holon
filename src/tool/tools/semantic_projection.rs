@@ -171,6 +171,26 @@ fn generic_facts(value: &Value, depth: usize, nodes: &mut usize) -> Option<Value
 
 fn semantic_result(name: &str, value: &Value, chars: usize, rows: usize) -> Value {
     match name {
+        "WaitFor" => fields(
+            value,
+            &[
+                "continuation",
+                "disposition",
+                "scope",
+                "owner",
+                "work_item_id",
+                "waiter_work_item_id",
+                "requested_work_item_id",
+                "owner_selection",
+                "task_id",
+                "result_message_id",
+                "wait_condition_id",
+                "claimed_by_work_item_id",
+                "wake",
+                "wait_registered",
+                "expected_output",
+            ],
+        ),
         "ListWorkItems" => {
             let mut result = fields(
                 value,
@@ -377,6 +397,27 @@ mod tests {
 
     fn envelope(name: &str, result: Value) -> ToolResultEnvelope {
         ToolResult::success(name, result, None).envelope
+    }
+
+    #[test]
+    fn wait_receipts_keep_continuation_under_budget() {
+        for continuation in ["continue_turn", "yield_and_wait", "yield_and_reenter"] {
+            let canonical = envelope(
+                "WaitFor",
+                json!({
+                    "continuation": continuation,
+                    "task_id": "task_1",
+                    "result_message_id": "message_1",
+                    "work_item": {"objective": "long objective ".repeat(10000)},
+                }),
+            );
+            let rendered = project(&canonical, None, 512).unwrap();
+            let value: Value = serde_json::from_str(&rendered).unwrap();
+            assert_eq!(value["result"]["continuation"], continuation);
+            assert_eq!(value["result"]["task_id"], "task_1");
+            assert_eq!(value["result"]["result_message_id"], "message_1");
+            assert!(estimated_tokens(&rendered) <= 512);
+        }
     }
 
     #[test]
