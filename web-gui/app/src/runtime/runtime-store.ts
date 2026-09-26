@@ -667,6 +667,13 @@ function cancelClientGenerationWork(): void {
   for (const timer of agentSkillCatalogRetryTimers.values()) window.clearTimeout(timer);
   agentSkillCatalogRetryTimers.clear();
   agentSkillCatalogRetryAttempts.clear();
+  for (const timer of readMarkerRetryTimers.values()) window.clearTimeout(timer);
+  readMarkerRetryTimers.clear();
+  readMarkerRetryAttempts.clear();
+  pendingReadMarkerAgentIds.clear();
+  pendingReadMarkerCursorByAgentId.clear();
+  readMarkerAdvanceQueued.clear();
+  readMarkerAdvanceInFlight.clear();
   globalSyncCoordinator.cancelClientGenerationWork();
   inspectorDetailInFlight.clear();
   workItemRefreshInFlight.clear();
@@ -1071,8 +1078,11 @@ export function observerSyncDiagnostics(): ObserverSyncDiagnostics {
 let briefReadStatesRefreshInFlight: Promise<void> | undefined;
 let briefReadStatesRefreshGeneration: number | undefined;
 const pendingReadMarkerAgentIds = new Set<string>();
+const pendingReadMarkerCursorByAgentId = new Map<string, number>();
 const readMarkerAdvanceInFlight = new Set<string>();
 const readMarkerAdvanceQueued = new Set<string>();
+const readMarkerRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const readMarkerRetryAttempts = new Map<string, number>();
 let readStateBus: ReadStateBus | null = null;
 
 function ensureReadStateBus(): ReadStateBus {
@@ -1108,8 +1118,40 @@ async function refreshBriefReadStatesInView(): Promise<void> {
     try {
       const states = await runtimeClient.getBriefReadStates();
       if (!isCurrentClientGeneration(generation)) return;
+      const currentStates = useRuntimeStore.getState().briefReadStateByAgentId;
+      const nextStates = Object.fromEntries(states.map((state) => [state.agent_id, state]));
+      for (const incoming of states) {
+        const current = currentStates[incoming.agent_id];
+        const pendingCursor = pendingReadMarkerCursorByAgentId.get(incoming.agent_id);
+        if (
+          current &&
+          current.event_log_epoch === incoming.event_log_epoch &&
+          current.visibility_scope_id === incoming.visibility_scope_id &&
+          (incoming.read_through_event_seq < current.read_through_event_seq ||
+            (incoming.read_through_event_seq === current.read_through_event_seq &&
+              incoming.revision < current.revision &&
+              incoming.event_head_seq <= current.event_head_seq))
+        ) {
+          nextStates[incoming.agent_id] = current;
+          continue;
+        }
+        if (
+          current &&
+          pendingCursor != null &&
+          incoming.read_through_event_seq < pendingCursor &&
+          current.event_log_epoch === incoming.event_log_epoch &&
+          current.visibility_scope_id === incoming.visibility_scope_id
+        ) {
+          nextStates[incoming.agent_id] = {
+            ...incoming,
+            read_through_event_seq: pendingCursor,
+            unread_count: 0,
+            revision: Math.max(incoming.revision, current.revision),
+          };
+        }
+      }
       useRuntimeStore.setState({
-        briefReadStateByAgentId: Object.fromEntries(states.map((state) => [state.agent_id, state])),
+        briefReadStateByAgentId: nextStates,
         briefReadStatesLoading: false,
         briefReadStatesError: undefined,
       });
@@ -1190,6 +1232,13 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
     if (result.state.read_through_event_seq >= result.state.event_head_seq) {
       pendingReadMarkerAgentIds.delete(agentId);
     }
+    pendingReadMarkerCursorByAgentId.delete(agentId);
+    readMarkerRetryAttempts.delete(agentId);
+    const retryTimer = readMarkerRetryTimers.get(agentId);
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      readMarkerRetryTimers.delete(agentId);
+    }
     useRuntimeStore.setState((current) => ({
       briefReadStateByAgentId: {
         ...current.briefReadStateByAgentId,
@@ -1202,6 +1251,7 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
       candidateSeq,
     });
   } catch (error) {
+    if (!isCurrentClientGeneration(generation)) return;
     span.end("error", {
       candidateSeq,
       error: error instanceof Error ? error.message : String(error),
@@ -1209,6 +1259,16 @@ export async function retryPendingReadMarker(agentId: string): Promise<void> {
     useRuntimeStore.setState({
       briefReadStatesError: error instanceof Error ? error.message : String(error),
     });
+    const attempt = (readMarkerRetryAttempts.get(agentId) ?? 0) + 1;
+    readMarkerRetryAttempts.set(agentId, attempt);
+    if (!readMarkerRetryTimers.has(agentId)) {
+      const delayMs = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
+      const retryTimer = setTimeout(() => {
+        readMarkerRetryTimers.delete(agentId);
+        void retryPendingReadMarker(agentId);
+      }, delayMs);
+      readMarkerRetryTimers.set(agentId, retryTimer);
+    }
   } finally {
     readMarkerAdvanceInFlight.delete(agentId);
     if (readMarkerAdvanceQueued.delete(agentId)) {
@@ -1360,6 +1420,23 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
       route: "agent",
     })),
   markAgentConversationRead: (agentId) => {
+    const current = get().briefReadStateByAgentId[agentId];
+    if (current) {
+      pendingReadMarkerCursorByAgentId.set(
+        agentId,
+        Math.max(pendingReadMarkerCursorByAgentId.get(agentId) ?? 0, current.event_head_seq),
+      );
+      set((state) => ({
+        briefReadStateByAgentId: {
+          ...state.briefReadStateByAgentId,
+          [agentId]: {
+            ...current,
+            read_through_event_seq: Math.max(current.read_through_event_seq, current.event_head_seq),
+            unread_count: 0,
+          },
+        },
+      }));
+    }
     pendingReadMarkerAgentIds.add(agentId);
     void retryPendingReadMarker(agentId);
   },
