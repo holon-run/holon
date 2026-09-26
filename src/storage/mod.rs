@@ -29,8 +29,8 @@ use crate::{
 const RUNTIME_DIR: &str = ".holon";
 const RUNTIME_STATE_DIR: &str = "state";
 const RUNTIME_LEDGER_DIR: &str = "ledger";
-const RUNTIME_INDEXES_DIR: &str = "indexes";
 const RUNTIME_CACHE_DIR: &str = "cache";
+const SHARED_INDEXES_DIR: &str = "indexes";
 
 mod activity;
 mod events;
@@ -291,10 +291,6 @@ impl AppStorage {
 
     pub fn ledger_dir(&self) -> PathBuf {
         self.runtime_dir().join(RUNTIME_LEDGER_DIR)
-    }
-
-    pub fn indexes_dir(&self) -> PathBuf {
-        self.runtime_dir().join(RUNTIME_INDEXES_DIR)
     }
 
     // Shared search projections live at host data scope. They are rebuildable
@@ -1279,7 +1275,7 @@ fn infer_agent_id_from_data_dir(data_dir: &Path) -> Option<String> {
 }
 
 fn shared_indexes_dir_for(data_dir: &Path, agent_scoped: bool) -> PathBuf {
-    shared_indexes_host_dir_for(data_dir, agent_scoped).join(RUNTIME_INDEXES_DIR)
+    shared_indexes_host_dir_for(data_dir, agent_scoped).join(SHARED_INDEXES_DIR)
 }
 
 fn shared_indexes_host_dir_for(data_dir: &Path, agent_scoped: bool) -> PathBuf {
@@ -3278,7 +3274,6 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].kind, TranscriptEntryKind::IncomingMessage);
         assert_eq!(restored[0].related_message_id.as_deref(), Some("message-1"));
-        assert!(!storage.indexes_dir().exists());
         assert!(storage.cache_dir().is_dir());
     }
 
