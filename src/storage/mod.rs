@@ -195,7 +195,6 @@ impl AppStorage {
             for dir in [
                 &state_dir,
                 &ledger_dir,
-                &runtime_dir.join(RUNTIME_INDEXES_DIR),
                 &runtime_dir.join(RUNTIME_CACHE_DIR),
             ] {
                 fs::create_dir_all(dir)
@@ -3279,7 +3278,7 @@ mod tests {
         assert_eq!(restored.len(), 1);
         assert_eq!(restored[0].kind, TranscriptEntryKind::IncomingMessage);
         assert_eq!(restored[0].related_message_id.as_deref(), Some("message-1"));
-        assert!(storage.indexes_dir().is_dir());
+        assert!(!storage.indexes_dir().exists());
         assert!(storage.cache_dir().is_dir());
     }
 
@@ -5444,9 +5443,7 @@ mod tests {
         std::fs::create_dir_all(&legacy).unwrap();
         std::fs::write(legacy.join("memory.v2.sqlite3"), b"legacy").unwrap();
 
-        let storage =
-            AppStorage::new_for_agent_for_test(dir.path().join("agents/agent-a"), "agent-a")
-                .unwrap();
+        let storage = AppStorage::new_global_for_test(dir.path().join("host")).unwrap();
         let canonical = dir.path().join("indexes");
 
         assert_eq!(storage.shared_indexes_dir(), canonical);
