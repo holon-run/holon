@@ -38,6 +38,7 @@ pub enum DaemonLifecycleState {
     Degraded,
     Stopped,
     Stale,
+    Unresponsive,
     VersionMismatch,
 }
 
