@@ -105,6 +105,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -168,6 +169,8 @@ private fun StartingScreen() {
 @Composable
 private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val isInsecureHttp = state.baseUrl.trim().startsWith("http://", ignoreCase = true)
+    val context = LocalContext.current
+    val scanner = remember(context) { GmsBarcodeScanning.getClient(context) }
     var showLanguagePicker by remember { mutableStateOf(false) }
     if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
     Column(
@@ -215,6 +218,21 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
             )
+            OutlinedButton(
+                onClick = {
+                    scanner.startScan()
+                        .addOnSuccessListener { barcode ->
+                            viewModel.applyScannedAddress(barcode.rawValue.orEmpty())
+                        }
+                        .addOnFailureListener {
+                            viewModel.reportScanFailure()
+                        }
+                },
+                enabled = !state.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(ui("扫描连接二维码"))
+            }
             AnimatedVisibility(visible = isInsecureHttp) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,

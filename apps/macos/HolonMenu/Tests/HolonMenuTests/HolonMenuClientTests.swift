@@ -10,13 +10,31 @@ actor RecordingProcessLauncher: HolonProcessLaunching {
 
     private var recordedInvocations: [Invocation] = []
     private let result: Result<HolonProcessResult, Error>
+    private let address: String?
+    private let responses: [String: String]
 
-    init(result: Result<HolonProcessResult, Error>) {
+    init(
+        result: Result<HolonProcessResult, Error>,
+        address: String? = nil,
+        responses: [String: String] = [:]
+    ) {
         self.result = result
+        self.address = address
+        self.responses = responses
     }
 
     func run(executableURL: URL, arguments: [String]) async throws -> HolonProcessResult {
         recordedInvocations.append(Invocation(executableURL: executableURL, arguments: arguments))
+        if arguments.first == "getifaddr", let address {
+            return HolonProcessResult(
+                terminationStatus: 0, stdout: Data(address.utf8), stderr: Data()
+            )
+        }
+        if let response = responses[arguments.joined(separator: " ")] {
+            return HolonProcessResult(
+                terminationStatus: 0, stdout: Data(response.utf8), stderr: Data()
+            )
+        }
         return try result.get()
     }
 
@@ -26,6 +44,45 @@ actor RecordingProcessLauncher: HolonProcessLaunching {
 }
 
 final class HolonMenuClientTests: XCTestCase {
+    func testParsesConnectedAndServingTailscaleStatus() {
+        let status = HolonTailscaleStatus.parse(
+            statusOutput: #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#,
+            serveOutput: #"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7878"},"/other":{"Proxy":"http://127.0.0.1:9000"}}}}}"#,
+            holonURL: URL(string: "http://127.0.0.1:7878")
+        )
+
+        XCTAssertEqual(status.state, .serving)
+        XCTAssertEqual(status.hostname, "holon.example.ts.net")
+        XCTAssertEqual(status.serveURL?.absoluteString, "https://holon.example.ts.net")
+    }
+
+    func testIgnoresServeForAnotherService() {
+        let status = HolonTailscaleStatus.parse(
+            statusOutput: #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#,
+            serveOutput: #"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:9000"}}}}}"#,
+            holonURL: URL(string: "http://127.0.0.1:7878")
+        )
+        XCTAssertEqual(status.state, .connected)
+        XCTAssertNil(status.serveURL)
+    }
+
+    func testExistingNonProxyRootHandlerIsNotHolon() throws {
+        let configuration = try JSONDecoder().decode(
+            HolonTailscaleServeConfiguration.self,
+            from: Data(#"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Text":"Other service"}}}}}"#.utf8)
+        )
+        XCTAssertTrue(configuration.hasRootHandler(for: "holon.example.ts.net"))
+        XCTAssertNil(configuration.rootProxy(for: "holon.example.ts.net"))
+    }
+
+    func testParsesTailscaleLoginRequirement() {
+        let status = HolonTailscaleStatus.parse(
+            statusOutput: #"{"BackendState":"NeedsLogin"}"#
+        )
+
+        XCTAssertEqual(status.state, .loggedOut)
+    }
+
     func testClientBuildsDaemonArgumentsAndDecodesJSON() async throws {
         let statusJSON = """
         {
@@ -86,5 +143,112 @@ final class HolonMenuClientTests: XCTestCase {
             restartInvocations.last?.arguments,
             ["daemon", "restart", "--access", "local", "--port", "7878", "--desktop-integration"]
         )
+    }
+
+    func testLANUsesClientVisibleAddressWithoutDesktopIntegration() async throws {
+        let statusJSON = """
+        {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
+        "socket_path":"/tmp/holon.sock","http_addr":"0.0.0.0:7878",
+        "web_url":"http://127.0.0.1:7878","desired_running":true,
+        "control_connectivity":true,"message":"Running"}
+        """
+        let launcher = RecordingProcessLauncher(
+            result: .success(HolonProcessResult(
+                terminationStatus: 0, stdout: Data(statusJSON.utf8), stderr: Data()
+            )),
+            address: "192.168.1.20\n"
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            launchOptions: HolonDaemonLaunchOptions(access: "local", port: 7878)
+        )
+        let webURL = try await client.webURL()
+        XCTAssertEqual(webURL.absoluteString, "http://192.168.1.20:7878")
+        _ = try await client.restart()
+        var invocations = await launcher.invocations()
+        XCTAssertEqual(
+            invocations.last?.arguments,
+            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878", "--desktop-integration=false"]
+        )
+        _ = try await client.disableLAN()
+        invocations = await launcher.invocations()
+        XCTAssertEqual(
+            invocations.last?.arguments,
+            ["daemon", "restart", "--access", "local", "--listen", "127.0.0.1:7878", "--desktop-integration"]
+        )
+        _ = try await client.enableLAN()
+        invocations = await launcher.invocations()
+        XCTAssertEqual(
+            invocations.last?.arguments,
+            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878", "--desktop-integration=false"]
+        )
+    }
+
+    func testDisableServeOnlyRemovesHolonRootRule() async throws {
+        let status = #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#
+        let serve = #"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7878"},"/other":{"Proxy":"http://127.0.0.1:9000"}}}}}"#
+        let launcher = RecordingProcessLauncher(
+            result: .success(HolonProcessResult(
+                terminationStatus: 0,
+                stdout: Data("""
+                {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
+                "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                "web_url":"http://127.0.0.1:7878","desired_running":true,
+                "control_connectivity":true,"message":"Running"}
+                """.utf8),
+                stderr: Data()
+            )),
+            responses: ["status --json": status, "serve status --json": serve]
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            tailscaleExecutableURL: URL(fileURLWithPath: "/opt/tailscale")
+        )
+        _ = try await client.disableTailscaleServe()
+        let invocations = await launcher.invocations()
+        XCTAssertTrue(invocations.contains {
+            $0.arguments == ["serve", "--https=443", "--set-path=/", "off"]
+        })
+        XCTAssertFalse(invocations.contains { $0.arguments == ["serve", "reset"] })
+    }
+
+    func testDisableServeRefusesUnrelatedRule() async throws {
+        let status = #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#
+        let serve = #"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:9000"}}}}}"#
+        let launcher = RecordingProcessLauncher(
+            result: .success(HolonProcessResult(
+                terminationStatus: 0,
+                stdout: Data("""
+                {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
+                "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                "web_url":"http://127.0.0.1:7878","desired_running":true,
+                "control_connectivity":true,"message":"Running"}
+                """.utf8),
+                stderr: Data()
+            )),
+            responses: ["status --json": status, "serve status --json": serve]
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            tailscaleExecutableURL: URL(fileURLWithPath: "/opt/tailscale")
+        )
+        do {
+            _ = try await client.disableTailscaleServe()
+            XCTFail("Disabling an unrelated Serve rule must fail")
+        } catch HolonCLIError.tailscaleServeConflict {
+            // The other service is not managed by Holon.
+        }
+        do {
+            _ = try await client.enableTailscaleServe()
+            XCTFail("Enabling Holon Serve must not replace an unrelated rule")
+        } catch HolonCLIError.tailscaleServeConflict {
+            // The existing root rule belongs to another service.
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("off") })
+        XCTAssertFalse(invocations.contains { $0.arguments.contains("--bg") })
     }
 }

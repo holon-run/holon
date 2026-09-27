@@ -3,6 +3,14 @@ import XCTest
 
 @MainActor
 final class HolonMenuViewModelTests: XCTestCase {
+    func testLANAddressIsDisplayedInsteadOfLoopback() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.enableLAN()
+        XCTAssertEqual(viewModel.webAddressText, "http://192.168.1.20:7878")
+        viewModel.stopPolling()
+    }
+
     func testBootstrapReplacesIncompatibleDesiredRuntime() async {
         let client = FakeHolonClient(
             currentStatus: HolonDaemonStatus(
@@ -32,9 +40,10 @@ final class HolonMenuViewModelTests: XCTestCase {
 
         let commands = await client.recordedCommands()
         XCTAssertEqual(
-            Array(commands.prefix(3)),
-            [.status, .launchAtLoginEnabled, .restart]
+            Array(commands.prefix(4)),
+            [.status, .tailscaleStatus, .lanURL, .launchAtLoginEnabled]
         )
+        XCTAssertEqual(commands.last, .restart)
         XCTAssertEqual(viewModel.status?.state, .running)
     }
 }

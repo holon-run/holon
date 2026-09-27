@@ -18,6 +18,13 @@ final class HolonMenuFakeClientTests: XCTestCase {
         let logsURL = try await client.logsURL()
         XCTAssertTrue(logsURL.path.hasSuffix("/run/daemon.log"))
 
+        let tailscale = try await client.tailscaleStatus()
+        XCTAssertEqual(tailscale.state, .connected)
+        let serving = try await client.enableTailscaleServe()
+        XCTAssertEqual(serving.state, .serving)
+        let disabled = try await client.disableTailscaleServe()
+        XCTAssertEqual(disabled.state, .connected)
+
         try await client.setLaunchAtLoginEnabled(true)
         let launchAtLoginEnabled = try await client.launchAtLoginEnabled()
         XCTAssertTrue(launchAtLoginEnabled)
@@ -30,6 +37,9 @@ final class HolonMenuFakeClientTests: XCTestCase {
                 .start,
                 .webURL,
                 .logsURL,
+                .tailscaleStatus,
+                .enableTailscaleServe,
+                .disableTailscaleServe,
                 .setLaunchAtLoginEnabled(true),
                 .launchAtLoginEnabled,
             ]

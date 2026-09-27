@@ -11,11 +11,18 @@ actor FakeHolonClient: HolonDesiredStateClient {
         case launchAtLoginEnabled
         case setLaunchAtLoginEnabled(Bool)
         case installCommandLineTool
+        case tailscaleStatus
+        case enableTailscaleServe
+        case disableTailscaleServe
+        case lanURL
+        case enableLAN
+        case disableLAN
     }
 
     private(set) var commands: [Command] = []
     private var currentStatus: HolonDaemonStatus
     private var launchAtLoginEnabledValue: Bool
+    private var tailscaleStatusValue: HolonTailscaleStatus
 
     init(
         currentStatus: HolonDaemonStatus = HolonDaemonStatus(
@@ -37,10 +44,17 @@ actor FakeHolonClient: HolonDesiredStateClient {
             configFingerprintMatch: nil,
             message: "Holon runtime is stopped."
         ),
-        launchAtLoginEnabled: Bool = false
+        launchAtLoginEnabled: Bool = false,
+        tailscaleStatus: HolonTailscaleStatus = HolonTailscaleStatus(
+            state: .connected,
+            hostname: "holon.example.ts.net",
+            serveURL: nil,
+            message: "Tailscale is connected; Serve is not enabled."
+        )
     ) {
         self.currentStatus = currentStatus
         self.launchAtLoginEnabledValue = launchAtLoginEnabled
+        self.tailscaleStatusValue = tailscaleStatus
     }
 
     func status() async throws -> HolonDaemonStatus {
@@ -104,6 +118,54 @@ actor FakeHolonClient: HolonDesiredStateClient {
     func installCommandLineTool() async throws -> URL {
         commands.append(.installCommandLineTool)
         return URL(fileURLWithPath: "/Users/holon/.local/bin/holon")
+    }
+
+    func tailscaleStatus() async throws -> HolonTailscaleStatus {
+        commands.append(.tailscaleStatus)
+        return tailscaleStatusValue
+    }
+
+    func enableTailscaleServe() async throws -> HolonTailscaleStatus {
+        commands.append(.enableTailscaleServe)
+        tailscaleStatusValue = HolonTailscaleStatus(
+            state: .serving,
+            hostname: tailscaleStatusValue.hostname,
+            serveURL: URL(string: "https://holon.example.ts.net"),
+            message: "Tailscale Serve is exposing Holon."
+        )
+        return tailscaleStatusValue
+    }
+
+    func disableTailscaleServe() async throws -> HolonTailscaleStatus {
+        commands.append(.disableTailscaleServe)
+        tailscaleStatusValue = HolonTailscaleStatus(
+            state: .connected,
+            hostname: tailscaleStatusValue.hostname,
+            serveURL: nil,
+            message: "Tailscale is connected; Serve is not enabled."
+        )
+        return tailscaleStatusValue
+    }
+
+    func lanURL() async throws -> URL? {
+        commands.append(.lanURL)
+        return currentStatus.httpAddr.hasPrefix("127.")
+            ? nil
+            : URL(string: "http://192.168.1.20:7878")
+    }
+
+    func enableLAN() async throws -> URL {
+        commands.append(.enableLAN)
+        currentStatus.httpAddr = "0.0.0.0:7878"
+        currentStatus.webUrl = "http://127.0.0.1:7878"
+        return URL(string: "http://192.168.1.20:7878")!
+    }
+
+    func disableLAN() async throws -> HolonDaemonStatus {
+        commands.append(.disableLAN)
+        currentStatus.httpAddr = "127.0.0.1:7878"
+        currentStatus.webUrl = "http://127.0.0.1:7878"
+        return currentStatus
     }
 
     func recordedCommands() -> [Command] {

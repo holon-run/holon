@@ -30,6 +30,69 @@ struct HolonMenuView: View {
                 .font(.caption)
             }
 
+            GroupBox("Local network") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(viewModel.lanURL == nil ? "LAN access is off" : "LAN access is on")
+                        .font(.headline)
+                    if let lanURL = viewModel.lanURL {
+                        Text(lanURL.absoluteString)
+                            .font(.caption2)
+                            .textSelection(.enabled)
+                        Button("Disable LAN access") {
+                            Task { await viewModel.disableLAN() }
+                        }
+                    } else {
+                        Text("Explicitly expose Holon on this Mac's local network.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Button("Enable LAN access…") {
+                            viewModel.requestLANAccess()
+                        }
+                        .disabled(viewModel.isOperating)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            GroupBox("Tailscale") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(viewModel.tailscaleStatus?.title ?? "Checking…")
+                        .font(.headline)
+                    Text(viewModel.tailscaleStatus?.message ?? "Checking Tailscale status.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let serveURL = viewModel.tailscaleStatus?.serveURL {
+                        Text(serveURL.absoluteString)
+                            .font(.caption2)
+                            .textSelection(.enabled)
+                    }
+                    if viewModel.tailscaleStatus?.state == .serving {
+                        Button("Disable Serve") {
+                            Task { await viewModel.disableTailscaleServe() }
+                        }
+                    } else {
+                        Button("Enable Serve…") {
+                            viewModel.requestTailscaleServe()
+                        }
+                        .disabled(viewModel.isOperating)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let connectionURL = viewModel.connectionURL {
+                GroupBox("Connect from phone") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HolonQRCodeView(payload: connectionURL.absoluteString)
+                            .frame(maxWidth: .infinity)
+                        Text(connectionURL.absoluteString)
+                            .font(.caption2)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+                }
+            }
+
             HStack(spacing: 8) {
                 Button("Start") {
                     Task { await viewModel.start() }
@@ -94,5 +157,21 @@ struct HolonMenuView: View {
         }
         .padding(12)
         .frame(width: 320)
+        .alert("Enable Tailscale Serve?", isPresented: $viewModel.showTailscaleServeConfirmation) {
+            Button("Enable") {
+                Task { await viewModel.enableTailscaleServe() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Holon will ask Tailscale to expose its local web service over your tailnet. This changes network reachability and can be disabled from this menu.")
+        }
+        .alert("Enable LAN access?", isPresented: $viewModel.showLANConfirmation) {
+            Button("Enable") {
+                Task { await viewModel.enableLAN() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Holon will listen on the local network and require its configured control token. Devices on the same network may be able to reach this service.")
+        }
     }
 }
