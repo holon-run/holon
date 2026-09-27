@@ -19,6 +19,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonAgentEvent
@@ -39,6 +41,9 @@ import run.holon.android.sdk.HolonWorkItemSnapshot
 import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
 import run.holon.android.sdk.toConversationEvent
+
+internal fun HolonHttpException.isStaleAgentEventCursor(): Boolean =
+    statusCode == 404 && apiError?.code == "cursor_not_found"
 
 internal enum class AppPhase {
     Starting,
@@ -176,6 +181,8 @@ internal class HolonViewModel(
     private var globalEventStreamJob: Job? = null
     private val agentEventStreamJobs = ConcurrentHashMap<String, Job>()
     private val agentEventCursors = ConcurrentHashMap<String, Long>()
+    private val staleCursorRecoveryMutex = Mutex()
+    @Volatile private var liveEventLogEpoch: String? = null
     private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
     private var workspaceBrowseJob: Job? = null
@@ -205,7 +212,7 @@ internal class HolonViewModel(
                         )
                     }
                     loadBriefReadStates()
-                    startLiveSync(result.roster.agents)
+                    startLiveSync(result.roster.agents, result.roster.eventLogEpoch)
                     viewModelScope.launch(Dispatchers.IO) { runCatching { repository.retryOutbox() } }
                 }
                 is ResumeResult.Offline -> {
@@ -356,7 +363,7 @@ internal class HolonViewModel(
                     )
                 }
                 loadBriefReadStates()
-                startLiveSync(roster.agents)
+                startLiveSync(roster.agents, roster.eventLogEpoch)
             }.onFailure { error ->
                 tokenChars.fill('\u0000')
                 mutableState.update {
@@ -399,7 +406,7 @@ internal class HolonViewModel(
                         statusMessage = null,
                     )
                 }
-                startLiveSync(roster.agents)
+                startLiveSync(roster.agents, roster.eventLogEpoch)
                 state.value.selectedAgent?.let(::openAgent)
                 viewModelScope.launch {
                     runCatching {
@@ -426,8 +433,9 @@ internal class HolonViewModel(
         }
     }
 
-    private fun startLiveSync(agents: List<AgentSummary>) {
+    private fun startLiveSync(agents: List<AgentSummary>, eventLogEpoch: String? = null) {
         if (!foreground || state.value.phase != AppPhase.Ready) return
+        eventLogEpoch?.let { liveEventLogEpoch = it }
         if (globalEventStreamJob?.isActive != true) {
             globalEventStreamJob =
                 viewModelScope.launch(Dispatchers.IO) {
@@ -461,19 +469,56 @@ internal class HolonViewModel(
             agentEventStreamJobs[agent.id] =
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching {
-                        var persistedCursor = repository.syncState(agent.id)?.eventCursor
+                        val persistedState = repository.syncState(agent.id)
+                        var persistedCursor = persistedState?.eventCursor
+                        var streamEpoch = liveEventLogEpoch
+                        if (
+                            persistedState?.eventLogEpoch != null &&
+                                streamEpoch != null &&
+                                persistedState.eventLogEpoch != streamEpoch
+                        ) {
+                            repository.resetAgentEventCursor(agent.id, streamEpoch)
+                            persistedCursor = null
+                            agentEventCursors.remove(agent.id)
+                        }
                         persistedCursor?.let { agentEventCursors[agent.id] = it }
                         while (isActive && foreground) {
-                            repository.reconnectingAgentEvents(
-                                agentId = agent.id,
-                                afterSeq = persistedCursor,
-                                policy = SseReconnectPolicy(maxAttempts = 8),
-                            ).forEach { event ->
-                                if (!isActive || !foreground) return@forEach
-                                persistedCursor = event.eventSeq
-                                agentEventCursors[agent.id] = event.eventSeq
-                                repository.saveAgentEventCursor(agent.id, event)
-                                scheduleLiveRosterRefresh()
+                            val currentEpoch = liveEventLogEpoch
+                            if (streamEpoch != null && currentEpoch != null && streamEpoch != currentEpoch) {
+                                repository.resetAgentEventCursor(agent.id, currentEpoch)
+                                persistedCursor = null
+                                streamEpoch = currentEpoch
+                                agentEventCursors.remove(agent.id)
+                            }
+                            try {
+                                for (event in repository.reconnectingAgentEvents(
+                                    agentId = agent.id,
+                                    afterSeq = persistedCursor,
+                                    policy = SseReconnectPolicy(maxAttempts = 8),
+                                )) {
+                                    if (!isActive || !foreground) break
+                                    if (
+                                        liveEventLogEpoch != null &&
+                                            event.eventLogEpoch != liveEventLogEpoch
+                                    ) {
+                                        repository.resetAgentEventCursor(agent.id, event.eventLogEpoch)
+                                        persistedCursor = null
+                                        streamEpoch = event.eventLogEpoch
+                                        agentEventCursors.remove(agent.id)
+                                        recoverLiveRosterAfterStaleCursor()
+                                        break
+                                    }
+                                    persistedCursor = event.eventSeq
+                                    agentEventCursors[agent.id] = event.eventSeq
+                                    repository.saveAgentEventCursor(agent.id, event)
+                                    scheduleLiveRosterRefresh()
+                                }
+                            } catch (error: HolonHttpException) {
+                                if (!error.isStaleAgentEventCursor()) throw error
+                                persistedCursor = null
+                                agentEventCursors.remove(agent.id)
+                                repository.resetAgentEventCursor(agent.id, liveEventLogEpoch)
+                                streamEpoch = recoverLiveRosterAfterStaleCursor() ?: liveEventLogEpoch
                             }
                             delay(500)
                         }
@@ -487,6 +532,27 @@ internal class HolonViewModel(
                 }
         }
     }
+
+    private suspend fun recoverLiveRosterAfterStaleCursor(): String? =
+        staleCursorRecoveryMutex.withLock {
+            if (!foreground || state.value.phase != AppPhase.Ready) return@withLock liveEventLogEpoch
+            runCatching {
+                withContext(Dispatchers.IO) { repository.refreshSessionAndRoster() }
+            }.onSuccess { (session, roster) ->
+                liveEventLogEpoch = roster.eventLogEpoch
+                mutableState.update {
+                    it.copy(
+                        session = session,
+                        agents = roster.agents,
+                        online = true,
+                        lastSyncedAt = System.currentTimeMillis(),
+                        statusMessage = null,
+                    )
+                }
+                loadBriefReadStates()
+                startLiveSync(roster.agents, roster.eventLogEpoch)
+            }.onFailure(::handleRuntimeFailure).getOrNull()?.second?.eventLogEpoch
+        }
 
     private fun stopLiveSync() {
         globalEventStreamJob?.cancel()
@@ -517,7 +583,7 @@ internal class HolonViewModel(
                         )
                     }
                     loadBriefReadStates()
-                    startLiveSync(roster.agents)
+                    startLiveSync(roster.agents, roster.eventLogEpoch)
                 }.onFailure(::handleRuntimeFailure)
             }
     }

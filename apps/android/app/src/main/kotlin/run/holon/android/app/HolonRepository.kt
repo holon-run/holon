@@ -524,6 +524,21 @@ internal class HolonRepository(
         )
     }
 
+    suspend fun resetAgentEventCursor(agentId: String, eventLogEpoch: String?) {
+        val session = requireSession()
+        val current = dao.syncState(session.scopeKey, agentId)
+        dao.putSyncState(
+            AgentSyncStateEntity(
+                scopeKey = session.scopeKey,
+                agentId = agentId,
+                eventCursor = null,
+                conversationCursor = current?.conversationCursor,
+                eventLogEpoch = eventLogEpoch,
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+
     suspend fun brief(agentId: String, briefId: String): HolonBrief {
         val session = requireSession()
         return try {
