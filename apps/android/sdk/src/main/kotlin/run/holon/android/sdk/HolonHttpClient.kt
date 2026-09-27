@@ -96,6 +96,38 @@ public class HolonHttpClient internal constructor(
             serializer = ListSerializer(AgentListEntry.serializer()),
         ).map(AgentListEntry::toAgentSummary)
 
+    public fun briefReadStates(): List<HolonBriefReadState> {
+        val values = getJson("agents/brief-read-states").raw as? JsonArray
+            ?: throw HolonProtocolException("Holon brief read states response is not an array")
+        return values.map { element ->
+            (element as? JsonObject)?.toHolonBriefReadState()
+                ?: throw HolonProtocolException("Holon brief read states response contains an invalid state")
+        }
+    }
+
+    public fun briefReadState(agentId: String): HolonBriefReadState {
+        val raw = getJson("agents/${agentId.pathSegment()}/brief-read-state").objectOrNull
+            ?: throw HolonProtocolException("Holon brief read state response is not an object")
+        return raw.toHolonBriefReadState()
+    }
+
+    public fun markBriefRead(agentId: String, readThroughEventSeq: Long): HolonMarkBriefReadResult {
+        val raw =
+            postJson(
+                path = "agents/${agentId.pathSegment()}/brief-read-cursor",
+                body = buildJsonObject { put("read_through_event_seq", readThroughEventSeq) },
+            ).objectOrNull ?: throw HolonProtocolException("Holon mark brief read response is not an object")
+        val state =
+            (raw["state"] as? JsonObject)?.toHolonBriefReadState()
+                ?: throw HolonProtocolException("Holon mark brief read response is missing state")
+        return HolonMarkBriefReadResult(
+            appliedReadThroughEventSeq =
+                raw.long("applied_read_through_event_seq")
+                    ?: throw HolonProtocolException("Holon mark brief read response is missing applied cursor"),
+            state = state,
+        )
+    }
+
     public fun currentUser(): HolonCurrentUser {
         val response =
             get(

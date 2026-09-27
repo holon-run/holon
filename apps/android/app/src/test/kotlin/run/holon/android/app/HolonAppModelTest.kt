@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlinx.serialization.json.buildJsonObject
 import run.holon.android.sdk.AgentSummary
+import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonLatestBrief
 
@@ -52,6 +53,12 @@ class HolonAppModelTest {
         val attention = agent("attention", "2026-09-23T10:00:00Z").copy(schedulingPosture = "waiting_for_operator")
         val state = HolonUiState(
             agents = listOf(read, unread, attention),
+            briefReadStates = mapOf(
+                read.id to readState(read.id, unreadCount = 0),
+                unread.id to readState(unread.id, unreadCount = 2),
+                attention.id to readState(attention.id, unreadCount = 0),
+            ),
+            briefReadStatesLoaded = true,
             readBriefIds = mapOf(read.id to read.latestBrief!!.briefId),
             readBriefsLoaded = true,
         )
@@ -112,6 +119,20 @@ class HolonAppModelTest {
             currentRunId = null,
             schedulingPosture = "idle",
             latestBrief = HolonLatestBrief("brief-$id", createdAt, "done", 1),
+        )
+
+    private fun readState(agentId: String, unreadCount: Int) =
+        HolonBriefReadState(
+            agentId = agentId,
+            eventHeadSeq = 10,
+            eventLogEpoch = "epoch",
+            oldestRetainedSeq = 1,
+            readThroughEventSeq = 8,
+            resetRequired = false,
+            retentionGap = false,
+            revision = 1,
+            unreadCount = unreadCount,
+            visibilityScopeId = "scope",
         )
 
     private fun turn(

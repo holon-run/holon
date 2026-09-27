@@ -23,6 +23,7 @@ import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonBrief
+import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
@@ -88,6 +89,8 @@ internal data class HolonUiState(
     val lastSyncedAt: Long? = null,
     val session: ActiveSession? = null,
     val agents: List<AgentSummary> = emptyList(),
+    val briefReadStates: Map<String, HolonBriefReadState> = emptyMap(),
+    val briefReadStatesLoaded: Boolean = false,
     val readBriefIds: Map<String, String> = emptyMap(),
     val readBriefsLoaded: Boolean = false,
     val selectedAgent: AgentSummary? = null,
@@ -130,7 +133,7 @@ internal data class HolonUiState(
         get() =
             agents.sortedWith(
                 compareByDescending<AgentSummary> { it.needsReply() }
-                    .thenByDescending { readBriefsLoaded && it.hasUnreadBrief(readBriefIds) }
+                    .thenByDescending { briefReadStatesLoaded && it.unreadCount(briefReadStates) > 0 }
                     .thenByDescending { it.latestBrief?.createdAt.orEmpty() }
                     .thenBy { it.displayName.lowercase() },
             )
@@ -195,7 +198,7 @@ internal class HolonViewModel(
                             agents = result.roster.agents,
                         )
                     }
-                    loadReadBriefIds()
+                    loadBriefReadStates()
                     startLiveSync(result.roster.agents)
                     viewModelScope.launch(Dispatchers.IO) { runCatching { repository.retryOutbox() } }
                 }
@@ -210,7 +213,7 @@ internal class HolonViewModel(
                             statusMessage = "当前离线，显示上次同步内容",
                         )
                     }
-                    loadReadBriefIds()
+                    loadBriefReadStates()
                     refresh(showProgress = false)
                 }
                 is ResumeResult.Incompatible ->
@@ -235,29 +238,76 @@ internal class HolonViewModel(
         mutableState.update { it.copy(allowInsecureHttp = value, error = null) }
     fun setSearch(value: String) = mutableState.update { it.copy(search = value) }
 
-    private fun loadReadBriefIds() {
+    private fun loadBriefReadStates() {
         val scopeKey = state.value.session?.scopeKey ?: return
         val agents = state.value.agents
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repository.readBriefIds(agents) } }
-                .onSuccess { read ->
+            runCatching { withContext(Dispatchers.IO) { repository.briefReadStates() } }
+                .onSuccess { readStates ->
                     if (state.value.session?.scopeKey == scopeKey) {
-                        mutableState.update { it.copy(readBriefIds = read, readBriefsLoaded = true) }
+                        mutableState.update {
+                            it.copy(
+                                briefReadStates = readStates,
+                                briefReadStatesLoaded = true,
+                                error = null,
+                            )
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    if (isBriefReadStateUnsupported(error) && state.value.session?.scopeKey == scopeKey) {
+                        runCatching { withContext(Dispatchers.IO) { repository.readBriefIds(agents) } }
+                            .onSuccess { read ->
+                                mutableState.update {
+                                    it.copy(
+                                        readBriefIds = read,
+                                        readBriefsLoaded = true,
+                                        briefReadStatesLoaded = false,
+                                    )
+                                }
+                            }
+                    } else if (state.value.session?.scopeKey == scopeKey) {
+                        mutableState.update { it.copy(error = "无法加载未读数：${humanError(error)}") }
                     }
                 }
         }
     }
 
-    fun markBriefRead(agentId: String, briefId: String) {
+    fun markBriefRead(agentId: String, readThroughEventSeq: Long) {
         val current = state.value
-        if (current.selectedAgent?.id != agentId || current.readBriefIds[agentId] == briefId) return
+        if (current.selectedAgent?.id != agentId) return
+        val existing = current.briefReadStates[agentId]
+        if (existing != null && existing.readThroughEventSeq >= readThroughEventSeq) return
         val scopeKey = current.session?.scopeKey ?: return
-        mutableState.update { it.copy(readBriefIds = it.readBriefIds + (agentId to briefId)) }
         viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repository.markBriefRead(agentId, briefId) } }
+            runCatching { withContext(Dispatchers.IO) { repository.markBriefRead(agentId, readThroughEventSeq) } }
+                .onSuccess { result ->
+                    if (state.value.session?.scopeKey == scopeKey) {
+                        mutableState.update {
+                            it.copy(
+                                briefReadStates = it.briefReadStates + (agentId to result.state),
+                                briefReadStatesLoaded = true,
+                            )
+                        }
+                    }
+                }
                 .onFailure { error ->
                     if (state.value.session?.scopeKey == scopeKey) {
-                        mutableState.update { it.copy(error = "无法保存已读状态：${humanError(error)}") }
+                        if (isBriefReadStateUnsupported(error)) {
+                            state.value.selectedAgent?.latestBrief?.briefId?.let { briefId ->
+                                viewModelScope.launch(Dispatchers.IO) {
+                                    repository.markBriefRead(agentId, briefId)
+                                }
+                                mutableState.update {
+                                    it.copy(
+                                        readBriefIds = it.readBriefIds + (agentId to briefId),
+                                        readBriefsLoaded = true,
+                                    )
+                                }
+                            }
+                        } else {
+                            mutableState.update { it.copy(error = "无法保存已读状态：${humanError(error)}") }
+                        }
                     }
                 }
         }
@@ -288,12 +338,14 @@ internal class HolonViewModel(
                         baseUrl = session.baseUrl,
                         token = "",
                         agents = roster.agents,
+                        briefReadStates = emptyMap(),
+                        briefReadStatesLoaded = false,
                         readBriefIds = emptyMap(),
                         readBriefsLoaded = false,
                         statusMessage = null,
                     )
                 }
-                loadReadBriefIds()
+                loadBriefReadStates()
                 startLiveSync(roster.agents)
             }.onFailure { error ->
                 tokenChars.fill('\u0000')
@@ -450,7 +502,7 @@ internal class HolonViewModel(
                             statusMessage = null,
                         )
                     }
-                    loadReadBriefIds()
+                    loadBriefReadStates()
                     startLiveSync(roster.agents)
                 }.onFailure(::handleRuntimeFailure)
             }
@@ -1722,3 +1774,9 @@ internal fun AgentSummary.needsReply(): Boolean =
 
 internal fun AgentSummary.hasUnreadBrief(readBriefIds: Map<String, String>): Boolean =
     latestBrief?.briefId?.let { it != readBriefIds[id] } ?: false
+
+internal fun AgentSummary.unreadCount(readStates: Map<String, HolonBriefReadState>): Int =
+    readStates[id]?.unreadCount ?: 0
+
+private fun isBriefReadStateUnsupported(error: Throwable): Boolean =
+    (error as? run.holon.android.sdk.HolonHttpException)?.statusCode in setOf(404, 405, 501)
