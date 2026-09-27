@@ -99,7 +99,7 @@ internal sealed interface ResumeResult {
 
     data class Offline(
         val session: ActiveSession,
-        val cached: List<ConversationCacheEntity>,
+        val cached: List<AgentProjectionEntity>,
     ) : ResumeResult
 
     data class Incompatible(
@@ -226,7 +226,7 @@ internal class HolonRepository(
         return requireSession() to roster
     }
 
-    suspend fun cachedRoster(): List<ConversationCacheEntity> =
+    suspend fun cachedRoster(): List<AgentProjectionEntity> =
         requireSession().let { dao.conversations(it.scopeKey) }
 
     suspend fun conversation(agent: AgentSummary): ConversationBundle {
@@ -234,11 +234,22 @@ internal class HolonRepository(
         val snapshot = requireClient().conversationSnapshot(agent.id, limit = 60)
         validateConversationScope(snapshot)
         val existing = dao.conversation(session.scopeKey, agent.id)
-        dao.putConversation(
-            rosterEntity(session.scopeKey, agent, existing?.updatedAt ?: System.currentTimeMillis()).copy(
+        val now = System.currentTimeMillis()
+        dao.putProjectionAndSync(
+            projection =
+                rosterEntity(session.scopeKey, agent, existing?.updatedAt ?: now).copy(
                 snapshotJson = snapshot.raw.toString(),
-                updatedAt = System.currentTimeMillis(),
-            ),
+                updatedAt = now,
+                ),
+            syncState =
+                AgentSyncStateEntity(
+                    scopeKey = session.scopeKey,
+                    agentId = agent.id,
+                    eventCursor = dao.syncState(session.scopeKey, agent.id)?.eventCursor,
+                    conversationCursor = snapshot.snapshotCursor,
+                    eventLogEpoch = snapshot.eventLogEpoch,
+                    updatedAt = now,
+                ),
         )
         val authoritativeMessageIds = snapshot.turns.flatMap { turn -> turn.inputs.map { it.messageId } }.toSet()
         dao.outbox(session.scopeKey, agent.id)
@@ -495,6 +506,24 @@ internal class HolonRepository(
             policy = policy,
         )
 
+    suspend fun syncState(agentId: String): AgentSyncStateEntity? =
+        requireSession().let { dao.syncState(it.scopeKey, agentId) }
+
+    suspend fun saveAgentEventCursor(agentId: String, event: HolonAgentEvent) {
+        val session = requireSession()
+        val current = dao.syncState(session.scopeKey, agentId)
+        dao.putSyncState(
+            AgentSyncStateEntity(
+                scopeKey = session.scopeKey,
+                agentId = agentId,
+                eventCursor = event.eventSeq,
+                conversationCursor = current?.conversationCursor,
+                eventLogEpoch = event.eventLogEpoch,
+                updatedAt = System.currentTimeMillis(),
+            ),
+        )
+    }
+
     suspend fun brief(agentId: String, briefId: String): HolonBrief {
         val session = requireSession()
         return try {
@@ -689,20 +718,38 @@ internal class HolonRepository(
 
     private suspend fun cacheRoster(scopeKey: String, roster: HolonRosterSnapshot) {
         val old = dao.conversations(scopeKey).associateBy { it.agentId }
-        dao.putConversations(
-            roster.agents.map { agent ->
-                val previous = old[agent.id]
-                rosterEntity(
-                    scopeKey,
-                    agent,
-                    latestActivityMillis(agent.latestBrief?.createdAt) ?: previous?.updatedAt ?: 0L,
-                ).copy(snapshotJson = previous?.snapshotJson)
-            },
+        val session = requireSession()
+        val now = System.currentTimeMillis()
+        val existingSync = dao.syncStates(scopeKey).associateBy { it.agentId }
+        dao.putRosterAndSync(
+            scope =
+                RuntimeScopeEntity(
+                    scopeId = scopeKey,
+                    baseUrl = session.baseUrl,
+                    runtimeId = session.runtimeId,
+                    userId = session.user.userId,
+                    visibilityScopeId = session.visibilityScopeId,
+                    createdAt = now,
+                    lastSeenAt = now,
+                ),
+            projections =
+                roster.agents.map { agent ->
+                    val previous = old[agent.id]
+                    rosterEntity(
+                        scopeKey,
+                        agent,
+                        latestActivityMillis(agent.latestBrief?.createdAt) ?: previous?.updatedAt ?: 0L,
+                    ).copy(snapshotJson = previous?.snapshotJson)
+                },
+            syncStates =
+                roster.agents.mapNotNull { agent ->
+                    existingSync[agent.id]?.copy(updatedAt = now)
+                },
         )
     }
 
     private fun rosterEntity(scopeKey: String, agent: AgentSummary, updatedAt: Long) =
-        ConversationCacheEntity(
+        AgentProjectionEntity(
             scopeKey = scopeKey,
             agentId = agent.id,
             displayName = agent.displayName,
@@ -766,6 +813,7 @@ internal class HolonRepository(
         dao.purgeOtherOutboxScopes(scopeKey)
         dao.purgeOtherBriefScopes(scopeKey)
         dao.purgeOtherCursorScopes(scopeKey)
+        dao.purgeOtherSyncScopes(scopeKey)
     }
 
     private suspend fun clearLocalState() {
@@ -775,6 +823,8 @@ internal class HolonRepository(
         dao.clearOutbox()
         dao.clearBriefs()
         dao.clearCursors()
+        dao.clearRuntimeScopes()
+        dao.clearSyncStates()
         File(context.filesDir, "outbox").deleteRecursively()
         File(context.cacheDir, "shared-artifacts").deleteRecursively()
     }

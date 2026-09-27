@@ -7,11 +7,13 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.first
@@ -54,8 +56,27 @@ internal class HostPreferences(private val context: Context) {
     }
 }
 
-@Entity(tableName = "conversation_cache", primaryKeys = ["scopeKey", "agentId"])
-internal data class ConversationCacheEntity(
+@Entity(
+    tableName = "runtime_scope",
+    primaryKeys = ["scopeId"],
+    indices = [Index(value = ["runtimeId", "userId", "visibilityScopeId"], unique = true)],
+)
+internal data class RuntimeScopeEntity(
+    val scopeId: String,
+    val baseUrl: String,
+    val runtimeId: String,
+    val userId: String,
+    val visibilityScopeId: String,
+    val createdAt: Long,
+    val lastSeenAt: Long,
+)
+
+@Entity(
+    tableName = "agent_projection",
+    primaryKeys = ["scopeKey", "agentId"],
+    indices = [Index(value = ["scopeKey", "updatedAt"])],
+)
+internal data class AgentProjectionEntity(
     val scopeKey: String,
     val agentId: String,
     val displayName: String,
@@ -85,7 +106,10 @@ internal data class ComposerAttachmentsEntity(
     val updatedAt: Long,
 )
 
-@Entity(tableName = "outbox")
+@Entity(
+    tableName = "outbox",
+    indices = [Index(value = ["scopeKey", "state", "createdAt"])],
+)
 internal data class OutboxEntity(
     @androidx.room.PrimaryKey val requestId: String,
     val scopeKey: String,
@@ -116,19 +140,39 @@ internal data class ReadCursorEntity(
     val updatedAt: Long,
 )
 
+@Entity(
+    tableName = "agent_sync_state",
+    primaryKeys = ["scopeKey", "agentId"],
+    indices = [Index(value = ["scopeKey", "updatedAt"])],
+)
+internal data class AgentSyncStateEntity(
+    val scopeKey: String,
+    val agentId: String,
+    val eventCursor: Long?,
+    val conversationCursor: String?,
+    val eventLogEpoch: String?,
+    val updatedAt: Long,
+)
+
 @Dao
 internal interface HolonDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun putConversations(entries: List<ConversationCacheEntity>)
+    suspend fun putRuntimeScope(entry: RuntimeScopeEntity)
 
-    @Query("SELECT * FROM conversation_cache WHERE scopeKey = :scopeKey ORDER BY updatedAt DESC")
-    suspend fun conversations(scopeKey: String): List<ConversationCacheEntity>
-
-    @Query("SELECT * FROM conversation_cache WHERE scopeKey = :scopeKey AND agentId = :agentId")
-    suspend fun conversation(scopeKey: String, agentId: String): ConversationCacheEntity?
+    @Query("SELECT * FROM runtime_scope WHERE scopeId = :scopeId")
+    suspend fun runtimeScope(scopeId: String): RuntimeScopeEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun putConversation(entry: ConversationCacheEntity)
+    suspend fun putConversations(entries: List<AgentProjectionEntity>)
+
+    @Query("SELECT * FROM agent_projection WHERE scopeKey = :scopeKey ORDER BY updatedAt DESC")
+    suspend fun conversations(scopeKey: String): List<AgentProjectionEntity>
+
+    @Query("SELECT * FROM agent_projection WHERE scopeKey = :scopeKey AND agentId = :agentId")
+    suspend fun conversation(scopeKey: String, agentId: String): AgentProjectionEntity?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun putConversation(entry: AgentProjectionEntity)
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putDraft(draft: DraftEntity)
@@ -166,7 +210,38 @@ internal interface HolonDao {
     @Query("SELECT * FROM read_cursors WHERE scopeKey = :scopeKey")
     suspend fun readCursors(scopeKey: String): List<ReadCursorEntity>
 
-    @Query("DELETE FROM conversation_cache WHERE scopeKey != :scopeKey")
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun putSyncState(entry: AgentSyncStateEntity)
+
+    @Query("SELECT * FROM agent_sync_state WHERE scopeKey = :scopeKey AND agentId = :agentId")
+    suspend fun syncState(scopeKey: String, agentId: String): AgentSyncStateEntity?
+
+    @Query("SELECT * FROM agent_sync_state WHERE scopeKey = :scopeKey")
+    suspend fun syncStates(scopeKey: String): List<AgentSyncStateEntity>
+
+    @Transaction
+    suspend fun putRosterAndSync(
+        scope: RuntimeScopeEntity,
+        projections: List<AgentProjectionEntity>,
+        syncStates: List<AgentSyncStateEntity>,
+    ) {
+        putRuntimeScope(scope)
+        putConversations(projections)
+        for (syncState in syncStates) {
+            putSyncState(syncState)
+        }
+    }
+
+    @Transaction
+    suspend fun putProjectionAndSync(
+        projection: AgentProjectionEntity,
+        syncState: AgentSyncStateEntity,
+    ) {
+        putConversation(projection)
+        putSyncState(syncState)
+    }
+
+    @Query("DELETE FROM agent_projection WHERE scopeKey != :scopeKey")
     suspend fun purgeOtherConversationScopes(scopeKey: String)
 
     @Query("DELETE FROM drafts WHERE scopeKey != :scopeKey")
@@ -184,7 +259,13 @@ internal interface HolonDao {
     @Query("DELETE FROM read_cursors WHERE scopeKey != :scopeKey")
     suspend fun purgeOtherCursorScopes(scopeKey: String)
 
-    @Query("DELETE FROM conversation_cache")
+    @Query("DELETE FROM agent_sync_state WHERE scopeKey != :scopeKey")
+    suspend fun purgeOtherSyncScopes(scopeKey: String)
+
+    @Query("DELETE FROM runtime_scope")
+    suspend fun clearRuntimeScopes()
+
+    @Query("DELETE FROM agent_projection")
     suspend fun clearConversations()
 
     @Query("DELETE FROM drafts")
@@ -201,18 +282,23 @@ internal interface HolonDao {
 
     @Query("DELETE FROM read_cursors")
     suspend fun clearCursors()
+
+    @Query("DELETE FROM agent_sync_state")
+    suspend fun clearSyncStates()
 }
 
 @Database(
     entities = [
-        ConversationCacheEntity::class,
+        RuntimeScopeEntity::class,
+        AgentProjectionEntity::class,
         DraftEntity::class,
         ComposerAttachmentsEntity::class,
         OutboxEntity::class,
         BriefCacheEntity::class,
         ReadCursorEntity::class,
+        AgentSyncStateEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 internal abstract class HolonDatabase : RoomDatabase() {
@@ -225,9 +311,57 @@ internal abstract class HolonDatabase : RoomDatabase() {
             }
         }
 
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `runtime_scope` (" +
+                        "`scopeId` TEXT NOT NULL, `baseUrl` TEXT NOT NULL, `runtimeId` TEXT NOT NULL, " +
+                        "`userId` TEXT NOT NULL, `visibilityScopeId` TEXT NOT NULL, `createdAt` INTEGER NOT NULL, " +
+                        "`lastSeenAt` INTEGER NOT NULL, PRIMARY KEY(`scopeId`))",
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_runtime_scope_runtimeId_userId_visibilityScopeId` " +
+                        "ON `runtime_scope` (`runtimeId`, `userId`, `visibilityScopeId`)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `agent_projection` (" +
+                        "`scopeKey` TEXT NOT NULL, `agentId` TEXT NOT NULL, `displayName` TEXT NOT NULL, " +
+                        "`posture` TEXT NOT NULL, `waitingReason` TEXT, `pending` INTEGER NOT NULL, " +
+                        "`latestBriefId` TEXT, `latestBriefPreview` TEXT, `latestActivityAt` TEXT, " +
+                        "`snapshotJson` TEXT, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`scopeKey`, `agentId`))",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_projection_scopeKey_updatedAt` " +
+                        "ON `agent_projection` (`scopeKey`, `updatedAt`)",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_outbox_scopeKey_state_createdAt` " +
+                        "ON `outbox` (`scopeKey`, `state`, `createdAt`)",
+                )
+                db.execSQL(
+                    "INSERT INTO `agent_projection` " +
+                        "SELECT `scopeKey`, `agentId`, `displayName`, `posture`, `waitingReason`, `pending`, " +
+                        "`latestBriefId`, `latestBriefPreview`, `latestActivityAt`, `snapshotJson`, `updatedAt` " +
+                        "FROM `conversation_cache`",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `agent_sync_state` (" +
+                        "`scopeKey` TEXT NOT NULL, `agentId` TEXT NOT NULL, `eventCursor` INTEGER, " +
+                        "`conversationCursor` TEXT, `eventLogEpoch` TEXT, `updatedAt` INTEGER NOT NULL, " +
+                        "PRIMARY KEY(`scopeKey`, `agentId`))",
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_agent_sync_state_scopeKey_updatedAt` " +
+                        "ON `agent_sync_state` (`scopeKey`, `updatedAt`)",
+                )
+                db.execSQL("DROP TABLE `conversation_cache`")
+            }
+        }
+
         fun create(context: Context): HolonDatabase =
             Room.databaseBuilder(context, HolonDatabase::class.java, "holon.db")
                 .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_2_3)
                 .build()
     }
 }

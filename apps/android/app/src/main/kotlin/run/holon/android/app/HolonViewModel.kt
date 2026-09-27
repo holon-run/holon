@@ -215,7 +215,7 @@ internal class HolonViewModel(
                             online = false,
                             session = result.session,
                             baseUrl = result.session.baseUrl,
-                            agents = result.cached.map(ConversationCacheEntity::toAgentSummary),
+                            agents = result.cached.map(AgentProjectionEntity::toAgentSummary),
                             statusMessage = "当前离线，显示上次同步内容",
                         )
                     }
@@ -461,14 +461,18 @@ internal class HolonViewModel(
             agentEventStreamJobs[agent.id] =
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching {
+                        var persistedCursor = repository.syncState(agent.id)?.eventCursor
+                        persistedCursor?.let { agentEventCursors[agent.id] = it }
                         while (isActive && foreground) {
                             repository.reconnectingAgentEvents(
                                 agentId = agent.id,
-                                afterSeq = agentEventCursors[agent.id],
+                                afterSeq = persistedCursor,
                                 policy = SseReconnectPolicy(maxAttempts = 8),
                             ).forEach { event ->
                                 if (!isActive || !foreground) return@forEach
+                                persistedCursor = event.eventSeq
                                 agentEventCursors[agent.id] = event.eventSeq
+                                repository.saveAgentEventCursor(agent.id, event)
                                 scheduleLiveRosterRefresh()
                             }
                             delay(500)
@@ -1762,7 +1766,7 @@ internal suspend fun <T> executeWorkspaceBrowseRequest(block: suspend () -> T): 
         Result.failure(error)
     }
 
-private fun ConversationCacheEntity.toAgentSummary(): AgentSummary =
+private fun AgentProjectionEntity.toAgentSummary(): AgentSummary =
     AgentSummary(
         id = agentId,
         displayName = displayName,
