@@ -11,6 +11,8 @@ import java.time.Instant
 import java.util.UUID
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -24,6 +26,7 @@ import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonMarkBriefReadResult
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
+import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonCurrentUser
 import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonDownloadedFile
@@ -81,6 +84,31 @@ internal data class ConversationBundle(
     val draft: String,
     val attachments: List<StagedAttachment>,
 )
+
+internal fun mergeConversationSnapshots(
+    cached: HolonConversationSnapshot?,
+    incoming: HolonConversationSnapshot,
+): HolonConversationSnapshot {
+    if (cached == null ||
+        cached.runtimeId != incoming.runtimeId ||
+        cached.eventLogEpoch != incoming.eventLogEpoch
+    ) {
+        return incoming
+    }
+
+    val turns =
+        (incoming.turns + cached.turns)
+            .distinctBy(HolonConversationTurn::id)
+            .sortedWith(
+                compareBy<HolonConversationTurn> { it.startedAt ?: it.completedAt ?: "\uFFFF" }
+                    .thenBy(HolonConversationTurn::id),
+            )
+    val raw = incoming.raw.toMutableMap()
+    raw["turns"] = JsonArray(turns.map(HolonConversationTurn::raw))
+    return HolonConversationSnapshot.from(
+        run.holon.android.sdk.HolonJsonDocument(JsonObject(raw)),
+    )
+}
 
 internal data class PreparedArtifact(
     val locator: String,
@@ -231,9 +259,18 @@ internal class HolonRepository(
 
     suspend fun conversation(agent: AgentSummary): ConversationBundle {
         val session = requireSession()
-        val snapshot = requireClient().conversationSnapshot(agent.id, limit = 60)
-        validateConversationScope(snapshot)
         val existing = dao.conversation(session.scopeKey, agent.id)
+        val incoming = requireClient().conversationSnapshot(agent.id, limit = 60)
+        validateConversationScope(incoming)
+        val cached =
+            existing?.snapshotJson?.let { raw ->
+                runCatching {
+                    HolonConversationSnapshot.from(
+                        run.holon.android.sdk.HolonJsonDocument(json.parseToJsonElement(raw)),
+                    )
+                }.getOrNull()
+            }
+        val snapshot = mergeConversationSnapshots(cached, incoming)
         val now = System.currentTimeMillis()
         dao.putProjectionAndSync(
             projection =
@@ -269,7 +306,28 @@ internal class HolonRepository(
     suspend fun olderConversation(agentId: String, before: String): HolonConversationSnapshot =
         requireClient().conversationSnapshot(agentId, limit = 60, before = before).also {
             validateConversationScope(it)
+            cacheConversationSnapshot(agentId, it)
         }
+
+    private suspend fun cacheConversationSnapshot(
+        agentId: String,
+        incoming: HolonConversationSnapshot,
+    ) {
+        val session = requireSession()
+        val existing = dao.conversation(session.scopeKey, agentId) ?: return
+        val cached =
+            existing.snapshotJson?.let { raw ->
+                runCatching {
+                    HolonConversationSnapshot.from(
+                        run.holon.android.sdk.HolonJsonDocument(json.parseToJsonElement(raw)),
+                    )
+                }.getOrNull()
+            }
+        val merged = mergeConversationSnapshots(cached, incoming)
+        if (merged.raw.toString() != existing.snapshotJson) {
+            dao.putConversation(existing.copy(snapshotJson = merged.raw.toString(), updatedAt = System.currentTimeMillis()))
+        }
+    }
 
     private suspend fun validateConversationScope(snapshot: HolonConversationSnapshot) {
         validateReadScope(
