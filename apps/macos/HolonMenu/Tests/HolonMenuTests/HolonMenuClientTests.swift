@@ -148,7 +148,7 @@ final class HolonMenuClientTests: XCTestCase {
     func testLANUsesClientVisibleAddressWithoutDesktopIntegration() async throws {
         let statusJSON = """
         {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
-        "socket_path":"/tmp/holon.sock","http_addr":"192.168.1.20:7878",
+        "socket_path":"/tmp/holon.sock","http_addr":"0.0.0.0:7878",
         "web_url":"http://127.0.0.1:7878","desired_running":true,
         "control_connectivity":true,"message":"Running"}
         """
