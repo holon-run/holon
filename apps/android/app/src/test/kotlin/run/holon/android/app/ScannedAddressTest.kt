@@ -15,6 +15,14 @@ class ScannedAddressTest {
             "http://100.64.0.1:7878",
             normalizeScannedAddress("http://100.64.0.1:7878"),
         )
+        assertEquals(
+            "https://holon.example/api",
+            normalizeScannedAddress("HTTPS://holon.example/api/"),
+        )
+        assertEquals(
+            "http://100.64.0.1:7878",
+            normalizeScannedAddress("HTTP://100.64.0.1:7878"),
+        )
     }
 
     @Test

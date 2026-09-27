@@ -9,7 +9,8 @@ internal fun normalizeScannedAddress(input: String): String {
     val uri = runCatching { URI(trimmed) }.getOrElse {
         throw IllegalArgumentException("二维码地址格式无效")
     }
-    require(uri.scheme == "http" || uri.scheme == "https") {
+    val scheme = uri.scheme.lowercase()
+    require(scheme == "http" || scheme == "https") {
         "二维码地址必须使用 HTTP 或 HTTPS"
     }
     require(uri.host != null && uri.userInfo == null && uri.query == null && uri.fragment == null) {
@@ -19,7 +20,7 @@ internal fun normalizeScannedAddress(input: String): String {
         "二维码地址路径只能为空或 /api"
     }
     return URI(
-        uri.scheme.lowercase(),
+        scheme,
         null,
         uri.host,
         uri.port,
