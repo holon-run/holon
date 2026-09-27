@@ -470,7 +470,7 @@ internal fun AgentConversationRow(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     if (unreadCount > 0) {
                         Text(
-                            if (unreadCount == 1) "新结果" else "$unreadCount 个未读结果",
+                            if (unreadCount == 1) ui("新结果") else ui("$unreadCount 个未读结果"),
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.primary,
                         )
@@ -818,9 +818,15 @@ private fun ConversationTimeline(
     val latestBriefEventSeq = state.selectedAgent?.latestBrief?.createdEventSeq
     val readState = agentId?.let { state.briefReadStates[it] }
     val latestBriefRead =
-        latestBriefEventSeq != null &&
-            readState != null &&
-            readState.readThroughEventSeq >= latestBriefEventSeq
+        if (latestBriefEventSeq != null && agentId != null) {
+            if (state.briefReadStatesLoaded) {
+                readState?.readThroughEventSeq?.let { it >= latestBriefEventSeq } ?: false
+            } else {
+                state.readBriefsLoaded && latestBriefId != null && state.readBriefIds[agentId] == latestBriefId
+            }
+        } else {
+            false
+        }
     LaunchedEffect(
         agentId,
         latestBriefId,

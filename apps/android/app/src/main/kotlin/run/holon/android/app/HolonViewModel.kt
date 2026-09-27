@@ -133,7 +133,13 @@ internal data class HolonUiState(
         get() =
             agents.sortedWith(
                 compareByDescending<AgentSummary> { it.needsReply() }
-                    .thenByDescending { briefReadStatesLoaded && it.unreadCount(briefReadStates) > 0 }
+                    .thenByDescending {
+                        if (briefReadStatesLoaded) {
+                            it.unreadCount(briefReadStates) > 0
+                        } else {
+                            readBriefsLoaded && it.hasUnreadBrief(readBriefIds)
+                        }
+                    }
                     .thenByDescending { it.latestBrief?.createdAt.orEmpty() }
                     .thenBy { it.displayName.lowercase() },
             )
@@ -276,8 +282,14 @@ internal class HolonViewModel(
     fun markBriefRead(agentId: String, readThroughEventSeq: Long) {
         val current = state.value
         if (current.selectedAgent?.id != agentId) return
+        val latestBriefId = current.selectedAgent?.latestBrief?.briefId ?: return
         val existing = current.briefReadStates[agentId]
-        if (existing != null && existing.readThroughEventSeq >= readThroughEventSeq) return
+        if (
+            (current.briefReadStatesLoaded && existing != null && existing.readThroughEventSeq >= readThroughEventSeq) ||
+            (!current.briefReadStatesLoaded && current.readBriefsLoaded && current.readBriefIds[agentId] == latestBriefId)
+        ) {
+            return
+        }
         val scopeKey = current.session?.scopeKey ?: return
         viewModelScope.launch {
             runCatching { withContext(Dispatchers.IO) { repository.markBriefRead(agentId, readThroughEventSeq) } }
@@ -294,16 +306,14 @@ internal class HolonViewModel(
                 .onFailure { error ->
                     if (state.value.session?.scopeKey == scopeKey) {
                         if (isBriefReadStateUnsupported(error)) {
-                            state.value.selectedAgent?.latestBrief?.briefId?.let { briefId ->
-                                viewModelScope.launch(Dispatchers.IO) {
-                                    repository.markBriefRead(agentId, briefId)
-                                }
-                                mutableState.update {
-                                    it.copy(
-                                        readBriefIds = it.readBriefIds + (agentId to briefId),
-                                        readBriefsLoaded = true,
-                                    )
-                                }
+                            viewModelScope.launch(Dispatchers.IO) {
+                                repository.markBriefRead(agentId, latestBriefId)
+                            }
+                            mutableState.update {
+                                it.copy(
+                                    readBriefIds = it.readBriefIds + (agentId to latestBriefId),
+                                    readBriefsLoaded = true,
+                                )
                             }
                         } else {
                             mutableState.update { it.copy(error = "无法保存已读状态：${humanError(error)}") }

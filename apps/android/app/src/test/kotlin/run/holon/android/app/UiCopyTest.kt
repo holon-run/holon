@@ -27,6 +27,8 @@ class UiCopyTest {
     fun `dynamic status and errors are translated without changing their values`() {
         assertEquals("3 Agents · Connected", UiCopy.translate("3 个 Agent · 已连接", "en"))
         assertEquals("2 minutes ago", UiCopy.translate("2 分钟前", "en"))
+        assertEquals("1 unread result", UiCopy.translate("1 个未读结果", "en"))
+        assertEquals("2 unread results", UiCopy.translate("2 个未读结果", "en"))
         assertEquals("Could not open file: missing", UiCopy.translate("文件无法打开：missing", "en"))
         assertEquals("Save failed: disk full. The selected location may contain an incomplete file.",
             UiCopy.translate("保存失败：disk full。所选位置可能留下不完整文件。", "en"))

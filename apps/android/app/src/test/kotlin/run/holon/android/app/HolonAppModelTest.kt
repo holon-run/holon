@@ -69,6 +69,20 @@ class HolonAppModelTest {
     }
 
     @Test
+    fun `legacy unread result ranks ahead of older read result`() {
+        val read = agent("read", "2026-09-25T10:00:00Z")
+        val unread = agent("unread", "2026-09-24T10:00:00Z")
+        val state =
+            HolonUiState(
+                agents = listOf(read, unread),
+                readBriefIds = mapOf(read.id to read.latestBrief!!.briefId),
+                readBriefsLoaded = true,
+            )
+
+        assertEquals(listOf("unread", "read"), state.recentAgents.map { it.id })
+    }
+
+    @Test
     fun `cache scope includes visibility boundary without separator collisions`() {
         assertEquals("1:a|2:bc|1:d", cacheScopeKey("a", "bc", "d"))
         assertEquals("2:ab|1:c|1:d", cacheScopeKey("ab", "c", "d"))
