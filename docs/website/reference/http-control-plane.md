@@ -3,7 +3,7 @@ title: HTTP control plane
 summary: How to think about Holon's headless integration surface.
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.45.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.46.0. -->
 
 # HTTP control plane
 
@@ -130,6 +130,27 @@ events or dedicated routes.
 **`GET /api/agents/:id/briefs`** — Recent briefs
 
 Returns recent briefs (acknowledgements and results) for the agent.
+
+**`GET /api/agents/brief-read-states`** — All agent brief read states
+
+Returns authoritative brief read cursors and exact unread counts across all
+visible public agents for the caller's principal and visibility scope.
+Used by web and mobile clients to keep unread badges synchronized.
+
+**`GET /api/agents/:id/brief-read-state`** — Single agent brief read state
+
+Returns the authoritative brief read cursor (`read_through_event_seq`), event head,
+and unread count for the specified agent.
+
+**`POST /api/agents/:id/brief-read-cursor`** — Advance brief read cursor
+
+Monotonically advances the caller's brief read cursor for an agent. Requested
+cursors beyond the committed event head are clamped to that head. Request body:
+
+```json
+{ "read_through_event_seq": 42 }
+```
+Returns `MarkBriefReadResult` containing `applied_read_through_event_seq` and the updated `BriefReadState`.
 
 **`GET /api/agents/:id/tasks`** — Active tasks
 

@@ -3,7 +3,7 @@ title: HTTP 控制平面
 summary: 如何理解 Holon 的无头集成接口。
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.45.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.46.0. -->
 
 # HTTP 控制平面
 
@@ -119,6 +119,25 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
 **`GET /api/agents/:id/briefs`** — 近期简报
 
 返回该 agent 的近期简报（确认和结果）。
+
+**`GET /api/agents/brief-read-states`** — 所有 Agent 的简报已读状态
+
+返回当前调用者主体和可见性作用域下所有可见 Agent 的权威 Brief 已读游标与精确未读数。
+Web 端与移动客户端借此保持跨端未读标记与角标同步。
+
+**`GET /api/agents/:id/brief-read-state`** — 单个 Agent 的简报已读状态
+
+返回指定 Agent 的权威已读游标（`read_through_event_seq`）、事件日志头位置（`event_head_seq`）与未读数。
+
+**`POST /api/agents/:id/brief-read-cursor`** — 推进简报已读游标
+
+单调递增推进当前调用者针对该 Agent 的已读游标。若请求的序列号超过已提交事件日志头，服务端会自动安全夹断至日志头。请求体：
+
+```json
+{ "read_through_event_seq": 42 }
+```
+
+返回 `MarkBriefReadResult`，包含更新后的 `BriefReadState` 和实际应用的 `applied_read_through_event_seq`。
 
 **`GET /api/agents/:id/tasks`** — 活跃任务
 

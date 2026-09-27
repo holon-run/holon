@@ -6,9 +6,10 @@ order: 37
 
 # Connect with the Android Client
 
-Starting in v0.45.0, Holon includes a native Android client powered by an
-Android SDK. The app lets you monitor agents, review conversation briefs,
-and send tasks from an Android device or emulator.
+Holon provides a native Android client powered by the Holon Android SDK.
+Designed for mobile daily use, the app delivers a brief-first agent workspace
+to review high-signal outcomes, inspect workspace files, and dispatch tasks
+from an Android phone, tablet, or emulator.
 
 This guide explains how to connect the Android app to a running Holon daemon.
 
@@ -72,20 +73,32 @@ discards the input token from memory.
 
 ## Step 4: Interact with Agents
 
-Once connected, you can:
+Once connected, the mobile workspace provides:
 
-- **Browse the Agent Roster:** View all persistent agents, current posture
-  (Awake or Sleeping), and active children.
-- **Track Work Items and Tasks:** Review active work items, checklists, and
-  completion briefs.
-- **Send Prompts:** Submit tasks directly into the agent's work queue.
-  The app includes a durable outbox: prompts composed while offline or
-  experiencing weak connectivity automatically queue and send once
-  the connection recovers.
-- **Inspect Artifacts:** View delivered summaries, markdown notes, and
-  generated files right in the conversation timeline.
+- **Brief-First Workspace:** Focus on high-signal outcomes. The app elevates
+  completion briefs, active work items, and checklist progress, giving you an
+  immediate read on deliverables without wading through internal execution traces.
+- **Live Roster Sync:** Browse all persistent agents, current posture (Awake or
+  Sleeping), and active children. The roster updates automatically through live
+  runtime events without pulling to refresh.
+- **File Reader and Message Links:** Read plan documents, Markdown notes, and
+  workspace files in an integrated reader. When an agent references a workspace file
+  path in conversation, tap the link to open the file directly on your device.
+- **Composer with Durable Outbox:** Submit tasks with a responsive multi-line
+  input composer. If connectivity drops, prompts queue locally in a durable outbox
+  and transmit automatically once the connection restores.
 
-## Building from Source
+## Language Settings
+
+The Android app interface supports both **English** and **Simplified Chinese**
+(`简体中文`).
+
+By default, the interface matches your device or per-app system language. You can
+override this preference on the login screen or in **Settings** by choosing
+*System default*, *English*, or *简体中文*. The selection remains saved on your
+device across sign-outs.
+
+## Build from Source
 
 If you want to compile the Android app from the repository:
 

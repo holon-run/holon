@@ -129,7 +129,7 @@ without overlapping.
 
 Holon exposes two memory tools for indexed retrieval:
 
-- **`MemorySearch`** — Search across memory sources (agent memory markdown, runtime evidence) by query. Returns ranked results with opaque `source_ref` values.
+- **`MemorySearch`** — Search across memory sources (agent memory markdown, runtime evidence) by query. Returns ranked results with opaque `source_ref` values. The query engine bounds candidate documents before projection to keep searches fast even on large indexes.
 - **`MemoryGet`** — Fetch exact memory content by `source_ref`. Used to retrieve a specific record identified by search.
 
 These tools let the agent pull relevant past context on demand without
