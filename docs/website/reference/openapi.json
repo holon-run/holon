@@ -10510,6 +10510,11 @@
                 "minimum": 0,
                 "type": "integer"
               },
+              "stale_expired": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
               "stale_served": {
                 "format": "uint64",
                 "minimum": 0,
@@ -10525,6 +10530,7 @@
               "failed",
               "cancelled",
               "stale_served",
+              "stale_expired",
               "active_permits",
               "max_active_permits"
             ],

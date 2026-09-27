@@ -225,10 +225,21 @@ impl ProjectionGate {
     }
 
     fn fresh_stale_bytes(&self, key: &ProjectionKey) -> Option<Bytes> {
-        let stale = self.stale.lock().expect("projection gate lock poisoned");
-        stale.get(key).and_then(|entry| {
-            (entry.built_at.elapsed() <= self.stale_max_age).then(|| entry.bytes.clone())
-        })
+        let mut stale = self.stale.lock().expect("projection gate lock poisoned");
+        match stale.get(key) {
+            Some(entry) if entry.built_at.elapsed() <= self.stale_max_age => {
+                Some(entry.bytes.clone())
+            }
+            Some(_) => {
+                // Expired fallback entries have no other cleanup path; drop
+                // them on access so long-lived processes do not accumulate
+                // per-key stale bytes without bound.
+                stale.remove(key);
+                diagnostics::record_projection_gate_stale_expired();
+                None
+            }
+            None => None,
+        }
     }
 }
 
@@ -747,6 +758,17 @@ mod tests {
             })
             .await;
         assert!(matches!(expired, Err(ProjectionGateError::Build(_))));
+
+        // The expired entry is dropped so long-lived processes do not keep
+        // per-key stale bytes forever; the expiration stays observable via
+        // the stale_expired diagnostics counter.
+        assert!(gate
+            .stale
+            .lock()
+            .expect("projection gate lock poisoned")
+            .is_empty());
+        let snapshot = diagnostics::performance_snapshot();
+        assert!(snapshot.projection_gate.stale_expired >= 1);
     }
 
     #[tokio::test]

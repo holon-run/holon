@@ -5511,6 +5511,8 @@ export interface components {
                 /** Format: uint64 */
                 rejected: number;
                 /** Format: uint64 */
+                stale_expired: number;
+                /** Format: uint64 */
                 stale_served: number;
             };
             projections: {
