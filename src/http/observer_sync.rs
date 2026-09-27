@@ -20,7 +20,8 @@ use crate::types::{AgentListEntry, WorkItemPlanStatus, WorkItemState};
 use super::{
     agents::load_observer_sync_verification, auth_required, authorize_remote_access,
     error_response, http_error, projection_gate_error_response, serialize_json, traced_json_bytes,
-    AppState, AxumResponse, HttpErrorEnvelope, IntoResponse, ProjectionFailure, ProjectionKey,
+    traced_json_bytes_with_stale_marker, AppState, AxumResponse, HttpErrorEnvelope, IntoResponse,
+    ProjectionFailure, ProjectionGateError, ProjectionKey,
 };
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use crate::runtime_event::ProjectionEffect;
@@ -417,6 +418,9 @@ pub async fn agent_roster_snapshot(
         .await;
     match result {
         Ok(bytes) => traced_json_bytes("/agents/snapshot", started_at, bytes),
+        Err(ProjectionGateError::StaleServed(bytes)) => {
+            traced_json_bytes_with_stale_marker("/agents/snapshot", started_at, bytes)
+        }
         Err(error) => {
             diagnostics::record_roster_snapshot_failure();
             projection_gate_error_response(error)
@@ -631,6 +635,11 @@ pub async fn agent_projection_snapshot(
         .await;
     match result {
         Ok(bytes) => traced_json_bytes("/agents/{agent_id}/projection-snapshot", started_at, bytes),
+        Err(ProjectionGateError::StaleServed(bytes)) => traced_json_bytes_with_stale_marker(
+            "/agents/{agent_id}/projection-snapshot",
+            started_at,
+            bytes,
+        ),
         Err(error) => {
             diagnostics::record_projection_snapshot_failure();
             projection_gate_error_response(error)

@@ -64,10 +64,24 @@ impl From<(StatusCode, Json<Value>)> for ProjectionFailure {
 #[derive(Debug)]
 pub(crate) enum ProjectionGateError {
     Build(ProjectionFailure),
+    /// The assembly failed retryably and a fresh-enough last good projection
+    /// exists. Carries the stale bytes so the caller serves them with the
+    /// stale marker instead of a bare success the client would read as fresh.
+    StaleServed(Bytes),
     Rejected,
 }
 
 type ProjectionResult = Result<Bytes, ProjectionFailure>;
+
+/// The stale fallback must not fire for every HTTP 503: this crate
+/// deliberately maps the non-retryable `runtime_db_quarantined` error onto
+/// HTTP 503 with `retryable: false` in its envelope. Only assembly failures
+/// whose envelope opts into retry (`retryable: true`, e.g. the snapshot
+/// budget timeout or a cancelled leader) may serve the last good projection.
+fn is_retryable_service_unavailable(failure: &ProjectionFailure) -> bool {
+    failure.status == StatusCode::SERVICE_UNAVAILABLE
+        && failure.body.get("retryable") == Some(&Value::Bool(true))
+}
 
 #[derive(Debug, Clone)]
 enum FlightState {
@@ -210,14 +224,14 @@ impl ProjectionGate {
         result: ProjectionResult,
     ) -> Result<Bytes, ProjectionGateError> {
         if let Err(failure) = &result {
-            if failure.status == StatusCode::SERVICE_UNAVAILABLE {
+            if is_retryable_service_unavailable(failure) {
                 if let Some(bytes) = self.fresh_stale_bytes(key) {
                     tracing::warn!(
                         status = %failure.status,
-                        "projection assembly failed retryably; serving the last good projection"
+                        "projection assembly failed retryably; serving the last good projection marked stale"
                     );
                     diagnostics::record_projection_gate_stale_served();
-                    return Ok(bytes);
+                    return Err(ProjectionGateError::StaleServed(bytes));
                 }
             }
         }
@@ -689,10 +703,14 @@ mod tests {
                 builds.fetch_add(1, Ordering::SeqCst);
                 Err(service_unavailable_failure())
             })
-            .await
-            .unwrap();
+            .await;
+        match stale {
+            Err(ProjectionGateError::StaleServed(bytes)) => {
+                assert_eq!(bytes, Bytes::from_static(b"first"))
+            }
+            other => panic!("expected stale fallback, got {:?}", other),
+        }
         assert_eq!(first, Bytes::from_static(b"first"));
-        assert_eq!(stale, Bytes::from_static(b"first"));
 
         let rebuilt = gate
             .run(ProjectionKey::AgentsRosterSnapshot, || async {
@@ -747,9 +765,13 @@ mod tests {
             .run(ProjectionKey::AgentsRosterSnapshot, || async {
                 Err(service_unavailable_failure())
             })
-            .await
-            .unwrap();
-        assert_eq!(still_fresh, Bytes::from_static(b"first"));
+            .await;
+        match still_fresh {
+            Err(ProjectionGateError::StaleServed(bytes)) => {
+                assert_eq!(bytes, Bytes::from_static(b"first"))
+            }
+            other => panic!("expected stale fallback, got {:?}", other),
+        }
 
         tokio::time::advance(Duration::from_millis(100)).await;
         let expired = gate
@@ -769,6 +791,48 @@ mod tests {
             .is_empty());
         let snapshot = diagnostics::performance_snapshot();
         assert!(snapshot.projection_gate.stale_expired >= 1);
+    }
+
+    #[tokio::test]
+    async fn non_retryable_service_unavailable_failure_surfaces_instead_of_stale_fallback() {
+        tokio::time::pause();
+        let gate = ProjectionGate::new(4, Duration::from_millis(250));
+
+        gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
+            Ok(Bytes::from_static(b"first"))
+        })
+        .await
+        .unwrap();
+        tokio::time::advance(Duration::from_millis(251)).await;
+
+        let served_before = diagnostics::performance_snapshot()
+            .projection_gate
+            .stale_served;
+        let surfaced = gate
+            .run(ProjectionKey::AgentsRosterSnapshot, || async {
+                Err(ProjectionFailure {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    body: json!({
+                        "error": "runtime database is quarantined",
+                        "code": "runtime_db_quarantined",
+                        "retryable": false,
+                    }),
+                })
+            })
+            .await;
+        match surfaced {
+            Err(ProjectionGateError::Build(failure)) => {
+                assert_eq!(failure.status, StatusCode::SERVICE_UNAVAILABLE);
+            }
+            other => panic!(
+                "expected the quarantine failure to surface, got {:?}",
+                other
+            ),
+        }
+        let served_after = diagnostics::performance_snapshot()
+            .projection_gate
+            .stale_served;
+        assert_eq!(served_before, served_after);
     }
 
     #[tokio::test]
@@ -810,7 +874,13 @@ mod tests {
         tokio::task::yield_now().await;
         release.notify_one();
 
-        assert_eq!(leader.await.unwrap().unwrap(), Bytes::from_static(b"first"));
-        assert_eq!(waiter.await.unwrap().unwrap(), Bytes::from_static(b"first"));
+        for task in [leader, waiter] {
+            match task.await.unwrap() {
+                Err(ProjectionGateError::StaleServed(bytes)) => {
+                    assert_eq!(bytes, Bytes::from_static(b"first"))
+                }
+                other => panic!("expected stale fallback, got {:?}", other),
+            }
+        }
     }
 }
