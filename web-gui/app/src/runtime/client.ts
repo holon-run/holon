@@ -247,6 +247,15 @@ export type EventPageResponseDto = components["schemas"]["EventsPageResponse"];
 type MeasuredEventPageResponseDto = EventPageResponseDto & { responseBytes?: number };
 export type AgentProjectionSnapshotDto = components["schemas"]["AgentProjectionSnapshot"];
 export type AgentRosterSnapshotDto = AgentRosterSnapshotGeneratedDto;
+/**
+ * Roster snapshot result carrying the runtime's projection-freshness marker:
+ * `projectionStale` is true when the runtime answered with the last good
+ * projection instead of a fresh build (`x-holon-projection-stale`).
+ */
+export interface AgentRosterSnapshotResult {
+  snapshot: AgentRosterSnapshotDto;
+  projectionStale: boolean;
+}
 type GeneratedStreamEventEnvelopeDto = components["schemas"]["StreamEventEnvelope"];
 export type StreamEventEnvelopeDto = Partial<GeneratedStreamEventEnvelopeDto>;
 type EventEnvelopeDto = StreamEventEnvelopeDto;
@@ -1028,16 +1037,20 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       );
     },
     /** Authoritative roster snapshot owned by the embedded daemon contract. */
-    async getAgentRosterSnapshot(): Promise<AgentRosterSnapshotDto> {
+    async getAgentRosterSnapshot(): Promise<AgentRosterSnapshotResult> {
       if (!baseUrl) {
         throw new Error("The authoritative roster snapshot requires a runtime connection.");
       }
-      return getJson<AgentRosterSnapshotDto>(
+      const { value, responseHeaders } = await getJsonWithResponseBytes<AgentRosterSnapshotDto>(
         fetchImpl,
         baseUrl,
         "/agents/snapshot",
         { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS },
       );
+      return {
+        snapshot: value,
+        projectionStale: responseHeaders.get("x-holon-projection-stale") === "true",
+      };
     },
     async getAgentMessagesBatch(agentId: string, messageIds: string[]): Promise<AgentMessagesBatchGetResponseDto> {
       if (!baseUrl || !messageIds.length) {

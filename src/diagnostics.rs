@@ -850,8 +850,14 @@ pub fn record_projection_gate_stale_served() {
 }
 
 pub fn record_projection_gate_stale_expired() {
+    record_projection_gate_stale_expired_by(1);
+}
+
+pub fn record_projection_gate_stale_expired_by(count: u64) {
     process_started_at();
-    PROJECTION_GATE_STALE_EXPIRED.fetch_add(1, Ordering::Relaxed);
+    if count > 0 {
+        PROJECTION_GATE_STALE_EXPIRED.fetch_add(count, Ordering::Relaxed);
+    }
 }
 
 pub fn record_projection_gate_leader_started() {

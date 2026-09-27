@@ -297,11 +297,22 @@ impl<'a> LeaderGuard<'a> {
                             .stale
                             .lock()
                             .expect("projection gate lock poisoned");
+                        // Sweep expired entries on insert. Cleanup on access
+                        // alone would let never-revisited keys (request-derived
+                        // per-agent projections) accumulate stale bytes without
+                        // bound in long-lived processes.
+                        let built_at = Instant::now();
+                        let max_age = self.gate.stale_max_age;
+                        let before = stale.len();
+                        stale.retain(|_, entry| entry.built_at.elapsed() <= max_age);
+                        diagnostics::record_projection_gate_stale_expired_by(
+                            (before - stale.len()) as u64,
+                        );
                         stale.insert(
                             self.key.clone(),
                             StaleEntry {
                                 bytes: bytes.clone(),
-                                built_at: Instant::now(),
+                                built_at,
                             },
                         );
                         drop(stale);
@@ -791,6 +802,47 @@ mod tests {
             .is_empty());
         let snapshot = diagnostics::performance_snapshot();
         assert!(snapshot.projection_gate.stale_expired >= 1);
+    }
+
+    #[tokio::test]
+    async fn stale_entries_for_other_keys_are_swept_on_insert() {
+        tokio::time::pause();
+        let gate = ProjectionGate::new_with_stale_max_age(
+            4,
+            Duration::from_millis(250),
+            Duration::from_millis(300),
+        );
+
+        gate.run(ProjectionKey::AgentsRosterSnapshot, || async {
+            Ok(Bytes::from_static(b"roster"))
+        })
+        .await
+        .unwrap();
+        // Advance beyond stale_max_age without touching the roster key again.
+        tokio::time::advance(Duration::from_millis(400)).await;
+        let expired_before = diagnostics::performance_snapshot()
+            .projection_gate
+            .stale_expired;
+
+        // A successful build on a different key sweeps the expired roster
+        // entry even though its key is never accessed again.
+        gate.run(
+            ProjectionKey::AgentProjectionSnapshot("agent-1".to_string()),
+            || async { Ok(Bytes::from_static(b"projection")) },
+        )
+        .await
+        .unwrap();
+
+        let stale = gate.stale.lock().expect("projection gate lock poisoned");
+        assert!(!stale.contains_key(&ProjectionKey::AgentsRosterSnapshot));
+        assert!(stale.contains_key(&ProjectionKey::AgentProjectionSnapshot(
+            "agent-1".to_string()
+        )));
+        drop(stale);
+        let expired_after = diagnostics::performance_snapshot()
+            .projection_gate
+            .stale_expired;
+        assert!(expired_after >= expired_before + 1);
     }
 
     #[tokio::test]
