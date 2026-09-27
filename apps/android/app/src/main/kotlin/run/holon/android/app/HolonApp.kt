@@ -319,13 +319,18 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
     var filter by remember { mutableStateOf(AgentFilter.All) }
     var searchOpen by remember { mutableStateOf(state.search.isNotBlank()) }
     val attentionCount = state.agents.count { it.needsReply() }
-    val unreadCount = if (state.readBriefsLoaded) state.agents.count { it.hasUnreadBrief(state.readBriefIds) } else 0
+    val unreadCount =
+        if (state.briefReadStatesLoaded) state.agents.sumOf { it.unreadCount(state.briefReadStates) }
+        else if (state.readBriefsLoaded) state.agents.count { it.hasUnreadBrief(state.readBriefIds) }
+        else 0
     val activeCount = state.agents.count { it.isActive() }
     val filtered = state.filteredAgents.filter { agent ->
         when (filter) {
             AgentFilter.All -> true
             AgentFilter.Attention -> agent.needsReply()
-            AgentFilter.NewResults -> state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds)
+            AgentFilter.NewResults ->
+                (state.briefReadStatesLoaded && agent.unreadCount(state.briefReadStates) > 0) ||
+                    (!state.briefReadStatesLoaded && state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds))
             AgentFilter.Active -> agent.isActive()
         }
     }
@@ -397,7 +402,14 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
             }
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(filtered, key = AgentSummary::id) { agent ->
-                    AgentConversationRow(agent, unread = state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds), onClick = { viewModel.openAgent(agent) })
+                    AgentConversationRow(
+                        agent,
+                        unreadCount =
+                            if (state.briefReadStatesLoaded) agent.unreadCount(state.briefReadStates)
+                            else if (state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds)) 1
+                            else 0,
+                        onClick = { viewModel.openAgent(agent) },
+                    )
                     HorizontalDivider(modifier = Modifier.padding(start = 16.dp), color = MaterialTheme.colorScheme.outlineVariant)
                 }
                 if (filtered.isEmpty()) item {
@@ -421,7 +433,12 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
 }
 
 @Composable
-internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false, unread: Boolean = false, onClick: () -> Unit) {
+internal fun AgentConversationRow(
+    agent: AgentSummary,
+    compact: Boolean = false,
+    unreadCount: Int = 0,
+    onClick: () -> Unit,
+) {
     val tone = agent.statusTone()
     val briefPreview = plainTextPreview(agent.latestBrief?.preview.orEmpty())
     val postureReason = agent.postureReason.orEmpty()
@@ -451,7 +468,13 @@ internal fun AgentConversationRow(agent: AgentSummary, compact: Boolean = false,
             )
             if (!compact) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (unread) Text(ui("新结果"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    if (unreadCount > 0) {
+                        Text(
+                            if (unreadCount == 1) ui("新结果") else ui("$unreadCount 个未读结果"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                     Text(
                         listOfNotNull(
                             agent.latestBrief?.createdAt?.let(::relativeTime),
@@ -792,12 +815,38 @@ private fun ConversationTimeline(
     val latestBriefId = state.selectedAgent?.latestBrief?.briefId
     val latestBriefIndex = turns.indexOfLast { latestBriefId != null && latestBriefId in it.briefIds }
     val latestBriefLoaded = latestBriefId != null && state.briefs.containsKey(latestBriefId)
-    val latestBriefRead = agentId != null && state.readBriefIds[agentId] == latestBriefId
-    LaunchedEffect(agentId, latestBriefId, latestBriefIndex, latestBriefLoaded, latestBriefRead, historyRows, pendingRows) {
-        if (agentId != null && latestBriefId != null && latestBriefLoaded && !latestBriefRead && latestBriefIndex >= 0) {
+    val latestBriefEventSeq = state.selectedAgent?.latestBrief?.createdEventSeq
+    val readState = agentId?.let { state.briefReadStates[it] }
+    val latestBriefRead =
+        if (latestBriefEventSeq != null && agentId != null) {
+            if (state.briefReadStatesLoaded) {
+                readState?.readThroughEventSeq?.let { it >= latestBriefEventSeq } ?: false
+            } else {
+                state.readBriefsLoaded && latestBriefId != null && state.readBriefIds[agentId] == latestBriefId
+            }
+        } else {
+            false
+        }
+    LaunchedEffect(
+        agentId,
+        latestBriefId,
+        latestBriefEventSeq,
+        latestBriefIndex,
+        latestBriefLoaded,
+        latestBriefRead,
+        historyRows,
+        pendingRows,
+    ) {
+        if (
+            agentId != null &&
+            latestBriefEventSeq != null &&
+            latestBriefLoaded &&
+            !latestBriefRead &&
+            latestBriefIndex >= 0
+        ) {
             val itemIndex = historyRows + pendingRows + latestBriefIndex
             snapshotFlow { listState.layoutInfo.visibleItemsInfo.any { it.index == itemIndex } }.first { it }
-            viewModel.markBriefRead(agentId, latestBriefId)
+            viewModel.markBriefRead(agentId, latestBriefEventSeq)
         }
     }
     LaunchedEffect(snapshot?.snapshotCursor, itemCount, state.outbox.size, state.olderTurns.size) {

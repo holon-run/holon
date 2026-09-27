@@ -27,6 +27,24 @@ public data class HolonRosterSnapshot(
     public val agents: List<AgentSummary>,
 )
 
+public data class HolonBriefReadState(
+    public val agentId: String,
+    public val eventHeadSeq: Long,
+    public val eventLogEpoch: String,
+    public val oldestRetainedSeq: Long,
+    public val readThroughEventSeq: Long,
+    public val resetRequired: Boolean,
+    public val retentionGap: Boolean,
+    public val revision: Long,
+    public val unreadCount: Int,
+    public val visibilityScopeId: String,
+)
+
+public data class HolonMarkBriefReadResult(
+    public val appliedReadThroughEventSeq: Long,
+    public val state: HolonBriefReadState,
+)
+
 public data class HolonPromptAttachment(
     public val kind: String,
     public val name: String?,
@@ -589,3 +607,20 @@ internal fun JsonObject.long(name: String): Long? =
 
 internal fun JsonObject.int(name: String): Int? =
     long(name)?.takeIf { it in Int.MIN_VALUE..Int.MAX_VALUE }?.toInt()
+
+internal fun JsonObject.boolean(name: String): Boolean? =
+    this[name]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+
+internal fun JsonObject.toHolonBriefReadState(): HolonBriefReadState =
+    HolonBriefReadState(
+        agentId = string("agent_id") ?: throw HolonProtocolException("Brief read state is missing agent_id"),
+        eventHeadSeq = long("event_head_seq") ?: throw HolonProtocolException("Brief read state is missing event_head_seq"),
+        eventLogEpoch = string("event_log_epoch") ?: throw HolonProtocolException("Brief read state is missing event_log_epoch"),
+        oldestRetainedSeq = long("oldest_retained_seq") ?: throw HolonProtocolException("Brief read state is missing oldest_retained_seq"),
+        readThroughEventSeq = long("read_through_event_seq") ?: throw HolonProtocolException("Brief read state is missing read_through_event_seq"),
+        resetRequired = boolean("reset_required") ?: throw HolonProtocolException("Brief read state is missing reset_required"),
+        retentionGap = boolean("retention_gap") ?: throw HolonProtocolException("Brief read state is missing retention_gap"),
+        revision = long("revision") ?: throw HolonProtocolException("Brief read state is missing revision"),
+        unreadCount = int("unread_count") ?: throw HolonProtocolException("Brief read state is missing unread_count"),
+        visibilityScopeId = string("visibility_scope_id") ?: throw HolonProtocolException("Brief read state is missing visibility_scope_id"),
+    )

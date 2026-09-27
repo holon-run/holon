@@ -362,6 +362,7 @@ internal object UiCopy {
         }
         match("(\\d+) 条输入正在排队")?.let { return "${count(it[1], "input")} queued" }
         match("(\\d+) 条新活动")?.let { return "${count(it[1], "new activity", "new activities")}" }
+        match("(\\d+) 个未读结果")?.let { return count(it[1], "unread result") }
         match("产生 (\\d+) 个产物")?.let { return "Produced ${count(it[1], "artifact")}" }
         match("已加载 (\\d+) 项 · (\\d+) 项进行中 · (\\d+) 项已完成")?.let {
             return "${it[1]} loaded · ${it[2]} in progress · ${it[3]} completed"

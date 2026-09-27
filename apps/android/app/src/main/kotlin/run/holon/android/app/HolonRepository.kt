@@ -20,6 +20,8 @@ import run.holon.android.sdk.BearerTokenProvider
 import run.holon.android.sdk.CompatibilityResult
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefAttachment
+import run.holon.android.sdk.HolonBriefReadState
+import run.holon.android.sdk.HolonMarkBriefReadResult
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonCurrentUser
@@ -331,6 +333,16 @@ internal class HolonRepository(
                 ?.let { entry.agentId to it }
         }.toMap()
     }
+
+    suspend fun briefReadStates(): Map<String, HolonBriefReadState> =
+        requireClient().briefReadStates().onEach { state ->
+            validateReadScope(null, state.visibilityScopeId)
+        }.associateBy { it.agentId }
+
+    suspend fun markBriefRead(agentId: String, readThroughEventSeq: Long): HolonMarkBriefReadResult =
+        requireClient().markBriefRead(agentId, readThroughEventSeq).also { result ->
+            validateReadScope(null, result.state.visibilityScopeId)
+        }
 
     suspend fun markBriefRead(agentId: String, briefId: String) {
         dao.putReadCursor(ReadCursorEntity(requireSession().scopeKey, agentId, "brief:$briefId", System.currentTimeMillis()))

@@ -16,6 +16,42 @@ import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
     @Test
+    fun `brief read state endpoints use server cursor and exact unread count`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """[{"agent_id":"agent-a","event_head_seq":12,"event_log_epoch":"epoch-1","oldest_retained_seq":3,"read_through_event_seq":8,"reset_required":false,"retention_gap":false,"revision":4,"unread_count":2,"visibility_scope_id":"scope-1"}]""",
+                ),
+            )
+            server.enqueue(
+                jsonResponse(
+                    """{"agent_id":"agent-a","event_head_seq":12,"event_log_epoch":"epoch-1","oldest_retained_seq":3,"read_through_event_seq":8,"reset_required":false,"retention_gap":false,"revision":4,"unread_count":2,"visibility_scope_id":"scope-1"}""",
+                ),
+            )
+            server.enqueue(
+                jsonResponse(
+                    """{"applied_read_through_event_seq":12,"state":{"agent_id":"agent-a","event_head_seq":12,"event_log_epoch":"epoch-1","oldest_retained_seq":3,"read_through_event_seq":12,"reset_required":false,"retention_gap":false,"revision":5,"unread_count":0,"visibility_scope_id":"scope-1"}}""",
+                ),
+            )
+            val client = HolonHttpClient(
+                server.url("/api/").toString(),
+                bearerTokenProvider = BearerTokenProvider { "token" },
+            )
+
+            assertEquals(2, client.briefReadStates().single().unreadCount)
+            assertEquals(8, client.briefReadState("agent-a").readThroughEventSeq)
+            assertEquals(0, client.markBriefRead("agent-a", 12).state.unreadCount)
+
+            assertEquals("/api/agents/brief-read-states", server.takeRequest().path)
+            assertEquals("/api/agents/agent-a/brief-read-state", server.takeRequest().path)
+            val mark = server.takeRequest()
+            assertEquals("/api/agents/agent-a/brief-read-cursor", mark.path)
+            assertEquals("""{"read_through_event_seq":12}""", mark.body.readUtf8())
+            assertEquals("Bearer token", mark.getHeader("Authorization"))
+        }
+    }
+
+    @Test
     fun `file references resolve through the authorized daemon and preserve root identity`() {
         MockWebServer().use { server ->
             server.enqueue(jsonResponse("""{"results":[{"status":"resolved","location":{"workspace_id":"ws-1","execution_root_id":"root:old","path":"reports/final.md","absolute_path":"/host/reports/final.md","kind":"file","root_kind":"git_worktree_root"}}]}"""))
