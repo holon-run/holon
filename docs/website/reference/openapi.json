@@ -10509,6 +10509,11 @@
                 "format": "uint64",
                 "minimum": 0,
                 "type": "integer"
+              },
+              "stale_served": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
               }
             },
             "required": [
@@ -10519,6 +10524,7 @@
               "rejected",
               "failed",
               "cancelled",
+              "stale_served",
               "active_permits",
               "max_active_permits"
             ],
