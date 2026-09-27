@@ -61,7 +61,7 @@ adb reverse tcp:7878 tcp:7878
 3. 输入认证 Token。
 4. 点击 **连接**。
 
-客户端会向服务端的 `/api/auth/session/exchange` 端点请求兑换，将生成的会话安全存入系统底层的 Android Keystore，同时从内存中抹除原始 Token。
+客户端会向服务端的 `/api/auth/session/exchange/native` 端点请求兑换，将生成的会话安全存入系统底层的 Android Keystore，同时从内存中抹除原始 Token。
 
 ## 第四步：在移动端与 Agent 交互
 

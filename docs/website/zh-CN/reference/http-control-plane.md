@@ -23,7 +23,8 @@ Holon 在设计上是无头的。HTTP 和事件驱动的集成接口应当保留
 从 v0.36.0 开始，Holon 支持**优先 Session（Session-first）**的认证架构。除 Bearer Token 外，浏览器和 Web UI 客户端还支持通过 HTTP-only Session Cookie 进行认证：
 
 - **`GET /api/auth/method`** — 返回当前认证模式（`"local"` 或 `"oidc"`）。
-- **`POST /api/auth/session/exchange`** — 使用有效 Token 换取 HTTP-only Session Cookie。
+- **`POST /api/auth/session/exchange`** — 使用有效 Token 换取 HTTP-only Session Cookie（主要供 Web/浏览器客户端使用）。
+- **`POST /api/auth/session/exchange/native`** — 使用静态或引导凭证换取原生 Session 响应与可撤销凭证（供 Android 等原生客户端使用；客户端保留返回的 JSON `credential`，并通过 `Authorization: Bearer <credential>` 发起后续请求）。
 - **`GET /api/auth/session/me`** — 查询当前已认证用户的身份与认证方式。
 - **`POST /api/auth/session/logout`** — 注销当前 Session 并清除 Session Cookie。
 - **`GET /api/auth/oidc/start`** 与 **`GET /api/auth/oidc/callback`** — 当 `auth.mode="oidc"` 时发起并完成 OpenID Connect PKCE 授权码流程。

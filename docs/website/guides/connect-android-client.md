@@ -67,7 +67,7 @@ You do not need this step when using the standard Android emulator.
 3. Enter your auth token or bootstrap secret.
 4. Tap **Connect**.
 
-The app exchanges your token via the daemon's `/api/auth/session/exchange`
+The app exchanges your token via the daemon's `/api/auth/session/exchange/native`
 endpoint, creates an encrypted session stored securely in Android Keystore, and
 discards the input token from memory.
 

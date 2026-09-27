@@ -28,7 +28,8 @@ and trusts the local process boundary.
 Starting in v0.36.0, Holon supports a **session-first authentication** architecture. Browser and Web UI clients can authenticate using HTTP-only session cookies in addition to bearer tokens:
 
 - **`GET /api/auth/method`** — Returns current auth mode (`"local"` or `"oidc"`).
-- **`POST /api/auth/session/exchange`** — Exchange a bearer token for a revocable session credential and HTTP-only session cookie. Native clients should retain the JSON `credential` and send it as `Authorization: Bearer <credential>`; browser clients may use the cookie.
+- **`POST /api/auth/session/exchange`** — Exchange a bearer token for a revocable session credential and HTTP-only session cookie (primarily for browser/web clients).
+- **`POST /api/auth/session/exchange/native`** — Exchange a static or bootstrap credential for a revocable session credential and native session response (used by native clients such as the Android app; retain the JSON `credential` and send it as `Authorization: Bearer <credential>`).
 - **`GET /api/auth/session/me`** — Inspect the authenticated user identity and authentication method.
 - **`POST /api/auth/session/logout`** — Invalidate current session and clear session cookies.
 - **`GET /api/auth/oidc/start`** and **`GET /api/auth/oidc/callback`** — Initiate and complete OpenID Connect PKCE authorization code flow when `auth.mode="oidc"`.
