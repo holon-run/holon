@@ -176,6 +176,8 @@ static PROJECTION_GATE_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_REJECTED: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_FAILED: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_CANCELLED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_STALE_SERVED: AtomicU64 = AtomicU64::new(0);
+static PROJECTION_GATE_STALE_EXPIRED: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
 static PROJECTION_GATE_MAX_ACTIVE_PERMITS: AtomicU64 = AtomicU64::new(0);
 
@@ -270,6 +272,8 @@ pub struct ProjectionGateDiagnosticsSnapshot {
     pub rejected: u64,
     pub failed: u64,
     pub cancelled: u64,
+    pub stale_served: u64,
+    pub stale_expired: u64,
     pub active_permits: u64,
     pub max_active_permits: u64,
 }
@@ -840,6 +844,22 @@ pub fn record_projection_gate_cancelled() {
     PROJECTION_GATE_CANCELLED.fetch_add(1, Ordering::Relaxed);
 }
 
+pub fn record_projection_gate_stale_served() {
+    process_started_at();
+    PROJECTION_GATE_STALE_SERVED.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn record_projection_gate_stale_expired() {
+    record_projection_gate_stale_expired_by(1);
+}
+
+pub fn record_projection_gate_stale_expired_by(count: u64) {
+    process_started_at();
+    if count > 0 {
+        PROJECTION_GATE_STALE_EXPIRED.fetch_add(count, Ordering::Relaxed);
+    }
+}
+
 pub fn record_projection_gate_leader_started() {
     process_started_at();
     PROJECTION_GATE_LEADERS.fetch_add(1, Ordering::Relaxed);
@@ -904,6 +924,8 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             rejected: PROJECTION_GATE_REJECTED.load(Ordering::Relaxed),
             failed: PROJECTION_GATE_FAILED.load(Ordering::Relaxed),
             cancelled: PROJECTION_GATE_CANCELLED.load(Ordering::Relaxed),
+            stale_served: PROJECTION_GATE_STALE_SERVED.load(Ordering::Relaxed),
+            stale_expired: PROJECTION_GATE_STALE_EXPIRED.load(Ordering::Relaxed),
             active_permits: PROJECTION_GATE_ACTIVE_PERMITS.load(Ordering::Relaxed),
             max_active_permits: PROJECTION_GATE_MAX_ACTIVE_PERMITS.load(Ordering::Relaxed),
         },

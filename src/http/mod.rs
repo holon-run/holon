@@ -1059,6 +1059,29 @@ pub(crate) fn traced_json_bytes(
     ([(CONTENT_TYPE, "application/json")], bytes).into_response()
 }
 
+/// 200 JSON response for a stale-served projection: the bytes are the last
+/// good projection, and the observer-sync contract requires transient old
+/// data to be marked, so clients can distinguish it from a fresh build.
+pub(crate) fn traced_json_bytes_with_stale_marker(
+    route: &'static str,
+    started_at: std::time::Instant,
+    bytes: Bytes,
+) -> AxumResponse {
+    let build_elapsed = started_at.elapsed();
+    diagnostics::record_http_json_response(route, build_elapsed, bytes.len());
+    (
+        [
+            (CONTENT_TYPE, "application/json"),
+            (
+                axum::http::HeaderName::from_static("x-holon-projection-stale"),
+                "true",
+            ),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 /// Strong ETag derived from the serialized response body. Content-addressed
 /// so any change to the payload (epoch, seq, rendering) yields a new tag.
 pub(crate) fn etag_for_bytes(bytes: &[u8]) -> String {
@@ -1130,6 +1153,21 @@ pub(crate) fn projection_gate_error_response(error: ProjectionGateError) -> Axum
             ),
         )
             .into_response(),
+        ProjectionGateError::StaleServed(_) => {
+            // Defensive: stale-served payloads are handled by the caller with
+            // the stale marker header. If one reaches here, surface a
+            // retryable 503 instead of hiding the assembly failure behind
+            // fresh-looking bytes.
+            http_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                HttpErrorEnvelope::new(
+                    "projection_stale_unhandled",
+                    "projection assembly failed and the stale fallback was not served",
+                )
+                .retryable(true),
+            )
+            .into_response()
+        }
     }
 }
 pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> Result<()> {

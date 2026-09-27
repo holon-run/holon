@@ -5510,6 +5510,10 @@ export interface components {
                 max_active_permits: number;
                 /** Format: uint64 */
                 rejected: number;
+                /** Format: uint64 */
+                stale_expired: number;
+                /** Format: uint64 */
+                stale_served: number;
             };
             projections: {
                 /** Format: double */

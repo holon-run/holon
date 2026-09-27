@@ -542,6 +542,76 @@ describe("authoritative discovery cutover", () => {
     expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a", "agent-c"]);
   });
 
+  it("applies a stale-marked roster but keeps discovery stale and retries to fresh", async () => {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    let snapshotCalls = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.pathname.endsWith("/agents/list")) {
+        return Promise.resolve(jsonResponse([listEntry("agent-a")]));
+      }
+      if (url.pathname.endsWith("/agents/snapshot")) {
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          // The runtime degrades to its last good projection and marks it.
+          return Promise.resolve(new Response(JSON.stringify(rosterSnapshot(["agent-a"])), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-holon-projection-stale": "true",
+            },
+          }));
+        }
+        return Promise.resolve(jsonResponse(rosterSnapshot(["agent-a"])));
+      }
+      if (url.pathname.endsWith("/projection-snapshot")) {
+        return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        return Promise.resolve(sseResponse(init, () => undefined));
+      }
+      if (url.pathname.endsWith("/agents/agent-a/events")) {
+        if (url.searchParams.get("order") === "desc") return Promise.resolve(jsonResponse(baselinePage("agent-a")));
+        return Promise.resolve(jsonResponse(emptyEventsPage("agent-a")));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    // The stale-marked snapshot is still applied (it is the best known
+    // roster), but discovery stays stale with a bounded retry scheduled.
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().discovery).toMatchObject({
+        mode: "authoritative",
+        freshness: "stale",
+        retryAttempt: 1,
+      });
+    });
+    expect(useRuntimeStore.getState().bootstrap.agents.map((agent) => agent.id)).toEqual(["agent-a"]);
+
+    // The bounded retry converges once the runtime serves a fresh snapshot.
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().discovery).toMatchObject({
+        mode: "authoritative",
+        freshness: "fresh",
+      });
+    }, { timeout: 5_000 });
+    expect(snapshotCalls).toBeGreaterThanOrEqual(2);
+  });
+
   it("keeps the last roster and marks discovery stale on a transient snapshot failure", async () => {
     const retryCallbacks: Array<() => void> = [];
     vi.stubGlobal("window", {

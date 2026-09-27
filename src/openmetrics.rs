@@ -120,6 +120,16 @@ pub fn render(snapshot: &PerformanceDiagnosticsSnapshot) -> String {
         "holon_projection_gate_cancelled_total",
         gate.cancelled,
     );
+    counter(
+        &mut output,
+        "holon_projection_gate_stale_served_total",
+        gate.stale_served,
+    );
+    counter(
+        &mut output,
+        "holon_projection_gate_stale_expired_total",
+        gate.stale_expired,
+    );
     gauge(
         &mut output,
         "holon_projection_gate_active_permits",

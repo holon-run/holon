@@ -5,6 +5,7 @@ import {
   rosterAgentEntries,
   type AgentEventStreamSubscription,
   type AgentRosterSnapshotDto,
+  type AgentRosterSnapshotResult,
   type StreamEventEnvelopeDto,
 } from "./client";
 import {
@@ -76,7 +77,7 @@ interface GlobalSyncCoordinatorDependencies<State extends GlobalSyncStoreState> 
     updates?: Partial<AgentSessionState>,
   ) => void;
   /** Fetch the authoritative roster snapshot from the embedded daemon. */
-  fetchRosterSnapshot: (request: ClientRequest) => Promise<AgentRosterSnapshotDto>;
+  fetchRosterSnapshot: (request: ClientRequest) => Promise<AgentRosterSnapshotResult>;
   /**
    * Atomically apply one complete roster snapshot: validate identity,
    * replace the roster, reset stale-scope sessions, and purge omitted
@@ -316,6 +317,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     const cycle = (async () => {
       let refreshAgain = true;
       let settledFromSnapshot = false;
+      let lastServedStale = false;
       while (
         refreshAgain
         && this.dependencies.isCurrentClientRequest(request)
@@ -325,7 +327,9 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         this.rosterDirty = false;
         let snapshot: AgentRosterSnapshotDto;
         try {
-          snapshot = await this.dependencies.fetchRosterSnapshot(request);
+          const result = await this.dependencies.fetchRosterSnapshot(request);
+          snapshot = result.snapshot;
+          lastServedStale = result.projectionStale;
         } catch (error) {
           if (!this.dependencies.isCurrentClientRequest(request)) return;
           span.end("error");
@@ -371,6 +375,37 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       // until a real snapshot settles.
       if (!settledFromSnapshot) {
         span.end("skipped", { reason: "stream_unavailable" });
+        return;
+      }
+      if (lastServedStale) {
+        // The runtime served its last good projection marked stale (via
+        // x-holon-projection-stale). The applied roster stays usable, but
+        // discovery must not present it as fresh authoritative data; keep
+        // the stale state visible and retry with bounded backoff until a
+        // fresh snapshot settles.
+        this.rosterRetryAttempt += 1;
+        const delay = retryDelayWithServerHintMs(this.rosterRetryAttempt);
+        if (this.rosterRetryTimer != null) window.clearTimeout(this.rosterRetryTimer);
+        set((state) => ({
+          discovery: {
+            ...state.discovery,
+            mode: "authoritative",
+            freshness: "stale",
+            staleReason: "runtime served a stale roster projection",
+            unauthorizedReason: undefined,
+            retryAttempt: this.rosterRetryAttempt,
+            retryAt: Date.now() + delay,
+          },
+        } as Partial<State>));
+        this.rosterRetryTimer = window.setTimeout(() => {
+          this.rosterRetryTimer = undefined;
+          void this.refreshRosterInner(
+            get,
+            set,
+            this.dependencies.captureClientRequest(),
+            "roster_retry",
+          );
+        }, delay);
         return;
       }
       // Discovery is marked fresh only after the settle of the last
