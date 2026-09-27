@@ -3,6 +3,7 @@ import ServiceManagement
 
 enum HolonCLIError: LocalizedError {
     case missingHolonBinary
+    case missingTailscaleBinary
     case processFailed(command: [String], terminationStatus: Int32, stderr: String)
     case invalidJSON(String)
     case invalidWebAddress(String)
@@ -13,6 +14,8 @@ enum HolonCLIError: LocalizedError {
         switch self {
         case .missingHolonBinary:
             return "Unable to locate the bundled holon CLI."
+        case .missingTailscaleBinary:
+            return "Unable to locate the Tailscale command-line tool."
         case let .processFailed(command, terminationStatus, stderr):
             let renderedCommand = command.joined(separator: " ")
             if stderr.isEmpty {
@@ -94,6 +97,28 @@ enum HolonBinaryLocator {
         }
 
         throw HolonCLIError.missingHolonBinary
+    }
+}
+
+enum TailscaleBinaryLocator {
+    static func resolve() throws -> URL {
+        if let path = ProcessInfo.processInfo.environment["TAILSCALE_BINARY_PATH"], !path.isEmpty {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.isExecutableFile(atPath: url.path) {
+                return url
+            }
+        }
+
+        let candidates = [
+            "/usr/local/bin/tailscale",
+            "/opt/homebrew/bin/tailscale",
+            "/usr/bin/tailscale",
+            "/Applications/Tailscale.app/Contents/MacOS/Tailscale",
+        ]
+        if let path = candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) {
+            return URL(fileURLWithPath: path)
+        }
+        throw HolonCLIError.missingTailscaleBinary
     }
 }
 
@@ -186,6 +211,150 @@ final class HolonCLIClient: HolonDesiredStateClient {
             withDestinationURL: executable
         )
         return destination
+    }
+
+    func tailscaleStatus() async throws -> HolonTailscaleStatus {
+        guard let executable = try? TailscaleBinaryLocator.resolve() else {
+            return HolonTailscaleStatus(
+                state: .unavailable,
+                hostname: nil,
+                serveURL: nil,
+                message: "Install Tailscale to enable a tailnet connection."
+            )
+        }
+        guard let status = try? await launcher.run(
+            executableURL: executable,
+            arguments: ["status", "--json"]
+        ) else {
+            return HolonTailscaleStatus(
+                state: .stopped,
+                hostname: nil,
+                serveURL: nil,
+                message: "Start Tailscale before enabling Serve."
+            )
+        }
+        guard status.terminationStatus == 0 else {
+            return HolonTailscaleStatus(
+                state: .stopped,
+                hostname: nil,
+                serveURL: nil,
+                message: String(data: status.stderr, encoding: .utf8)
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .flatMap { $0.isEmpty ? nil : $0 }
+                    ?? "Start Tailscale before enabling Serve."
+            )
+        }
+        let serve = try? await launcher.run(executableURL: executable, arguments: ["serve", "status"])
+        return HolonTailscaleStatus.parse(
+            statusOutput: String(data: status.stdout, encoding: .utf8) ?? "",
+            serveOutput: String(data: serve?.stdout ?? Data(), encoding: .utf8) ?? ""
+        )
+    }
+
+    func enableTailscaleServe() async throws -> HolonTailscaleStatus {
+        let executable = try TailscaleBinaryLocator.resolve()
+        let url = try await webURL()
+        let result = try await launcher.run(
+            executableURL: executable,
+            arguments: ["serve", "--bg", url.absoluteString]
+        )
+        guard result.terminationStatus == 0 else {
+            throw HolonCLIError.processFailed(
+                command: [executable.path, "serve", "--bg", url.absoluteString],
+                terminationStatus: result.terminationStatus,
+                stderr: String(data: result.stderr, encoding: .utf8) ?? ""
+            )
+        }
+        return try await tailscaleStatus()
+    }
+
+    func disableTailscaleServe() async throws -> HolonTailscaleStatus {
+        let executable = try TailscaleBinaryLocator.resolve()
+        let result = try await launcher.run(
+            executableURL: executable,
+            arguments: ["serve", "reset"]
+        )
+        guard result.terminationStatus == 0 else {
+            throw HolonCLIError.processFailed(
+                command: [executable.path, "serve", "reset"],
+                terminationStatus: result.terminationStatus,
+                stderr: String(data: result.stderr, encoding: .utf8) ?? ""
+            )
+        }
+        return try await tailscaleStatus()
+    }
+
+    func lanURL() async throws -> URL? {
+        let currentStatus = try await status()
+        guard isNonLoopbackAddress(currentStatus.httpAddr) else {
+            return nil
+        }
+        let host = try await localNetworkHost()
+        return URL(string: "http://\(host):\(port(from: currentStatus.httpAddr))")
+    }
+
+    func enableLAN() async throws -> URL {
+        let currentStatus = try await status()
+        let host = try await localNetworkHost()
+        let port = port(from: currentStatus.httpAddr)
+        var options = launchOptions
+        options.access = "lan"
+        options.host = host
+        options.port = port
+        options.advertise = nil
+        _ = try await run(
+            ["daemon", "restart"] + options.arguments(),
+            as: HolonDaemonStatus.self
+        )
+        guard let url = URL(string: "http://\(host):\(port)") else {
+            throw HolonCLIError.invalidWebAddress("\(host):\(port)")
+        }
+        return url
+    }
+
+    func disableLAN() async throws -> HolonDaemonStatus {
+        var options = launchOptions
+        options.access = "local"
+        options.advertise = nil
+        return try await run(
+            ["daemon", "restart"] + options.arguments(),
+            as: HolonDaemonStatus.self
+        )
+    }
+
+    private func localNetworkHost() async throws -> String {
+        for interface in ["en0", "en1"] {
+            let result = try? await launcher.run(
+                executableURL: URL(fileURLWithPath: "/sbin/ipconfig"),
+                arguments: ["getifaddr", interface]
+            )
+            if let host = result?.stdout
+                .flatMap({ String(data: $0, encoding: .utf8) })?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+               isIPv4Address(host) {
+                return host
+            }
+        }
+        throw HolonCLIError.invalidWebAddress(
+            "Unable to determine the Mac's local network address."
+        )
+    }
+
+    private func port(from address: String) -> UInt16 {
+        UInt16(address.split(separator: ":").last ?? "7878") ?? 7878
+    }
+
+    private func isNonLoopbackAddress(_ address: String) -> Bool {
+        let host = address.split(separator: ":").first.map(String.init) ?? address
+        return host != "127.0.0.1" && host != "localhost" && host != "[::1]"
+    }
+
+    private func isIPv4Address(_ value: String) -> Bool {
+        let octets = value.split(separator: ".")
+        return octets.count == 4 && octets.allSatisfy {
+            guard let number = Int($0) else { return false }
+            return (0...255).contains(number)
+        }
     }
 
     private func run<T: Decodable>(_ arguments: [String], as type: T.Type) async throws -> T {

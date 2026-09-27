@@ -238,6 +238,20 @@ internal class HolonViewModel(
         mutableState.update {
             it.copy(baseUrl = value, allowInsecureHttp = false, error = null)
         }
+
+    fun applyScannedAddress(value: String) {
+        runCatching { normalizeScannedAddress(value) }
+            .onSuccess(::setBaseUrl)
+            .onFailure { error ->
+                mutableState.update {
+                    it.copy(error = error.message ?: "二维码地址无效")
+                }
+            }
+    }
+
+    fun reportScanFailure() {
+        mutableState.update { it.copy(error = "二维码读取失败，请重试或手动输入地址") }
+    }
     fun setToken(value: String) = mutableState.update { it.copy(token = value, error = null) }
     fun toggleToken() = mutableState.update { it.copy(showToken = !it.showToken) }
     fun setAllowInsecureHttp(value: Boolean) =

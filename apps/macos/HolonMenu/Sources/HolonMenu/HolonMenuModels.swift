@@ -54,6 +54,87 @@ struct HolonDaemonLogs: Codable, Equatable, Sendable {
     }
 }
 
+enum HolonTailscaleState: Equatable, Sendable {
+    case unavailable
+    case stopped
+    case loggedOut
+    case connected
+    case serving
+}
+
+struct HolonTailscaleStatus: Equatable, Sendable {
+    var state: HolonTailscaleState
+    var hostname: String?
+    var serveURL: URL?
+    var message: String
+
+    var title: String {
+        switch state {
+        case .unavailable:
+            return "Not installed"
+        case .stopped:
+            return "Not running"
+        case .loggedOut:
+            return "Sign-in required"
+        case .connected:
+            return "Connected"
+        case .serving:
+            return "Serve enabled"
+        }
+    }
+
+    static func parse(statusOutput: String, serveOutput: String = "") -> Self {
+        let status = statusOutput.lowercased()
+        let hostname = statusOutput
+            .firstMatch(of: #""DNSName"\s*:\s*"([^"]+)"#)
+            .flatMap { $0.split(separator: "\"").last.map(String.init) }
+            .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+        let serveURL = serveOutput.firstMatch(
+            of: #"https://[A-Za-z0-9._-]+\.ts\.net(?:/[^\s]*)?"#
+        ).flatMap(URL.init(string:))
+
+        if let serveURL {
+            return Self(
+                state: .serving,
+                hostname: hostname,
+                serveURL: serveURL,
+                message: "Tailscale Serve is exposing Holon."
+            )
+        }
+        if status.contains("needslogin") || status.contains("logged out") {
+            return Self(
+                state: .loggedOut,
+                hostname: hostname,
+                serveURL: nil,
+                message: "Sign in to Tailscale before enabling Serve."
+            )
+        }
+        if status.contains("stopped") {
+            return Self(
+                state: .stopped,
+                hostname: hostname,
+                serveURL: nil,
+                message: "Start Tailscale before enabling Serve."
+            )
+        }
+        return Self(
+            state: .connected,
+            hostname: hostname,
+            serveURL: nil,
+            message: "Tailscale is connected; Serve is not enabled."
+        )
+    }
+}
+
+private extension String {
+    func firstMatch(of pattern: String) -> String? {
+        guard let range = range(of: pattern, options: .regularExpression) else {
+            return nil
+        }
+        return String(self[range])
+    }
+}
+
 struct HolonDaemonLaunchOptions: Equatable, Sendable {
     var access: String?
     var host: String?
@@ -119,4 +200,10 @@ protocol HolonDesiredStateClient: Sendable {
     func launchAtLoginEnabled() async throws -> Bool
     func setLaunchAtLoginEnabled(_ enabled: Bool) async throws
     func installCommandLineTool() async throws -> URL
+    func tailscaleStatus() async throws -> HolonTailscaleStatus
+    func enableTailscaleServe() async throws -> HolonTailscaleStatus
+    func disableTailscaleServe() async throws -> HolonTailscaleStatus
+    func lanURL() async throws -> URL?
+    func enableLAN() async throws -> URL
+    func disableLAN() async throws -> HolonDaemonStatus
 }

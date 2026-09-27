@@ -26,6 +26,25 @@ actor RecordingProcessLauncher: HolonProcessLaunching {
 }
 
 final class HolonMenuClientTests: XCTestCase {
+    func testParsesConnectedAndServingTailscaleStatus() {
+        let status = HolonTailscaleStatus.parse(
+            statusOutput: #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#,
+            serveOutput: "https://holon.example.ts.net (tailnet only)\n|-- / proxy http://127.0.0.1:7878"
+        )
+
+        XCTAssertEqual(status.state, .serving)
+        XCTAssertEqual(status.hostname, "holon.example.ts.net")
+        XCTAssertEqual(status.serveURL?.absoluteString, "https://holon.example.ts.net")
+    }
+
+    func testParsesTailscaleLoginRequirement() {
+        let status = HolonTailscaleStatus.parse(
+            statusOutput: #"{"BackendState":"NeedsLogin"}"#
+        )
+
+        XCTAssertEqual(status.state, .loggedOut)
+    }
+
     func testClientBuildsDaemonArgumentsAndDecodesJSON() async throws {
         let statusJSON = """
         {

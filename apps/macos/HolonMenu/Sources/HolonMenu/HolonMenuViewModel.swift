@@ -17,6 +17,10 @@ final class HolonMenuViewModel: ObservableObject {
     @Published private(set) var status: HolonDaemonStatus?
     @Published private(set) var isPolling = false
     @Published private(set) var activeOperation: String?
+    @Published private(set) var tailscaleStatus: HolonTailscaleStatus?
+    @Published private(set) var lanURL: URL?
+    @Published var showTailscaleServeConfirmation = false
+    @Published var showLANConfirmation = false
     @Published var launchAtLoginEnabled = false
     @Published var lastError: String?
     @Published var commandLineToolMessage: String?
@@ -52,6 +56,8 @@ final class HolonMenuViewModel: ObservableObject {
     func refresh() async {
         do {
             status = try await client.status()
+            tailscaleStatus = try await client.tailscaleStatus()
+            lanURL = try await client.lanURL()
             launchAtLoginEnabled = try await client.launchAtLoginEnabled()
             lastError = nil
         } catch {
@@ -69,6 +75,62 @@ final class HolonMenuViewModel: ObservableObject {
 
     func restart() async {
         await runOperation { try await self.client.restart() }
+    }
+
+    func requestTailscaleServe() {
+        showTailscaleServeConfirmation = true
+    }
+
+    func requestLANAccess() {
+        showLANConfirmation = true
+    }
+
+    func enableLAN() async {
+        showLANConfirmation = false
+        activeOperation = "Enabling LAN access…"
+        defer { activeOperation = nil }
+        do {
+            lanURL = try await client.enableLAN()
+            status = try await client.status()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func disableLAN() async {
+        activeOperation = "Disabling LAN access…"
+        defer { activeOperation = nil }
+        do {
+            status = try await client.disableLAN()
+            lanURL = nil
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func enableTailscaleServe() async {
+        showTailscaleServeConfirmation = false
+        activeOperation = "Updating Tailscale…"
+        defer { activeOperation = nil }
+        do {
+            tailscaleStatus = try await client.enableTailscaleServe()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    func disableTailscaleServe() async {
+        activeOperation = "Updating Tailscale…"
+        defer { activeOperation = nil }
+        do {
+            tailscaleStatus = try await client.disableTailscaleServe()
+            lastError = nil
+        } catch {
+            lastError = error.localizedDescription
+        }
     }
 
     func openWeb() async {
@@ -138,6 +200,10 @@ final class HolonMenuViewModel: ObservableObject {
 
     var webAddressText: String {
         status?.webUrl ?? status?.httpAddr ?? "No web endpoint yet."
+    }
+
+    var connectionURL: URL? {
+        tailscaleStatus?.serveURL ?? lanURL
     }
 
     var isRunning: Bool {

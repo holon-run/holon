@@ -32,9 +32,10 @@ final class HolonMenuViewModelTests: XCTestCase {
 
         let commands = await client.recordedCommands()
         XCTAssertEqual(
-            Array(commands.prefix(3)),
-            [.status, .launchAtLoginEnabled, .restart]
+            Array(commands.prefix(4)),
+            [.status, .tailscaleStatus, .lanURL, .launchAtLoginEnabled]
         )
+        XCTAssertEqual(commands.last, .restart)
         XCTAssertEqual(viewModel.status?.state, .running)
     }
 }
