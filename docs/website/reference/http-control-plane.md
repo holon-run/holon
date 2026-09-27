@@ -3,7 +3,7 @@ title: HTTP control plane
 summary: How to think about Holon's headless integration surface.
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.45.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.46.0. -->
 
 # HTTP control plane
 
@@ -28,7 +28,8 @@ and trusts the local process boundary.
 Starting in v0.36.0, Holon supports a **session-first authentication** architecture. Browser and Web UI clients can authenticate using HTTP-only session cookies in addition to bearer tokens:
 
 - **`GET /api/auth/method`** — Returns current auth mode (`"local"` or `"oidc"`).
-- **`POST /api/auth/session/exchange`** — Exchange a bearer token for a revocable session credential and HTTP-only session cookie. Native clients should retain the JSON `credential` and send it as `Authorization: Bearer <credential>`; browser clients may use the cookie.
+- **`POST /api/auth/session/exchange`** — Exchange a bearer token for a revocable session credential and HTTP-only session cookie (primarily for browser/web clients).
+- **`POST /api/auth/session/exchange/native`** — Exchange a static or bootstrap credential for a revocable session credential and native session response (used by native clients such as the Android app; retain the JSON `credential` and send it as `Authorization: Bearer <credential>`).
 - **`GET /api/auth/session/me`** — Inspect the authenticated user identity and authentication method.
 - **`POST /api/auth/session/logout`** — Invalidate current session and clear session cookies.
 - **`GET /api/auth/oidc/start`** and **`GET /api/auth/oidc/callback`** — Initiate and complete OpenID Connect PKCE authorization code flow when `auth.mode="oidc"`.
@@ -130,6 +131,27 @@ events or dedicated routes.
 **`GET /api/agents/:id/briefs`** — Recent briefs
 
 Returns recent briefs (acknowledgements and results) for the agent.
+
+**`GET /api/agents/brief-read-states`** — All agent brief read states
+
+Returns authoritative brief read cursors and exact unread counts across all
+visible public agents for the caller's principal and visibility scope.
+Used by web and mobile clients to keep unread badges synchronized.
+
+**`GET /api/agents/:id/brief-read-state`** — Single agent brief read state
+
+Returns the authoritative brief read cursor (`read_through_event_seq`), event head,
+and unread count for the specified agent.
+
+**`POST /api/agents/:id/brief-read-cursor`** — Advance brief read cursor
+
+Monotonically advances the caller's brief read cursor for an agent. Requested
+cursors beyond the committed event head are clamped to that head. Request body:
+
+```json
+{ "read_through_event_seq": 42 }
+```
+Returns `MarkBriefReadResult` containing `applied_read_through_event_seq` and the updated `BriefReadState`.
 
 **`GET /api/agents/:id/tasks`** — Active tasks
 
