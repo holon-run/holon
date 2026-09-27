@@ -20,8 +20,10 @@ final class HolonMenuFakeClientTests: XCTestCase {
 
         let tailscale = try await client.tailscaleStatus()
         XCTAssertEqual(tailscale.state, .connected)
-        XCTAssertEqual(try await client.enableTailscaleServe().state, .serving)
-        XCTAssertEqual(try await client.disableTailscaleServe().state, .connected)
+        let serving = try await client.enableTailscaleServe()
+        XCTAssertEqual(serving.state, .serving)
+        let disabled = try await client.disableTailscaleServe()
+        XCTAssertEqual(disabled.state, .connected)
 
         try await client.setLaunchAtLoginEnabled(true)
         let launchAtLoginEnabled = try await client.launchAtLoginEnabled()

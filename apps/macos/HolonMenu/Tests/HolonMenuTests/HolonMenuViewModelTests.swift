@@ -3,6 +3,14 @@ import XCTest
 
 @MainActor
 final class HolonMenuViewModelTests: XCTestCase {
+    func testLANAddressIsDisplayedInsteadOfLoopback() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.enableLAN()
+        XCTAssertEqual(viewModel.webAddressText, "http://192.168.1.20:7878")
+        viewModel.stopPolling()
+    }
+
     func testBootstrapReplacesIncompatibleDesiredRuntime() async {
         let client = FakeHolonClient(
             currentStatus: HolonDaemonStatus(

@@ -83,15 +83,25 @@ struct HolonTailscaleStatus: Equatable, Sendable {
         }
     }
 
-    static func parse(statusOutput: String, serveOutput: String = "") -> Self {
+    static func parse(
+        statusOutput: String,
+        serveOutput: String = "",
+        holonURL: URL? = nil
+    ) -> Self {
         let status = statusOutput.lowercased()
         let hostname = statusOutput
             .firstMatch(of: #""DNSName"\s*:\s*"([^"]+)"#)
             .flatMap { $0.split(separator: "\"").last.map(String.init) }
             .map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
-        let serveURL = serveOutput.firstMatch(
-            of: #"https://[A-Za-z0-9._-]+\.ts\.net(?:/[^\s]*)?"#
-        ).flatMap(URL.init(string:))
+        let configuration = try? JSONDecoder().decode(
+            HolonTailscaleServeConfiguration.self, from: Data(serveOutput.utf8)
+        )
+        let serveURL: URL? = if let hostname, let holonURL,
+                                configuration?.rootProxy(for: hostname) == holonURL {
+            URL(string: "https://\(hostname)")
+        } else {
+            nil
+        }
 
         if let serveURL {
             return Self(
@@ -123,6 +133,30 @@ struct HolonTailscaleStatus: Equatable, Sendable {
             serveURL: nil,
             message: "Tailscale is connected; Serve is not enabled."
         )
+    }
+}
+
+struct HolonTailscaleServeConfiguration: Decodable {
+    let web: [String: Web]?
+
+    struct Web: Decodable {
+        let handlers: [String: Handler]?
+        enum CodingKeys: String, CodingKey { case handlers = "Handlers" }
+    }
+
+    struct Handler: Decodable {
+        let proxy: String?
+        enum CodingKeys: String, CodingKey { case proxy = "Proxy" }
+    }
+
+    enum CodingKeys: String, CodingKey { case web = "Web" }
+
+    func hasRootHandler(for hostname: String) -> Bool {
+        web?["\(hostname):443"]?.handlers?["/"] != nil
+    }
+
+    func rootProxy(for hostname: String) -> URL? {
+        web?["\(hostname):443"]?.handlers?["/"]?.proxy.flatMap(URL.init(string:))
     }
 }
 
@@ -176,7 +210,8 @@ struct HolonDaemonLaunchOptions: Equatable, Sendable {
         }
 
         // The menu app runs alongside its managed daemon on this Mac.
-        arguments.append("--desktop-integration")
+        // Restarts inherit the previous daemon's flags; LAN must explicitly turn this off.
+        arguments.append(access == "lan" ? "--desktop-integration=false" : "--desktop-integration")
         return arguments
     }
 }

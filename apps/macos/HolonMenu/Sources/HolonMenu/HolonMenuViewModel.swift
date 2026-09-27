@@ -199,7 +199,7 @@ final class HolonMenuViewModel: ObservableObject {
     }
 
     var webAddressText: String {
-        status?.webUrl ?? status?.httpAddr ?? "No web endpoint yet."
+        lanURL?.absoluteString ?? status?.webUrl ?? status?.httpAddr ?? "No web endpoint yet."
     }
 
     var connectionURL: URL? {
