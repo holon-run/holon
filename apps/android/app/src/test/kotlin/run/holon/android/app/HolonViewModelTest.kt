@@ -7,6 +7,8 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
+import run.holon.android.sdk.HolonApiError
+import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonWorkspace
 
 class HolonViewModelTest {
@@ -59,5 +61,31 @@ class HolonViewModelTest {
 
         assertTrue(result.isFailure)
         assertEquals("daemon unavailable", result.exceptionOrNull()?.message)
+    }
+
+    @Test
+    fun `stale event cursor error is classified for restart`() {
+        val error =
+            HolonHttpException(
+                statusCode = 404,
+                apiError =
+                    HolonApiError(
+                        code = "cursor_not_found",
+                        message = "cursor expired",
+                        retryable = false,
+                        detail = null,
+                        domain = null,
+                        context = emptyMap(),
+                    ),
+            )
+
+        assertTrue(error.isStaleAgentEventCursor())
+        assertFalse(
+            HolonHttpException(
+                    statusCode = 404,
+                    apiError = error.apiError?.copy(code = "not_found"),
+                )
+                .isStaleAgentEventCursor(),
+        )
     }
 }

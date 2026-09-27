@@ -17,7 +17,10 @@ class HolonAppModelTest {
         assertFailsWith<IllegalArgumentException> {
             normalizeAddress("https://holon.example/other")
         }
-        assertEquals("http://10.0.2.2:7878/api/", normalizeAddress("http://10.0.2.2:7878"))
+        assertEquals(
+            "http://10.0.2.2:7878/api/",
+            normalizeAddress("http://10.0.2.2:7878", allowInsecureHttp = true),
+        )
         assertFailsWith<IllegalArgumentException> {
             normalizeAddress("http://192.168.1.10:7878")
         }
