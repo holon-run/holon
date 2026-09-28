@@ -46,7 +46,7 @@ struct HolonMenuView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                         if viewModel.showLANConfirmation {
-                            Text("Holon will listen on the local network and require a control token. If none is configured, the app creates a private menu-control.token file in the Holon home directory. Devices on the same network may be able to reach this service.")
+                            Text("Holon will listen on the local network and require a control token. If none is configured, the app creates a private control.token file in the Holon home directory. Devices on the same network may be able to reach this service.")
                                 .font(.caption)
                             HStack {
                                 Button("Enable") {

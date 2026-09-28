@@ -219,7 +219,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         // The long-lived token only travels over the loopback request, not in the QR.
         let tokenPath = launchOptions.tokenFilePath ?? URL(fileURLWithPath: status.homeDir)
-            .appendingPathComponent("menu-control.token").path
+            .appendingPathComponent("control.token").path
         let token = launchOptions.token ?? (try? String(contentsOfFile: tokenPath, encoding: .utf8))
         if let token, !token.isEmpty {
             request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))",
@@ -449,7 +449,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
     private func configureLANToken(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws {
         guard options.token == nil, options.tokenFilePath == nil else { return }
         let path = URL(fileURLWithPath: homeDir, isDirectory: true)
-            .appendingPathComponent("menu-control.token").path
+            .appendingPathComponent("control.token").path
         let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
         if fd >= 0 {
             defer { Darwin.close(fd) }

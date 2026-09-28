@@ -175,7 +175,7 @@ final class HolonMenuClientTests: XCTestCase {
         XCTAssertEqual(addressLookup?.arguments, ["getifaddr", "en0"])
         _ = try await client.restart()
         var invocations = await launcher.invocations()
-        let tokenPath = home.appendingPathComponent("menu-control.token").path
+        let tokenPath = home.appendingPathComponent("control.token").path
         let token = try String(contentsOfFile: tokenPath, encoding: .utf8)
         XCTAssertEqual(token.count, 64)
         XCTAssertEqual(
@@ -207,7 +207,7 @@ final class HolonMenuClientTests: XCTestCase {
         let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: home) }
-        let tokenPath = home.appendingPathComponent("menu-control.token").path
+        let tokenPath = home.appendingPathComponent("control.token").path
         XCTAssertTrue(FileManager.default.createFile(
             atPath: tokenPath, contents: Data("secret".utf8),
             attributes: [.posixPermissions: 0o644]
