@@ -161,7 +161,7 @@ async fn wait_for_worktree(
     let deadline = Instant::now() + Duration::from_secs(30);
 
     loop {
-        let events = storage.read_recent_events(200)?;
+        let events = storage.read_recent_events(usize::MAX)?;
         if let Some(event) = events.iter().find(|event| {
             event.kind == "worktree_created_for_task"
                 && event.data["task_id"].as_str() == Some(task_id.as_str())
