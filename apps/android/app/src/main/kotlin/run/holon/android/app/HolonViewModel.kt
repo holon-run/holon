@@ -61,7 +61,7 @@ internal enum class MainDestination(private val sourceLabel: String) {
 }
 
 internal enum class AgentSection(private val sourceLabel: String) {
-    Results("结果"),
+    Results("会话"),
     Work("工作"),
     Files("文件"),
     ;
@@ -112,8 +112,12 @@ internal data class HolonUiState(
     val attachments: List<StagedAttachment> = emptyList(),
     val agentSection: AgentSection = AgentSection.Results,
     val briefs: Map<String, HolonBrief> = emptyMap(),
+    val briefLoads: Map<String, BriefLoadState> = emptyMap(),
     val selectedBrief: HolonBrief? = null,
+    val briefOriginWork: HolonWorkItemSnapshot? = null,
+    val workOriginBrief: HolonBrief? = null,
     val selectedTurn: HolonConversationTurn? = null,
+    val fullScreenTurn: Boolean = false,
     val conversationDetail: HolonConversationDetail? = null,
     val olderActivitiesBusy: Boolean = false,
     val olderActivitiesLoaded: Boolean = false,
@@ -219,6 +223,7 @@ internal class HolonViewModel(
     private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
     private var workspaceBrowseJob: Job? = null
+    private var artifactJob: Job? = null
     private var workspaceBrowseGeneration = 0L
     private var workspaceBrowseRequest: WorkspaceBrowseRequest? = null
     private var refreshJob: Job? = null
@@ -227,6 +232,32 @@ internal class HolonViewModel(
     private val composerSaveJobs = mutableMapOf<String, Job>()
     private var draftRevision = 0L
     @Volatile private var liveSyncGeneration = 0L
+    private var briefScope: String? = null
+    private val readingCache = linkedMapOf<String, ConversationReadingState>()
+    private fun rememberConversation() {
+        val current = state.value
+        val agent = current.selectedAgent ?: return
+        val key = "${current.session?.scopeKey}:${agent.id}"
+        readingCache.remove(key)
+        readingCache[key] = ConversationReadingState.from(current)
+        while (readingCache.size > 4) readingCache.remove(readingCache.keys.first())
+    }
+    private val briefLoader = BriefLoader(
+        scope = viewModelScope,
+        read = { id: String ->
+            val agent = state.value.selectedAgent ?: error("No conversation")
+            withContext(Dispatchers.IO) { repository.brief(agent.id, id) }
+        },
+        onLoading = { id -> mutableState.update { it.copy(briefLoads = it.briefLoads + (id to BriefLoadState.Loading)) } },
+        onLoaded = { id, brief -> mutableState.update { it.copy(briefs = it.briefs + (id to brief), briefLoads = it.briefLoads - id) } },
+        onFailure = { id, error ->
+            if (error.isAuthenticationFailure() || error is SessionScopeChangedException) {
+                handleRuntimeFailure(error)
+            } else {
+                mutableState.update { it.copy(briefLoads = it.briefLoads + (id to BriefLoadState.Failed(humanError(error)))) }
+            }
+        },
+    )
 
     init {
         viewModelScope.launch {
@@ -783,6 +814,11 @@ internal class HolonViewModel(
 
     private fun invalidateLiveSync(): Long {
         liveSyncGeneration += 1
+        briefLoader.reset()
+        briefScope = null
+        detailRefreshJob?.cancel()
+        readingCache.clear()
+        artifactJob?.cancel()
         stopConversationStream()
         stopLiveSync()
         conversationJob?.cancel()
@@ -823,9 +859,18 @@ internal class HolonViewModel(
     fun openAgent(agent: AgentSummary) {
         if (state.value.enqueueing) return
         val sameAgentBeforeLoad = state.value.selectedAgent?.id == agent.id
+        if (!sameAgentBeforeLoad) rememberConversation()
+        val savedReading = if (!sameAgentBeforeLoad) readingCache["${state.value.session?.scopeKey}:${agent.id}"] else null
+        if (!sameAgentBeforeLoad) {
+            artifactJob?.cancel()
+            briefLoader.reset()
+            briefScope = null
+            detailRefreshJob?.cancel()
+        }
         conversationJob?.cancel()
         stopConversationStream()
-        mutableState.update { current ->
+        mutableState.update { original ->
+            val current = savedReading?.restore(original, agent) ?: original
             val sameConversation = current.selectedAgent?.id == agent.id
             current.copy(
                 selectedAgent = agent,
@@ -839,7 +884,13 @@ internal class HolonViewModel(
                 attachments = current.attachments.takeIf { sameConversation }.orEmpty(),
                 agentSection = current.agentSection.takeIf { sameConversation } ?: AgentSection.Results,
                 briefs = current.briefs.takeIf { sameConversation }.orEmpty(),
+                briefLoads = current.briefLoads.takeIf { sameConversation }.orEmpty(),
+                fullScreenTurn = sameConversation && current.fullScreenTurn,
                 selectedBrief = current.selectedBrief.takeIf { sameConversation },
+                briefOriginWork = current.briefOriginWork.takeIf { sameConversation },
+                workOriginBrief = current.workOriginBrief.takeIf { sameConversation },
+                planFile = current.planFile.takeIf { sameConversation },
+                fileLinkOrigin = current.fileLinkOrigin.takeIf { sameConversation },
                 selectedTurn = current.selectedTurn.takeIf { sameConversation },
                 conversationDetail = current.conversationDetail.takeIf { sameConversation },
                 olderActivitiesBusy = false,
@@ -870,6 +921,7 @@ internal class HolonViewModel(
                             it.conversation?.runtimeId == bundle.snapshot.runtimeId
                         it.copy(
                             conversation = bundle.snapshot,
+                            briefs = it.briefs.takeIf { keepHistory }.orEmpty(),
                             olderTurns = it.olderTurns.takeIf { keepHistory }.orEmpty(),
                             historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
                             hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
@@ -884,6 +936,7 @@ internal class HolonViewModel(
                     loadAgentWorkspace(agent)
                     startConversationStream(agent, bundle.snapshot.snapshotCursor)
                 }.onFailure { error ->
+                    if (error is CancellationException) return@onFailure
                     if ((error.isAuthenticationFailure()) ||
                         error is SessionScopeChangedException
                     ) {
@@ -916,6 +969,10 @@ internal class HolonViewModel(
 
     fun closeConversation() {
         if (state.value.enqueueing) return
+        artifactJob?.cancel()
+        rememberConversation()
+        briefLoader.reset()
+        briefScope = null
         conversationJob?.cancel()
         detailRefreshJob?.cancel()
         stopConversationStream()
@@ -932,6 +989,10 @@ internal class HolonViewModel(
                 attachments = emptyList(),
                 agentSection = AgentSection.Results,
                 briefs = emptyMap(),
+                briefLoads = emptyMap(),
+                fullScreenTurn = false,
+                briefOriginWork = null,
+                workOriginBrief = null,
                 selectedBrief = null,
                 selectedTurn = null,
                 conversationDetail = null,
@@ -1181,6 +1242,8 @@ internal class HolonViewModel(
                     mutableState.update {
                         it.copy(
                             selectedBrief = brief,
+                            briefOriginWork = it.selectedWorkItem,
+                            selectedWorkItem = null,
                             briefs = it.briefs + (brief.id to brief),
                             busy = false,
                         )
@@ -1193,13 +1256,18 @@ internal class HolonViewModel(
     }
 
     fun closeBrief() = mutableState.update {
-        it.copy(selectedBrief = null, preparedArtifact = null, agentSection = AgentSection.Results)
+        it.copy(selectedBrief = null, preparedArtifact = null, selectedWorkItem = it.briefOriginWork, briefOriginWork = null)
     }
 
     fun selectAgentSection(section: AgentSection) {
+        if (artifactJob?.isActive == true) clearPreparedArtifact()
         mutableState.update {
             it.copy(
                 agentSection = section,
+                selectedBrief = null,
+                briefOriginWork = null,
+                workOriginBrief = null,
+                fullScreenTurn = false,
                 selectedTurn = null,
                 conversationDetail = null,
                 olderActivitiesBusy = false,
@@ -1219,6 +1287,7 @@ internal class HolonViewModel(
         mutableState.update {
             it.copy(
                 selectedTurn = turn,
+                fullScreenTurn = false,
                 conversationDetail = null,
                 olderActivitiesBusy = false,
                 olderActivitiesLoaded = false,
@@ -1230,6 +1299,8 @@ internal class HolonViewModel(
         }
         scheduleTurnDetailRefresh(agent, turn.id, delayMillis = 0)
     }
+
+    fun setTurnFullScreen(fullScreen: Boolean) = mutableState.update { it.copy(fullScreenTurn = fullScreen) }
 
     fun loadOlderTurns() {
         val current = state.value
@@ -1313,6 +1384,7 @@ internal class HolonViewModel(
         mutableState.update {
             it.copy(
                 selectedTurn = null,
+                fullScreenTurn = false,
                 conversationDetail = null,
                 olderActivitiesBusy = false,
                 olderActivitiesLoaded = false,
@@ -1378,8 +1450,9 @@ internal class HolonViewModel(
                 if (state.value.selectedAgent?.id == agent.id) {
                     mutableState.update {
                         it.copy(
-                            agentSection = AgentSection.Work,
                             selectedWorkItem = detail,
+                            workOriginBrief = it.selectedBrief,
+                            selectedBrief = null,
                             planFile = null,
                             busy = false,
                         )
@@ -1421,7 +1494,7 @@ internal class HolonViewModel(
 
     fun closePlanFile() = mutableState.update { it.copy(planFile = null) }
 
-    fun closeWorkItem() = mutableState.update { it.copy(selectedWorkItem = null, planFile = null) }
+    fun closeWorkItem() = mutableState.update { it.copy(selectedWorkItem = null, planFile = null, selectedBrief = it.workOriginBrief, workOriginBrief = null) }
 
     fun loadMoreWorkItems() {
         val current = state.value
@@ -1582,13 +1655,20 @@ internal class HolonViewModel(
     }
 
     fun prepareArtifact(locator: String, name: String) {
+        if (state.value.busy) return
+        val originScope = state.value.session?.scopeKey
+        val originAgent = state.value.selectedAgent?.id
         mutableState.update { it.copy(busy = true, error = null, preparedArtifact = null) }
-        viewModelScope.launch {
+        artifactJob = viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) { repository.prepareArtifact(locator, name) }
             }.onSuccess { artifact ->
-                mutableState.update { it.copy(preparedArtifact = artifact, busy = false) }
-            }.onFailure(::handleRuntimeFailure)
+                if (state.value.session?.scopeKey == originScope && state.value.selectedAgent?.id == originAgent) {
+                    mutableState.update { it.copy(preparedArtifact = artifact, busy = false) }
+                }
+            }.onFailure { error ->
+                if (error !is CancellationException && state.value.session?.scopeKey == originScope && state.value.selectedAgent?.id == originAgent) handleRuntimeFailure(error)
+            }
         }
     }
 
@@ -1610,7 +1690,12 @@ internal class HolonViewModel(
         }
     }
 
-    fun clearPreparedArtifact() = mutableState.update { it.copy(preparedArtifact = null) }
+    fun clearPreparedArtifact() {
+        val reading = artifactJob?.isActive == true
+        artifactJob?.cancel()
+        artifactJob = null
+        mutableState.update { it.copy(preparedArtifact = null, busy = if (reading) false else it.busy) }
+    }
 
     fun returnFromMessageFile() {
         val origin = state.value.fileLinkOrigin
@@ -1662,6 +1747,10 @@ internal class HolonViewModel(
     fun handleSystemBack(): Boolean {
         val current = state.value
         return when {
+            artifactJob?.isActive == true -> {
+                clearPreparedArtifact()
+                true
+            }
             current.phase == AppPhase.AddingNetwork -> {
                 cancelAddNetwork()
                 true
@@ -1678,11 +1767,15 @@ internal class HolonViewModel(
                 clearPreparedArtifact()
                 true
             }
-            current.selectedActivity != null -> {
+            current.selectedActivity != null && current.selectedWorkItem == null && current.selectedBrief == null && current.agentSection == AgentSection.Results -> {
                 closeActivity()
                 true
             }
-            current.selectedTurn != null -> {
+            current.fullScreenTurn -> {
+                setTurnFullScreen(false)
+                true
+            }
+            current.selectedTurn != null && current.agentSection == AgentSection.Results && current.selectedWorkItem == null && current.selectedBrief == null -> {
                 closeTurn()
                 true
             }
@@ -1698,6 +1791,10 @@ internal class HolonViewModel(
                 current.agentSection == AgentSection.Files &&
                 !current.workspaceDirectory?.path.isNullOrBlank() -> {
                 navigateWorkspaceUp()
+                true
+            }
+            current.selectedAgent != null && current.agentSection != AgentSection.Results -> {
+                selectAgentSection(AgentSection.Results)
                 true
             }
             current.selectedAgent != null -> {
@@ -1718,7 +1815,7 @@ internal class HolonViewModel(
 
     private fun endSession(keepCurrentHost: Boolean) {
         if (state.value.enqueueing) return
-        stopConversationStream()
+        invalidateLiveSync()
         val nextBaseUrl = if (keepCurrentHost) state.value.baseUrl else defaultBaseUrl()
         mutableState.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
@@ -1789,6 +1886,7 @@ internal class HolonViewModel(
                                                     it.conversation?.runtimeId == bundle.snapshot.runtimeId
                                                 it.copy(
                                                     conversation = bundle.snapshot,
+                                                    briefs = it.briefs.takeIf { keepHistory }.orEmpty(),
                                                     olderTurns = it.olderTurns.takeIf { keepHistory }.orEmpty(),
                                                     historyBeforeCursor = if (keepHistory && it.olderTurns.isNotEmpty()) it.historyBeforeCursor else bundle.snapshot.nextBeforeCursor,
                                                     hasOlderTurns = if (keepHistory && it.olderTurns.isNotEmpty()) it.hasOlderTurns else bundle.snapshot.hasMore,
@@ -1900,6 +1998,7 @@ internal class HolonViewModel(
         turnId: String,
         delayMillis: Long = 180,
     ) {
+        val expectedScope = state.value.session?.scopeKey
         detailRefreshJob?.cancel()
         detailRefreshJob =
             viewModelScope.launch {
@@ -1907,7 +2006,7 @@ internal class HolonViewModel(
                 runCatching {
                     withContext(Dispatchers.IO) { repository.conversationDetail(agent.id, turnId) }
                 }.onSuccess { detail ->
-                    if (state.value.selectedAgent?.id == agent.id && state.value.selectedTurn?.id == turnId) {
+                    if (state.value.session?.scopeKey == expectedScope && state.value.selectedAgent?.id == agent.id && state.value.selectedTurn?.id == turnId) {
                         mutableState.update {
                             val previous = it.conversationDetail
                             val keepOlder = it.olderActivitiesLoaded && previous?.eventLogEpoch == detail.eventLogEpoch
@@ -1927,7 +2026,7 @@ internal class HolonViewModel(
                         }
                     }
                 }.onFailure { error ->
-                    if (state.value.selectedTurn?.id == turnId) {
+                    if (error !is CancellationException && state.value.session?.scopeKey == expectedScope && state.value.selectedAgent?.id == agent.id && state.value.selectedTurn?.id == turnId) {
                         mutableState.update { it.copy(detailBusy = false, error = humanError(error)) }
                     }
                 }
@@ -1942,20 +2041,23 @@ internal class HolonViewModel(
     }
 
     private fun hydrateBriefs(agent: AgentSummary, snapshot: HolonConversationSnapshot) {
-        val briefIds = snapshot.turns.asReversed().flatMap(HolonConversationTurn::briefIds).distinct().take(20)
-        val missing = briefIds.filterNot(state.value.briefs::containsKey)
-        if (missing.isEmpty()) return
+        // Preload only the tail; visible rows request the rest without a fixed history cap.
         viewModelScope.launch {
-            missing.forEach { briefId ->
-                runCatching {
-                    withContext(Dispatchers.IO) { repository.brief(agent.id, briefId) }
-                }.onSuccess { brief ->
-                    if (state.value.selectedAgent?.id == agent.id) {
-                        mutableState.update { it.copy(briefs = it.briefs + (brief.id to brief)) }
-                    }
-                }
+            if (state.value.selectedAgent?.id == agent.id && state.value.conversation?.runtimeId == snapshot.runtimeId && state.value.conversation?.eventLogEpoch == snapshot.eventLogEpoch) {
+                ensureBriefs(snapshot.turns.asReversed().flatMap(HolonConversationTurn::briefIds).distinct().take(3))
             }
         }
+    }
+
+    fun ensureBriefs(ids: List<String>, retry: Boolean = false) {
+        val current = state.value
+        val identity = "${current.session?.scopeKey}:${current.selectedAgent?.id}:${current.conversation?.eventLogEpoch}"
+        if (identity != briefScope) {
+            briefLoader.reset()
+            briefScope = identity
+            mutableState.update { it.copy(briefLoads = emptyMap()) }
+        }
+        briefLoader.request(ids.filterNot(current.briefs::containsKey), retry)
     }
 
     private fun loadAgentWorkspace(agent: AgentSummary) {
@@ -2047,9 +2149,11 @@ internal class HolonViewModel(
     }
 
     private fun handleRuntimeFailure(error: Throwable) {
+        if (error is CancellationException) return
         if (error.isAuthenticationFailure() ||
             error is SessionScopeChangedException
         ) {
+            invalidateLiveSync()
             viewModelScope.launch {
                 withContext(Dispatchers.IO) { repository.logout() }
                 mutableState.value =

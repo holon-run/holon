@@ -184,7 +184,7 @@ internal fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                     ) {
                         Text(
                             block.checked?.let { if (it) "☑" else "☐" } ?: block.marker,
-                            color = MaterialTheme.colorScheme.primary,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.width(24.dp),
                         )
                         InlineMarkdownText(block.text, MaterialTheme.typography.bodyLarge, Modifier.weight(1f))

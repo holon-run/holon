@@ -10,6 +10,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import app.cash.paparazzi.DeviceConfig
@@ -18,13 +21,18 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import org.junit.Rule
 import org.junit.Before
+import org.junit.After
+import java.util.TimeZone
 import org.junit.Test
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonLatestBrief
 import run.holon.android.sdk.HolonToolExecutionSnapshot
+import run.holon.android.sdk.HolonBrief
+import run.holon.android.sdk.HolonBriefAttachment
 
 class HolonVisualSnapshotTest {
+    private val originalTimeZone = TimeZone.getDefault()
     @get:Rule
     val paparazzi =
         Paparazzi(
@@ -34,6 +42,36 @@ class HolonVisualSnapshotTest {
 
     @Before fun setChineseLocale() {
         UiCopy.initialize(paparazzi.context)
+        TimeZone.setDefault(TimeZone.getTimeZone("UTC"))
+    }
+
+    @After fun restoreSettings() {
+        TimeZone.setDefault(originalTimeZone)
+        UiCopy.select(paparazzi.context, null)
+    }
+
+    @Test
+    fun conversationResultAndCompactComposer() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                BriefContent(HolonBrief("brief", "tester", null, "result", "2026-09-29T07:12:00Z", "## 验收结果\n\n已完成 **消息接收** 和文件浏览。\n\n- 结果直接展示\n- 过程按需展开", listOf(HolonBriefAttachment("file", "android-acceptance.md", "workspace://test/report.md", null)), null), onFile = { _, _ -> }, onWork = {})
+                MessageComposer("", emptyList(), false, false, false, false, {}, {}, {}, {}, {}, {}, {})
+            }
+        }
+    }
+
+    @Test
+    fun composerAndRetryEnglishDarkLargeText() {
+        UiCopy.select(paparazzi.context, "en")
+        paparazzi.snapshot {
+            CompositionLocalProvider(LocalDensity provides Density(LocalDensity.current.density, 1.5f)) {
+                PreviewFrame(darkTheme = true) {
+                    BriefPlaceholder(BriefLoadState.Failed("Connection interrupted"), offline = true, onRetry = {})
+                    MessageComposer("Please review the report.\nKeep the draft while viewing files.", emptyList(), false, false, true, false, {}, {}, {}, {}, {}, {}, {})
+                }
+            }
+        }
+        UiCopy.select(paparazzi.context, null)
     }
 
     @Test

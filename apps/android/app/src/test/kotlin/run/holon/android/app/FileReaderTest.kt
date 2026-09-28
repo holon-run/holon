@@ -43,6 +43,8 @@ class FileReaderTest {
         assertTrue(isReadableTextFile("application/x-toml", "config.toml"))
         assertTrue(isReadableTextFile("application/javascript", "app.js"))
         assertTrue(isReadableTextFile("application/octet-stream", "lib.rs"))
+        assertTrue(isReadableTextFile("application/octet-stream", "report.md"))
+        assertTrue(isReadableTextFile("application/octet-stream", "output.txt"))
         assertFalse(isReadableTextFile("application/octet-stream", "archive.zip"))
         assertEquals("rust", codeLanguage("lib.rs"))
         assertEquals("kotlin", codeLanguage("MainActivity.KT"))
