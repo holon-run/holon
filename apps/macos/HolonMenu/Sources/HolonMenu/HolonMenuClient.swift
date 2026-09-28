@@ -139,17 +139,20 @@ final class HolonCLIClient: HolonDesiredStateClient {
     private let launcher: HolonProcessLaunching
     private let launchOptions: HolonDaemonLaunchOptions
     private let decoder: JSONDecoder
+    private let networkSession: URLSession
 
     init(
         executableURL: URL? = nil,
         launcher: HolonProcessLaunching = SystemHolonProcessLauncher(),
         launchOptions: HolonDaemonLaunchOptions = .default,
-        tailscaleExecutableURL: URL? = nil
+        tailscaleExecutableURL: URL? = nil,
+        networkSession: URLSession = .shared
     ) {
         self.executableURL = executableURL
         self.tailscaleExecutableURL = tailscaleExecutableURL
         self.launcher = launcher
         self.launchOptions = launchOptions
+        self.networkSession = networkSession
 
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -292,103 +295,61 @@ final class HolonCLIClient: HolonDesiredStateClient {
     }
 
     func tailscaleStatus() async throws -> HolonTailscaleStatus {
-        guard let executable = try? resolveTailscaleBinary() else {
-            return HolonTailscaleStatus(
-                state: .unavailable,
-                hostname: nil,
-                serveURL: nil,
-                message: "Install Tailscale to enable a tailnet connection."
-            )
-        }
-        guard let status = try? await launcher.run(
-            executableURL: executable,
-            arguments: ["status", "--json"]
-        ) else {
-            return HolonTailscaleStatus(
-                state: .stopped,
-                hostname: nil,
-                serveURL: nil,
-                message: "Start Tailscale before enabling Serve."
-            )
-        }
-        guard status.terminationStatus == 0 else {
-            return HolonTailscaleStatus(
-                state: .stopped,
-                hostname: nil,
-                serveURL: nil,
-                message: String(data: status.stderr, encoding: .utf8)
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .flatMap { $0.isEmpty ? nil : $0 }
-                    ?? "Start Tailscale before enabling Serve."
-            )
-        }
-        let serve = try? await launcher.run(
-            executableURL: executable, arguments: ["serve", "status", "--json"]
-        )
-        let holonURL = try? await webURL()
-        return HolonTailscaleStatus.parse(
-            statusOutput: String(data: status.stdout, encoding: .utf8) ?? "",
-            serveOutput: serve?.terminationStatus == 0
-                ? String(data: serve?.stdout ?? Data(), encoding: .utf8) ?? ""
-                : "",
-            holonURL: holonURL
-        )
+        try await tailscaleServeRequest(method: "GET", action: nil)
     }
 
     func enableTailscaleServe() async throws -> HolonTailscaleStatus {
-        let executable = try resolveTailscaleBinary()
-        let url = try await webURL()
-        let tailscale = try await tailscaleStatus()
-        guard let hostname = tailscale.hostname,
-              tailscale.state == .connected || tailscale.state == .serving else {
-            throw HolonCLIError.tailscaleServeConflict("Tailscale must be connected before enabling Serve.")
-        }
-        let configuration = try await serveConfiguration(executable: executable)
-        if configuration.hasRootHandler(for: hostname) {
-            guard configuration.rootProxy(for: hostname) == url else {
-                throw HolonCLIError.tailscaleServeConflict(
-                    "Tailscale Serve already exposes another service at /; leave its configuration unchanged."
-                )
-            }
-            return tailscale
-        }
-        let result = try await launcher.run(
-            executableURL: executable,
-            arguments: ["serve", "--bg", "--https=443", "--set-path=/", url.absoluteString]
-        )
-        guard result.terminationStatus == 0 else {
-            throw HolonCLIError.processFailed(
-                command: [executable.path, "serve", "--bg", "--https=443", "--set-path=/", url.absoluteString],
-                terminationStatus: result.terminationStatus,
-                stderr: String(data: result.stderr, encoding: .utf8) ?? ""
-            )
-        }
-        return try await tailscaleStatus()
+        try await tailscaleServeRequest(method: "POST", action: "enable")
     }
 
     func disableTailscaleServe() async throws -> HolonTailscaleStatus {
-        let executable = try resolveTailscaleBinary()
-        let url = try await webURL()
-        let tailscale = try await tailscaleStatus()
-        guard let hostname = tailscale.hostname,
-              try await serveConfiguration(executable: executable).rootProxy(for: hostname) == url else {
+        try await tailscaleServeRequest(method: "POST", action: "disable")
+    }
+
+    private func tailscaleServeRequest(method: String, action: String?) async throws -> HolonTailscaleStatus {
+        let daemon = try await status()
+        let port = port(from: daemon.httpAddr)
+        let host: String
+        if daemon.httpAddr.hasPrefix("["), let closing = daemon.httpAddr.firstIndex(of: "]") {
+            host = String(daemon.httpAddr[...closing])
+        } else {
+            host = daemon.httpAddr.split(separator: ":").first.map(String.init) ?? "127.0.0.1"
+        }
+        let localHost = host == "0.0.0.0" || host == "[::]" ? "127.0.0.1" : host
+        guard let base = URL(string: "http://\(localHost):\(port)") else {
+            throw HolonCLIError.invalidWebAddress(daemon.httpAddr)
+        }
+        var url = base.appendingPathComponent("api/control/network/tailscale/serve")
+        if let action { url.appendPathComponent(action) }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let tokenPath = launchOptions.tokenFilePath ?? URL(fileURLWithPath: daemon.homeDir)
+            .appendingPathComponent("control.token").path
+        let token = (launchOptions.token ?? (try? String(contentsOfFile: tokenPath, encoding: .utf8)))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await networkSession.data(for: request)
+        guard let response = response as? HTTPURLResponse, (200..<300).contains(response.statusCode) else {
             throw HolonCLIError.tailscaleServeConflict(
-                "Holon does not own the Tailscale Serve rule at /; no configuration was changed."
+                (try? JSONDecoder().decode(HolonServeErrorResponse.self, from: data).error)
+                    ?? "Unable to access daemon Tailscale Serve control. Check daemon version and local token configuration."
             )
         }
-        let arguments = ["serve", "--https=443", "--set-path=/", "off"]
-        let result = try await launcher.run(
-            executableURL: executable,
-            arguments: arguments
+        let payload = try decoder.decode(HolonTailscaleServeResponse.self, from: data)
+        return HolonTailscaleStatus(
+            state: !payload.available ? .unavailable : !payload.connected ? .stopped
+                : payload.serving ? .serving : .connected,
+            hostname: payload.hostname,
+            serveURL: payload.serving ? payload.serveUrl.flatMap(URL.init(string:)) : nil,
+            message: payload.message,
+            desiredEnabled: payload.desiredEnabled,
+            serving: payload.serving,
+            conflict: payload.conflict,
+            statusKnown: payload.statusKnown
         )
-        guard result.terminationStatus == 0 else {
-            throw HolonCLIError.processFailed(
-                command: [executable.path] + arguments,
-                terminationStatus: result.terminationStatus,
-                stderr: String(data: result.stderr, encoding: .utf8) ?? ""
-            )
-        }
-        return try await tailscaleStatus()
     }
 
     private func resolveTailscaleBinary() throws -> URL {
@@ -551,4 +512,20 @@ final class HolonCLIClient: HolonDesiredStateClient {
             )
         }
     }
+}
+
+private struct HolonTailscaleServeResponse: Decodable {
+    let desiredEnabled: Bool
+    let available: Bool
+    let connected: Bool
+    let statusKnown: Bool
+    let serving: Bool
+    let conflict: Bool
+    let hostname: String?
+    let serveUrl: String?
+    let message: String
+}
+
+private struct HolonServeErrorResponse: Decodable {
+    let error: String
 }

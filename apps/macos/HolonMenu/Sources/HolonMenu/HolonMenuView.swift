@@ -81,7 +81,9 @@ struct HolonMenuView: View {
 
             GroupBox("Tailscale") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(viewModel.tailscaleStatus?.title ?? "Checking…")
+                    Text(viewModel.tailscaleStatus?.desiredTitle ?? "Checking…")
+                        .font(.headline)
+                    Text(viewModel.tailscaleStatus?.actualTitle ?? "Checking…")
                         .font(.headline)
                     Text(viewModel.tailscaleStatus?.message ?? "Checking Tailscale status.")
                         .font(.caption)
@@ -91,12 +93,21 @@ struct HolonMenuView: View {
                             .font(.caption2)
                             .textSelection(.enabled)
                     }
-                    if viewModel.tailscaleStatus?.state == .serving {
+                    if viewModel.tailscaleStatus?.hasDrift == true {
+                        Text("Desired and actual Serve state differ. Use the control below to retry manually.")
+                            .font(.caption)
+                        if viewModel.tailscaleStatus?.conflict == true {
+                            Text("Another Serve rule conflicts with Holon; resolve it before retrying.")
+                                .font(.caption)
+                        }
+                    }
+                    if viewModel.tailscaleStatus?.statusKnown == true,
+                       viewModel.tailscaleStatus?.serving == true {
                         Button("Disable Serve") {
                             Task { await viewModel.disableTailscaleServe() }
                         }
-                        .disabled(viewModel.isOperating)
-                    } else {
+                        .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
+                    } else if viewModel.tailscaleStatus?.statusKnown == true {
                         if viewModel.showTailscaleServeConfirmation {
                             Text("Holon will ask Tailscale to expose its local web service over your tailnet. This changes network reachability and can be disabled from this menu.")
                                 .font(.caption)
@@ -104,16 +115,22 @@ struct HolonMenuView: View {
                                 Button("Enable") {
                                     Task { await viewModel.enableTailscaleServe() }
                                 }
-                                .disabled(viewModel.isOperating)
+                                .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
                                 Button("Cancel") {
                                     viewModel.showTailscaleServeConfirmation = false
                                 }
                             }
                         } else {
-                            Button("Enable Serve…") {
+                            Button(viewModel.tailscaleStatus?.desiredEnabled == true ? "Restore Serve…" : "Enable Serve…") {
                                 viewModel.requestTailscaleServe()
                             }
-                            .disabled(viewModel.isOperating)
+                            .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
+                        }
+                        if viewModel.tailscaleStatus?.desiredEnabled == true {
+                            Button("Turn off desired Serve") {
+                                Task { await viewModel.disableTailscaleServe() }
+                            }
+                            .disabled(viewModel.isOperating || viewModel.tailscaleStatus?.conflict == true)
                         }
                     }
                     if let error = viewModel.tailscaleError {

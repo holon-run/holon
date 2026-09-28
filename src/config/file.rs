@@ -2,6 +2,8 @@ use super::*;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HolonConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale_serve_desired_enabled: Option<bool>,
     #[serde(default, skip_serializing_if = "AuthConfigFile::is_empty")]
     pub auth: AuthConfigFile,
     #[serde(default, skip_serializing_if = "ApiConfigFile::is_empty")]

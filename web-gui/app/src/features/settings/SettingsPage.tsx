@@ -13,6 +13,8 @@ import { LANGUAGE_MODE_OPTIONS } from "../../i18n/types";
 import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
+import { PairingCard } from "./PairingCard";
+import { TailscaleServeCard } from "./TailscaleServeCard";
 import {
   clearRuntimeTraceRecords,
   getRuntimeTraceRecords,
@@ -949,6 +951,9 @@ export function SettingsPage({
                 </div>
               </dl>
             </Card>
+
+            <PairingCard connection={connection} />
+            <TailscaleServeCard connection={connection} />
 
             {/* ── Language ── */}
             <Card className="settings-card settings-primary-card">

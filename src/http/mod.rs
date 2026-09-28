@@ -105,6 +105,7 @@ mod conversation;
 mod events;
 mod ingress;
 mod jobs;
+mod tailscale_serve;
 // S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
 // unit tests now and wired into handlers by the S2/S4/S5 slices.
 mod desktop;
@@ -683,6 +684,18 @@ pub fn router(state: AppState) -> Router {
             get(control::runtime_trace),
         )
         .route("/control/runtime/config", get(control::runtime_config))
+        .route(
+            "/control/network/tailscale/serve",
+            get(tailscale_serve::status),
+        )
+        .route(
+            "/control/network/tailscale/serve/enable",
+            post(tailscale_serve::enable),
+        )
+        .route(
+            "/control/network/tailscale/serve/disable",
+            post(tailscale_serve::disable),
+        )
         .route(
             "/control/runtime/config",
             patch(control::runtime_config_update),

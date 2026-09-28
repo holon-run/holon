@@ -44,6 +44,55 @@ actor RecordingProcessLauncher: HolonProcessLaunching {
 }
 
 final class HolonMenuClientTests: XCTestCase {
+    private final class ServeURLProtocol: URLProtocol {
+        static let lock = NSLock()
+        nonisolated(unsafe) static var requests: [(String, String, String?)] = []
+        nonisolated(unsafe) static var responseCode = 200
+
+        override class func canInit(with request: URLRequest) -> Bool { true }
+        override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+        override func startLoading() {
+            Self.lock.lock()
+            Self.requests.append((
+                request.httpMethod ?? "",
+                request.url?.path ?? "",
+                request.value(forHTTPHeaderField: "Authorization")
+            ))
+            let code = Self.responseCode
+            Self.lock.unlock()
+            client?.urlProtocol(self, didReceive: HTTPURLResponse(
+                url: request.url!, statusCode: code, httpVersion: nil, headerFields: nil
+            )!, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data("""
+                {"desired_enabled":true,"available":true,"connected":true,"status_known":true,
+                 "serving":false,"conflict":false,"hostname":"holon.example.ts.net",
+                 "serve_url":"https://holon.example.ts.net","message":"Not serving"}
+                """.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        override func stopLoading() {}
+    }
+
+    private func serveClient() -> (HolonCLIClient, RecordingProcessLauncher) {
+        let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
+            terminationStatus: 0,
+            stdout: Data("""
+                {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
+                "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                "web_url":"http://127.0.0.1:7878","desired_running":true,
+                "control_connectivity":true,"message":"Running"}
+                """.utf8),
+            stderr: Data()
+        )))
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [ServeURLProtocol.self]
+        return (HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            launchOptions: HolonDaemonLaunchOptions(token: "test-token"),
+            networkSession: URLSession(configuration: configuration)
+        ), launcher)
+    }
     func testParsesConnectedAndServingTailscaleStatus() {
         let status = HolonTailscaleStatus.parse(
             statusOutput: #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#,
@@ -236,55 +285,33 @@ final class HolonMenuClientTests: XCTestCase {
     }
 
     func testDisableServeOnlyRemovesHolonRootRule() async throws {
-        let status = #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#
-        let serve = #"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:7878"},"/other":{"Proxy":"http://127.0.0.1:9000"}}}}}"#
-        let launcher = RecordingProcessLauncher(
-            result: .success(HolonProcessResult(
-                terminationStatus: 0,
-                stdout: Data("""
-                {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
-                "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
-                "web_url":"http://127.0.0.1:7878","desired_running":true,
-                "control_connectivity":true,"message":"Running"}
-                """.utf8),
-                stderr: Data()
-            )),
-            responses: ["status --json": status, "serve status --json": serve]
-        )
-        let client = HolonCLIClient(
-            executableURL: URL(fileURLWithPath: "/opt/holon"),
-            launcher: launcher,
-            tailscaleExecutableURL: URL(fileURLWithPath: "/opt/tailscale")
-        )
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.responseCode = 200
+        }
+        let (client, launcher) = serveClient()
+        let status = try await client.tailscaleStatus()
+        XCTAssertTrue(status.desiredEnabled)
+        XCTAssertFalse(status.serving)
+        _ = try await client.enableTailscaleServe()
         _ = try await client.disableTailscaleServe()
+        let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+        XCTAssertEqual(requests.map { "\($0.0) \($0.1)" }, [
+            "GET /api/control/network/tailscale/serve",
+            "POST /api/control/network/tailscale/serve/enable",
+            "POST /api/control/network/tailscale/serve/disable"
+        ])
+        XCTAssertTrue(requests.allSatisfy { $0.2 == "Bearer test-token" })
         let invocations = await launcher.invocations()
-        XCTAssertTrue(invocations.contains {
-            $0.arguments == ["serve", "--https=443", "--set-path=/", "off"]
-        })
-        XCTAssertFalse(invocations.contains { $0.arguments == ["serve", "reset"] })
+        XCTAssertTrue(invocations.allSatisfy { $0.arguments == ["daemon", "status"] })
     }
 
     func testDisableServeRefusesUnrelatedRule() async throws {
-        let status = #"{"BackendState":"Running","Self":{"DNSName":"holon.example.ts.net."}}"#
-        let serve = #"{"Web":{"holon.example.ts.net:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:9000"}}}}}"#
-        let launcher = RecordingProcessLauncher(
-            result: .success(HolonProcessResult(
-                terminationStatus: 0,
-                stdout: Data("""
-                {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
-                "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
-                "web_url":"http://127.0.0.1:7878","desired_running":true,
-                "control_connectivity":true,"message":"Running"}
-                """.utf8),
-                stderr: Data()
-            )),
-            responses: ["status --json": status, "serve status --json": serve]
-        )
-        let client = HolonCLIClient(
-            executableURL: URL(fileURLWithPath: "/opt/holon"),
-            launcher: launcher,
-            tailscaleExecutableURL: URL(fileURLWithPath: "/opt/tailscale")
-        )
+        ServeURLProtocol.lock.withLock { ServeURLProtocol.responseCode = 409 }
+        defer {
+            ServeURLProtocol.lock.withLock { ServeURLProtocol.responseCode = 200 }
+        }
+        let (client, launcher) = serveClient()
         do {
             _ = try await client.disableTailscaleServe()
             XCTFail("Disabling an unrelated Serve rule must fail")
