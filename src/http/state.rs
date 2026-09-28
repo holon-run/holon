@@ -94,7 +94,7 @@ pub(crate) async fn enqueue_internal(
     request: EnqueueRequest,
     ingress: EnqueueIngress,
     trace_context: Option<crate::observability::TraceContext>,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<Json<EnqueueResponse>, (StatusCode, Json<Value>)> {
     let ingress_started_at = chrono::Utc::now();
     let kind = request.kind.unwrap_or(MessageKind::WebhookEvent);
     if matches!(kind, MessageKind::SystemTick | MessageKind::CallbackEvent) {

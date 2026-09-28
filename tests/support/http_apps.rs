@@ -5,9 +5,11 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
+use futures_util::StreamExt;
 use holon::host::RuntimeHost;
 use reqwest::header::CONTENT_TYPE;
 use reqwest::Client;
+use tokio::time::{timeout, Duration};
 
 use super::spawn_server;
 
@@ -363,6 +365,98 @@ pub async fn apps_reject_symlink_escape() -> Result<()> {
         .send()
         .await?;
     assert_eq!(root_linked.status(), 403);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn apps_sdk_request_and_events() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let agent = host.config().default_agent_id.clone();
+    let apps_dir = agent_apps_dir(&host, &agent);
+    write_app(
+        &apps_dir,
+        "sdk",
+        &[
+            ("manifest.json", &manifest("sdk")),
+            ("index.html", "<script src=\"holon.js\"></script>"),
+        ],
+    )?;
+    let client = Client::new();
+
+    let context: serde_json::Value = client
+        .get(format!("{base}/apps/{agent}/sdk/context"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(context["sdk_version"], "1");
+    assert_eq!(context["agent_id"], agent);
+    assert_eq!(context["app_id"], "sdk");
+    assert_eq!(context["session"]["authenticated"], true);
+
+    let sdk = client
+        .get(format!("{base}/apps/{agent}/sdk/holon.js"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    assert!(sdk.contains("window.Holon"));
+    assert!(sdk.contains("request"));
+    assert!(sdk.contains("events"));
+
+    let event_response = client
+        .get(format!("{base}/apps/{agent}/sdk/events"))
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut event_stream = event_response.bytes_stream();
+    let response: serde_json::Value = client
+        .post(format!("{base}/apps/{agent}/sdk/request"))
+        .json(&serde_json::json!({
+            "version": "1",
+            "request_id": "req-sdk-1",
+            "request_type": "submit",
+            "payload": {"text": "hello"}
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["request_id"], "req-sdk-1");
+    assert_eq!(response["status"], "accepted");
+    assert_eq!(response["agent_id"], agent);
+    assert_eq!(response["app_id"], "sdk");
+
+    let event = timeout(Duration::from_secs(5), async {
+        let mut body = String::new();
+        while let Some(chunk) = event_stream.next().await {
+            body.push_str(&String::from_utf8_lossy(&chunk?));
+            if body.contains("req-sdk-1") {
+                return Ok::<_, anyhow::Error>(body);
+            }
+        }
+        anyhow::bail!("app event stream ended before request event")
+    })
+    .await??;
+    assert!(event.contains("holon_event"));
+    assert!(event.contains("\"app_id\":\"sdk\""));
+    assert!(event.contains("\"request_id\":\"req-sdk-1\""));
+
+    let invalid = client
+        .post(format!("{base}/apps/{agent}/sdk/request"))
+        .json(&serde_json::json!({
+            "version": "999",
+            "request_type": "submit",
+            "payload": {}
+        }))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), 400);
 
     server.abort();
     Ok(())
