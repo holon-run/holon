@@ -68,7 +68,14 @@ internal data class ActiveSession(
     val visibilityScopeId: String,
     val server: HolonServerInfo,
 ) {
-    val scopeKey: String = "$networkId:${cacheScopeKey(runtimeId, user.userId, visibilityScopeId)}"
+    val scopeKey =
+        scopeKeyForNetwork(
+            networkId,
+            baseUrl,
+            runtimeId,
+            user.userId,
+            visibilityScopeId,
+        )
 }
 
 @Serializable
@@ -215,6 +222,7 @@ internal class HolonRepository(
         val runtimeId = profile.runtimeId ?: return ResumeResult.NoSession
         val userId = profile.userId ?: return ResumeResult.NoSession
         val visibilityScopeId = profile.visibilityScopeId ?: return ResumeResult.NoSession
+        migrateLegacyCredential(profile)
         val saved =
             SavedConnection(
                 baseUrl = profile.baseUrl,
@@ -260,7 +268,7 @@ internal class HolonRepository(
             ResumeResult.Ready(session, roster)
         } catch (error: HolonHttpException) {
             if (error.statusCode == 401 || error.statusCode == 403) {
-                clearAuthentication()
+                clearAuthentication(networkId = saved.networkId, scopeKey = saved.scopeKey)
                 ResumeResult.NoSession
             } else {
                 offlineResult(saved, candidate)
@@ -969,18 +977,32 @@ internal class HolonRepository(
         File(context.cacheDir, "shared-artifacts").deleteRecursively()
     }
 
-    private suspend fun clearAuthentication(removeProfile: Boolean = false) {
+    private suspend fun clearLocalState(scopeKey: String) {
+        dao.clearScope(scopeKey)
+    }
+
+    private suspend fun clearAuthentication(
+        removeProfile: Boolean = false,
+        networkId: String? = active?.networkId,
+        scopeKey: String? = active?.scopeKey,
+    ) {
         val current = active
-        if (current != null) {
-            credentialStore(current.networkId).clear()
-            if (removeProfile) preferences.removeProfile(current.networkId)
+        val targetNetworkId = current?.networkId ?: networkId
+        if (targetNetworkId != null) {
+            credentialStore(targetNetworkId).clear()
+            if (removeProfile) preferences.removeProfile(targetNetworkId)
         } else {
             sessionStore.clear()
             if (removeProfile) preferences.clear()
         }
-        clearLocalState()
+        if (scopeKey != null) clearLocalState(scopeKey) else clearLocalState()
         active = null
         client = null
+    }
+
+    private fun migrateLegacyCredential(profile: NetworkProfile) {
+        if (!shouldMigrateLegacyCredential(profile)) return
+        (sessionStore as? LegacySessionCredentialMigrator)?.migrateLegacy(profile.networkId)
     }
 
     private fun requireSession(): ActiveSession = checkNotNull(active) { "No active Holon session" }
@@ -1161,6 +1183,20 @@ private fun Throwable.isTransportFailure(): Boolean {
 
 internal fun cacheScopeKey(runtimeId: String, userId: String, visibilityScopeId: String): String =
     listOf(runtimeId, userId, visibilityScopeId).joinToString("|") { "${it.length}:$it" }
+
+internal fun scopeKeyForNetwork(
+    networkId: String,
+    baseUrl: String,
+    runtimeId: String,
+    userId: String,
+    visibilityScopeId: String,
+): String {
+    val scope = cacheScopeKey(runtimeId, userId, visibilityScopeId)
+    return if (networkId == legacyNetworkId(baseUrl)) scope else "$networkId:$scope"
+}
+
+internal fun shouldMigrateLegacyCredential(profile: NetworkProfile): Boolean =
+    profile.networkId == legacyNetworkId(profile.baseUrl)
 
 internal fun encodedPromptBodySize(
     text: String,

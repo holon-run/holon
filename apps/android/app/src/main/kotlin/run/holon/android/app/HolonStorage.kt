@@ -45,7 +45,8 @@ internal data class SavedConnection(
     val visibilityScopeId: String,
     val networkId: String = legacyNetworkId(baseUrl),
     val displayName: String = displayNameFor(baseUrl),
-    val allowInsecureHttp: Boolean = URI(baseUrl).scheme.equals("http", ignoreCase = true),
+    val allowInsecureHttp: Boolean =
+        runCatching { URI(baseUrl).scheme.equals("http", ignoreCase = true) }.getOrDefault(false),
 )
 
 internal class HostPreferences(private val context: Context) {
@@ -146,7 +147,7 @@ internal class HostPreferences(private val context: Context) {
     }
 }
 
-private fun legacyNetworkId(baseUrl: String): String =
+internal fun legacyNetworkId(baseUrl: String): String =
     UUID.nameUUIDFromBytes(baseUrl.toByteArray()).toString()
 
 internal fun displayNameFor(baseUrl: String): String =
@@ -357,6 +358,42 @@ internal interface HolonDao {
 
     @Query("DELETE FROM agent_sync_state WHERE scopeKey != :scopeKey")
     suspend fun purgeOtherSyncScopes(scopeKey: String)
+
+    @Transaction
+    suspend fun clearScope(scopeKey: String) {
+        clearConversations(scopeKey)
+        clearDrafts(scopeKey)
+        clearComposerAttachments(scopeKey)
+        clearOutbox(scopeKey)
+        clearBriefs(scopeKey)
+        clearCursors(scopeKey)
+        clearRuntimeScope(scopeKey)
+        clearSyncStates(scopeKey)
+    }
+
+    @Query("DELETE FROM agent_projection WHERE scopeKey = :scopeKey")
+    suspend fun clearConversations(scopeKey: String)
+
+    @Query("DELETE FROM drafts WHERE scopeKey = :scopeKey")
+    suspend fun clearDrafts(scopeKey: String)
+
+    @Query("DELETE FROM composer_attachments WHERE scopeKey = :scopeKey")
+    suspend fun clearComposerAttachments(scopeKey: String)
+
+    @Query("DELETE FROM outbox WHERE scopeKey = :scopeKey")
+    suspend fun clearOutbox(scopeKey: String)
+
+    @Query("DELETE FROM brief_cache WHERE scopeKey = :scopeKey")
+    suspend fun clearBriefs(scopeKey: String)
+
+    @Query("DELETE FROM read_cursors WHERE scopeKey = :scopeKey")
+    suspend fun clearCursors(scopeKey: String)
+
+    @Query("DELETE FROM runtime_scope WHERE scopeId = :scopeKey")
+    suspend fun clearRuntimeScope(scopeKey: String)
+
+    @Query("DELETE FROM agent_sync_state WHERE scopeKey = :scopeKey")
+    suspend fun clearSyncStates(scopeKey: String)
 
     @Query("DELETE FROM runtime_scope")
     suspend fun clearRuntimeScopes()

@@ -23,16 +23,23 @@ private const val TRANSFORMATION = "AES/GCM/NoPadding"
 internal fun createSessionStore(context: Context): ProfileSessionCredentialStore =
     EncryptedSessionStore(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
 
+internal interface LegacySessionCredentialMigrator {
+    fun migrateLegacy(profileId: String)
+}
+
 private class EncryptedSessionStore(
     private val preferences: SharedPreferences,
-) : ProfileSessionCredentialStore {
+) : ProfileSessionCredentialStore, LegacySessionCredentialMigrator {
     override fun read(): String? = readEncoded(SESSION_KEY)
 
-    override fun read(profileId: String): String? {
-        return readEncoded(profileKey(profileId))
-            ?: read().also { legacy ->
-                if (!legacy.isNullOrBlank()) write(profileId, legacy)
-            }
+    override fun read(profileId: String): String? = readEncoded(profileKey(profileId))
+
+    override fun migrateLegacy(profileId: String) {
+        val legacy = read() ?: return
+        if (readEncoded(profileKey(profileId)) == null) {
+            write(profileId, legacy)
+        }
+        clear()
     }
 
     private fun readEncoded(keyName: String): String? {
