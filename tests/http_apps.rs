@@ -21,4 +21,5 @@ http_apps_tests!(
     apps_reject_symlink_escape,
     apps_sdk_request_and_events,
     apps_sdk_event_replay_order,
+    apps_reference_workbench_end_to_end,
 );

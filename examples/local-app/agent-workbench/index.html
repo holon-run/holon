@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Agent Workbench</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="shell">
+      <header>
+        <p class="eyebrow">Holon Local App</p>
+        <h1>Agent Workbench</h1>
+        <p class="lede">A small reference app for the Agent context, request, and event bridge.</p>
+      </header>
+
+      <section class="card" aria-labelledby="context-heading">
+        <h2 id="context-heading">Context</h2>
+        <dl class="context">
+          <div><dt>Agent</dt><dd id="agent-id">Loading…</dd></div>
+          <div><dt>App</dt><dd id="app-id">Loading…</dd></div>
+          <div><dt>SDK</dt><dd id="sdk-version">Loading…</dd></div>
+        </dl>
+      </section>
+
+      <section class="card" aria-labelledby="request-heading">
+        <h2 id="request-heading">Send a request</h2>
+        <form id="request-form">
+          <label for="request-text">Message</label>
+          <textarea id="request-text" name="message" rows="4" required
+            placeholder="Ask the owning Agent to process this message"></textarea>
+          <button type="submit">Send to Agent</button>
+        </form>
+        <p id="request-status" class="status" role="status">Connecting…</p>
+        <pre id="request-result" class="result" aria-live="polite"></pre>
+      </section>
+
+      <section class="card" aria-labelledby="events-heading">
+        <h2 id="events-heading">Agent events</h2>
+        <p class="muted">Events for this app request stream appear here.</p>
+        <ol id="event-log" class="events" aria-live="polite"></ol>
+      </section>
+    </main>
+
+    <script src="holon.js"></script>
+    <script src="app.js"></script>
+  </body>
+</html>
