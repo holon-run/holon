@@ -121,6 +121,7 @@ mod unread;
 mod web;
 mod workspace_files;
 pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
+pub(crate) use tailscale_serve::TailscaleServeStatus;
 pub(crate) use unread::MarkBriefReadRequest;
 
 // Re-export shared helpers used across submodules.

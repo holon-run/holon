@@ -14801,6 +14801,54 @@
         "title": "SyncTemplateRemoteSourcesRequest",
         "type": "object"
       },
+      "TailscaleServeStatus": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "conflict": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "desired_enabled": {
+            "type": "boolean"
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "serve_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "serving": {
+            "type": "boolean"
+          },
+          "status_known": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "desired_enabled",
+          "available",
+          "connected",
+          "status_known",
+          "serving",
+          "conflict",
+          "message"
+        ],
+        "title": "TailscaleServeStatus",
+        "type": "object"
+      },
       "TaskInputRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -23319,6 +23367,150 @@
         "summary": "Exit workspace",
         "tags": [
           "control"
+        ]
+      }
+    },
+    "/api/control/network/tailscale/serve": {
+      "get": {
+        "description": "Return the desired and actual Tailscale Serve state, including conflicts.",
+        "operationId": "tailscaleServeStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServeStatus"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Tailscale Serve status",
+        "tags": [
+          "network"
+        ]
+      }
+    },
+    "/api/control/network/tailscale/serve/disable": {
+      "post": {
+        "description": "Disable the Holon root Serve rule without removing another rule, then persist the desired state.",
+        "operationId": "disableTailscaleServe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServeStatus"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Disable Tailscale Serve",
+        "tags": [
+          "network"
+        ]
+      }
+    },
+    "/api/control/network/tailscale/serve/enable": {
+      "post": {
+        "description": "Enable the Holon root Serve rule without replacing a conflicting rule, then persist the desired state.",
+        "operationId": "enableTailscaleServe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServeStatus"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Enable Tailscale Serve",
+        "tags": [
+          "network"
         ]
       }
     },
