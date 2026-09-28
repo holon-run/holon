@@ -608,7 +608,14 @@ internal class HolonViewModel(
                     }.onFailure { error ->
                         if (isActive && foreground) {
                             mutableState.update {
-                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
+                                it.copy(
+                                    statusMessage =
+                                        if (error.isTransientNetworkFailure()) {
+                                            TRANSIENT_NETWORK_STATUS_MESSAGE
+                                        } else {
+                                            "列表同步已暂停：${humanError(error)}"
+                                        },
+                                )
                             }
                         }
                     }
@@ -700,7 +707,14 @@ internal class HolonViewModel(
                     }.onFailure { error ->
                         if (isActive && foreground) {
                             mutableState.update {
-                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
+                                it.copy(
+                                    statusMessage =
+                                        if (error.isTransientNetworkFailure()) {
+                                            TRANSIENT_NETWORK_STATUS_MESSAGE
+                                        } else {
+                                            "列表同步已暂停：${humanError(error)}"
+                                        },
+                                )
                             }
                         }
                     }
@@ -1997,7 +2011,7 @@ internal class HolonViewModel(
     }
 
     private fun handleRuntimeFailure(error: Throwable) {
-        if ((error is HolonHttpException && error.statusCode in setOf(401, 403)) ||
+        if (error.isAuthenticationFailure() ||
             error is SessionScopeChangedException
         ) {
             viewModelScope.launch {
@@ -2008,6 +2022,17 @@ internal class HolonViewModel(
                         baseUrl = state.value.baseUrl,
                         error = "登录已失效，请重新登录",
                     )
+            }
+            return
+        }
+        if (error.isTransientNetworkFailure()) {
+            mutableState.update {
+                it.copy(
+                    busy = false,
+                    online = false,
+                    error = null,
+                    statusMessage = TRANSIENT_NETWORK_STATUS_MESSAGE,
+                )
             }
             return
         }

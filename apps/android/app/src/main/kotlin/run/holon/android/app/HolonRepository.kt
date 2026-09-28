@@ -208,7 +208,9 @@ internal class HolonRepository(
             session to roster
         } catch (error: Throwable) {
             transientToken = null
-            scopedStore.clear()
+            if (error.isAuthenticationFailure()) {
+                scopedStore.clear()
+            }
             throw error
         }
     }
@@ -1154,6 +1156,18 @@ internal fun humanError(error: Throwable): String =
         is java.net.ConnectException -> "无法连接 Holon 主机，请确认 daemon 已启动"
         else -> "无法连接 Holon，请检查网络和地址"
     }
+
+internal fun Throwable.isAuthenticationFailure(): Boolean =
+    this is HolonHttpException && statusCode in setOf(401, 403)
+
+internal fun Throwable.isTransientNetworkFailure(): Boolean =
+    when (this) {
+        is HolonHttpException -> statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+        else -> isTransportFailure()
+    }
+
+internal const val TRANSIENT_NETWORK_STATUS_MESSAGE: String =
+    "网络暂时不可用，已保留当前内容；恢复后可重试"
 
 private fun safeFileName(value: String): String =
     value.map { if (it.isLetterOrDigit() || it in ".-_ ") it else '_' }.joinToString("").take(120)

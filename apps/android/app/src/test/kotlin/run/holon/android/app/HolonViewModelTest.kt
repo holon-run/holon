@@ -1,5 +1,7 @@
 package run.holon.android.app
 
+import java.net.ConnectException
+import java.net.UnknownHostException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -9,6 +11,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import run.holon.android.sdk.HolonApiError
 import run.holon.android.sdk.HolonHttpException
+import run.holon.android.sdk.HolonProtocolException
 import run.holon.android.sdk.HolonWorkspace
 
 class HolonViewModelTest {
@@ -94,6 +97,46 @@ class HolonViewModelTest {
                     apiError = error.apiError?.copy(code = "not_found"),
                 )
                 .isStaleAgentEventCursor(),
+        )
+    }
+
+    @Test
+    fun `only explicit authentication responses require login`() {
+        assertTrue(
+            HolonHttpException(
+                statusCode = 401,
+                apiError = null,
+            ).isAuthenticationFailure(),
+        )
+        assertTrue(
+            HolonHttpException(
+                statusCode = 403,
+                apiError = null,
+            ).isAuthenticationFailure(),
+        )
+        assertFalse(
+            HolonHttpException(
+                statusCode = 503,
+                apiError = null,
+            ).isAuthenticationFailure(),
+        )
+    }
+
+    @Test
+    fun `transport and transient server failures stay recoverable`() {
+        assertTrue(HolonProtocolException("request failed", ConnectException()).isTransientNetworkFailure())
+        assertTrue(HolonProtocolException("request failed", UnknownHostException()).isTransientNetworkFailure())
+        assertTrue(
+            HolonHttpException(
+                statusCode = 503,
+                apiError = null,
+            ).isTransientNetworkFailure(),
+        )
+        assertFalse(
+            HolonHttpException(
+                statusCode = 400,
+                apiError = null,
+            ).isTransientNetworkFailure(),
         )
     }
 }
