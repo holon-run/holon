@@ -679,6 +679,34 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `reconnecting conversation stream retries transient HTTP errors`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_UNAVAILABLE))
+            server.enqueue(
+                MockResponse()
+                    .setHeader("Content-Type", "text/event-stream")
+                    .setBody("id: recovered\ndata: {\"event_seq\":1}\n\n"),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val events =
+                client
+                    .reconnectingConversationStream(
+                        agentId = "main",
+                        policy =
+                            SseReconnectPolicy(
+                                maxAttempts = 1,
+                                initialDelayMillis = 0,
+                                maxDelayMillis = 0,
+                            ),
+                    ).toList()
+
+            assertEquals(listOf("recovered"), events.map { it.id })
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test
     fun `redirects are rejected without forwarding bearer credentials`() {
         MockWebServer().use { redirectTarget ->
             MockWebServer().use { server ->
