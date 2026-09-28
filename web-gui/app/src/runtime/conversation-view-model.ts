@@ -113,9 +113,14 @@ export function buildConversationSessionModel(
     briefLoadStates: input.briefLoadStates,
     detailLoadStates: input.detailLoadStates,
     activeTurn,
+    // The SDK emits a scope-less empty view object before the first
+    // bootstrap (and after a stream reset clears state). Only a scoped view
+    // carries renderable content, so a scope-less view must render the
+    // loading state too; otherwise a cold cache miss shows a blank pane
+    // behind the sync banner while the network bootstrap is in flight.
     bootstrapLoading:
       (input.status.kind === "loading" || input.status.kind === "idle") &&
-      view === null,
+      view?.scope == null,
   };
 }
 

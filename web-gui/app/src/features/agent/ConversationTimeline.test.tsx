@@ -256,6 +256,32 @@ describe("ConversationTimeline", () => {
     expect(html).toContain("No conversation activity yet");
   });
 
+  it("renders the loading state for a scope-less view before bootstrap", () => {
+    // Cold cache miss: the SDK has not bootstrapped a scoped view yet, so
+    // the pane must show the loading spinner instead of a blank surface.
+    const html = renderToStaticMarkup(
+      <ConversationTimeline
+        model={buildConversationSessionModel({
+          status: { kind: "loading" },
+          view: { ...stateView([]), scope: null },
+          historyState: { kind: "idle" },
+          briefs: new Map(),
+          briefLoadStates: new Map(),
+          detailLoadStates: new Map(),
+        })}
+        onLoadBrief={() => {}}
+        onLoadDetail={() => {}}
+        onLoadOlderActivities={() => {}}
+        onRetry={() => {}}
+        briefRecord={() => null}
+        briefLoadState={() => null}
+        detailLoadState={() => ({ kind: "idle" })}
+      />,
+    );
+    expect(html).toContain("conversation-loading");
+    expect(html).not.toContain("No conversation activity yet");
+  });
+
   it("keeps terminal turns collapsed and active turns expanded by default", () => {
     const html = renderTimeline([
       turnSummary("turn-active", 1),

@@ -5,6 +5,7 @@ import {
   ConversationHttpError,
   ConversationProtocolError,
   ConversationResetError,
+  ConversationTimeoutError,
 } from "./errors.js";
 import {
   decodeBriefRecord,
@@ -30,6 +31,8 @@ import {
   type ConversationSummaryResponse,
 } from "./types.js";
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
 export type FetchLike = (
   input: RequestInfo | URL,
   init?: RequestInit,
@@ -50,6 +53,12 @@ export interface ConversationClientOptions {
   readonly fetch?: FetchLike;
   readonly headers?: ConversationHeadersProvider;
   readonly bearerToken?: ConversationBearerTokenProvider;
+  /**
+   * Abort JSON requests (handshake, summary, briefs, activities) after this
+   * many milliseconds so a stalled connection fails retryably instead of
+   * hanging the supervise loop. 0 disables the timeout. Default: 30s.
+   */
+  readonly requestTimeoutMs?: number;
 }
 
 export interface ConversationPageOptions {
@@ -78,6 +87,7 @@ export class ConversationClient {
   readonly #fetch: FetchLike;
   readonly #headers: ConversationHeadersProvider | undefined;
   readonly #bearerToken: ConversationBearerTokenProvider | undefined;
+  readonly #requestTimeoutMs: number;
 
   constructor(options: ConversationClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
@@ -93,6 +103,8 @@ export class ConversationClient {
     this.#fetch = injectedFetch.bind(globalThis);
     this.#headers = options.headers;
     this.#bearerToken = options.bearerToken;
+    this.#requestTimeoutMs =
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   }
 
   async handshake(signal?: AbortSignal): Promise<ConversationHandshake> {
@@ -288,6 +300,12 @@ export class ConversationClient {
     return headers;
   }
 
+  /**
+   * GET + decode with a bounded request lifetime. The envelope aborts the
+   * underlying fetch when the timeout elapses and converts that failure
+   * into a retryable ConversationTimeoutError; caller-initiated aborts keep
+   * their original rejection (AbortError) so intentional stops stay silent.
+   */
   async #getJson<T>(
     path: string,
     signal: AbortSignal | undefined,
@@ -295,6 +313,53 @@ export class ConversationClient {
   ): Promise<T> {
     const headers = await this.#requestHeaders();
     headers.set("accept", "application/json");
+    const timeoutMs = this.#requestTimeoutMs;
+    if (timeoutMs <= 0) {
+      return await this.#readJson(path, headers, signal, decode);
+    }
+    const controller = new AbortController();
+    const abortFromCaller = () => controller.abort(signal?.reason);
+    if (signal !== undefined) {
+      if (signal.aborted) {
+        abortFromCaller();
+      } else {
+        signal.addEventListener("abort", abortFromCaller, { once: true });
+      }
+    }
+    const timer = setTimeout(() => {
+      controller.abort(
+        typeof DOMException === "function"
+          ? new DOMException(
+              `conversation request timed out after ${timeoutMs}ms`,
+              "TimeoutError",
+            )
+          : Object.assign(
+              new Error(`conversation request timed out after ${timeoutMs}ms`),
+              { name: "TimeoutError" },
+            ),
+      );
+    }, timeoutMs);
+    try {
+      return await this.#readJson(path, headers, controller.signal, decode);
+    } catch (error) {
+      if (controller.signal.aborted && signal?.aborted !== true) {
+        throw new ConversationTimeoutError(timeoutMs, { cause: error });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (signal !== undefined) {
+        signal.removeEventListener("abort", abortFromCaller);
+      }
+    }
+  }
+
+  async #readJson<T>(
+    path: string,
+    headers: Headers,
+    signal: AbortSignal | undefined,
+    decode: (value: unknown) => T,
+  ): Promise<T> {
     const response = await this.#fetch(this.#url(path), {
       method: "GET",
       headers,
