@@ -608,14 +608,7 @@ internal class HolonViewModel(
                     }.onFailure { error ->
                         if (isActive && foreground) {
                             mutableState.update {
-                                it.copy(
-                                    statusMessage =
-                                        if (error.isTransientNetworkFailure()) {
-                                            TRANSIENT_NETWORK_STATUS_MESSAGE
-                                        } else {
-                                            "列表同步已暂停：${humanError(error)}"
-                                        },
-                                )
+                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
                             }
                         }
                     }
@@ -707,14 +700,7 @@ internal class HolonViewModel(
                     }.onFailure { error ->
                         if (isActive && foreground) {
                             mutableState.update {
-                                it.copy(
-                                    statusMessage =
-                                        if (error.isTransientNetworkFailure()) {
-                                            TRANSIENT_NETWORK_STATUS_MESSAGE
-                                        } else {
-                                            "列表同步已暂停：${humanError(error)}"
-                                        },
-                                )
+                                it.copy(statusMessage = "列表同步已暂停：${humanError(error)}")
                             }
                         }
                     }
@@ -855,7 +841,7 @@ internal class HolonViewModel(
                     loadAgentWorkspace(agent)
                     startConversationStream(agent, bundle.snapshot.snapshotCursor)
                 }.onFailure { error ->
-                    if ((error is HolonHttpException && error.statusCode in setOf(401, 403)) ||
+                    if ((error.isAuthenticationFailure()) ||
                         error is SessionScopeChangedException
                     ) {
                         handleRuntimeFailure(error)
@@ -1379,7 +1365,7 @@ internal class HolonViewModel(
                 }
             }.onFailure { error ->
                 mutableState.update { it.copy(workItemsBusy = false) }
-                if ((error is HolonHttpException && error.statusCode in setOf(401, 403)) ||
+                if ((error.isAuthenticationFailure()) ||
                     error is SessionScopeChangedException
                 ) {
                     handleRuntimeFailure(error)
@@ -1501,7 +1487,7 @@ internal class HolonViewModel(
                                     }
                                 }.onFailure { error ->
                                     if (state.value.fileLinkOrigin != null) {
-                                        if (error is HolonHttpException && error.statusCode in setOf(401, 403)) handleRuntimeFailure(error)
+                                        if (error.isAuthenticationFailure()) handleRuntimeFailure(error)
                                         else mutableState.update { it.copy(workspaceBusy = false, error = humanError(error)) }
                                     }
                                 }
@@ -1511,7 +1497,7 @@ internal class HolonViewModel(
                 }
             }.onFailure { error ->
                 if (state.value.selectedAgent?.id != agentId) return@onFailure
-                if (error is HolonHttpException && error.statusCode in setOf(401, 403)) handleRuntimeFailure(error)
+                if (error.isAuthenticationFailure()) handleRuntimeFailure(error)
                 else mutableState.update { it.copy(error = humanError(error)) }
             }
         }
@@ -1788,7 +1774,7 @@ internal class HolonViewModel(
                     } catch (_: CancellationException) {
                         break
                     } catch (error: Throwable) {
-                        if ((error is HolonHttpException && error.statusCode in setOf(401, 403)) ||
+                        if ((error.isAuthenticationFailure()) ||
                             error is SessionScopeChangedException
                         ) {
                             withContext(Dispatchers.Main) { handleRuntimeFailure(error) }
@@ -1841,7 +1827,7 @@ internal class HolonViewModel(
                     } catch (_: CancellationException) {
                         break
                     } catch (error: Throwable) {
-                        if ((error is HolonHttpException && error.statusCode in setOf(401, 403)) ||
+                        if ((error.isAuthenticationFailure()) ||
                             error is SessionScopeChangedException
                         ) {
                             withContext(Dispatchers.Main) { handleRuntimeFailure(error) }

@@ -47,6 +47,7 @@ import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
 import run.holon.android.sdk.ProfileSessionCredentialStore
 import run.holon.android.sdk.SessionCredentialStore
+import run.holon.android.sdk.isTransientHttpStatus
 
 internal val REQUIRED_CAPABILITIES =
     setOf(
@@ -172,7 +173,9 @@ internal class HolonRepository(
                     allowInsecureHttp = allowInsecureHttp,
                 )
         val scopedStore = credentialStore(profile.networkId)
+        val previousCredential = scopedStore.read()
         var transientToken: String? = token.concatToString()
+        var exchangedSession = false
         token.fill('\u0000')
         val candidate =
             HolonHttpClient(
@@ -183,6 +186,7 @@ internal class HolonRepository(
             )
         return try {
             candidate.exchangeSession(transientToken.orEmpty())
+            exchangedSession = true
             transientToken = null
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
@@ -208,7 +212,13 @@ internal class HolonRepository(
             session to roster
         } catch (error: Throwable) {
             transientToken = null
-            if (error.isAuthenticationFailure()) {
+            if (exchangedSession) {
+                if (previousCredential.isNullOrBlank()) {
+                    scopedStore.clear()
+                } else {
+                    scopedStore.write(previousCredential)
+                }
+            } else if (error.isAuthenticationFailure()) {
                 scopedStore.clear()
             }
             throw error
@@ -1162,7 +1172,7 @@ internal fun Throwable.isAuthenticationFailure(): Boolean =
 
 internal fun Throwable.isTransientNetworkFailure(): Boolean =
     when (this) {
-        is HolonHttpException -> statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+        is HolonHttpException -> isTransientHttpStatus(statusCode)
         else -> isTransportFailure()
     }
 
