@@ -11558,10 +11558,11 @@ mod tests {
         assert_eq!(still_waiting.next_attempt_at, failed.next_attempt_at);
 
         blocker.execute_batch("ROLLBACK").unwrap();
+        drop(blocker);
         let wait_for = (still_waiting.next_attempt_at.unwrap() - Utc::now())
             .to_std()
             .unwrap_or_default()
-            + Duration::from_millis(20);
+            + Duration::from_millis(100);
         tokio::time::sleep(wait_for).await;
         host.execute_deletion_job(still_waiting).await.unwrap();
         let completed = host
