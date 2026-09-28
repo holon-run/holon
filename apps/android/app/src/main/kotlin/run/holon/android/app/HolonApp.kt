@@ -153,6 +153,9 @@ internal fun HolonApp(viewModel: HolonViewModel) {
     }
 }
 
+internal fun shouldShowSavedNetworks(addingNetwork: Boolean, profiles: List<NetworkProfile>): Boolean =
+    !addingNetwork && profiles.isNotEmpty()
+
 @Composable
 private fun StartingScreen() {
     Box(
@@ -211,7 +214,7 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel, addingNe
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (!addingNetwork && state.networkProfiles.size > 1) {
+            if (shouldShowSavedNetworks(addingNetwork, state.networkProfiles)) {
                 Text(ui("已保存的网络"), style = MaterialTheme.typography.titleSmall)
                 state.networkProfiles.forEach { profile ->
                     OutlinedButton(

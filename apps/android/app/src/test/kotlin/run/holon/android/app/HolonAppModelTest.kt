@@ -11,6 +11,15 @@ import run.holon.android.sdk.HolonLatestBrief
 
 class HolonAppModelTest {
     @Test
+    fun `one saved network stays available on the sign in screen`() {
+        val profile = NetworkProfile("network-b", "Lab", "https://lab.example/api/", false)
+
+        assertEquals(true, shouldShowSavedNetworks(false, listOf(profile)))
+        assertEquals(false, shouldShowSavedNetworks(false, emptyList()))
+        assertEquals(false, shouldShowSavedNetworks(true, listOf(profile)))
+    }
+
+    @Test
     fun `address is normalized to API root`() {
         assertEquals("https://holon.example/api/", normalizeAddress("https://holon.example"))
         assertEquals("https://holon.example/api/", normalizeAddress("https://holon.example/api/"))
