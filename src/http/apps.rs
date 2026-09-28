@@ -190,7 +190,7 @@ async fn app_events(
     let stream_agent_id = agent_id.clone();
     tokio::spawn(async move {
         let mut last_sent_seq = after_seq.unwrap_or(0);
-        for event in buffered.iter().rev() {
+        for event in &buffered {
             if event.event_seq > last_sent_seq {
                 last_sent_seq = event.event_seq;
                 if let Some(frame) = app_event_frame(event, &stream_agent_id, &app_id) {
@@ -436,7 +436,9 @@ async fn resolve_app(
     validate_segment("app_id", app_id)?;
     let agent_home = state.host.agent_data_dir(agent_id);
     let apps_dir = agent_home.join("apps");
-    canonical_app_root(&agent_home, &apps_dir, app_id).await
+    let app_root = canonical_app_root(&agent_home, &apps_dir, app_id).await?;
+    read_manifest(&app_root, app_id).await?;
+    Ok(app_root)
 }
 
 /// Canonicalize an app directory and prove it stays inside the agent's

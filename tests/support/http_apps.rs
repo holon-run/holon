@@ -245,6 +245,35 @@ pub async fn apps_reject_invalid_manifest_and_missing_entry() -> Result<()> {
         .await?;
     assert_eq!(mismatch.status(), 422);
 
+    let mismatch_context = client
+        .get(format!("{base}/apps/{agent}/mismatch/context"))
+        .send()
+        .await?;
+    assert_eq!(mismatch_context.status(), 422);
+
+    let mismatch_request = client
+        .post(format!("{base}/apps/{agent}/mismatch/request"))
+        .json(&serde_json::json!({
+            "version": "1",
+            "request_type": "submit",
+            "payload": {}
+        }))
+        .send()
+        .await?;
+    assert_eq!(mismatch_request.status(), 422);
+
+    let mismatch_events = client
+        .get(format!("{base}/apps/{agent}/mismatch/events"))
+        .send()
+        .await?;
+    assert_eq!(mismatch_events.status(), 422);
+
+    let mismatch_sdk = client
+        .get(format!("{base}/apps/{agent}/mismatch/holon.js"))
+        .send()
+        .await?;
+    assert_eq!(mismatch_sdk.status(), 422);
+
     let missing_entry = client
         .get(format!("{base}/apps/{agent}/missing-entry/"))
         .send()
@@ -457,6 +486,65 @@ pub async fn apps_sdk_request_and_events() -> Result<()> {
         .send()
         .await?;
     assert_eq!(invalid.status(), 400);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn apps_sdk_event_replay_order() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let agent = host.config().default_agent_id.clone();
+    let apps_dir = agent_apps_dir(&host, &agent);
+    write_app(
+        &apps_dir,
+        "sdk-replay",
+        &[
+            ("manifest.json", &manifest("sdk-replay")),
+            ("index.html", "replay"),
+        ],
+    )?;
+    let client = Client::new();
+
+    for request_id in ["req-replay-1", "req-replay-2"] {
+        client
+            .post(format!("{base}/apps/{agent}/sdk-replay/request"))
+            .json(&serde_json::json!({
+                "version": "1",
+                "request_id": request_id,
+                "request_type": "submit",
+                "payload": {"text": request_id}
+            }))
+            .send()
+            .await?
+            .error_for_status()?;
+    }
+
+    let response = client
+        .get(format!("{base}/apps/{agent}/sdk-replay/events"))
+        .header("Last-Event-ID", "0")
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut stream = response.bytes_stream();
+    let body = timeout(Duration::from_secs(5), async {
+        let mut body = String::new();
+        while let Some(chunk) = stream.next().await {
+            body.push_str(&String::from_utf8_lossy(&chunk?));
+            if body.contains("req-replay-1") && body.contains("req-replay-2") {
+                return Ok::<_, anyhow::Error>(body);
+            }
+        }
+        anyhow::bail!("app event replay ended before both request events")
+    })
+    .await??;
+
+    let first = body
+        .find("req-replay-1")
+        .expect("first replayed request should be present");
+    let second = body
+        .find("req-replay-2")
+        .expect("second replayed request should be present");
+    assert!(first < second, "replayed events should remain oldest-first");
 
     server.abort();
     Ok(())
