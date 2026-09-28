@@ -11,7 +11,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
-import run.holon.android.sdk.SessionCredentialStore
+import run.holon.android.sdk.ProfileSessionCredentialStore
 
 private const val PREFS = "holon_debug_session"
 private const val SESSION_KEY = "session_credential"
@@ -20,14 +20,23 @@ private const val KEY_ALIAS = "holon_debug_session_key"
 private const val TRANSFORMATION = "AES/GCM/NoPadding"
 
 /** Stores only the revocable native session; the exchange token never reaches disk. */
-internal fun createSessionStore(context: Context): SessionCredentialStore =
+internal fun createSessionStore(context: Context): ProfileSessionCredentialStore =
     EncryptedSessionStore(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE))
 
 private class EncryptedSessionStore(
     private val preferences: SharedPreferences,
-) : SessionCredentialStore {
-    override fun read(): String? {
-        val encoded = preferences.getString(SESSION_KEY, null) ?: return null
+) : ProfileSessionCredentialStore {
+    override fun read(): String? = readEncoded(SESSION_KEY)
+
+    override fun read(profileId: String): String? {
+        return readEncoded(profileKey(profileId))
+            ?: read().also { legacy ->
+                if (!legacy.isNullOrBlank()) write(profileId, legacy)
+            }
+    }
+
+    private fun readEncoded(keyName: String): String? {
+        val encoded = preferences.getString(keyName, null) ?: return null
         return runCatching {
             val parts = encoded.split(':', limit = 2)
             require(parts.size == 2)
@@ -40,12 +49,17 @@ private class EncryptedSessionStore(
             cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP))
                 .toString(StandardCharsets.UTF_8)
         }.getOrElse {
-            clear()
+            preferences.edit().remove(keyName).commit()
             null
         }
     }
 
-    override fun write(credential: String) {
+    override fun write(credential: String) = writeEncoded(SESSION_KEY, credential)
+
+    override fun write(profileId: String, credential: String) =
+        writeEncoded(profileKey(profileId), credential)
+
+    private fun writeEncoded(keyName: String, credential: String) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         val iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
@@ -54,13 +68,19 @@ private class EncryptedSessionStore(
                 cipher.doFinal(credential.toByteArray(StandardCharsets.UTF_8)),
                 Base64.NO_WRAP,
             )
-        check(preferences.edit().putString(SESSION_KEY, "$iv:$encrypted").commit()) {
+        check(preferences.edit().putString(keyName, "$iv:$encrypted").commit()) {
             "Unable to persist the native session credential"
         }
     }
 
     override fun clear() {
         check(preferences.edit().remove(SESSION_KEY).commit()) {
+            "Unable to clear the native session credential"
+        }
+    }
+
+    override fun clear(profileId: String) {
+        check(preferences.edit().remove(profileKey(profileId)).commit()) {
             "Unable to clear the native session credential"
         }
     }
@@ -80,4 +100,7 @@ private class EncryptedSessionStore(
             generateKey()
         }
     }
+
+    private fun profileKey(profileId: String): String =
+        "session_credential_profile_${profileId.replace(Regex("[^A-Za-z0-9_-]"), "_")}"
 }

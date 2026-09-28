@@ -13,3 +13,17 @@ public interface SessionCredentialStore {
 
     public fun clear()
 }
+
+/**
+ * Secure credential storage keyed by the locally stable network profile id.
+ *
+ * The unkeyed methods remain part of [SessionCredentialStore] for migration
+ * compatibility with existing SDK clients and storage implementations.
+ */
+public interface ProfileSessionCredentialStore : SessionCredentialStore {
+    public fun read(profileId: String): String?
+
+    public fun write(profileId: String, credential: String)
+
+    public fun clear(profileId: String)
+}

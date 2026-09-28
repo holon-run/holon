@@ -93,6 +93,8 @@ internal data class HolonUiState(
     val online: Boolean = false,
     val lastSyncedAt: Long? = null,
     val session: ActiveSession? = null,
+    val networkProfiles: List<NetworkProfile> = emptyList(),
+    val switchingNetworkId: String? = null,
     val agents: List<AgentSummary> = emptyList(),
     val briefReadStates: Map<String, HolonBriefReadState> = emptyMap(),
     val briefReadStatesLoaded: Boolean = false,
@@ -158,6 +160,14 @@ internal data class HolonUiState(
             }
 }
 
+internal fun isCurrentLiveSync(
+    foreground: Boolean,
+    phase: AppPhase,
+    expectedGeneration: Long,
+    currentGeneration: Long,
+): Boolean =
+    foreground && phase == AppPhase.Ready && expectedGeneration == currentGeneration
+
 internal class AppContainer(context: Context) {
     private val database = HolonDatabase.create(context)
     val repository =
@@ -193,13 +203,17 @@ internal class HolonViewModel(
     private val draftSaveJobs = mutableMapOf<String, Job>()
     private val composerSaveJobs = mutableMapOf<String, Job>()
     private var draftRevision = 0L
+    @Volatile private var liveSyncGeneration = 0L
 
     init {
         viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { repository.resume() }
+            val (profiles, result) =
+                withContext(Dispatchers.IO) {
+                    repository.networkProfiles() to repository.resume()
+                }
             when (result) {
                 ResumeResult.NoSession ->
-                    mutableState.update { it.copy(phase = AppPhase.SignedOut) }
+                    mutableState.update { it.copy(phase = AppPhase.SignedOut, networkProfiles = profiles) }
                 is ResumeResult.Ready -> {
                     mutableState.update {
                         it.copy(
@@ -208,6 +222,7 @@ internal class HolonViewModel(
                             lastSyncedAt = System.currentTimeMillis(),
                             session = result.session,
                             baseUrl = result.session.baseUrl,
+                            networkProfiles = profiles,
                             agents = result.roster.agents,
                         )
                     }
@@ -222,6 +237,7 @@ internal class HolonViewModel(
                             online = false,
                             session = result.session,
                             baseUrl = result.session.baseUrl,
+                            networkProfiles = profiles,
                             agents = result.cached.map(AgentProjectionEntity::toAgentSummary),
                             statusMessage = "当前离线，显示上次同步内容",
                         )
@@ -233,6 +249,7 @@ internal class HolonViewModel(
                     mutableState.update {
                         it.copy(
                             phase = AppPhase.SignedOut,
+                            networkProfiles = profiles,
                             baseUrl = result.baseUrl,
                             error = result.message,
                         )
@@ -264,6 +281,107 @@ internal class HolonViewModel(
     fun setAllowInsecureHttp(value: Boolean) =
         mutableState.update { it.copy(allowInsecureHttp = value, error = null) }
     fun setSearch(value: String) = mutableState.update { it.copy(search = value) }
+
+    fun switchNetwork(networkId: String) {
+        val before = state.value
+        val profile = before.networkProfiles.firstOrNull { it.networkId == networkId } ?: return
+        if (before.busy || before.session?.networkId == networkId) return
+        val generation = invalidateLiveSync()
+        mutableState.update {
+            it.copy(
+                busy = true,
+                switchingNetworkId = networkId,
+                error = null,
+                statusMessage = "正在切换到 ${profile.displayName}…",
+                selectedAgent = null,
+                conversation = null,
+                olderTurns = emptyList(),
+                historyBeforeCursor = null,
+                agents = emptyList(),
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    repository.switchNetwork(networkId) to repository.networkProfiles()
+                }
+            }.onSuccess { (result, profiles) ->
+                if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) {
+                    return@onSuccess
+                }
+                when (result) {
+                    ResumeResult.NoSession ->
+                        mutableState.update {
+                            it.copy(
+                                phase = AppPhase.SignedOut,
+                                busy = false,
+                                switchingNetworkId = null,
+                                networkProfiles = profiles,
+                                baseUrl = profile.baseUrl,
+                                token = "",
+                                session = null,
+                                statusMessage = null,
+                            )
+                        }
+                    is ResumeResult.Ready -> {
+                        mutableState.update {
+                            it.copy(
+                                phase = AppPhase.Ready,
+                                busy = false,
+                                switchingNetworkId = null,
+                                online = true,
+                                lastSyncedAt = System.currentTimeMillis(),
+                                networkProfiles = profiles,
+                                session = result.session,
+                                baseUrl = result.session.baseUrl,
+                                agents = result.roster.agents,
+                                statusMessage = null,
+                                briefReadStates = emptyMap(),
+                                briefReadStatesLoaded = false,
+                                readBriefIds = emptyMap(),
+                                readBriefsLoaded = false,
+                            )
+                        }
+                        loadBriefReadStates()
+                        if (foreground) {
+                            startLiveSync(result.roster.agents, result.roster.eventLogEpoch, generation)
+                        }
+                    }
+                    is ResumeResult.Offline ->
+                        mutableState.update {
+                            it.copy(
+                                phase = AppPhase.Ready,
+                                busy = false,
+                                switchingNetworkId = null,
+                                online = false,
+                                networkProfiles = profiles,
+                                session = result.session,
+                                baseUrl = result.session.baseUrl,
+                                agents = result.cached.map(AgentProjectionEntity::toAgentSummary),
+                                statusMessage = "当前离线，显示上次同步内容",
+                            )
+                        }
+                    is ResumeResult.Incompatible ->
+                        mutableState.update {
+                            it.copy(
+                                busy = false,
+                                switchingNetworkId = null,
+                                networkProfiles = profiles,
+                                baseUrl = result.baseUrl,
+                                error = result.message,
+                                statusMessage = null,
+                            )
+                        }
+                }
+            }.onFailure { error ->
+                if (generation == liveSyncGeneration) {
+                    mutableState.update {
+                        it.copy(busy = false, switchingNetworkId = null, error = humanError(error), statusMessage = null)
+                    }
+                }
+            }
+        }
+    }
 
     private fun loadBriefReadStates() {
         val scopeKey = state.value.session?.scopeKey ?: return
@@ -356,9 +474,11 @@ internal class HolonViewModel(
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    repository.login(before.baseUrl, tokenChars, before.allowInsecureHttp)
+                    val (session, roster) =
+                        repository.login(before.baseUrl, tokenChars, before.allowInsecureHttp)
+                    Triple(session, roster, repository.networkProfiles())
                 }
-            }.onSuccess { (session, roster) ->
+            }.onSuccess { (session, roster, profiles) ->
                 mutableState.update {
                     it.copy(
                         phase = AppPhase.Ready,
@@ -367,6 +487,7 @@ internal class HolonViewModel(
                         lastSyncedAt = System.currentTimeMillis(),
                         session = session,
                         baseUrl = session.baseUrl,
+                        networkProfiles = profiles,
                         token = "",
                         agents = roster.agents,
                         briefReadStates = emptyMap(),
@@ -447,18 +568,40 @@ internal class HolonViewModel(
         }
     }
 
-    private fun startLiveSync(agents: List<AgentSummary>, eventLogEpoch: String? = null) {
-        if (!foreground || state.value.phase != AppPhase.Ready) return
+    private fun startLiveSync(
+        agents: List<AgentSummary>,
+        eventLogEpoch: String? = null,
+        generation: Long = liveSyncGeneration,
+    ) {
+        if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) return
         eventLogEpoch?.let { liveEventLogEpoch = it }
         if (globalEventStreamJob?.isActive != true) {
             globalEventStreamJob =
                 viewModelScope.launch(Dispatchers.IO) {
                     runCatching {
-                        while (isActive && foreground) {
+                        while (
+                            isActive &&
+                                isCurrentLiveSync(
+                                    foreground,
+                                    state.value.phase,
+                                    generation,
+                                    liveSyncGeneration,
+                                )
+                        ) {
                             repository.reconnectingRosterHints(
                                 policy = SseReconnectPolicy(maxAttempts = 8),
                             ).forEach {
-                                if (isActive && foreground) scheduleLiveRosterRefresh()
+                                if (
+                                    isActive &&
+                                        isCurrentLiveSync(
+                                            foreground,
+                                            state.value.phase,
+                                            generation,
+                                            liveSyncGeneration,
+                                        )
+                                ) {
+                                    scheduleLiveRosterRefresh()
+                                }
                             }
                             delay(500)
                         }
@@ -496,7 +639,15 @@ internal class HolonViewModel(
                             agentEventCursors.remove(agent.id)
                         }
                         persistedCursor?.let { agentEventCursors[agent.id] = it }
-                        while (isActive && foreground) {
+                        while (
+                            isActive &&
+                                isCurrentLiveSync(
+                                    foreground,
+                                    state.value.phase,
+                                    generation,
+                                    liveSyncGeneration,
+                                )
+                        ) {
                             val currentEpoch = liveEventLogEpoch
                             if (streamEpoch != null && currentEpoch != null && streamEpoch != currentEpoch) {
                                 repository.resetAgentEventCursor(agent.id, currentEpoch)
@@ -510,7 +661,17 @@ internal class HolonViewModel(
                                     afterSeq = persistedCursor,
                                     policy = SseReconnectPolicy(maxAttempts = 8),
                                 )) {
-                                    if (!isActive || !foreground) break
+                                    if (
+                                        !isActive ||
+                                            !isCurrentLiveSync(
+                                                foreground,
+                                                state.value.phase,
+                                                generation,
+                                                liveSyncGeneration,
+                                            )
+                                    ) {
+                                        break
+                                    }
                                     if (
                                         liveEventLogEpoch != null &&
                                             event.eventLogEpoch != liveEventLogEpoch
@@ -577,7 +738,19 @@ internal class HolonViewModel(
         liveRosterRefreshJob = null
     }
 
+    private fun invalidateLiveSync(): Long {
+        liveSyncGeneration += 1
+        stopConversationStream()
+        stopLiveSync()
+        conversationJob?.cancel()
+        conversationJob = null
+        refreshJob?.cancel()
+        refreshJob = null
+        return liveSyncGeneration
+    }
+
     private fun scheduleLiveRosterRefresh() {
+        val generation = liveSyncGeneration
         if (!foreground || state.value.phase != AppPhase.Ready) return
         liveRosterRefreshJob?.cancel()
         liveRosterRefreshJob =
@@ -586,7 +759,9 @@ internal class HolonViewModel(
                 runCatching {
                     withContext(Dispatchers.IO) { repository.refreshSessionAndRoster() }
                 }.onSuccess { (session, roster) ->
-                    if (!foreground || state.value.phase != AppPhase.Ready) return@onSuccess
+                    if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) {
+                        return@onSuccess
+                    }
                     mutableState.update {
                         it.copy(
                             session = session,
@@ -1507,18 +1682,30 @@ internal class HolonViewModel(
 
     fun clearError() = mutableState.update { it.copy(error = null, statusMessage = null) }
 
-    private fun startConversationStream(agent: AgentSummary, after: String?) {
+    private fun startConversationStream(
+        agent: AgentSummary,
+        after: String?,
+        generation: Long = liveSyncGeneration,
+    ) {
         stopConversationStream()
         conversationStreamJob =
             viewModelScope.launch(Dispatchers.IO) {
                 var cursor = after
                 var retryDelay = 1_000L
-                while (isActive && foreground && state.value.selectedAgent?.id == agent.id) {
+                while (
+                    isActive &&
+                        foreground &&
+                        generation == liveSyncGeneration &&
+                        state.value.selectedAgent?.id == agent.id
+                ) {
                     try {
                         if (!state.value.online) {
                             val (session, roster) = repository.refreshSessionAndRoster()
                             withContext(Dispatchers.Main) {
-                                if (state.value.selectedAgent?.id == agent.id) {
+                                if (
+                                    generation == liveSyncGeneration &&
+                                        state.value.selectedAgent?.id == agent.id
+                                ) {
                                     mutableState.update { it.copy(session = session, agents = roster.agents) }
                                 }
                             }
@@ -1542,7 +1729,10 @@ internal class HolonViewModel(
                                     val bundle = repository.conversation(agent)
                                     cursor = bundle.snapshot.snapshotCursor
                                     withContext(Dispatchers.Main) {
-                                        if (state.value.selectedAgent?.id == agent.id) {
+                                        if (
+                                            generation == liveSyncGeneration &&
+                                                state.value.selectedAgent?.id == agent.id
+                                        ) {
                                             mutableState.update {
                                                 val selectedTurnId = it.selectedTurn?.id
                                                 val keepHistory = it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
@@ -1594,13 +1784,27 @@ internal class HolonViewModel(
                     }
                     delay(retryDelay)
                     retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
-                    if (!isActive || !foreground || state.value.selectedAgent?.id != agent.id) break
+                    if (
+                        !isActive ||
+                            !isCurrentLiveSync(
+                                foreground,
+                                state.value.phase,
+                                generation,
+                                liveSyncGeneration,
+                            ) ||
+                            state.value.selectedAgent?.id != agent.id
+                    ) {
+                        break
+                    }
                     try {
                         val (session, roster) = repository.refreshSessionAndRoster()
                         val bundle = repository.conversation(agent)
                         cursor = bundle.snapshot.snapshotCursor
                         withContext(Dispatchers.Main) {
-                            if (state.value.selectedAgent?.id == agent.id) {
+                            if (
+                                generation == liveSyncGeneration &&
+                                    state.value.selectedAgent?.id == agent.id
+                            ) {
                                 mutableState.update {
                                     val keepHistory = it.conversation?.eventLogEpoch == bundle.snapshot.eventLogEpoch &&
                                         it.conversation?.runtimeId == bundle.snapshot.runtimeId

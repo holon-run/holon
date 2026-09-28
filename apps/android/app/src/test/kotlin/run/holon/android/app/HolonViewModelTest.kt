@@ -23,6 +23,14 @@ class HolonViewModelTest {
         )
 
     @Test
+    fun `live sync callbacks are accepted only for the foreground current generation`() {
+        assertTrue(isCurrentLiveSync(true, AppPhase.Ready, 3, 3))
+        assertFalse(isCurrentLiveSync(false, AppPhase.Ready, 3, 3))
+        assertFalse(isCurrentLiveSync(true, AppPhase.SignedOut, 3, 3))
+        assertFalse(isCurrentLiveSync(true, AppPhase.Ready, 2, 3))
+    }
+
+    @Test
     fun `stale workspace browse request cannot update selected workspace`() {
         val oldRequest = WorkspaceBrowseRequest(1, workspace.workspaceId, workspace.executionRootId, "")
         val currentRequest = WorkspaceBrowseRequest(2, workspace.workspaceId, workspace.executionRootId, "apps")

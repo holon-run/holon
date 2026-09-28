@@ -45,6 +45,7 @@ import run.holon.android.sdk.HolonWorkItemSnapshot
 import run.holon.android.sdk.HolonWorkItemPlanArtifact
 import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
+import run.holon.android.sdk.ProfileSessionCredentialStore
 import run.holon.android.sdk.SessionCredentialStore
 
 internal val REQUIRED_CAPABILITIES =
@@ -60,13 +61,14 @@ private const val MAX_ARTIFACT_CACHE_BYTES = 100L * 1024L * 1024L
 private const val READ_BRIEF_BASELINE_AGENT_ID = "__android_brief_baseline_v1__"
 
 internal data class ActiveSession(
+    val networkId: String,
     val baseUrl: String,
     val user: HolonCurrentUser,
     val runtimeId: String,
     val visibilityScopeId: String,
     val server: HolonServerInfo,
 ) {
-    val scopeKey: String = cacheScopeKey(runtimeId, user.userId, visibilityScopeId)
+    val scopeKey: String = "$networkId:${cacheScopeKey(runtimeId, user.userId, visibilityScopeId)}"
 }
 
 @Serializable
@@ -154,13 +156,22 @@ internal class HolonRepository(
         allowInsecureHttp: Boolean,
     ): Pair<ActiveSession, HolonRosterSnapshot> {
         val baseUrl = normalizeAddress(address, allowInsecureHttp)
+        val profile =
+            preferences.profiles().firstOrNull { it.baseUrl == baseUrl }
+                ?: NetworkProfile(
+                    networkId = UUID.randomUUID().toString(),
+                    displayName = displayNameFor(baseUrl),
+                    baseUrl = baseUrl,
+                    allowInsecureHttp = allowInsecureHttp,
+                )
+        val scopedStore = credentialStore(profile.networkId)
         var transientToken: String? = token.concatToString()
         token.fill('\u0000')
         val candidate =
             HolonHttpClient(
                 baseUrl = baseUrl,
                 bearerTokenProvider = BearerTokenProvider { transientToken },
-                sessionCredentialStore = sessionStore,
+                sessionCredentialStore = scopedStore,
                 insecureHttpHosts = insecureHttpHosts(baseUrl),
             )
         return try {
@@ -169,27 +180,54 @@ internal class HolonRepository(
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
             val roster = candidate.rosterSnapshot()
-            val session = ActiveSession(baseUrl, user, roster.runtimeId, roster.visibilityScopeId, server)
+            val session =
+                ActiveSession(
+                    networkId = profile.networkId,
+                    baseUrl = baseUrl,
+                    user = user,
+                    runtimeId = roster.runtimeId,
+                    visibilityScopeId = roster.visibilityScopeId,
+                    server = server,
+                )
             activate(session, candidate, roster)
-            preferences.write(
-                SavedConnection(baseUrl, roster.runtimeId, user.userId, roster.visibilityScopeId),
+            preferences.upsertProfile(
+                profile.copy(
+                    runtimeId = roster.runtimeId,
+                    userId = user.userId,
+                    visibilityScopeId = roster.visibilityScopeId,
+                    lastUsedAt = System.currentTimeMillis(),
+                ),
             )
             session to roster
         } catch (error: Throwable) {
             transientToken = null
-            sessionStore.clear()
+            scopedStore.clear()
             throw error
         }
     }
 
     suspend fun resume(): ResumeResult {
-        val saved = preferences.read()
+        val profile = preferences.selectedProfile()
             ?: run {
                 sessionStore.clear()
                 return ResumeResult.NoSession
             }
-        if (sessionStore.read().isNullOrBlank()) return ResumeResult.NoSession
-        val candidate = clientFor(saved.baseUrl)
+        val runtimeId = profile.runtimeId ?: return ResumeResult.NoSession
+        val userId = profile.userId ?: return ResumeResult.NoSession
+        val visibilityScopeId = profile.visibilityScopeId ?: return ResumeResult.NoSession
+        val saved =
+            SavedConnection(
+                baseUrl = profile.baseUrl,
+                runtimeId = runtimeId,
+                userId = userId,
+                visibilityScopeId = visibilityScopeId,
+                networkId = profile.networkId,
+                displayName = profile.displayName,
+                allowInsecureHttp = profile.allowInsecureHttp,
+            )
+        val scopedStore = credentialStore(profile.networkId)
+        if (scopedStore.read().isNullOrBlank()) return ResumeResult.NoSession
+        val candidate = clientFor(saved.baseUrl, profile.networkId)
         return try {
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
@@ -203,19 +241,20 @@ internal class HolonRepository(
             }
             val session =
                 ActiveSession(
-                    saved.baseUrl,
-                    user,
-                    roster.runtimeId,
-                    roster.visibilityScopeId,
-                    server,
+                    networkId = saved.networkId,
+                    baseUrl = saved.baseUrl,
+                    user = user,
+                    runtimeId = roster.runtimeId,
+                    visibilityScopeId = roster.visibilityScopeId,
+                    server = server,
                 )
             activate(session, candidate, roster)
-            preferences.write(
-                SavedConnection(
-                    saved.baseUrl,
-                    roster.runtimeId,
-                    user.userId,
-                    roster.visibilityScopeId,
+            preferences.upsertProfile(
+                profile.copy(
+                    runtimeId = roster.runtimeId,
+                    userId = user.userId,
+                    visibilityScopeId = roster.visibilityScopeId,
+                    lastUsedAt = System.currentTimeMillis(),
                 ),
             )
             ResumeResult.Ready(session, roster)
@@ -256,6 +295,25 @@ internal class HolonRepository(
 
     suspend fun cachedRoster(): List<AgentProjectionEntity> =
         requireSession().let { dao.conversations(it.scopeKey) }
+
+    suspend fun networkProfiles(): List<NetworkProfile> = preferences.profiles()
+
+    suspend fun switchNetwork(networkId: String): ResumeResult {
+        if (active?.networkId == networkId) return resume()
+        active = null
+        client = null
+        preferences.selectProfile(networkId)
+        return resume()
+    }
+
+    suspend fun deleteNetwork(networkId: String) {
+        credentialStore(networkId).clear()
+        preferences.removeProfile(networkId)
+        if (active?.networkId == networkId) {
+            active = null
+            client = null
+        }
+    }
 
     suspend fun conversation(agent: AgentSummary): ConversationBundle {
         val session = requireSession()
@@ -731,7 +789,7 @@ internal class HolonRepository(
 
     suspend fun logout() {
         runCatching { client?.logout() }
-        clearAuthentication()
+        clearAuthentication(removeProfile = true)
     }
 
     private suspend fun deliver(entry: OutboxEntity): OutboxEntity {
@@ -785,7 +843,6 @@ internal class HolonRepository(
     ) {
         active = session
         client = newClient
-        purgeOtherScopes(session.scopeKey)
         cacheRoster(session.scopeKey, roster)
     }
 
@@ -836,12 +893,21 @@ internal class HolonRepository(
             updatedAt = updatedAt,
         )
 
-    private fun clientFor(baseUrl: String): HolonHttpClient =
+    private fun clientFor(baseUrl: String, networkId: String): HolonHttpClient =
         HolonHttpClient(
             baseUrl = baseUrl,
-            sessionCredentialStore = sessionStore,
+            sessionCredentialStore = credentialStore(networkId),
             insecureHttpHosts = insecureHttpHosts(baseUrl),
         )
+
+    private fun credentialStore(networkId: String): SessionCredentialStore {
+        val profileStore = sessionStore as? ProfileSessionCredentialStore ?: return sessionStore
+        return object : SessionCredentialStore {
+            override fun read(): String? = profileStore.read(networkId)
+            override fun write(credential: String) = profileStore.write(networkId, credential)
+            override fun clear() = profileStore.clear(networkId)
+        }
+    }
 
     private suspend fun offlineResult(
         saved: SavedConnection,
@@ -849,6 +915,7 @@ internal class HolonRepository(
     ): ResumeResult.Offline {
         val session =
             ActiveSession(
+                networkId = saved.networkId,
                 baseUrl = saved.baseUrl,
                 user = HolonCurrentUser(saved.userId, null, "cached"),
                 runtimeId = saved.runtimeId,
@@ -902,9 +969,15 @@ internal class HolonRepository(
         File(context.cacheDir, "shared-artifacts").deleteRecursively()
     }
 
-    private suspend fun clearAuthentication() {
-        sessionStore.clear()
-        preferences.clear()
+    private suspend fun clearAuthentication(removeProfile: Boolean = false) {
+        val current = active
+        if (current != null) {
+            credentialStore(current.networkId).clear()
+            if (removeProfile) preferences.removeProfile(current.networkId)
+        } else {
+            sessionStore.clear()
+            if (removeProfile) preferences.clear()
+        }
         clearLocalState()
         active = null
         client = null
