@@ -841,6 +841,7 @@ pub async fn spawn_server_with_runtime_config(
 }
 
 // HTTP route support modules
+pub mod http_apps;
 pub mod http_callback;
 pub mod http_client;
 pub mod http_control;
