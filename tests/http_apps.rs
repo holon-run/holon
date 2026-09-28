@@ -19,4 +19,6 @@ http_apps_tests!(
     apps_reject_unsupported_asset_type,
     apps_reject_path_traversal,
     apps_reject_symlink_escape,
+    apps_sdk_request_and_events,
+    apps_sdk_event_replay_order,
 );

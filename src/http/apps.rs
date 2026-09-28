@@ -12,6 +12,8 @@ use std::path::{Path as FsPath, PathBuf};
 use axum::http::header::{CONTENT_SECURITY_POLICY, X_CONTENT_TYPE_OPTIONS};
 use tokio::fs;
 
+use crate::http::state::trace_context_from_headers;
+
 use super::*;
 
 const MANIFEST_FILE: &str = "manifest.json";
@@ -32,7 +34,290 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         .route("/{agent_id}", get(list_apps))
         .route("/{agent_id}/{app_id}", get(serve_app_entry))
         .route("/{agent_id}/{app_id}/", get(serve_app_entry))
+        .route("/{agent_id}/{app_id}/context", get(app_context))
+        .route("/{agent_id}/{app_id}/request", post(app_request))
+        .route("/{agent_id}/{app_id}/events", get(app_events))
+        .route("/{agent_id}/{app_id}/holon.js", get(serve_sdk))
         .route("/{agent_id}/{app_id}/{*asset_path}", get(serve_app_asset))
+}
+
+const SDK_VERSION: &str = "1";
+
+#[derive(Debug, Serialize)]
+struct AppContext {
+    sdk_version: &'static str,
+    agent_id: String,
+    app_id: String,
+    session: AppSession,
+}
+
+#[derive(Debug, Serialize)]
+struct AppSession {
+    authenticated: bool,
+    permissions: [&'static str; 2],
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AppRequest {
+    version: String,
+    #[serde(default)]
+    request_id: Option<String>,
+    request_type: String,
+    payload: Value,
+}
+
+#[derive(Debug, Serialize)]
+struct AppResponse {
+    ok: bool,
+    version: &'static str,
+    request_id: String,
+    agent_id: String,
+    app_id: String,
+    status: &'static str,
+    message_id: String,
+}
+
+async fn app_context(
+    Path((agent_id, app_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
+    Ok(Json(AppContext {
+        sdk_version: SDK_VERSION,
+        agent_id,
+        app_id,
+        session: AppSession {
+            authenticated: true,
+            permissions: ["agent.request", "agent.events"],
+        },
+    }))
+}
+
+async fn app_request(
+    Path((agent_id, app_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<AppRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
+    if request.version != SDK_VERSION {
+        return Err(bad_request("unsupported app SDK request version"));
+    }
+    validate_segment("request_type", &request.request_type)?;
+    if request.request_type.is_empty() {
+        return Err(bad_request("request_type must not be empty"));
+    }
+    let request_id = request
+        .request_id
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| crate::ids::message_id());
+    let metadata = json!({
+        "app_id": app_id,
+        "app_request_id": request_id,
+        "app_sdk_version": SDK_VERSION,
+        "app_request_type": request.request_type,
+    });
+    let enqueue = state::enqueue_internal(
+        state,
+        agent_id.clone(),
+        EnqueueRequest {
+            kind: Some(MessageKind::WebhookEvent),
+            priority: Some(Priority::Normal),
+            authority_class: None,
+            body: None,
+            text: None,
+            json: Some(json!({
+                "request_id": request_id,
+                "type": metadata["app_request_type"],
+                "payload": request.payload,
+            })),
+            metadata: Some(metadata),
+            correlation_id: Some(request_id.clone()),
+            causation_id: None,
+            origin: Some(IncomingOrigin::Webhook {
+                source: format!("app:{app_id}"),
+                event_type: Some("app_request".into()),
+            }),
+        },
+        state::EnqueueIngress::Public,
+        trace_context_from_headers(&headers)?,
+    )
+    .await?;
+    Ok(Json(AppResponse {
+        ok: true,
+        version: SDK_VERSION,
+        request_id,
+        agent_id,
+        app_id,
+        status: "accepted",
+        message_id: enqueue.0.message_id.clone(),
+    }))
+}
+
+async fn app_events(
+    Path((agent_id, app_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
+    let mut events = state.host.subscribe_events();
+    let storage = state
+        .host
+        .operator_agent_read_storage(&agent_id)
+        .map_err(agent_access_error)?;
+    let after_seq = headers
+        .get("last-event-id")
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| bad_request("invalid Last-Event-ID"))
+        })
+        .transpose()?;
+    let buffered = if after_seq.is_some() {
+        storage.read_recent_events(256).map_err(error_response)?
+    } else {
+        Vec::new()
+    };
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<std::result::Result<Event, std::convert::Infallible>>(32);
+    let stream_agent_id = agent_id.clone();
+    tokio::spawn(async move {
+        let mut last_sent_seq = after_seq.unwrap_or(0);
+        for event in &buffered {
+            if event.event_seq > last_sent_seq {
+                last_sent_seq = event.event_seq;
+                if let Some(frame) = app_event_frame(event, &stream_agent_id, &app_id) {
+                    if tx.send(Ok(frame)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+        loop {
+            match events.recv().await {
+                Ok(published)
+                    if published.agent_id.as_deref() == Some(stream_agent_id.as_str()) =>
+                {
+                    if published.event.event_seq > last_sent_seq {
+                        last_sent_seq = published.event.event_seq;
+                        if let Some(frame) =
+                            app_event_frame(&published.event, &stream_agent_id, &app_id)
+                        {
+                            if tx.send(Ok(frame)).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_))
+                | Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    Ok((
+        [(
+            HeaderName::from_static("x-holon-app-sdk-version"),
+            SDK_VERSION.to_string(),
+        )],
+        Sse::new(ReceiverStream::new(rx)).keep_alive(
+            KeepAlive::new()
+                .interval(Duration::from_secs(15))
+                .text("heartbeat"),
+        ),
+    ))
+}
+
+fn app_event_frame(
+    event: &crate::types::AuditEvent,
+    agent_id: &str,
+    app_id: &str,
+) -> Option<Event> {
+    if !matches!(
+        event.kind.as_str(),
+        "message_enqueued" | "message_processing_started"
+    ) || event.data["agent_id"].as_str() != Some(agent_id)
+        || event.data["origin"]["kind"].as_str() != Some("webhook")
+        || event.data["origin"]["source"].as_str() != Some(&format!("app:{app_id}"))
+        || event.data["origin"]["event_type"].as_str() != Some("app_request")
+    {
+        return None;
+    }
+    let message_id = event.data["message_id"].as_str()?;
+    let payload = json!({
+        "version": SDK_VERSION,
+        "agent_id": agent_id,
+        "app_id": app_id,
+        "event": {
+            "sequence": event.event_seq,
+            "type": event.kind,
+            "timestamp": event.created_at,
+            "message_id": message_id,
+            "request_id": event.data["correlation_id"],
+        }
+    });
+    Some(
+        Event::default()
+            .id(event.event_seq.to_string())
+            .event("holon_event")
+            .data(payload.to_string()),
+    )
+}
+
+async fn serve_sdk(
+    Path((agent_id, app_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
+    let _manifest = resolve_app(&state, &headers, &agent_id, &app_id).await?;
+    let body = format!(
+        r#"(function () {{
+  "use strict";
+  const version = "{SDK_VERSION}";
+  const base = new URL(".", document.currentScript && document.currentScript.src || location.href);
+  async function json(path, options) {{
+    const response = await fetch(new URL(path, base), Object.assign({{
+      credentials: "same-origin",
+      headers: {{ "content-type": "application/json" }}
+    }}, options || {{}}));
+    let value = null;
+    try {{ value = await response.json(); }} catch (_) {{}}
+    if (!response.ok) {{
+      const error = new Error(value && value.error && value.error.message || "Holon App request failed");
+      error.code = value && value.error && value.error.code || "request_failed";
+      error.status = response.status;
+      throw error;
+    }}
+    return value;
+  }}
+  window.Holon = Object.freeze({{
+    version,
+    context: () => json("context", {{ headers: {{}} }}),
+    request: (requestType, payload, requestId) => json("request", {{
+      method: "POST",
+      body: JSON.stringify({{ version, request_type: requestType, payload, request_id: requestId }})
+    }}),
+    events: (onEvent, onError) => {{
+      const source = new EventSource(new URL("events", base), {{ withCredentials: true }});
+      source.addEventListener("holon_event", event => onEvent(JSON.parse(event.data)));
+      source.onerror = onError || null;
+      return source;
+    }}
+  }});
+}})();"#
+    );
+    Ok((
+        [(CONTENT_TYPE, "application/javascript; charset=utf-8")],
+        body,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -151,7 +436,9 @@ async fn resolve_app(
     validate_segment("app_id", app_id)?;
     let agent_home = state.host.agent_data_dir(agent_id);
     let apps_dir = agent_home.join("apps");
-    canonical_app_root(&agent_home, &apps_dir, app_id).await
+    let app_root = canonical_app_root(&agent_home, &apps_dir, app_id).await?;
+    read_manifest(&app_root, app_id).await?;
+    Ok(app_root)
 }
 
 /// Canonicalize an app directory and prove it stays inside the agent's
