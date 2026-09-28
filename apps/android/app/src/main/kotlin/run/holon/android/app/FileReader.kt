@@ -4,8 +4,19 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.Alignment
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,11 +26,9 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,7 +58,7 @@ internal fun isReadableTextFile(mediaType: String, fileName: String): Boolean =
     mediaType.startsWith("text/") || mediaType in setOf(
         "application/json", "application/javascript", "application/xml", "application/x-yaml",
         "application/x-sh", "application/x-toml", "application/toml", "application/yaml",
-    ) || (mediaType == "application/octet-stream" && codeLanguage(fileName) != null)
+    ) || (mediaType == "application/octet-stream" && (codeLanguage(fileName) != null || fileName.substringAfterLast('.').lowercase() in setOf("md", "markdown", "txt", "log", "csv")))
 
 internal fun codeLanguage(fileName: String): String? =
     when (fileName.substringAfterLast('.', "").lowercase()) {
@@ -125,6 +134,7 @@ internal class IndexedTextFile(private val file: File, private val pageBytes: In
 }
 
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 internal fun FileReaderScreen(
     artifact: PreparedArtifact,
     title: String,
@@ -141,6 +151,7 @@ internal fun FileReaderScreen(
     var renderedMarkdown by remember(artifact.localPath) { mutableStateOf(canRenderMarkdown) }
     var highlighted by remember(artifact.localPath) { mutableStateOf(canHighlight) }
     var wrapLines by remember(artifact.localPath) { mutableStateOf(true) }
+    var optionsOpen by remember(artifact.localPath) { mutableStateOf(false) }
     val listState = rememberLazyListState()
     val index by produceState<Result<IndexedTextFile>?>(null, artifact.localPath) {
         value = withContext(Dispatchers.IO) { runCatching { IndexedTextFile(file) } }
@@ -155,26 +166,26 @@ internal fun FileReaderScreen(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
         verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        item {
-            Column(Modifier.padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                TextButton(onClick = onBack) { Text(ui("‹ 返回$backLabel")) }
-                Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
-                Text(artifact.fileName, style = MaterialTheme.typography.headlineSmall)
-                Text("${readerFileSize(file.length())} · ${artifact.mediaType}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = { saveFile.launch(artifact.fileName) }) { Text(ui("保存")) }
-                    TextButton(onClick = onShare) { Text(ui("分享或打开")) }
+        stickyHeader {
+            Column(Modifier.background(MaterialTheme.colorScheme.background).padding(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, ui("返回上一级")) }
+                    Column(Modifier.weight(1f)) {
+                        Text(artifact.fileName, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text("${readerFileSize(file.length())} · $backLabel", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Box {
+                        IconButton(onClick = { optionsOpen = true }) { Icon(Icons.Default.MoreVert, ui("文件选项")) }
+                        DropdownMenu(expanded = optionsOpen, onDismissRequest = { optionsOpen = false }) {
+                            DropdownMenuItem(text = { Text(ui("保存")) }, onClick = { optionsOpen = false; saveFile.launch(artifact.fileName) })
+                            DropdownMenuItem(text = { Text(ui("分享或打开")) }, onClick = { optionsOpen = false; onShare() })
+                            if (canRenderMarkdown) DropdownMenuItem(text = { Text((if (renderedMarkdown) "✓ " else "") + ui("排版")) }, onClick = { renderedMarkdown = !renderedMarkdown; optionsOpen = false })
+                            if (canHighlight) DropdownMenuItem(text = { Text((if (highlighted) "✓ " else "") + ui("代码高亮")) }, onClick = { highlighted = !highlighted; optionsOpen = false })
+                            DropdownMenuItem(text = { Text((if (wrapLines) "✓ " else "") + ui("自动换行")) }, onClick = { wrapLines = !wrapLines; optionsOpen = false })
+                        }
+                    }
                 }
                 if (isMarkdown || language != null) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (canRenderMarkdown) {
-                            FilterChip(selected = renderedMarkdown, onClick = { renderedMarkdown = !renderedMarkdown }, label = { Text(ui("排版")) })
-                        }
-                        if (canHighlight) {
-                            FilterChip(selected = highlighted, onClick = { highlighted = !highlighted }, label = { Text(ui("代码高亮")) })
-                        }
-                        FilterChip(selected = wrapLines, onClick = { wrapLines = !wrapLines }, label = { Text(ui("自动换行")) })
-                    }
                     if (isMarkdown && !canRenderMarkdown) {
                         Text(ui("文件较大，使用源码模式连续阅读"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     } else if (language != null && !canHighlight) {
@@ -311,7 +322,7 @@ internal object CodeHighlighter {
     }
 }
 
-private fun readerFileSize(bytes: Long): String = when {
+internal fun readerFileSize(bytes: Long): String = when {
     bytes < 1024 -> "$bytes B"
     bytes < 1024L * 1024L -> "%.1f KB".format(bytes / 1024.0)
     else -> "%.1f MB".format(bytes / (1024.0 * 1024.0))

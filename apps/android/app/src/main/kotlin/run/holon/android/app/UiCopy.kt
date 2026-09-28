@@ -53,6 +53,30 @@ internal object UiCopy {
 
     private val english: Map<String, String> =
         """
+        会话|Conversation
+        复制结果|Copy result
+        显示最近过程，更多内容可全屏查看|Showing recent activity. Open full screen for more.
+        扫描连接二维码|Scan connection QR code
+        HTTPS 默认安全；HTTP 需要确认。扫码可填写地址，登录仍需 token。|HTTPS is recommended; HTTP requires confirmation. Scan to fill the address, then enter a token to sign in.
+        当前网络|Current network
+        切换网络|Switch network
+        切换 Agent|Switch Agent
+        关联工作|Related work item
+        此产物暂不支持读取|This artifact cannot be opened in the app yet
+        正在加载结果…|Loading result…
+        结果尚未加载|Result not loaded yet
+        结果加载失败|Could not load result
+        离线，结果未缓存|Offline · result not cached
+        回到最新|Jump to latest
+        全屏查看过程|Open process full screen
+        打开文件|Open file
+        展开编辑|Expand editor
+        收起编辑|Collapse editor
+        编辑消息|Edit message
+        停止本轮？|Stop this turn?
+        已完成的结果会保留，当前执行将被中断。|Completed results will be kept. The current execution will be interrupted.
+        文件选项|File options
+        完成|Done
         Agent 尚未连接可访问的工作区。|This Agent has no accessible workspace yet.
         Agent 的工作计划和验收结果会显示在这里。|The Agent's work plans and results will appear here.
         Assistant 文本|Assistant text
@@ -264,7 +288,7 @@ internal object UiCopy {
         输入|Input
         输出|Output
         返回|Back
-        返回上一级|Go to parent folder
+        返回上一级|Back
         返回上一级继续浏览。|Go to the parent folder to continue browsing.
         返回工作列表|Back to work items
         返回结果|Back to results
