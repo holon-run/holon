@@ -12,6 +12,8 @@ import kotlinx.coroutines.test.runTest
 import run.holon.android.sdk.HolonApiError
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonProtocolException
+import run.holon.android.sdk.HolonCurrentUser
+import run.holon.android.sdk.HolonServerInfo
 import run.holon.android.sdk.HolonWorkspace
 
 class HolonViewModelTest {
@@ -26,10 +28,47 @@ class HolonViewModelTest {
         )
 
     @Test
+    fun `adding a network preserves the current session until a new login succeeds`() {
+        val session =
+            ActiveSession(
+                networkId = "network-a",
+                baseUrl = "https://office.example/api/",
+                user = HolonCurrentUser("user-a", "Alice", "session"),
+                runtimeId = "runtime-a",
+                visibilityScopeId = "scope-a",
+                server = HolonServerInfo("", "local", true, emptySet()),
+            )
+        val profile = NetworkProfile("network-a", "Office", session.baseUrl, false)
+        val current =
+            HolonUiState(
+                phase = AppPhase.Ready,
+                baseUrl = session.baseUrl,
+                session = session,
+                networkProfiles = listOf(profile),
+                mainDestination = MainDestination.Settings,
+            )
+
+        val adding = current.forAddingNetwork()
+        assertEquals(AppPhase.AddingNetwork, adding.phase)
+        assertEquals("", adding.baseUrl)
+        assertEquals(session, adding.session)
+        assertEquals(listOf(profile), adding.networkProfiles)
+
+        val restored = adding.copy(baseUrl = "http://lab.example:7878", token = "temporary").afterCancelAddingNetwork()
+        assertEquals(AppPhase.Ready, restored.phase)
+        assertEquals(session.baseUrl, restored.baseUrl)
+        assertEquals("", restored.token)
+        assertEquals(session, restored.session)
+        assertEquals(listOf(profile), restored.networkProfiles)
+        assertEquals(MainDestination.Settings, restored.mainDestination)
+    }
+
+    @Test
     fun `live sync callbacks are accepted only for the foreground current generation`() {
         assertTrue(isCurrentLiveSync(true, AppPhase.Ready, 3, 3))
         assertFalse(isCurrentLiveSync(false, AppPhase.Ready, 3, 3))
         assertFalse(isCurrentLiveSync(true, AppPhase.SignedOut, 3, 3))
+        assertFalse(isCurrentLiveSync(true, AppPhase.AddingNetwork, 3, 3))
         assertFalse(isCurrentLiveSync(true, AppPhase.Ready, 2, 3))
     }
 

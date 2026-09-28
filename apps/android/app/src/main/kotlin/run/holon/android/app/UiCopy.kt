@@ -113,6 +113,15 @@ internal object UiCopy {
         图片|Image
         图片无法预览，可保存或分享后打开|Cannot preview this image. Save or share it to open elsewhere.
         地址|Address
+        添加网络|Add network
+        添加并切换|Add and switch
+        当前网络|Current network
+        已保存的网络|Saved networks
+        连接另一台 Holon 主机|Connect another Holon host
+        连接成功后切换到新网络，原网络会保留在此设备上。|After connecting, switch to the new network. The current one stays on this device.
+        网络|Networks
+        返回设置|Back to Settings
+        正在连接|Connecting
         复制代码|Copy code
         失败|Failed
         完整计划|Full plan

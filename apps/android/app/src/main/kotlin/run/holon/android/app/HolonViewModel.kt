@@ -48,6 +48,7 @@ internal fun HolonHttpException.isStaleAgentEventCursor(): Boolean =
 internal enum class AppPhase {
     Starting,
     SignedOut,
+    AddingNetwork,
     Ready,
 }
 
@@ -159,6 +160,28 @@ internal data class HolonUiState(
                     it.id.contains(search, ignoreCase = true)
             }
 }
+
+internal fun HolonUiState.forAddingNetwork(): HolonUiState =
+    copy(
+        phase = AppPhase.AddingNetwork,
+        baseUrl = "",
+        token = "",
+        showToken = false,
+        allowInsecureHttp = false,
+        error = null,
+        statusMessage = null,
+    )
+
+internal fun HolonUiState.afterCancelAddingNetwork(): HolonUiState =
+    copy(
+        phase = AppPhase.Ready,
+        baseUrl = session?.baseUrl.orEmpty(),
+        token = "",
+        showToken = false,
+        allowInsecureHttp = networkProfiles.firstOrNull { it.networkId == session?.networkId }?.allowInsecureHttp ?: false,
+        error = null,
+        statusMessage = null,
+    )
 
 internal fun isCurrentLiveSync(
     foreground: Boolean,
@@ -282,6 +305,23 @@ internal class HolonViewModel(
         mutableState.update { it.copy(allowInsecureHttp = value, error = null) }
     fun setSearch(value: String) = mutableState.update { it.copy(search = value) }
 
+    fun beginAddNetwork() {
+        val current = state.value
+        if (current.phase != AppPhase.Ready || current.busy || current.session == null) return
+        invalidateLiveSync()
+        mutableState.update(HolonUiState::forAddingNetwork)
+    }
+
+    fun cancelAddNetwork() {
+        val current = state.value
+        if (current.phase != AppPhase.AddingNetwork || current.busy) return
+        mutableState.update(HolonUiState::afterCancelAddingNetwork)
+        if (foreground) {
+            startLiveSync(state.value.agents)
+            refresh(showProgress = false)
+        }
+    }
+
     fun switchNetwork(networkId: String) {
         val before = state.value
         val profile = before.networkProfiles.firstOrNull { it.networkId == networkId } ?: return
@@ -306,7 +346,7 @@ internal class HolonViewModel(
                     repository.switchNetwork(networkId) to repository.networkProfiles()
                 }
             }.onSuccess { (result, profiles) ->
-                if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) {
+                if (generation != liveSyncGeneration) {
                     return@onSuccess
                 }
                 when (result) {
@@ -319,6 +359,7 @@ internal class HolonViewModel(
                                 networkProfiles = profiles,
                                 baseUrl = profile.baseUrl,
                                 token = "",
+                                allowInsecureHttp = false,
                                 session = null,
                                 statusMessage = null,
                             )
@@ -359,15 +400,22 @@ internal class HolonViewModel(
                                 baseUrl = result.session.baseUrl,
                                 agents = result.cached.map(AgentProjectionEntity::toAgentSummary),
                                 statusMessage = "当前离线，显示上次同步内容",
+                                briefReadStates = emptyMap(),
+                                briefReadStatesLoaded = false,
+                                readBriefIds = emptyMap(),
+                                readBriefsLoaded = false,
                             )
                         }
                     is ResumeResult.Incompatible ->
                         mutableState.update {
                             it.copy(
+                                phase = AppPhase.SignedOut,
                                 busy = false,
                                 switchingNetworkId = null,
                                 networkProfiles = profiles,
                                 baseUrl = result.baseUrl,
+                                allowInsecureHttp = false,
+                                session = null,
                                 error = result.message,
                                 statusMessage = null,
                             )
@@ -464,7 +512,7 @@ internal class HolonViewModel(
 
     fun login() {
         val before = state.value
-        if (before.busy) return
+        if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return
         if (before.token.isBlank()) {
             mutableState.update { it.copy(error = "请输入 token") }
             return
@@ -479,24 +527,19 @@ internal class HolonViewModel(
                     Triple(session, roster, repository.networkProfiles())
                 }
             }.onSuccess { (session, roster, profiles) ->
-                mutableState.update {
-                    it.copy(
+                mutableState.value =
+                    HolonUiState(
                         phase = AppPhase.Ready,
-                        busy = false,
+                        mainDestination =
+                            if (before.phase == AppPhase.AddingNetwork) MainDestination.Settings
+                            else MainDestination.Agents,
                         online = true,
                         lastSyncedAt = System.currentTimeMillis(),
                         session = session,
                         baseUrl = session.baseUrl,
                         networkProfiles = profiles,
-                        token = "",
                         agents = roster.agents,
-                        briefReadStates = emptyMap(),
-                        briefReadStatesLoaded = false,
-                        readBriefIds = emptyMap(),
-                        readBriefsLoaded = false,
-                        statusMessage = null,
                     )
-                }
                 loadBriefReadStates()
                 startLiveSync(roster.agents, roster.eventLogEpoch)
             }.onFailure { error ->
@@ -1619,6 +1662,10 @@ internal class HolonViewModel(
     fun handleSystemBack(): Boolean {
         val current = state.value
         return when {
+            current.phase == AppPhase.AddingNetwork -> {
+                cancelAddNetwork()
+                true
+            }
             current.fileLinkOrigin != null -> {
                 returnFromMessageFile()
                 true
@@ -1675,8 +1722,11 @@ internal class HolonViewModel(
         val nextBaseUrl = if (keepCurrentHost) state.value.baseUrl else defaultBaseUrl()
         mutableState.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
-            withContext(Dispatchers.IO) { repository.logout() }
-            mutableState.value = HolonUiState(phase = AppPhase.SignedOut, baseUrl = nextBaseUrl)
+            val profiles = withContext(Dispatchers.IO) {
+                repository.logout()
+                repository.networkProfiles()
+            }
+            mutableState.value = HolonUiState(phase = AppPhase.SignedOut, baseUrl = nextBaseUrl, networkProfiles = profiles)
         }
     }
 
