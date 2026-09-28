@@ -513,6 +513,7 @@ internal fun AgentConversationRow(
 private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBack: () -> Unit) {
     var showDiagnostics by remember { mutableStateOf(false) }
     var showLanguagePicker by remember { mutableStateOf(false) }
+    var showNetworkPicker by remember { mutableStateOf(false) }
     var pendingSignOut by remember { mutableStateOf<String?>(null) }
     if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
     pendingSignOut?.let { action ->
@@ -558,6 +559,55 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                     SettingsValue(ui("地址"), state.session?.baseUrl.orEmpty())
                     SettingsValue(ui("状态"), if (state.online) ui("已连接") else ui("离线缓存"))
                     state.lastSyncedAt?.let { SettingsValue(ui("上次同步"), syncClock(it)) }
+                }
+            }
+            if (state.networkProfiles.size > 1) {
+                item {
+                    HolonSection(ui("网络")) {
+                        Box {
+                            OutlinedButton(
+                                onClick = { showNetworkPicker = true },
+                                enabled = !state.busy,
+                            ) {
+                                Text(
+                                    state.networkProfiles
+                                        .firstOrNull { it.networkId == state.session?.networkId }
+                                        ?.displayName
+                                        ?: ui("选择网络"),
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showNetworkPicker,
+                                onDismissRequest = { showNetworkPicker = false },
+                            ) {
+                                state.networkProfiles.forEach { profile ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Column {
+                                                Text(profile.displayName)
+                                                Text(
+                                                    profile.baseUrl,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            showNetworkPicker = false
+                                            viewModel.switchNetwork(profile.networkId)
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                        state.switchingNetworkId?.let {
+                            Text(
+                                ui("正在切换网络…"),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
             item {

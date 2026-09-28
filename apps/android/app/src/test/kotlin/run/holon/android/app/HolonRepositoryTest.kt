@@ -2,6 +2,7 @@ package run.holon.android.app
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
 import kotlinx.serialization.json.Json
 import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonJsonDocument
@@ -21,6 +22,51 @@ class HolonRepositoryTest {
         assertEquals(listOf("old", "new"), merged.turns.map { it.id })
         assertEquals(true, merged.hasMore)
         assertEquals("cursor-1", merged.nextBeforeCursor)
+    }
+
+    @Test
+    fun `conversation cache is not merged across runtime epochs`() {
+        val cached =
+            snapshot(
+                """{"runtime_id":"runtime-1","event_log_epoch":"epoch-1","turns":[{"turn_id":"cached","started_at":"2026-09-27T10:00:00Z"}],"pending_inputs":[]}""",
+            )
+        val incoming =
+            snapshot(
+                """{"runtime_id":"runtime-1","event_log_epoch":"epoch-2","turns":[{"turn_id":"incoming","started_at":"2026-09-27T11:00:00Z"}],"pending_inputs":[]}""",
+            )
+
+        val merged = mergeConversationSnapshots(cached, incoming)
+
+        assertEquals(listOf("incoming"), merged.turns.map { it.id })
+        assertNotEquals(cached.eventLogEpoch, merged.eventLogEpoch)
+    }
+
+    @Test
+    fun `network profiles preserve independent identity and connection settings`() {
+        val profiles =
+            listOf(
+                NetworkProfile(
+                    networkId = "network-a",
+                    displayName = "Office",
+                    baseUrl = "https://office.example/api/",
+                    allowInsecureHttp = false,
+                ),
+                NetworkProfile(
+                    networkId = "network-b",
+                    displayName = "Lab",
+                    baseUrl = "http://10.0.2.2:7878/api/",
+                    allowInsecureHttp = true,
+                ),
+            )
+        val serializer =
+            kotlinx.serialization.builtins.ListSerializer(NetworkProfile.serializer())
+        val encoded = Json.encodeToString(serializer, profiles)
+        val decoded = Json.decodeFromString(serializer, encoded)
+
+        assertEquals(profiles, decoded)
+        assertNotEquals(decoded[0].networkId, decoded[1].networkId)
+        assertEquals("https://office.example/api/", decoded[0].baseUrl)
+        assertEquals(true, decoded[1].allowInsecureHttp)
     }
 
     @Test

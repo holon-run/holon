@@ -16,15 +16,37 @@ import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import java.net.URI
+import java.util.UUID
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 private val Context.holonDataStore by preferencesDataStore(name = "holon_connection")
+
+@Serializable
+internal data class NetworkProfile(
+    val networkId: String,
+    val displayName: String,
+    val baseUrl: String,
+    val allowInsecureHttp: Boolean,
+    val runtimeId: String? = null,
+    val userId: String? = null,
+    val visibilityScopeId: String? = null,
+    val createdAt: Long = System.currentTimeMillis(),
+    val lastUsedAt: Long = createdAt,
+)
 
 internal data class SavedConnection(
     val baseUrl: String,
     val runtimeId: String,
     val userId: String,
     val visibilityScopeId: String,
+    val networkId: String = legacyNetworkId(baseUrl),
+    val displayName: String = displayNameFor(baseUrl),
+    val allowInsecureHttp: Boolean =
+        runCatching { URI(baseUrl).scheme.equals("http", ignoreCase = true) }.getOrDefault(false),
 )
 
 internal class HostPreferences(private val context: Context) {
@@ -32,6 +54,9 @@ internal class HostPreferences(private val context: Context) {
     private val runtimeIdKey = stringPreferencesKey("runtime_id")
     private val userIdKey = stringPreferencesKey("user_id")
     private val visibilityScopeIdKey = stringPreferencesKey("visibility_scope_id")
+    private val profilesKey = stringPreferencesKey("network_profiles")
+    private val selectedProfileKey = stringPreferencesKey("selected_network_profile")
+    private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun read(): SavedConnection? {
         val values = context.holonDataStore.data.first()
@@ -54,7 +79,79 @@ internal class HostPreferences(private val context: Context) {
     suspend fun clear() {
         context.holonDataStore.edit { it.clear() }
     }
+
+    suspend fun profiles(): List<NetworkProfile> {
+        val values = context.holonDataStore.data.first()
+        val stored =
+            values[profilesKey]?.let { raw ->
+                runCatching {
+                    json.decodeFromString(ListSerializer(NetworkProfile.serializer()), raw)
+                }.getOrNull()
+            }.orEmpty()
+        if (stored.isNotEmpty()) return stored.sortedByDescending { it.lastUsedAt }
+
+        val legacy = readLegacy(values) ?: return emptyList()
+        val migrated =
+            NetworkProfile(
+                networkId = legacy.networkId,
+                displayName = legacy.displayName,
+                baseUrl = legacy.baseUrl,
+                allowInsecureHttp = legacy.allowInsecureHttp,
+                runtimeId = legacy.runtimeId,
+                userId = legacy.userId,
+                visibilityScopeId = legacy.visibilityScopeId,
+            )
+        saveProfiles(listOf(migrated), migrated.networkId)
+        return listOf(migrated)
+    }
+
+    suspend fun selectedProfile(): NetworkProfile? {
+        val values = context.holonDataStore.data.first()
+        val profiles = profiles()
+        val selectedId = values[selectedProfileKey]
+        return profiles.firstOrNull { it.networkId == selectedId } ?: profiles.firstOrNull()
+    }
+
+    suspend fun upsertProfile(profile: NetworkProfile, select: Boolean = true) {
+        val profiles = profiles().filterNot { it.networkId == profile.networkId } + profile
+        saveProfiles(profiles, if (select) profile.networkId else null)
+    }
+
+    suspend fun selectProfile(networkId: String) {
+        check(profiles().any { it.networkId == networkId }) {
+            "Unknown network profile: $networkId"
+        }
+        saveProfiles(profiles(), networkId)
+    }
+
+    suspend fun removeProfile(networkId: String) {
+        val remaining = profiles().filterNot { it.networkId == networkId }
+        saveProfiles(remaining, remaining.maxByOrNull { it.lastUsedAt }?.networkId)
+    }
+
+    private suspend fun saveProfiles(profiles: List<NetworkProfile>, selectedId: String?) {
+        context.holonDataStore.edit { values ->
+            values[profilesKey] =
+                json.encodeToString(ListSerializer(NetworkProfile.serializer()), profiles)
+            if (selectedId == null) values.remove(selectedProfileKey)
+            else values[selectedProfileKey] = selectedId
+        }
+    }
+
+    private fun readLegacy(values: androidx.datastore.preferences.core.Preferences): SavedConnection? {
+        val baseUrl = values[baseUrlKey] ?: return null
+        val runtimeId = values[runtimeIdKey] ?: return null
+        val userId = values[userIdKey] ?: return null
+        val visibilityScopeId = values[visibilityScopeIdKey] ?: return null
+        return SavedConnection(baseUrl, runtimeId, userId, visibilityScopeId)
+    }
 }
+
+internal fun legacyNetworkId(baseUrl: String): String =
+    UUID.nameUUIDFromBytes(baseUrl.toByteArray()).toString()
+
+internal fun displayNameFor(baseUrl: String): String =
+    runCatching { URI(baseUrl).host ?: baseUrl }.getOrDefault(baseUrl)
 
 @Entity(
     tableName = "runtime_scope",
@@ -261,6 +358,42 @@ internal interface HolonDao {
 
     @Query("DELETE FROM agent_sync_state WHERE scopeKey != :scopeKey")
     suspend fun purgeOtherSyncScopes(scopeKey: String)
+
+    @Transaction
+    suspend fun clearScope(scopeKey: String) {
+        clearConversations(scopeKey)
+        clearDrafts(scopeKey)
+        clearComposerAttachments(scopeKey)
+        clearOutbox(scopeKey)
+        clearBriefs(scopeKey)
+        clearCursors(scopeKey)
+        clearRuntimeScope(scopeKey)
+        clearSyncStates(scopeKey)
+    }
+
+    @Query("DELETE FROM agent_projection WHERE scopeKey = :scopeKey")
+    suspend fun clearConversations(scopeKey: String)
+
+    @Query("DELETE FROM drafts WHERE scopeKey = :scopeKey")
+    suspend fun clearDrafts(scopeKey: String)
+
+    @Query("DELETE FROM composer_attachments WHERE scopeKey = :scopeKey")
+    suspend fun clearComposerAttachments(scopeKey: String)
+
+    @Query("DELETE FROM outbox WHERE scopeKey = :scopeKey")
+    suspend fun clearOutbox(scopeKey: String)
+
+    @Query("DELETE FROM brief_cache WHERE scopeKey = :scopeKey")
+    suspend fun clearBriefs(scopeKey: String)
+
+    @Query("DELETE FROM read_cursors WHERE scopeKey = :scopeKey")
+    suspend fun clearCursors(scopeKey: String)
+
+    @Query("DELETE FROM runtime_scope WHERE scopeId = :scopeKey")
+    suspend fun clearRuntimeScope(scopeKey: String)
+
+    @Query("DELETE FROM agent_sync_state WHERE scopeKey = :scopeKey")
+    suspend fun clearSyncStates(scopeKey: String)
 
     @Query("DELETE FROM runtime_scope")
     suspend fun clearRuntimeScopes()

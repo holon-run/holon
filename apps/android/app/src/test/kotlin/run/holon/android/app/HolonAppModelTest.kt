@@ -35,6 +35,41 @@ class HolonAppModelTest {
     }
 
     @Test
+    fun `legacy profile keeps legacy cache scope and credential migration is profile specific`() {
+        val baseUrl = "https://holon.example/api/"
+        val legacyId = legacyNetworkId(baseUrl)
+        val legacyScope = cacheScopeKey("runtime", "user", "visibility")
+
+        assertEquals(legacyScope, scopeKeyForNetwork(legacyId, baseUrl, "runtime", "user", "visibility"))
+        assertEquals(
+            "new-network:$legacyScope",
+            scopeKeyForNetwork("new-network", baseUrl, "runtime", "user", "visibility"),
+        )
+        assertEquals(
+            true,
+            shouldMigrateLegacyCredential(
+                NetworkProfile(
+                    networkId = legacyId,
+                    displayName = "holon",
+                    baseUrl = baseUrl,
+                    allowInsecureHttp = false,
+                ),
+            ),
+        )
+        assertEquals(
+            false,
+            shouldMigrateLegacyCredential(
+                NetworkProfile(
+                    networkId = "new-network",
+                    displayName = "other",
+                    baseUrl = "https://other.example/api/",
+                    allowInsecureHttp = false,
+                ),
+            ),
+        )
+    }
+
+    @Test
     fun `recent conversations prioritize operator attention before recency`() {
         val ready = agent("ready", "2026-09-24T11:00:00Z")
         val olderAttention =
