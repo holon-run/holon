@@ -1,0 +1,7 @@
+{
+  "id": "agent-workbench",
+  "name": "Agent Workbench",
+  "version": "1.0.0",
+  "entry": "index.html",
+  "description": "A minimal HTML and JavaScript Local App Engine reference application."
+}

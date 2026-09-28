@@ -70,6 +70,24 @@ with built-in file browser, task tracking, and more.
 
 For more: [TUI guide](docs/website/reference/tui.md) · [Web GUI guide](docs/website/guides/use-web-gui.md) · [First agent](docs/website/getting-started/first-agent.md)
 
+## Local App reference
+
+The reference Local App fixture lives in
+`examples/local-app/agent-workbench`. Copy it into an Agent's
+`agent_home/apps/` directory as `agent-workbench`, start Holon, and open:
+
+```text
+/apps/<agent-id>/agent-workbench/
+```
+
+It demonstrates the Local App lifecycle: discovery, static HTML/CSS/JavaScript
+hosting, `Holon.context()`, `Holon.request()`, and `Holon.events`. The
+end-to-end fixture test can be run with:
+
+```bash
+cargo test --test http_apps apps_reference_workbench_end_to_end
+```
+
 ## Install
 
 ```bash

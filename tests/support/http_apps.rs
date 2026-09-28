@@ -37,6 +37,31 @@ fn manifest(id: &str) -> String {
     format!(r#"{{"id":"{id}","name":"{id} app","version":"1.0.0","entry":"index.html"}}"#)
 }
 
+fn write_reference_app(apps_dir: &Path) -> Result<()> {
+    write_app(
+        apps_dir,
+        "agent-workbench",
+        &[
+            (
+                "manifest.json",
+                include_str!("../../examples/local-app/agent-workbench/manifest.json"),
+            ),
+            (
+                "index.html",
+                include_str!("../../examples/local-app/agent-workbench/index.html"),
+            ),
+            (
+                "app.js",
+                include_str!("../../examples/local-app/agent-workbench/app.js"),
+            ),
+            (
+                "styles.css",
+                include_str!("../../examples/local-app/agent-workbench/styles.css"),
+            ),
+        ],
+    )
+}
+
 pub async fn apps_discovery_and_static_hosting() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let agent = host.config().default_agent_id.clone();
@@ -545,6 +570,103 @@ pub async fn apps_sdk_event_replay_order() -> Result<()> {
         .find("req-replay-2")
         .expect("second replayed request should be present");
     assert!(first < second, "replayed events should remain oldest-first");
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn apps_reference_workbench_end_to_end() -> Result<()> {
+    let (host, base, server) = spawn_server().await?;
+    let agent = host.config().default_agent_id.clone();
+    write_reference_app(&agent_apps_dir(&host, &agent))?;
+    let client = Client::new();
+
+    let discovery: serde_json::Value = client
+        .get(format!("{base}/apps/{agent}"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(discovery["apps"][0]["id"], "agent-workbench");
+    assert_eq!(discovery["apps"][0]["entry"], "index.html");
+
+    let entry = client
+        .get(format!("{base}/apps/{agent}/agent-workbench/"))
+        .send()
+        .await?
+        .error_for_status()?;
+    assert_eq!(
+        entry
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("text/html; charset=utf-8")
+    );
+    let entry_body = entry.text().await?;
+    assert!(entry_body.contains("Agent Workbench"));
+    assert!(entry_body.contains("holon.js"));
+
+    let script = client
+        .get(format!("{base}/apps/{agent}/agent-workbench/app.js"))
+        .send()
+        .await?
+        .error_for_status()?
+        .text()
+        .await?;
+    assert!(script.contains("Holon.context()"));
+    assert!(script.contains("Holon.request"));
+    assert!(script.contains("Holon.events"));
+
+    let context: serde_json::Value = client
+        .get(format!("{base}/apps/{agent}/agent-workbench/context"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(context["agent_id"], agent);
+    assert_eq!(context["app_id"], "agent-workbench");
+
+    let event_response = client
+        .get(format!("{base}/apps/{agent}/agent-workbench/events"))
+        .header("Last-Event-ID", "0")
+        .send()
+        .await?
+        .error_for_status()?;
+    let mut event_stream = event_response.bytes_stream();
+
+    let response: serde_json::Value = client
+        .post(format!("{base}/apps/{agent}/agent-workbench/request"))
+        .json(&serde_json::json!({
+            "version": "1",
+            "request_id": "workbench-e2e",
+            "request_type": "message",
+            "payload": {"text": "hello from the reference app"}
+        }))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(response["ok"], true);
+    assert_eq!(response["request_id"], "workbench-e2e");
+    assert_eq!(response["app_id"], "agent-workbench");
+
+    let events = timeout(Duration::from_secs(5), async {
+        let mut body = String::new();
+        while let Some(chunk) = event_stream.next().await {
+            body.push_str(&String::from_utf8_lossy(&chunk?));
+            if body.contains("workbench-e2e") {
+                return Ok::<_, anyhow::Error>(body);
+            }
+        }
+        anyhow::bail!("reference app event stream ended before the request event")
+    })
+    .await??;
+    assert!(events.contains("holon_event"));
+    assert!(events.contains("\"app_id\":\"agent-workbench\""));
+    assert!(events.contains("\"request_id\":\"workbench-e2e\""));
 
     server.abort();
     Ok(())

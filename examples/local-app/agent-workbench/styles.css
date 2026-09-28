@@ -1,0 +1,130 @@
+:root {
+  color-scheme: light;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  color: #172033;
+  background: #f3f6fb;
+}
+
+body {
+  margin: 0;
+}
+
+.shell {
+  width: min(48rem, calc(100% - 2rem));
+  margin: 0 auto;
+  padding: 3rem 0;
+}
+
+.eyebrow {
+  margin: 0;
+  color: #5269a3;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0.35rem 0;
+  font-size: clamp(2rem, 6vw, 3.5rem);
+}
+
+h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+.lede,
+.muted {
+  color: #59657a;
+}
+
+.card {
+  margin-top: 1.25rem;
+  padding: 1.25rem;
+  border: 1px solid #d9e0ee;
+  border-radius: 1rem;
+  background: #fff;
+  box-shadow: 0 0.5rem 1.5rem rgb(44 62 96 / 6%);
+}
+
+.context {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr));
+  gap: 1rem;
+  margin: 0;
+}
+
+.context div {
+  padding: 0.75rem;
+  border-radius: 0.7rem;
+  background: #f3f6fb;
+}
+
+dt {
+  color: #59657a;
+  font-size: 0.8rem;
+}
+
+dd {
+  margin: 0.25rem 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+label {
+  display: block;
+  margin-bottom: 0.4rem;
+  font-weight: 700;
+}
+
+textarea {
+  box-sizing: border-box;
+  width: 100%;
+  resize: vertical;
+  padding: 0.75rem;
+  border: 1px solid #bdc8dc;
+  border-radius: 0.6rem;
+  font: inherit;
+}
+
+button {
+  margin-top: 0.75rem;
+  padding: 0.65rem 1rem;
+  border: 0;
+  border-radius: 0.6rem;
+  color: #fff;
+  background: #5269a3;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 700;
+}
+
+.status {
+  min-height: 1.4rem;
+  margin-bottom: 0;
+}
+
+.status[data-kind="error"] {
+  color: #b42318;
+}
+
+.status[data-kind="ok"] {
+  color: #147a4b;
+}
+
+.result {
+  overflow-x: auto;
+  min-height: 1.4rem;
+  padding: 0.75rem;
+  border-radius: 0.6rem;
+  background: #172033;
+  color: #e8edf8;
+  white-space: pre-wrap;
+}
+
+.events {
+  display: grid;
+  gap: 0.5rem;
+  padding-left: 1.5rem;
+}
