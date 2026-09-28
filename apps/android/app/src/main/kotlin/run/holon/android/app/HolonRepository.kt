@@ -174,8 +174,9 @@ internal class HolonRepository(
                 )
         val scopedStore = credentialStore(profile.networkId)
         val previousCredential = scopedStore.read()
+        val previousActive = active
+        val previousClient = client
         var transientToken: String? = token.concatToString()
-        var exchangedSession = false
         token.fill('\u0000')
         val candidate =
             HolonHttpClient(
@@ -186,7 +187,6 @@ internal class HolonRepository(
             )
         return try {
             candidate.exchangeSession(transientToken.orEmpty())
-            exchangedSession = true
             transientToken = null
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
@@ -212,14 +212,12 @@ internal class HolonRepository(
             session to roster
         } catch (error: Throwable) {
             transientToken = null
-            if (exchangedSession) {
-                if (previousCredential.isNullOrBlank()) {
-                    scopedStore.clear()
-                } else {
-                    scopedStore.write(previousCredential)
-                }
-            } else if (error.isAuthenticationFailure()) {
+            active = previousActive
+            client = previousClient
+            if (previousCredential.isNullOrBlank()) {
                 scopedStore.clear()
+            } else {
+                scopedStore.write(previousCredential)
             }
             throw error
         }

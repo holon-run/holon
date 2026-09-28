@@ -119,6 +119,22 @@ class HolonVisualSnapshotTest {
         }
     }
 
+    @Test
+    fun networkSettingsWithOneProfile() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                NetworkSection(
+                    profiles = listOf(NetworkProfile("office", "Office", "https://office.example/api/", false)),
+                    currentNetworkId = "office",
+                    busy = false,
+                    switchingNetworkId = null,
+                    onSwitch = {},
+                    onAdd = {},
+                )
+            }
+        }
+    }
+
     private fun sampleAgents(): List<AgentSummary> =
         listOf(
             agent(

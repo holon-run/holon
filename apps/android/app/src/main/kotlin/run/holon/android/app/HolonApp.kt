@@ -147,6 +147,7 @@ internal fun HolonApp(viewModel: HolonViewModel) {
         when (state.phase) {
             AppPhase.Starting -> StartingScreen()
             AppPhase.SignedOut -> LoginScreen(state, viewModel)
+            AppPhase.AddingNetwork -> LoginScreen(state, viewModel, addingNetwork = true)
             AppPhase.Ready -> MainShell(state, viewModel)
         }
     }
@@ -167,7 +168,7 @@ private fun StartingScreen() {
 }
 
 @Composable
-private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
+private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel, addingNetwork: Boolean = false) {
     val isInsecureHttp = state.baseUrl.trim().startsWith("http://", ignoreCase = true)
     val context = LocalContext.current
     val scanner = remember(context) { GmsBarcodeScanning.getClient(context) }
@@ -183,8 +184,15 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
             .padding(horizontal = 24.dp),
         verticalArrangement = Arrangement.Center,
     ) {
-        TextButton(onClick = { showLanguagePicker = true }, modifier = Modifier.align(Alignment.End)) {
-            Text(ui("语言"))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            if (addingNetwork) {
+                IconButton(onClick = viewModel::cancelAddNetwork, enabled = !state.busy) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = ui("返回设置"))
+                }
+            } else {
+                Spacer(Modifier.size(48.dp))
+            }
+            TextButton(onClick = { showLanguagePicker = true }) { Text(ui("语言")) }
         }
         Column(
             modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
@@ -193,12 +201,31 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 HolonMark()
                 Column {
-                    Text(ui("连接 Holon"), style = MaterialTheme.typography.headlineLarge)
-                    Text(ui("继续你正在进行的工作"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(ui(if (addingNetwork) "添加网络" else "连接 Holon"), style = MaterialTheme.typography.headlineLarge)
+                    Text(ui(if (addingNetwork) "连接另一台 Holon 主机" else "继续你正在进行的工作"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Spacer(Modifier.height(4.dp))
-            Text(ui("需要一台已运行的 Holon 主机，以及该主机提供的访问令牌。"), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                ui(if (addingNetwork) "连接成功后切换到新网络，原网络会保留在此设备上。" else "需要一台已运行的 Holon 主机，以及该主机提供的访问令牌。"),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (!addingNetwork && state.networkProfiles.size > 1) {
+                Text(ui("已保存的网络"), style = MaterialTheme.typography.titleSmall)
+                state.networkProfiles.forEach { profile ->
+                    OutlinedButton(
+                        onClick = { viewModel.switchNetwork(profile.networkId) },
+                        enabled = !state.busy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                            Text(profile.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(profile.baseUrl, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                }
+            }
             OutlinedTextField(
                 value = state.baseUrl,
                 onValueChange = viewModel::setBaseUrl,
@@ -280,7 +307,7 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     CircularProgressIndicator(Modifier.size(18.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
                     Spacer(Modifier.width(10.dp))
                 }
-                Text(if (state.busy) ui("正在登录") else ui("登录"))
+                Text(if (state.busy) ui(if (addingNetwork) "正在连接" else "正在登录") else ui(if (addingNetwork) "添加并切换" else "登录"))
             }
             Text(
                 ui("HTTPS 默认安全；HTTP 需要逐次确认。浏览器登录和扫码配对将在后续版本提供。"),
@@ -513,7 +540,6 @@ internal fun AgentConversationRow(
 private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBack: () -> Unit) {
     var showDiagnostics by remember { mutableStateOf(false) }
     var showLanguagePicker by remember { mutableStateOf(false) }
-    var showNetworkPicker by remember { mutableStateOf(false) }
     var pendingSignOut by remember { mutableStateOf<String?>(null) }
     if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
     pendingSignOut?.let { action ->
@@ -561,54 +587,15 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                     state.lastSyncedAt?.let { SettingsValue(ui("上次同步"), syncClock(it)) }
                 }
             }
-            if (state.networkProfiles.size > 1) {
-                item {
-                    HolonSection(ui("网络")) {
-                        Box {
-                            OutlinedButton(
-                                onClick = { showNetworkPicker = true },
-                                enabled = !state.busy,
-                            ) {
-                                Text(
-                                    state.networkProfiles
-                                        .firstOrNull { it.networkId == state.session?.networkId }
-                                        ?.displayName
-                                        ?: ui("选择网络"),
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = showNetworkPicker,
-                                onDismissRequest = { showNetworkPicker = false },
-                            ) {
-                                state.networkProfiles.forEach { profile ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Column {
-                                                Text(profile.displayName)
-                                                Text(
-                                                    profile.baseUrl,
-                                                    style = MaterialTheme.typography.labelSmall,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                )
-                                            }
-                                        },
-                                        onClick = {
-                                            showNetworkPicker = false
-                                            viewModel.switchNetwork(profile.networkId)
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                        state.switchingNetworkId?.let {
-                            Text(
-                                ui("正在切换网络…"),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
+            item {
+                NetworkSection(
+                    profiles = state.networkProfiles,
+                    currentNetworkId = state.session?.networkId,
+                    busy = state.busy,
+                    switchingNetworkId = state.switchingNetworkId,
+                    onSwitch = viewModel::switchNetwork,
+                    onAdd = viewModel::beginAddNetwork,
+                )
             }
             item {
                 HolonSection(ui("当前身份")) {
@@ -670,6 +657,59 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                 ) { Text(ui("退出并清除本机数据")) }
             }
             item { Spacer(Modifier.height(16.dp)) }
+        }
+    }
+}
+
+@Composable
+internal fun NetworkSection(
+    profiles: List<NetworkProfile>,
+    currentNetworkId: String?,
+    busy: Boolean,
+    switchingNetworkId: String?,
+    onSwitch: (String) -> Unit,
+    onAdd: () -> Unit,
+) {
+    HolonSection(ui("网络")) {
+        profiles.sortedByDescending { it.networkId == currentNetworkId }.forEach { profile ->
+            val isCurrent = profile.networkId == currentNetworkId
+            Surface(
+                modifier = Modifier.fillMaxWidth().clickable(enabled = !busy && !isCurrent) {
+                    onSwitch(profile.networkId)
+                },
+                shape = RoundedCornerShape(10.dp),
+                border = BorderStroke(1.dp, if (isCurrent) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant),
+                color = MaterialTheme.colorScheme.surface,
+            ) {
+                Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(profile.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            profile.baseUrl,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (isCurrent) {
+                        Spacer(Modifier.width(8.dp))
+                        Icon(Icons.Default.CheckCircle, contentDescription = ui("当前网络"), tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        }
+        OutlinedButton(onClick = onAdd, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.Add, contentDescription = null)
+            Spacer(Modifier.width(8.dp))
+            Text(ui("添加网络"))
+        }
+        switchingNetworkId?.let {
+            Text(
+                ui("正在切换网络…"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }

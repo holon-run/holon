@@ -12,6 +12,10 @@ class UiCopyTest {
         assertEquals("Current work", UiCopy.translate("当前工作", "en"))
         assertEquals("Tool calls", UiCopy.translate("工具调用", "en"))
         assertEquals("Needs attention", UiCopy.translate("需注意", "en"))
+        assertEquals("Networks", UiCopy.translate("网络", "en"))
+        assertEquals("Add network", UiCopy.translate("添加网络", "en"))
+        assertEquals("Add and switch", UiCopy.translate("添加并切换", "en"))
+        assertEquals("Saved networks", UiCopy.translate("已保存的网络", "en"))
     }
 
     @Test
