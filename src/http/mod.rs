@@ -98,6 +98,7 @@ pub(crate) use crate::{
     },
 };
 mod agents;
+mod apps;
 mod auth;
 mod control;
 mod conversation;
@@ -846,9 +847,14 @@ pub fn router(state: AppState) -> Router {
         Arc::new(state.clone()),
         session_auth_middleware,
     ));
+    let app_routes = apps::router().layer(from_fn_with_state(
+        Arc::new(state.clone()),
+        session_auth_middleware,
+    ));
 
     Router::new()
         .nest("/api", api_routes)
+        .nest("/apps", app_routes)
         .fallback(web::web_or_not_found_handler)
         .layer(api_cors_layer(&config.api_cors))
         .layer(CompressionLayer::new())
