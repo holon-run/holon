@@ -44,6 +44,36 @@ actor RecordingProcessLauncher: HolonProcessLaunching {
 }
 
 final class HolonMenuClientTests: XCTestCase {
+    func testTokenlessPairingUsesTrustedUnixControlSocket() async throws {
+        let curlArguments = ["--silent", "--show-error", "--fail", "--unix-socket",
+                             "/tmp/holon.sock", "--request", "POST",
+                             "http://localhost/api/auth/pairing/issue"]
+        let launcher = RecordingProcessLauncher(
+            result: .success(HolonProcessResult(
+                terminationStatus: 0,
+                stdout: Data("""
+                    {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
+                    "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                    "web_url":"http://127.0.0.1:7878","desired_running":true,
+                    "control_connectivity":true,"message":"Running"}
+                    """.utf8),
+                stderr: Data()
+            )),
+            responses: [curlArguments.joined(separator: " "): #"{"ticket":"one-time-code"}"#]
+        )
+        let client = HolonCLIClient(
+            executableURL: URL(fileURLWithPath: "/opt/holon"),
+            launcher: launcher,
+            launchOptions: HolonDaemonLaunchOptions(tokenFilePath: "/tmp/nonexistent-holon-menu-token")
+        )
+
+        let url = try await client.authenticatedWebURL()
+        XCTAssertEqual(url.absoluteString, "http://127.0.0.1:7878/login#pair=one-time-code")
+        let invocations = await launcher.invocations()
+        XCTAssertEqual(invocations.last?.executableURL.path, "/usr/bin/curl")
+        XCTAssertEqual(invocations.last?.arguments, curlArguments)
+    }
+
     private final class ServeURLProtocol: URLProtocol {
         static let lock = NSLock()
         nonisolated(unsafe) static var requests: [(String, String, String?)] = []

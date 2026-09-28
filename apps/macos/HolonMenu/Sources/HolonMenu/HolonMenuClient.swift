@@ -228,8 +228,24 @@ final class HolonCLIClient: HolonDesiredStateClient {
             request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))",
                              forHTTPHeaderField: "Authorization")
         }
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+        let data: Data
+        let statusCode: Int
+        if request.value(forHTTPHeaderField: "Authorization") == nil {
+            // The Unix control listener admits local callers without a control token.
+            let result = try await launcher.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/curl"),
+                arguments: ["--silent", "--show-error", "--fail", "--unix-socket",
+                            status.socketPath, "--request", "POST",
+                            "http://localhost/api/auth/pairing/issue"]
+            )
+            data = result.stdout
+            statusCode = result.terminationStatus == 0 ? 200 : 0
+        } else {
+            let (body, response) = try await networkSession.data(for: request)
+            data = body
+            statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        }
+        guard statusCode == 200 else {
             throw HolonCLIError.pairingFailed(
                 "Unable to issue a pairing code. Check daemon version and local token configuration."
             )

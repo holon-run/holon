@@ -931,6 +931,12 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     spawn_stale_agent_template_remote_source_sync(&config, &host);
     emit_first_run_intro(&config, &runtime).await;
 
+    let tcp_state =
+        AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+            .with_desktop_integration(desktop_integration)
+            .with_advertise_url(advertise_url.clone())
+            .with_web_dist(web_dist.clone());
+
     #[cfg(unix)]
     let unix_server = {
         ensure_socket_parent(&config.socket_path)?;
@@ -940,6 +946,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         println!("Holon control socket on {}", config.socket_path.display());
         let unix_router = http::router(
             AppState::for_unix_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+                .share_listener_state_from(&tcp_state)
                 .with_web_dist(web_dist.clone()),
         );
         tokio::spawn(http::serve_unix(
@@ -953,12 +960,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     // state: one-time pairing tickets are minted over loopback and redeemed from
     // the advertised LAN or Tailscale address, so both sockets must serve the
     // same state instead of a per-listener copy.
-    let tcp_router = http::router(
-        AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-            .with_desktop_integration(desktop_integration)
-            .with_advertise_url(advertise_url.clone())
-            .with_web_dist(web_dist.clone()),
-    );
+    let tcp_router = http::router(tcp_state);
     let listener = TcpListener::bind(&config.http_addr)
         .await
         .with_context(|| format!("failed to bind {}", config.http_addr))?;

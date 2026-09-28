@@ -14,7 +14,7 @@ pub struct TailscaleServeStatus {
     pub message: String,
 }
 
-trait Runner {
+pub(super) trait Runner {
     fn run(&self, args: &[&str]) -> Result<Value>;
     fn command(&self, args: &[&str]) -> Result<()>;
 }
@@ -188,7 +188,15 @@ pub async fn status(
     Ok(Json(status))
 }
 
-fn change(state: &AppState, runner: &impl Runner, enabled: bool) -> Result<TailscaleServeStatus> {
+pub(super) fn change(
+    state: &AppState,
+    runner: &impl Runner,
+    enabled: bool,
+) -> Result<TailscaleServeStatus> {
+    let _guard = state
+        .tailscale_serve_change
+        .lock()
+        .map_err(|_| anyhow!("Tailscale Serve change lock unavailable"))?;
     let config = state.host.config();
     let mut stored = load_persisted_config_at(&config.config_file_path)?;
     let before = inspect(

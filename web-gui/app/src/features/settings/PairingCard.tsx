@@ -4,6 +4,8 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { useCopyText } from "../../components/ClipboardProvider";
+import { resolveRuntimeApiBase } from "../../runtime/client";
 import { getRuntimeConnectionConfig } from "../../runtime/runtime-store";
 import type { RuntimeConnection } from "../../runtime/types";
 
@@ -13,13 +15,21 @@ export function pairingLink(origin: string, ticket: string): string {
   return url.toString();
 }
 
+export function pairingIssueUrl(connection: RuntimeConnection): string {
+  const base = resolveRuntimeApiBase(connection);
+  if (!base) throw new Error("Runtime API base is unavailable");
+  return `${base}/auth/pairing/issue`;
+}
+
 export function PairingCard({ connection }: { connection: RuntimeConnection }) {
   const { t } = useTranslation();
+  const copyText = useCopyText();
   const [pairing, setPairing] = useState<{ link: string; expiresAt: number; qr: string }>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
-  const target = window.location.origin;
+  const target = connection.mode === "remote" && connection.baseUrl
+    ? new URL(connection.baseUrl, window.location.origin).origin : window.location.origin;
 
   useEffect(() => {
     if (!pairing) return;
@@ -34,7 +44,7 @@ export function PairingCard({ connection }: { connection: RuntimeConnection }) {
     setBusy(true);
     try {
       const token = getRuntimeConnectionConfig().token;
-      const response = await fetch("/api/auth/pairing/issue", {
+      const response = await fetch(pairingIssueUrl(connection), {
         method: "POST",
         credentials: "include",
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -75,10 +85,7 @@ export function PairingCard({ connection }: { connection: RuntimeConnection }) {
           <p>{t("settings.pairing.expires", { time: new Date(pairing.expiresAt).toLocaleTimeString() })}</p>
           <input aria-label={t("settings.pairing.link")} readOnly value={pairing.link} onFocus={(event) => event.currentTarget.select()} />
           <Button type="button" variant="secondary" onClick={() => {
-            void navigator.clipboard.writeText(pairing.link).then(
-              () => setCopied(true),
-              () => setError(t("settings.pairing.copyError")),
-            );
+            void copyText(pairing.link).then(setCopied);
           }}>{copied ? t("clipboard.copied") : t("settings.pairing.copy")}</Button>
         </div>
       ) : null}

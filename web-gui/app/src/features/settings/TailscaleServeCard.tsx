@@ -3,10 +3,9 @@ import { useTranslation } from "react-i18next";
 
 import { Button } from "../../components/ui/Button";
 import { Card } from "../../components/ui/Card";
+import { resolveRuntimeApiBase } from "../../runtime/client";
 import { getRuntimeConnectionConfig } from "../../runtime/runtime-store";
 import type { RuntimeConnection } from "../../runtime/types";
-
-const endpoint = "/api/control/network/tailscale/serve";
 
 type ServeStatus = {
   desired_enabled: boolean;
@@ -20,9 +19,15 @@ type ServeStatus = {
   message: string;
 };
 
-function request(path: string, method = "GET", signal?: AbortSignal) {
+export function tailscaleServeUrl(connection: RuntimeConnection, path = ""): string {
+  const base = resolveRuntimeApiBase(connection);
+  if (!base) throw new Error("Runtime API base is unavailable");
+  return `${base}/control/network/tailscale/serve${path}`;
+}
+
+function request(connection: RuntimeConnection, path: string, method = "GET", signal?: AbortSignal) {
   const token = getRuntimeConnectionConfig().token;
-  return fetch(`${endpoint}${path}`, {
+  return fetch(tailscaleServeUrl(connection, path), {
     method,
     credentials: "include",
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -42,7 +47,7 @@ export function TailscaleServeCard({ connection }: { connection: RuntimeConnecti
     setError("");
     if (connection.source !== "http") return;
     const controller = new AbortController();
-    void request("", "GET", controller.signal)
+    void request(connection, "", "GET", controller.signal)
       .then(async (response) => {
         if (!response.ok) throw new Error(t("settings.serve.loadError"));
         const result: ServeStatus = await response.json();
@@ -52,14 +57,14 @@ export function TailscaleServeCard({ connection }: { connection: RuntimeConnecti
         if (!controller.signal.aborted) setError(t("settings.serve.loadError"));
       });
     return () => controller.abort();
-  }, [connection.source, t, reload]);
+  }, [connection, t, reload]);
 
   async function change(action: "enable" | "disable") {
     if (action === "enable" && !window.confirm(t("settings.serve.confirm"))) return;
     setBusy(true);
     setError("");
     try {
-      const response = await request(`/${action}`, "POST");
+      const response = await request(connection, `/${action}`, "POST");
       if (!response.ok) {
         const body: { error?: string } = await response.json().catch(() => ({}));
         throw new Error(body.error || t("settings.serve.actionError"));

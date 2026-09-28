@@ -2527,6 +2527,22 @@ fn persisted_config_round_trips() {
 }
 
 #[test]
+fn tailscale_serve_desired_state_is_available_through_config_schema() {
+    let key = "tailscale_serve_desired_enabled";
+    let mut config = HolonConfigFile::default();
+    assert!(config_schema().iter().any(|entry| entry.key == key));
+    assert_eq!(get_config_key(&config, key).unwrap(), Value::Null);
+    set_config_key(&mut config, key, "true").unwrap();
+    assert_eq!(get_config_key(&config, key).unwrap(), json!(true));
+    assert!(set_config_key(&mut config, key, "unknown").is_err());
+    assert_eq!(get_config_key(&config, key).unwrap(), json!(true));
+    set_config_key(&mut config, key, "false").unwrap();
+    assert_eq!(get_config_key(&config, key).unwrap(), json!(false));
+    unset_config_key(&mut config, key).unwrap();
+    assert_eq!(get_config_key(&config, key).unwrap(), Value::Null);
+}
+
+#[test]
 fn schema_contains_expected_keys() {
     let keys = config_schema()
         .into_iter()

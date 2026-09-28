@@ -216,6 +216,7 @@ pub struct AppState {
     pub host: RuntimeHost,
     pub require_control_token: bool,
     pairing_tickets: Arc<std::sync::Mutex<auth::PairingTickets>>,
+    tailscale_serve_change: Arc<std::sync::Mutex<()>>,
     transport: ControlTransportKind,
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
@@ -355,6 +356,11 @@ pub(crate) const EVENT_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs
 pub(crate) const SESSION_COOKIE_NAME: &str = "holon_session";
 
 impl AppState {
+    pub fn share_listener_state_from(mut self, other: &Self) -> Self {
+        self.pairing_tickets = other.pairing_tickets.clone();
+        self.tailscale_serve_change = other.tailscale_serve_change.clone();
+        self
+    }
     pub fn for_tcp(host: RuntimeHost) -> Self {
         Self::for_tcp_with_runtime_service(host, None)
     }
@@ -379,6 +385,7 @@ impl AppState {
             host,
             require_control_token,
             pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
+            tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
             transport: ControlTransportKind::Tcp,
             runtime_service,
             advertise_url: None,
@@ -417,6 +424,7 @@ impl AppState {
             host,
             require_control_token: false,
             pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
+            tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
             transport: ControlTransportKind::Unix,
             runtime_service,
             advertise_url: None,
@@ -1856,7 +1864,7 @@ mod tests {
     use super::{
         add_retry_after_to_service_unavailable, authenticate_session, error_response,
         if_none_match_satisfied, projection_gate_error_response, router, session_credential,
-        AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
+        tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -1936,6 +1944,105 @@ mod tests {
                 assert!(response.headers().contains_key(header::SET_COOKIE));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn pairing_ticket_exchanges_across_tcp_and_unix_listeners_once() {
+        let (_home, host) = control_token_test_host();
+        let tcp_state = AppState::for_tcp(host.clone());
+        let tcp = router(tcp_state.clone());
+        let unix = router(AppState::for_unix(host).share_listener_state_from(&tcp_state));
+        let issue = unix
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.status(), StatusCode::OK);
+        let body = to_bytes(issue.into_body(), 4096).await.unwrap();
+        let ticket = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for expected in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+            let response = tcp
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/auth/pairing/redeem")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"ticket": ticket}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
+
+    #[test]
+    fn tailscale_changes_serialize_inspection_command_and_save() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct ServeRunner {
+            serving: AtomicBool,
+            active: AtomicUsize,
+            overlap: AtomicBool,
+        }
+
+        impl tailscale_serve::Runner for ServeRunner {
+            fn run(&self, args: &[&str]) -> anyhow::Result<serde_json::Value> {
+                if args == ["status", "--json"] {
+                    return Ok(serde_json::json!({
+                        "BackendState": "Running",
+                        "Self": {"DNSName": "host.example.ts.net."}
+                    }));
+                }
+                let handlers = if self.serving.load(Ordering::SeqCst) {
+                    serde_json::json!({"/": {"Proxy": "http://127.0.0.1:7878"}})
+                } else {
+                    serde_json::json!({})
+                };
+                Ok(serde_json::json!({"Web": {"host.example.ts.net:443": {"Handlers": handlers}}}))
+            }
+
+            fn command(&self, args: &[&str]) -> anyhow::Result<()> {
+                if self.active.fetch_add(1, Ordering::SeqCst) != 0 {
+                    self.overlap.store(true, Ordering::SeqCst);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                self.serving
+                    .store(args.last() != Some(&"off"), Ordering::SeqCst);
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let (_home, host) = control_token_test_host();
+        let state = AppState::for_tcp(host);
+        let runner = ServeRunner {
+            serving: AtomicBool::new(false),
+            active: AtomicUsize::new(0),
+            overlap: AtomicBool::new(false),
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| tailscale_serve::change(&state, &runner, true).unwrap());
+            scope.spawn(|| tailscale_serve::change(&state, &runner, false).unwrap());
+        });
+        assert!(!runner.overlap.load(Ordering::SeqCst));
+        let stored =
+            crate::config::load_persisted_config_at(&state.host.config().config_file_path).unwrap();
+        assert_eq!(
+            stored.tailscale_serve_desired_enabled,
+            Some(runner.serving.load(Ordering::SeqCst))
+        );
     }
 
     #[tokio::test]

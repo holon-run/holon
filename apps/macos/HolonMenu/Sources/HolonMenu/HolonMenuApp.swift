@@ -29,6 +29,7 @@ final class HolonMenuStatusController: NSObject {
         guard statusItem == nil else { return }
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         item.button?.image = HolonMenuIcon.image
+        item.button?.setAccessibilityLabel("Holon")
         item.button?.action = #selector(togglePopover)
         item.button?.target = self
         statusItem = item

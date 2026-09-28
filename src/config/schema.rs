@@ -64,6 +64,13 @@ fn parse_optional_session_ttl(key: &str, raw_value: &str) -> Result<Option<u64>>
 pub fn config_schema() -> Vec<ConfigSchemaEntry> {
     vec![
         ConfigSchemaEntry {
+            key: "tailscale_serve_desired_enabled",
+            kind: "boolean",
+            description: "Desired Tailscale Serve state; changing this setting alone does not change the external Serve rule.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "auth.mode",
             kind: "string",
             description: "Authentication mode. Changes are persisted and require restart.",
@@ -903,6 +910,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
 
 pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
     match key {
+        "tailscale_serve_desired_enabled" => Ok(json!(config.tailscale_serve_desired_enabled)),
         "auth.mode" => Ok(json!(config.auth.mode)),
         "auth.oidc.issuer_url" => Ok(config
             .auth
@@ -1428,6 +1436,11 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
 
 pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) -> Result<()> {
     match key {
+        "tailscale_serve_desired_enabled" => {
+            config.tailscale_serve_desired_enabled = Some(
+                parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
+            );
+        }
         "auth.mode" => {
             config.auth.mode = Some(match raw_value.trim().to_ascii_lowercase().as_str() {
                 "local" => AuthenticationMode::Local,
@@ -1904,6 +1917,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
 
 pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
     match key {
+        "tailscale_serve_desired_enabled" => config.tailscale_serve_desired_enabled = None,
         "auth.mode" => config.auth.mode = None,
         "auth.oidc.issuer_url" => clear_auth_oidc_field(config, |oidc| oidc.issuer_url.clear()),
         "auth.oidc.client_id" => clear_auth_oidc_field(config, |oidc| oidc.client_id.clear()),

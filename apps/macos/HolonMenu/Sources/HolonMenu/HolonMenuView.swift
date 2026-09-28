@@ -166,16 +166,16 @@ struct HolonMenuView: View {
                                 Task { await viewModel.showPairingCode() }
                             }
                         }
-                        Text("Opens an authorized Web session. Android app automatic pairing requires an app update.")
+                        Text("Opens an authorized Web session. The Android app supports automatic QR pairing.")
                             .font(.caption2)
-                        if let error = viewModel.pairingError {
-                            Text(error)
-                                .font(.caption2)
-                                .foregroundStyle(.red)
-                                .textSelection(.enabled)
-                        }
                     }
                 }
+            }
+            if let error = viewModel.pairingError {
+                Text(error)
+                    .font(.caption2)
+                    .foregroundStyle(.red)
+                    .textSelection(.enabled)
             }
 
             HStack(spacing: 8) {
