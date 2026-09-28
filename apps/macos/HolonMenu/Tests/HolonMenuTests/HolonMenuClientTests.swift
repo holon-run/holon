@@ -146,8 +146,11 @@ final class HolonMenuClientTests: XCTestCase {
     }
 
     func testLANUsesClientVisibleAddressWithoutDesktopIntegration() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
         let statusJSON = """
-        {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
+        {"ok":true,"state":"running","healthy":true,"home_dir":"\(home.path)",
         "socket_path":"/tmp/holon.sock","http_addr":"0.0.0.0:7878",
         "web_url":"http://127.0.0.1:7878","desired_running":true,
         "control_connectivity":true,"message":"Running"}
@@ -165,11 +168,24 @@ final class HolonMenuClientTests: XCTestCase {
         )
         let webURL = try await client.webURL()
         XCTAssertEqual(webURL.absoluteString, "http://192.168.1.20:7878")
+        let addressLookup = await launcher.invocations().first {
+            $0.arguments.first == "getifaddr"
+        }
+        XCTAssertEqual(addressLookup?.executableURL.path, "/usr/sbin/ipconfig")
+        XCTAssertEqual(addressLookup?.arguments, ["getifaddr", "en0"])
         _ = try await client.restart()
         var invocations = await launcher.invocations()
+        let tokenPath = home.appendingPathComponent("menu-control.token").path
+        let token = try String(contentsOfFile: tokenPath, encoding: .utf8)
+        XCTAssertEqual(token.count, 64)
+        XCTAssertEqual(
+            try FileManager.default.attributesOfItem(atPath: tokenPath)[.posixPermissions] as? Int,
+            0o600
+        )
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878", "--desktop-integration=false"]
+            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878",
+             "--token-file", tokenPath, "--desktop-integration=false"]
         )
         _ = try await client.disableLAN()
         invocations = await launcher.invocations()
@@ -181,8 +197,42 @@ final class HolonMenuClientTests: XCTestCase {
         invocations = await launcher.invocations()
         XCTAssertEqual(
             invocations.last?.arguments,
-            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878", "--desktop-integration=false"]
+            ["daemon", "restart", "--access", "lan", "--host", "192.168.1.20", "--port", "7878",
+             "--token-file", tokenPath, "--desktop-integration=false"]
         )
+        XCTAssertEqual(try String(contentsOfFile: tokenPath, encoding: .utf8), token)
+    }
+
+    func testLANRejectsInsecureTokenFileBeforeRestart() async throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let tokenPath = home.appendingPathComponent("menu-control.token").path
+        XCTAssertTrue(FileManager.default.createFile(
+            atPath: tokenPath, contents: Data("secret".utf8),
+            attributes: [.posixPermissions: 0o644]
+        ))
+        let statusJSON = """
+        {"ok":true,"state":"running","healthy":true,"home_dir":"\(home.path)",
+        "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+        "desired_running":true,"control_connectivity":true,"message":"Running"}
+        """
+        let launcher = RecordingProcessLauncher(
+            result: .success(HolonProcessResult(
+                terminationStatus: 0, stdout: Data(statusJSON.utf8), stderr: Data()
+            )),
+            address: "192.168.1.20\n"
+        )
+        let client = HolonCLIClient(executableURL: URL(fileURLWithPath: "/opt/holon"), launcher: launcher)
+        do {
+            _ = try await client.enableLAN()
+            XCTFail("Expected insecure token file to be rejected")
+        } catch let error as HolonCLIError {
+            XCTAssertEqual(error.localizedDescription,
+                           "The LAN token file must be a nonempty, owner-only regular file: \(tokenPath)")
+        }
+        let invocations = await launcher.invocations()
+        XCTAssertFalse(invocations.contains { $0.arguments.starts(with: ["daemon", "restart"]) })
     }
 
     func testDisableServeOnlyRemovesHolonRootRule() async throws {

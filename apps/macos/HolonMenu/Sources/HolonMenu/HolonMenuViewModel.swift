@@ -18,7 +18,9 @@ final class HolonMenuViewModel: ObservableObject {
     @Published private(set) var isPolling = false
     @Published private(set) var activeOperation: String?
     @Published private(set) var tailscaleStatus: HolonTailscaleStatus?
+    @Published private(set) var tailscaleError: String?
     @Published private(set) var lanURL: URL?
+    @Published private(set) var lanError: String?
     @Published var showTailscaleServeConfirmation = false
     @Published var showLANConfirmation = false
     @Published var launchAtLoginEnabled = false
@@ -87,6 +89,7 @@ final class HolonMenuViewModel: ObservableObject {
 
     func enableLAN() async {
         showLANConfirmation = false
+        lanError = nil
         activeOperation = "Enabling LAN access…"
         defer { activeOperation = nil }
         do {
@@ -94,11 +97,12 @@ final class HolonMenuViewModel: ObservableObject {
             status = try await client.status()
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            lanError = error.localizedDescription
         }
     }
 
     func disableLAN() async {
+        lanError = nil
         activeOperation = "Disabling LAN access…"
         defer { activeOperation = nil }
         do {
@@ -106,30 +110,32 @@ final class HolonMenuViewModel: ObservableObject {
             lanURL = nil
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            lanError = error.localizedDescription
         }
     }
 
     func enableTailscaleServe() async {
         showTailscaleServeConfirmation = false
+        tailscaleError = nil
         activeOperation = "Updating Tailscale…"
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.enableTailscaleServe()
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            tailscaleError = error.localizedDescription
         }
     }
 
     func disableTailscaleServe() async {
+        tailscaleError = nil
         activeOperation = "Updating Tailscale…"
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.disableTailscaleServe()
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            tailscaleError = error.localizedDescription
         }
     }
 

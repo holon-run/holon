@@ -1,5 +1,7 @@
 import Foundation
 import ServiceManagement
+import Security
+import Darwin
 
 enum HolonCLIError: LocalizedError {
     case missingHolonBinary
@@ -7,6 +9,7 @@ enum HolonCLIError: LocalizedError {
     case processFailed(command: [String], terminationStatus: Int32, stderr: String)
     case invalidJSON(String)
     case invalidWebAddress(String)
+    case invalidLANTokenFile(String)
     case loginItem(Error)
     case commandLineToolConflict(String)
     case tailscaleServeConflict(String)
@@ -27,6 +30,8 @@ enum HolonCLIError: LocalizedError {
             return "holon returned invalid JSON: \(output)"
         case let .invalidWebAddress(address):
             return "holon returned an invalid web address: \(address)"
+        case let .invalidLANTokenFile(path):
+            return "The LAN token file must be a nonempty, owner-only regular file: \(path)"
         case let .loginItem(error):
             return "Failed to update the login item: \(error.localizedDescription)"
         case let .commandLineToolConflict(path):
@@ -172,6 +177,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
             options.host = try await localNetworkHost()
             options.listen = nil
             options.port = port(from: currentStatus.httpAddr)
+            try configureLANToken(&options, homeDir: currentStatus.homeDir)
         }
         return options
     }
@@ -381,6 +387,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
         options.listen = nil
         options.port = port
         options.advertise = nil
+        try configureLANToken(&options, homeDir: currentStatus.homeDir)
         _ = try await run(
             ["daemon", "restart"] + options.arguments(),
             as: HolonDaemonStatus.self
@@ -389,6 +396,42 @@ final class HolonCLIClient: HolonDesiredStateClient {
             throw HolonCLIError.invalidWebAddress("\(host):\(port)")
         }
         return url
+    }
+
+    private func configureLANToken(_ options: inout HolonDaemonLaunchOptions, homeDir: String) throws {
+        guard options.token == nil, options.tokenFilePath == nil else { return }
+        let path = URL(fileURLWithPath: homeDir, isDirectory: true)
+            .appendingPathComponent("menu-control.token").path
+        let fd = Darwin.open(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode_t(0o600))
+        if fd >= 0 {
+            defer { Darwin.close(fd) }
+            do {
+                var bytes = [UInt8](repeating: 0, count: 32)
+                guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+                    throw HolonCLIError.invalidLANTokenFile(path)
+                }
+                let token = bytes.map { String(format: "%02x", $0) }.joined()
+                try FileHandle(fileDescriptor: fd, closeOnDealloc: false)
+                    .write(contentsOf: Data(token.utf8))
+            } catch {
+                Darwin.unlink(path)
+                throw error
+            }
+        } else if errno != EEXIST {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              info.st_uid == getuid(),
+              (info.st_mode & 0o400) != 0,
+              (info.st_mode & 0o077) == 0,
+              let token = try? String(contentsOfFile: path, encoding: .utf8),
+              !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw HolonCLIError.invalidLANTokenFile(path)
+        }
+        options.tokenFilePath = path
     }
 
     func disableLAN() async throws -> HolonDaemonStatus {
@@ -408,7 +451,7 @@ final class HolonCLIClient: HolonDesiredStateClient {
     private func localNetworkHost() async throws -> String {
         for interface in ["en0", "en1"] {
             let result = try? await launcher.run(
-                executableURL: URL(fileURLWithPath: "/sbin/ipconfig"),
+                executableURL: URL(fileURLWithPath: "/usr/sbin/ipconfig"),
                 arguments: ["getifaddr", interface]
             )
             if let host = result

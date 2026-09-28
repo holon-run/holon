@@ -23,6 +23,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
     private var currentStatus: HolonDaemonStatus
     private var launchAtLoginEnabledValue: Bool
     private var tailscaleStatusValue: HolonTailscaleStatus
+    private var enableLANError: Error?
+    private var enableTailscaleServeError: Error?
 
     init(
         currentStatus: HolonDaemonStatus = HolonDaemonStatus(
@@ -45,6 +47,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
             message: "Holon runtime is stopped."
         ),
         launchAtLoginEnabled: Bool = false,
+        enableLANError: Error? = nil,
+        enableTailscaleServeError: Error? = nil,
         tailscaleStatus: HolonTailscaleStatus = HolonTailscaleStatus(
             state: .connected,
             hostname: "holon.example.ts.net",
@@ -55,6 +59,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
         self.currentStatus = currentStatus
         self.launchAtLoginEnabledValue = launchAtLoginEnabled
         self.tailscaleStatusValue = tailscaleStatus
+        self.enableLANError = enableLANError
+        self.enableTailscaleServeError = enableTailscaleServeError
     }
 
     func status() async throws -> HolonDaemonStatus {
@@ -127,6 +133,9 @@ actor FakeHolonClient: HolonDesiredStateClient {
 
     func enableTailscaleServe() async throws -> HolonTailscaleStatus {
         commands.append(.enableTailscaleServe)
+        if let enableTailscaleServeError {
+            throw enableTailscaleServeError
+        }
         tailscaleStatusValue = HolonTailscaleStatus(
             state: .serving,
             hostname: tailscaleStatusValue.hostname,
@@ -156,6 +165,9 @@ actor FakeHolonClient: HolonDesiredStateClient {
 
     func enableLAN() async throws -> URL {
         commands.append(.enableLAN)
+        if let enableLANError {
+            throw enableLANError
+        }
         currentStatus.httpAddr = "0.0.0.0:7878"
         currentStatus.webUrl = "http://127.0.0.1:7878"
         return URL(string: "http://192.168.1.20:7878")!

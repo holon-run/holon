@@ -45,10 +45,35 @@ struct HolonMenuView: View {
                         Text("Explicitly expose Holon on this Mac's local network.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                        Button("Enable LAN access…") {
-                            viewModel.requestLANAccess()
+                        if viewModel.showLANConfirmation {
+                            Text("Holon will listen on the local network and require a control token. If none is configured, the app creates a private menu-control.token file in the Holon home directory. Devices on the same network may be able to reach this service.")
+                                .font(.caption)
+                            HStack {
+                                Button("Enable") {
+                                    Task { await viewModel.enableLAN() }
+                                }
+                                .disabled(viewModel.isOperating)
+                                Button("Cancel") {
+                                    viewModel.showLANConfirmation = false
+                                }
+                            }
+                        } else {
+                            Button("Enable LAN access…") {
+                                viewModel.requestLANAccess()
+                            }
+                            .disabled(viewModel.isOperating)
                         }
-                        .disabled(viewModel.isOperating)
+                    }
+                    if let error = viewModel.lanError {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        Button("Copy LAN error") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(error, forType: .string)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -70,11 +95,37 @@ struct HolonMenuView: View {
                         Button("Disable Serve") {
                             Task { await viewModel.disableTailscaleServe() }
                         }
-                    } else {
-                        Button("Enable Serve…") {
-                            viewModel.requestTailscaleServe()
-                        }
                         .disabled(viewModel.isOperating)
+                    } else {
+                        if viewModel.showTailscaleServeConfirmation {
+                            Text("Holon will ask Tailscale to expose its local web service over your tailnet. This changes network reachability and can be disabled from this menu.")
+                                .font(.caption)
+                            HStack {
+                                Button("Enable") {
+                                    Task { await viewModel.enableTailscaleServe() }
+                                }
+                                .disabled(viewModel.isOperating)
+                                Button("Cancel") {
+                                    viewModel.showTailscaleServeConfirmation = false
+                                }
+                            }
+                        } else {
+                            Button("Enable Serve…") {
+                                viewModel.requestTailscaleServe()
+                            }
+                            .disabled(viewModel.isOperating)
+                        }
+                    }
+                    if let error = viewModel.tailscaleError {
+                        Text(error)
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                        Button("Copy Tailscale error") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(error, forType: .string)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -157,21 +208,5 @@ struct HolonMenuView: View {
         }
         .padding(12)
         .frame(width: 320)
-        .alert("Enable Tailscale Serve?", isPresented: $viewModel.showTailscaleServeConfirmation) {
-            Button("Enable") {
-                Task { await viewModel.enableTailscaleServe() }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Holon will ask Tailscale to expose its local web service over your tailnet. This changes network reachability and can be disabled from this menu.")
-        }
-        .alert("Enable LAN access?", isPresented: $viewModel.showLANConfirmation) {
-            Button("Enable") {
-                Task { await viewModel.enableLAN() }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Holon will listen on the local network and require its configured control token. Devices on the same network may be able to reach this service.")
-        }
     }
 }

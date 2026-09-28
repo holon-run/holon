@@ -11,6 +11,49 @@ final class HolonMenuViewModelTests: XCTestCase {
         viewModel.stopPolling()
     }
 
+    func testLANFailureRemainsVisibleAfterPollingRefresh() async {
+        let client = FakeHolonClient(
+            enableLANError: NSError(
+                domain: "LAN test",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "LAN restart failed"]
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+
+        viewModel.requestLANAccess()
+        XCTAssertTrue(viewModel.showLANConfirmation)
+        await viewModel.enableLAN()
+        await viewModel.refresh()
+
+        XCTAssertFalse(viewModel.showLANConfirmation)
+        XCTAssertEqual(viewModel.lanError, "LAN restart failed")
+        XCTAssertNil(viewModel.lanURL)
+        viewModel.stopPolling()
+    }
+
+    func testTailscaleFailureRemainsVisibleAfterPollingRefresh() async {
+        let client = FakeHolonClient(
+            enableTailscaleServeError: HolonCLIError.tailscaleServeConflict(
+                "Tailscale Serve already exposes another service at /; leave its configuration unchanged."
+            )
+        )
+        let viewModel = HolonMenuViewModel(client: client)
+
+        viewModel.requestTailscaleServe()
+        XCTAssertTrue(viewModel.showTailscaleServeConfirmation)
+        await viewModel.enableTailscaleServe()
+        await viewModel.refresh()
+
+        XCTAssertFalse(viewModel.showTailscaleServeConfirmation)
+        XCTAssertEqual(
+            viewModel.tailscaleError,
+            "Tailscale Serve already exposes another service at /; leave its configuration unchanged."
+        )
+        XCTAssertEqual(viewModel.tailscaleStatus?.state, .connected)
+        viewModel.stopPolling()
+    }
+
     func testBootstrapReplacesIncompatibleDesiredRuntime() async {
         let client = FakeHolonClient(
             currentStatus: HolonDaemonStatus(
