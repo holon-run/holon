@@ -13,6 +13,7 @@ enum HolonCLIError: LocalizedError {
     case loginItem(Error)
     case commandLineToolConflict(String)
     case tailscaleServeConflict(String)
+    case pairingFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -37,6 +38,8 @@ enum HolonCLIError: LocalizedError {
         case let .commandLineToolConflict(path):
             return "A different holon command already exists at \(path). It was not replaced."
         case let .tailscaleServeConflict(reason):
+            return reason
+        case let .pairingFailed(reason):
             return reason
         }
     }
@@ -192,6 +195,51 @@ final class HolonCLIClient: HolonDesiredStateClient {
         }
         guard let url = status.webURL else {
             throw HolonCLIError.invalidWebAddress(status.httpAddr)
+        }
+        return url
+    }
+
+    func authenticatedWebURL() async throws -> URL {
+        let current = try await status()
+        let local = URL(string: "http://127.0.0.1:\(port(from: current.httpAddr))")!
+        return try await pairingURL(for: local, status: current)
+    }
+
+    func pairingURL(for destination: URL) async throws -> URL {
+        try await pairingURL(for: destination, status: try await status())
+    }
+
+    private func pairingURL(for destination: URL, status: HolonDaemonStatus) async throws -> URL {
+        guard status.healthy, status.state == .running || status.state == .degraded else {
+            throw HolonCLIError.pairingFailed("Start the Holon daemon before pairing.")
+        }
+        let local = URL(string: "http://127.0.0.1:\(port(from: status.httpAddr))")!
+        var request = URLRequest(url: local.appendingPathComponent("api/auth/pairing/issue"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        // The long-lived token only travels over the loopback request, not in the QR.
+        let tokenPath = launchOptions.tokenFilePath ?? URL(fileURLWithPath: status.homeDir)
+            .appendingPathComponent("menu-control.token").path
+        let token = launchOptions.token ?? (try? String(contentsOfFile: tokenPath, encoding: .utf8))
+        if let token, !token.isEmpty {
+            request.setValue("Bearer \(token.trimmingCharacters(in: .whitespacesAndNewlines))",
+                             forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else {
+            throw HolonCLIError.pairingFailed(
+                "Unable to issue a pairing code. Check daemon version and local token configuration."
+            )
+        }
+        struct Ticket: Decodable { let ticket: String }
+        let ticket = try JSONDecoder().decode(Ticket.self, from: data).ticket
+        guard !ticket.isEmpty else { throw HolonCLIError.pairingFailed("Empty pairing code.") }
+        var components = URLComponents(url: destination, resolvingAgainstBaseURL: false)
+        components?.path = "/login"
+        components?.query = nil
+        components?.fragment = "pair=\(ticket)"
+        guard let url = components?.url else {
+            throw HolonCLIError.invalidWebAddress(destination.absoluteString)
         }
         return url
     }

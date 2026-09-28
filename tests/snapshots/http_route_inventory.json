@@ -1580,6 +1580,50 @@
   },
   {
     "method": "post",
+    "path": "/api/auth/pairing/issue",
+    "handler": "issue_pairing_ticket",
+    "operation_id": "pairingIssue",
+    "tag": "auth",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/auth/pairing/redeem",
+    "handler": "redeem_pairing_ticket",
+    "operation_id": "pairingRedeem",
+    "tag": "auth",
+    "parameters": [],
+    "request_schema": "PairingRedeemRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": []
+  },
+  {
+    "method": "post",
+    "path": "/api/auth/pairing/redeem/native",
+    "handler": "redeem_pairing_ticket_native",
+    "operation_id": "pairingRedeemNative",
+    "tag": "auth",
+    "parameters": [],
+    "request_schema": "PairingRedeemRequest",
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": []
+  },
+  {
+    "method": "post",
     "path": "/api/auth/session/exchange/native",
     "handler": "exchange_session_native",
     "operation_id": "sessionExchangeNative",

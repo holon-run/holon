@@ -231,6 +231,8 @@ protocol HolonDesiredStateClient: Sendable {
     func stop() async throws -> HolonDaemonStatus
     func restart() async throws -> HolonDaemonStatus
     func webURL() async throws -> URL
+    func authenticatedWebURL() async throws -> URL
+    func pairingURL(for destination: URL) async throws -> URL
     func logsURL() async throws -> URL
     func launchAtLoginEnabled() async throws -> Bool
     func setLaunchAtLoginEnabled(_ enabled: Bool) async throws

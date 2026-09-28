@@ -16,11 +16,12 @@ use crate::{
         ConversationSummaryResponse, CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest,
         DesktopCapabilities, EnqueueResponse, HandshakeResponse, HttpErrorEnvelope,
         MarkBriefReadRequest, MemoryGetRequest, ModelConfigMigrationRequest, NativeSessionResponse,
-        PickWorkItemRequest, PickWorkItemResponse, ResolveFileReferencesRequest,
-        ResolveFileReferencesResponse, RevealFileRequest, RuntimeConfigReadResponse,
-        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, RuntimeDecisionTestRequest,
-        RuntimeDecisionTestResponse, SearchRequest, SearchResponse, SessionExchangeRequest,
-        SessionResponse, UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
+        PairingIssueResponse, PairingRedeemRequest, PickWorkItemRequest, PickWorkItemResponse,
+        ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
+        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+        RuntimeDecisionTestRequest, RuntimeDecisionTestResponse, SearchRequest, SearchResponse,
+        SessionExchangeRequest, SessionResponse, UpdateWorkItemRequest,
+        CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -193,6 +194,9 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/auth/method", "authMethod", "auth", "Authentication method", "Return the configured authentication mode used by the Web login page.", None, AuthKind::None),
     route_with_response("post", "/auth/session/exchange", "sessionExchange", "auth", "Exchange session credential", "Exchange a static or bootstrap credential for a revocable session credential and browser session cookie.", Some("SessionExchangeRequest"), "SessionResponse", AuthKind::None),
     route_with_response("post", "/auth/session/exchange/native", "sessionExchangeNative", "auth", "Exchange native session credential", "Exchange a static or bootstrap credential for a revocable session credential and native session response.", Some("SessionExchangeRequest"), "NativeSessionResponse", AuthKind::None),
+    route_with_response("post", "/auth/pairing/issue", "pairingIssue", "auth", "Issue pairing ticket", "Issue a short-lived, single-use local pairing ticket. Requires an explicit control token or session.", None, "PairingIssueResponse", AuthKind::Control),
+    route_with_response("post", "/auth/pairing/redeem", "pairingRedeem", "auth", "Redeem pairing ticket", "Exchange a one-time pairing ticket for a browser session cookie.", Some("PairingRedeemRequest"), "SessionResponse", AuthKind::None),
+    route_with_response("post", "/auth/pairing/redeem/native", "pairingRedeemNative", "auth", "Redeem native pairing ticket", "Exchange a one-time pairing ticket for a native session credential.", Some("PairingRedeemRequest"), "NativeSessionResponse", AuthKind::None),
     route_with_response("get", "/auth/session/me", "sessionMe", "auth", "Current session user", "Return the identity behind the current session: the authenticated OIDC user, or the stable local control identity for static-token deployments.", None, "CurrentUserResponse", AuthKind::None),
     route("post", "/control/runtime/shutdown", "runtimeShutdown", "runtime", "Runtime shutdown", "Request graceful runtime shutdown.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/debug-prompt", "debugPrompt", "control", "Debug prompt", "Render a diagnostic prompt preview.", Some("DebugPromptRequest"), AuthKind::Control),
@@ -765,6 +769,14 @@ fn component_schemas() -> Value {
     schemas.insert(
         "NativeSessionResponse".into(),
         component_schema_with_refs::<NativeSessionResponse>(),
+    );
+    schemas.insert(
+        "PairingIssueResponse".into(),
+        component_schema_with_refs::<PairingIssueResponse>(),
+    );
+    schemas.insert(
+        "PairingRedeemRequest".into(),
+        component_schema_with_refs::<PairingRedeemRequest>(),
     );
     schemas.insert(
         "ControlPromptRequest".into(),

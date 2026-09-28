@@ -134,12 +134,29 @@ struct HolonMenuView: View {
             if let connectionURL = viewModel.connectionURL {
                 GroupBox("Connect from phone") {
                     VStack(alignment: .leading, spacing: 6) {
-                        HolonQRCodeView(payload: connectionURL.absoluteString)
-                            .frame(maxWidth: .infinity)
-                        Text(connectionURL.absoluteString)
+                        Text(connectionURL.scheme == "https"
+                             ? "Pair over Tailscale HTTPS when possible."
+                             : "Plain HTTP LAN pairing can be observed or redeemed first by someone on the same network. Prefer Tailscale HTTPS.")
+                            .font(.caption)
+                        if let pairingURL = viewModel.pairingURL {
+                            HolonQRCodeView(payload: pairingURL.absoluteString)
+                                .frame(maxWidth: .infinity)
+                            Text("One-time pairing code; expires after 2 minutes. Keep this QR private.")
+                                .font(.caption2)
+                            Button("Hide pairing code") { viewModel.hidePairingCode() }
+                        } else {
+                            Button("Show one-time pairing QR…") {
+                                Task { await viewModel.showPairingCode() }
+                            }
+                        }
+                        Text("Opens an authorized Web session. Android app automatic pairing requires an app update.")
                             .font(.caption2)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .center)
+                        if let error = viewModel.pairingError {
+                            Text(error)
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                                .textSelection(.enabled)
+                        }
                     }
                 }
             }

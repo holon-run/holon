@@ -3,6 +3,29 @@ import XCTest
 
 @MainActor
 final class HolonMenuViewModelTests: XCTestCase {
+    func testOpenWebRequestsAnAuthenticatedLocalURL() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.openWeb()
+        let commands = await client.recordedCommands()
+        XCTAssertEqual(commands, [.authenticatedWebURL])
+    }
+
+    func testPairingQRIsRequestedOnlyOnDemandAndCanBeHidden() async {
+        let client = FakeHolonClient()
+        let viewModel = HolonMenuViewModel(client: client)
+        await viewModel.refresh()
+        XCTAssertNil(viewModel.pairingURL)
+        await viewModel.enableLAN()
+        await viewModel.showPairingCode()
+        XCTAssertTrue(viewModel.pairingURL?.absoluteString.contains("#pair=") == true)
+        let commands = await client.recordedCommands()
+        XCTAssertEqual(commands.last,
+                       .pairingURL(URL(string: "http://192.168.1.20:7878")!))
+        viewModel.hidePairingCode()
+        XCTAssertNil(viewModel.pairingURL)
+    }
+
     func testLANAddressIsDisplayedInsteadOfLoopback() async {
         let client = FakeHolonClient()
         let viewModel = HolonMenuViewModel(client: client)

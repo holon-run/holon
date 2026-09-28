@@ -1,5 +1,5 @@
 import { clearConversationCaches } from "../../runtime/conversation-cache-lifecycle";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { KeyRound } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -15,6 +15,9 @@ export function LoginPage() {
   const [methodAttempt, setMethodAttempt] = useState(0);
   const [methodError, setMethodError] = useState(false);
   const [oidc, setOidc] = useState<boolean>();
+  const [pairingTicket, setPairingTicket] = useState(() =>
+    new URLSearchParams(window.location.hash.slice(1)).get("pair"));
+  const pairingStarted = useRef(false);
   const returnTo = useMemo(() => {
     const requested = new URLSearchParams(window.location.search).get("return_to");
     return requested?.startsWith("/") && !requested.startsWith("//")
@@ -25,6 +28,32 @@ export function LoginPage() {
   }, []);
 
   useEffect(() => {
+    if (!pairingTicket || pairingStarted.current) return;
+    pairingStarted.current = true;
+    // A fragment never reaches the HTTP request line; remove it from the
+    // browser history before the asynchronous exchange.
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+    const ticket = pairingTicket;
+    void fetch("/api/auth/pairing/redeem", {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ ticket }),
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(t("auth.tokenExchangeError"));
+        await clearConversationCaches();
+        clearStoredRuntimeConnectionToken();
+        window.location.replace(returnTo || "/");
+      })
+      .catch((cause) => {
+        setError(cause instanceof Error ? cause.message : t("auth.loginFailed"));
+        setPairingTicket(null);
+      });
+  }, [pairingTicket, returnTo, t]);
+
+  useEffect(() => {
+    if (pairingTicket) return;
     const controller = new AbortController();
     setMethodError(false);
     void fetch("/api/auth/method", {
@@ -45,7 +74,7 @@ export function LoginPage() {
       })
       .catch(() => { if (!controller.signal.aborted) setMethodError(true); });
     return () => controller.abort();
-  }, [methodAttempt]);
+  }, [methodAttempt, pairingTicket]);
 
   useEffect(() => {
     if (oidc !== true) return;

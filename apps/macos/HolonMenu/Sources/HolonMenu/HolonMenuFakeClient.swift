@@ -7,6 +7,8 @@ actor FakeHolonClient: HolonDesiredStateClient {
         case stop
         case restart
         case webURL
+        case authenticatedWebURL
+        case pairingURL(URL)
         case logsURL
         case launchAtLoginEnabled
         case setLaunchAtLoginEnabled(Bool)
@@ -104,6 +106,16 @@ actor FakeHolonClient: HolonDesiredStateClient {
             throw HolonCLIError.invalidWebAddress(currentStatus.httpAddr)
         }
         return url
+    }
+
+    func authenticatedWebURL() async throws -> URL {
+        commands.append(.authenticatedWebURL)
+        return URL(string: "http://127.0.0.1:7878/login#pair=test-ticket")!
+    }
+
+    func pairingURL(for destination: URL) async throws -> URL {
+        commands.append(.pairingURL(destination))
+        return URL(string: "\(destination.absoluteString)/login#pair=test-ticket")!
     }
 
     func logsURL() async throws -> URL {

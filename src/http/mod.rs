@@ -125,7 +125,8 @@ pub(crate) use unread::MarkBriefReadRequest;
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
 pub(crate) use auth::{
-    CurrentUserResponse, NativeSessionResponse, SessionExchangeRequest, SessionResponse,
+    CurrentUserResponse, NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest,
+    SessionExchangeRequest, SessionResponse,
 };
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
@@ -212,6 +213,7 @@ fn decrement_http_in_flight_requests() -> usize {
 pub struct AppState {
     pub host: RuntimeHost,
     pub require_control_token: bool,
+    pairing_tickets: Arc<std::sync::Mutex<auth::PairingTickets>>,
     transport: ControlTransportKind,
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
@@ -374,6 +376,7 @@ impl AppState {
         Self {
             host,
             require_control_token,
+            pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
             transport: ControlTransportKind::Tcp,
             runtime_service,
             advertise_url: None,
@@ -411,6 +414,7 @@ impl AppState {
         Self {
             host,
             require_control_token: false,
+            pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
             transport: ControlTransportKind::Unix,
             runtime_service,
             advertise_url: None,
@@ -713,6 +717,12 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/oidc/callback", get(auth::complete_oidc_login))
         .route("/auth/method", get(auth::auth_method))
         .route("/auth/session/exchange", post(auth::exchange_session))
+        .route("/auth/pairing/issue", post(auth::issue_pairing_ticket))
+        .route("/auth/pairing/redeem", post(auth::redeem_pairing_ticket))
+        .route(
+            "/auth/pairing/redeem/native",
+            post(auth::redeem_pairing_ticket_native),
+        )
         .route(
             "/auth/session/exchange/native",
             post(auth::exchange_session_native),
@@ -1417,6 +1427,8 @@ async fn session_auth_middleware(
             | "/auth/oidc/callback"
             | "/auth/method"
             | "/auth/session/exchange"
+            | "/auth/pairing/redeem"
+            | "/auth/pairing/redeem/native"
             | "/login"
     ) || api_path.starts_with("/callbacks/")
         || api_path.starts_with("/webhooks/");
@@ -1866,6 +1878,109 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[tokio::test]
+    async fn pairing_ticket_exchanges_once_for_a_session_cookie() {
+        let (_home, host) = control_token_test_host();
+        let app = router(AppState::for_tcp(host));
+        let issue = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .header(header::AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.status(), StatusCode::OK);
+        let body = to_bytes(issue.into_body(), 4096).await.unwrap();
+        let ticket = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for expected in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/auth/pairing/redeem")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"ticket": ticket}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                assert!(response.headers().contains_key(header::SET_COOKIE));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pairing_issue_requires_control_admission() {
+        let (_home, host) = control_token_test_host();
+        let app = router(AppState::for_tcp(host));
+        for (authorization, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("Bearer wrong"), StatusCode::UNAUTHORIZED),
+            (Some("Bearer secret"), StatusCode::OK),
+        ] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/auth/pairing/issue");
+            if let Some(authorization) = authorization {
+                request = request.header(header::AUTHORIZATION, authorization);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        let (_home, host) = test_host();
+        let response = router(AppState::for_tcp(host))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn pairing_redeem_rejects_oidc_mode() {
+        let (home, _) = test_host();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.auth.mode = crate::authentication::AuthenticationMode::Oidc;
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let response = router(AppState::for_tcp(host))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/redeem")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"ticket": "0".repeat(64)}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

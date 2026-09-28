@@ -1,5 +1,195 @@
 use super::*;
+use std::collections::HashMap;
 use url::Url;
+
+const PAIRING_TTL: chrono::Duration = chrono::Duration::minutes(2);
+const MAX_PAIRING_TICKETS: usize = 128;
+
+#[derive(Default)]
+pub(crate) struct PairingTickets {
+    // Only digests are kept in memory; a restart invalidates outstanding tickets.
+    expires: HashMap<String, chrono::DateTime<Utc>>,
+}
+
+fn issue_local_session(
+    state: &AppState,
+    auth_method: &str,
+    now: chrono::DateTime<Utc>,
+) -> Result<crate::oidc::IssuedSession, (StatusCode, Json<Value>)> {
+    let user_id = "local-static-token";
+    state
+        .host
+        .runtime_db()
+        .authentication()
+        .upsert_user(&crate::authentication::AuthUserRecord {
+            user_id: user_id.to_string(),
+            issuer: "local".to_string(),
+            subject: "static-token".to_string(),
+            display_name: Some("Local token user".to_string()),
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })
+        .map_err(error_response)?;
+    crate::oidc::issue_session(
+        state.host.runtime_db(),
+        &state.host.config().auth,
+        user_id,
+        auth_method,
+        now,
+    )
+    .map_err(error_response)
+}
+
+impl PairingTickets {
+    fn issue(&mut self, now: chrono::DateTime<Utc>) -> Option<(String, chrono::DateTime<Utc>)> {
+        self.expires.retain(|_, expiry| *expiry > now);
+        if self.expires.len() >= MAX_PAIRING_TICKETS {
+            return None;
+        }
+        let ticket = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let expires_at = now + PAIRING_TTL;
+        self.expires
+            .insert(crate::authentication::digest_secret(&ticket), expires_at);
+        Some((ticket, expires_at))
+    }
+
+    fn consume(&mut self, ticket: &str, now: chrono::DateTime<Utc>) -> bool {
+        self.expires
+            .remove(&crate::authentication::digest_secret(ticket))
+            .is_some_and(|expiry| expiry > now)
+    }
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PairingRedeemRequest {
+    ticket: String,
+}
+
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PairingIssueResponse {
+    ticket: String,
+    expires_at: chrono::DateTime<Utc>,
+}
+
+pub async fn issue_pairing_ticket(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    if state.host.config().auth.mode != crate::authentication::AuthenticationMode::Local {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "pairing requires local authentication"})),
+        ));
+    }
+    let has_valid_token = state
+        .host
+        .config()
+        .control_token
+        .as_deref()
+        .is_some_and(|expected| {
+            headers
+                .get(AUTHORIZATION)
+                .and_then(|header| header.to_str().ok())
+                .and_then(|header| header.strip_prefix("Bearer "))
+                == Some(expected)
+        });
+    if !state.uses_trusted_local_admission()
+        && !has_valid_token
+        && authenticate_session(&headers, &state).is_err()
+    {
+        return Err(auth_required("authentication required"));
+    }
+    let (ticket, expires_at) = state
+        .pairing_tickets
+        .lock()
+        .map_err(|_| error_response(anyhow!("pairing ticket store unavailable")))?
+        .issue(Utc::now())
+        .ok_or_else(|| {
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(json!({"error": "too many active pairing tickets"})),
+            )
+        })?;
+    Ok((
+        [(CACHE_CONTROL, HeaderValue::from_static("no-store"))],
+        Json(PairingIssueResponse { ticket, expires_at }),
+    ))
+}
+
+async fn redeem_ticket(
+    state: &AppState,
+    ticket: &str,
+) -> Result<(crate::oidc::IssuedSession, String), (StatusCode, Json<Value>)> {
+    if state.host.config().auth.mode != crate::authentication::AuthenticationMode::Local {
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "pairing requires local authentication"})),
+        ));
+    }
+    if ticket.len() != 64 || !ticket.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(auth_required("invalid or expired pairing ticket"));
+    }
+    let consumed = state
+        .pairing_tickets
+        .lock()
+        .map_err(|_| error_response(anyhow!("pairing ticket store unavailable")))?
+        .consume(ticket, Utc::now());
+    if !consumed {
+        return Err(auth_required("invalid or expired pairing ticket"));
+    }
+    let session = issue_local_session(state, "pairing_ticket", Utc::now())?;
+    let cookie = session_cookie(state, &session.credential);
+    Ok((session, cookie))
+}
+
+pub async fn redeem_pairing_ticket(
+    State(state): State<Arc<AppState>>,
+    ApiJson(request): ApiJson<PairingRedeemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let (session, cookie) = redeem_ticket(&state, &request.ticket).await?;
+    Ok((
+        [
+            (
+                SET_COOKIE,
+                HeaderValue::from_str(&cookie).map_err(|error| error_response(anyhow!(error)))?,
+            ),
+            (CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        Json(SessionResponse {
+            ok: true,
+            expires_at: session.record.expires_at,
+            user_id: session.record.user_id,
+        }),
+    ))
+}
+
+pub async fn redeem_pairing_ticket_native(
+    State(state): State<Arc<AppState>>,
+    ApiJson(request): ApiJson<PairingRedeemRequest>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let (session, cookie) = redeem_ticket(&state, &request.ticket).await?;
+    Ok((
+        [
+            (
+                SET_COOKIE,
+                HeaderValue::from_str(&cookie).map_err(|error| error_response(anyhow!(error)))?,
+            ),
+            (CACHE_CONTROL, HeaderValue::from_static("no-store")),
+        ],
+        Json(NativeSessionResponse {
+            credential: session.credential,
+            ok: true,
+            expires_at: session.record.expires_at,
+            user_id: session.record.user_id,
+        }),
+    ))
+}
 
 #[derive(Debug, Deserialize)]
 pub struct OidcCallbackQuery {
@@ -149,30 +339,7 @@ async fn exchange_session_credential(
         if request.credential != expected {
             return Err(auth_required("invalid static token"));
         }
-        let user_id = "local-static-token";
-        state
-            .host
-            .runtime_db()
-            .authentication()
-            .upsert_user(&crate::authentication::AuthUserRecord {
-                user_id: user_id.to_string(),
-                issuer: "local".to_string(),
-                subject: "static-token".to_string(),
-                display_name: Some("Local token user".to_string()),
-                email: None,
-                created_at: now,
-                updated_at: now,
-                disabled_at: None,
-            })
-            .map_err(error_response)?;
-        crate::oidc::issue_session(
-            state.host.runtime_db(),
-            &config.auth,
-            user_id,
-            "static_token",
-            now,
-        )
-        .map_err(error_response)?
+        issue_local_session(&state, "static_token", now)?
     } else {
         crate::oidc::exchange_bootstrap(
             state.host.runtime_db(),
@@ -284,6 +451,51 @@ pub async fn start_codex_device_login(
             job,
         }),
     ))
+}
+
+#[cfg(test)]
+mod pairing_tests {
+    use super::*;
+
+    #[test]
+    fn ticket_is_single_use_expires_and_is_bounded() {
+        let mut tickets = PairingTickets::default();
+        let now = Utc::now();
+        let (ticket, expiry) = tickets.issue(now).unwrap();
+        assert_eq!(expiry, now + PAIRING_TTL);
+        assert!(!tickets.expires.contains_key(&ticket));
+        assert!(tickets.consume(&ticket, now));
+        assert!(!tickets.consume(&ticket, now));
+
+        let (expired, _) = tickets.issue(now).unwrap();
+        assert!(!tickets.consume(&expired, now + PAIRING_TTL));
+        for _ in 0..MAX_PAIRING_TICKETS {
+            assert!(tickets.issue(now).is_some());
+        }
+        assert!(tickets.issue(now).is_none());
+        assert!(tickets.issue(now + PAIRING_TTL).is_some());
+    }
+
+    #[test]
+    fn concurrent_redemption_has_only_one_winner() {
+        let now = Utc::now();
+        let mut tickets = PairingTickets::default();
+        let (ticket, _) = tickets.issue(now).unwrap();
+        let tickets = std::sync::Arc::new(std::sync::Mutex::new(tickets));
+        let results = std::thread::scope(|scope| {
+            let left = {
+                let tickets = tickets.clone();
+                let ticket = ticket.clone();
+                scope.spawn(move || tickets.lock().unwrap().consume(&ticket, now))
+            };
+            let right = {
+                let tickets = tickets.clone();
+                scope.spawn(move || tickets.lock().unwrap().consume(&ticket, now))
+            };
+            (left.join().unwrap(), right.join().unwrap())
+        });
+        assert_ne!(results.0, results.1);
+    }
 }
 
 pub async fn start_oauth_device_login(
