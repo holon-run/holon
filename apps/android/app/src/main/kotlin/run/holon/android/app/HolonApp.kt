@@ -177,6 +177,24 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel, addingNe
     val scanner = remember(context) { GmsBarcodeScanning.getClient(context) }
     var showLanguagePicker by remember { mutableStateOf(false) }
     if (showLanguagePicker) AppLanguagePicker { showLanguagePicker = false }
+    state.pendingPairing?.let { pairing ->
+        AlertDialog(
+            onDismissRequest = viewModel::cancelPairing,
+            title = { Text(ui("连接到这台 Holon？")) },
+            text = {
+                Text(
+                    ui("目标地址：${pairing.address}\n") +
+                        if (pairing.address.startsWith("http://")) {
+                            ui("HTTP 不加密，配对票据和会话可能被同一网络上的其他人截获。仅在可信局域网中继续；推荐使用 Tailscale HTTPS。")
+                        } else {
+                            ui("确认这是你信任的 Holon 主机。配对码只可使用一次。")
+                        },
+                )
+            },
+            confirmButton = { TextButton(onClick = viewModel::confirmPairing) { Text(ui("确认并连接")) } },
+            dismissButton = { TextButton(onClick = viewModel::cancelPairing) { Text(ui("取消")) } },
+        )
+    }
     Column(
         Modifier.fillMaxSize()
             .background(MaterialTheme.colorScheme.background)

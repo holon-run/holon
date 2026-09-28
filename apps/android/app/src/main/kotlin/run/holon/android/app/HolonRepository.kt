@@ -162,6 +162,7 @@ internal class HolonRepository(
         address: String,
         token: CharArray,
         allowInsecureHttp: Boolean,
+        pairingTicket: String? = null,
     ): Pair<ActiveSession, HolonRosterSnapshot> {
         val baseUrl = normalizeAddress(address, allowInsecureHttp)
         val profile =
@@ -176,7 +177,7 @@ internal class HolonRepository(
         val previousCredential = scopedStore.read()
         val previousActive = active
         val previousClient = client
-        var transientToken: String? = token.concatToString()
+        var transientToken: String? = if (pairingTicket == null) token.concatToString() else null
         token.fill('\u0000')
         val candidate =
             HolonHttpClient(
@@ -186,7 +187,11 @@ internal class HolonRepository(
                 insecureHttpHosts = insecureHttpHosts(baseUrl),
             )
         return try {
-            candidate.exchangeSession(transientToken.orEmpty())
+            if (pairingTicket == null) {
+                candidate.exchangeSession(transientToken.orEmpty())
+            } else {
+                candidate.redeemPairingTicket(pairingTicket)
+            }
             transientToken = null
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))

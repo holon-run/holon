@@ -101,16 +101,17 @@ creation fails; daemon restart invalidates all outstanding tickets.
 
 The browser receives the ticket in a `/login#pair=...` fragment, removes the
 fragment from history before POSTing it to `/api/auth/pairing/redeem`, and gets
-the normal HttpOnly session cookie. A future native client can exchange the
+the normal HttpOnly session cookie. The Android client exchanges the
 same ticket at `/api/auth/pairing/redeem/native` for an opaque session
-credential. Neither QR nor browser URL contains the long-lived control token.
+credential after confirming the target and, for HTTP, the plaintext risk.
+Neither QR nor browser URL contains the long-lived control token.
 The QR is created only on operator request and is hidden on timeout.
 
 The fragment avoids HTTP request-line and referrer leakage, **not** network
 eavesdropping: plaintext LAN traffic still exposes ticket redemption and
 session cookies to an on-path party. Prefer Tailscale HTTPS; the menu explicitly
-warns when the selected destination is HTTP. No promise of automatic Android
-pairing is made until that client supports ticket redemption.
+warns when the selected destination is HTTP. Android redeems only after
+confirmation and saves the revocable session credential.
 
 ## Follow-up slices
 

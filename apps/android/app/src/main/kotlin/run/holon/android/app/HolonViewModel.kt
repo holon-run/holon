@@ -86,6 +86,7 @@ internal data class HolonUiState(
     val token: String = "",
     val showToken: Boolean = false,
     val allowInsecureHttp: Boolean = false,
+    val pendingPairing: ScannedPairing? = null,
     val mainDestination: MainDestination = MainDestination.Agents,
     val busy: Boolean = false,
     val enqueueing: Boolean = false,
@@ -283,17 +284,38 @@ internal class HolonViewModel(
 
     fun setBaseUrl(value: String) =
         mutableState.update {
-            it.copy(baseUrl = value, allowInsecureHttp = false, error = null)
+            it.copy(baseUrl = value, allowInsecureHttp = false, pendingPairing = null, error = null)
         }
 
     fun applyScannedAddress(value: String) {
-        runCatching { normalizeScannedAddress(value) }
-            .onSuccess(::setBaseUrl)
-            .onFailure { error ->
-                mutableState.update {
-                    it.copy(error = error.message ?: "二维码地址无效")
+        if (state.value.busy) return
+        runCatching {
+            val uri = java.net.URI(value.trim())
+            if (uri.path == "/login" || uri.rawFragment != null) {
+                parseScannedPairing(value)
+            } else {
+                normalizeScannedAddress(value)
+            }
+        }
+            .onSuccess { scanned ->
+                when (scanned) {
+                    is ScannedPairing -> mutableState.update { it.copy(pendingPairing = scanned, error = null) }
+                    is String -> setBaseUrl(scanned)
                 }
             }
+            .onFailure { error ->
+                mutableState.update {
+                    it.copy(pendingPairing = null, error = error.message ?: "二维码地址无效")
+                }
+            }
+    }
+
+    fun cancelPairing() = mutableState.update { it.copy(pendingPairing = null) }
+
+    fun confirmPairing() {
+        val pairing = state.value.pendingPairing ?: return
+        mutableState.update { it.copy(pendingPairing = null) }
+        login(pairing)
     }
 
     fun reportScanFailure() {
@@ -511,19 +533,28 @@ internal class HolonViewModel(
     }
 
     fun login() {
+        login(null)
+    }
+
+    private fun login(pairing: ScannedPairing?) {
         val before = state.value
         if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return
-        if (before.token.isBlank()) {
+        if (pairing == null && before.token.isBlank()) {
             mutableState.update { it.copy(error = "请输入 token") }
             return
         }
-        val tokenChars = before.token.toCharArray()
+        val tokenChars = pairing?.let { charArrayOf() } ?: before.token.toCharArray()
         mutableState.update { it.copy(busy = true, error = null, statusMessage = "正在安全登录…") }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
                     val (session, roster) =
-                        repository.login(before.baseUrl, tokenChars, before.allowInsecureHttp)
+                        repository.login(
+                            pairing?.address ?: before.baseUrl,
+                            tokenChars,
+                            pairing?.address?.startsWith("http://") ?: before.allowInsecureHttp,
+                            pairing?.ticket,
+                        )
                     Triple(session, roster, repository.networkProfiles())
                 }
             }.onSuccess { (session, roster, profiles) ->

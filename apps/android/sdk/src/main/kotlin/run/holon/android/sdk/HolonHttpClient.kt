@@ -6,6 +6,7 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
@@ -27,6 +28,9 @@ import run.holon.client.wire.generated.models.ErrorResponse
 import run.holon.client.wire.generated.models.HandshakeResponse
 import run.holon.client.wire.generated.models.NativeSessionResponse
 import run.holon.client.wire.generated.models.SessionExchangeRequest
+
+@Serializable
+private data class PairingTicketRequest(val ticket: String)
 
 public fun interface BearerTokenProvider {
     public fun token(): String?
@@ -255,6 +259,25 @@ public class HolonHttpClient internal constructor(
             )
         sessionCredentialStore?.write(session.credential)
         return session
+    }
+
+    /** Redeems a short-lived QR ticket without sending any existing session to the pairing endpoint. */
+    public fun redeemPairingTicket(ticket: String): SessionCredentials {
+        require(ticket.matches(Regex("[0-9a-fA-F]{64}"))) { "Invalid pairing ticket" }
+        val response =
+            post(
+                path = "auth/pairing/redeem/native",
+                body = PairingTicketRequest(ticket),
+                bodySerializer = PairingTicketRequest.serializer(),
+                responseSerializer = NativeSessionResponse.serializer(),
+                unauthenticated = true,
+            )
+        require(response.ok && response.credential.isNotBlank()) { "Invalid pairing session" }
+        return SessionCredentials(
+            credential = response.credential,
+            userId = response.userId,
+            expiresAt = response.expiresAt,
+        ).also { sessionCredentialStore?.write(it.credential) }
     }
 
     /**
@@ -1077,6 +1100,7 @@ public class HolonHttpClient internal constructor(
         body: Request,
         bodySerializer: KSerializer<Request>,
         responseSerializer: KSerializer<Response>,
+        unauthenticated: Boolean = false,
     ): Response {
         val requestBody =
             HolonWire.json
@@ -1085,7 +1109,10 @@ public class HolonHttpClient internal constructor(
         try {
             val response =
                 httpClient
-                    .newCall(authorizedRequest(path).post(requestBody).build())
+                    .newCall(
+                        (if (unauthenticated) Request.Builder().url(endpoint(path)) else authorizedRequest(path))
+                            .post(requestBody).build(),
+                    )
                     .execute()
             response.use {
                 val responseText = it.body?.string().orEmpty()
