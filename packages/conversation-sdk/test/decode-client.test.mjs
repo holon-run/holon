@@ -113,6 +113,58 @@ test("caller aborts keep their AbortError and never become timeouts", async () =
   await assert.rejects(pending, (error) => error.name === "AbortError");
 });
 
+test("summary requests time out retryably when the connection stalls", async () => {
+  const client = new ConversationClient({
+    baseUrl: "http://127.0.0.1:7878",
+    fetch: (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason);
+        });
+      }),
+    requestTimeoutMs: 20,
+  });
+  await assert.rejects(
+    client.summary("agent-1"),
+    (error) =>
+      error instanceof ConversationTimeoutError && error.timeoutMs === 20,
+  );
+});
+
+test("a caller abort landing after the timer still yields a retryable timeout", async () => {
+  const client = new ConversationClient({
+    baseUrl: "http://127.0.0.1:7878",
+    // Rejects late so the caller's abort lands between the timer firing and
+    // the fetch rejection, exercising the race the identity check repairs.
+    fetch: (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        const rejectSoon = () => {
+          setTimeout(() => reject(signal.reason), 40);
+        };
+        if (signal?.aborted) {
+          rejectSoon();
+          return;
+        }
+        signal?.addEventListener("abort", rejectSoon);
+      }),
+    requestTimeoutMs: 20,
+  });
+  const caller = new AbortController();
+  const pending = client.summary("agent-1", { signal: caller.signal });
+  setTimeout(() => caller.abort(), 30);
+  await assert.rejects(
+    pending,
+    (error) =>
+      error instanceof ConversationTimeoutError && error.timeoutMs === 20,
+  );
+});
+
 test("requestTimeoutMs 0 disables the request timeout", async () => {
   const client = new ConversationClient({
     baseUrl: "http://127.0.0.1:7878",

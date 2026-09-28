@@ -148,35 +148,33 @@ export class ConversationClient {
     if (options.ifNoneMatch !== undefined) {
       headers.set("if-none-match", options.ifNoneMatch);
     }
-    const response = await this.#fetch(
-      this.#url(
-        this.#agentPath(
-          agentId,
-          `/conversation${query.size === 0 ? "" : `?${query}`}`,
-        ),
-      ),
-      {
+    const path = this.#agentPath(
+      agentId,
+      `/conversation${query.size === 0 ? "" : `?${query}`}`,
+    );
+    return await this.#withRequestTimeout(options.signal, async (signal) => {
+      const response = await this.#fetch(this.#url(path), {
         method: "GET",
         headers,
-        ...(options.signal === undefined ? {} : { signal: options.signal }),
-      },
-    );
-    const etag = response.headers.get("etag");
-    if (response.status === 304) {
-      return { summary: null, etag };
-    }
-    if (!response.ok) {
-      await this.#throwResponseError(response);
-    }
-    let value: unknown;
-    try {
-      value = await response.json();
-    } catch (error) {
-      throw new ConversationDecodeError("$response", "invalid JSON", {
-        cause: error,
+        ...(signal === undefined ? {} : { signal }),
       });
-    }
-    return { summary: decodeConversationSummaryResponse(value), etag };
+      const etag = response.headers.get("etag");
+      if (response.status === 304) {
+        return { summary: null, etag };
+      }
+      if (!response.ok) {
+        await this.#throwResponseError(response);
+      }
+      let value: unknown;
+      try {
+        value = await response.json();
+      } catch (error) {
+        throw new ConversationDecodeError("$response", "invalid JSON", {
+          cause: error,
+        });
+      }
+      return { summary: decodeConversationSummaryResponse(value), etag };
+    });
   }
 
   async activities(
@@ -301,10 +299,8 @@ export class ConversationClient {
   }
 
   /**
-   * GET + decode with a bounded request lifetime. The envelope aborts the
-   * underlying fetch when the timeout elapses and converts that failure
-   * into a retryable ConversationTimeoutError; caller-initiated aborts keep
-   * their original rejection (AbortError) so intentional stops stay silent.
+   * GET + decode with a bounded request lifetime via the shared timeout
+   * envelope.
    */
   async #getJson<T>(
     path: string,
@@ -313,9 +309,25 @@ export class ConversationClient {
   ): Promise<T> {
     const headers = await this.#requestHeaders();
     headers.set("accept", "application/json");
+    return await this.#withRequestTimeout(signal, (inner) =>
+      this.#readJson(path, headers, inner, decode),
+    );
+  }
+
+  /**
+   * Bounded request lifetime for caller-provided request work. Elapsing the
+   * timeout aborts the inner signal and converts the rejection into a
+   * retryable ConversationTimeoutError, even when the caller aborts right
+   * after the timer fires; caller-initiated aborts keep their original
+   * rejection (AbortError) so intentional stops stay silent.
+   */
+  async #withRequestTimeout<T>(
+    signal: AbortSignal | undefined,
+    run: (inner: AbortSignal | undefined) => Promise<T>,
+  ): Promise<T> {
     const timeoutMs = this.#requestTimeoutMs;
     if (timeoutMs <= 0) {
-      return await this.#readJson(path, headers, signal, decode);
+      return await run(signal);
     }
     const controller = new AbortController();
     const abortFromCaller = () => controller.abort(signal?.reason);
@@ -326,23 +338,28 @@ export class ConversationClient {
         signal.addEventListener("abort", abortFromCaller, { once: true });
       }
     }
+    let timedOut = false;
+    const timeoutError =
+      typeof DOMException === "function"
+        ? new DOMException(
+            `conversation request timed out after ${timeoutMs}ms`,
+            "TimeoutError",
+          )
+        : Object.assign(
+            new Error(`conversation request timed out after ${timeoutMs}ms`),
+            { name: "TimeoutError" },
+          );
     const timer = setTimeout(() => {
-      controller.abort(
-        typeof DOMException === "function"
-          ? new DOMException(
-              `conversation request timed out after ${timeoutMs}ms`,
-              "TimeoutError",
-            )
-          : Object.assign(
-              new Error(`conversation request timed out after ${timeoutMs}ms`),
-              { name: "TimeoutError" },
-            ),
-      );
+      timedOut = true;
+      controller.abort(timeoutError);
     }, timeoutMs);
     try {
-      return await this.#readJson(path, headers, controller.signal, decode);
+      return await run(controller.signal);
     } catch (error) {
-      if (controller.signal.aborted && signal?.aborted !== true) {
+      // Identity-match the timeout abort reason first: a caller abort that
+      // lands right after the timer fires must not downgrade the failure to
+      // the raw (terminal-classified) TimeoutError rejection.
+      if (timedOut && (error === timeoutError || signal?.aborted !== true)) {
         throw new ConversationTimeoutError(timeoutMs, { cause: error });
       }
       throw error;
