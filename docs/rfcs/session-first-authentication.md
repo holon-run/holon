@@ -98,6 +98,9 @@ Trusted Unix admission is also allowed. OIDC mode rejects issuance; a menu must 
 local credentials. The issuer keeps only a digest in bounded in-memory state.
 Consumption is atomic and removes the ticket even if subsequent session
 creation fails; daemon restart invalidates all outstanding tickets.
+The store is daemon-wide rather than listener-local: a menu mints the ticket
+over the loopback listener and its holder redeems it from the advertised LAN or
+Tailscale address, so every listener of one daemon must serve the same tickets.
 
 The browser receives the ticket in a `/login#pair=...` fragment, removes the
 fragment from history before POSTing it to `/api/auth/pairing/redeem`, and gets

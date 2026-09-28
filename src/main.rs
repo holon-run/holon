@@ -949,6 +949,10 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         ))
     };
 
+    // The advertised address and the localhost alias are one daemon-wide HTTP
+    // state: one-time pairing tickets are minted over loopback and redeemed from
+    // the advertised LAN or Tailscale address, so both sockets must serve the
+    // same state instead of a per-listener copy.
     let tcp_router = http::router(
         AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
             .with_desktop_integration(desktop_integration)
@@ -989,7 +993,9 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         let tcp_server = async {
             axum::serve(
                 listener,
-                tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                tcp_router
+                    .clone()
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
             .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
             .await
@@ -1003,12 +1009,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             Ok::<(), anyhow::Error>(())
         };
         let result = if let Some(local) = local_listener {
-            let local_router = http::router(
-                AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-                    .with_desktop_integration(desktop_integration)
-                    .with_advertise_url(advertise_url.clone())
-                    .with_web_dist(web_dist.clone()),
-            );
+            let local_router = tcp_router.clone();
             let local_server = async {
                 axum::serve(
                     local,
@@ -1040,12 +1041,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     {
         runtime_service.write_state_files(&config)?;
         if let Some(local) = local_listener {
-            let local_router = http::router(
-                AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
-                    .with_desktop_integration(desktop_integration)
-                    .with_advertise_url(advertise_url.clone())
-                    .with_web_dist(web_dist.clone()),
-            );
+            let local_router = tcp_router.clone();
             let local_server = axum::serve(
                 local,
                 local_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
@@ -1053,7 +1049,9 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
             let tcp_server = axum::serve(
                 listener,
-                tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                tcp_router
+                    .clone()
+                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
             .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
             tokio::try_join!(tcp_server, local_server)
