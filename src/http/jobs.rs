@@ -5,6 +5,16 @@ use uuid::Uuid;
 
 const USER_GLOBAL_LIBRARY_LABEL: &str = "user_global";
 
+fn effective_user_home_dir(state: &AppState) -> Result<PathBuf> {
+    state
+        .host
+        .config()
+        .user_home_dir
+        .clone()
+        .or_else(|| crate::agent_template::user_home_dir().ok())
+        .ok_or_else(|| anyhow!("HOME is not set; cannot resolve user-global skills"))
+}
+
 #[derive(Clone, Default)]
 pub struct JobRegistry {
     // TODO: retain terminal jobs for a bounded window before evicting them.
@@ -146,7 +156,7 @@ async fn create_skill_install_job(
 
     let jobs = state.jobs.clone();
     let skill_library_write_jobs = state.skill_library_write_jobs.clone();
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let job_id = id.clone();
     tokio::spawn(async move {
         jobs.update(&job_id, |job| {
@@ -273,7 +283,7 @@ pub(super) async fn create_skill_update_job(
 
     let jobs = state.jobs.clone();
     let skill_library_write_jobs = state.skill_library_write_jobs.clone();
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let job_id = id.clone();
     tokio::spawn(async move {
         let permit = match skill_library_write_jobs.acquire_owned().await {
