@@ -154,7 +154,7 @@ public class HolonSseConnection internal constructor(
 
 internal fun IOException.isRetryableSseFailure(): Boolean =
     when (this) {
-        is HolonHttpException -> statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+        is HolonHttpException -> isTransientHttpStatus(statusCode)
         is HolonProtocolException -> false
         else -> message?.contains("canceled", ignoreCase = true) != true
     }
