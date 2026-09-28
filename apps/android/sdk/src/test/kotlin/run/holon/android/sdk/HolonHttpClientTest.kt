@@ -707,6 +707,32 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `reconnecting conversation stream reports transient error after retries are exhausted`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_UNAVAILABLE))
+            server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_UNAVAILABLE))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val error =
+                assertFailsWith<HolonHttpException> {
+                    client
+                        .reconnectingConversationStream(
+                            agentId = "main",
+                            policy =
+                                SseReconnectPolicy(
+                                    maxAttempts = 1,
+                                    initialDelayMillis = 0,
+                                    maxDelayMillis = 0,
+                                ),
+                        ).toList()
+                }
+
+            assertEquals(HttpURLConnection.HTTP_UNAVAILABLE, error.statusCode)
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test
     fun `redirects are rejected without forwarding bearer credentials`() {
         MockWebServer().use { redirectTarget ->
             MockWebServer().use { server ->

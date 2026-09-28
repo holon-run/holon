@@ -40,6 +40,9 @@ public class HolonHttpException(
         ?: "Holon request failed with HTTP $statusCode",
 )
 
+public fun isTransientHttpStatus(statusCode: Int): Boolean =
+    statusCode == 408 || statusCode == 425 || statusCode == 429 || statusCode in 500..599
+
 public class HolonProtocolException(
     message: String,
     cause: Throwable? = null,
@@ -980,6 +983,7 @@ public class HolonHttpClient internal constructor(
             val deduplicator = HolonSseDeduplicator()
             var attempts = 0
             var lastEventId: String? = null
+            var lastRetryableError: IOException? = null
             while (true) {
                 var emitted = false
                 try {
@@ -1005,12 +1009,20 @@ public class HolonHttpClient internal constructor(
                     if (!error.isRetryableSseFailure()) {
                         throw error
                     }
+                    lastRetryableError = error
                 } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
                     return@sequence
                 }
                 if (attempts >= policy.maxAttempts) {
+                    if (!emitted) {
+                        lastRetryableError?.let { throw it }
+                    }
                     return@sequence
+                }
+                if (emitted) {
+                    attempts = 0
+                    lastRetryableError = null
                 }
                 val delayMillis =
                     (policy.initialDelayMillis shl attempts.coerceAtMost(20))
@@ -1024,9 +1036,6 @@ public class HolonHttpClient internal constructor(
                     }
                 }
                 attempts++
-                if (emitted) {
-                    attempts = 0
-                }
             }
         }
 
