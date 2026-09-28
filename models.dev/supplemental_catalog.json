@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "984c34c7a7da6854221edcea2d7f979808aa90adf94c43cf4b514df32809d700",
-  "adapter_version": "0.44.1 (a34544ee)",
+  "upstream_revision": "2c225d8893f884193ba2cfc44a0cc8a79ca1689fb890069b6f10b017f9963e02",
+  "adapter_version": "0.46.0 (f7bc6f7)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -140,14 +140,62 @@
       "source": "models_dev_supplement"
     },
     {
+      "model_ref": "dashscope/qwen3.7-flash",
+      "display_name": "Qwen3.7 Flash",
+      "description": "Lightweight multimodal Qwen model for high-throughput text, image, and video tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "dashscope/qwen3.8-omni-flash",
+      "display_name": "Qwen3.8 Omni Flash",
+      "description": "Qwen omni model for text, vision, audio, and multimodal agent tasks",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
       "model_ref": "deepseek/deepseek-flash",
       "display_name": "DeepSeek V4.1 Flash",
       "description": "DeepSeek V4.1 Flash model for reasoning and agentic coding",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
+      "default_max_output_tokens": 393216,
+      "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -172,8 +220,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
+      "default_max_output_tokens": 393216,
+      "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -195,9 +243,9 @@
       "model_ref": "gemini/gemini-3-pro-image",
       "display_name": "Nano Banana Pro",
       "description": "Nano Banana Pro for higher-fidelity image generation and design-heavy edits",
-      "context_window_tokens": 131072,
+      "context_window_tokens": 65536,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
+      "auto_compact_token_limit": 62259,
       "default_max_output_tokens": 32768,
       "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
@@ -220,11 +268,11 @@
       "model_ref": "gemini/gemini-3.1-flash-image",
       "display_name": "Nano Banana 2",
       "description": "Image model for prompt-driven generation, editing, and visual design workflows",
-      "context_window_tokens": 65536,
+      "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 62259,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "auto_compact_token_limit": 124518,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -248,8 +296,8 @@
       "context_window_tokens": 65536,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 62259,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 4096,
+      "max_output_tokens_upper_limit": 4096,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -614,6 +662,64 @@
       "source": "models_dev_supplement"
     },
     {
+      "model_ref": "openai/gpt-daybreak-blue-latest",
+      "display_name": "Daybreak Blue",
+      "description": "Alias for flagship general-purpose models with safeguards for defensive cybersecurity work",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "openai/gpt-daybreak-red-latest",
+      "display_name": "Daybreak Red",
+      "description": "Alias for advanced cybersecurity models for authorized vulnerability research and security testing",
+      "context_window_tokens": 400000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 380000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
       "model_ref": "openai/gpt-realtime-2.1",
       "display_name": "GPT-Realtime-2.1",
       "description": "Realtime speech-to-speech model with configurable reasoning, tool use, and robust voice-agent behavior",
@@ -648,8 +754,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 1000000,
-      "max_output_tokens_upper_limit": 1000000,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -1057,7 +1163,11 @@
   ],
   "routes": [
     "dashscope@coding-plan/kimi-k3",
+    "dashscope@coding-plan/qwen3.7-flash",
+    "dashscope@coding-plan/qwen3.8-omni-flash",
     "dashscope@token-plan/kimi-k3",
+    "dashscope@token-plan/qwen3.7-flash",
+    "dashscope@token-plan/qwen3.8-omni-flash",
     "stepfun@plan/step-5-preview",
     "volcengine@plan/deepseek-v4-flash-ga-260731",
     "volcengine@plan/deepseek-v4-pro-ga-260813",

@@ -1,19 +1,15 @@
 # models.dev refresh summary
 
-- Supplement models: 40 (drafted this run: 8, retained: 32, removed: 0)
+- Supplement models: 44 (drafted this run: 4, retained: 40, removed: 0)
 - Deferred candidates: 166 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `anthropic/claude-opus-5-5` — Claude Opus 5.5 (context 1000000, reasoning true, image input true)
-- `openai/gpt-6-luna` — GPT-6 Luna (context 1050000, reasoning true, image input true)
-- `openai/gpt-6-sol` — GPT-6 Sol (context 1050000, reasoning true, image input true)
-- `stepfun/step-5-preview` — Step 5 Preview (context 1000000, reasoning true, image input true)
-- `xai/grok-4.7` — Grok 4.7 (context 500000, reasoning true, image input true)
-- `xiaomi/mimo-v2.6-flash` — MiMo-V2.6-Flash (context 1048576, reasoning true, image input true)
-- `xiaomi/mimo-v2.6-pro` — MiMo-V2.6-Pro (context 1048576, reasoning true, image input true)
-- `xiaomi/mimo-v2.6-pro-ultraspeed` — MiMo-V2.6-Pro-UltraSpeed (context 1048576, reasoning true, image input true)
+- `dashscope/qwen3.7-flash` — Qwen3.7 Flash (context 1000000, reasoning true, image input true)
+- `dashscope/qwen3.8-omni-flash` — Qwen3.8 Omni Flash (context 1000000, reasoning true, image input true)
+- `openai/gpt-daybreak-blue-latest` — Daybreak Blue (context 1050000, reasoning true, image input true)
+- `openai/gpt-daybreak-red-latest` — Daybreak Red (context 400000, reasoning true, image input true)
 
 ## Deferred (needs human decision or outside policy)
 
