@@ -8,6 +8,11 @@ import kotlinx.serialization.json.buildJsonObject
 import run.holon.android.sdk.HolonConversationTurn
 
 class ConversationPresentationTest {
+    @Test fun `saved anchor follows content id when preceding history changes`() {
+        assertEquals(2, readingAnchorIndex(listOf("older", "a", "brief:turn:b", "c"), "brief:turn:b", 1))
+        assertEquals(0, readingAnchorIndex(listOf("only"), "expired", 100))
+        assertEquals(0, readingAnchorIndex(emptyList(), "expired", 100))
+    }
     @Test fun `every brief gets a stable reading anchor including multiple briefs in a turn`() {
         val turn = turn("one", listOf("a", "b", "a"))
         val rows = conversationRows(listOf(turn))

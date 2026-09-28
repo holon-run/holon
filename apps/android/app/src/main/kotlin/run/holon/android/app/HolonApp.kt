@@ -103,6 +103,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.runtime.saveable.listSaver
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -800,8 +801,7 @@ private fun SettingsValue(label: String, value: String) {
 @Composable
 private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
     val agent = state.selectedAgent ?: return
-    val timelineListState = rememberLazyListState()
-    val timelinePosition = remember(agent.id) { ConversationTimelinePosition(timelineListState).apply { positionedAtLatest = timelineListState.firstVisibleItemIndex > 0; followLatest = !positionedAtLatest } }
+    val timelinePosition = rememberSaveable(agent.id, saver = ConversationTimelinePosition.Saver) { ConversationTimelinePosition() }
     val workListState = rememberLazyListState()
     val filePosition = remember(agent.id) { FileBrowserPosition() }
     var autoExpandedTurn by rememberSaveable { mutableStateOf<String?>(null) }
@@ -936,10 +936,35 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
 }
 
 
-private class ConversationTimelinePosition(val listState: LazyListState) {
+private class ConversationTimelinePosition(val listState: LazyListState = LazyListState()) {
     var positionedAtLatest by mutableStateOf(false)
     var followLatest by mutableStateOf(true)
     var previousOutboxCount by mutableStateOf(0)
+    var pendingAnchor by mutableStateOf<String?>(null)
+    var pendingOffset = 0
+
+    companion object {
+        val Saver = listSaver<ConversationTimelinePosition, Any>(
+            save = { position ->
+                val list = position.listState
+                listOf(
+                    position.pendingAnchor ?: list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == list.firstVisibleItemIndex }?.key?.toString().orEmpty(),
+                    list.firstVisibleItemIndex,
+                    if (position.pendingAnchor != null) position.pendingOffset else list.firstVisibleItemScrollOffset,
+                    position.positionedAtLatest,
+                    position.followLatest,
+                )
+            },
+            restore = { saved ->
+                ConversationTimelinePosition(LazyListState(saved[1] as Int, saved[2] as Int)).apply {
+                    positionedAtLatest = saved[3] as Boolean
+                    followLatest = saved[4] as Boolean
+                    pendingAnchor = (saved[0] as String).takeIf { it.isNotBlank() && !followLatest }
+                    pendingOffset = saved[2] as Int
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -960,20 +985,37 @@ private fun ConversationTimeline(
     val latestBriefEventSeq = state.selectedAgent?.latestBrief?.createdEventSeq
     val agentId = state.selectedAgent?.id
     val tail = "conversation-tail"
-    val contentRevision = listOf(snapshot?.snapshotCursor, state.briefs, state.conversationDetail, state.outbox)
+    val itemKeys = buildList {
+        if (state.hasOlderTurns) add("load-older-turns")
+        if (snapshot?.pendingInputs?.isNotEmpty() == true) add("pending-inputs")
+        addAll(rows.map(ConversationRow::key))
+        addAll(state.outbox.map { "outbox:${it.requestId}" })
+        if (turns.isEmpty() && state.outbox.isEmpty()) add("empty")
+        add(tail)
+    }
+    val contentRevision = listOf(snapshot?.snapshotCursor, state.briefs, state.briefLoads, state.conversationDetail, state.outbox)
     LaunchedEffect(dragging) { if (dragging) position.followLatest = false }
     LaunchedEffect(listState) {
         snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }.collect { (scrolling, canScroll) ->
-            if (position.positionedAtLatest && listState.layoutInfo.visibleItemsInfo.isNotEmpty() && !scrolling && !canScroll) position.followLatest = true
+            if (position.pendingAnchor == null && position.positionedAtLatest && listState.layoutInfo.visibleItemsInfo.isNotEmpty() && !scrolling && !canScroll) position.followLatest = true
         }
     }
     LaunchedEffect(contentRevision) {
         if (snapshot != null) {
             val justSent = state.outbox.size > position.previousOutboxCount
-            if (!position.positionedAtLatest || position.followLatest || justSent) {
-                val count = rows.size + state.outbox.size + (if (state.hasOlderTurns) 1 else 0) + (if (snapshot.pendingInputs.isNotEmpty()) 1 else 0) + (if (turns.isEmpty() && state.outbox.isEmpty()) 1 else 0) + 1
-                snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it == count }
-                val last = count - 1
+            val anchor = position.pendingAnchor
+            if (anchor != null) {
+                val anchorBrief = rows.filterIsInstance<ConversationRow.Brief>().firstOrNull { it.key == anchor }
+                if (anchorBrief != null && anchorBrief.id !in state.briefs && state.briefLoads[anchorBrief.id] !is BriefLoadState.Failed) {
+                    viewModel.ensureBriefs(listOf(anchorBrief.id))
+                    return@LaunchedEffect
+                }
+                snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it == itemKeys.size }
+                listState.scrollToItem(readingAnchorIndex(itemKeys, anchor, listState.firstVisibleItemIndex), position.pendingOffset)
+                position.pendingAnchor = null
+            } else if (!position.positionedAtLatest || position.followLatest || justSent) {
+                snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it == itemKeys.size }
+                val last = itemKeys.lastIndex
                 if (last >= 0) listState.scrollToItem(last)
                 position.followLatest = true
             }
