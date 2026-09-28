@@ -5,6 +5,32 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class ScannedAddressTest {
+    private val ticket = "a".repeat(64)
+
+    @Test
+    fun `accepts menu pairing QR without leaking ticket into the address`() {
+        assertEquals(
+            ScannedPairing("https://holon.example", ticket),
+            parseScannedPairing("https://holon.example/login#pair=$ticket"),
+        )
+        assertEquals(
+            ScannedPairing("http://100.64.0.1:7878", ticket),
+            parseScannedPairing("http://100.64.0.1:7878/login#pair=$ticket"),
+        )
+    }
+
+    @Test
+    fun `rejects malformed pairing QR`() {
+        listOf(
+            "https://holon.example/login?ticket=x#pair=$ticket",
+            "https://user@holon.example/login#pair=$ticket",
+            "https://holon.example/other#pair=$ticket",
+            "https://holon.example/login#pair=short",
+            "https://holon.example/login#pair=$ticket&extra=1",
+            "ftp://holon.example/login#pair=$ticket",
+        ).forEach { assertFailsWith<IllegalArgumentException> { parseScannedPairing(it) } }
+    }
+
     @Test
     fun `normalizes supported Holon address`() {
         assertEquals(

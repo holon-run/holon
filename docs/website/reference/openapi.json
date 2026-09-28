@@ -9837,6 +9837,35 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "PairingIssueResponse": {
+        "properties": {
+          "expires_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket",
+          "expires_at"
+        ],
+        "title": "PairingIssueResponse",
+        "type": "object"
+      },
+      "PairingRedeemRequest": {
+        "properties": {
+          "ticket": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ticket"
+        ],
+        "title": "PairingRedeemRequest",
+        "type": "object"
+      },
       "PerformanceDiagnosticsSnapshot": {
         "properties": {
           "attribution": {
@@ -14770,6 +14799,54 @@
           }
         },
         "title": "SyncTemplateRemoteSourcesRequest",
+        "type": "object"
+      },
+      "TailscaleServeStatus": {
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "conflict": {
+            "type": "boolean"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "desired_enabled": {
+            "type": "boolean"
+          },
+          "hostname": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": "string"
+          },
+          "serve_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "serving": {
+            "type": "boolean"
+          },
+          "status_known": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "desired_enabled",
+          "available",
+          "connected",
+          "status_known",
+          "serving",
+          "conflict",
+          "message"
+        ],
+        "title": "TailscaleServeStatus",
         "type": "object"
       },
       "TaskInputRequest": {
@@ -20326,6 +20403,160 @@
         ]
       }
     },
+    "/api/auth/pairing/issue": {
+      "post": {
+        "description": "Issue a short-lived, single-use local pairing ticket. Requires an explicit control token or session.",
+        "operationId": "pairingIssue",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingIssueResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Issue pairing ticket",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/pairing/redeem": {
+      "post": {
+        "description": "Exchange a one-time pairing ticket for a browser session cookie.",
+        "operationId": "pairingRedeem",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingRedeemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "summary": "Redeem pairing ticket",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/auth/pairing/redeem/native": {
+      "post": {
+        "description": "Exchange a one-time pairing ticket for a native session credential.",
+        "operationId": "pairingRedeemNative",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingRedeemRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeSessionResponse"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "summary": "Redeem native pairing ticket",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/api/auth/session/exchange": {
       "post": {
         "description": "Exchange a static or bootstrap credential for a revocable session credential and browser session cookie.",
@@ -23136,6 +23367,150 @@
         "summary": "Exit workspace",
         "tags": [
           "control"
+        ]
+      }
+    },
+    "/api/control/network/tailscale/serve": {
+      "get": {
+        "description": "Return the desired and actual Tailscale Serve state, including conflicts.",
+        "operationId": "tailscaleServeStatus",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServeStatus"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Tailscale Serve status",
+        "tags": [
+          "network"
+        ]
+      }
+    },
+    "/api/control/network/tailscale/serve/disable": {
+      "post": {
+        "description": "Disable the Holon root Serve rule without removing another rule, then persist the desired state.",
+        "operationId": "disableTailscaleServe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServeStatus"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Disable Tailscale Serve",
+        "tags": [
+          "network"
+        ]
+      }
+    },
+    "/api/control/network/tailscale/serve/enable": {
+      "post": {
+        "description": "Enable the Holon root Serve rule without replacing a conflicting rule, then persist the desired state.",
+        "operationId": "enableTailscaleServe",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TailscaleServeStatus"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Enable Tailscale Serve",
+        "tags": [
+          "network"
         ]
       }
     },

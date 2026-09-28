@@ -89,6 +89,33 @@ admission layers.
 4. OIDC identity matching uses issuer plus subject, never email alone.
 5. Local mode remains usable without an OIDC provider.
 
+### Menu-initiated pairing (local mode)
+
+The macOS menu can request a two-minute, single-use pairing ticket from the
+local daemon (`POST /api/auth/pairing/issue`) using an explicit valid control
+token or existing session, even if general control admission is optional.
+Trusted Unix admission is also allowed. OIDC mode rejects issuance; a menu must not bypass OIDC with
+local credentials. The issuer keeps only a digest in bounded in-memory state.
+Consumption is atomic and removes the ticket even if subsequent session
+creation fails; daemon restart invalidates all outstanding tickets.
+The store is daemon-wide rather than listener-local: a menu mints the ticket
+over the loopback listener and its holder redeems it from the advertised LAN or
+Tailscale address, so every listener of one daemon must serve the same tickets.
+
+The browser receives the ticket in a `/login#pair=...` fragment, removes the
+fragment from history before POSTing it to `/api/auth/pairing/redeem`, and gets
+the normal HttpOnly session cookie. The Android client exchanges the
+same ticket at `/api/auth/pairing/redeem/native` for an opaque session
+credential after confirming the target and, for HTTP, the plaintext risk.
+Neither QR nor browser URL contains the long-lived control token.
+The QR is created only on operator request and is hidden on timeout.
+
+The fragment avoids HTTP request-line and referrer leakage, **not** network
+eavesdropping: plaintext LAN traffic still exposes ticket redemption and
+session cookies to an on-path party. Prefer Tailscale HTTPS; the menu explicitly
+warns when the selected destination is HTTP. Android redeems only after
+confirmation and saves the revocable session credential.
+
 ## Follow-up slices
 
 The next implementation slice adds `/auth/login`, `/auth/callback`, and

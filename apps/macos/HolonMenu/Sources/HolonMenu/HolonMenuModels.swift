@@ -67,6 +67,17 @@ struct HolonTailscaleStatus: Equatable, Sendable {
     var hostname: String?
     var serveURL: URL?
     var message: String
+    var desiredEnabled = false
+    var serving = false
+    var conflict = false
+    var statusKnown = false
+
+    var hasDrift: Bool { statusKnown && desiredEnabled != serving }
+
+    var desiredTitle: String { "Desired: \(desiredEnabled ? "On" : "Off")" }
+    var actualTitle: String {
+        statusKnown ? "Actual: \(serving ? "Serving" : "Not serving")" : "Actual: Unknown"
+    }
 
     var title: String {
         switch state {
@@ -231,6 +242,8 @@ protocol HolonDesiredStateClient: Sendable {
     func stop() async throws -> HolonDaemonStatus
     func restart() async throws -> HolonDaemonStatus
     func webURL() async throws -> URL
+    func authenticatedWebURL() async throws -> URL
+    func pairingURL(for destination: URL) async throws -> URL
     func logsURL() async throws -> URL
     func launchAtLoginEnabled() async throws -> Bool
     func setLaunchAtLoginEnabled(_ enabled: Bool) async throws

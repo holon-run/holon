@@ -18,7 +18,11 @@ final class HolonMenuViewModel: ObservableObject {
     @Published private(set) var isPolling = false
     @Published private(set) var activeOperation: String?
     @Published private(set) var tailscaleStatus: HolonTailscaleStatus?
+    @Published private(set) var tailscaleError: String?
     @Published private(set) var lanURL: URL?
+    @Published private(set) var lanError: String?
+    @Published private(set) var pairingURL: URL?
+    @Published private(set) var pairingError: String?
     @Published var showTailscaleServeConfirmation = false
     @Published var showLANConfirmation = false
     @Published var launchAtLoginEnabled = false
@@ -28,6 +32,7 @@ final class HolonMenuViewModel: ObservableObject {
     private let client: any HolonDesiredStateClient
     private let opener: MenuURLOpening
     private var pollingTask: Task<Void, Never>?
+    private var pairingExpiryTask: Task<Void, Never>?
 
     init(client: some HolonDesiredStateClient, opener: some MenuURLOpening = SystemMenuURLOpener()) {
         self.client = client
@@ -36,6 +41,7 @@ final class HolonMenuViewModel: ObservableObject {
 
     deinit {
         pollingTask?.cancel()
+        pairingExpiryTask?.cancel()
     }
 
     func bootstrap() async {
@@ -55,9 +61,15 @@ final class HolonMenuViewModel: ObservableObject {
 
     func refresh() async {
         do {
+            let previousPID = status?.pid
+            let previousConnection = connectionURL
             status = try await client.status()
             tailscaleStatus = try await client.tailscaleStatus()
             lanURL = try await client.lanURL()
+            if previousPID != nil && previousPID != status?.pid
+                || previousConnection != nil && previousConnection != connectionURL {
+                hidePairingCode()
+            }
             launchAtLoginEnabled = try await client.launchAtLoginEnabled()
             lastError = nil
         } catch {
@@ -87,6 +99,7 @@ final class HolonMenuViewModel: ObservableObject {
 
     func enableLAN() async {
         showLANConfirmation = false
+        lanError = nil
         activeOperation = "Enabling LAN access…"
         defer { activeOperation = nil }
         do {
@@ -94,11 +107,12 @@ final class HolonMenuViewModel: ObservableObject {
             status = try await client.status()
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            lanError = error.localizedDescription
         }
     }
 
     func disableLAN() async {
+        lanError = nil
         activeOperation = "Disabling LAN access…"
         defer { activeOperation = nil }
         do {
@@ -106,40 +120,67 @@ final class HolonMenuViewModel: ObservableObject {
             lanURL = nil
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            lanError = error.localizedDescription
         }
     }
 
     func enableTailscaleServe() async {
         showTailscaleServeConfirmation = false
+        tailscaleError = nil
         activeOperation = "Updating Tailscale…"
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.enableTailscaleServe()
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            tailscaleError = error.localizedDescription
         }
     }
 
     func disableTailscaleServe() async {
+        tailscaleError = nil
         activeOperation = "Updating Tailscale…"
         defer { activeOperation = nil }
         do {
             tailscaleStatus = try await client.disableTailscaleServe()
             lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            tailscaleError = error.localizedDescription
         }
     }
 
     func openWeb() async {
+        pairingError = nil
         do {
-            let url = try await client.webURL()
+            let url = try await client.authenticatedWebURL()
             opener.open(url)
+            lastError = nil
         } catch {
-            lastError = error.localizedDescription
+            pairingError = error.localizedDescription
         }
+    }
+
+    func showPairingCode() async {
+        guard let destination = connectionURL else { return }
+        pairingError = nil
+        do {
+            let url = try await client.pairingURL(for: destination)
+            pairingExpiryTask?.cancel()
+            pairingURL = url
+            lastError = nil
+            pairingExpiryTask = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(120))
+                guard !Task.isCancelled else { return }
+                self?.pairingURL = nil
+            }
+        } catch {
+            pairingError = error.localizedDescription
+        }
+    }
+
+    func hidePairingCode() {
+        pairingExpiryTask?.cancel()
+        pairingURL = nil
     }
 
     func openLogs() async {

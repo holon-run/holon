@@ -3065,6 +3065,13 @@ code {
   gap: 16px;
 }
 
+.settings-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .settings-card-head h2,
 .provider-card h3 {
   margin: 2px 0 0;

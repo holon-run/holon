@@ -367,6 +367,7 @@ internal object UiCopy {
         正在停止本轮…|Stopping turn…
         正在安全登录…|Signing in securely…
         消息不属于当前登录身份|This message belongs to a different signed-in identity
+        配对码无效或已过期，请在 macOS 菜单重新生成|Pairing code is invalid or expired. Generate a new one in the macOS menu.
         登录已失效，请重新登录|Session expired. Sign in again.
         计划不属于当前 Agent|This plan belongs to a different Agent
         请求标识冲突，请重新发送|Request ID conflict. Send again.

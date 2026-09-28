@@ -2,6 +2,30 @@ package run.holon.android.app
 
 import java.net.URI
 
+internal data class ScannedPairing(val address: String, val ticket: String)
+
+internal fun parseScannedPairing(input: String): ScannedPairing {
+    val trimmed = input.trim()
+    require(trimmed.length <= 2048) { "配对二维码过长" }
+    val uri = runCatching { URI(trimmed) }.getOrElse {
+        throw IllegalArgumentException("配对二维码格式无效")
+    }
+    require(uri.scheme?.lowercase() in setOf("http", "https") &&
+        uri.host != null && uri.userInfo == null && uri.rawQuery == null &&
+        uri.path == "/login" && uri.port in -1..65535) {
+        "配对二维码必须是 Holon 登录地址"
+    }
+    val ticket = uri.rawFragment?.removePrefix("pair=")
+    require(uri.rawFragment?.startsWith("pair=") == true &&
+        ticket?.matches(Regex("[0-9a-fA-F]{64}")) == true) {
+        "配对二维码票据无效"
+    }
+    return ScannedPairing(
+        URI(uri.scheme.lowercase(), null, uri.host, uri.port, null, null, null).toString(),
+        ticket,
+    )
+}
+
 internal fun normalizeScannedAddress(input: String): String {
     val trimmed = input.trim().trimEnd('/')
     require(trimmed.length <= 2048) { "二维码地址过长" }

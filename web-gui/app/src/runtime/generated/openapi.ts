@@ -761,6 +761,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/auth/pairing/issue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Issue pairing ticket
+         * @description Issue a short-lived, single-use local pairing ticket. Requires an explicit control token or session.
+         */
+        post: operations["pairingIssue"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/pairing/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Redeem pairing ticket
+         * @description Exchange a one-time pairing ticket for a browser session cookie.
+         */
+        post: operations["pairingRedeem"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/auth/pairing/redeem/native": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Redeem native pairing ticket
+         * @description Exchange a one-time pairing ticket for a native session credential.
+         */
+        post: operations["pairingRedeemNative"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/session/exchange": {
         parameters: {
             query?: never;
@@ -1599,6 +1659,66 @@ export interface paths {
          * @description Return an agent to its default AgentHome workspace.
          */
         post: operations["exitWorkspace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/network/tailscale/serve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Tailscale Serve status
+         * @description Return the desired and actual Tailscale Serve state, including conflicts.
+         */
+        get: operations["tailscaleServeStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/network/tailscale/serve/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disable Tailscale Serve
+         * @description Disable the Holon root Serve rule without removing another rule, then persist the desired state.
+         */
+        post: operations["disableTailscaleServe"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/network/tailscale/serve/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enable Tailscale Serve
+         * @description Enable the Holon root Serve rule without replacing a conflicting rule, then persist the desired state.
+         */
+        post: operations["enableTailscaleServe"];
         delete?: never;
         options?: never;
         head?: never;
@@ -5223,6 +5343,16 @@ export interface components {
         OperatorTransportBindingRequest: {
             [key: string]: unknown;
         };
+        /** PairingIssueResponse */
+        PairingIssueResponse: {
+            /** Format: date-time */
+            expires_at: string;
+            ticket: string;
+        };
+        /** PairingRedeemRequest */
+        PairingRedeemRequest: {
+            ticket: string;
+        };
         /** PerformanceDiagnosticsSnapshot */
         PerformanceDiagnosticsSnapshot: {
             /** @default [] */
@@ -6789,6 +6919,18 @@ export interface components {
              *      are synchronized.
              */
             source_id?: string | null;
+        };
+        /** TailscaleServeStatus */
+        TailscaleServeStatus: {
+            available: boolean;
+            conflict: boolean;
+            connected: boolean;
+            desired_enabled: boolean;
+            hostname?: string | null;
+            message: string;
+            serve_url?: string | null;
+            serving: boolean;
+            status_known: boolean;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         TaskInputRequest: {
@@ -9140,6 +9282,128 @@ export interface operations {
             };
         };
     };
+    pairingIssue: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PairingIssueResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    pairingRedeem: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairingRedeemRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SessionResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    pairingRedeemNative: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PairingRedeemRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NativeSessionResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     sessionExchange: {
         parameters: {
             query?: never;
@@ -11010,6 +11274,120 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    tailscaleServeStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TailscaleServeStatus"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    disableTailscaleServe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TailscaleServeStatus"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    enableTailscaleServe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TailscaleServeStatus"];
                 };
             };
             /** @description Client error JSON response. */

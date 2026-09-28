@@ -16,11 +16,12 @@ use crate::{
         ConversationSummaryResponse, CreateTimerRequest, CurrentUserResponse, DeleteAgentRequest,
         DesktopCapabilities, EnqueueResponse, HandshakeResponse, HttpErrorEnvelope,
         MarkBriefReadRequest, MemoryGetRequest, ModelConfigMigrationRequest, NativeSessionResponse,
-        PickWorkItemRequest, PickWorkItemResponse, ResolveFileReferencesRequest,
-        ResolveFileReferencesResponse, RevealFileRequest, RuntimeConfigReadResponse,
-        RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, RuntimeDecisionTestRequest,
-        RuntimeDecisionTestResponse, SearchRequest, SearchResponse, SessionExchangeRequest,
-        SessionResponse, UpdateWorkItemRequest, CONVERSATION_SHADOW_DEFAULT_LIMIT,
+        PairingIssueResponse, PairingRedeemRequest, PickWorkItemRequest, PickWorkItemResponse,
+        ResolveFileReferencesRequest, ResolveFileReferencesResponse, RevealFileRequest,
+        RuntimeConfigReadResponse, RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse,
+        RuntimeDecisionTestRequest, RuntimeDecisionTestResponse, SearchRequest, SearchResponse,
+        SessionExchangeRequest, SessionResponse, TailscaleServeStatus, UpdateWorkItemRequest,
+        CONVERSATION_SHADOW_DEFAULT_LIMIT,
     },
     http_dto::{AgentStateSnapshotDto, SlimTaskDto, SlimWorkItemDto},
     memory::MemoryGetResult,
@@ -180,6 +181,9 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/control/runtime/traces/{trace_id}", "runtimeTrace", "runtime", "Runtime trace waterfall", "Return the recorded span waterfall for a recent or retained persistent trace.", None, "RecentTrace", AuthKind::Control),
     route_with_response("get", "/control/runtime/config", "runtimeConfig", "runtime", "Runtime config", "Return the daemon effective runtime configuration surface.", None, "RuntimeConfigReadResponse", AuthKind::Control),
     route_with_response("patch", "/control/runtime/config", "runtimeConfigUpdate", "runtime", "Update runtime config", "Persist runtime-mutable config updates and classify their effect as restart/reload-required or rejected.", Some("RuntimeConfigUpdateRequest"), "RuntimeConfigUpdateResponse", AuthKind::Control),
+    route_with_response("get", "/control/network/tailscale/serve", "tailscaleServeStatus", "network", "Tailscale Serve status", "Return the desired and actual Tailscale Serve state, including conflicts.", None, "TailscaleServeStatus", AuthKind::Control),
+    route_with_response("post", "/control/network/tailscale/serve/enable", "enableTailscaleServe", "network", "Enable Tailscale Serve", "Enable the Holon root Serve rule without replacing a conflicting rule, then persist the desired state.", None, "TailscaleServeStatus", AuthKind::Control),
+    route_with_response("post", "/control/network/tailscale/serve/disable", "disableTailscaleServe", "network", "Disable Tailscale Serve", "Disable the Holon root Serve rule without removing another rule, then persist the desired state.", None, "TailscaleServeStatus", AuthKind::Control),
     route_with_response("post", "/control/runtime/decision/test", "testDecision", "runtime", "Test Decision provider", "Run a fixed, side-effect-free Decision provider smoke test without returning credentials or mutating configuration.", Some("RuntimeDecisionTestRequest"), "RuntimeDecisionTestResponse", AuthKind::Control),
     route_with_response("post", "/control/runtime/config/migrate-model-routes", "migrateModelConfigRoutes", "runtime", "Migrate model config routes", "Inspect legacy model route references or persist a complete canonical migration across config.json and agent state.", Some("ModelConfigMigrationRequest"), "ModelConfigMigrationReport", AuthKind::Control),
     route("get", "/control/runtime/decision/local-onnx/preset/{preset}", "runtimeDecisionLocalOnnxPreset", "runtime", "Local ONNX preset status", "Return the managed-cache status for a local ONNX decision preset.", None, AuthKind::Control),
@@ -193,6 +197,9 @@ const ROUTES: &[RouteSpec] = &[
     route("get", "/auth/method", "authMethod", "auth", "Authentication method", "Return the configured authentication mode used by the Web login page.", None, AuthKind::None),
     route_with_response("post", "/auth/session/exchange", "sessionExchange", "auth", "Exchange session credential", "Exchange a static or bootstrap credential for a revocable session credential and browser session cookie.", Some("SessionExchangeRequest"), "SessionResponse", AuthKind::None),
     route_with_response("post", "/auth/session/exchange/native", "sessionExchangeNative", "auth", "Exchange native session credential", "Exchange a static or bootstrap credential for a revocable session credential and native session response.", Some("SessionExchangeRequest"), "NativeSessionResponse", AuthKind::None),
+    route_with_response("post", "/auth/pairing/issue", "pairingIssue", "auth", "Issue pairing ticket", "Issue a short-lived, single-use local pairing ticket. Requires an explicit control token or session.", None, "PairingIssueResponse", AuthKind::Control),
+    route_with_response("post", "/auth/pairing/redeem", "pairingRedeem", "auth", "Redeem pairing ticket", "Exchange a one-time pairing ticket for a browser session cookie.", Some("PairingRedeemRequest"), "SessionResponse", AuthKind::None),
+    route_with_response("post", "/auth/pairing/redeem/native", "pairingRedeemNative", "auth", "Redeem native pairing ticket", "Exchange a one-time pairing ticket for a native session credential.", Some("PairingRedeemRequest"), "NativeSessionResponse", AuthKind::None),
     route_with_response("get", "/auth/session/me", "sessionMe", "auth", "Current session user", "Return the identity behind the current session: the authenticated OIDC user, or the stable local control identity for static-token deployments.", None, "CurrentUserResponse", AuthKind::None),
     route("post", "/control/runtime/shutdown", "runtimeShutdown", "runtime", "Runtime shutdown", "Request graceful runtime shutdown.", None, AuthKind::Control),
     route("post", "/control/agents/{agent_id}/debug-prompt", "debugPrompt", "control", "Debug prompt", "Render a diagnostic prompt preview.", Some("DebugPromptRequest"), AuthKind::Control),
@@ -767,6 +774,14 @@ fn component_schemas() -> Value {
         component_schema_with_refs::<NativeSessionResponse>(),
     );
     schemas.insert(
+        "PairingIssueResponse".into(),
+        component_schema_with_refs::<PairingIssueResponse>(),
+    );
+    schemas.insert(
+        "PairingRedeemRequest".into(),
+        component_schema_with_refs::<PairingRedeemRequest>(),
+    );
+    schemas.insert(
         "ControlPromptRequest".into(),
         component_schema_with_refs::<ControlPromptRequest>(),
     );
@@ -950,6 +965,10 @@ fn component_schemas() -> Value {
     schemas.insert(
         "RuntimeConfigReadResponse".into(),
         component_schema::<RuntimeConfigReadResponse>(),
+    );
+    schemas.insert(
+        "TailscaleServeStatus".into(),
+        component_schema::<TailscaleServeStatus>(),
     );
     schemas.insert(
         "PerformanceDiagnosticsSnapshot".into(),

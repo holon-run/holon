@@ -162,6 +162,7 @@ internal class HolonRepository(
         address: String,
         token: CharArray,
         allowInsecureHttp: Boolean,
+        pairingTicket: String? = null,
     ): Pair<ActiveSession, HolonRosterSnapshot> {
         val baseUrl = normalizeAddress(address, allowInsecureHttp)
         val profile =
@@ -176,7 +177,7 @@ internal class HolonRepository(
         val previousCredential = scopedStore.read()
         val previousActive = active
         val previousClient = client
-        var transientToken: String? = token.concatToString()
+        var transientToken: String? = if (pairingTicket == null) token.concatToString() else null
         token.fill('\u0000')
         val candidate =
             HolonHttpClient(
@@ -186,7 +187,11 @@ internal class HolonRepository(
                 insecureHttpHosts = insecureHttpHosts(baseUrl),
             )
         return try {
-            candidate.exchangeSession(transientToken.orEmpty())
+            if (pairingTicket == null) {
+                candidate.exchangeSession(transientToken.orEmpty())
+            } else {
+                candidate.redeemPairingTicket(pairingTicket)
+            }
             transientToken = null
             val user = candidate.currentUser()
             val server = requireCompatible(candidate.handshake(REQUIRED_CAPABILITIES))
@@ -1164,6 +1169,11 @@ internal fun humanError(error: Throwable): String =
         is java.net.ConnectException -> "无法连接 Holon 主机，请确认 daemon 已启动"
         else -> "无法连接 Holon，请检查网络和地址"
     }
+
+/** Pairing starts without any session, so an auth failure means the one-time code. */
+internal fun pairingHumanError(error: Throwable): String =
+    if (error.isAuthenticationFailure()) "配对码无效或已过期，请在 macOS 菜单重新生成"
+    else humanError(error)
 
 internal fun Throwable.isAuthenticationFailure(): Boolean =
     this is HolonHttpException && statusCode in setOf(401, 403)

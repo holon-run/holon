@@ -105,6 +105,7 @@ mod conversation;
 mod events;
 mod ingress;
 mod jobs;
+mod tailscale_serve;
 // S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
 // unit tests now and wired into handlers by the S2/S4/S5 slices.
 mod desktop;
@@ -120,12 +121,14 @@ mod unread;
 mod web;
 mod workspace_files;
 pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
+pub(crate) use tailscale_serve::TailscaleServeStatus;
 pub(crate) use unread::MarkBriefReadRequest;
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
 pub(crate) use auth::{
-    CurrentUserResponse, NativeSessionResponse, SessionExchangeRequest, SessionResponse,
+    CurrentUserResponse, NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest,
+    SessionExchangeRequest, SessionResponse,
 };
 pub(crate) use conversation::{
     ConversationActivityResponse, ConversationReadQuery, ConversationShadowQuery,
@@ -212,6 +215,8 @@ fn decrement_http_in_flight_requests() -> usize {
 pub struct AppState {
     pub host: RuntimeHost,
     pub require_control_token: bool,
+    pairing_tickets: Arc<std::sync::Mutex<auth::PairingTickets>>,
+    tailscale_serve_change: Arc<std::sync::Mutex<()>>,
     transport: ControlTransportKind,
     pub runtime_service: Option<RuntimeServiceHandle>,
     pub advertise_url: Option<String>,
@@ -351,6 +356,11 @@ pub(crate) const EVENT_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs
 pub(crate) const SESSION_COOKIE_NAME: &str = "holon_session";
 
 impl AppState {
+    pub fn share_listener_state_from(mut self, other: &Self) -> Self {
+        self.pairing_tickets = other.pairing_tickets.clone();
+        self.tailscale_serve_change = other.tailscale_serve_change.clone();
+        self
+    }
     pub fn for_tcp(host: RuntimeHost) -> Self {
         Self::for_tcp_with_runtime_service(host, None)
     }
@@ -374,6 +384,8 @@ impl AppState {
         Self {
             host,
             require_control_token,
+            pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
+            tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
             transport: ControlTransportKind::Tcp,
             runtime_service,
             advertise_url: None,
@@ -411,6 +423,8 @@ impl AppState {
         Self {
             host,
             require_control_token: false,
+            pairing_tickets: Arc::new(std::sync::Mutex::new(auth::PairingTickets::default())),
+            tailscale_serve_change: Arc::new(std::sync::Mutex::new(())),
             transport: ControlTransportKind::Unix,
             runtime_service,
             advertise_url: None,
@@ -680,6 +694,18 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/control/runtime/config", get(control::runtime_config))
         .route(
+            "/control/network/tailscale/serve",
+            get(tailscale_serve::status),
+        )
+        .route(
+            "/control/network/tailscale/serve/enable",
+            post(tailscale_serve::enable),
+        )
+        .route(
+            "/control/network/tailscale/serve/disable",
+            post(tailscale_serve::disable),
+        )
+        .route(
             "/control/runtime/config",
             patch(control::runtime_config_update),
         )
@@ -713,6 +739,12 @@ pub fn router(state: AppState) -> Router {
         .route("/auth/oidc/callback", get(auth::complete_oidc_login))
         .route("/auth/method", get(auth::auth_method))
         .route("/auth/session/exchange", post(auth::exchange_session))
+        .route("/auth/pairing/issue", post(auth::issue_pairing_ticket))
+        .route("/auth/pairing/redeem", post(auth::redeem_pairing_ticket))
+        .route(
+            "/auth/pairing/redeem/native",
+            post(auth::redeem_pairing_ticket_native),
+        )
         .route(
             "/auth/session/exchange/native",
             post(auth::exchange_session_native),
@@ -1417,6 +1449,8 @@ async fn session_auth_middleware(
             | "/auth/oidc/callback"
             | "/auth/method"
             | "/auth/session/exchange"
+            | "/auth/pairing/redeem"
+            | "/auth/pairing/redeem/native"
             | "/login"
     ) || api_path.starts_with("/callbacks/")
         || api_path.starts_with("/webhooks/");
@@ -1830,7 +1864,7 @@ mod tests {
     use super::{
         add_retry_after_to_service_unavailable, authenticate_session, error_response,
         if_none_match_satisfied, projection_gate_error_response, router, session_credential,
-        AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
+        tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -1866,6 +1900,208 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    #[tokio::test]
+    async fn pairing_ticket_exchanges_once_for_a_session_cookie() {
+        let (_home, host) = control_token_test_host();
+        let app = router(AppState::for_tcp(host));
+        let issue = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .header(header::AUTHORIZATION, "Bearer secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.status(), StatusCode::OK);
+        let body = to_bytes(issue.into_body(), 4096).await.unwrap();
+        let ticket = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for expected in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/auth/pairing/redeem")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"ticket": ticket}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+            if expected == StatusCode::OK {
+                assert!(response.headers().contains_key(header::SET_COOKIE));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn pairing_ticket_exchanges_across_tcp_and_unix_listeners_once() {
+        let (_home, host) = control_token_test_host();
+        let tcp_state = AppState::for_tcp(host.clone());
+        let tcp = router(tcp_state.clone());
+        let unix = router(AppState::for_unix(host).share_listener_state_from(&tcp_state));
+        let issue = unix
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(issue.status(), StatusCode::OK);
+        let body = to_bytes(issue.into_body(), 4096).await.unwrap();
+        let ticket = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["ticket"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        for expected in [StatusCode::OK, StatusCode::UNAUTHORIZED] {
+            let response = tcp
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/auth/pairing/redeem")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            serde_json::json!({"ticket": ticket}).to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+    }
+
+    #[test]
+    fn tailscale_changes_serialize_inspection_command_and_save() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        struct ServeRunner {
+            serving: AtomicBool,
+            active: AtomicUsize,
+            overlap: AtomicBool,
+        }
+
+        impl tailscale_serve::Runner for ServeRunner {
+            fn run(&self, args: &[&str]) -> anyhow::Result<serde_json::Value> {
+                if args == ["status", "--json"] {
+                    return Ok(serde_json::json!({
+                        "BackendState": "Running",
+                        "Self": {"DNSName": "host.example.ts.net."}
+                    }));
+                }
+                let handlers = if self.serving.load(Ordering::SeqCst) {
+                    serde_json::json!({"/": {"Proxy": "http://127.0.0.1:7878"}})
+                } else {
+                    serde_json::json!({})
+                };
+                Ok(serde_json::json!({"Web": {"host.example.ts.net:443": {"Handlers": handlers}}}))
+            }
+
+            fn command(&self, args: &[&str]) -> anyhow::Result<()> {
+                if self.active.fetch_add(1, Ordering::SeqCst) != 0 {
+                    self.overlap.store(true, Ordering::SeqCst);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                self.serving
+                    .store(args.last() != Some(&"off"), Ordering::SeqCst);
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let (_home, host) = control_token_test_host();
+        let state = AppState::for_tcp(host);
+        let runner = ServeRunner {
+            serving: AtomicBool::new(false),
+            active: AtomicUsize::new(0),
+            overlap: AtomicBool::new(false),
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| tailscale_serve::change(&state, &runner, true).unwrap());
+            scope.spawn(|| tailscale_serve::change(&state, &runner, false).unwrap());
+        });
+        assert!(!runner.overlap.load(Ordering::SeqCst));
+        let stored =
+            crate::config::load_persisted_config_at(&state.host.config().config_file_path).unwrap();
+        assert_eq!(
+            stored.tailscale_serve_desired_enabled,
+            Some(runner.serving.load(Ordering::SeqCst))
+        );
+    }
+
+    #[tokio::test]
+    async fn pairing_issue_requires_control_admission() {
+        let (_home, host) = control_token_test_host();
+        let app = router(AppState::for_tcp(host));
+        for (authorization, expected) in [
+            (None, StatusCode::UNAUTHORIZED),
+            (Some("Bearer wrong"), StatusCode::UNAUTHORIZED),
+            (Some("Bearer secret"), StatusCode::OK),
+        ] {
+            let mut request = Request::builder()
+                .method("POST")
+                .uri("/api/auth/pairing/issue");
+            if let Some(authorization) = authorization {
+                request = request.header(header::AUTHORIZATION, authorization);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected);
+        }
+        let (_home, host) = test_host();
+        let response = router(AppState::for_tcp(host))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/issue")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn pairing_redeem_rejects_oidc_mode() {
+        let (home, _) = test_host();
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.auth.mode = crate::authentication::AuthenticationMode::Oidc;
+        let host =
+            RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
+        let response = router(AppState::for_tcp(host))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/pairing/redeem")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"ticket": "0".repeat(64)}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

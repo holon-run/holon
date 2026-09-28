@@ -5,6 +5,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlinx.serialization.json.Json
 import run.holon.android.sdk.HolonConversationSnapshot
+import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonJsonDocument
 
 class HolonRepositoryTest {
@@ -81,6 +82,18 @@ class HolonRepositoryTest {
         val merged = mergeConversationSnapshots(cached, incoming)
 
         assertEquals(listOf("new"), merged.turns.map { it.id })
+    }
+
+    @Test
+    fun `pairing auth failure names the one-time code instead of an expired session`() {
+        assertEquals(
+            "配对码无效或已过期，请在 macOS 菜单重新生成",
+            pairingHumanError(HolonHttpException(401, null)),
+        )
+        assertEquals(
+            "无法连接 Holon 主机，请确认 daemon 已启动",
+            pairingHumanError(java.net.ConnectException("refused")),
+        )
     }
 
     private fun snapshot(raw: String): HolonConversationSnapshot =

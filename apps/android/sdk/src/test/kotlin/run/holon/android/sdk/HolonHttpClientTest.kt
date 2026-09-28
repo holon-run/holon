@@ -221,6 +221,28 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `pairing ticket redeems without forwarding an existing credential`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse(fixture("session-response-v1.json")))
+            val store = FakeSessionCredentialStore().apply { write("old-session") }
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = store,
+                )
+            val ticket = "a".repeat(64)
+            val session = client.redeemPairingTicket(ticket)
+
+            assertEquals("session-credential", session.credential)
+            assertEquals("session-credential", store.value)
+            val request = server.takeRequest()
+            assertEquals("/auth/pairing/redeem/native", request.path)
+            assertNull(request.getHeader("Authorization"))
+            assertEquals("""{"ticket":"$ticket"}""", request.body.readUtf8())
+        }
+    }
+
+    @Test
     fun `stored session credential is used as bearer fallback`() {
         MockWebServer().use { server ->
             server.enqueue(jsonResponse(fixture("agent-list-v1.json")))
