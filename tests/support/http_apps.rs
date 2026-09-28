@@ -194,14 +194,12 @@ pub async fn apps_reject_unknown_agent_and_app() -> Result<()> {
         .await?;
     assert_eq!(unknown_app.status(), 404);
 
-    // Unknown agents have no apps directory; discovery is empty, assets 404.
+    // Unknown agents must not be confused with a valid agent with no apps.
     let unknown_agent_list = client
         .get(format!("{base}/apps/no-such-agent"))
         .send()
         .await?;
-    assert_eq!(unknown_agent_list.status(), 200);
-    let body: serde_json::Value = unknown_agent_list.json().await?;
-    assert!(body["apps"].as_array().expect("apps array").is_empty());
+    assert_eq!(unknown_agent_list.status(), 404);
 
     let unknown_agent_entry = client
         .get(format!("{base}/apps/no-such-agent/app/"))
@@ -345,6 +343,26 @@ pub async fn apps_reject_symlink_escape() -> Result<()> {
         .send()
         .await?;
     assert!(linked.status().is_client_error());
+
+    // The apps root itself must not redirect one agent to another agent's apps.
+    let root_link_agent = host.config().default_agent_id.clone();
+    let root_link_apps = agent_apps_dir(&host, "root-link-target");
+    write_app(
+        &root_link_apps,
+        "private",
+        &[
+            ("manifest.json", &manifest("private")),
+            ("index.html", "root link secret"),
+        ],
+    )?;
+    let real_apps = host.config().data_dir.join("real-apps-root");
+    std::fs::rename(&agent_apps_dir(&host, &root_link_agent), &real_apps)?;
+    std::os::unix::fs::symlink(&real_apps, agent_apps_dir(&host, &root_link_agent))?;
+    let root_linked = Client::new()
+        .get(format!("{base}/apps/{root_link_agent}/private/"))
+        .send()
+        .await?;
+    assert_eq!(root_linked.status(), 403);
 
     server.abort();
     Ok(())

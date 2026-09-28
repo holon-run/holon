@@ -56,11 +56,11 @@ struct AppManifest {
 
 /// Discover the valid apps owned by an agent.
 ///
-/// A missing or empty `apps/` directory yields an empty list rather than an
-/// error, and GET never creates directories. Entries whose id fails segment
-/// validation, whose directory escapes `apps/` after canonicalize, or whose
-/// manifest is missing/invalid are skipped so discovery only surfaces usable
-/// apps.
+/// A valid agent with a missing or empty `apps/` directory yields an empty
+/// list rather than an error, and GET never creates directories. Entries whose
+/// id fails segment validation, whose directory escapes `apps/` after
+/// canonicalize, or whose manifest is missing/invalid are skipped so
+/// discovery only surfaces usable apps.
 async fn list_apps(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -69,9 +69,14 @@ async fn list_apps(
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
     validate_segment("agent_id", &agent_id)?;
 
-    let apps_dir = state.host.agent_data_dir(&agent_id).join("apps");
+    let agent_home = state.host.agent_data_dir(&agent_id);
+    let apps_dir = agent_home.join("apps");
     let mut apps = Vec::new();
-    let mut entries = match fs::read_dir(&apps_dir).await {
+    let apps_root = match canonical_apps_root(&agent_home, &apps_dir).await? {
+        Some(root) => root,
+        None => return Ok(Json(json!({ "agent_id": agent_id, "apps": apps }))),
+    };
+    let mut entries = match fs::read_dir(&apps_root).await {
         Ok(entries) => entries,
         Err(_) => return Ok(Json(json!({ "agent_id": agent_id, "apps": apps }))),
     };
@@ -91,7 +96,7 @@ async fn list_apps(
         if validate_segment("app_id", &app_id).is_err() {
             continue;
         }
-        let app_root = match canonical_app_root(&apps_dir, &app_id).await {
+        let app_root = match canonical_app_root(&agent_home, &apps_dir, &app_id).await {
             Ok(root) => root,
             Err(_) => continue,
         };
@@ -144,20 +149,22 @@ async fn resolve_app(
     authorize_remote_access(headers, state).map_err(|err| auth_required(err.to_string()))?;
     validate_segment("agent_id", agent_id)?;
     validate_segment("app_id", app_id)?;
-    let apps_dir = state.host.agent_data_dir(agent_id).join("apps");
-    canonical_app_root(&apps_dir, app_id).await
+    let agent_home = state.host.agent_data_dir(agent_id);
+    let apps_dir = agent_home.join("apps");
+    canonical_app_root(&agent_home, &apps_dir, app_id).await
 }
 
 /// Canonicalize an app directory and prove it stays inside the agent's
 /// `apps/` directory. Rejecting symlinked app directories keeps one agent from
 /// serving another agent's files through a filesystem link.
 async fn canonical_app_root(
+    agent_home: &FsPath,
     apps_dir: &FsPath,
     app_id: &str,
 ) -> Result<PathBuf, (StatusCode, Json<Value>)> {
-    let apps_root = fs::canonicalize(apps_dir)
-        .await
-        .map_err(|_| not_found("agent apps directory not found"))?;
+    let apps_root = canonical_apps_root(agent_home, apps_dir)
+        .await?
+        .ok_or_else(|| not_found("agent apps directory not found"))?;
     let candidate = fs::canonicalize(apps_root.join(app_id))
         .await
         .map_err(|_| not_found(format!("app '{app_id}' not found")))?;
@@ -165,6 +172,44 @@ async fn canonical_app_root(
         return Err(forbidden("app directory escapes the agent apps root"));
     }
     Ok(candidate)
+}
+
+/// Resolve an agent's apps root without trusting a symlink supplied by the
+/// agent. A missing root is valid for discovery, but a missing agent home is
+/// not.
+async fn canonical_apps_root(
+    agent_home: &FsPath,
+    apps_dir: &FsPath,
+) -> Result<Option<PathBuf>, (StatusCode, Json<Value>)> {
+    let home_metadata = fs::metadata(agent_home)
+        .await
+        .map_err(|_| not_found("agent not found"))?;
+    if !home_metadata.is_dir() {
+        return Err(not_found("agent not found"));
+    }
+
+    let apps_metadata = match fs::symlink_metadata(apps_dir).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(internal("failed to inspect agent apps directory")),
+    };
+    if apps_metadata.file_type().is_symlink() {
+        return Err(forbidden("agent apps directory must not be a symlink"));
+    }
+    if !apps_metadata.is_dir() {
+        return Err(forbidden("agent apps path is not a directory"));
+    }
+
+    let agent_root = fs::canonicalize(agent_home)
+        .await
+        .map_err(|_| not_found("agent not found"))?;
+    let apps_root = fs::canonicalize(apps_dir)
+        .await
+        .map_err(|_| not_found("agent apps directory not found"))?;
+    if !apps_root.starts_with(&agent_root) {
+        return Err(forbidden("agent apps directory escapes the agent home"));
+    }
+    Ok(Some(apps_root))
 }
 
 async fn read_manifest(

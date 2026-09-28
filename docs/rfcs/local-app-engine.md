@@ -26,8 +26,9 @@ An app is stored at:
 ```
 
 The directory must contain `manifest.json`. `GET /apps/{agent_id}` returns
-only apps with a valid app directory and valid manifest. A missing or empty
-`apps/` directory returns an empty list; discovery does not create
+only apps with a valid app directory and valid manifest. A valid Agent with a
+missing or empty `apps/` directory returns an empty list; an unknown Agent
+returns `404`. Discovery does not create
 directories. Invalid entries are skipped during discovery and are reported as
 errors when addressed directly.
 
@@ -74,7 +75,8 @@ home; the request cannot select an arbitrary root.
 
 Before serving an app or asset, the resolved path is canonicalized and checked
 to remain under the owning `apps/` directory. This check also prevents
-symlinks from escaping the app root. Asset reads require a regular file and an
+the `apps/` root itself must not be a symlink, and symlinks from escaping the
+app root are rejected. Asset reads require a regular file and an
 allowlisted content type.
 
 The baseline CSP keeps scripts, styles, images, fonts, and connections on the
