@@ -576,7 +576,12 @@ internal class HolonViewModel(
             }.onFailure { error ->
                 tokenChars.fill('\u0000')
                 mutableState.update {
-                    it.copy(busy = false, token = "", error = humanError(error), statusMessage = null)
+                    it.copy(
+                        busy = false,
+                        token = "",
+                        error = if (pairing != null) pairingHumanError(error) else humanError(error),
+                        statusMessage = null,
+                    )
                 }
             }
         }

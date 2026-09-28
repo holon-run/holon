@@ -1170,6 +1170,11 @@ internal fun humanError(error: Throwable): String =
         else -> "无法连接 Holon，请检查网络和地址"
     }
 
+/** Pairing starts without any session, so an auth failure means the one-time code. */
+internal fun pairingHumanError(error: Throwable): String =
+    if (error.isAuthenticationFailure()) "配对码无效或已过期，请在 macOS 菜单重新生成"
+    else humanError(error)
+
 internal fun Throwable.isAuthenticationFailure(): Boolean =
     this is HolonHttpException && statusCode in setOf(401, 403)
 
