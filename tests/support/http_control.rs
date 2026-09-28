@@ -1479,9 +1479,11 @@ pub async fn agent_skill_detail_follows_active_execution_root_without_canonical_
 pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let skill_name = format!("http-global-catalog-{}", std::process::id());
-    let user_home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let user_home = host
+        .config()
+        .user_home_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("test user home must be configured"))?;
     let user_skill_dir = user_home.join(".agents").join("skills").join(&skill_name);
     let _ = std::fs::remove_dir_all(&user_skill_dir);
     std::fs::create_dir_all(&user_skill_dir)?;
@@ -1555,11 +1557,13 @@ pub async fn skills_catalog_returns_global_user_library_only() -> Result<()> {
 }
 
 pub async fn skill_detail_returns_catalog_skill_markdown() -> Result<()> {
-    let (_host, base, server) = spawn_server().await?;
+    let (host, base, server) = spawn_server().await?;
     let skill_name = format!("http-skill-detail-{}", std::process::id());
-    let user_home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let user_home = host
+        .config()
+        .user_home_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("test user home must be configured"))?;
     let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
         .iter()
         .map(|suffix| user_home.join(suffix))
@@ -1661,7 +1665,7 @@ pub async fn install_skill_existing_destination_returns_conflict() -> Result<()>
 }
 
 pub async fn add_skill_to_catalog_existing_destination_returns_conflict() -> Result<()> {
-    let (_host, base, server) = spawn_server().await?;
+    let (host, base, server) = spawn_server().await?;
     let client = Client::new();
     let skill_name = format!("http-catalog-conflict-{}", std::process::id());
     let local_skill_root = tempdir()?;
@@ -1671,9 +1675,11 @@ pub async fn add_skill_to_catalog_existing_destination_returns_conflict() -> Res
         local_skill_path.join("SKILL.md"),
         format!("# {skill_name}\n\nTemporary catalog conflict test skill.\n"),
     )?;
-    let user_home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let user_home = host
+        .config()
+        .user_home_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("test user home must be configured"))?;
     let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
         .iter()
         .map(|suffix| user_home.join(suffix))
@@ -1712,7 +1718,7 @@ pub async fn add_skill_to_catalog_existing_destination_returns_conflict() -> Res
 }
 
 pub async fn create_skill_install_job_installs_local_skill() -> Result<()> {
-    let (_host, base, server) = spawn_server().await?;
+    let (host, base, server) = spawn_server().await?;
     let client = Client::new();
     let skill_name = format!("http-job-skill-{}", std::process::id());
     let local_skill_root = tempdir()?;
@@ -1722,9 +1728,11 @@ pub async fn create_skill_install_job_installs_local_skill() -> Result<()> {
         local_skill_path.join("SKILL.md"),
         format!("# {skill_name}\n\nTemporary job API test skill.\n"),
     )?;
-    let user_home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let user_home = host
+        .config()
+        .user_home_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("test user home must be configured"))?;
     let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
         .iter()
         .map(|suffix| user_home.join(suffix))
@@ -1793,9 +1801,10 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
         local_skill_path.join("SKILL.md"),
         format!("# {skill_name}\n\nTemporary split API test skill.\n"),
     )?;
-    let user_home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let user_home = config
+        .user_home_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("test user home must be configured"))?;
     let library_root = [".agents/skills", ".codex/skills", ".claude/skills"]
         .iter()
         .map(|suffix| user_home.join(suffix))
@@ -1882,12 +1891,14 @@ pub async fn skill_library_add_remove_and_agent_enable_disable_are_separate() ->
 }
 
 pub async fn skill_library_reconcile_and_check_lock_file() -> Result<()> {
-    let (_host, base, server) = spawn_server().await?;
+    let (host, base, server) = spawn_server().await?;
     let client = Client::new();
     let skill_name = format!("http-lock-skill-{}", std::process::id());
-    let user_home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow::anyhow!("HOME must be set for skill library tests"))?;
+    let user_home = host
+        .config()
+        .user_home_dir
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("test user home must be configured"))?;
     let library_root = user_home.join(".agents").join("skills");
     let library_path = library_root.join(&skill_name);
     let lock_path = user_home.join(".agents").join(".skill-lock.json");

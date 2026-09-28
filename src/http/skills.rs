@@ -3,6 +3,16 @@ use axum::extract::Query;
 
 const USER_GLOBAL_LIBRARY_LABEL: &str = "user_global";
 
+fn effective_user_home_dir(state: &AppState) -> Result<PathBuf> {
+    state
+        .host
+        .config()
+        .user_home_dir
+        .clone()
+        .or_else(|| crate::agent_template::user_home_dir().ok())
+        .ok_or_else(|| anyhow!("HOME is not set; cannot resolve user-global skills"))
+}
+
 pub async fn list_skills(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -34,7 +44,7 @@ pub async fn install_skill(
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let kind = request.kind.clone();
     let skill_name = tokio::task::spawn_blocking(move || {
         crate::skills::install_skill_with_user_home(&agent_home, Some(&user_home), &kind)
@@ -66,7 +76,7 @@ pub async fn add_skill_to_catalog(
     ApiJson(request): ApiJson<crate::types::AddSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let skill_name = tokio::task::spawn_blocking(move || {
         crate::skills::add_library_skill(&user_home, &request.kind)
     })
@@ -86,7 +96,7 @@ pub async fn remove_skill_from_catalog(
     ApiJson(request): ApiJson<crate::types::RemoveSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     crate::skills::remove_library_skill(&user_home, &request.name).map_err(error_response)?;
     Ok(Json(json!({
         "ok": true,
@@ -101,7 +111,7 @@ pub async fn reconcile_skill_catalog(
     ApiJson(request): ApiJson<crate::types::ReconcileSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
     Ok(Json(json!({
@@ -116,7 +126,7 @@ pub async fn refresh_skill_catalog(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let roots = crate::skills::existing_skill_roots(
         Some(&user_home),
         &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
@@ -159,7 +169,7 @@ pub async fn check_skill_catalog(
     ApiJson(request): ApiJson<crate::types::CheckSkillRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let result = crate::skills::check_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
     Ok(Json(json!({
@@ -182,7 +192,7 @@ pub async fn enable_skill(
         .await
         .map_err(agent_access_error)?;
     let agent_home = runtime.agent_home();
-    let user_home = crate::agent_template::user_home_dir().map_err(error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let skill_name = crate::skills::enable_agent_skill(
         &agent_home,
         Some(&user_home),
@@ -283,7 +293,7 @@ pub async fn skills_catalog(
         _ => None,
     });
 
-    let user_home = crate::agent_template::user_home_dir().ok();
+    let user_home = effective_user_home_dir(&state).ok();
     let roots = crate::skills::existing_skill_roots(
         user_home.as_deref(),
         &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
@@ -325,7 +335,7 @@ pub async fn skill_detail(
         return agent_scoped_skill_detail(&agent_id, &skill_id, &state).await;
     }
 
-    let user_home = crate::agent_template::user_home_dir().ok();
+    let user_home = effective_user_home_dir(&state).ok();
     let roots = crate::skills::existing_skill_roots(
         user_home.as_deref(),
         &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
