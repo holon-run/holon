@@ -8,6 +8,8 @@ import {
   ConversationCompatibilityError,
   ConversationDecodeError,
   ConversationResetError,
+  ConversationTimeoutError,
+  classifyConversationError,
   decodeBriefRecord,
   decodeConversationActivity,
   decodeConversationSummaryResponse,
@@ -58,6 +60,129 @@ test("decodes pending input previews and defaults missing previews to empty", ()
       preview: "",
     },
   ]);
+});
+
+test("JSON requests time out retryably when the connection stalls", async () => {
+  const client = new ConversationClient({
+    baseUrl: "http://127.0.0.1:7878",
+    // A fetch that never settles on its own and only rejects on abort,
+    // mirroring a black-holed connection.
+    fetch: (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason);
+        });
+      }),
+    requestTimeoutMs: 20,
+  });
+  await assert.rejects(
+    client.handshake(),
+    (error) =>
+      error instanceof ConversationTimeoutError && error.timeoutMs === 20,
+  );
+  assert.equal(
+    classifyConversationError(new ConversationTimeoutError(20)),
+    "retryable",
+  );
+});
+
+test("caller aborts keep their AbortError and never become timeouts", async () => {
+  const client = new ConversationClient({
+    baseUrl: "http://127.0.0.1:7878",
+    fetch: (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason);
+        });
+      }),
+    requestTimeoutMs: 20,
+  });
+  const caller = new AbortController();
+  const pending = client.handshake(caller.signal);
+  caller.abort();
+  await assert.rejects(pending, (error) => error.name === "AbortError");
+});
+
+test("summary requests time out retryably when the connection stalls", async () => {
+  const client = new ConversationClient({
+    baseUrl: "http://127.0.0.1:7878",
+    fetch: (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal?.aborted) {
+          reject(signal.reason);
+          return;
+        }
+        signal?.addEventListener("abort", () => {
+          reject(signal.reason);
+        });
+      }),
+    requestTimeoutMs: 20,
+  });
+  await assert.rejects(
+    client.summary("agent-1"),
+    (error) =>
+      error instanceof ConversationTimeoutError && error.timeoutMs === 20,
+  );
+});
+
+test("a caller abort landing after the timer still yields a retryable timeout", async () => {
+  const client = new ConversationClient({
+    baseUrl: "http://127.0.0.1:7878",
+    // Rejects late so the caller's abort lands between the timer firing and
+    // the fetch rejection, exercising the race the identity check repairs.
+    fetch: (_input, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        const rejectSoon = () => {
+          setTimeout(() => reject(signal.reason), 40);
+        };
+        if (signal?.aborted) {
+          rejectSoon();
+          return;
+        }
+        signal?.addEventListener("abort", rejectSoon);
+      }),
+    requestTimeoutMs: 20,
+  });
+  const caller = new AbortController();
+  const pending = client.summary("agent-1", { signal: caller.signal });
+  setTimeout(() => caller.abort(), 30);
+  await assert.rejects(
+    pending,
+    (error) =>
+      error instanceof ConversationTimeoutError && error.timeoutMs === 20,
+  );
+});
+
+test("requestTimeoutMs 0 disables the request timeout", async () => {
+  const client = new ConversationClient({
+    baseUrl: "http://127.0.0.1:7878",
+    fetch: async () =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          protocol: { name: "holon-control", version: 1 },
+          auth: { mode: "none", required: false },
+          capabilities: [CONVERSATION_CAPABILITY],
+          runtime: {},
+        }),
+        { headers: { "content-type": "application/json" } },
+      ),
+    requestTimeoutMs: 0,
+  });
+  const handshake = await client.handshake();
+  assert.equal(handshake.protocol.name, "holon-control");
 });
 
 test("decodes turn input previews that are present but empty", () => {

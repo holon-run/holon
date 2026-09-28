@@ -165,6 +165,35 @@ describe("buildConversationSessionModel", () => {
     expect(model.turns).toEqual([]);
   });
 
+  it("treats a scope-less view before bootstrap as loading", () => {
+    // The SDK emits a non-null empty view object before the first
+    // bootstrap; the pane must render the loading state rather than a
+    // blank surface behind the sync banner on a cold cache miss.
+    const model = buildConversationSessionModel({
+      status: { kind: "loading" },
+      view: stateView([], { scope: null }),
+      historyState: { kind: "idle" },
+      briefs: new Map(),
+      briefLoadStates: new Map(),
+      detailLoadStates: new Map(),
+    });
+    expect(model.bootstrapLoading).toBe(true);
+    expect(model.turns).toEqual([]);
+  });
+
+  it("keeps a scoped view during revalidation out of the loading state", () => {
+    const model = buildConversationSessionModel({
+      status: { kind: "loading" },
+      view: stateView([turnSummary("turn-1", 1)]),
+      historyState: { kind: "idle" },
+      briefs: new Map(),
+      briefLoadStates: new Map(),
+      detailLoadStates: new Map(),
+    });
+    expect(model.bootstrapLoading).toBe(false);
+    expect(model.turns.map((turn) => turn.turnId)).toEqual(["turn-1"]);
+  });
+
   it("carries pending inputs and history paging state", () => {
     const model = buildConversationSessionModel({
       status: { kind: "ready" },

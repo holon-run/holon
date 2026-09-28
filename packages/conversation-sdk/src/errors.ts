@@ -48,6 +48,15 @@ export class ConversationCapabilityError extends ConversationProtocolError {
   }
 }
 
+export class ConversationTimeoutError extends ConversationProtocolError {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number, options?: ErrorOptions) {
+    super(`conversation request timed out after ${timeoutMs}ms`, options);
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 export class ConversationCompatibilityError extends ConversationProtocolError {
   readonly protocolName: string;
   readonly protocolVersion: number;

@@ -5,6 +5,7 @@ import {
   ConversationDecodeError,
   ConversationHttpError,
   ConversationProtocolError,
+  ConversationTimeoutError,
   ConversationResetError,
   ConversationStaleResponseError,
   ConversationStateLimitError,
@@ -128,6 +129,9 @@ export function classifyConversationError(
   }
   if (error instanceof ConversationResetError) {
     return error.reason === "agent_not_found" ? "recoverable" : "retryable";
+  }
+  if (error instanceof ConversationTimeoutError) {
+    return "retryable";
   }
   if (error instanceof ConversationStaleResponseError) {
     return "retryable";
@@ -1120,7 +1124,7 @@ async function readCache<T>(read: () => Promise<T>): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([read(), new Promise<undefined>((resolve) => {
-      timer = setTimeout(() => resolve(undefined), 600);
+      timer = setTimeout(() => resolve(undefined), 1500);
     })]);
   } finally {
     if (timer !== undefined) clearTimeout(timer);
