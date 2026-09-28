@@ -228,6 +228,14 @@ pub(crate) fn delete_agent_memory_index_projection(
             "DELETE FROM memory_index_source_state WHERE agent_id = ?1",
             [agent_id],
         )?;
+        for table in ["memory_index_rebuild_jobs", "memory_index_rebuild_seen"] {
+            if table_exists(table)? {
+                transaction.execute(
+                    &format!("DELETE FROM {table} WHERE agent_id = ?1"),
+                    [agent_id],
+                )?;
+            }
+        }
         for table in [
             "memory_index_pending_sources",
             "memory_index_checkpoints",
@@ -4864,6 +4872,52 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_agent_cleans_in_flight_rebuild_metadata() -> Result<()> {
+        let directory = tempdir()?;
+        let storage = AppStorage::new_for_agent_for_test(directory.path(), "default")?;
+        let index = MemoryIndex::open(&storage)?;
+        index.connection.execute(
+            "INSERT INTO memory_index_rebuild_jobs (
+                agent_id, generation, phase, source_kind_index, source_cursor, source_offset,
+                runtime_high_watermark, documents_processed, started_at, last_progress_at
+             ) VALUES ('deleted-agent', 'generation-1', 'scan', 0, '', 0, 0, 0, 'now', 'now'),
+                    ('retained-agent', 'generation-2', 'scan', 0, '', 0, 0, 0, 'now', 'now')",
+            [],
+        )?;
+        index.connection.execute(
+            "INSERT INTO memory_index_rebuild_seen (
+                agent_id, generation, document_key
+             ) VALUES ('deleted-agent', 'generation-1', 'deleted-agent:message:old'),
+                    ('retained-agent', 'generation-2', 'retained-agent:message:keep')",
+            [],
+        )?;
+        drop(index);
+
+        delete_agent_memory_index_projection(&storage.shared_indexes_dir(), "deleted-agent")?;
+
+        let connection = rusqlite::Connection::open(memory_index_path(&storage))?;
+        for table in ["memory_index_rebuild_jobs", "memory_index_rebuild_seen"] {
+            let deleted_count: i64 = connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE agent_id = 'deleted-agent'"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(
+                deleted_count, 0,
+                "{table} must not retain deleted agent rows"
+            );
+
+            let retained_count: i64 = connection.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE agent_id = 'retained-agent'"),
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(retained_count, 1, "{table} must retain other agent rows");
+        }
         Ok(())
     }
 
