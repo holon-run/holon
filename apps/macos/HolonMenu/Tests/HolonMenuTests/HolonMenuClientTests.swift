@@ -76,7 +76,7 @@ final class HolonMenuClientTests: XCTestCase {
 
     private final class ServeURLProtocol: URLProtocol {
         static let lock = NSLock()
-        nonisolated(unsafe) static var requests: [(String, String, String?)] = []
+        nonisolated(unsafe) static var requests: [(String, String, String?, URL?)] = []
         nonisolated(unsafe) static var responseCode = 200
 
         override class func canInit(with request: URLRequest) -> Bool { true }
@@ -86,7 +86,8 @@ final class HolonMenuClientTests: XCTestCase {
             Self.requests.append((
                 request.httpMethod ?? "",
                 request.url?.path ?? "",
-                request.value(forHTTPHeaderField: "Authorization")
+                request.value(forHTTPHeaderField: "Authorization"),
+                request.url
             ))
             let code = Self.responseCode
             Self.lock.unlock()
@@ -103,12 +104,12 @@ final class HolonMenuClientTests: XCTestCase {
         override func stopLoading() {}
     }
 
-    private func serveClient() -> (HolonCLIClient, RecordingProcessLauncher) {
+    private func serveClient(address: String = "127.0.0.1:7878") -> (HolonCLIClient, RecordingProcessLauncher) {
         let launcher = RecordingProcessLauncher(result: .success(HolonProcessResult(
             terminationStatus: 0,
             stdout: Data("""
                 {"ok":true,"state":"running","healthy":true,"home_dir":"/tmp/holon",
-                "socket_path":"/tmp/holon.sock","http_addr":"127.0.0.1:7878",
+                "socket_path":"/tmp/holon.sock","http_addr":"\(address)",
                 "web_url":"http://127.0.0.1:7878","desired_running":true,
                 "control_connectivity":true,"message":"Running"}
                 """.utf8),
@@ -334,6 +335,42 @@ final class HolonMenuClientTests: XCTestCase {
         XCTAssertTrue(requests.allSatisfy { $0.2 == "Bearer test-token" })
         let invocations = await launcher.invocations()
         XCTAssertTrue(invocations.allSatisfy { $0.arguments == ["daemon", "status"] })
+    }
+
+    func testServeControlUsesLoopbackWhenDaemonReportsStaleLANAddress() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.responseCode = 200
+        }
+        let (client, _) = serveClient(address: "192.168.11.2:7878")
+        _ = try await client.tailscaleStatus()
+        _ = try await client.enableTailscaleServe()
+        _ = try await client.disableTailscaleServe()
+
+        let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+        XCTAssertEqual(requests.map { $0.3?.absoluteString }, [
+            "http://127.0.0.1:7878/api/control/network/tailscale/serve",
+            "http://127.0.0.1:7878/api/control/network/tailscale/serve/enable",
+            "http://127.0.0.1:7878/api/control/network/tailscale/serve/disable"
+        ])
+    }
+
+    func testServeControlUsesIPv6LoopbackWhenDaemonOnlyListensOnIPv6() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.responseCode = 200
+        }
+        let (client, _) = serveClient(address: "[::1]:7878")
+        _ = try await client.tailscaleStatus()
+        _ = try await client.enableTailscaleServe()
+        _ = try await client.disableTailscaleServe()
+
+        let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+        XCTAssertEqual(requests.map { $0.3?.absoluteString }, [
+            "http://[::1]:7878/api/control/network/tailscale/serve",
+            "http://[::1]:7878/api/control/network/tailscale/serve/enable",
+            "http://[::1]:7878/api/control/network/tailscale/serve/disable"
+        ])
     }
 
     func testDisableServeRefusesUnrelatedRule() async throws {
