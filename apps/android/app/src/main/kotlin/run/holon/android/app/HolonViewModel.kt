@@ -225,6 +225,8 @@ internal class HolonViewModel(
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
     private var globalEventStreamJob: Job? = null
+    // SSE readers block threads; keep them off the pool used by foreground sends and file staging.
+    private val eventStreamIo = Dispatchers.IO.limitedParallelism(64)
     private val agentEventStreamJobs = ConcurrentHashMap<String, Job>()
     private val agentEventCursors = ConcurrentHashMap<String, Long>()
     private val staleCursorRecoveryMutex = Mutex()
@@ -697,7 +699,7 @@ internal class HolonViewModel(
         eventLogEpoch?.let { liveEventLogEpoch = it }
         if (globalEventStreamJob?.isActive != true) {
             globalEventStreamJob =
-                viewModelScope.launch(Dispatchers.IO) {
+                viewModelScope.launch(eventStreamIo) {
                     runCatching {
                         while (
                             isActive &&
@@ -744,7 +746,7 @@ internal class HolonViewModel(
         agents.forEach { agent ->
             if (agentEventStreamJobs[agent.id]?.isActive == true) return@forEach
             agentEventStreamJobs[agent.id] =
-                viewModelScope.launch(Dispatchers.IO) {
+                viewModelScope.launch(eventStreamIo) {
                     runCatching {
                         val persistedState = repository.syncState(agent.id)
                         var persistedCursor = persistedState?.eventCursor
