@@ -1,0 +1,50 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "obra/the-elements-of-style"
+path = "skills/writing-clearly-and-concisely"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/product-marketing"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/content-strategy"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/copywriting"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/copy-editing"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/seo-audit"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"
+
+[[skills]]
+kind = "github"
+repo = "coreyhaines31/marketingskills"
+path = "skills/customer-research"
+ref = "5b2c0007766c6a1cf1d53fd8fc73e979e0821022"

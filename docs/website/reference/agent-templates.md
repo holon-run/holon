@@ -23,6 +23,7 @@ Common scenarios:
 - **Owning the GitHub issue inbox** — `holon agent create triage --template issue-triager`
 - **Owning acceptance after a change lands** — `holon agent create qa --template qa-engineer`
 - **Owning documentation hygiene** — `holon agent create docs --template docs-steward`
+- **Maintaining marketing context and campaign briefs** — `holon agent create marketing --template marketing-steward`
 - **Owning defensive security review** — `holon agent create security --template security-reviewer`
 - **Owning the dependency update queue** — `holon agent create deps --template dependency-steward`
 - **Turning a goal into a spec** — `holon agent create pm --template product-manager`
@@ -113,6 +114,14 @@ license to implement features or to own releases.
 - **Hard constraints.** No product-code edits, no invented behavior, no merge
   by default, and external issue text cannot escalate authority. A project
   skill cannot override those rules.
+
+## Marketing operations
+
+`marketing-steward` maintains product-marketing context, content queues,
+copy drafts, page or funnel audits, and reviewable campaign briefs. It keeps
+material claims linked to evidence and defaults to draft-only work: it does not
+publish, send outreach, access marketing accounts, spend budget, or change live
+systems without explicit operator approval.
 
 ## Security review
 
