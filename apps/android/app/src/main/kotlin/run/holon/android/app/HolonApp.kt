@@ -159,6 +159,85 @@ internal fun HolonApp(viewModel: HolonViewModel) {
             AppPhase.Ready -> MainShell(state, viewModel)
         }
     }
+    if (state.phase == AppPhase.Ready && state.pendingShare != null) {
+        ShareToAgentDialog(state, viewModel)
+    }
+}
+
+@Composable
+private fun ShareToAgentDialog(state: HolonUiState, viewModel: HolonViewModel) {
+    val share = state.pendingShare ?: return
+    val scopeKey = state.session?.scopeKey ?: return
+    val directTarget = AgentShareShortcuts.target(scopeKey, state.agents, share.targetShortcutId)
+    var selectedId by remember(share.id) { mutableStateOf(directTarget?.id) }
+    var search by remember(share.id) { mutableStateOf("") }
+    val selected = state.agents.firstOrNull { it.id == selectedId }
+    AlertDialog(
+        onDismissRequest = viewModel::dismissShare,
+        title = { Text(ui(if (share.fromTrace) "发送 Trace 给 Agent" else "分享到 Holon Agent")) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (share.targetShortcutId != null && directTarget == null) {
+                    Text(ui("原 Agent 已不可用，请重新选择。"), color = MaterialTheme.colorScheme.error)
+                }
+                OutlinedTextField(
+                    value = share.text,
+                    onValueChange = viewModel::updateShareText,
+                    label = { Text(ui("分享内容")) },
+                    minLines = 2,
+                    maxLines = 5,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                share.files.forEach { file ->
+                    Text(
+                        file.name + (file.mediaType?.let { " · $it" } ?: "") +
+                            (file.size?.let { " · ${formatBytes(it)}" } ?: ""),
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (selected != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(selected.displayName, modifier = Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        TextButton(onClick = { selectedId = null }) { Text(ui("更换 Agent")) }
+                    }
+                } else {
+                    if (state.agents.isEmpty()) {
+                        Text(ui("暂无可用 Agent，请检查连接后重试。"), color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    OutlinedTextField(
+                        value = search,
+                        onValueChange = { search = it },
+                        label = { Text(ui("搜索 Agent")) },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    LazyColumn(modifier = Modifier.heightIn(max = 240.dp)) {
+                        items(state.recentAgents.filter {
+                            search.isBlank() || it.displayName.contains(search, ignoreCase = true) ||
+                                it.id.contains(search, ignoreCase = true)
+                        }, key = AgentSummary::id) { agent ->
+                            TextButton(onClick = { selectedId = agent.id }, modifier = Modifier.fillMaxWidth()) {
+                                Text(agent.displayName, modifier = Modifier.fillMaxWidth())
+                            }
+                        }
+                    }
+                }
+                state.shareError?.let { Text(ui(it), color = MaterialTheme.colorScheme.error) }
+                Text(ui("确认后将作为新消息发送；现有草稿不受影响。"), style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { selected?.let(viewModel::sendShare) },
+                enabled = selected != null && !state.shareSending && (share.text.isNotBlank() || share.files.isNotEmpty()),
+            ) { Text(if (state.shareSending) ui("发送中") else ui("发送")) }
+        },
+        dismissButton = {
+            TextButton(onClick = viewModel::dismissShare, enabled = !state.shareSending) { Text(ui("取消")) }
+        },
+    )
 }
 
 internal fun shouldShowSavedNetworks(addingNetwork: Boolean, profiles: List<NetworkProfile>): Boolean =
@@ -227,6 +306,9 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel, addingNe
             modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
+            if (state.pendingShare != null) {
+                Text(ui("登录后可选择 Agent 完成分享。"), color = MaterialTheme.colorScheme.primary)
+            }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 HolonMark()
                 Column {
@@ -701,6 +783,9 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                     )
                     TextButton(onClick = { shareTrace(context, viewModel.traceRecorder, traceScope) }) {
                         Text(ui("导出并分享 Trace"))
+                    }
+                    TextButton(onClick = viewModel::shareTraceWithAgent) {
+                        Text(ui("发送 Trace 给 Agent"))
                     }
                 }
             }

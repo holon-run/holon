@@ -1,5 +1,6 @@
 package run.holon.android.app
 
+import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.widget.Toast
@@ -10,6 +11,14 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.lifecycleScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
     private val container by lazy { AppContainer(applicationContext) }
@@ -42,6 +51,59 @@ class MainActivity : ComponentActivity() {
         setContent {
             HolonTheme {
                 HolonApp(viewModel)
+            }
+        }
+        receiveShare(intent)
+        lifecycleScope.launch {
+            viewModel.state
+                .map { state ->
+                    if (intent.action in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE) &&
+                        state.pendingShare == null && state.queuedShares.isEmpty() && !state.shareSending
+                    ) {
+                        setIntent(Intent(Intent.ACTION_MAIN).setClass(this@MainActivity, MainActivity::class.java))
+                    }
+                    val scope = state.session?.scopeKey.takeIf { state.phase == AppPhase.Ready }
+                    scope to if (scope == null) emptyList() else
+                        (listOfNotNull(state.selectedAgent) + state.recentAgents).distinctBy { it.id }.take(4)
+                }
+                .distinctUntilChanged { previous, current ->
+                    previous.first == current.first &&
+                        previous.second.map { it.id to it.displayName } == current.second.map { it.id to it.displayName }
+                }
+                .collectLatest { (scope, agents) ->
+                    withContext(Dispatchers.IO) {
+                        runCatching { AgentShareShortcuts.publish(applicationContext, scope, agents) }
+                            .onFailure { error ->
+                                container.traceRecorder.record(
+                                    TraceScope.Global,
+                                    TraceLevel.WARN,
+                                    "share",
+                                    "share.shortcuts.failed",
+                                    attributes = mapOf("error" to error::class.simpleName.orEmpty()),
+                                )
+                            }
+                    }
+                }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        receiveShare(intent)
+    }
+
+    private fun receiveShare(intent: Intent) {
+        val shared = incomingShare(this, intent)
+        if (shared != null) {
+            viewModel.offerShare(shared)
+            return
+        }
+        if (intent.action == Intent.ACTION_VIEW) {
+            val shortcutId = intent.getStringExtra(AgentShareShortcuts.EXTRA_SHORTCUT_ID) ?: return
+            lifecycleScope.launch {
+                val ready = viewModel.state.first { it.phase == AppPhase.Ready && it.session != null }
+                AgentShareShortcuts.target(ready.session!!.scopeKey, ready.agents, shortcutId)?.let(viewModel::openAgent)
             }
         }
     }
