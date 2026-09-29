@@ -370,6 +370,7 @@ internal class HolonRepository(
 
     suspend fun deleteNetwork(networkId: String) {
         traceRecorder.record(TraceScope.Network(networkId), TraceLevel.INFO, "network", "network.deleted")
+        traceRecorder.delete(TraceScope.Network(networkId))
         credentialStore(networkId).clear()
         preferences.removeProfile(networkId)
         if (active?.networkId == networkId) {

@@ -49,6 +49,46 @@ class AndroidTraceTest {
     }
 
     @Test
+    fun `export recreates missing export directory`() {
+        val dir = Files.createTempDirectory("holon-trace-export-test").toFile()
+        val recorder = TraceRecorder(dir)
+        val scope = TraceScope.Network("profile")
+
+        val first = recorder.export(scope)
+        assertEquals("trace-exports", first.parentFile?.name)
+        first.parentFile!!.deleteRecursively()
+
+        val second = recorder.export(scope)
+        assertTrue(second.isFile)
+        assertTrue(second.readText().contains("holon.android.trace.v1"))
+    }
+
+    @Test
+    fun `record does not throw when trace io fails`() {
+        val notADirectory = Files.createTempFile("holon-trace-io-test", ".file").toFile()
+        val recorder = TraceRecorder(notADirectory)
+
+        recorder.record(TraceScope.Global, TraceLevel.INFO, "session", "session.login")
+
+        assertEquals(0, recorder.summary(TraceScope.Global).eventCount)
+    }
+
+    @Test
+    fun `delete removes stored events for scope`() {
+        val dir = Files.createTempDirectory("holon-trace-delete-test").toFile()
+        val recorder = TraceRecorder(dir)
+        val scope = TraceScope.Network("profile")
+
+        recorder.record(scope, TraceLevel.INFO, "network", "network.deleted")
+        assertEquals(1, recorder.summary(scope).eventCount)
+
+        recorder.delete(scope)
+
+        assertEquals(0, recorder.summary(scope).eventCount)
+        assertFalse(java.io.File(dir, "${scope.storageKey}.jsonl").exists())
+    }
+
+    @Test
     fun `path redaction masks opaque segments but keeps endpoint segments`() {
         assertEquals(
             "/api/agents/list",

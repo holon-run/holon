@@ -73,7 +73,7 @@ internal class TraceRecorder private constructor(
         maxBytes: Long = 512 * 1024,
     ) : this(
         root = File(context.filesDir, "trace"),
-        exports = File(context.cacheDir, "shared-artifacts"),
+        exports = File(context.cacheDir, "trace-exports"),
         maxEvents = maxEvents,
         maxBytes = maxBytes,
     )
@@ -84,7 +84,7 @@ internal class TraceRecorder private constructor(
         maxBytes: Long = 512 * 1024,
     ) : this(
         root = rootDirectory,
-        exports = File(rootDirectory.parentFile ?: rootDirectory, "shared-artifacts"),
+        exports = File(rootDirectory.parentFile ?: rootDirectory, "trace-exports"),
         maxEvents = maxEvents,
         maxBytes = maxBytes,
     )
@@ -118,14 +118,17 @@ internal class TraceRecorder private constructor(
                 attributes = TraceRedactor.attributes(attributes),
             )
         synchronized(lock) {
-            val file = fileFor(scope)
-            val lines = file.takeIf(File::isFile)?.readLines()?.toMutableList() ?: mutableListOf()
-            lines += event.toJsonLine()
-            while (lines.size > maxEvents || lines.sumOf { it.toByteArray().size + 1 } > maxBytes) {
-                if (lines.isEmpty()) break
-                lines.removeAt(0)
+            // Diagnostics must never break the business flow; drop the event when trace I/O fails.
+            runCatching {
+                val file = fileFor(scope)
+                val lines = file.takeIf(File::isFile)?.readLines()?.toMutableList() ?: mutableListOf()
+                lines += event.toJsonLine()
+                while (lines.size > maxEvents || lines.sumOf { it.toByteArray().size + 1 } > maxBytes) {
+                    if (lines.isEmpty()) break
+                    lines.removeAt(0)
+                }
+                file.writeText(lines.joinToString("\n", postfix = "\n"))
             }
-            file.writeText(lines.joinToString("\n", postfix = "\n"))
         }
     }
 
@@ -141,6 +144,7 @@ internal class TraceRecorder private constructor(
     }
 
     fun export(scope: TraceScope): File = synchronized(lock) {
+        exports.mkdirs()
         pruneExports()
         val target = File(exports, "holon-trace-${scope.storageKey}-${UUID.randomUUID()}.jsonl")
         val lines = fileFor(scope).takeIf(File::isFile)?.readLines().orEmpty()
@@ -149,6 +153,12 @@ internal class TraceRecorder private constructor(
             lines.forEach(writer::appendLine)
         }
         target
+    }
+
+    fun delete(scope: TraceScope) {
+        synchronized(lock) {
+            runCatching { fileFor(scope).delete() }
+        }
     }
 
     private fun fileFor(scope: TraceScope): File = File(root, "${scope.storageKey}.jsonl")
