@@ -355,6 +355,24 @@ final class HolonMenuClientTests: XCTestCase {
         ])
     }
 
+    func testServeControlUsesIPv6LoopbackWhenDaemonOnlyListensOnIPv6() async throws {
+        ServeURLProtocol.lock.withLock {
+            ServeURLProtocol.requests = []
+            ServeURLProtocol.responseCode = 200
+        }
+        let (client, _) = serveClient(address: "[::1]:7878")
+        _ = try await client.tailscaleStatus()
+        _ = try await client.enableTailscaleServe()
+        _ = try await client.disableTailscaleServe()
+
+        let requests = ServeURLProtocol.lock.withLock { ServeURLProtocol.requests }
+        XCTAssertEqual(requests.map { $0.3?.absoluteString }, [
+            "http://[::1]:7878/api/control/network/tailscale/serve",
+            "http://[::1]:7878/api/control/network/tailscale/serve/enable",
+            "http://[::1]:7878/api/control/network/tailscale/serve/disable"
+        ])
+    }
+
     func testDisableServeRefusesUnrelatedRule() async throws {
         ServeURLProtocol.lock.withLock { ServeURLProtocol.responseCode = 409 }
         defer {

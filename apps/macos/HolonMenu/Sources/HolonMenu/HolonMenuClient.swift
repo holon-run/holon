@@ -325,7 +325,8 @@ final class HolonCLIClient: HolonDesiredStateClient {
     private func tailscaleServeRequest(method: String, action: String?) async throws -> HolonTailscaleStatus {
         let daemon = try await status()
         let port = port(from: daemon.httpAddr)
-        let base = URL(string: "http://127.0.0.1:\(port)")!
+        let loopback = daemon.httpAddr.hasPrefix("[::1]:") ? "[::1]" : "127.0.0.1"
+        let base = URL(string: "http://\(loopback):\(port)")!
         var url = base.appendingPathComponent("api/control/network/tailscale/serve")
         if let action { url.appendPathComponent(action) }
         var request = URLRequest(url: url)
