@@ -117,8 +117,8 @@ fn inspect(
     let proxy = root
         .and_then(|root| root.get("Proxy"))
         .and_then(Value::as_str);
-    result.serving = proxy == Some(target);
     result.legacy_serving = legacy_target.is_some_and(|legacy| proxy == Some(legacy));
+    result.serving = proxy == Some(target) || result.legacy_serving;
     if result.serving {
         result.serve_url = Some(format!("https://{hostname}"));
     }
@@ -154,10 +154,13 @@ fn target_for_addr(addr: &str) -> Result<String> {
             std::net::SocketAddr::V6(_) => format!("http://127.0.0.1:{}", socket.port()),
         });
     }
-    let (_, port) = addr
+    let (host, port) = addr
         .rsplit_once(':')
         .ok_or_else(|| anyhow!("HTTP listener address must include a port"))?;
     let port = port.parse::<u16>()?;
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(format!("http://localhost:{port}"));
+    }
     Ok(format!("http://127.0.0.1:{port}"))
 }
 
@@ -165,11 +168,11 @@ fn target(state: &AppState) -> Result<String> {
     target_for_addr(&state.host.config().http_addr)
 }
 
-fn serve_authentication_available(state: &AppState) -> bool {
+pub(super) fn serve_authentication_available(state: &AppState) -> bool {
     let config = state.host.config();
     authenticated_control_available(
         config.auth.mode,
-        state.require_control_token,
+        config.control_token_required(ControlTransportKind::Tcp),
         config.control_token.as_deref(),
     )
 }
@@ -250,7 +253,7 @@ pub(super) fn change(
         if before.conflict {
             return Err(anyhow!("A different Tailscale Serve root rule exists"));
         }
-        if !before.serving {
+        if !before.serving || before.legacy_serving {
             runner.command(&["serve", "--bg", "--https=443", "--set-path=/", &target])?;
         }
     } else if before.conflict {
@@ -304,7 +307,7 @@ mod tests {
         assert_eq!(target_for_addr("[::1]:7878").unwrap(), "http://[::1]:7878");
         assert_eq!(
             target_for_addr("localhost:7878").unwrap(),
-            "http://127.0.0.1:7878"
+            "http://localhost:7878"
         );
     }
 
@@ -372,11 +375,38 @@ mod tests {
             "http://127.0.0.1:7878",
             Some("http://192.0.2.5:7878"),
         );
-        assert!(!status.serving);
+        assert!(status.serving);
         assert!(status.legacy_serving);
         assert!(!status.conflict);
         assert!(status.status_known);
+        assert_eq!(
+            status.serve_url.as_deref(),
+            Some("https://host.example.ts.net")
+        );
         assert!(status.message.contains("enable to migrate"));
+    }
+
+    #[test]
+    fn legacy_listener_remains_reported_as_serving_when_desired_is_disabled() {
+        let status = inspect(
+            &Mock {
+                serve: serde_json::json!({"Web": {
+                    "host.example.ts.net:443": {"Handlers": {
+                        "/": {"Proxy": "http://192.0.2.5:7878"}
+                    }}
+                }}),
+            },
+            false,
+            "http://127.0.0.1:7878",
+            Some("http://192.0.2.5:7878"),
+        );
+        assert!(!status.desired_enabled);
+        assert!(status.serving);
+        assert!(!status.conflict);
+        assert_eq!(
+            status.serve_url.as_deref(),
+            Some("https://host.example.ts.net")
+        );
     }
 
     #[test]

@@ -44,13 +44,16 @@ Tailscale configuration. Mutations target the current tailnet host's HTTPS 443
 `/` handler; other paths and hosts are left untouched. Failed operations must
 not change the desired value.
 The Serve backend uses the daemon's local loopback listener on the HTTP port,
-not its advertised LAN address. Enabling Serve requires effective Holon TCP
-control authentication: a configured nonempty control token in local mode
+not its advertised LAN address. A `localhost:port` listener retains its hostname
+target so the proxy resolves the same loopback address family as the listener.
+Enabling Serve requires effective Holon TCP control authentication, regardless
+of whether the request arrives over TCP or the Unix socket: a configured
+nonempty control token in local mode
 (with control authentication enabled), or OIDC session authentication. Existing
 valid sessions remain usable; no per-request token prompt is required. A root
 rule pointing to the current LAN listener is recognized as Holon's legacy rule,
-reported as needing migration, and replaced by the loopback target only on
-explicit enable; unrelated root rules remain conflicts.
+reported as serving Holon and needing migration, and replaced by the loopback
+target only on explicit enable; unrelated root rules remain conflicts.
 The menu and Web Settings are clients of the same daemon operations, not owners
 of independent saved preferences or competing Serve reconciliation loops.
 Tailscale remains optional; Holon does not manage Tailscale installation, login,
