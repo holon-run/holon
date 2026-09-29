@@ -487,6 +487,8 @@ const zh: Record<string, any> = {
     pendingInputState: "待处理输入状态",
     pendingQueued: "已排队，等待执行",
     pendingAssigning: "正在分配到执行轮次",
+    pendingSending: "发送中…",
+    promptAttachmentsOnly: "{{count}} 个附件",
     turnAria: "对话轮次 {{index}}",
     turnClass: {
       operator: "操作者",

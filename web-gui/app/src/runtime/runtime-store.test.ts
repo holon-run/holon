@@ -3,13 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationStateView } from "@holon/conversation-sdk";
 
 import {
-  appendOptimisticOperatorPrompt,
   agentBriefPatchFromEvents,
   agentDetailErrorKind,
   applyStreamEvents,
   backfillRetryDelayMs,
   isSessionCacheContextCurrent,
-  materializeProjectionDetail,
   mergeBootstrapAgentState,
   mergeTimelineEventPage,
   modelCatalogCacheKey,
@@ -157,6 +155,7 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
     syncStatus: "idle",
     sendingPrompt: false,
     abortingRun: false,
+    pendingOperatorPrompts: [],
     detail: null,
     workItemDetailsById: {},
     taskDetailsById: {},
@@ -529,22 +528,77 @@ describe("credential mutations", () => {
   });
 });
 
-describe("appendOptimisticOperatorPrompt", () => {
-  it("attributes the pending prompt to the current user display name", () => {
-    const agent = { id: "agent-a" } as AgentSummary;
-    const attributed = appendOptimisticOperatorPrompt(null, agent, "hello", "client-1", "Alice");
-    expect(attributed?.timeline.at(-1)).toMatchObject({
-      kind: "operator",
-      body: "hello",
-      senderName: "Alice",
-    });
+describe("pendingOperatorPrompts lifecycle", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
-  it("keeps local control prompts unattributed", () => {
-    const agent = { id: "agent-a" } as AgentSummary;
-    const local = appendOptimisticOperatorPrompt(null, agent, "hello", "client-2", undefined);
-    expect(local?.timeline.at(-1)).toMatchObject({ kind: "operator", body: "hello" });
-    expect(local?.timeline.at(-1)?.senderName).toBeUndefined();
+  function promptFetchMock(prompt: () => Response = () => jsonResponse({ ok: true, message_id: "msg-1" })) {
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout,
+      clearTimeout,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    return vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/control/agents/agent-a/prompt")) return prompt();
+      if (url.endsWith("/handshake")) {
+        return jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES });
+      }
+      if (url.endsWith("/agents/list")) return jsonResponse([]);
+      if (url.endsWith("/agents/snapshot")) {
+        return jsonResponse({
+          contract_version: 1,
+          runtime_id: "runtime-1",
+          event_log_epoch: "epoch-1",
+          visibility_scope_id: "scope-1",
+          agents: [],
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+  }
+
+  it("echoes the prompt locally, confirms it with the server message id, and prunes once echoed", async () => {
+    const fetchMock = promptFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    useRuntimeStore.setState({ currentUser: { displayName: "Alice" } as never });
+    useRuntimeStore.setState({ sessionsByAgentId: { "agent-a": sessionState() } });
+
+    await useRuntimeStore.getState().sendOperatorPrompt("agent-a", "hello");
+
+    const session = useRuntimeStore.getState().sessionsByAgentId["agent-a"];
+    expect(session?.pendingOperatorPrompts).toHaveLength(1);
+    expect(session?.pendingOperatorPrompts[0]).toMatchObject({
+      text: "hello",
+      senderName: "Alice",
+      messageId: "msg-1",
+    });
+
+    useRuntimeStore.getState().pruneOperatorPrompts("agent-a", ["msg-1"]);
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.pendingOperatorPrompts)
+      .toHaveLength(0);
+  });
+
+  it("drops the local echo when the enqueue fails so the draft stays the only copy", async () => {
+    const fetchMock = promptFetchMock(() =>
+      new Response(JSON.stringify({ error: "gateway exploded" }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      }));
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    useRuntimeStore.setState({ sessionsByAgentId: { "agent-a": sessionState() } });
+
+    await expect(
+      useRuntimeStore.getState().sendOperatorPrompt("agent-a", "hello"),
+    ).rejects.toThrow();
+
+    expect(useRuntimeStore.getState().sessionsByAgentId["agent-a"]?.pendingOperatorPrompts)
+      .toHaveLength(0);
   });
 });
 
@@ -1443,73 +1497,6 @@ describe("brief projection and hydration", () => {
   });
 });
 
-describe("optimistic operator prompt reconciliation", () => {
-  it("removes a confirmed optimistic item when its canonical message is projected", () => {
-    const projection = reduceSessionProjection(createSessionProjectionState(), {
-      type: "events_received",
-      eventLogEpoch: "epoch-1",
-      events: [{
-        id: "message-event",
-        event_seq: 1,
-        event_log_epoch: "epoch-1",
-        ts: "2026-07-17T00:00:01Z",
-        type: "message_enqueued",
-        payload: {
-          message_id: "message-123",
-          origin: { kind: "operator" },
-          body: "Run the checks",
-        },
-      }],
-    });
-    const detail = materializeProjectionDetail({
-      agent: { id: "agent-1" } as NonNullable<AgentSessionState["detail"]>["agent"],
-      source: "http",
-      timeline: [{
-        id: "operator-prompt:pending:client-123",
-        kind: "operator",
-        label: "Operator input",
-        body: "Run the checks",
-        timestamp: "2026-07-17T00:00:00Z",
-        meta: "Sent",
-        minDisplayLevel: "info",
-        sourceIds: [
-          "pending-operator-prompt",
-          "operator-prompt-client:client-123",
-          "operator-prompt-message:message-123",
-        ],
-      }, {
-        id: "operator-prompt:pending:client-456",
-        kind: "operator",
-        label: "Operator input",
-        body: "Run different checks",
-        timestamp: "2026-07-17T00:00:00Z",
-        meta: "Sent",
-        minDisplayLevel: "info",
-        sourceIds: [
-          "pending-operator-prompt",
-          "operator-prompt-client:client-456",
-          "operator-prompt-message:message-456",
-        ],
-      }],
-    }, projection, "info");
-
-    expect(detail?.timeline).toHaveLength(2);
-    expect(detail?.timeline).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: "message:message-123",
-      }),
-      expect.objectContaining({
-      id: "operator-prompt:pending:client-456",
-      body: "Run different checks",
-      }),
-    ]));
-    expect(detail?.timeline).not.toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        id: "operator-prompt:pending:client-123",
-      }),
-    ]));
-  });
-});
 
 describe("runtime client generation", () => {
   it("drops an old work-item response after switching clients with the same agent id", async () => {

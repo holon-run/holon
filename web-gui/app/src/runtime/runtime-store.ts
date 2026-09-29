@@ -124,12 +124,13 @@ import type {
 import type {
   AgentLiveStatus,
   AgentSessionState,
+  PendingOperatorPrompt,
   TimelineEventsState,
   WorkItemDetailState,
   TaskDetailState,
   ToolExecutionDetailState,
 } from "./runtime-store-helpers";
-export type { AgentLiveStatus, AgentSessionState, TimelineEventsState };
+export type { AgentLiveStatus, AgentSessionState, PendingOperatorPrompt, TimelineEventsState };
 export {
   hasEventIdentityConflict,
   materializeProjectionDetail,
@@ -254,62 +255,29 @@ function rebuildProvisionalDetailsWithAgents(
   return changed ? updated : null;
 }
 
-const OPTIMISTIC_OPERATOR_PROMPT_SOURCE = "pending-operator-prompt";
-const OPTIMISTIC_OPERATOR_CLIENT_PREFIX = "operator-prompt-client:";
-const OPTIMISTIC_OPERATOR_MESSAGE_PREFIX = "operator-prompt-message:";
 const MAX_SEMANTIC_HISTORY_PAGES_PER_LOAD = 5;
+/** Opportunistic age-out applied whenever a prune pass runs. */
+const PENDING_OPERATOR_PROMPT_TTL_MS = 5 * 60_000;
 
-export function appendOptimisticOperatorPrompt(
-  detail: AgentDetail | null,
-  agent: AgentSummary | undefined,
-  prompt: string,
-  clientId: string,
-  senderName: string | undefined,
-): AgentDetail | null {
-  const baseDetail = detail ?? createLiveAgentDetail(agent);
-  if (!baseDetail) return null;
-  const timestamp = new Date().toISOString();
-  return {
-    ...baseDetail,
-    timeline: [
-      ...baseDetail.timeline,
-      {
-        id: `operator-prompt:pending:${clientId}`,
-        kind: "operator",
-        label: "Operator input",
-        senderName,
-        body: prompt,
-        timestamp,
-        meta: "sending",
-        minDisplayLevel: "info",
-        sourceIds: [OPTIMISTIC_OPERATOR_PROMPT_SOURCE, `${OPTIMISTIC_OPERATOR_CLIENT_PREFIX}${clientId}`],
-      },
-    ],
-  };
-}
-
-function confirmOptimisticOperatorPrompt(
-  detail: AgentDetail | null,
+function markPendingOperatorPromptConfirmed(
+  prompts: readonly PendingOperatorPrompt[],
   clientId: string,
   messageId: string,
-): AgentDetail | null {
-  if (!detail) return detail;
-  let changed = false;
-  const timeline = detail.timeline.map((item) => {
-    if (
-      item.kind !== "operator" ||
-      !item.sourceIds.includes(`${OPTIMISTIC_OPERATOR_CLIENT_PREFIX}${clientId}`)
-    ) {
-      return item;
-    }
-    changed = true;
-    return {
-      ...item,
-      meta: "Sent",
-      sourceIds: [...item.sourceIds, `${OPTIMISTIC_OPERATOR_MESSAGE_PREFIX}${messageId}`],
-    };
-  });
-  return changed ? { ...detail, timeline } : detail;
+): PendingOperatorPrompt[] {
+  return prompts.map((entry) =>
+    entry.clientId === clientId ? { ...entry, messageId } : entry,
+  );
+}
+
+function retainPendingOperatorPrompts(
+  prompts: readonly PendingOperatorPrompt[],
+  confirmedMessageIds: ReadonlySet<string>,
+  now: number,
+): PendingOperatorPrompt[] | null {
+  const retained = prompts.filter((entry) =>
+    (entry.messageId === undefined || !confirmedMessageIds.has(entry.messageId))
+    && now - Date.parse(entry.createdAt) < PENDING_OPERATOR_PROMPT_TTL_MS);
+  return retained.length === prompts.length ? null : retained;
 }
 
 export interface RuntimeStoreState {
@@ -453,6 +421,8 @@ export interface RuntimeStoreState {
   loadAgentTaskDetail: (agentId: string | undefined, taskId: string | undefined, force?: boolean) => Promise<void>;
   loadAgentToolExecutionDetail: (agentId: string | undefined, toolExecutionId: string | undefined, fallbackActivity?: AgentTimelineActivity, conversationRevision?: number) => Promise<void>;
   sendOperatorPrompt: (agentId: string | undefined, text: string, attachments?: OperatorPromptAttachment[]) => Promise<void>;
+  /** Drop locally echoed prompts once the server view carries them. */
+  pruneOperatorPrompts: (agentId: string, confirmedMessageIds: readonly string[]) => void;
   abortCurrentRun: (agentId: string | undefined, runId: string | null | undefined) => Promise<void>;
   setAgentModel: (agentId: string | undefined, model: string, reasoningEffort?: string) => Promise<void>;
   clearAgentModel: (agentId: string | undefined) => Promise<void>;
@@ -3128,8 +3098,13 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
 
     const request = captureClientRequest();
+    // Tracked outside try so a failed enqueue can drop the local echo; left
+    // undefined when even the client id could not be generated.
+    let echoClientId: string | undefined;
+    const createdAt = new Date().toISOString();
     try {
       const clientId = generateUuid();
+      echoClientId = clientId;
       set((state) => {
         const rosterActivityByAgentId = touchRosterActivity(state.rosterActivityByAgentId, agentId, "operator", new Date().toISOString());
         if (rosterActivityByAgentId !== state.rosterActivityByAgentId) {
@@ -3145,13 +3120,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
               ...state.sessionsByAgentId[agentId],
               sendingPrompt: true,
               promptError: undefined,
-              detail: appendOptimisticOperatorPrompt(
-                state.sessionsByAgentId[agentId]?.detail ?? null,
-                state.bootstrap.agents.find((agent) => agent.id === agentId),
-                prompt,
-                clientId,
-                get().currentUser?.displayName,
-              ),
+              // Local echo: keep the sent prompt visible until the server
+              // conversation view carries it (pending input or turn input).
+              pendingOperatorPrompts: [
+                ...(state.sessionsByAgentId[agentId]?.pendingOperatorPrompts ?? []),
+                {
+                  clientId,
+                  text: prompt,
+                  senderName: get().currentUser?.displayName,
+                  createdAt,
+                  ...(attachments.length > 0 ? { attachmentCount: attachments.length } : {}),
+                },
+              ],
             },
           },
         };
@@ -3168,8 +3148,8 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             ...state.sessionsByAgentId[agentId],
             sendingPrompt: false,
             promptError: undefined,
-            detail: confirmOptimisticOperatorPrompt(
-              state.sessionsByAgentId[agentId]?.detail ?? null,
+            pendingOperatorPrompts: markPendingOperatorPromptConfirmed(
+              state.sessionsByAgentId[agentId]?.pendingOperatorPrompts ?? [],
               clientId,
               messageId,
             ),
@@ -3187,11 +3167,37 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
             ...state.sessionsByAgentId[agentId],
             sendingPrompt: false,
             promptError: message,
+            // The composer keeps its draft on failure; the local echo
+            // must not duplicate a prompt that never reached the server.
+            pendingOperatorPrompts: (state.sessionsByAgentId[agentId]?.pendingOperatorPrompts ?? [])
+              .filter((entry) => entry.clientId !== echoClientId),
           },
         },
       }));
       throw error;
     }
+  },
+
+  pruneOperatorPrompts: (agentId, confirmedMessageIds) => {
+    if (!agentId) return;
+    const confirmed = new Set(confirmedMessageIds);
+    set((state) => {
+      const session = state.sessionsByAgentId[agentId];
+      const prompts = session?.pendingOperatorPrompts;
+      if (!prompts || prompts.length === 0) return {};
+      const retained = retainPendingOperatorPrompts(prompts, confirmed, Date.now());
+      if (retained === null) return {};
+      return {
+        sessionsByAgentId: {
+          ...state.sessionsByAgentId,
+          [agentId]: {
+            ...emptyAgentSession(),
+            ...session,
+            pendingOperatorPrompts: retained,
+          },
+        },
+      };
+    });
   },
 
   abortCurrentRun: async (agentId, runId) => {

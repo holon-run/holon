@@ -34,6 +34,7 @@ import type {
   TurnInputSummary,
 } from "@holon/conversation-sdk";
 
+import type { LocalPendingOperatorPrompt } from "../../runtime/conversation-view-model";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { EmptyState } from "../../components/ui/EmptyState";
 import type { AgentTimelineActivity, ToolExecutionDetailState } from "../../runtime/types";
@@ -87,6 +88,8 @@ export const ConversationTimeline = memo(function ConversationTimeline({
         </Fragment>
       ))}
       {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} onInspectActivity={actions.onInspectActivity} /> : null}
+      {/* Server-queued operator inputs come first; local echoes stay below them so
+          the newest submission never reorders above older queued prompts. */}
       {operatorInputs.length > 0 ? (
         <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingInputs")}>
           {operatorInputs.map((input) => (
@@ -94,8 +97,16 @@ export const ConversationTimeline = memo(function ConversationTimeline({
           ))}
         </div>
       ) : null}
+      {model.localPendingPrompts.length > 0 ? (
+        <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingSending")}>
+          {model.localPendingPrompts.map((prompt) => (
+            <LocalPendingPromptChip key={prompt.clientId} prompt={prompt} />
+          ))}
+        </div>
+      ) : null}
       {!model.bootstrapLoading &&
       model.turns.length === 0 &&
+      model.localPendingPrompts.length === 0 &&
       model.pendingInputs.length === 0 &&
       (status.kind === "ready" || status.kind === "reconnecting") ? (
         <EmptyState
@@ -206,6 +217,30 @@ function PendingInputChip({ input }: { input: PendingInput }) {
       <span className="conversation-input-status" role="status">
         <Clock size={12} />
         {t(input.state === "assigning" ? "agentPage.pendingAssigning" : "agentPage.pendingQueued")}
+      </span>
+    </div>
+  );
+}
+
+/** Local echo for a prompt this client just submitted; retired once the
+ *  server conversation view carries the message. */
+function LocalPendingPromptChip({ prompt }: { prompt: LocalPendingOperatorPrompt }) {
+  const { t } = useTranslation();
+  const senderName = prompt.senderName?.trim();
+  return (
+    <div className="conversation-pending-chip is-local" data-conversation-anchor={`local-prompt:${prompt.clientId}`}>
+      {senderName ? (
+        <div className="conversation-input-sender"><User size={12} aria-hidden="true" /><span>{senderName}</span></div>
+      ) : null}
+      {prompt.text ? <MarkdownContent text={prompt.text} /> : null}
+      {prompt.attachmentCount ? (
+        <span className="conversation-pending-attachment-count">
+          {t("agentPage.promptAttachmentsOnly", { count: prompt.attachmentCount })}
+        </span>
+      ) : null}
+      <span className="conversation-input-status" role="status">
+        <LoaderCircle size={12} className="is-spinning" />
+        {t("agentPage.pendingSending")}
       </span>
     </div>
   );

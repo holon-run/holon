@@ -93,8 +93,6 @@ function timelineDedupeKey(item: AgentTimelineItem): string {
 }
 
 function timelineItemPriority(item: AgentTimelineItem): number {
-  if (item.id.startsWith("operator-prompt:pending:")) return 0;
-  if (item.sourceIds.includes("pending-operator-prompt")) return 0;
   if (item.id.startsWith("event-") || item.meta.includes("event #")) return 1;
   return 2;
 }

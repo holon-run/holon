@@ -18,9 +18,6 @@ import type {
   DisplayLevel,
 } from "./types";
 
-export const OPTIMISTIC_OPERATOR_PROMPT_SOURCE = "pending-operator-prompt";
-export const OPTIMISTIC_OPERATOR_MESSAGE_PREFIX = "operator-prompt-message:";
-
 export interface MergeConversationEventPageOptions {
   newestSeq?: number;
   eventLogEpoch?: string;
@@ -35,6 +32,7 @@ export function emptyAgentSession(): AgentSessionState {
     syncStatus: "idle",
     sendingPrompt: false,
     abortingRun: false,
+    pendingOperatorPrompts: [],
     detail: null,
     workItemDetailsById: {},
     taskDetailsById: {},
@@ -64,24 +62,8 @@ export function materializeProjectionDetail(
 ): AgentDetail | null {
   if (!detail) return null;
   const projectedTimeline = deriveSessionTimeline(projection, displayLevel);
-  const projectedMessageIds = new Set(
-    projectedTimeline.flatMap((item) =>
-      item.kind === "operator" && item.id.startsWith("message:")
-        ? [item.id.slice("message:".length)]
-        : [],
-    ),
-  );
-  const optimisticItems = detail.timeline.filter((item) => {
-    if (!item.sourceIds.includes(OPTIMISTIC_OPERATOR_PROMPT_SOURCE)) return false;
-    const canonicalMessageId = item.sourceIds
-      .find((sourceId) => sourceId.startsWith(OPTIMISTIC_OPERATOR_MESSAGE_PREFIX))
-      ?.slice(OPTIMISTIC_OPERATOR_MESSAGE_PREFIX.length);
-    return !canonicalMessageId || !projectedMessageIds.has(canonicalMessageId);
-  });
-  const timeline = compactAgentTimelineItems([
-    ...projectedTimeline,
-    ...optimisticItems,
-  ]).sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
+  const timeline = compactAgentTimelineItems(projectedTimeline)
+    .sort((left, right) => sortableTime(left.timestamp) - sortableTime(right.timestamp));
   return {
     ...detail,
     timeline,

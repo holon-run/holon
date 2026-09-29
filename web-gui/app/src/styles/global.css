@@ -6943,6 +6943,10 @@ code {
 .conversation-input-sender span { min-width: 0; }
 .conversation-pending-inputs { display: flex; flex-direction: column; gap: 12px; }
 .conversation-pending-chip { margin-bottom: 0; }
+.conversation-pending-chip.is-local { border: 1px dashed color-mix(in srgb, var(--muted) 45%, transparent); }
+.conversation-pending-chip.is-local .markdown-content,
+.conversation-pending-attachment-count { opacity: 0.75; }
+.conversation-pending-attachment-count { display: block; font-size: 13px; }
 .conversation-pending-events { min-width: 0; color: var(--muted); font-size: 12px; }
 .conversation-pending-events summary { display: flex; align-items: center; gap: 7px; cursor: pointer; padding: 8px 0; list-style: none; }
 .conversation-pending-events summary::-webkit-details-marker { display: none; }
