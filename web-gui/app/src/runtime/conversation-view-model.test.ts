@@ -312,3 +312,59 @@ describe("turn execution state", () => {
     })))).toBe("waitingResult");
   });
 });
+
+describe("local pending operator prompts", () => {
+  const emptyBriefState = {
+    briefs: new Map(),
+    briefLoadStates: new Map(),
+    detailLoadStates: new Map(),
+  };
+
+  function baseModel() {
+    return buildConversationSessionModel({
+      status: { kind: "ready" },
+      view: stateView([]),
+      historyState: { kind: "idle" },
+      ...emptyBriefState,
+    });
+  }
+
+  it("surfaces unconfirmed prompts as a local echo", () => {
+    const model = buildConversationSessionModel({
+      status: { kind: "ready" },
+      view: stateView([]),
+      historyState: { kind: "idle" },
+      ...emptyBriefState,
+      localPendingPrompts: [
+        { clientId: "client-1", text: "hello", createdAt: "2026-09-29T00:00:00Z" },
+      ],
+    });
+    expect(model.localPendingPrompts).toHaveLength(1);
+    expect(baseModel().localPendingPrompts).toHaveLength(0);
+  });
+
+  it("retires a prompt once the server view echoes its message id", () => {
+    const echoed = stateView([], {
+      pending_inputs: [{
+        message_id: "msg-1",
+        revision: 1,
+        state: "queued",
+        preview: "hello",
+        presentation_class: "operator",
+        created_at: "2026-09-29T00:00:01Z",
+        actor_display_name: undefined,
+      }],
+    });
+    const model = buildConversationSessionModel({
+      status: { kind: "ready" },
+      view: echoed,
+      historyState: { kind: "idle" },
+      ...emptyBriefState,
+      localPendingPrompts: [
+        { clientId: "client-1", text: "hello", createdAt: "2026-09-29T00:00:00Z", messageId: "msg-1" },
+        { clientId: "client-2", text: "still sending", createdAt: "2026-09-29T00:00:02Z" },
+      ],
+    });
+    expect(model.localPendingPrompts.map((entry) => entry.clientId)).toEqual(["client-2"]);
+  });
+});

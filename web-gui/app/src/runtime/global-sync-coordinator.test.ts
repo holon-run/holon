@@ -83,6 +83,7 @@ function sessionState(overrides: Partial<AgentSessionState> = {}): AgentSessionS
     syncStatus: "idle",
     sendingPrompt: false,
     abortingRun: false,
+    pendingOperatorPrompts: [],
     detail: null,
     workItemDetailsById: {},
     taskDetailsById: {},

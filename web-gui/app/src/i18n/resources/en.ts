@@ -486,6 +486,8 @@ const en = {
     pendingInputState: "Pending input state",
     pendingQueued: "Queued, waiting to run",
     pendingAssigning: "Assigning to a turn",
+    pendingSending: "Sending…",
+    promptAttachmentsOnly: "{{count}} attachment(s)",
     turnAria: "Conversation turn {{index}}",
     turnClass: {
       operator: "Operator",

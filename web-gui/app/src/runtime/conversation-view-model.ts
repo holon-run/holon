@@ -45,6 +45,12 @@ export interface ConversationSessionModel {
   readonly status: ConversationStatus;
   readonly view: ConversationStateView | null;
   readonly turns: readonly ConversationTurnGroup[];
+  /**
+   * Operator prompts submitted from this client whose server echo (pending
+   * input or assigned turn input) has not arrived yet. Rendered as a local
+   * echo so the sent message never disappears while sync is in flight.
+   */
+  readonly localPendingPrompts: readonly LocalPendingOperatorPrompt[];
   readonly pendingInputs: readonly PendingInput[];
   readonly hasMoreHistory: boolean;
   readonly historyState: ConversationHistoryLoadState;
@@ -61,9 +67,22 @@ export interface BuildConversationSessionModelInput {
   readonly status: ConversationStatus;
   readonly view: ConversationStateView | null;
   readonly historyState: ConversationHistoryLoadState;
+  /** Client-echoed prompts for this agent, already server-deduped upstream. */
+  readonly localPendingPrompts?: readonly LocalPendingOperatorPrompt[];
   readonly briefs: ReadonlyMap<string, BriefRecord>;
   readonly briefLoadStates: ReadonlyMap<string, ConversationBriefLoadState>;
   readonly detailLoadStates: ReadonlyMap<string, ConversationDetailLoadState>;
+}
+
+/** Render shape of a locally echoed operator prompt. */
+export interface LocalPendingOperatorPrompt {
+  readonly clientId: string;
+  readonly text: string;
+  readonly senderName?: string;
+  readonly createdAt: string;
+  readonly attachmentCount?: number;
+  /** Server message id once the enqueue is accepted; enables echo dedupe. */
+  readonly messageId?: string;
 }
 
 export function buildConversationSessionModel(
@@ -95,6 +114,10 @@ export function buildConversationSessionModel(
   );
   const activeTurn =
     [...turns].reverse().find((turn) => turn.execution.kind === "active") ?? null;
+  const serverEchoedMessageIds = new Set([
+    ...(view?.pending_inputs ?? []).map((input) => input.message_id),
+    ...turns.flatMap((turn) => turn.inputs.map((assigned) => assigned.message_id)),
+  ]);
   return {
     status: input.status,
     view,
@@ -104,6 +127,9 @@ export function buildConversationSessionModel(
       && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
       && turn.settled && !turn.attention && turn.briefIds.length === 0
       && turn.result.kind === "none" && turn.result.reason.kind === "reducer_only")),
+    localPendingPrompts: (input.localPendingPrompts ?? []).filter(
+      (entry) => entry.messageId === undefined || !serverEchoedMessageIds.has(entry.messageId),
+    ),
     pendingInputs: (view?.pending_inputs ?? []).filter(
       (input) => !turns.some((turn) => turn.inputs.some((assigned) => assigned.message_id === input.message_id)),
     ),

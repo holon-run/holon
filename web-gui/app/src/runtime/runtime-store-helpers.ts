@@ -21,6 +21,23 @@ export type { WorkItemDetailState, TaskDetailState, ToolExecutionDetailState };
 
 export type AgentLiveStatus = "idle" | "connecting" | "streaming" | "reconnecting" | "recovering" | "stale" | "error";
 export type AgentCacheStatus = "unchecked" | "loading" | "hit" | "miss" | "unavailable";
+
+/**
+ * Operator prompt submitted from this client that the server conversation
+ * view has not echoed yet. Rendered locally so the sent message stays
+ * visible between composer submit and the server-driven pending/turn input.
+ */
+export interface PendingOperatorPrompt {
+  clientId: string;
+  text: string;
+  senderName?: string;
+  createdAt: string;
+  /** Number of attachments when the prompt was submitted without text. */
+  attachmentCount?: number;
+  /** Server message id, set once the enqueue request is accepted. */
+  messageId?: string;
+}
+
 export type AgentContentStatus = "unknown" | "available" | "confirmed-empty";
 export type AgentSyncStatus =
   | "idle"
@@ -65,6 +82,8 @@ export interface AgentSessionState extends SessionProjectionState {
   syncRetryAt?: number;
   promptError?: string;
   modelError?: string;
+  /** Prompts awaiting their server echo, keyed by client-generated id. */
+  pendingOperatorPrompts: PendingOperatorPrompt[];
   workItemDetailsById: Record<string, WorkItemDetailState>;
   taskDetailsById: Record<string, TaskDetailState>;
   toolExecutionDetailsById: Record<string, ToolExecutionDetailState>;

@@ -25,6 +25,8 @@ import {
 import { getRuntimeConnectionConfig, retryPendingReadMarker, useRuntimeStore } from "./runtime-store";
 import { currentRemoteKey } from "./session-cache";
 
+const NO_PENDING_OPERATOR_PROMPTS: readonly never[] = [];
+
 export interface UseConversationSessionResult {
   readonly model: ConversationSessionModel;
   readonly scopeKey: string | null;
@@ -52,6 +54,12 @@ export function useConversationSession(
   const currentUser = useRuntimeStore((state) => state.currentUser);
   const currentUserLoaded = useRuntimeStore((state) => state.currentUserLoaded);
   const connection = useRuntimeStore((state) => state.bootstrap.connection);
+  const pendingOperatorPrompts = useRuntimeStore((state) =>
+    agentId === undefined
+      ? NO_PENDING_OPERATOR_PROMPTS
+      : state.sessionsByAgentId[agentId]?.pendingOperatorPrompts ?? NO_PENDING_OPERATOR_PROMPTS,
+  );
+  const pruneOperatorPrompts = useRuntimeStore((state) => state.pruneOperatorPrompts);
   const remoteKey = currentRemoteKey({
     mode: connection.mode,
     baseUrl: connection.baseUrl,
@@ -100,6 +108,24 @@ export function useConversationSession(
   const version = snapshot.version;
   const conversationReady = snapshot.status.kind === "ready" && snapshot.view?.scope != null && snapshot.view.reset_reason === null;
 
+  // Locally echoed prompts retire once the server view carries their message
+  // id (pending input or assigned turn input). Stale entries age out via the
+  // store-side TTL.
+  useEffect(() => {
+    if (agentId === undefined || pendingOperatorPrompts.length === 0) return;
+    const view = snapshot.displayView;
+    if (!view?.scope) return;
+    const covered = new Set<string>([
+      ...view.pending_inputs.map((input) => input.message_id),
+      ...view.turns.flatMap((turn) => turn.inputs.map((input) => input.message_id)),
+    ]);
+    const confirmed = pendingOperatorPrompts
+      .map((entry) => entry.messageId)
+      .filter((messageId): messageId is string => messageId !== undefined && covered.has(messageId));
+    // Cheap no-op when nothing is covered; also ages out stale entries.
+    pruneOperatorPrompts(agentId, confirmed);
+  }, [agentId, snapshot, pendingOperatorPrompts, pruneOperatorPrompts]);
+
   // A scope that becomes ready can retry a pending server read-state update.
   useEffect(() => {
     if (!conversationReady || agentId === undefined) return;
@@ -136,6 +162,7 @@ export function useConversationSession(
     return buildConversationSessionModel({
       status: snapshot.status,
       view,
+      localPendingPrompts: pendingOperatorPrompts,
       historyState: controller?.historyState() ?? { kind: "idle" },
       briefs,
       briefLoadStates,
@@ -143,7 +170,7 @@ export function useConversationSession(
     });
     // `version` covers controller-side mutations; `controller` and
     // `snapshot` are stable between version bumps.
-  }, [snapshot, controller, version]);
+  }, [snapshot, controller, version, pendingOperatorPrompts]);
 
   const loadOlderHistory = useCallback(() => {
     if (controller === null || controller.view().reset_reason !== null) return;
