@@ -2,11 +2,25 @@
 
 FROM node:24-bookworm-slim AS web-builder
 
+WORKDIR /src/packages/api-sdk
+COPY packages/api-sdk/package.json ./
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install
+COPY packages/api-sdk/ ./
+RUN npm run build
+
 WORKDIR /src/packages/conversation-sdk
 COPY packages/conversation-sdk/package.json packages/conversation-sdk/package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm ci
 COPY packages/conversation-sdk/ ./
+RUN npm run build
+
+WORKDIR /src/packages/app-sdk
+COPY packages/app-sdk/package.json ./
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm install
+COPY packages/app-sdk/ ./
 RUN npm run build
 
 WORKDIR /src/web-gui/app
@@ -27,6 +41,7 @@ RUN apt-get update \
 WORKDIR /src
 COPY . .
 COPY --from=web-builder /src/web-gui/app/dist ./web-gui/app/dist
+COPY --from=web-builder /src/packages/app-sdk/dist ./packages/app-sdk/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/usr/local/cargo/git/db,sharing=locked \
     --mount=type=cache,target=/src/target,sharing=locked \

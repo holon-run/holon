@@ -15,6 +15,8 @@ on:
       - "apps/android/**"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
+      - "packages/api-sdk/**"
+      - "packages/app-sdk/**"
       - "agent_templates/**"
       - "builtin_templates/**"
       - "docs/website/reference/openapi.json"
@@ -48,6 +50,8 @@ on:
       - "apps/android/**"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
+      - "packages/api-sdk/**"
+      - "packages/app-sdk/**"
       - "agent_templates/**"
       - "builtin_templates/**"
       - "docs/website/reference/openapi.json"
@@ -125,6 +129,8 @@ jobs:
               - 'src/**'
               - 'tests/**'
               - 'crates/**'
+              - 'packages/api-sdk/**'
+              - 'packages/app-sdk/**'
               - 'scripts/ci_test_shards.py'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -146,6 +152,8 @@ jobs:
               - 'tests/fixtures/client-wire/**'
               - 'web-gui/**'
               - 'packages/client-wire-kotlin/**'
+              - 'packages/api-sdk/**'
+              - 'packages/app-sdk/**'
               - '.github/workflows/ci.yml'
               - 'docs/website/reference/openapi.json'
             android:
@@ -550,6 +558,16 @@ jobs:
           env-vars: RUSTFLAGS
           cache-bin: false
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+
+      - name: Set up Node.js for App SDK tests
+        if: matrix.shard == 'misc'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build App SDK for embedded asset tests
+        if: matrix.shard == 'misc'
+        run: make app-sdk
 
       - name: Run test shard
         run: |

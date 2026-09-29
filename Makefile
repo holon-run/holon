@@ -46,6 +46,7 @@ web: ## Build the web GUI (requires Node.js 24). Produces web-gui/app/dist
 
 web-ci: ## Test and build the web GUI with one clean dependency install
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
+	$(MAKE) app-sdk && \
 	cd $(CONVERSATION_SDK_DIR) && npm_config_engine_strict=true npm ci && npm test && \
 	cd ../../$(OPENAPI_TOOLS_DIR) && npm ci && npm run check && \
 	cd ../../$(WEB_DIR) && npm ci && npm test && npm run build
