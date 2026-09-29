@@ -3415,7 +3415,6 @@ impl RuntimeHandle {
             .autonomous_continuation_hook = hook;
     }
 
-    #[cfg(test)]
     pub(crate) fn runtime_db(&self) -> &crate::runtime_db::RuntimeDb {
         &self.inner.runtime_db
     }

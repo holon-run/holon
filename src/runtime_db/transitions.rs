@@ -500,6 +500,12 @@ impl RuntimeDb {
                         "startup_recovery/orphaned_queue_claim",
                         "orphaned_queue_claim",
                     )
+                } else if turn.destructive_operation_id.is_some() {
+                    report.daemon_restart_turns += 1;
+                    (
+                        "startup_recovery/destructive_operation_verify_only",
+                        "destructive_operation_verify_only",
+                    )
                 } else {
                     report.daemon_restart_turns += 1;
                     ("startup_recovery/daemon_restart", "daemon_restart")
@@ -5719,6 +5725,54 @@ mod tests {
                 .as_ref()
                 .and_then(|terminal| terminal.reason.as_deref()),
             Some("startup_recovery/daemon_restart")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_marks_destructive_operation_turns_verify_only() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-destructive-operation";
+        let mut turn = active_turn(
+            agent_id,
+            "turn-startup-destructive-operation",
+            1,
+            None,
+            Utc::now() - chrono::Duration::seconds(2),
+        );
+        turn.destructive_operation_id = Some("op-startup-restart".into());
+        db.turn_records().upsert(&turn)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 1);
+        assert_eq!(report.daemon_restart_turns, 1);
+
+        let recovered = db
+            .turn_records()
+            .by_id(Some(agent_id), &turn.turn_id)?
+            .unwrap();
+        assert_eq!(
+            recovered
+                .terminal
+                .as_ref()
+                .and_then(|terminal| terminal.reason.as_deref()),
+            Some("startup_recovery/destructive_operation_verify_only")
+        );
+        // The fence survives recovery so the replayed turn verifies instead of
+        // re-dispatching the destructive command.
+        assert_eq!(
+            recovered.destructive_operation_id.as_deref(),
+            Some("op-startup-restart")
+        );
+        let event = db
+            .audit_events()
+            .recent(Some(agent_id), 20)?
+            .into_iter()
+            .find(|event| event.kind == "startup_interrupted_turn_recovered")
+            .expect("recovery should emit an audit event");
+        assert_eq!(
+            event.data["reason_class"],
+            serde_json::json!("destructive_operation_verify_only")
         );
         Ok(())
     }

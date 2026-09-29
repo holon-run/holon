@@ -3713,6 +3713,25 @@ CREATE INDEX IF NOT EXISTS idx_agent_brief_read_cursors_agent
   ON agent_brief_read_cursors(agent_id, updated_at);
 "#,
     },
+    Migration {
+        version: 74,
+        name: "destructive_operation_fences",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS destructive_operations (
+  operation_id TEXT PRIMARY KEY,
+  owner_turn_id TEXT NOT NULL,
+  owner_work_item_id TEXT,
+  phase TEXT NOT NULL,
+  verification_target TEXT NOT NULL,
+  recovery_policy TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_destructive_operations_phase
+  ON destructive_operations(phase, updated_at);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -8,6 +8,7 @@
 /// Importing `tool::names::TOOL_*` lets the compiler catch typos and makes
 /// renames a single-point edit.
 pub mod tool_names {
+    pub const SCHEDULE_DESTRUCTIVE_OPERATION: &str = "ScheduleDestructiveOperation";
     pub const GET_AGENT: &str = "GetAgent";
     pub const APPLY_PATCH: &str = "ApplyPatch";
     pub const ATTACH_WORKSPACE: &str = "AttachWorkspace";

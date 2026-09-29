@@ -9,6 +9,16 @@ Use this skill for platform-neutral server and service operations. It defines
 the workflow and record formats; environment-specific skills and tools own
 Linux, SSH, containers, Kubernetes, IaC, cloud, and observability commands.
 
+## Destructive service operations
+
+When an operation can stop or replace the process performing the operation,
+schedule it through an external supervisor or transient unit rather than
+running it synchronously in the service cgroup. Persist a unique operation id
+and an explicit `planned` → `scheduled` phase before dispatch. Recovery must
+use the idempotency record to verify the target, not replay the destructive
+command. Never substitute `nohup`, `&`, or `sleep` for a durable lifecycle
+boundary.
+
 ## Core rules
 
 1. Identify the exact environment, hosts, services, source of truth, and
