@@ -55,6 +55,10 @@ authentication boundary:
 
 - `GET /apps/{agent_id}` — discover valid apps owned by the Agent.
 - `GET /apps/{agent_id}/{app_id}` or `/` — serve the manifest entry document.
+- `GET /apps/{agent_id}/{app_id}/context` — return the App SDK context.
+- `POST /apps/{agent_id}/{app_id}/request` — enqueue an App request.
+- `GET /apps/{agent_id}/{app_id}/events` — stream App-originated lifecycle events.
+- `GET /apps/{agent_id}/{app_id}/holon.js` — serve the built browser SDK artifact.
 - `GET /apps/{agent_id}/{app_id}/{asset_path}` — serve an app asset.
 
 Entry documents and assets are served with `Cache-Control: no-store`,
@@ -83,6 +87,12 @@ The baseline CSP keeps scripts, styles, images, fonts, and connections on the
 same origin (with data URLs only for images and fonts), disallows a base URI,
 and limits framing and form actions to the same origin. This permits the
 same-origin SDK surface planned for #3255.
+
+The browser SDK is built from `packages/app-sdk` and exposes
+`window.Holon.context()`, `window.Holon.request()`, and `window.Holon.events()`.
+The Rust route embeds `dist/holon.js` when available and returns an explicit
+service-unavailable response when the optional artifact is absent; it never
+reconstructs the SDK JavaScript in Rust source.
 
 ## Trust boundary and non-goals
 

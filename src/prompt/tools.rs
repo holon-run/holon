@@ -440,6 +440,24 @@ mod tests {
     }
 
     #[test]
+    fn holon_cli_guidance_describes_app_boundary() {
+        let tools = vec![ToolSpec {
+            name: "ExecCommand".into(),
+            description: String::new(),
+            input_schema: json!({}),
+            freeform_grammar: None,
+        }];
+        let section = tool_sections(&tools)
+            .into_iter()
+            .find(|section| section.name == "holon_cli_contract")
+            .expect("holon cli contract section");
+
+        assert!(section.content.contains("/apps/{agent_id}/{app_id}/"));
+        assert!(section.content.contains("App-originated input is not"));
+        assert!(section.content.contains("does not grant permissions"));
+    }
+
+    #[test]
     fn holon_cli_guidance_uses_managed_skill_lifecycle() {
         let tools = vec![ToolSpec {
             name: "ExecCommand".into(),

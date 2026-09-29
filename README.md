@@ -88,6 +88,11 @@ end-to-end fixture test can be run with:
 cargo test --test http_apps apps_reference_workbench_end_to_end
 ```
 
+Hosted apps load the browser artifact from
+`/apps/<agent-id>/<app-id>/holon.js`. The artifact installs `window.Holon` and
+uses the existing same-origin session boundary; App requests do not become
+operator input and do not grant additional permissions.
+
 ## Install
 
 ```bash
