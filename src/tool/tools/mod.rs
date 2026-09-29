@@ -36,6 +36,7 @@ pub(crate) mod memory_get;
 pub(crate) mod memory_search;
 pub(crate) mod pick_work_item;
 pub(crate) mod remove_worktree;
+pub(crate) mod schedule_destructive_operation;
 pub(crate) mod semantic_projection;
 pub(crate) mod send_agent_message;
 pub(crate) mod sleep;
@@ -103,6 +104,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         switch_workspace::definition()?,
         create_worktree::definition()?,
         remove_worktree::definition()?,
+        schedule_destructive_operation::definition()?,
         apply_patch_tool::definition()?,
         exec_command::definition()?,
         exec_command_batch::definition()?,
@@ -358,6 +360,13 @@ fn execute_builtin_tool_inner<'a>(
             agent_id,
             authority_class,
             &call.input,
+        )),
+        schedule_destructive_operation::NAME => Box::pin(schedule_destructive_operation::execute(
+            runtime,
+            agent_id,
+            authority_class,
+            &call.input,
+            context,
         )),
         create_external_trigger::NAME => Box::pin(create_external_trigger::execute(
             runtime,
@@ -626,6 +635,9 @@ mod tests {
             "MemorySearch" => "src/tool/tool_descriptions/memory_search.md",
             "PickWorkItem" => "src/tool/tool_descriptions/pick_work_item.md",
             "RemoveWorktree" => "src/tool/tool_descriptions/remove_worktree.md",
+            "ScheduleDestructiveOperation" => {
+                "src/tool/tool_descriptions/schedule_destructive_operation.md"
+            }
             "SendAgentMessage" => "src/tool/tool_descriptions/send_agent_message.md",
             "Sleep" => "src/tool/tool_descriptions/sleep.md",
             "CreateAgent" => "src/tool/tool_descriptions/create_agent.md",

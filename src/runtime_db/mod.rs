@@ -17,6 +17,7 @@ pub mod authentication;
 pub mod brief_publication_repair;
 pub mod connection;
 pub mod conversation;
+pub mod destructive_operations;
 pub mod evidence;
 mod legacy_scheduler_wire;
 pub mod migrations;
@@ -47,6 +48,10 @@ pub use crate::runtime_db::brief_publication_repair::{
     WaitFinalBriefPublicationRepairDiagnostic, WaitFinalBriefPublicationRepairPhase,
     WaitFinalBriefPublicationRepairPlanStatus, WaitFinalBriefPublicationRepairProgress,
     WaitFinalBriefPublicationRepairReport,
+};
+pub use crate::runtime_db::destructive_operations::{
+    DestructiveOperationPhase, DestructiveOperationRecord, DestructiveOperationRepository,
+    PlannedDestructiveOperation,
 };
 pub use crate::runtime_db::evidence::{
     EvidenceKind, EvidencePayloadRow, EvidenceQuery, EvidenceRow,
@@ -850,6 +855,10 @@ impl RuntimeDb {
 
     pub fn turn_records(&self) -> TurnRecordRepository<'_> {
         TurnRecordRepository { db: self }
+    }
+
+    pub fn destructive_operations(&self) -> DestructiveOperationRepository<'_> {
+        DestructiveOperationRepository { db: self }
     }
 
     pub fn conversation(&self) -> ConversationRepository<'_> {

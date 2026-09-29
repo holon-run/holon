@@ -5255,6 +5255,41 @@
       "stability": "stable"
     },
     {
+      "description": "Schedule an explicitly authorized destructive lifecycle operation outside the\ncurrent Holon daemon cgroup. The operation is durably fenced before dispatch\nand idempotent by `operation_id`; recovery verifies the target instead of\nreplaying the destructive command.\n",
+      "family": "local_environment",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "command": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "verification_target": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "operation_id",
+          "command",
+          "verification_target"
+        ],
+        "type": "object"
+      },
+      "name": "ScheduleDestructiveOperation",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "tool-specific JSON payload",
+        "success_result_schema": null
+      },
+      "stability": "experimental"
+    },
+    {
       "description": "Apply a unified diff patch across one or more files. Call the JSON/function tool with exactly {\"patch\":\"--- a/path\\n+++ b/path\\n@@ ...\"}.\nRelative paths: write `\"--- a/src/foo.rs\"` (with `a/` prefix). Absolute paths: write `\"--- /home/foo.rs\"` directly (no `a/` prefix). Do not prefix absolute paths with `a/`.\n",
       "family": "local_environment",
       "freeform_grammar": null,

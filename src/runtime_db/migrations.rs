@@ -3713,6 +3713,30 @@ CREATE INDEX IF NOT EXISTS idx_agent_brief_read_cursors_agent
   ON agent_brief_read_cursors(agent_id, updated_at);
 "#,
     },
+    Migration {
+        version: 74,
+        name: "destructive_operation_fences",
+        sql: r#"
+CREATE TABLE IF NOT EXISTS destructive_operations (
+  operation_id TEXT PRIMARY KEY,
+  owner_turn_id TEXT NOT NULL,
+  owner_work_item_id TEXT,
+  phase TEXT NOT NULL,
+  verification_target TEXT NOT NULL,
+  recovery_policy TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_destructive_operations_phase
+  ON destructive_operations(phase, updated_at);
+"#,
+    },
+    Migration {
+        version: 75,
+        name: "destructive_operation_command_digest",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4008,6 +4032,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "execution_root_registry_backfill" {
         backfill_execution_root_entries(transaction)?;
     }
+    if migration.name == "destructive_operation_command_digest" {
+        ensure_destructive_operation_command_digest_schema(transaction)?;
+    }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "execution_protocol_authority" {
         backfill_execution_protocol_authority(transaction)?;
@@ -4179,6 +4206,23 @@ fn ensure_agent_display_names_schema(transaction: &Transaction<'_>) -> Result<()
            ON agent_identities(name_key)
            WHERE name_key IS NOT NULL;",
     )?;
+    Ok(())
+}
+
+fn ensure_destructive_operation_command_digest_schema(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "destructive_operations")? {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(destructive_operations)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|column| column == "command_digest") {
+        transaction.execute_batch(
+            "ALTER TABLE destructive_operations \
+             ADD COLUMN command_digest TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
     Ok(())
 }
 

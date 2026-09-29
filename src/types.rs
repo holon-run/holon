@@ -2393,6 +2393,9 @@ pub struct TurnRecord {
     pub terminal: Option<TurnTerminalSummary>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay: Option<TurnReplayProvenance>,
+    /// Durable fence for a destructive lifecycle operation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_operation_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -2414,6 +2417,7 @@ impl TurnRecord {
             waiting_condition_ids: Vec::new(),
             terminal: None,
             replay: None,
+            destructive_operation_id: None,
             created_at: Utc::now(),
         }
     }
