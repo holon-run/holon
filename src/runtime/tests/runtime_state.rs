@@ -12288,7 +12288,7 @@ async fn message_admission_does_not_wake_stopped_agents() {
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::Stopped);
-    assert_eq!(state.pending, 1);
+    assert_eq!(state.pending, 0);
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
     assert!(!events.iter().any(|event| {
         event.kind == "scheduler_posture_decision" && event.data["boundary"] == "message_admission"
@@ -12341,7 +12341,7 @@ async fn control_start_hands_stopped_agent_to_scheduler_without_model_turn() {
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::AwakeIdle);
-    assert_eq!(state.pending, 1);
+    assert_eq!(state.pending, 0);
     assert_eq!(provider.call_count().await, 0);
     let events = wait_for_audit_events(
         &runtime,
@@ -12606,7 +12606,7 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
 
     let committed_state = runtime.storage().read_agent().unwrap().unwrap();
     assert_eq!(committed_state.total_input_tokens, 41);
-    assert_eq!(committed_state.pending, 1);
+    assert_eq!(committed_state.pending, 0);
     assert_eq!(committed_state.total_message_count, 1);
     assert!(runtime
         .storage()

@@ -112,6 +112,7 @@ pub(crate) enum QueueMutation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QueueOperation {
     Admit,
+    Discard,
     Claim,
     Interject,
     Requeue,
@@ -1703,6 +1704,7 @@ impl RuntimeTransitionRepository<'_> {
                     QueueOperation::Claim => true,
                     QueueOperation::Interject => false,
                     QueueOperation::Admit
+                    | QueueOperation::Discard
                     | QueueOperation::Requeue
                     | QueueOperation::Settle
                     | QueueOperation::RepairDrop => {
@@ -1793,6 +1795,7 @@ impl RuntimeTransitionRepository<'_> {
                         QueueOperation::Claim => try_claim_queued_message_tx(tx, record)?,
                         QueueOperation::Interject => try_interject_queued_message_tx(tx, record)?,
                         QueueOperation::Admit
+                        | QueueOperation::Discard
                         | QueueOperation::Requeue
                         | QueueOperation::Settle
                         | QueueOperation::RepairDrop => {
@@ -3230,6 +3233,12 @@ fn validate_queue_operation(command: &QueueTransitionCommand) -> Result<()> {
             QueueOperation::Admit,
             QueueMutation::Upsert(QueueEntryRecord {
                 status: QueueEntryStatus::Queued,
+                ..
+            })
+        ) | (
+            QueueOperation::Discard,
+            QueueMutation::Upsert(QueueEntryRecord {
+                status: QueueEntryStatus::Aborted,
                 ..
             })
         ) | (

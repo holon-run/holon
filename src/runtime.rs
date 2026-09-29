@@ -4650,7 +4650,11 @@ impl RuntimeHandle {
             };
             let command = crate::runtime_db::transitions::QueueTransitionCommand {
                 agent_id: message.agent_id.clone(),
-                operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                operation: if discard_due_to_stop {
+                    crate::runtime_db::transitions::QueueOperation::Discard
+                } else {
+                    crate::runtime_db::transitions::QueueOperation::Admit
+                },
                 mutation: crate::runtime_db::transitions::QueueMutation::Upsert(QueueEntryRecord {
                     message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),
