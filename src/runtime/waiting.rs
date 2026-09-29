@@ -1527,29 +1527,166 @@ impl RuntimeHandle {
     fn spawn_timer_loop(&self, timer: TimerRecord) {
         let runtime = self.clone();
         tokio::spawn(async move {
-            let mut timer = timer;
-            loop {
-                let Some(next_fire_at) = timer.next_fire_at else {
-                    break;
-                };
-                if next_fire_at > runtime.now() {
-                    runtime.inner.clock.sleep_until(next_fire_at).await;
+            let timer_id = timer.id.clone();
+            let loop_runtime = runtime.clone();
+            let loop_task = tokio::spawn(async move { loop_runtime.run_timer_loop(timer).await });
+            match loop_task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    runtime
+                        .recover_failed_timer_loop(&timer_id, "fire_error", error.to_string())
+                        .await;
                 }
-                if let Err(err) = runtime.fire_timer_record(&mut timer).await {
-                    let _ = runtime.inner.storage.append_event(&AuditEvent::legacy(
-                        "timer_fire_failed",
-                        serde_json::json!({
-                            "timer_id": timer.id,
-                            "error": err.to_string(),
-                        }),
-                    ));
-                    break;
-                }
-                if timer.status != TimerStatus::Active {
-                    break;
+                Err(error) => {
+                    let failure_kind = if error.is_panic() {
+                        "panic"
+                    } else {
+                        "cancelled"
+                    };
+                    runtime
+                        .recover_failed_timer_loop(&timer_id, failure_kind, error.to_string())
+                        .await;
                 }
             }
         });
+    }
+
+    async fn run_timer_loop(&self, mut timer: TimerRecord) -> Result<()> {
+        #[cfg(test)]
+        if self
+            .inner
+            .panic_next_timer_loop
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            panic!("injected timer loop panic");
+        }
+
+        loop {
+            let Some(next_fire_at) = timer.next_fire_at else {
+                return Ok(());
+            };
+            if next_fire_at > self.now() {
+                self.inner.clock.sleep_until(next_fire_at).await;
+            }
+            if let Err(error) = self.fire_timer_record(&mut timer).await {
+                if let Err(audit_error) = self.inner.storage.append_event(&AuditEvent::legacy(
+                    "timer_fire_failed",
+                    serde_json::json!({
+                        "timer_id": timer.id,
+                        "error": error.to_string(),
+                    }),
+                )) {
+                    tracing::error!(
+                        timer_id = %timer.id,
+                        error = %audit_error,
+                        "failed to record timer fire failure"
+                    );
+                }
+                return Err(error);
+            }
+            if timer.status != TimerStatus::Active {
+                return Ok(());
+            }
+        }
+    }
+
+    async fn recover_failed_timer_loop(&self, timer_id: &str, failure_kind: &str, error: String) {
+        if self
+            .inner
+            .shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        if let Err(audit_error) = self.inner.storage.append_event(&AuditEvent::legacy(
+            "timer_loop_failed",
+            serde_json::json!({
+                "timer_id": timer_id,
+                "failure_kind": failure_kind,
+                "error": error,
+            }),
+        )) {
+            tracing::error!(
+                timer_id,
+                error = %audit_error,
+                "failed to record timer loop failure"
+            );
+        }
+
+        let timer = match self.inner.storage.latest_timer_record(timer_id) {
+            Ok(timer) => timer,
+            Err(error) => {
+                tracing::error!(
+                    timer_id,
+                    error = %error,
+                    "failed to load timer after loop failure"
+                );
+                return;
+            }
+        };
+        let Some(timer) = timer else {
+            return;
+        };
+        if timer.status != TimerStatus::Active {
+            return;
+        }
+
+        let retry_at = self.now() + chrono::Duration::seconds(1);
+        self.inner.clock.sleep_until(retry_at).await;
+        if self
+            .inner
+            .shutdown_requested
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return;
+        }
+        let timer = match self.inner.storage.latest_timer_record(timer_id) {
+            Ok(timer) => timer,
+            Err(error) => {
+                tracing::error!(
+                    timer_id,
+                    error = %error,
+                    "failed to reload timer before loop recovery"
+                );
+                return;
+            }
+        };
+        let Some(timer) = timer else {
+            return;
+        };
+        if timer.status != TimerStatus::Active {
+            return;
+        }
+
+        match self.recover_timer(timer).await {
+            Ok(()) => {
+                if let Err(error) = self.inner.storage.append_event(&AuditEvent::legacy(
+                    "timer_loop_restarted",
+                    serde_json::json!({ "timer_id": timer_id }),
+                )) {
+                    tracing::error!(
+                        timer_id,
+                        error = %error,
+                        "failed to record timer loop restart"
+                    );
+                }
+            }
+            Err(error) => {
+                if let Err(audit_error) = self.inner.storage.append_event(&AuditEvent::legacy(
+                    "timer_loop_recovery_failed",
+                    serde_json::json!({
+                        "timer_id": timer_id,
+                        "error": error.to_string(),
+                    }),
+                )) {
+                    tracing::error!(
+                        timer_id,
+                        error = %audit_error,
+                        "failed to record timer loop recovery failure"
+                    );
+                }
+            }
+        }
     }
 
     async fn recover_timer(&self, timer: TimerRecord) -> Result<()> {

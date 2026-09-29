@@ -450,6 +450,8 @@ struct RuntimeInner {
     #[cfg(test)]
     fail_non_retryable_after_next_runtime_claim: AtomicBool,
     #[cfg(test)]
+    panic_next_timer_loop: AtomicBool,
+    #[cfg(test)]
     claim_work_item_plan_status_before_commit:
         StdMutex<Option<(String, crate::types::WorkItemPlanStatus)>>,
     #[cfg(test)]
@@ -3057,6 +3059,13 @@ impl RuntimeHandle {
     pub(crate) fn inject_next_transition_fault(&self, fault: TransitionFaultPoint) {
         self.inject_next_transition_fault_unchecked(fault)
             .expect("a transition fault is already armed for this runtime fixture");
+    }
+
+    #[cfg(test)]
+    pub(crate) fn panic_next_timer_loop(&self) {
+        self.inner
+            .panic_next_timer_loop
+            .store(true, Ordering::SeqCst);
     }
 
     #[cfg(test)]

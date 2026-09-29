@@ -174,6 +174,81 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
     runtime_task.abort();
 }
 
+#[tokio::test(start_paused = true)]
+async fn repeating_timer_loop_panic_is_audited_and_restarted() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("timer done")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+
+    runtime.panic_next_timer_loop();
+    let timer = runtime
+        .schedule_timer(100, Some(100), Some("restart after panic".into()))
+        .await
+        .unwrap();
+    tokio::task::yield_now().await;
+    let events = wait_for_audit_events(
+        &runtime,
+        100,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "timer_loop_failed"
+                    && event.data["timer_id"] == timer.id
+                    && event.data["failure_kind"] == "panic"
+            })
+        },
+        "timer loop panic audit",
+    )
+    .await;
+    assert!(events.iter().any(|event| {
+        event.kind == "timer_loop_failed"
+            && event.data["timer_id"] == timer.id
+            && event.data["failure_kind"] == "panic"
+    }));
+
+    advance_lifecycle_time(&clock, std::time::Duration::from_secs(1)).await;
+    let events = wait_for_audit_events(
+        &runtime,
+        100,
+        |events| {
+            events
+                .iter()
+                .any(|event| event.kind == "timer_fired" && event.data["timer_id"] == timer.id)
+                && events.iter().any(|event| {
+                    event.kind == "timer_loop_restarted" && event.data["timer_id"] == timer.id
+                })
+        },
+        "restarted timer fire",
+    )
+    .await;
+    assert!(events.iter().any(|event| {
+        event.kind == "timer_loop_restarted" && event.data["timer_id"] == timer.id
+    }));
+
+    let recovered = runtime
+        .recent_timers(10)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|record| record.id == timer.id)
+        .unwrap();
+    assert_eq!(recovered.status, TimerStatus::Active);
+    assert_eq!(recovered.fire_count, 1);
+
+    runtime.cancel_timer(&timer.id).await.unwrap();
+    advance_lifecycle_time(&clock, std::time::Duration::from_millis(100)).await;
+}
+
 #[tokio::test]
 async fn schedule_timer_rejects_unrepresentable_duration() {
     let dir = tempdir().unwrap();

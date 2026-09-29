@@ -579,6 +579,8 @@ impl RuntimeHandle {
                 #[cfg(test)]
                 fail_non_retryable_after_next_runtime_claim: AtomicBool::new(false),
                 #[cfg(test)]
+                panic_next_timer_loop: AtomicBool::new(false),
+                #[cfg(test)]
                 claim_work_item_plan_status_before_commit: StdMutex::new(None),
                 #[cfg(test)]
                 terminal_tool_interjection_checkpoint:
