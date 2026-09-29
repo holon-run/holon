@@ -30,6 +30,11 @@ struct CoercionOutcome {
     string_json_parse_errors: Vec<Value>,
 }
 
+struct ParseDiagnostic {
+    message: String,
+    field_path: Option<String>,
+}
+
 pub(crate) async fn capture_tool_input_coercion<F>(
     future: F,
 ) -> (F::Output, Option<ToolInputCoercion>)
@@ -74,12 +79,16 @@ where
 {
     let coercion = coerce_string_scalars_with_diagnostics(input);
     let input = coercion.value.as_ref().unwrap_or(input);
-    let first_error = match serde_json::from_value(input.clone()) {
+    let first_error = match deserialize_tool_args::<T>(input) {
         Ok(args) => return Ok(args),
         Err(error) => error,
     };
 
-    let mut parse_error = first_error.to_string();
+    let ParseDiagnostic {
+        message,
+        field_path,
+    } = first_error;
+    let mut parse_error = message;
     if !coercion.string_json_parse_errors.is_empty() {
         parse_error = redact_serde_string_value(&parse_error);
     }
@@ -102,6 +111,26 @@ where
         "tool_name": tool_name,
         "parse_error": parse_error,
     });
+    if let Some(field) = schema_error_field(&details["parse_error"]) {
+        let field_path = field_path
+            .as_deref()
+            .map(|path| append_field_path(path, &field));
+        details
+            .as_object_mut()
+            .expect("tool error details should be an object")
+            .insert("field".into(), Value::String(field));
+        if let Some(field_path) = field_path {
+            details
+                .as_object_mut()
+                .expect("tool error details should be an object")
+                .insert("field_path".into(), Value::String(field_path));
+        }
+    } else if let Some(field_path) = field_path.as_ref() {
+        details
+            .as_object_mut()
+            .expect("tool error details should be an object")
+            .insert("field_path".into(), Value::String(field_path.clone()));
+    }
     if !coercion.string_json_parse_errors.is_empty() {
         details
             .as_object_mut()
@@ -112,7 +141,7 @@ where
             );
     }
     let default_hint = recovery_hint();
-    let hint = unknown_field_recovery_hint(&parse_error)
+    let hint = schema_error_recovery_hint(&parse_error, field_path.as_deref())
         .map(|specific| format!("{specific}; {default_hint}"))
         .unwrap_or(default_hint);
 
@@ -124,6 +153,59 @@ where
         .with_details(details)
         .with_recovery_hint(hint),
     ))
+}
+
+fn deserialize_tool_args<T>(input: &Value) -> std::result::Result<T, ParseDiagnostic>
+where
+    T: DeserializeOwned,
+{
+    serde_path_to_error::deserialize(input).map_err(|error| {
+        let field_path = path_to_json_path(error.path());
+        ParseDiagnostic {
+            message: error.into_inner().to_string(),
+            field_path: Some(field_path),
+        }
+    })
+}
+
+fn path_to_json_path(path: &serde_path_to_error::Path) -> String {
+    use serde_path_to_error::Segment;
+
+    let mut json_path = "$".to_string();
+    for segment in path {
+        match segment {
+            Segment::Map { key } | Segment::Enum { variant: key } => {
+                if is_json_path_identifier(key) {
+                    json_path.push('.');
+                    json_path.push_str(key);
+                } else {
+                    json_path.push('[');
+                    json_path
+                        .push_str(&serde_json::to_string(key).unwrap_or_else(|_| "\"?\"".into()));
+                    json_path.push(']');
+                }
+            }
+            Segment::Seq { index } => json_path.push_str(&format!("[{index}]")),
+            Segment::Unknown => json_path.push_str("[?]"),
+        }
+    }
+    json_path
+}
+
+fn is_json_path_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|first| first == '_' || first.is_ascii_alphabetic())
+        && chars.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+fn append_field_path(path: &str, field: &str) -> String {
+    if path == "$" {
+        format!("$.{field}")
+    } else {
+        format!("{path}.{field}")
+    }
 }
 
 /// Recursively coerces string scalars to their typed JSON equivalents so that
@@ -327,6 +409,64 @@ fn unknown_field_recovery_hint(parse_error: &str) -> Option<String> {
             "remove unsupported top-level field `{field}`{accepted}"
         ))
     }
+}
+
+fn schema_error_recovery_hint(parse_error: &str, field_path: Option<&str>) -> Option<String> {
+    unknown_field_recovery_hint(parse_error)
+        .or_else(|| missing_field_recovery_hint(parse_error, field_path))
+        .or_else(|| unknown_variant_recovery_hint(parse_error, field_path))
+        .or_else(|| invalid_type_recovery_hint(parse_error, field_path))
+}
+
+fn missing_field_recovery_hint(parse_error: &str, field_path: Option<&str>) -> Option<String> {
+    let field = missing_field_name(parse_error)?;
+    let path = field_path
+        .map(|path| append_field_path(path, field))
+        .unwrap_or_else(|| field.to_string());
+    Some(format!(
+        "required field `{field}` is missing at path `{path}`; regenerate the complete tool arguments with that field, rather than putting the correction in a natural-language field"
+    ))
+}
+
+fn unknown_variant_recovery_hint(parse_error: &str, field_path: Option<&str>) -> Option<String> {
+    let expected = parse_error
+        .split_once(", expected ")
+        .map(|(_, expected)| backtick_values(expected))
+        .filter(|values| !values.is_empty())?;
+    if !parse_error.starts_with("unknown variant `") {
+        return None;
+    }
+    let location = field_path.unwrap_or("the schema-defined field path");
+    Some(format!(
+        "field at path `{location}` has an invalid enum value; allowed values: {}; regenerate the complete tool arguments",
+        expected.join(", ")
+    ))
+}
+
+fn invalid_type_recovery_hint(parse_error: &str, field_path: Option<&str>) -> Option<String> {
+    if !(parse_error.starts_with("invalid type:") || parse_error.starts_with("invalid value:")) {
+        return None;
+    }
+    let expected = parse_error
+        .rsplit_once(", expected ")
+        .map(|(_, expected)| expected.trim())
+        .filter(|expected| !expected.is_empty())?;
+    let location = field_path.unwrap_or("the schema-defined field path");
+    Some(format!(
+        "field at path `{location}` has the wrong type; expected {expected}; regenerate the complete tool arguments"
+    ))
+}
+
+fn schema_error_field(parse_error: &Value) -> Option<String> {
+    let parse_error = parse_error.as_str()?;
+    unknown_field_name(parse_error)
+        .or_else(|| missing_field_name(parse_error))
+        .map(ToString::to_string)
+}
+
+fn missing_field_name(parse_error: &str) -> Option<&str> {
+    let rest = parse_error.strip_prefix("missing field `")?;
+    Some(&rest[..rest.find('`')?])
 }
 
 fn unknown_field_name(parse_error: &str) -> Option<&str> {
@@ -830,6 +970,34 @@ mod tests {
             .as_ref()
             .and_then(|details| details["parse_error"].as_str())
             .is_some_and(|message| message.contains("missing field `required`")));
+    }
+
+    #[test]
+    fn parse_tool_args_reports_nested_missing_field_path() {
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct NestedItem {
+            #[allow(dead_code)]
+            state: String,
+        }
+
+        #[derive(Debug, serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct NestedArgs {
+            #[allow(dead_code)]
+            items: Vec<NestedItem>,
+        }
+
+        let error = parse_tool_args::<NestedArgs>("TestTool", &json!({"items": [{}]})).unwrap_err();
+        let error = error.downcast_ref::<ToolError>().expect("tool error");
+        let details = error.details.as_ref().expect("details");
+
+        assert_eq!(details["field"], "state");
+        assert_eq!(details["field_path"], "$.items[0].state");
+        assert!(error
+            .recovery_hint
+            .as_deref()
+            .is_some_and(|hint| hint.contains("regenerate the complete tool arguments")));
     }
 
     #[tokio::test]

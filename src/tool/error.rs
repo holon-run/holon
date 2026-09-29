@@ -96,6 +96,17 @@ impl ToolError {
         {
             receipt.insert("field".to_string(), Value::String(field.to_string()));
         }
+        if let Some(field_path) = self
+            .details
+            .as_ref()
+            .and_then(|details| details.get("field_path"))
+            .and_then(Value::as_str)
+        {
+            receipt.insert(
+                "field_path".to_string(),
+                Value::String(field_path.to_string()),
+            );
+        }
         receipt.insert("retryable".to_string(), Value::Bool(self.retryable));
         if let Some(details) = self.details.as_ref() {
             receipt.insert(

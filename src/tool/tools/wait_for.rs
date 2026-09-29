@@ -10,7 +10,7 @@ use crate::{
         WaitForWakeKind,
     },
     tool::{
-        helpers::{invalid_tool_input, parse_tool_args, validate_non_empty},
+        helpers::{invalid_tool_input, parse_tool_args_with_recovery_hint, validate_non_empty},
         spec::{typed_spec, AwaitWaitReportDirective, ToolExecutionContext, ToolLoopDirective},
         ToolError, ToolResult,
     },
@@ -441,7 +441,9 @@ impl WaitForOwnerDisclosure {
 }
 
 pub(crate) fn parse_wait_for_args(input: &Value) -> Result<WaitForArgs> {
-    parse_tool_args(NAME, input)
+    parse_tool_args_with_recovery_hint(NAME, input, || {
+        "WaitFor arguments must be a complete JSON object. Required fields are `reason`, `wake`, and `delivery`; `wake` must be a top-level field at path `$.wake` with one of `operator_input`, `task_result`, `external`, `timer`, or `system`. Regenerate the complete arguments object, for example: {\"reason\":\"wait for operator input\",\"wake\":\"operator_input\",\"delivery\":\"final\"}. Do not put the correction in `reason` or retry incomplete arguments.".to_string()
+    })
 }
 
 fn optional_resource(resource: Option<String>) -> Option<String> {
@@ -569,6 +571,45 @@ mod tests {
             .and_then(|value| value.get("parse_error"))
             .and_then(|value| value.as_str())
             .is_some_and(|error| error.contains("unknown field `summary`")));
+    }
+
+    #[test]
+    fn wait_for_missing_wake_exposes_actionable_model_guidance() {
+        let error = parse_wait_for_args(&json!({
+            "reason": "wait for operator input",
+            "delivery": "final",
+        }))
+        .unwrap_err();
+        let tool_error = ToolError::from_anyhow(&error);
+        let details = tool_error.details.as_ref().expect("tool error details");
+
+        assert_eq!(details["field"], "wake");
+        assert_eq!(details["field_path"], "$.wake");
+        assert!(details["parse_error"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing field `wake`")));
+
+        let rendered = tool_error.render_for_model(Some(NAME));
+        let receipt: Value = serde_json::from_str(&rendered).expect("model error receipt");
+        assert_eq!(receipt["field"], "wake");
+        assert_eq!(receipt["field_path"], "$.wake");
+        let hint = receipt["hint"].as_str().expect("model recovery hint");
+        for allowed in [
+            "operator_input",
+            "task_result",
+            "external",
+            "timer",
+            "system",
+        ] {
+            assert!(
+                hint.contains(allowed),
+                "hint missing allowed wake: {allowed}"
+            );
+        }
+        assert!(hint.contains("top-level field"));
+        assert!(hint.contains("Regenerate the complete arguments object"));
+        assert!(hint.contains("\"reason\":\"wait for operator input\""));
+        assert!(hint.contains("Do not put the correction in `reason`"));
     }
 
     #[test]
