@@ -153,6 +153,7 @@ internal class HolonRepository(
     private val sessionStore: SessionCredentialStore,
     private val preferences: HostPreferences,
     private val dao: HolonDao,
+    private val traceRecorder: TraceRecorder,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private var active: ActiveSession? = null
@@ -174,6 +175,14 @@ internal class HolonRepository(
                     allowInsecureHttp = allowInsecureHttp,
                 )
         val scopedStore = credentialStore(profile.networkId)
+        val traceScope = TraceScope.Network(profile.networkId)
+        traceRecorder.record(
+            traceScope,
+            TraceLevel.INFO,
+            "session",
+            "session.login.started",
+            attributes = mapOf("path" to TraceRedactor.path(baseUrl)),
+        )
         val previousCredential = scopedStore.read()
         val previousActive = active
         val previousClient = client
@@ -185,6 +194,8 @@ internal class HolonRepository(
                 bearerTokenProvider = BearerTokenProvider { transientToken },
                 sessionCredentialStore = scopedStore,
                 insecureHttpHosts = insecureHttpHosts(baseUrl),
+                eventListenerFactory = traceEventListenerFactory(traceRecorder, traceScope),
+                sseRetryObserver = traceSseRetryObserver(traceRecorder, traceScope),
             )
         return try {
             if (pairingTicket == null) {
@@ -214,6 +225,13 @@ internal class HolonRepository(
                     lastUsedAt = System.currentTimeMillis(),
                 ),
             )
+            traceRecorder.record(
+                traceScope,
+                TraceLevel.INFO,
+                "session",
+                "session.login.completed",
+                attributes = mapOf("runtimeIdPresent" to (session.runtimeId.isNotBlank()).toString()),
+            )
             session to roster
         } catch (error: Throwable) {
             transientToken = null
@@ -224,6 +242,13 @@ internal class HolonRepository(
             } else {
                 scopedStore.write(previousCredential)
             }
+            traceRecorder.record(
+                traceScope,
+                TraceLevel.ERROR,
+                "error",
+                "session.login.failed",
+                attributes = mapOf("errorType" to error::class.simpleName.orEmpty()),
+            )
             throw error
         }
     }
@@ -323,13 +348,29 @@ internal class HolonRepository(
 
     suspend fun switchNetwork(networkId: String): ResumeResult {
         if (active?.networkId == networkId) return resume()
+        traceRecorder.record(
+            TraceScope.Network(networkId),
+            TraceLevel.INFO,
+            "network",
+            "network.switch.started",
+        )
         active = null
         client = null
         preferences.selectProfile(networkId)
-        return resume()
+        return resume().also {
+            traceRecorder.record(
+                TraceScope.Network(networkId),
+                TraceLevel.INFO,
+                "network",
+                "network.switch.completed",
+                attributes = mapOf("result" to it::class.simpleName.orEmpty()),
+            )
+        }
     }
 
     suspend fun deleteNetwork(networkId: String) {
+        traceRecorder.record(TraceScope.Network(networkId), TraceLevel.INFO, "network", "network.deleted")
+        traceRecorder.delete(TraceScope.Network(networkId))
         credentialStore(networkId).clear()
         preferences.removeProfile(networkId)
         if (active?.networkId == networkId) {
@@ -811,6 +852,9 @@ internal class HolonRepository(
     }
 
     suspend fun logout() {
+        active?.networkId?.let {
+            traceRecorder.record(TraceScope.Network(it), TraceLevel.INFO, "session", "session.logout")
+        }
         runCatching { client?.logout() }
         clearAuthentication(removeProfile = true)
     }
@@ -921,6 +965,8 @@ internal class HolonRepository(
             baseUrl = baseUrl,
             sessionCredentialStore = credentialStore(networkId),
             insecureHttpHosts = insecureHttpHosts(baseUrl),
+            eventListenerFactory = traceEventListenerFactory(traceRecorder, TraceScope.Network(networkId)),
+            sseRetryObserver = traceSseRetryObserver(traceRecorder, TraceScope.Network(networkId)),
         )
 
     private fun credentialStore(networkId: String): SessionCredentialStore {

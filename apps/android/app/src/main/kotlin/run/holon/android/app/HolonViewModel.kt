@@ -198,18 +198,21 @@ internal fun isCurrentLiveSync(
 
 internal class AppContainer(context: Context) {
     private val database = HolonDatabase.create(context)
+    val traceRecorder = TraceRecorder(context)
     val repository =
         HolonRepository(
             context = context,
             sessionStore = createSessionStore(context),
             preferences = HostPreferences(context),
             dao = database.holonDao(),
+            traceRecorder = traceRecorder,
         )
 }
 
 internal class HolonViewModel(
     application: Application,
     private val repository: HolonRepository,
+    internal val traceRecorder: TraceRecorder,
 ) : AndroidViewModel(application) {
     private val mutableState = MutableStateFlow(HolonUiState(baseUrl = defaultBaseUrl()))
     val state: StateFlow<HolonUiState> = mutableState.asStateFlow()
@@ -2222,7 +2225,7 @@ internal class HolonViewModel(
             object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T =
-                    HolonViewModel(application, container.repository) as T
+                    HolonViewModel(application, container.repository, container.traceRecorder) as T
             }
     }
 }

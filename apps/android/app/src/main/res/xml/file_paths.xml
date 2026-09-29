@@ -2,4 +2,5 @@
 <paths xmlns:android="http://schemas.android.com/apk/res/android">
     <cache-path name="camera" path="camera/" />
     <cache-path name="shared-artifacts" path="shared-artifacts/" />
+    <cache-path name="trace-exports" path="trace-exports/" />
 </paths>
