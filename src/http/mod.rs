@@ -2213,6 +2213,14 @@ mod tests {
     }
 
     #[test]
+    fn tailscale_serve_checks_tcp_auth_even_for_unix_control_requests() {
+        let (_home, host) = control_token_test_host();
+        let state = AppState::for_unix(host);
+        assert!(!state.require_control_token);
+        assert!(tailscale_serve::serve_authentication_available(&state));
+    }
+
+    #[test]
     fn http_error_envelope_always_serializes_machine_code() {
         let value = serde_json::to_value(HttpErrorEnvelope::new(
             "invalid_request",

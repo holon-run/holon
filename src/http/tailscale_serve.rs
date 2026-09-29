@@ -9,6 +9,9 @@ pub struct TailscaleServeStatus {
     pub status_known: bool,
     pub serving: bool,
     pub conflict: bool,
+    #[serde(skip)]
+    #[schemars(skip)]
+    legacy_serving: bool,
     pub hostname: Option<String>,
     pub serve_url: Option<String>,
     pub message: String,
@@ -77,6 +80,7 @@ fn inspect(
         status_known: false,
         serving: false,
         conflict: false,
+        legacy_serving: false,
         hostname: None,
         serve_url: None,
         message: "Tailscale unavailable".into(),
@@ -110,21 +114,23 @@ fn inspect(
         .as_object()
         .and_then(|web| web.get(&format!("{hostname}:443")));
     let root = site.and_then(|site| site["Handlers"]["/"].as_object());
-    result.serving = root.is_some_and(|root| {
-        root.get("Proxy").and_then(Value::as_str) == Some(target)
-            || legacy_target
-                .is_some_and(|legacy| root.get("Proxy").and_then(Value::as_str) == Some(legacy))
-    });
+    let proxy = root
+        .and_then(|root| root.get("Proxy"))
+        .and_then(Value::as_str);
+    result.legacy_serving = legacy_target.is_some_and(|legacy| proxy == Some(legacy));
+    result.serving = proxy == Some(target) || result.legacy_serving;
     if result.serving {
         result.serve_url = Some(format!("https://{hostname}"));
     }
-    result.conflict = (root.is_some() && !result.serving)
+    result.conflict = (root.is_some() && !result.serving && !result.legacy_serving)
         || serve["TCP"]
             .as_object()
             .is_some_and(|tcp| tcp.contains_key("443"));
     result.status_known = true;
     result.message = if result.conflict {
         "A different Tailscale Serve root rule exists"
+    } else if result.legacy_serving {
+        "Holon uses a legacy LAN Serve target; enable to migrate to loopback"
     } else if result.serving {
         "Holon is served"
     } else if desired_enabled {
@@ -136,20 +142,48 @@ fn inspect(
     result
 }
 
-fn target(state: &AppState) -> String {
-    let addr = &state.host.config().http_addr;
+fn target_for_addr(addr: &str) -> Result<String> {
     if let Ok(socket) = addr.parse::<std::net::SocketAddr>() {
-        let ip = if socket.ip().is_unspecified() {
-            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
-        } else {
-            socket.ip()
-        };
-        return match ip {
-            std::net::IpAddr::V4(_) => format!("http://{ip}:{}", socket.port()),
-            std::net::IpAddr::V6(_) => format!("http://[{ip}]:{}", socket.port()),
-        };
+        return Ok(match socket {
+            std::net::SocketAddr::V4(_) => format!("http://127.0.0.1:{}", socket.port()),
+            std::net::SocketAddr::V6(socket)
+                if socket.ip().is_loopback() || socket.ip().is_unspecified() =>
+            {
+                format!("http://[::1]:{}", socket.port())
+            }
+            std::net::SocketAddr::V6(_) => format!("http://127.0.0.1:{}", socket.port()),
+        });
     }
-    format!("http://{addr}")
+    let (host, port) = addr
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow!("HTTP listener address must include a port"))?;
+    let port = port.parse::<u16>()?;
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(format!("http://localhost:{port}"));
+    }
+    Ok(format!("http://127.0.0.1:{port}"))
+}
+
+fn target(state: &AppState) -> Result<String> {
+    target_for_addr(&state.host.config().http_addr)
+}
+
+pub(super) fn serve_authentication_available(state: &AppState) -> bool {
+    let config = state.host.config();
+    authenticated_control_available(
+        config.auth.mode,
+        config.control_token_required(ControlTransportKind::Tcp),
+        config.control_token.as_deref(),
+    )
+}
+
+fn authenticated_control_available(
+    auth_mode: crate::authentication::AuthenticationMode,
+    require_control_token: bool,
+    control_token: Option<&str>,
+) -> bool {
+    auth_mode == crate::authentication::AuthenticationMode::Oidc
+        || (require_control_token && control_token.is_some_and(|token| !token.trim().is_empty()))
 }
 
 fn legacy_target(state: &AppState) -> Option<String> {
@@ -168,10 +202,11 @@ fn legacy_target(state: &AppState) -> Option<String> {
 fn read(state: &AppState, runner: &impl Runner) -> Result<TailscaleServeStatus> {
     let config = state.host.config();
     let stored = load_persisted_config_at(&config.config_file_path)?;
+    let target = target(state)?;
     Ok(inspect(
         runner,
         stored.tailscale_serve_desired_enabled.unwrap_or(false),
-        &target(state),
+        &target,
         legacy_target(state).as_deref(),
     ))
 }
@@ -199,31 +234,31 @@ pub(super) fn change(
         .map_err(|_| anyhow!("Tailscale Serve change lock unavailable"))?;
     let config = state.host.config();
     let mut stored = load_persisted_config_at(&config.config_file_path)?;
+    let target = target(state)?;
     let before = inspect(
         runner,
         stored.tailscale_serve_desired_enabled.unwrap_or(false),
-        &target(state),
+        &target,
         legacy_target(state).as_deref(),
     );
     if !before.status_known {
         return Err(anyhow!("Tailscale Serve is unavailable"));
     }
     if enabled {
+        if !serve_authentication_available(state) {
+            return Err(anyhow!(
+                "Tailscale Serve requires Holon control authentication (configure a control token or OIDC)"
+            ));
+        }
         if before.conflict {
             return Err(anyhow!("A different Tailscale Serve root rule exists"));
         }
-        if !before.serving {
-            runner.command(&[
-                "serve",
-                "--bg",
-                "--https=443",
-                "--set-path=/",
-                &target(state),
-            ])?;
+        if !before.serving || before.legacy_serving {
+            runner.command(&["serve", "--bg", "--https=443", "--set-path=/", &target])?;
         }
     } else if before.conflict {
         return Err(anyhow!("Cannot remove a conflicting Serve rule"));
-    } else if before.serving {
+    } else if before.serving || before.legacy_serving {
         runner.command(&["serve", "--https=443", "--set-path=/", "off"])?;
     }
     stored.tailscale_serve_desired_enabled = Some(enabled);
@@ -258,6 +293,37 @@ pub async fn disable(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn serve_target_uses_loopback_even_with_lan_listener() {
+        assert_eq!(
+            target_for_addr("192.0.2.5:7878").unwrap(),
+            "http://127.0.0.1:7878"
+        );
+        assert_eq!(
+            target_for_addr("[2001:db8::5]:7878").unwrap(),
+            "http://127.0.0.1:7878"
+        );
+        assert_eq!(target_for_addr("[::1]:7878").unwrap(), "http://[::1]:7878");
+        assert_eq!(
+            target_for_addr("localhost:7878").unwrap(),
+            "http://localhost:7878"
+        );
+    }
+
+    #[test]
+    fn enable_requires_effective_control_authentication() {
+        use crate::authentication::AuthenticationMode::{Local, Oidc};
+        assert!(!authenticated_control_available(Local, false, None));
+        assert!(!authenticated_control_available(
+            Local,
+            false,
+            Some("secret")
+        ));
+        assert!(!authenticated_control_available(Local, true, Some(" ")));
+        assert!(authenticated_control_available(Local, true, Some("secret")));
+        assert!(authenticated_control_available(Oidc, false, None));
+    }
 
     struct Mock {
         serve: Value,
@@ -310,8 +376,37 @@ mod tests {
             Some("http://192.0.2.5:7878"),
         );
         assert!(status.serving);
+        assert!(status.legacy_serving);
         assert!(!status.conflict);
         assert!(status.status_known);
+        assert_eq!(
+            status.serve_url.as_deref(),
+            Some("https://host.example.ts.net")
+        );
+        assert!(status.message.contains("enable to migrate"));
+    }
+
+    #[test]
+    fn legacy_listener_remains_reported_as_serving_when_desired_is_disabled() {
+        let status = inspect(
+            &Mock {
+                serve: serde_json::json!({"Web": {
+                    "host.example.ts.net:443": {"Handlers": {
+                        "/": {"Proxy": "http://192.0.2.5:7878"}
+                    }}
+                }}),
+            },
+            false,
+            "http://127.0.0.1:7878",
+            Some("http://192.0.2.5:7878"),
+        );
+        assert!(!status.desired_enabled);
+        assert!(status.serving);
+        assert!(!status.conflict);
+        assert_eq!(
+            status.serve_url.as_deref(),
+            Some("https://host.example.ts.net")
+        );
     }
 
     #[test]
