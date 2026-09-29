@@ -82,6 +82,7 @@ function renderTimeline(
   options: {
     status?: never;
     pendingInputs?: never;
+    localPendingPrompts?: never;
     onLoadBrief?: (briefId: string) => void;
     details?: ConversationStateView["details"];
   } = {},
@@ -95,9 +96,13 @@ function renderTimeline(
     detailLoadStates: new Map(),
   });
   const withPending =
-    options.pendingInputs === undefined
+    options.pendingInputs === undefined && options.localPendingPrompts === undefined
       ? model
-      : { ...model, pendingInputs: options.pendingInputs };
+      : {
+          ...model,
+          pendingInputs: options.pendingInputs ?? model.pendingInputs,
+          localPendingPrompts: options.localPendingPrompts ?? model.localPendingPrompts,
+        };
   return renderToStaticMarkup(
     <ConversationTimeline
       model={withPending}
@@ -249,6 +254,16 @@ describe("ConversationTimeline", () => {
     } as never);
     expect(html).toContain("看看这轮渲染");
     expect(html).toContain("Queued, waiting to run");
+  });
+
+  it("renders local echo below server-queued operator inputs with a distinct label", () => {
+    const html = renderTimeline([], {
+      pendingInputs: [{ message_id: "m-queued", revision: 1, state: "queued", preview: "older queued prompt", presentation_class: "operator" }],
+      localPendingPrompts: [{ clientId: "client-1", text: "newer local echo", createdAt: "2026-09-29T10:00:00Z" }],
+    } as never);
+    expect(html.indexOf("newer local echo")).toBeGreaterThan(html.indexOf("older queued prompt"));
+    expect((html.match(/aria-label="Pending inputs"/g) ?? []).length).toBe(1);
+    expect(html).toContain('aria-label="Sending…"');
   });
 
   it("renders an empty state when ready with no turns", () => {

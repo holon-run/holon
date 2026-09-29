@@ -88,17 +88,19 @@ export const ConversationTimeline = memo(function ConversationTimeline({
         </Fragment>
       ))}
       {model.turns.length === 0 ? <PendingEvents inputs={backgroundInputs} onInspectActivity={actions.onInspectActivity} /> : null}
-      {model.localPendingPrompts.length > 0 ? (
-        <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingInputs")}>
-          {model.localPendingPrompts.map((prompt) => (
-            <LocalPendingPromptChip key={prompt.clientId} prompt={prompt} />
-          ))}
-        </div>
-      ) : null}
+      {/* Server-queued operator inputs come first; local echoes stay below them so
+          the newest submission never reorders above older queued prompts. */}
       {operatorInputs.length > 0 ? (
         <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingInputs")}>
           {operatorInputs.map((input) => (
             <PendingInputChip key={input.message_id} input={input} />
+          ))}
+        </div>
+      ) : null}
+      {model.localPendingPrompts.length > 0 ? (
+        <div className="conversation-pending-inputs" aria-label={t("agentPage.pendingSending")}>
+          {model.localPendingPrompts.map((prompt) => (
+            <LocalPendingPromptChip key={prompt.clientId} prompt={prompt} />
           ))}
         </div>
       ) : null}
