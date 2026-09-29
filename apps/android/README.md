@@ -14,6 +14,14 @@ an app-language override (System default, English, 简体中文). The override s
 on this device across sign-out. Agent messages, briefs, tool output, and file
 contents are displayed as authored, without translation.
 
+The Settings connection diagnostics section can export a redacted trace or send
+it directly to a selected Agent. Android's Share menu can also send text, links,
+images, and files to Holon. The app previews the content and asks which Agent
+should receive it before enqueueing a new message; an existing composer draft is
+left alone. Recent Agents are published as Android Direct Share shortcuts when a
+session is active. Android controls how many shortcuts appear and their ranking.
+Shortcuts are refreshed for the current runtime and user, and removed on sign-out.
+
 The generated transport sources remain owned by
 `packages/client-wire-kotlin`. Do not copy or edit those models in this
 directory.

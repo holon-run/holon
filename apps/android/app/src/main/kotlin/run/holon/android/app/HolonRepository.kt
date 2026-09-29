@@ -611,6 +611,7 @@ internal class HolonRepository(
         text: String,
         attachments: List<StagedAttachment>,
         requestId: String = UUID.randomUUID().toString(),
+        clearComposer: Boolean = true,
     ): OutboxEntity {
         val session = requireSession()
         validatePromptBody(text, attachments, requestId)
@@ -632,8 +633,10 @@ internal class HolonRepository(
         // process stops between these writes, recovery keeps both the outbox entry
         // and the old draft instead of losing the user's message.
         dao.putOutbox(entry)
-        dao.putDraft(DraftEntity(session.scopeKey, agentId, "", now))
-        saveComposerAttachments(agentId, emptyList())
+        if (clearComposer) {
+            dao.putDraft(DraftEntity(session.scopeKey, agentId, "", now))
+            saveComposerAttachments(agentId, emptyList())
+        }
         return entry
     }
 

@@ -119,6 +119,18 @@ internal object UiCopy {
         分享脱敏诊断信息|Share redacted diagnostics
         分享连接诊断|Share connection diagnostics
         分享 Trace|Share trace
+        发送 Trace 给 Agent|Send trace to Agent
+        分享到 Holon Agent|Share to Holon Agent
+        分享内容|Shared content
+        暂无可用 Agent，请检查连接后重试。|No Agents available. Check your connection and try again.
+        请分析附件中的 Android Trace。|Please analyze the attached Android trace.
+        此 Trace 属于其他连接，请重新导出|This trace belongs to another connection. Export it again.
+        原 Agent 已不可用，请重新选择。|The original Agent is unavailable. Choose another Agent.
+        更换 Agent|Change Agent
+        搜索 Agent|Search Agents
+        确认后将作为新消息发送；现有草稿不受影响。|A new message will be sent after confirmation. Your draft will stay intact.
+        登录后可选择 Agent 完成分享。|Sign in to choose an Agent and finish sharing.
+        分享已加入发送队列|Share added to the outbox
         刚刚|Just now
         刷新|Refresh
         导出并分享 Trace|Export and share trace

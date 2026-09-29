@@ -3,6 +3,7 @@ package run.holon.android.app
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -111,6 +112,10 @@ internal data class HolonUiState(
     val outbox: List<OutboxEntity> = emptyList(),
     val draft: String = "",
     val attachments: List<StagedAttachment> = emptyList(),
+    val pendingShare: PendingAgentShare? = null,
+    val queuedShares: List<PendingAgentShare> = emptyList(),
+    val shareSending: Boolean = false,
+    val shareError: String? = null,
     val agentSection: AgentSection = AgentSection.Results,
     val briefs: Map<String, HolonBrief> = emptyMap(),
     val briefLoads: Map<String, BriefLoadState> = emptyMap(),
@@ -220,6 +225,8 @@ internal class HolonViewModel(
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
     private var globalEventStreamJob: Job? = null
+    // SSE readers block threads; keep them off the pool used by foreground sends and file staging.
+    private val eventStreamIo = Dispatchers.IO.limitedParallelism(64)
     private val agentEventStreamJobs = ConcurrentHashMap<String, Job>()
     private val agentEventCursors = ConcurrentHashMap<String, Long>()
     private val staleCursorRecoveryMutex = Mutex()
@@ -595,6 +602,8 @@ internal class HolonViewModel(
                 mutableState.value =
                     HolonUiState(
                         phase = AppPhase.Ready,
+                        pendingShare = before.pendingShare,
+                        queuedShares = before.queuedShares,
                         mainDestination =
                             if (before.phase == AppPhase.AddingNetwork) MainDestination.Settings
                             else MainDestination.Agents,
@@ -690,7 +699,7 @@ internal class HolonViewModel(
         eventLogEpoch?.let { liveEventLogEpoch = it }
         if (globalEventStreamJob?.isActive != true) {
             globalEventStreamJob =
-                viewModelScope.launch(Dispatchers.IO) {
+                viewModelScope.launch(eventStreamIo) {
                     runCatching {
                         while (
                             isActive &&
@@ -737,7 +746,7 @@ internal class HolonViewModel(
         agents.forEach { agent ->
             if (agentEventStreamJobs[agent.id]?.isActive == true) return@forEach
             agentEventStreamJobs[agent.id] =
-                viewModelScope.launch(Dispatchers.IO) {
+                viewModelScope.launch(eventStreamIo) {
                     runCatching {
                         val persistedState = repository.syncState(agent.id)
                         var persistedCursor = persistedState?.eventCursor
@@ -1065,6 +1074,93 @@ internal class HolonViewModel(
         draftSaveJobs.remove(agent.id)?.cancel()
         draftSaveJobs[agent.id] =
             viewModelScope.launch(Dispatchers.IO) { repository.saveDraft(agent.id, value) }
+    }
+
+    fun offerShare(share: PendingAgentShare) {
+        mutableState.update {
+            if (it.pendingShare == null) it.copy(pendingShare = share, shareError = null)
+            else it.copy(queuedShares = it.queuedShares + share)
+        }
+    }
+
+    fun shareTraceWithAgent() {
+        val session = state.value.session ?: return
+        if (state.value.phase != AppPhase.Ready) return
+        viewModelScope.launch {
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    val file = traceRecorder.export(TraceScope.Network(session.networkId))
+                    val context = getApplication<Application>()
+                    val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+                    PendingAgentShare(
+                        text = ui("请分析附件中的 Android Trace。"),
+                        files = listOf(SharedFile(uri, file.name, file.length(), "application/x-ndjson")),
+                        fromTrace = true,
+                        sourceScopeKey = session.scopeKey,
+                    )
+                }
+            }.onSuccess { share ->
+                if (state.value.session?.scopeKey == session.scopeKey) offerShare(share)
+            }
+                .onFailure { error -> mutableState.update { it.copy(error = humanError(error)) } }
+        }
+    }
+
+    fun updateShareText(text: String) {
+        mutableState.update { it.copy(pendingShare = it.pendingShare?.copy(text = text), shareError = null) }
+    }
+
+    fun dismissShare() {
+        if (state.value.shareSending) return
+        mutableState.update(::nextShare)
+    }
+
+    private fun nextShare(state: HolonUiState): HolonUiState =
+        state.copy(
+            pendingShare = state.queuedShares.firstOrNull(),
+            queuedShares = state.queuedShares.drop(1),
+            shareSending = false,
+            shareError = null,
+        )
+
+    fun sendShare(agent: AgentSummary) {
+        val before = state.value
+        val share = before.pendingShare ?: return
+        val session = before.session ?: return
+        if (before.phase != AppPhase.Ready || before.shareSending || agent.id !in before.agents.map(AgentSummary::id)) return
+        if (share.sourceScopeKey != null && share.sourceScopeKey != session.scopeKey) {
+            mutableState.update { it.copy(shareError = "此 Trace 属于其他连接，请重新导出") }
+            return
+        }
+        mutableState.update { it.copy(shareSending = true, shareError = null) }
+        viewModelScope.launch {
+            val staged = mutableListOf<StagedAttachment>()
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    share.files.forEach { file ->
+                        staged += repository.stageAttachment(
+                            uri = file.uri,
+                            existingAttachments = staged,
+                            promptText = share.text,
+                        )
+                    }
+                    check(state.value.session?.scopeKey == session.scopeKey) { "登录身份已变化，请重新分享" }
+                    repository.enqueue(agent.id, share.text, staged, clearComposer = false)
+                }
+            }
+            result.onSuccess { pending ->
+                mutableState.update {
+                    nextShare(it).copy(statusMessage = "分享已加入发送队列")
+                }
+                openAgent(agent)
+                runCatching { withContext(Dispatchers.IO) { repository.deliverOutbox(pending) } }
+                    .onSuccess { if (state.value.phase == AppPhase.Ready) refresh(showProgress = false) }
+                    .onFailure(::handleRuntimeFailure)
+            }.onFailure { error ->
+                withContext(Dispatchers.IO) { staged.forEach(repository::discardAttachment) }
+                mutableState.update { it.copy(shareSending = false, shareError = humanError(error)) }
+            }
+        }
     }
 
     fun addAttachment(uri: Uri, preferredKind: String? = null) {
@@ -1786,6 +1882,10 @@ internal class HolonViewModel(
     fun handleSystemBack(): Boolean {
         val current = state.value
         return when {
+            current.pendingShare != null -> {
+                dismissShare()
+                true
+            }
             artifactJob?.isActive == true -> {
                 clearPreparedArtifact()
                 true
