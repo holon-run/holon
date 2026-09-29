@@ -3511,6 +3511,7 @@ mod tests {
             "security-reviewer",
             "product-manager",
             "dependency-steward",
+            "marketing-steward",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3522,6 +3523,30 @@ mod tests {
                 "{template_id} should declare template metadata"
             );
         }
+
+        let marketing_template = syncable.join("marketing-steward");
+        assert_eq!(
+            local_template_skills(&marketing_template),
+            vec![
+                "coreyhaines31/marketingskills/skills/content-strategy@5b2c0007766c6a1cf1d53fd8fc73e979e0821022",
+                "coreyhaines31/marketingskills/skills/copy-editing@5b2c0007766c6a1cf1d53fd8fc73e979e0821022",
+                "coreyhaines31/marketingskills/skills/copywriting@5b2c0007766c6a1cf1d53fd8fc73e979e0821022",
+                "coreyhaines31/marketingskills/skills/customer-research@5b2c0007766c6a1cf1d53fd8fc73e979e0821022",
+                "coreyhaines31/marketingskills/skills/product-marketing@5b2c0007766c6a1cf1d53fd8fc73e979e0821022",
+                "coreyhaines31/marketingskills/skills/seo-audit@5b2c0007766c6a1cf1d53fd8fc73e979e0821022",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "obra/the-elements-of-style/skills/writing-clearly-and-concisely",
+            ]
+        );
+        let marketing_agents_md =
+            fs::read_to_string(marketing_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(marketing_agents_md.contains("`.agents/product-marketing.md`"));
+        assert!(marketing_agents_md.contains("Campaign Brief Minimum"));
+        assert!(marketing_agents_md.contains("operator approval before experiment"));
+        assert!(marketing_agents_md.contains("does not grant account access"));
+        assert!(marketing_agents_md.contains("`product-manager`"));
+        assert!(marketing_agents_md.contains("`research-steward`"));
 
         let solve_template = syncable.join(GITHUB_SOLVE_AGENT_TEMPLATE_ID);
         assert_eq!(

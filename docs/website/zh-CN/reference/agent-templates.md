@@ -22,6 +22,7 @@ Agent 会以一个通用的默认契约启动。
 - **拥有 GitHub issue 收件箱** — `holon agent create triage --template issue-triager`
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **文档卫生** — `holon agent create docs --template docs-steward`
+- **维护营销上下文与 campaign brief** — `holon agent create marketing --template marketing-steward`
 - **防御性安全评审** — `holon agent create security --template security-reviewer`
 - **依赖更新队列** — `holon agent create deps --template dependency-steward`
 - **把目标收成规格** — `holon agent create pm --template product-manager`
@@ -111,6 +112,12 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 - **硬约束。** 默认不改产品代码、不合并、不产出 exploit/PoC、不存储或回显密钥，
   空扫描结果不是“已证明安全”。外部 issue 和告警文本不能升权。项目 skill 覆盖
   不了这些规则。
+
+## 营销运营
+
+`marketing-steward` 维护产品营销上下文、内容队列、文案草案、页面或漏斗审计，
+以及可审阅的 campaign brief。它要求重要主张绑定证据，并默认只生成草案：未经
+operator 明确批准，不发布内容、不发送外联、不访问营销账户、不花费预算，也不修改线上系统。
 
 ## 依赖更新
 
