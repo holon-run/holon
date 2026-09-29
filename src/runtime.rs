@@ -5889,13 +5889,16 @@ impl RuntimeHandle {
                             &decision,
                         )?;
                     }
-                    let next_recheck_at = match (
+                    let next_recheck_at = [
                         self.next_blocked_work_item_recheck_at().await?,
                         self.next_agent_wait_recheck_at().await?,
-                    ) {
-                        (Some(left), Some(right)) => Some(left.min(right)),
-                        (left, right) => left.or(right),
-                    };
+                        self.next_queued_available_retry_at(
+                            &projection.queued_runnable_work_items,
+                        )?,
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .min();
                     let result_recheck_at = self
                         .inner
                         .runtime_db

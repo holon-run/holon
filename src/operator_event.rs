@@ -272,7 +272,8 @@ fn event_category(kind: &str) -> OperatorEventCategory {
         | "work_item_completion_report_candidate_promoted"
         | "work_item_stale_reminder_injected"
         | "work_item_stale_reminder_skipped"
-        | "missing_current_work_item_before_wait" => OperatorEventCategory::WorkItem,
+        | "missing_current_work_item_before_wait"
+        | "work_queue_redispatch_stalled" => OperatorEventCategory::WorkItem,
         "task_created"
         | "task_status_updated"
         | "task_result_received"
@@ -376,6 +377,9 @@ fn event_visibility(
         ("brief_created", _) => brief_visibility(payload, context),
         ("work_item_written", _) if work_item_completed(payload) => OperatorVisibility::WorkDone,
         ("work_item_written", _) if work_item_created(payload) => OperatorVisibility::TurnResult,
+        ("work_queue_redispatch_stalled", OperatorEventCategory::WorkItem) => {
+            OperatorVisibility::TurnResult
+        }
         (_, OperatorEventCategory::WorkItem) => OperatorVisibility::Progress,
         ("timer_fire_failed", OperatorEventCategory::Waiting) => OperatorVisibility::Progress,
         ("runtime_error", _) => OperatorVisibility::TurnResult,
@@ -716,6 +720,7 @@ fn event_text(
         "timer_fired" => timer_text(payload, fallback_summary, true),
         "timer_fire_failed" => simple_event_text("Timer failed", error_or_timer_body(payload)),
         "work_item_written" => work_item_text(payload, fallback_summary),
+        "work_queue_redispatch_stalled" => queued_redispatch_stalled_text(payload),
         "work_item_stale_reminder_injected" => work_item_stale_reminder_text(payload, false),
         "work_item_stale_reminder_skipped" => work_item_stale_reminder_text(payload, true),
         "missing_current_work_item_before_wait" => simple_event_text(
@@ -957,6 +962,23 @@ fn work_item_body(payload: &Value) -> Option<String> {
                 .and_then(Value::as_str)
                 .map(trim_summary)
         })
+}
+
+fn queued_redispatch_stalled_text(payload: &Value) -> (String, Option<String>, String) {
+    let work_item = string_field(payload, "work_item_id")
+        .map(|id| format!("Work item {id}"))
+        .unwrap_or_else(|| "A queued work item".into());
+    let attempts = payload
+        .get("no_progress_attempts")
+        .and_then(Value::as_u64)
+        .map(|attempts| format!(" after {attempts} redispatch attempts without progress"))
+        .unwrap_or_default();
+    simple_event_text(
+        "Queued work stalled",
+        Some(format!(
+            "{work_item} is stalled{attempts}. It will wait for new external input or a WorkItem update."
+        )),
+    )
 }
 
 fn timer_body(payload: &Value) -> Option<String> {
@@ -2108,6 +2130,7 @@ mod tests {
         "work_item_stale_reminder_injected",
         "work_item_stale_reminder_skipped",
         "missing_current_work_item_before_wait",
+        "work_queue_redispatch_stalled",
         "work_item_delegation_created",
         "work_item_delegation_completed",
         "task_created",
@@ -2626,6 +2649,35 @@ mod tests {
             &context,
         );
         assert_eq!(terminal.visibility, OperatorVisibility::Trace);
+    }
+
+    #[test]
+    fn stalled_queued_work_item_is_visible_in_info_mode() {
+        let payload = json!({
+            "work_item_id": "wi-1",
+            "no_progress_attempts": 5,
+            "awaiting": "new_external_signal_or_work_item_update"
+        });
+        let context = OperatorPresentationContext::default();
+        let presentation = present_operator_event(
+            "work_queue_redispatch_stalled",
+            &payload,
+            "fallback",
+            &context,
+        );
+
+        assert_eq!(presentation.category, OperatorEventCategory::WorkItem);
+        assert_eq!(presentation.visibility, OperatorVisibility::TurnResult);
+        assert_eq!(presentation.title, "Queued work stalled");
+        assert!(presentation.summary.contains("wi-1"));
+        assert!(presentation.summary.contains("5 redispatch attempts"));
+        assert!(super::is_operator_event_in_display_mode(
+            "work_queue_redispatch_stalled",
+            &payload,
+            "fallback",
+            &context,
+            OperatorDisplayMode::Info
+        ));
     }
 
     #[test]

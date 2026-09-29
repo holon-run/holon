@@ -2,6 +2,30 @@ use super::*;
 use crate::types::{BriefKind, TaskStatus, TodoItemState};
 
 const CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT: usize = 512;
+const QUEUED_AVAILABLE_NO_PROGRESS_LIMIT: usize = 5;
+
+#[derive(Debug, Clone)]
+enum QueuedAvailableRetryStatus {
+    Ready,
+    Backoff {
+        message_id: String,
+        attempts: usize,
+        retry_at: chrono::DateTime<chrono::Utc>,
+        episode_key: String,
+    },
+    Exhausted {
+        message_id: String,
+        attempts: usize,
+        episode_key: String,
+    },
+}
+
+struct QueuedAvailableRetryAttempt {
+    message_id: String,
+    attempts: usize,
+    retry_at: chrono::DateTime<chrono::Utc>,
+    episode_key: String,
+}
 
 #[derive(Debug, Clone)]
 enum IdleTickTrigger {
@@ -148,6 +172,8 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
+        let mut queued_retry_statuses =
+            self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
         let async_hook = self
             .inner
             .autonomous_continuation_decision_hook
@@ -188,6 +214,8 @@ impl RuntimeHandle {
                     fresh_work_queue_projection,
                     self.now(),
                 )?;
+            queued_retry_statuses =
+                self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
         }
         if let Some(selection) = selection.as_ref() {
             if let Some(reason) = selection.fallback_reason() {
@@ -274,9 +302,17 @@ impl RuntimeHandle {
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued, generation)) => {
-                let duplicate = self
-                    .duplicate_queued_available_message_id(&queued, generation)?
-                    .map(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage);
+                let retry_status = queued_retry_statuses
+                    .remove(&queued.id)
+                    .unwrap_or(QueuedAvailableRetryStatus::Ready);
+                let duplicate = match &retry_status {
+                    QueuedAvailableRetryStatus::Ready => None,
+                    QueuedAvailableRetryStatus::Backoff { message_id, .. }
+                    | QueuedAvailableRetryStatus::Exhausted { message_id, .. } => {
+                        Some(message_id.clone())
+                    }
+                }
+                .map(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage);
                 let decision = scheduler::decide_next_action(
                     &scheduler_projection,
                     scheduler::SchedulerBoundary::IdleTick,
@@ -297,20 +333,6 @@ impl RuntimeHandle {
                         &self.inner.default_agent_id,
                         &decision,
                     )?;
-                    if let Some(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage(
-                        message_id,
-                    )) = duplicate
-                    {
-                        self.inner.storage.append_event(&AuditEvent::legacy(
-                            "system_tick_suppressed",
-                            serde_json::json!({
-                                "subsystem": "work_queue",
-                                "reason": "no_new_signal_after_queued_available",
-                                "work_item_id": queued.id,
-                                "message_id": message_id
-                            }),
-                        ))?;
-                    }
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
@@ -449,6 +471,30 @@ impl RuntimeHandle {
             .min())
     }
 
+    pub(super) fn next_queued_available_retry_at(
+        &self,
+        work_items: &[crate::types::WorkItemRecord],
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        if work_items.is_empty() {
+            return Ok(None);
+        }
+        let recent_messages = self
+            .inner
+            .storage
+            .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?;
+        let mut next_retry_at: Option<chrono::DateTime<chrono::Utc>> = None;
+        for work_item in work_items {
+            if let Some(attempt) = Self::queued_available_retry_attempt(work_item, &recent_messages)
+                .filter(|attempt| attempt.attempts < QUEUED_AVAILABLE_NO_PROGRESS_LIMIT)
+            {
+                next_retry_at = Some(
+                    next_retry_at.map_or(attempt.retry_at, |current| current.min(attempt.retry_at)),
+                );
+            }
+        }
+        Ok(next_retry_at)
+    }
+
     pub(super) async fn emit_due_agent_wait_recheck(&self) -> Result<bool> {
         let agent_id = self.agent_id().await?;
         let now = self.now();
@@ -539,46 +585,183 @@ impl RuntimeHandle {
         Ok(true)
     }
 
-    fn duplicate_queued_available_message_id(
+    fn filter_suppressed_queued_available_work_items(
         &self,
-        work_item: &crate::types::WorkItemRecord,
-        generation: Option<u64>,
-    ) -> Result<Option<String>> {
-        if let Some((message_id, message_created_at)) = self.duplicate_work_queue_tick_message_id(
-            &scheduler::work_queue_tick_idempotency_key(work_item, "queued_available", generation),
-        )? {
-            // Even when the idempotency key matches, a provider failure may have
-            // left the WorkItem still runnable. Check whether any work signal
-            // appeared after the matched tick so we do not permanently suppress
-            // the retry tick.
-            if self.has_work_signal_after(work_item, message_created_at, "queued_available")? {
-                return Ok(None);
+        projection: &mut scheduler::SchedulerProjection,
+    ) -> Result<std::collections::HashMap<String, QueuedAvailableRetryStatus>> {
+        let now = self.now();
+        let recent_messages = if projection.queued_runnable_work_items.is_empty() {
+            Vec::new()
+        } else {
+            self.inner
+                .storage
+                .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
+        };
+        let mut retry_statuses =
+            std::collections::HashMap::with_capacity(projection.queued_runnable_work_items.len());
+        for work_item in &projection.queued_runnable_work_items {
+            let status = Self::queued_available_retry_status(work_item, &now, &recent_messages);
+            match &status {
+                QueuedAvailableRetryStatus::Backoff {
+                    attempts,
+                    retry_at,
+                    episode_key,
+                    message_id,
+                } => self.append_queued_available_retry_event(
+                    "work_queue_redispatch_backoff_scheduled",
+                    episode_key,
+                    Some(*attempts),
+                    serde_json::json!({
+                        "subsystem": "work_queue",
+                        "work_item_id": work_item.id,
+                        "work_item_revision": work_item.revision,
+                        "no_progress_attempts": attempts,
+                        "retry_at": retry_at.to_rfc3339(),
+                        "message_id": message_id
+                    }),
+                )?,
+                QueuedAvailableRetryStatus::Exhausted {
+                    attempts,
+                    episode_key,
+                    message_id,
+                } => self.append_queued_available_retry_event(
+                    "work_queue_redispatch_stalled",
+                    episode_key,
+                    None,
+                    serde_json::json!({
+                        "subsystem": "work_queue",
+                        "work_item_id": work_item.id,
+                        "work_item_revision": work_item.revision,
+                        "no_progress_attempts": attempts,
+                        "awaiting": "new_external_signal_or_work_item_update",
+                        "message_id": message_id
+                    }),
+                )?,
+                QueuedAvailableRetryStatus::Ready => {}
             }
-            return Ok(Some(message_id));
+            retry_statuses.insert(work_item.id.clone(), status);
         }
-        let recent_messages = self
-            .inner
-            .storage
-            .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?;
-        let Some(message) = recent_messages
+        projection.queued_runnable_work_items.retain(|work_item| {
+            retry_statuses
+                .get(&work_item.id)
+                .is_some_and(|status| matches!(status, QueuedAvailableRetryStatus::Ready))
+        });
+        Ok(retry_statuses)
+    }
+
+    fn queued_available_retry_status(
+        work_item: &crate::types::WorkItemRecord,
+        now: &chrono::DateTime<chrono::Utc>,
+        recent_messages: &[MessageEnvelope],
+    ) -> QueuedAvailableRetryStatus {
+        let Some(attempt) = Self::queued_available_retry_attempt(work_item, recent_messages) else {
+            return QueuedAvailableRetryStatus::Ready;
+        };
+        if attempt.attempts >= QUEUED_AVAILABLE_NO_PROGRESS_LIMIT {
+            return QueuedAvailableRetryStatus::Exhausted {
+                message_id: attempt.message_id,
+                attempts: attempt.attempts,
+                episode_key: attempt.episode_key,
+            };
+        }
+        if now < &attempt.retry_at {
+            return QueuedAvailableRetryStatus::Backoff {
+                message_id: attempt.message_id,
+                attempts: attempt.attempts,
+                retry_at: attempt.retry_at,
+                episode_key: attempt.episode_key,
+            };
+        }
+        QueuedAvailableRetryStatus::Ready
+    }
+
+    fn queued_available_retry_attempt(
+        work_item: &crate::types::WorkItemRecord,
+        recent_messages: &[MessageEnvelope],
+    ) -> Option<QueuedAvailableRetryAttempt> {
+        let latest_external_signal = recent_messages
+            .iter()
+            .filter(|message| is_queued_available_retry_signal(message))
+            .max_by_key(|message| message.created_at);
+        let episode_key = format!(
+            "{}:{}:{}",
+            work_item.id,
+            work_item.revision,
+            latest_external_signal.map_or("initial", |message| message.id.as_str())
+        );
+        let latest_signal_at = latest_external_signal.map(|message| message.created_at);
+        let mut attempts = recent_messages
             .iter()
             .filter(|message| {
                 is_runtime_work_queue_message_for_work_item(
                     message,
                     &work_item.id,
                     "queued_available",
-                )
+                ) && message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("work_queue"))
+                    .and_then(|metadata| metadata.get("work_item_revision"))
+                    .and_then(serde_json::Value::as_u64)
+                    == Some(work_item.revision)
+                    && latest_signal_at.is_none_or(|signal_at| message.created_at > signal_at)
             })
-            .max_by_key(|message| message.created_at)
-        else {
-            return Ok(None);
+            .collect::<Vec<_>>();
+        attempts.sort_by_key(|message| message.created_at);
+        let Some(last_tick) = attempts.last() else {
+            return None;
         };
+        let attempt_count = attempts.len();
+        let retry_delay = match attempt_count {
+            1 => chrono::Duration::minutes(1),
+            2 => chrono::Duration::minutes(5),
+            _ => chrono::Duration::minutes(30),
+        };
+        let retry_at = last_tick.created_at + retry_delay;
+        Some(QueuedAvailableRetryAttempt {
+            message_id: last_tick.id.clone(),
+            attempts: attempt_count,
+            retry_at,
+            episode_key,
+        })
+    }
 
-        if self.has_work_signal_after(work_item, message.created_at, "queued_available")? {
-            return Ok(None);
+    fn append_queued_available_retry_event(
+        &self,
+        kind: &str,
+        episode_key: &str,
+        attempt_count: Option<usize>,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        let already_recorded = self
+            .inner
+            .storage
+            .read_recent_events(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
+            .iter()
+            .any(|event| {
+                event.kind == kind
+                    && event
+                        .data
+                        .get("episode_key")
+                        .and_then(serde_json::Value::as_str)
+                        == Some(episode_key)
+                    && attempt_count.is_none_or(|attempt_count| {
+                        event
+                            .data
+                            .get("no_progress_attempts")
+                            .and_then(serde_json::Value::as_u64)
+                            == Some(attempt_count as u64)
+                    })
+            });
+        if already_recorded {
+            return Ok(());
         }
-
-        Ok(Some(message.id.clone()))
+        let mut data = data;
+        data["episode_key"] = serde_json::Value::String(episode_key.to_string());
+        self.inner
+            .storage
+            .append_event(&AuditEvent::legacy(kind, data))?;
+        Ok(())
     }
 
     fn duplicate_continue_active_result_brief_id(
@@ -1119,6 +1302,18 @@ impl RuntimeHandle {
     }
 }
 
+fn is_queued_available_retry_signal(message: &MessageEnvelope) -> bool {
+    matches!(
+        (&message.kind, &message.origin),
+        (MessageKind::OperatorPrompt, MessageOrigin::Operator { .. })
+            | (MessageKind::ChannelEvent, MessageOrigin::Channel { .. })
+            | (MessageKind::WebhookEvent, MessageOrigin::Webhook { .. })
+            | (MessageKind::CallbackEvent, MessageOrigin::Callback { .. })
+            | (MessageKind::TimerTick, MessageOrigin::Timer { .. })
+            | (MessageKind::TaskResult, MessageOrigin::Task { .. })
+    )
+}
+
 fn latest_nonempty_result_brief_for_work_item<'a>(
     briefs: &'a [BriefRecord],
     work_item_id: &str,
@@ -1309,6 +1504,71 @@ mod tests {
         record.id = id.to_string();
         persist_test_work_item(test_runtime, &record);
         record
+    }
+
+    fn append_queued_available_tick(
+        test_runtime: &TestRuntime,
+        work_item: &WorkItemRecord,
+        id: &str,
+        created_at: chrono::DateTime<chrono::Utc>,
+        generation: u64,
+    ) {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "work_queue".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "queued work item is available".into(),
+            },
+        );
+        message.id = id.into();
+        message.created_at = created_at;
+        message.work_item_id = Some(work_item.id.clone());
+        message.metadata = Some(serde_json::json!({
+            "work_queue": {
+                "idempotency_key": scheduler::work_queue_tick_idempotency_key(
+                    work_item,
+                    "queued_available",
+                    Some(generation),
+                ),
+                "reason": "queued_available",
+                "work_item_id": work_item.id,
+                "work_item_revision": work_item.revision,
+                "work_item_generation": generation,
+            }
+        }));
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&message)
+            .unwrap();
+    }
+
+    fn append_task_retry_signal(test_runtime: &TestRuntime, kind: MessageKind, id: &str) {
+        let mut message = MessageEnvelope::new(
+            "default",
+            kind,
+            MessageOrigin::Task {
+                task_id: "child-task".into(),
+            },
+            AuthorityClass::IntegrationSignal,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "child task update".into(),
+            },
+        );
+        message.id = id.into();
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&message)
+            .unwrap();
     }
 
     fn persist_test_work_item(test_runtime: &TestRuntime, record: &WorkItemRecord) {
@@ -2124,12 +2384,12 @@ mod tests {
     }
 
     #[test]
-    fn queued_system_tick_is_suppressed_without_new_signal() {
+    fn queued_available_generation_and_tool_activity_do_not_reset_backoff() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
 
         let queued_id = "wi-queued";
-        add_queued_work_item(&test_runtime, queued_id, "queued-target");
+        let queued = add_queued_work_item(&test_runtime, queued_id, "queued-target");
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let emitted = rt
@@ -2138,6 +2398,30 @@ mod tests {
         assert!(emitted, "first queued notification should be emitted");
 
         clear_queue(&test_runtime);
+        set_work_item_generation(&test_runtime, queued_id, 2);
+        let tool_now = chrono::Utc::now();
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_tool_execution(&crate::types::ToolExecutionRecord {
+                id: "no-progress-tool".into(),
+                agent_id: "default".into(),
+                work_item_id: Some(queued_id.into()),
+                turn_index: 1,
+                turn_id: None,
+                tool_name: "ExecCommand".into(),
+                created_at: tool_now,
+                completed_at: Some(tool_now),
+                duration_ms: 1,
+                authority_class: AuthorityClass::RuntimeInstruction,
+                status: crate::types::ToolExecutionStatus::Success,
+                input: serde_json::json!({}),
+                output: serde_json::json!({"ok": true}),
+                summary: "A successful tool call without a WorkItem update.".into(),
+                invocation_surface: None,
+            })
+            .unwrap();
 
         let emitted_again = rt
             .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
@@ -2154,13 +2438,240 @@ mod tests {
             .runtime
             .inner
             .storage
-            .read_recent_events(20)
+            .read_recent_events(100)
             .unwrap();
         assert!(events.iter().any(|event| {
-            event.kind == "system_tick_suppressed"
-                && event.data["reason"] == "no_new_signal_after_queued_available"
+            event.kind == "work_queue_redispatch_backoff_scheduled"
                 && event.data["work_item_id"] == queued_id
+                && event.data["work_item_revision"] == queued.revision
+                && event.data["no_progress_attempts"] == 1
         }));
+    }
+
+    #[test]
+    fn task_status_does_not_reset_backoff_but_task_result_does() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        append_queued_available_tick(
+            &test_runtime,
+            &queued,
+            "prior-queued-tick",
+            chrono::Utc::now() - chrono::Duration::seconds(10),
+            1,
+        );
+        append_task_retry_signal(&test_runtime, MessageKind::TaskStatus, "task-started");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(!rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
+
+        append_task_retry_signal(&test_runtime, MessageKind::TaskResult, "task-result");
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        assert_eq!(get_emitted_system_ticks(&test_runtime).len(), 1);
+    }
+
+    #[test]
+    fn backed_off_and_stalled_items_do_not_starve_later_runnable_items() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let backoff = add_queued_work_item(&test_runtime, "wi-backoff", "backed-off target");
+        let exhausted = add_queued_work_item(&test_runtime, "wi-exhausted", "stalled target");
+        let ready = add_queued_work_item(&test_runtime, "wi-ready", "runnable target");
+        let now = chrono::Utc::now();
+        append_queued_available_tick(
+            &test_runtime,
+            &backoff,
+            "backoff-tick",
+            now - chrono::Duration::seconds(10),
+            1,
+        );
+        for attempt in 0..QUEUED_AVAILABLE_NO_PROGRESS_LIMIT {
+            append_queued_available_tick(
+                &test_runtime,
+                &exhausted,
+                &format!("stalled-tick-{attempt}"),
+                now - chrono::Duration::minutes(60 - attempt as i64),
+                attempt as u64 + 1,
+            );
+        }
+
+        let emitted = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(
+            emitted,
+            "later runnable work should bypass suppressed items"
+        );
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].1["work_item_id"], ready.id);
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(100)
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "work_queue_redispatch_backoff_scheduled"
+                && event.data["work_item_id"] == backoff.id
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "work_queue_redispatch_stalled"
+                && event.data["work_item_id"] == exhausted.id
+        }));
+    }
+
+    #[test]
+    fn queued_available_retry_resumes_after_backoff_deadline() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        append_queued_available_tick(
+            &test_runtime,
+            &queued,
+            "prior-queued-tick",
+            chrono::Utc::now() - chrono::Duration::minutes(2),
+            1,
+        );
+        set_work_item_generation(&test_runtime, &queued.id, 2);
+
+        let emitted = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(
+            emitted,
+            "the first bounded retry should run after one minute"
+        );
+        assert_eq!(get_emitted_system_ticks(&test_runtime).len(), 1);
+    }
+
+    #[test]
+    fn overdue_queued_retry_deadline_is_preserved_for_idle_wake() {
+        let test_runtime = test_runtime();
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        let tick_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+        append_queued_available_tick(&test_runtime, &queued, "prior-queued-tick", tick_at, 1);
+
+        let retry_at = tick_at + chrono::Duration::minutes(1);
+        let next_retry_at = test_runtime
+            .runtime
+            .next_queued_available_retry_at(std::slice::from_ref(&queued))
+            .unwrap();
+
+        assert_eq!(next_retry_at, Some(retry_at));
+    }
+
+    #[test]
+    fn queued_available_work_item_revision_resets_retry_episode() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        append_queued_available_tick(
+            &test_runtime,
+            &queued,
+            "prior-queued-tick",
+            chrono::Utc::now() - chrono::Duration::seconds(10),
+            1,
+        );
+        let mut revised = queued.clone();
+        revised.revision += 1;
+        revised.updated_at = chrono::Utc::now();
+        persist_test_work_item(&test_runtime, &revised);
+
+        let emitted = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(emitted, "a WorkItem revision change should reset backoff");
+        assert_eq!(get_emitted_system_ticks(&test_runtime).len(), 1);
+    }
+
+    #[test]
+    fn queued_available_stops_after_five_no_progress_attempts_until_new_input() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        let now = chrono::Utc::now();
+        for attempt in 0..QUEUED_AVAILABLE_NO_PROGRESS_LIMIT {
+            append_queued_available_tick(
+                &test_runtime,
+                &queued,
+                &format!("prior-queued-tick-{attempt}"),
+                now - chrono::Duration::minutes(60 - attempt as i64),
+                attempt as u64 + 1,
+            );
+        }
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(!rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(100)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "work_queue_redispatch_stalled")
+                .count(),
+            1
+        );
+
+        assert!(!rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(100)
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "work_queue_redispatch_stalled")
+                .count(),
+            1,
+            "the escalation event is emitted once per no-progress episode"
+        );
+
+        let mut operator_signal = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "continue the queued item".into(),
+            },
+        );
+        operator_signal.created_at = chrono::Utc::now();
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&operator_signal)
+            .unwrap();
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        assert_eq!(get_emitted_system_ticks(&test_runtime).len(), 1);
     }
 
     #[test]
@@ -2219,7 +2730,7 @@ mod tests {
             },
         );
         existing_tick.id = "existing-work-queue-tick".into();
-        existing_tick.created_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        existing_tick.created_at = chrono::Utc::now() - chrono::Duration::minutes(2);
         existing_tick.work_item_id = Some(queued.id.clone());
         existing_tick.metadata = Some(serde_json::json!({
             "work_queue": {
@@ -2295,7 +2806,7 @@ mod tests {
             },
         );
         existing_tick.id = "failed-work-queue-tick".into();
-        existing_tick.created_at = chrono::Utc::now() - chrono::Duration::seconds(5);
+        existing_tick.created_at = chrono::Utc::now() - chrono::Duration::minutes(2);
         existing_tick.work_item_id = Some(queued.id.clone());
         existing_tick.metadata = Some(serde_json::json!({
             "work_queue": {

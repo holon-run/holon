@@ -1341,6 +1341,84 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
     runtime_task.abort();
 }
 
+#[tokio::test(start_paused = true)]
+async fn runtime_wakes_itself_for_queued_redispatch_retry_deadline() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("unused")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item("retry when eligible".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let tick_at = clock.now() - chrono::Duration::seconds(5);
+    let mut previous_tick = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "queued work item is available".into(),
+        },
+    );
+    previous_tick.id = "prior-queued-tick".into();
+    previous_tick.created_at = tick_at;
+    previous_tick.work_item_id = Some(work_item.id.clone());
+    previous_tick.metadata = Some(serde_json::json!({
+        "work_queue": {
+            "idempotency_key": "work_queue:queued_available:retry:1:generation:1",
+            "reason": "queued_available",
+            "work_item_id": work_item.id,
+            "work_item_revision": work_item.revision,
+            "work_item_generation": 1,
+        }
+    }));
+    runtime.storage().append_message(&previous_tick).unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
+        guard.persist_state(&runtime.inner.storage).unwrap();
+    }
+
+    let runtime_task = tokio::spawn(runtime.clone().run());
+    tokio::task::yield_now().await;
+    advance_lifecycle_time(&clock, std::time::Duration::from_secs(55)).await;
+    let events = wait_for_audit_events(
+        &runtime,
+        200,
+        |events| {
+            events.iter().any(|event| {
+                event.kind == "system_tick_emitted"
+                    && event.data.get("subsystem").and_then(|value| value.as_str())
+                        == Some("work_queue")
+                    && event.data["work_queue"]["work_item_id"] == work_item.id
+            })
+        },
+        "queued work retry after backoff deadline",
+    )
+    .await;
+
+    assert!(events.iter().any(|event| {
+        event.kind == "system_tick_emitted"
+            && event.data.get("subsystem").and_then(|value| value.as_str()) == Some("work_queue")
+            && event.data["work_queue"]["work_item_id"] == work_item.id
+    }));
+    runtime_task.abort();
+}
+
 #[tokio::test]
 async fn work_queue_projection_derives_scheduling_state_per_work_item() {
     let dir = tempdir().unwrap();
