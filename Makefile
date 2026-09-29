@@ -1,4 +1,4 @@
-.PHONY: help web web-ci android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
+.PHONY: help web web-ci api-sdk app-sdk android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
 ANDROID_DIR := apps/android
 WEB_DIR := web-gui/app
@@ -6,6 +6,8 @@ OPENAPI_TOOLS_DIR := web-gui/openapi-tools
 KOTLIN_WIRE_CHECK_DIR := $(OPENAPI_TOOLS_DIR)/kotlin-compile-check
 GRADLE ?= $(ANDROID_DIR)/gradlew
 CONVERSATION_SDK_DIR := packages/conversation-sdk
+API_SDK_DIR := packages/api-sdk
+APP_SDK_DIR := packages/app-sdk
 CONCURRENT_REPEATS ?= 3
 DOCKER_IMAGE ?= holon:dev
 CONCURRENT_LIFECYCLE_TESTS := \
@@ -30,8 +32,15 @@ help: ## Show this help message
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-24s\033[0m %s\n", $$1, $$2}'
 
+api-sdk: ## Build the shared TypeScript API SDK
+	cd $(API_SDK_DIR) && npm install --no-package-lock && npm run build
+
+app-sdk: api-sdk ## Build the hosted browser App SDK artifact
+	cd $(APP_SDK_DIR) && npm install --no-package-lock && npm run build
+
 web: ## Build the web GUI (requires Node.js 24). Produces web-gui/app/dist
 	@if [ -s "$$HOME/.nvm/nvm.sh" ]; then . "$$HOME/.nvm/nvm.sh" && nvm use; fi; \
+	$(MAKE) app-sdk && \
 	cd $(CONVERSATION_SDK_DIR) && npm ci && npm run build && \
 	cd ../../$(WEB_DIR) && npm ci && npm run build
 
@@ -102,7 +111,7 @@ snapshots-refresh: ## Refresh CLI, OpenAPI, HTTP route, runtime status, and mode
 build: ## Build all Rust targets (cargo build --all-targets)
 	cargo build --all-targets
 
-all: web build ## Build everything: web GUI then Rust
+all: web app-sdk build ## Build everything: web GUI, App SDK, then Rust
 
 test: ## Run library, binary, and integration tests serially (concurrent-proven binaries excluded; see test-concurrent)
 	python3 scripts/ci_test_shards.py run serial
