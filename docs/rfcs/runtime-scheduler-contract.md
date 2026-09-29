@@ -523,9 +523,19 @@ work_queue:queued_available:<work_item_id>:<work_item_generation>
 wake_hint:<waiting_intent_id_or_source>:<trigger_generation>
 ```
 
+Queued notifications also need a no-progress guard because execution generations
+advance even when the WorkItem itself does not change. A WorkItem revision and
+the latest external input or task result define a retry episode; provider rounds,
+tool activity, and scheduler generation changes do not reset it. Retries back off
+for one, five, then thirty minutes (capped at thirty minutes). After five
+no-progress attempts, the scheduler records a stalled event and waits for a new
+external signal or WorkItem revision before reactivating the item. Explicit
+WaitFor state continues to take precedence over queued notifications.
+
 The current heuristic of scanning recent messages, briefs, tool executions, and
-events is useful as a guardrail, but the scheduler contract should move toward
-explicit idempotency keys.
+events remains useful for other scheduler paths; it must not treat arbitrary tool
+activity as WorkItem progress. The scheduler contract should continue moving
+toward explicit idempotency keys.
 
 Invariants:
 
