@@ -525,12 +525,18 @@ wake_hint:<waiting_intent_id_or_source>:<trigger_generation>
 
 Queued notifications also need a no-progress guard because execution generations
 advance even when the WorkItem itself does not change. A WorkItem revision and
-the latest external input or task result define a retry episode; provider rounds,
-tool activity, and scheduler generation changes do not reset it. Retries back off
-for one, five, then thirty minutes (capped at thirty minutes). After five
-no-progress attempts, the scheduler records a stalled event and waits for a new
+the latest external input or terminal task result define a retry episode; task
+start/status messages, provider rounds, tool activity, and scheduler generation
+changes do not reset it. Retries back off for one, five, then thirty minutes
+(capped at thirty minutes), and the idle loop wakes at the next retry deadline.
+Queued items in backoff or stalled episodes are excluded before candidate
+selection so they cannot block later runnable work. After five no-progress
+attempts, the scheduler records an Info-visible stalled event and waits for a new
 external signal or WorkItem revision before reactivating the item. Explicit
 WaitFor state continues to take precedence over queued notifications.
+
+Attempt detection scans the most recent 512 messages. This is a bounded
+approximation: at high message volume, older ticks can age out of the window.
 
 The current heuristic of scanning recent messages, briefs, tool executions, and
 events remains useful for other scheduler paths; it must not treat arbitrary tool

@@ -20,6 +20,13 @@ enum QueuedAvailableRetryStatus {
     },
 }
 
+struct QueuedAvailableRetryAttempt {
+    message_id: String,
+    attempts: usize,
+    retry_at: chrono::DateTime<chrono::Utc>,
+    episode_key: String,
+}
+
 #[derive(Debug, Clone)]
 enum IdleTickTrigger {
     WorkQueueActive(crate::types::WorkItemRecord, Option<u64>),
@@ -165,6 +172,8 @@ impl RuntimeHandle {
                 work_queue_projection.clone(),
                 self.now(),
             )?;
+        let mut queued_retry_statuses =
+            self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
         let async_hook = self
             .inner
             .autonomous_continuation_decision_hook
@@ -205,6 +214,8 @@ impl RuntimeHandle {
                     fresh_work_queue_projection,
                     self.now(),
                 )?;
+            queued_retry_statuses =
+                self.filter_suppressed_queued_available_work_items(&mut scheduler_projection)?;
         }
         if let Some(selection) = selection.as_ref() {
             if let Some(reason) = selection.fallback_reason() {
@@ -291,7 +302,9 @@ impl RuntimeHandle {
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued, generation)) => {
-                let retry_status = self.queued_available_retry_status(&queued)?;
+                let retry_status = queued_retry_statuses
+                    .remove(&queued.id)
+                    .unwrap_or(QueuedAvailableRetryStatus::Ready);
                 let duplicate = match &retry_status {
                     QueuedAvailableRetryStatus::Ready => None,
                     QueuedAvailableRetryStatus::Backoff { message_id, .. }
@@ -320,49 +333,6 @@ impl RuntimeHandle {
                         &self.inner.default_agent_id,
                         &decision,
                     )?;
-                    if let Some(scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage(
-                        message_id,
-                    )) = duplicate
-                    {
-                        match &retry_status {
-                            QueuedAvailableRetryStatus::Backoff {
-                                attempts,
-                                retry_at,
-                                episode_key,
-                                ..
-                            } => self.append_queued_available_retry_event(
-                                "work_queue_redispatch_backoff_scheduled",
-                                episode_key,
-                                Some(*attempts),
-                                serde_json::json!({
-                                    "subsystem": "work_queue",
-                                    "work_item_id": queued.id,
-                                    "work_item_revision": queued.revision,
-                                    "no_progress_attempts": attempts,
-                                    "retry_at": retry_at.to_rfc3339(),
-                                    "message_id": message_id
-                                }),
-                            )?,
-                            QueuedAvailableRetryStatus::Exhausted {
-                                attempts,
-                                episode_key,
-                                ..
-                            } => self.append_queued_available_retry_event(
-                                "work_queue_redispatch_stalled",
-                                episode_key,
-                                None,
-                                serde_json::json!({
-                                    "subsystem": "work_queue",
-                                    "work_item_id": queued.id,
-                                    "work_item_revision": queued.revision,
-                                    "no_progress_attempts": attempts,
-                                    "awaiting": "new_external_signal_or_work_item_update",
-                                    "message_id": message_id
-                                }),
-                            )?,
-                            QueuedAvailableRetryStatus::Ready => {}
-                        }
-                    }
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
@@ -501,6 +471,30 @@ impl RuntimeHandle {
             .min())
     }
 
+    pub(super) fn next_queued_available_retry_at(
+        &self,
+        work_items: &[crate::types::WorkItemRecord],
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>> {
+        if work_items.is_empty() {
+            return Ok(None);
+        }
+        let recent_messages = self
+            .inner
+            .storage
+            .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?;
+        let mut next_retry_at: Option<chrono::DateTime<chrono::Utc>> = None;
+        for work_item in work_items {
+            if let Some(attempt) = Self::queued_available_retry_attempt(work_item, &recent_messages)
+                .filter(|attempt| attempt.attempts < QUEUED_AVAILABLE_NO_PROGRESS_LIMIT)
+            {
+                next_retry_at = Some(
+                    next_retry_at.map_or(attempt.retry_at, |current| current.min(attempt.retry_at)),
+                );
+            }
+        }
+        Ok(next_retry_at)
+    }
+
     pub(super) async fn emit_due_agent_wait_recheck(&self) -> Result<bool> {
         let agent_id = self.agent_id().await?;
         let now = self.now();
@@ -591,14 +585,100 @@ impl RuntimeHandle {
         Ok(true)
     }
 
-    fn queued_available_retry_status(
+    fn filter_suppressed_queued_available_work_items(
         &self,
+        projection: &mut scheduler::SchedulerProjection,
+    ) -> Result<std::collections::HashMap<String, QueuedAvailableRetryStatus>> {
+        let now = self.now();
+        let recent_messages = if projection.queued_runnable_work_items.is_empty() {
+            Vec::new()
+        } else {
+            self.inner
+                .storage
+                .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?
+        };
+        let mut retry_statuses =
+            std::collections::HashMap::with_capacity(projection.queued_runnable_work_items.len());
+        for work_item in &projection.queued_runnable_work_items {
+            let status = Self::queued_available_retry_status(work_item, &now, &recent_messages);
+            match &status {
+                QueuedAvailableRetryStatus::Backoff {
+                    attempts,
+                    retry_at,
+                    episode_key,
+                    message_id,
+                } => self.append_queued_available_retry_event(
+                    "work_queue_redispatch_backoff_scheduled",
+                    episode_key,
+                    Some(*attempts),
+                    serde_json::json!({
+                        "subsystem": "work_queue",
+                        "work_item_id": work_item.id,
+                        "work_item_revision": work_item.revision,
+                        "no_progress_attempts": attempts,
+                        "retry_at": retry_at.to_rfc3339(),
+                        "message_id": message_id
+                    }),
+                )?,
+                QueuedAvailableRetryStatus::Exhausted {
+                    attempts,
+                    episode_key,
+                    message_id,
+                } => self.append_queued_available_retry_event(
+                    "work_queue_redispatch_stalled",
+                    episode_key,
+                    None,
+                    serde_json::json!({
+                        "subsystem": "work_queue",
+                        "work_item_id": work_item.id,
+                        "work_item_revision": work_item.revision,
+                        "no_progress_attempts": attempts,
+                        "awaiting": "new_external_signal_or_work_item_update",
+                        "message_id": message_id
+                    }),
+                )?,
+                QueuedAvailableRetryStatus::Ready => {}
+            }
+            retry_statuses.insert(work_item.id.clone(), status);
+        }
+        projection.queued_runnable_work_items.retain(|work_item| {
+            retry_statuses
+                .get(&work_item.id)
+                .is_some_and(|status| matches!(status, QueuedAvailableRetryStatus::Ready))
+        });
+        Ok(retry_statuses)
+    }
+
+    fn queued_available_retry_status(
         work_item: &crate::types::WorkItemRecord,
-    ) -> Result<QueuedAvailableRetryStatus> {
-        let recent_messages = self
-            .inner
-            .storage
-            .read_recent_messages(CONTINUE_ACTIVE_SIGNAL_SCAN_LIMIT)?;
+        now: &chrono::DateTime<chrono::Utc>,
+        recent_messages: &[MessageEnvelope],
+    ) -> QueuedAvailableRetryStatus {
+        let Some(attempt) = Self::queued_available_retry_attempt(work_item, recent_messages) else {
+            return QueuedAvailableRetryStatus::Ready;
+        };
+        if attempt.attempts >= QUEUED_AVAILABLE_NO_PROGRESS_LIMIT {
+            return QueuedAvailableRetryStatus::Exhausted {
+                message_id: attempt.message_id,
+                attempts: attempt.attempts,
+                episode_key: attempt.episode_key,
+            };
+        }
+        if now < &attempt.retry_at {
+            return QueuedAvailableRetryStatus::Backoff {
+                message_id: attempt.message_id,
+                attempts: attempt.attempts,
+                retry_at: attempt.retry_at,
+                episode_key: attempt.episode_key,
+            };
+        }
+        QueuedAvailableRetryStatus::Ready
+    }
+
+    fn queued_available_retry_attempt(
+        work_item: &crate::types::WorkItemRecord,
+        recent_messages: &[MessageEnvelope],
+    ) -> Option<QueuedAvailableRetryAttempt> {
         let latest_external_signal = recent_messages
             .iter()
             .filter(|message| is_queued_available_retry_signal(message))
@@ -629,32 +709,21 @@ impl RuntimeHandle {
             .collect::<Vec<_>>();
         attempts.sort_by_key(|message| message.created_at);
         let Some(last_tick) = attempts.last() else {
-            return Ok(QueuedAvailableRetryStatus::Ready);
+            return None;
         };
         let attempt_count = attempts.len();
-        if attempt_count >= QUEUED_AVAILABLE_NO_PROGRESS_LIMIT {
-            return Ok(QueuedAvailableRetryStatus::Exhausted {
-                message_id: last_tick.id.clone(),
-                attempts: attempt_count,
-                episode_key,
-            });
-        }
-
         let retry_delay = match attempt_count {
             1 => chrono::Duration::minutes(1),
             2 => chrono::Duration::minutes(5),
             _ => chrono::Duration::minutes(30),
         };
         let retry_at = last_tick.created_at + retry_delay;
-        if self.now() < retry_at {
-            return Ok(QueuedAvailableRetryStatus::Backoff {
-                message_id: last_tick.id.clone(),
-                attempts: attempt_count,
-                retry_at,
-                episode_key,
-            });
-        }
-        Ok(QueuedAvailableRetryStatus::Ready)
+        Some(QueuedAvailableRetryAttempt {
+            message_id: last_tick.id.clone(),
+            attempts: attempt_count,
+            retry_at,
+            episode_key,
+        })
     }
 
     fn append_queued_available_retry_event(
@@ -1241,10 +1310,7 @@ fn is_queued_available_retry_signal(message: &MessageEnvelope) -> bool {
             | (MessageKind::WebhookEvent, MessageOrigin::Webhook { .. })
             | (MessageKind::CallbackEvent, MessageOrigin::Callback { .. })
             | (MessageKind::TimerTick, MessageOrigin::Timer { .. })
-            | (
-                MessageKind::TaskResult | MessageKind::TaskStatus,
-                MessageOrigin::Task { .. }
-            )
+            | (MessageKind::TaskResult, MessageOrigin::Task { .. })
     )
 }
 
@@ -1475,6 +1541,28 @@ mod tests {
                 "work_item_generation": generation,
             }
         }));
+        test_runtime
+            .runtime
+            .inner
+            .storage
+            .append_message(&message)
+            .unwrap();
+    }
+
+    fn append_task_retry_signal(test_runtime: &TestRuntime, kind: MessageKind, id: &str) {
+        let mut message = MessageEnvelope::new(
+            "default",
+            kind,
+            MessageOrigin::Task {
+                task_id: "child-task".into(),
+            },
+            AuthorityClass::IntegrationSignal,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "child task update".into(),
+            },
+        );
+        message.id = id.into();
         test_runtime
             .runtime
             .inner
@@ -2361,6 +2449,86 @@ mod tests {
     }
 
     #[test]
+    fn task_status_does_not_reset_backoff_but_task_result_does() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        append_queued_available_tick(
+            &test_runtime,
+            &queued,
+            "prior-queued-tick",
+            chrono::Utc::now() - chrono::Duration::seconds(10),
+            1,
+        );
+        append_task_retry_signal(&test_runtime, MessageKind::TaskStatus, "task-started");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        assert!(!rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
+
+        append_task_retry_signal(&test_runtime, MessageKind::TaskResult, "task-result");
+        assert!(rt
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap());
+        assert_eq!(get_emitted_system_ticks(&test_runtime).len(), 1);
+    }
+
+    #[test]
+    fn backed_off_and_stalled_items_do_not_starve_later_runnable_items() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let backoff = add_queued_work_item(&test_runtime, "wi-backoff", "backed-off target");
+        let exhausted = add_queued_work_item(&test_runtime, "wi-exhausted", "stalled target");
+        let ready = add_queued_work_item(&test_runtime, "wi-ready", "runnable target");
+        let now = chrono::Utc::now();
+        append_queued_available_tick(
+            &test_runtime,
+            &backoff,
+            "backoff-tick",
+            now - chrono::Duration::seconds(10),
+            1,
+        );
+        for attempt in 0..QUEUED_AVAILABLE_NO_PROGRESS_LIMIT {
+            append_queued_available_tick(
+                &test_runtime,
+                &exhausted,
+                &format!("stalled-tick-{attempt}"),
+                now - chrono::Duration::minutes(60 - attempt as i64),
+                attempt as u64 + 1,
+            );
+        }
+
+        let emitted = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(
+            emitted,
+            "later runnable work should bypass suppressed items"
+        );
+        let ticks = get_emitted_system_ticks(&test_runtime);
+        assert_eq!(ticks.len(), 1);
+        assert_eq!(ticks[0].1["work_item_id"], ready.id);
+        let events = test_runtime
+            .runtime
+            .inner
+            .storage
+            .read_recent_events(100)
+            .unwrap();
+        assert!(events.iter().any(|event| {
+            event.kind == "work_queue_redispatch_backoff_scheduled"
+                && event.data["work_item_id"] == backoff.id
+        }));
+        assert!(events.iter().any(|event| {
+            event.kind == "work_queue_redispatch_stalled"
+                && event.data["work_item_id"] == exhausted.id
+        }));
+    }
+
+    #[test]
     fn queued_available_retry_resumes_after_backoff_deadline() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
@@ -2383,6 +2551,48 @@ mod tests {
             emitted,
             "the first bounded retry should run after one minute"
         );
+        assert_eq!(get_emitted_system_ticks(&test_runtime).len(), 1);
+    }
+
+    #[test]
+    fn overdue_queued_retry_deadline_is_preserved_for_idle_wake() {
+        let test_runtime = test_runtime();
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        let tick_at = chrono::Utc::now() - chrono::Duration::minutes(2);
+        append_queued_available_tick(&test_runtime, &queued, "prior-queued-tick", tick_at, 1);
+
+        let retry_at = tick_at + chrono::Duration::minutes(1);
+        let next_retry_at = test_runtime
+            .runtime
+            .next_queued_available_retry_at(std::slice::from_ref(&queued))
+            .unwrap();
+
+        assert_eq!(next_retry_at, Some(retry_at));
+    }
+
+    #[test]
+    fn queued_available_work_item_revision_resets_retry_episode() {
+        let test_runtime = test_runtime();
+        set_agent_idle(&test_runtime);
+        let queued = add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
+        append_queued_available_tick(
+            &test_runtime,
+            &queued,
+            "prior-queued-tick",
+            chrono::Utc::now() - chrono::Duration::seconds(10),
+            1,
+        );
+        let mut revised = queued.clone();
+        revised.revision += 1;
+        revised.updated_at = chrono::Utc::now();
+        persist_test_work_item(&test_runtime, &revised);
+
+        let emitted = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
+            .unwrap();
+
+        assert!(emitted, "a WorkItem revision change should reset backoff");
         assert_eq!(get_emitted_system_ticks(&test_runtime).len(), 1);
     }
 
