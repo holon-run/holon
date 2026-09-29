@@ -57,11 +57,6 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             viewModel.state
                 .map { state ->
-                    if (intent.action in setOf(Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE) &&
-                        state.pendingShare == null && state.queuedShares.isEmpty() && !state.shareSending
-                    ) {
-                        setIntent(Intent(Intent.ACTION_MAIN).setClass(this@MainActivity, MainActivity::class.java))
-                    }
                     val scope = state.session?.scopeKey.takeIf { state.phase == AppPhase.Ready }
                     scope to if (scope == null) emptyList() else
                         (listOfNotNull(state.selectedAgent) + state.recentAgents).distinctBy { it.id }.take(4)
@@ -93,14 +88,17 @@ class MainActivity : ComponentActivity() {
         receiveShare(intent)
     }
 
-    private fun receiveShare(intent: Intent) {
-        val shared = incomingShare(this, intent)
-        if (shared != null) {
-            viewModel.offerShare(shared)
+    private fun receiveShare(incoming: Intent) {
+        if (incoming.action == Intent.ACTION_SEND || incoming.action == Intent.ACTION_SEND_MULTIPLE) {
+            val shared = incomingShare(this, incoming)
+            // The payload now belongs to the ViewModel. A retained ACTION_SEND would be replayed
+            // by onCreate after an onNewIntent delivery or an Activity recreation.
+            setIntent(Intent(Intent.ACTION_MAIN).setClass(this, MainActivity::class.java))
+            shared?.let(viewModel::offerShare)
             return
         }
-        if (intent.action == Intent.ACTION_VIEW) {
-            val shortcutId = intent.getStringExtra(AgentShareShortcuts.EXTRA_SHORTCUT_ID) ?: return
+        if (incoming.action == Intent.ACTION_VIEW) {
+            val shortcutId = incoming.getStringExtra(AgentShareShortcuts.EXTRA_SHORTCUT_ID) ?: return
             lifecycleScope.launch {
                 val ready = viewModel.state.first { it.phase == AppPhase.Ready && it.session != null }
                 AgentShareShortcuts.target(ready.session!!.scopeKey, ready.agents, shortcutId)?.let(viewModel::openAgent)

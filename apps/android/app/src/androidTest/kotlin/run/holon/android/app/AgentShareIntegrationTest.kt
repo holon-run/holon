@@ -4,6 +4,7 @@ import android.content.Intent
 import android.content.pm.ShortcutManager
 import android.net.Uri
 import androidx.core.content.FileProvider
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
@@ -50,6 +51,27 @@ class AgentShareIntegrationTest {
             0,
         )
         assertTrue(handlers.any { it.activityInfo.packageName == context.packageName })
+    }
+
+    @Test
+    fun consumesNewShareIntentBeforeActivityRecreation() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val launch = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_MAIN)
+        val scenario = ActivityScenario.launch<MainActivity>(launch)
+        try {
+            val share = Intent(context, MainActivity::class.java)
+                .setAction(Intent.ACTION_SEND)
+                .setType("text/plain")
+                .putExtra(Intent.EXTRA_TEXT, "share recreation probe")
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            scenario.onActivity { it.startActivity(share) }
+            instrumentation.waitForIdleSync()
+            scenario.onActivity { assertEquals(Intent.ACTION_MAIN, it.intent.action) }
+            scenario.recreate()
+            scenario.onActivity { assertEquals(Intent.ACTION_MAIN, it.intent.action) }
+        } finally {
+            scenario.close()
+        }
     }
 
     @Test
