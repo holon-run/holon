@@ -693,6 +693,15 @@ private fun SettingsScreen(state: HolonUiState, viewModel: HolonViewModel, onBac
                     TextButton(onClick = { shareDiagnostics(context, state) }) {
                         Text(ui("分享脱敏诊断信息"))
                     }
+                    val traceScope = state.session?.networkId?.let(TraceScope::Network) ?: TraceScope.Global
+                    val traceSummary = viewModel.traceRecorder.summary(traceScope)
+                    SettingsValue(
+                        ui("Trace"),
+                        "${traceSummary.eventCount} ${ui("条")} · ${traceSummary.bytes} B",
+                    )
+                    TextButton(onClick = { shareTrace(context, viewModel.traceRecorder, traceScope) }) {
+                        Text(ui("导出并分享 Trace"))
+                    }
                 }
             }
             item {
@@ -806,6 +815,18 @@ private fun shareDiagnostics(context: Context, state: HolonUiState) {
         putExtra(Intent.EXTRA_TEXT, details)
     }
     context.startActivity(Intent.createChooser(intent, ui("分享连接诊断")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+}
+
+private fun shareTrace(context: Context, recorder: TraceRecorder, scope: TraceScope) {
+    val file = recorder.export(scope)
+    val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
+    val intent =
+        Intent(Intent.ACTION_SEND).apply {
+            type = "application/x-ndjson"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    context.startActivity(Intent.createChooser(intent, ui("分享 Trace")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }
 
 @Composable
