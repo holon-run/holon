@@ -127,6 +127,7 @@ function isTextFile(mimeType?: string, name?: string): boolean {
     "application/json",
     "application/javascript",
     "application/typescript",
+    "application/xhtml+xml",
     "application/x-yaml",
     "application/toml",
     "application/x-sh",
@@ -134,7 +135,7 @@ function isTextFile(mimeType?: string, name?: string): boolean {
   if (textTypes.some((t) => mimeType.startsWith(t))) return true;
   if (name) {
     const ext = name.split(".").pop()?.toLowerCase();
-    return ["rs", "ts", "tsx", "js", "jsx", "json", "md", "toml", "yaml", "yml", "sh", "css", "html", "sql", "py"].includes(ext ?? "");
+    return ["rs", "ts", "tsx", "js", "jsx", "json", "md", "toml", "yaml", "yml", "sh", "css", "html", "htm", "xhtml", "sql", "py"].includes(ext ?? "");
   }
   return false;
 }
@@ -148,6 +149,12 @@ const AUDIO_EXTENSIONS = ["mp3", "wav", "ogg", "oga", "flac", "m4a", "aac", "opu
 
 function fileExtension(name: string): string {
   return name.split(".").pop()?.toLowerCase() ?? "";
+}
+
+export function isHtmlFile(mimeType?: string, name?: string): boolean {
+  const normalizedMimeType = mimeType?.split(";", 1)[0]?.trim().toLowerCase();
+  if (normalizedMimeType === "text/html" || normalizedMimeType === "application/xhtml+xml") return true;
+  return Boolean(name && ["html", "htm", "xhtml"].includes(fileExtension(name)));
 }
 
 export function isVideoFile(mimeType?: string, name?: string): boolean {
@@ -325,6 +332,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
   const fetchWorkspacePath = useRuntimeStore((s) => s.fetchWorkspacePath);
+  const fetchWorkspaceFileBlob = useRuntimeStore((s) => s.fetchWorkspaceFileBlob);
   const workspaceFileUrl = useRuntimeStore((s) => s.workspaceFileUrl);
 
   const effectiveInitialPath =
@@ -529,6 +537,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     if (filePath !== selectedFile?.path) rememberLocation();
     const request = ++requestGeneration.current;
     setViewMode("preview");
+    if (isHtmlFile(entry.mimeType, filePath)) setShowRendered(true);
 
     if (!isTextFile(entry.mimeType, entry.name)) {
       // URL-backed previews (image, video, audio, PDF) and other binary
@@ -597,6 +606,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
         setFilterText("");
         return;
       }
+      if (isHtmlFile(info.mimeType, filePath)) setShowRendered(true);
       const parent = filePath.split("/").slice(0, -1).join("/");
       const directory = await browseWorkspaceDir({ workspaceId, path: parent, executionRootId });
       if (request !== requestGeneration.current) return;
@@ -728,6 +738,51 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
     : undefined;
   const selectedFileTotalBytes =
     selectedFile?.totalSize ?? selectedFile?.size;
+  const htmlPreviewPath = selectedFile && !selectedFile.loading && !selectedFile.error
+    ? selectedFile.path
+    : undefined;
+  const htmlPreviewMimeType = selectedFile?.mimeType?.split(";", 1)[0]?.trim().toLowerCase() === "application/xhtml+xml"
+    ? "application/xhtml+xml"
+    : "text/html";
+  const htmlPreviewKey = htmlPreviewPath && isHtmlFile(selectedFile?.mimeType, htmlPreviewPath)
+    ? `${workspaceId}:${effectiveRootId ?? ""}:${htmlPreviewPath}`
+    : undefined;
+  const [htmlPreview, setHtmlPreview] = useState<{ key: string; url?: string; error?: string }>();
+  useEffect(() => {
+    if (!htmlPreviewKey || !htmlPreviewPath || !selectedFileUrl) {
+      setHtmlPreview(undefined);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | undefined;
+    const key = htmlPreviewKey;
+    if (isLargePreview(selectedFileTotalBytes)) {
+      setHtmlPreview({ key, error: t("fileBrowser.htmlPreviewTooLarge") });
+      return () => { cancelled = true; };
+    }
+    setHtmlPreview({ key });
+    void fetchWorkspaceFileBlob({
+      workspaceId,
+      path: htmlPreviewPath,
+      executionRootId: effectiveRootId,
+    }).then((blob) => {
+      if (cancelled) return;
+      const blobMimeType = blob.type.split(";", 1)[0]?.trim().toLowerCase();
+      const previewBlob = blobMimeType === htmlPreviewMimeType
+        ? blob
+        : new Blob([blob], { type: htmlPreviewMimeType });
+      objectUrl = URL.createObjectURL(previewBlob);
+      setHtmlPreview({ key, url: objectUrl });
+    }).catch(() => {
+      if (cancelled) return;
+      setHtmlPreview({ key, error: t("fileBrowser.htmlPreviewFailed") });
+    });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [effectiveRootId, fetchWorkspaceFileBlob, htmlPreviewKey, htmlPreviewMimeType, htmlPreviewPath, selectedFileTotalBytes, selectedFileUrl, t, workspaceId]);
+  const currentHtmlPreview = htmlPreview?.key === htmlPreviewKey ? htmlPreview : undefined;
   const previewVisible = Boolean(selectedFile) && (viewMode === "preview" || split);
   const largePreviewHint =
     selectedFileTotalBytes != null && isLargePreview(selectedFileTotalBytes)
@@ -771,7 +826,7 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
           <label className="file-browser-hidden-toggle"><input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /><small>{t("fileBrowser.hidden")}</small></label>
           {selectedFile ? <button type="button" onClick={() => setViewMode("preview")}>{t("fileBrowser.returnToFile")}</button> : null}
         </>}
-        {(viewMode === "preview" || split) && selectedFile && isMarkdownFile ? <div className="file-browser-md-toggle" role="group" aria-label={t("fileBrowser.markdownView")}>
+        {(viewMode === "preview" || split) && selectedFile && (isMarkdownFile || isHtmlFile(selectedFile.mimeType, selectedFile.path)) ? <div className="file-browser-md-toggle" role="group" aria-label={t("fileBrowser.documentView")}>
           <button type="button" className={showRendered ? "active" : ""} onClick={() => setShowRendered(true)}>{t("fileBrowser.rendered")}</button>
           <button type="button" className={!showRendered ? "active" : ""} onClick={() => setShowRendered(false)}>{t("fileBrowser.source")}</button>
         </div> : null}
@@ -933,6 +988,31 @@ function FileBrowserPanelView({ identity, workspaceId, executionRootId, initialP
               {largePreviewHint ? <p className="inspector-muted">{largePreviewHint}</p> : null}
               <iframe className="file-browser-pdf" src={selectedFileUrl} title={selectedFile.path} />
             </div>
+          ) : isHtmlFile(selectedFile.mimeType, selectedFile.path) && showRendered ? (
+            currentHtmlPreview?.url ? (
+              <iframe
+                className="file-browser-html"
+                src={currentHtmlPreview.url}
+                title={selectedFile.path}
+                sandbox=""
+                referrerPolicy="no-referrer"
+                onError={() => setHtmlPreview((current) => {
+                  if (!current || current.key !== htmlPreviewKey) return current;
+                  if (current.url) URL.revokeObjectURL(current.url);
+                  return { key: current.key, error: t("fileBrowser.htmlPreviewFailed") };
+                })}
+              />
+            ) : currentHtmlPreview?.error ? (
+              <div className="file-browser-preview-fallback" role="alert">
+                <p className="inspector-error">{currentHtmlPreview.error}</p>
+                <div>
+                  <button type="button" onClick={() => setShowRendered(false)}>{t("fileBrowser.source")}</button>
+                  <button type="button" onClick={() => void downloadSelectedFile()}>{t("fileBrowser.download")}</button>
+                </div>
+              </div>
+            ) : (
+              <p className="inspector-muted">{t("fileBrowser.loadingFile")}</p>
+            )
           ) : selectedFile.content != null ? (
             <>
               {selectedFile.truncated ? (

@@ -4,6 +4,7 @@ import {
   compareFileEntries,
   formatSize,
   isAudioFile,
+  isHtmlFile,
   isLargePreview,
   isPdfFile,
   isVideoFile,
@@ -17,6 +18,15 @@ function entry(partial: Partial<WorkspaceFileEntry> & { name: string }): Workspa
 }
 
 describe("media type detection", () => {
+  it("detects HTML by MIME type and extension", () => {
+    expect(isHtmlFile("text/html")).toBe(true);
+    expect(isHtmlFile("text/html; charset=utf-8")).toBe(true);
+    expect(isHtmlFile("application/xhtml+xml")).toBe(true);
+    expect(isHtmlFile(undefined, "report.HTML")).toBe(true);
+    expect(isHtmlFile(undefined, "report.htm")).toBe(true);
+    expect(isHtmlFile("text/plain", "report.txt")).toBe(false);
+  });
+
   it("detects video by mime type and extension", () => {
     expect(isVideoFile("video/mp4")).toBe(true);
     expect(isVideoFile(undefined, "clip.webm")).toBe(true);

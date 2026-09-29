@@ -1034,6 +1034,9 @@ const en = {
     lineCount: "{{count}} lines",
     imageDimensions: "{{width}}×{{height}} px",
     largeFileHint: "Large file ({{size}}). Consider downloading it to view locally.",
+    documentView: "Document view mode",
+    htmlPreviewFailed: "HTML preview is unavailable. Switch to Source or download the file.",
+    htmlPreviewTooLarge: "HTML preview is disabled for files larger than 1 GB. Use Source or download the file.",
   },
   inspector: {
     source: "Source",

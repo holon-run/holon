@@ -1035,6 +1035,9 @@ const zh: Record<string, any> = {
     lineCount: "{{count}} 行",
     imageDimensions: "{{width}}×{{height}} 像素",
     largeFileHint: "大文件（{{size}}），建议下载后本地查看。",
+    documentView: "文档查看模式",
+    htmlPreviewFailed: "HTML 预览不可用。请切换到源码或下载文件。",
+    htmlPreviewTooLarge: "超过 1 GB 的文件不提供 HTML 预览。请使用源码视图或下载文件。",
   },
   inspector: {
     source: "来源",
