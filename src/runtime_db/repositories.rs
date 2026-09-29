@@ -2448,7 +2448,7 @@ impl WaitConditionRepository<'_> {
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
-             WHERE status = 'active'
+             WHERE status IN ('active', 'triggered')
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
         )?;
         let rows = statement.query_map([], |row| {
@@ -2456,6 +2456,35 @@ impl WaitConditionRepository<'_> {
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+    }
+
+    pub fn cancel_unresolved_for_agent(
+        &self,
+        agent_id: &str,
+        cancelled_at: chrono::DateTime<Utc>,
+    ) -> Result<usize> {
+        self.db.transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT payload_json
+                 FROM wait_conditions
+                 WHERE agent_id = ?1 AND status IN ('active', 'triggered')",
+            )?;
+            let records = statement
+                .query_map([agent_id], |row| row.get::<_, String>(0))?
+                .map(|row| decode_wait_condition_payload(&row?))
+                .collect::<Result<Vec<_>>>()?;
+            drop(statement);
+
+            let mut count = 0;
+            for mut record in records {
+                record.status = WaitConditionStatus::Cancelled;
+                record.updated_at = cancelled_at;
+                record.cancelled_at = Some(cancelled_at);
+                upsert_wait_condition_tx(tx, &record)?;
+                count += 1;
+            }
+            Ok(count)
+        })
     }
 }
 
@@ -2635,6 +2664,68 @@ impl QueueEntryRepository<'_> {
 }
 
 impl TimerRepository<'_> {
+    pub fn cancel_active_for_agent(
+        &self,
+        agent_id: &str,
+        cancelled_at: chrono::DateTime<Utc>,
+    ) -> Result<usize> {
+        self.db.transaction(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT payload_json
+                 FROM timers
+                 WHERE agent_id = ?1 AND status = 'active'",
+            )?;
+            let records = statement
+                .query_map([agent_id], |row| row.get::<_, String>(0))?
+                .map(|row| decode_timer_payload(&row?))
+                .collect::<Result<Vec<_>>>()?;
+            drop(statement);
+
+            let mut count = 0;
+            for mut record in records {
+                record.status = TimerStatus::Cancelled;
+                upsert_timer_tx(tx, &record)?;
+
+                let message_ids = {
+                    let mut wake_statement = tx.prepare(
+                        "SELECT message_id
+                         FROM timer_wakes
+                         WHERE timer_id = ?1 AND status = 'pending'",
+                    )?;
+                    let message_ids = wake_statement
+                        .query_map([&record.id], |row| row.get::<_, String>(0))?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    message_ids
+                };
+                tx.execute(
+                    "UPDATE timer_wakes
+                     SET status = 'cancelled', updated_at = ?2, cancelled_at = ?2
+                     WHERE timer_id = ?1 AND status = 'pending'",
+                    params![record.id, timestamp(cancelled_at)],
+                )?;
+                for message_id in message_ids {
+                    let payload = tx
+                        .query_row(
+                            "SELECT payload_json
+                             FROM queue_entries
+                             WHERE message_id = ?1 AND status IN ('queued', 'interrupted')",
+                            [&message_id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?;
+                    if let Some(payload) = payload {
+                        let mut entry = decode_queue_entry_payload(&payload)?;
+                        entry.status = QueueEntryStatus::Dropped;
+                        entry.updated_at = cancelled_at;
+                        upsert_queue_entry_tx(tx, &entry)?;
+                    }
+                }
+                count += 1;
+            }
+            Ok(count)
+        })
+    }
+
     pub fn pending_wake(&self, timer_id: &str) -> Result<Option<TimerWakeRecord>> {
         let connection = self.db.connection()?;
         let row = connection

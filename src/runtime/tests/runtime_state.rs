@@ -12423,6 +12423,103 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
     }));
 }
 
+#[tokio::test]
+async fn control_stop_cancels_waits_and_discards_pending_input() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+
+    for (id, status, triggered_at) in [
+        ("wait-stop-active", WaitConditionStatus::Active, None),
+        (
+            "wait-stop-triggered",
+            WaitConditionStatus::Triggered,
+            Some(now),
+        ),
+    ] {
+        runtime
+            .inner
+            .runtime_db
+            .wait_conditions()
+            .upsert(&WaitConditionRecord {
+                id: id.into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                status,
+                kind: WaitConditionKind::Operator,
+                source: Some("test".into()),
+                subject_ref: None,
+                waiting_for: "operator input".into(),
+                wake_sources: Vec::new(),
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+                trigger_message_id: triggered_at.map(|_| "trigger-message".into()),
+                triggered_at,
+            })
+            .unwrap();
+    }
+
+    for (message_id, status) in [
+        ("message-stop-queued", QueueEntryStatus::Queued),
+        ("message-stop-interrupted", QueueEntryStatus::Interrupted),
+    ] {
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: message_id.into(),
+                agent_id: "default".into(),
+                priority: Priority::Normal,
+                status,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+    }
+
+    runtime.control(ControlAction::Stop).await.unwrap();
+
+    let waits = runtime
+        .inner
+        .runtime_db
+        .wait_conditions()
+        .latest_all()
+        .unwrap();
+    assert!(waits
+        .iter()
+        .filter(|wait| wait.id.starts_with("wait-stop-"))
+        .all(|wait| wait.status == WaitConditionStatus::Cancelled));
+    let queue_entries = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest_all()
+        .unwrap();
+    assert!(queue_entries
+        .iter()
+        .filter(|entry| entry.message_id.starts_with("message-stop-"))
+        .all(|entry| entry.status == QueueEntryStatus::Aborted));
+}
+
 #[tokio::test(start_paused = true)]
 async fn sleep_wake_task_ignores_stale_sleeping_until() {
     let dir = tempdir().unwrap();
