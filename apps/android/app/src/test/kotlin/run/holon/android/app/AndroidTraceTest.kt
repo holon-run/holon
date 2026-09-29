@@ -47,4 +47,68 @@ class AndroidTraceTest {
         assertEquals(2, summary.eventCount)
         assertTrue(recorder.export(scope).readText().contains("holon.android.trace.v1"))
     }
+
+    @Test
+    fun `path redaction masks opaque segments but keeps endpoint segments`() {
+        assertEquals(
+            "/api/agents/list",
+            TraceRedactor.path("http://10.0.2.2:7878/api/agents/list?token=secret"),
+        )
+        assertEquals(
+            "/api/agents/:id/events/stream",
+            TraceRedactor.path("http://10.0.2.2:7878/api/agents/holon-android/events/stream"),
+        )
+        assertEquals(
+            "/api/agents/:id/events/stream",
+            TraceRedactor.path("http://10.0.2.2:7878/api/agents/main/events/stream"),
+        )
+        assertEquals(
+            "/api/agents/:id/conversation/stream",
+            TraceRedactor.path("http://10.0.2.2:7878/api/agents/uxc-dev/conversation/stream"),
+        )
+        assertEquals(
+            "/api/agents/:id/turns/:id/activities",
+            TraceRedactor.path("http://10.0.2.2:7878/api/agents/main/turns/turn-9/activities"),
+        )
+        assertEquals(
+            "/api/agents/:id/events/stream",
+            TraceRedactor.path("http://10.0.2.2:7878/api/agents/deadbeef12345678/events/stream"),
+        )
+        assertEquals(
+            "/api/agents/:id/events/stream",
+            TraceRedactor.path("http://10.0.2.2:7878/api/agents/%E9%82%AE%E7%AE%B1%E5%8A%A9%E7%90%86/events/stream"),
+        )
+        assertEquals(
+            "/api/auth/session/exchange/native",
+            TraceRedactor.path("http://10.0.2.2:7878/api/auth/session/exchange/native"),
+        )
+    }
+
+    @Test
+    fun `http and sse call events are recorded with request ids and redacted paths`() {
+        val dir = Files.createTempDirectory("holon-trace-http-test").toFile()
+        val recorder = TraceRecorder(dir)
+        val scope = TraceScope.Network("profile")
+
+        val call = TraceHttp.started(recorder, scope, "GET", "http://host/api/agents/list")
+        TraceHttp.completed(recorder, scope, call, 200)
+
+        val sse = TraceHttp.started(recorder, scope, "GET", "http://host/api/agents/holon-android/events/stream")
+        TraceHttp.failed(recorder, scope, sse, "SocketTimeoutException")
+
+        TraceHttp.sseReconnectScheduled(recorder, scope, "agents/holon-android/events/stream", 2, 500)
+
+        val content = java.io.File(dir, "${scope.storageKey}.jsonl").readText()
+        assertTrue(content.contains("\"name\":\"http.request.started\""))
+        assertTrue(content.contains("\"name\":\"http.request.completed\""))
+        assertTrue(content.contains("\"statusCode\":\"200\""))
+        assertTrue(content.contains("\"name\":\"sse.connect.started\""))
+        assertTrue(content.contains("\"name\":\"sse.stream.failed\""))
+        assertTrue(content.contains("\"errorType\":\"SocketTimeoutException\""))
+        assertTrue(content.contains("\"name\":\"sse.reconnect.scheduled\""))
+        assertTrue(content.contains("\"backoffMs\":\"500\""))
+        assertTrue(content.contains("\"requestId\":\"${call.requestId.take(12)}\""))
+        assertFalse(content.contains("holon-android"))
+        assertFalse(content.contains("host"))
+    }
 }

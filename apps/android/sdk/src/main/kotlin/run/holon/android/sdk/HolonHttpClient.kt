@@ -19,6 +19,7 @@ import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -31,6 +32,11 @@ import run.holon.client.wire.generated.models.SessionExchangeRequest
 
 @Serializable
 private data class PairingTicketRequest(val ticket: String)
+
+/** Observes SSE reconnect attempts scheduled by the SDK retry loop. */
+public fun interface SseRetryObserver {
+    public fun onRetryScheduled(path: String, attempt: Int, delayMillis: Long)
+}
 
 public fun interface BearerTokenProvider {
     public fun token(): String?
@@ -71,18 +77,29 @@ public class HolonHttpClient internal constructor(
     private val httpClient: OkHttpClient,
     private val sessionCredentialStore: SessionCredentialStore?,
     insecureHttpHosts: Set<String>,
+    private val sseRetryObserver: SseRetryObserver? = null,
 ) {
     public constructor(
         baseUrl: String,
         bearerTokenProvider: BearerTokenProvider = BearerTokenProvider { null },
         sessionCredentialStore: SessionCredentialStore? = null,
         insecureHttpHosts: Set<String> = emptySet(),
+        eventListenerFactory: EventListener.Factory? = null,
+        sseRetryObserver: SseRetryObserver? = null,
     ) : this(
         baseUrl = baseUrl,
         bearerTokenProvider = bearerTokenProvider,
-        httpClient = defaultHttpClient(),
+        httpClient =
+            defaultHttpClient().let { client ->
+                if (eventListenerFactory == null) {
+                    client
+                } else {
+                    client.newBuilder().eventListenerFactory(eventListenerFactory).build()
+                }
+            },
         sessionCredentialStore = sessionCredentialStore,
         insecureHttpHosts = insecureHttpHosts,
+        sseRetryObserver = sseRetryObserver,
     )
 
     private val baseUrl: HttpUrl = normalizeBaseUrl(baseUrl, insecureHttpHosts)
@@ -1050,6 +1067,11 @@ public class HolonHttpClient internal constructor(
                 val delayMillis =
                     (policy.initialDelayMillis shl attempts.coerceAtMost(20))
                         .coerceAtMost(policy.maxDelayMillis)
+                sseRetryObserver?.onRetryScheduled(
+                    path = path,
+                    attempt = attempts + 1,
+                    delayMillis = delayMillis,
+                )
                 if (delayMillis > 0) {
                     try {
                         Thread.sleep(delayMillis)

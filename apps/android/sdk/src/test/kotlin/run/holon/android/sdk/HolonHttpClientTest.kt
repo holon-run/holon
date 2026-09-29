@@ -729,6 +729,49 @@ class HolonHttpClientTest {
     }
 
     @Test
+    fun `event listener factory and sse retry observer are notified`() {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_UNAVAILABLE))
+            server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_UNAVAILABLE))
+            val startedCalls = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val retries = java.util.concurrent.CopyOnWriteArrayList<Triple<String, Int, Long>>()
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    eventListenerFactory =
+                        okhttp3.EventListener.Factory {
+                            object : okhttp3.EventListener() {
+                                override fun callStart(call: okhttp3.Call) {
+                                    startedCalls.add(call.request().url.encodedPath)
+                                }
+                            }
+                        },
+                    sseRetryObserver =
+                        SseRetryObserver { path, attempt, delay ->
+                            retries.add(Triple(path, attempt, delay))
+                        },
+                )
+
+            assertFailsWith<HolonHttpException> {
+                client
+                    .reconnectingConversationStream(
+                        agentId = "main",
+                        policy =
+                            SseReconnectPolicy(
+                                maxAttempts = 1,
+                                initialDelayMillis = 0,
+                                maxDelayMillis = 0,
+                            ),
+                    ).toList()
+            }
+
+            assertEquals(2, startedCalls.size)
+            assertTrue(retries.isNotEmpty())
+            assertTrue(retries.all { it.first == "agents/main/conversation/stream" && it.second >= 1 })
+        }
+    }
+
+    @Test
     fun `reconnecting conversation stream reports transient error after retries are exhausted`() {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setResponseCode(HttpURLConnection.HTTP_UNAVAILABLE))

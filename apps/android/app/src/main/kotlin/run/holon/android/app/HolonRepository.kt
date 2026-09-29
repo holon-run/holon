@@ -194,6 +194,8 @@ internal class HolonRepository(
                 bearerTokenProvider = BearerTokenProvider { transientToken },
                 sessionCredentialStore = scopedStore,
                 insecureHttpHosts = insecureHttpHosts(baseUrl),
+                eventListenerFactory = traceEventListenerFactory(traceRecorder, traceScope),
+                sseRetryObserver = traceSseRetryObserver(traceRecorder, traceScope),
             )
         return try {
             if (pairingTicket == null) {
@@ -962,6 +964,8 @@ internal class HolonRepository(
             baseUrl = baseUrl,
             sessionCredentialStore = credentialStore(networkId),
             insecureHttpHosts = insecureHttpHosts(baseUrl),
+            eventListenerFactory = traceEventListenerFactory(traceRecorder, TraceScope.Network(networkId)),
+            sseRetryObserver = traceSseRetryObserver(traceRecorder, TraceScope.Network(networkId)),
         )
 
     private fun credentialStore(networkId: String): SessionCredentialStore {

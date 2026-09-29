@@ -1,10 +1,15 @@
 package run.holon.android.app
 
 import android.content.Context
+import java.io.IOException
 import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
+import okhttp3.Call
+import okhttp3.EventListener
+import okhttp3.Response
+import run.holon.android.sdk.SseRetryObserver
 
 internal enum class TraceLevel { DEBUG, INFO, WARN, ERROR }
 
@@ -184,6 +189,9 @@ internal object TraceRedactor {
     private val sensitiveKey =
         Regex("(?i)(token|authorization|cookie|password|secret|credential|body|content|payload|prompt|attachment)")
 
+    private val idParentSegments = setOf("agents", "turns", "tasks")
+    private val literalResourceSegments = setOf("list", "snapshot")
+
     fun attributes(input: Map<String, String>): Map<String, String> =
         input
             .filterKeys { !sensitiveKey.containsMatchIn(it) }
@@ -191,10 +199,149 @@ internal object TraceRedactor {
 
     fun path(value: String): String =
         runCatching {
-            val uri = java.net.URI(value)
-            uri.path.orEmpty().ifBlank { "/" }.replace(Regex("/[0-9a-fA-F-]{8,}"), "/:id")
+            val raw = java.net.URI(value).path.orEmpty().ifBlank { "/" }
+            val segments = raw.split('/')
+            segments.mapIndexed { index, segment ->
+                val previous = segments.getOrNull(index - 1).orEmpty()
+                when {
+                    segment.isEmpty() -> segment
+                    previous in idParentSegments && segment !in literalResourceSegments -> ":id"
+                    isOpaqueSegment(segment) -> ":id"
+                    else -> segment
+                }
+            }
+                .joinToString("/")
         }.getOrElse { "/" }
+
+    private fun isOpaqueSegment(segment: String): Boolean =
+        segment.isNotEmpty() &&
+            (
+                segment.any { it.code > 127 } ||
+                    segment.length >= 16 ||
+                    (segment.length >= 8 && segment.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) ||
+                    (segment.length >= 8 && segment.any { it == '-' || it == '_' || it == '%' }) ||
+                    (segment.length >= 4 && segment.all { it in '0'..'9' })
+            )
 }
+
+internal class TraceCallMeta(
+    val path: String,
+    val sse: Boolean,
+    val requestId: String,
+    val startedAt: Long,
+)
+
+internal object TraceHttp {
+    fun started(
+        recorder: TraceRecorder,
+        scope: TraceScope,
+        method: String,
+        url: String,
+    ): TraceCallMeta {
+        val path = TraceRedactor.path(url)
+        val sse = path.endsWith("/events/stream")
+        val meta = TraceCallMeta(path, sse, UUID.randomUUID().toString(), System.currentTimeMillis())
+        recorder.record(
+            scope,
+            TraceLevel.INFO,
+            if (sse) "sse" else "http",
+            if (sse) "sse.connect.started" else "http.request.started",
+            requestId = meta.requestId,
+            attributes = mapOf("method" to method, "path" to path),
+        )
+        return meta
+    }
+
+    fun completed(
+        recorder: TraceRecorder,
+        scope: TraceScope,
+        meta: TraceCallMeta,
+        statusCode: Int?,
+    ) {
+        recorder.record(
+            scope,
+            TraceLevel.INFO,
+            if (meta.sse) "sse" else "http",
+            if (meta.sse) "sse.stream.ended" else "http.request.completed",
+            requestId = meta.requestId,
+            durationMs = System.currentTimeMillis() - meta.startedAt,
+            statusCode = statusCode,
+        )
+    }
+
+    fun failed(
+        recorder: TraceRecorder,
+        scope: TraceScope,
+        meta: TraceCallMeta,
+        errorType: String,
+    ) {
+        recorder.record(
+            scope,
+            TraceLevel.ERROR,
+            if (meta.sse) "sse" else "http",
+            if (meta.sse) "sse.stream.failed" else "http.request.failed",
+            requestId = meta.requestId,
+            durationMs = System.currentTimeMillis() - meta.startedAt,
+            attributes = mapOf("errorType" to errorType.ifBlank { "Unknown" }),
+        )
+    }
+
+    fun sseReconnectScheduled(
+        recorder: TraceRecorder,
+        scope: TraceScope,
+        path: String,
+        attempt: Int,
+        backoffMs: Long,
+    ) {
+        recorder.record(
+            scope,
+            TraceLevel.WARN,
+            "sse",
+            "sse.reconnect.scheduled",
+            attributes = mapOf(
+                "path" to TraceRedactor.path("https://trace.local/$path"),
+                "attempt" to attempt.toString(),
+                "backoffMs" to backoffMs.toString(),
+            ),
+        )
+    }
+}
+
+internal class TraceHttpEventListener(
+    private val recorder: TraceRecorder,
+    private val scope: TraceScope,
+) : EventListener() {
+    private var meta: TraceCallMeta? = null
+    private var statusCode: Int? = null
+
+    override fun callStart(call: Call) {
+        val request = call.request()
+        statusCode = null
+        meta = TraceHttp.started(recorder, scope, request.method, request.url.toString())
+    }
+
+    override fun responseHeadersEnd(call: Call, response: Response) {
+        statusCode = response.code
+    }
+
+    override fun callEnd(call: Call) {
+        meta?.let { TraceHttp.completed(recorder, scope, it, statusCode) }
+        meta = null
+    }
+
+    override fun callFailed(call: Call, e: IOException) {
+        meta?.let { TraceHttp.failed(recorder, scope, it, e::class.simpleName.orEmpty()) }
+        meta = null
+    }
+}
+
+internal fun traceEventListenerFactory(recorder: TraceRecorder, scope: TraceScope): EventListener.Factory =
+    EventListener.Factory { TraceHttpEventListener(recorder, scope) }
+
+internal fun traceSseRetryObserver(recorder: TraceRecorder, scope: TraceScope): SseRetryObserver =
+    SseRetryObserver { path, attempt, delayMillis ->
+        TraceHttp.sseReconnectScheduled(recorder, scope, path, attempt, delayMillis)
+    }
 
 private fun jsonString(value: String): String =
     buildString {

@@ -118,8 +118,11 @@ internal object UiCopy {
         分享结果|Share result
         分享脱敏诊断信息|Share redacted diagnostics
         分享连接诊断|Share connection diagnostics
+        分享 Trace|Share trace
         刚刚|Just now
         刷新|Refresh
+        导出并分享 Trace|Export and share trace
+        条|events
         加载更多工作记录|Load more work items
         加载更早记录|Load earlier history
         加载更早过程|Load earlier activity
