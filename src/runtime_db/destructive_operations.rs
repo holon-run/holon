@@ -3,6 +3,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension};
+use sha2::{Digest, Sha256};
 
 use crate::runtime_db::RuntimeDb;
 use crate::types::TurnRecord;
@@ -41,11 +42,16 @@ pub struct DestructiveOperationRecord {
     pub operation_id: String,
     pub owner_turn_id: String,
     pub owner_work_item_id: Option<String>,
+    pub command_digest: String,
     pub phase: DestructiveOperationPhase,
     pub verification_target: String,
     pub recovery_policy: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+pub fn command_digest(command: &str) -> String {
+    format!("{:x}", Sha256::digest(command.as_bytes()))
 }
 
 /// Outcome of fencing a destructive operation.
@@ -77,7 +83,8 @@ impl DestructiveOperationRepository<'_> {
             let existing = tx
                 .query_row(
                     "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                            verification_target, recovery_policy, created_at, updated_at
+                            verification_target, recovery_policy, command_digest,
+                            created_at, updated_at
                      FROM destructive_operations WHERE operation_id = ?1",
                     [&record.operation_id],
                     decode_operation,
@@ -85,6 +92,8 @@ impl DestructiveOperationRepository<'_> {
                 .optional()?;
             if let Some(existing) = existing {
                 if existing.owner_turn_id != record.owner_turn_id
+                    || existing.owner_work_item_id != record.owner_work_item_id
+                    || existing.command_digest != record.command_digest
                     || existing.verification_target != record.verification_target
                 {
                     return Err(anyhow!(
@@ -118,7 +127,8 @@ impl DestructiveOperationRepository<'_> {
                 let active = tx
                     .query_row(
                         "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                                verification_target, recovery_policy, created_at, updated_at
+                                verification_target, recovery_policy, command_digest,
+                                created_at, updated_at
                          FROM destructive_operations
                          WHERE owner_work_item_id = ?1 AND phase != 'verified'
                          ORDER BY updated_at DESC
@@ -161,20 +171,22 @@ impl DestructiveOperationRepository<'_> {
             tx.execute(
                 "INSERT INTO destructive_operations
                  (operation_id, owner_turn_id, owner_work_item_id, phase,
-                  verification_target, recovery_policy, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, 'scheduled', ?4, ?5, ?6, ?6)",
+                  verification_target, recovery_policy, command_digest, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, 'scheduled', ?4, ?5, ?6, ?7, ?7)",
                 params![
                     record.operation_id,
                     record.owner_turn_id,
                     record.owner_work_item_id,
                     record.verification_target,
                     record.recovery_policy,
+                    record.command_digest,
                     record.created_at.to_rfc3339(),
                 ],
             )?;
             let scheduled = tx.query_row(
                 "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                        verification_target, recovery_policy, created_at, updated_at
+                         verification_target, recovery_policy, command_digest,
+                         created_at, updated_at
                  FROM destructive_operations WHERE operation_id = ?1",
                 [&record.operation_id],
                 decode_operation,
@@ -195,8 +207,8 @@ impl DestructiveOperationRepository<'_> {
             tx.execute(
                 "INSERT OR IGNORE INTO destructive_operations
                  (operation_id, owner_turn_id, owner_work_item_id, phase,
-                  verification_target, recovery_policy, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                  verification_target, recovery_policy, command_digest, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
                 params![
                     record.operation_id,
                     record.owner_turn_id,
@@ -204,12 +216,14 @@ impl DestructiveOperationRepository<'_> {
                     record.phase.as_str(),
                     record.verification_target,
                     record.recovery_policy,
+                    record.command_digest,
                     record.created_at.to_rfc3339(),
                 ],
             )?;
             tx.query_row(
                 "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                        verification_target, recovery_policy, created_at, updated_at
+                         verification_target, recovery_policy, command_digest,
+                         created_at, updated_at
                  FROM destructive_operations WHERE operation_id = ?1",
                 [&record.operation_id],
                 decode_operation,
@@ -223,7 +237,8 @@ impl DestructiveOperationRepository<'_> {
         connection
             .query_row(
                 "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
-                        verification_target, recovery_policy, created_at, updated_at
+                        verification_target, recovery_policy, command_digest,
+                        created_at, updated_at
                  FROM destructive_operations WHERE operation_id = ?1",
                 [operation_id],
                 decode_operation,
@@ -253,14 +268,30 @@ impl DestructiveOperationRepository<'_> {
             )? == 1)
         })
     }
+
+    pub fn pending_verification(&self) -> Result<Vec<DestructiveOperationRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT operation_id, owner_turn_id, owner_work_item_id, phase,
+                    verification_target, recovery_policy, command_digest,
+                    created_at, updated_at
+             FROM destructive_operations
+             WHERE phase = 'daemon_interrupted' AND recovery_policy = 'verify_only'
+             ORDER BY updated_at, operation_id",
+        )?;
+        let operations = statement
+            .query_map([], decode_operation)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(operations)
+    }
 }
 
 fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<DestructiveOperationRecord> {
-    let created_at = row.get::<_, String>(6)?.parse().map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error))
-    })?;
-    let updated_at = row.get::<_, String>(7)?.parse().map_err(|error| {
+    let created_at = row.get::<_, String>(7)?.parse().map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let updated_at = row.get::<_, String>(8)?.parse().map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(8, rusqlite::types::Type::Text, Box::new(error))
     })?;
     let phase = DestructiveOperationPhase::parse(&row.get::<_, String>(3)?).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -276,6 +307,7 @@ fn decode_operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<DestructiveOper
         operation_id: row.get(0)?,
         owner_turn_id: row.get(1)?,
         owner_work_item_id: row.get(2)?,
+        command_digest: row.get(6)?,
         phase,
         verification_target: row.get(4)?,
         recovery_policy: row.get(5)?,
@@ -314,6 +346,7 @@ mod tests {
             operation_id: operation_id.into(),
             owner_turn_id: owner_turn_id.into(),
             owner_work_item_id: work_item_id.map(str::to_string),
+            command_digest: command_digest("systemctl --user restart holon.service"),
             phase: DestructiveOperationPhase::Planned,
             verification_target: "holon.service active".into(),
             recovery_policy: "verify_only".into(),

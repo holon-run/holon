@@ -5,7 +5,10 @@ use serde_json::{json, Value};
 
 use crate::{
     runtime::RuntimeHandle,
-    runtime_db::{DestructiveOperationPhase, DestructiveOperationRecord},
+    runtime_db::{
+        destructive_operations::command_digest, DestructiveOperationPhase,
+        DestructiveOperationRecord,
+    },
     tool::{
         spec::{typed_spec, ToolExecutionContext},
         ToolResult,
@@ -57,11 +60,16 @@ pub(crate) async fn execute(
         .turn_id
         .as_deref()
         .ok_or_else(|| anyhow!("destructive lifecycle operation requires a durable turn"))?;
+    ensure!(
+        context.effective_work_item_id.is_some(),
+        "destructive lifecycle operation requires an owner WorkItem"
+    );
 
     let record = DestructiveOperationRecord {
         operation_id: args.operation_id.clone(),
         owner_turn_id: turn_id.to_string(),
         owner_work_item_id: context.effective_work_item_id.clone(),
+        command_digest: command_digest(&args.command),
         phase: DestructiveOperationPhase::Planned,
         verification_target: args.verification_target.clone(),
         recovery_policy: "verify_only".into(),
@@ -129,10 +137,14 @@ pub(crate) async fn execute(
         }
     );
     if !launched {
-        let _ = runtime.runtime_db().destructive_operations().transition(
+        ensure!(
+            runtime.runtime_db().destructive_operations().transition(
             &operation.operation_id,
             DestructiveOperationPhase::Scheduled,
             DestructiveOperationPhase::Planned,
+            )?,
+            "destructive operation {} dispatch failed but its scheduled marker could not be rolled back",
+            operation.operation_id
         );
     }
     serialize_success(

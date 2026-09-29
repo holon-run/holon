@@ -424,6 +424,12 @@ impl RuntimeDb {
         self.transaction(|tx| {
             let recovered_at = Utc::now();
             let queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
+            tx.execute(
+                "UPDATE destructive_operations
+                 SET phase = 'daemon_interrupted', updated_at = ?1
+                 WHERE phase = 'scheduled' AND recovery_policy = 'verify_only'",
+                [recovered_at.to_rfc3339()],
+            )?;
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
 
             let mut active_turns = {
