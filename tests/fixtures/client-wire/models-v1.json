@@ -1,0 +1,43 @@
+{
+  "available_models": [
+    {
+      "model_ref": "openai/gpt-5.6",
+      "display_name": "GPT 5.6",
+      "description": "Primary model",
+      "capabilities": {
+        "agent_turn": true,
+        "supports_reasoning": true
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high"
+      ],
+      "source": "built_in"
+    }
+  ],
+  "model_availability": [
+    {
+      "model": "openai/gpt-5.6",
+      "provider": "openai",
+      "provider_family": "openai",
+      "endpoint": "default",
+      "route_provider": "openai",
+      "display_name": "GPT 5.6",
+      "metadata_source": "built_in",
+      "provider_configured": true,
+      "credential_configured": true,
+      "available": true,
+      "policy": {
+        "capabilities": {
+          "agent_turn": true,
+          "supports_reasoning": true
+        },
+        "reasoning_effort_options": [
+          "low",
+          "high"
+        ]
+      }
+    }
+  ],
+  "model_discovery_cache": []
+}

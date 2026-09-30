@@ -2,6 +2,8 @@ package run.holon.android.sdk
 
 import java.net.HttpURLConnection
 import java.util.concurrent.TimeUnit
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -15,6 +17,67 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
+    @Test
+    fun `model catalog parses available model metadata and availability`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse(fixture("models-v1.json")))
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val catalog = client.modelCatalog()
+
+            assertEquals(
+                HolonModelOption(
+                    model = "openai/gpt-5.6",
+                    displayName = "GPT 5.6",
+                    provider = "openai",
+                    available = true,
+                    supportsReasoningEffort = true,
+                    reasoningEffortOptions = listOf("low", "high"),
+                ),
+                catalog.options.single(),
+            )
+            assertEquals("/models", server.takeRequest().path)
+        }
+    }
+
+    @Test
+    fun `agent model endpoints send operator authority and decode state`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """{"runtime_default_model":"openai/gpt-5.6","source":"agent_override","effective_model":"anthropic/claude","active_model":"anthropic/claude","override_reasoning_effort":"high"}""",
+                ),
+            )
+            server.enqueue(
+                jsonResponse(
+                    """{"runtime_default_model":"openai/gpt-5.6","source":"runtime_default","effective_model":"openai/gpt-5.6","active_model":"openai/gpt-5.6"}""",
+                ),
+            )
+            val client = HolonHttpClient(server.url("/").toString())
+
+            val overridden = client.setAgentModel("agent-a", "anthropic/claude", "high")
+            val cleared = client.clearAgentModel("agent-a")
+
+            assertEquals("agent_override", overridden.source)
+            assertEquals("anthropic/claude", overridden.effectiveModel)
+            assertEquals("high", overridden.overrideReasoningEffort)
+            assertEquals("runtime_default", cleared.source)
+            assertEquals("openai/gpt-5.6", cleared.effectiveModel)
+
+            val setRequest = server.takeRequest()
+            assertEquals("/control/agents/agent-a/model", setRequest.path)
+            val setBody = HolonWire.json.parseToJsonElement(setRequest.body.readUtf8()).jsonObject
+            assertEquals("anthropic/claude", setBody["model"]?.jsonPrimitive?.content)
+            assertEquals("high", setBody["reasoning_effort"]?.jsonPrimitive?.content)
+            assertEquals("operator_instruction", setBody["authority_class"]?.jsonPrimitive?.content)
+
+            val clearRequest = server.takeRequest()
+            assertEquals("/control/agents/agent-a/model/clear", clearRequest.path)
+            val clearBody = HolonWire.json.parseToJsonElement(clearRequest.body.readUtf8()).jsonObject
+            assertEquals("operator_instruction", clearBody["authority_class"]?.jsonPrimitive?.content)
+        }
+    }
+
     @Test
     fun `brief read state endpoints use server cursor and exact unread count`() {
         MockWebServer().use { server ->

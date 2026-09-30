@@ -9,6 +9,8 @@ import java.io.IOException
 import java.net.URI
 import java.time.Instant
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
@@ -29,6 +31,8 @@ import run.holon.android.sdk.HolonConversationSnapshot
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonCurrentUser
 import run.holon.android.sdk.HolonAgentEvent
+import run.holon.android.sdk.HolonAgentModelState
+import run.holon.android.sdk.HolonModelCatalog
 import run.holon.android.sdk.HolonDownloadedFile
 import run.holon.android.sdk.HolonFileReference
 import run.holon.android.sdk.HolonFileReferenceResult
@@ -340,6 +344,21 @@ internal class HolonRepository(
         cacheRoster(requireSession().scopeKey, roster)
         return requireSession() to roster
     }
+
+    suspend fun modelCatalog(refresh: Boolean = false): HolonModelCatalog =
+        withContext(Dispatchers.IO) {
+            requireClient().modelCatalog(refresh)
+        }
+
+    suspend fun setAgentModel(agentId: String, model: String, reasoningEffort: String?): HolonAgentModelState =
+        withContext(Dispatchers.IO) {
+            requireClient().setAgentModel(agentId, model, reasoningEffort)
+        }
+
+    suspend fun clearAgentModel(agentId: String): HolonAgentModelState =
+        withContext(Dispatchers.IO) {
+            requireClient().clearAgentModel(agentId)
+        }
 
     suspend fun cachedRoster(): List<AgentProjectionEntity> =
         requireSession().let { dao.conversations(it.scopeKey) }

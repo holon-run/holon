@@ -27,6 +27,28 @@ public data class HolonRosterSnapshot(
     public val agents: List<AgentSummary>,
 )
 
+public data class HolonModelOption(
+    public val model: String,
+    public val displayName: String,
+    public val provider: String,
+    public val available: Boolean = true,
+    public val unavailableReason: String? = null,
+    public val supportsReasoningEffort: Boolean = false,
+    public val reasoningEffortOptions: List<String> = emptyList(),
+)
+
+public data class HolonModelCatalog(
+    public val options: List<HolonModelOption>,
+)
+
+public data class HolonAgentModelState(
+    public val runtimeDefaultModel: String?,
+    public val source: String,
+    public val effectiveModel: String?,
+    public val activeModel: String?,
+    public val overrideReasoningEffort: String?,
+)
+
 public data class HolonBriefReadState(
     public val agentId: String,
     public val eventHeadSeq: Long,

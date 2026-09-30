@@ -25,6 +25,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonAgentEvent
+import run.holon.android.sdk.HolonModelCatalog
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonConversationActivity
@@ -104,6 +105,9 @@ internal data class HolonUiState(
     val readBriefIds: Map<String, String> = emptyMap(),
     val readBriefsLoaded: Boolean = false,
     val selectedAgent: AgentSummary? = null,
+    val modelCatalog: HolonModelCatalog? = null,
+    val modelBusy: Boolean = false,
+    val modelError: String? = null,
     val conversation: HolonConversationSnapshot? = null,
     val olderTurns: List<HolonConversationTurn> = emptyList(),
     val historyBeforeCursor: String? = null,
@@ -1063,6 +1067,75 @@ internal class HolonViewModel(
                 workItemsBusy = false,
                 workspaceBusy = false,
                 error = null,
+            )
+        }
+    }
+
+    fun loadModelCatalog(refresh: Boolean = false) {
+        if (state.value.modelBusy) return
+        mutableState.update { it.copy(modelBusy = true, modelError = null) }
+        viewModelScope.launch {
+            runCatching {
+                repository.modelCatalog(refresh)
+            }.onSuccess { catalog ->
+                mutableState.update { it.copy(modelCatalog = catalog, modelBusy = false) }
+            }.onFailure { error ->
+                mutableState.update {
+                    it.copy(modelBusy = false, modelError = humanError(error))
+                }
+            }
+        }
+    }
+
+    fun setAgentModel(model: String, reasoningEffort: String?) {
+        val agent = state.value.selectedAgent ?: return
+        if (state.value.modelBusy) return
+        mutableState.update { it.copy(modelBusy = true, modelError = null) }
+        viewModelScope.launch {
+            runCatching {
+                repository.setAgentModel(agent.id, model, reasoningEffort)
+            }.onSuccess { result ->
+                updateAgentModel(agent.id, result.effectiveModel ?: model, "agent_override", model, reasoningEffort)
+                mutableState.update { it.copy(modelBusy = false, statusMessage = "模型已更新") }
+            }.onFailure { error ->
+                mutableState.update {
+                    it.copy(modelBusy = false, modelError = humanError(error))
+                }
+            }
+        }
+    }
+
+    fun clearAgentModel() {
+        val agent = state.value.selectedAgent ?: return
+        if (state.value.modelBusy) return
+        mutableState.update { it.copy(modelBusy = true, modelError = null) }
+        viewModelScope.launch {
+            runCatching {
+                repository.clearAgentModel(agent.id)
+            }.onSuccess { result ->
+                updateAgentModel(agent.id, result.effectiveModel ?: agent.effectiveModel, "runtime_default", null, null)
+                mutableState.update { it.copy(modelBusy = false, statusMessage = "已恢复 Auto 模型") }
+            }.onFailure { error ->
+                mutableState.update {
+                    it.copy(modelBusy = false, modelError = humanError(error))
+                }
+            }
+        }
+    }
+
+    private fun updateAgentModel(agentId: String, effectiveModel: String, source: String, override: String?, effort: String?) {
+        mutableState.update { current ->
+            val updated = current.agents.map { agent ->
+                if (agent.id == agentId) agent.copy(
+                    effectiveModel = effectiveModel,
+                    modelSource = source,
+                    overrideModel = override,
+                    overrideReasoningEffort = effort,
+                ) else agent
+            }
+            current.copy(
+                agents = updated,
+                selectedAgent = updated.firstOrNull { it.id == agentId } ?: current.selectedAgent,
             )
         }
     }
