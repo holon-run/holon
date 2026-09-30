@@ -371,10 +371,15 @@ export function SettingsPage({
   const [imageGenSaveMessage, setImageGenSaveMessage] = useState<string | undefined>();
   const [decisionSaveMessage, setDecisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
-  const [activeTab, updateActiveTab] = useState<SettingsTabKey>(readSettingsTab);
+  const [activeTab, updateActiveTab] = useState<SettingsTabKey>(() => readSettingsTab(window.location.search));
   function setActiveTab(tab: SettingsTabKey) {
     updateActiveTab(tab);
     rememberSettingsTab(tab);
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("tab")) {
+      url.searchParams.set("tab", tab);
+      window.history.replaceState(window.history.state, "", url);
+    }
   }
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
   const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});

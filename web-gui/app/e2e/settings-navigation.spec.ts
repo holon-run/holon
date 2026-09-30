@@ -20,6 +20,22 @@ test("settings ignores stale saved tabs", async ({ page }) => {
   await expect(page.locator("#settings-tab-general")).toHaveAttribute("aria-selected", "true");
 });
 
+test("explicit tab overrides storage and follows later selections on reload", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("holon.webGui.settingsTab.v1", "advanced"));
+  await page.goto("/settings?tab=models");
+  await expect(page.locator("#settings-tab-models")).toHaveAttribute("aria-selected", "true");
+  await page.locator("#settings-tab-general").click();
+  await expect(page).toHaveURL(/\/settings\?tab=general$/);
+  await page.reload();
+  await expect(page.locator("#settings-tab-general")).toHaveAttribute("aria-selected", "true");
+});
+
+test("invalid explicit tab falls back to the remembered tab", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("holon.webGui.settingsTab.v1", "vision"));
+  await page.goto("/settings?tab=invalid");
+  await expect(page.locator("#settings-tab-vision")).toHaveAttribute("aria-selected", "true");
+});
+
 test("settings sections support keyboard navigation with a single tab stop", async ({ page }) => {
   await page.goto("/settings");
   const tabs = page.getByRole("tab");

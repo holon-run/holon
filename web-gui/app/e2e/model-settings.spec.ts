@@ -107,6 +107,18 @@ test("model search keeps routes distinct, persists favorites and next-run select
   await expect(dialog.getByRole("button", { name: /Runtime default/ })).toBeDisabled();
 });
 
+test("model management opens Models regardless of the remembered settings tab", async ({ page }) => {
+  await setup(page);
+  await page.addInitScript(() => localStorage.setItem("holon.webGui.settingsTab.v1", "advanced"));
+  await page.goto("/agents/bootstrap-agent/conversation");
+  await page.locator(".model-button").click();
+  const manage = page.locator(".model-browser-more");
+  await expect(manage).toHaveAttribute("href", "/settings?tab=models");
+  await manage.click();
+  await expect(page.locator("#settings-tab-models")).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator(".provider-directory")).toBeVisible();
+});
+
 test("global defaults and image settings share search with capability filtering", async ({ page }) => {
   const { updates } = await setup(page);
   await page.goto("/settings");

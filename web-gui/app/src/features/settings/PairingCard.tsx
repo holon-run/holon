@@ -73,7 +73,7 @@ export function PairingCard({ connection }: { connection: RuntimeConnection }) {
       if (!controller.signal.aborted) setServeTarget(origin);
     }).catch(() => {});
     return () => controller.abort();
-  }, [runtimeOrigin, connection]);
+  }, [runtimeOrigin, connection.mode, connection.baseUrl, connection.source]);
 
   useEffect(() => {
     if (!pairing) return;

@@ -51,3 +51,31 @@ test("requires a reachable origin when Serve is off, and supports LAN without le
   await address.fill("http://192.168.1.11:7878");
   await expect(page.getByRole("textbox", { name: "Pairing link", exact: true })).toHaveCount(0);
 });
+
+for (const serving of [true, false]) {
+  test(`bootstrap refresh preserves pairing QR, link and address (Serve ${serving})`, async ({ page }) => {
+    const issued = await setupPairing(page, serving);
+    const address = page.getByRole("textbox", { name: "Device-accessible server address", exact: true });
+    if (!serving) await address.fill("http://192.168.1.10:7878");
+    const previousAddress = await address.inputValue();
+    await page.getByRole("button", { name: "Create one-time pairing link", exact: true }).click();
+    const link = page.getByRole("textbox", { name: "Pairing link", exact: true });
+    await expect(link).toBeVisible();
+    const previousLink = await link.inputValue();
+    const qr = page.getByAltText("QR code for one-time pairing link");
+    const previousQr = await qr.getAttribute("src");
+    const refreshed = page.waitForResponse("**/api/agents/snapshot");
+    const applied = page.waitForResponse("**/api/auth/session/me");
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await refreshed;
+    await applied;
+    // User lookup starts after bootstrap resolves; let React commit its effects.
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+    await expect(address).toHaveValue(previousAddress);
+    await expect(link).toHaveValue(previousLink);
+    await expect(qr).toHaveAttribute("src", previousQr!);
+    expect(issued()).toBe(1);
+  });
+}
