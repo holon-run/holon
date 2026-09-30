@@ -21,7 +21,7 @@ use crate::{
         RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, SetAgentModelRequest,
         TaskInputRequest, TaskStopRequest,
     },
-    http_dto::AgentStateSnapshotDto,
+    http_dto::{AgentStateSnapshotDto, SlimAgentDto},
     model_catalog::BuiltInModelMetadata,
     runtime_error::{RuntimeErrorContext, RuntimeErrorDomain},
     system::ExecutionSnapshot,
@@ -500,11 +500,23 @@ impl LocalClient {
     }
 
     pub async fn agent_status(&self, agent_id: &str) -> Result<AgentSummary> {
-        self.get_json(&format!("/agents/{agent_id}/status")).await
+        self.get_json(&format!("/agents/{agent_id}/status?detail=full"))
+            .await
+    }
+
+    pub async fn agent_status_compact(&self, agent_id: &str) -> Result<SlimAgentDto> {
+        self.get_json(&format!("/agents/{agent_id}/status?detail=compact"))
+            .await
     }
 
     pub async fn get_agent(&self, agent_id: &str) -> Result<AgentSummary> {
-        self.get_json(&format!("/agents/{agent_id}")).await
+        self.get_json(&format!("/agents/{agent_id}?detail=full"))
+            .await
+    }
+
+    pub async fn get_agent_compact(&self, agent_id: &str) -> Result<SlimAgentDto> {
+        self.get_json(&format!("/agents/{agent_id}?detail=compact"))
+            .await
     }
 
     pub async fn agent_state_snapshot(&self, agent_id: &str) -> Result<AgentStateSnapshotDto> {

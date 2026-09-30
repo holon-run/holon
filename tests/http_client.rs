@@ -12,6 +12,7 @@ macro_rules! http_async_tests {
 }
 
 http_async_tests!(
+    agent_summary_routes_default_to_compact_and_allow_full_detail,
     agent_list_entries_are_slim_for_tui_bootstrap,
     explicit_model_refresh_discovers_credential_free_ollama_models,
     http_success_response_shapes_follow_route_class_policy,

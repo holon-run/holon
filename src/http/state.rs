@@ -2,6 +2,20 @@ use super::*;
 
 const STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT: usize = 16;
 
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum AgentSummaryDetail {
+    #[default]
+    Compact,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct AgentSummaryQuery {
+    #[serde(default)]
+    detail: AgentSummaryDetail,
+}
+
 pub async fn enqueue_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -246,11 +260,14 @@ pub(crate) fn trace_context_from_headers(
 pub async fn status_default(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<AgentSummaryQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    status(
-        Path(state.host.config().default_agent_id.clone()),
-        State(state),
+    agent_summary(
+        state.host.config().default_agent_id.clone(),
+        state,
         headers,
+        "/agents/{agent_id}/status",
+        query.detail,
     )
     .await
 }
@@ -259,16 +276,25 @@ pub async fn status(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<AgentSummaryQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    agent_summary(agent_id, state, headers, "/agents/{agent_id}/status").await
+    agent_summary(
+        agent_id,
+        state,
+        headers,
+        "/agents/{agent_id}/status",
+        query.detail,
+    )
+    .await
 }
 
 pub async fn get_agent(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
+    Query(query): Query<AgentSummaryQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    agent_summary(agent_id, state, headers, "/agents/{agent_id}").await
+    agent_summary(agent_id, state, headers, "/agents/{agent_id}", query.detail).await
 }
 
 async fn agent_summary(
@@ -276,6 +302,7 @@ async fn agent_summary(
     state: Arc<AppState>,
     headers: HeaderMap,
     route: &'static str,
+    detail: AgentSummaryDetail,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let started_at = std::time::Instant::now();
     authorize_remote_access(&headers, &state).map_err(|err| auth_required(err.to_string()))?;
@@ -284,7 +311,14 @@ async fn agent_summary(
         .local_agent_summary(&agent_id)
         .await
         .map_err(agent_access_error)?;
-    traced_json(route, started_at, agent)
+    match detail {
+        AgentSummaryDetail::Compact => traced_json(
+            route,
+            started_at,
+            crate::http_dto::SlimAgentDto::from(&agent),
+        ),
+        AgentSummaryDetail::Full => traced_json(route, started_at, agent),
+    }
 }
 
 pub async fn state_default(State(state): State<Arc<AppState>>, headers: HeaderMap) -> AxumResponse {

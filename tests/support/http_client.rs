@@ -64,6 +64,55 @@ async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<Ag
     .await?
 }
 
+pub async fn agent_summary_routes_default_to_compact_and_allow_full_detail() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    for path in [
+        "/api/agents/default",
+        "/api/agents/default/status",
+        "/api/status",
+    ] {
+        let response = client.get(format!("{base}{path}")).send().await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK, "{path}");
+        let compact: serde_json::Value = response.json().await?;
+        assert!(compact["identity"]["agent_id"].is_string(), "{path}");
+        assert!(compact["agent"]["status"].is_string(), "{path}");
+        assert!(compact.get("skills").is_none(), "{path} should be compact");
+        assert!(
+            compact.get("execution").is_none(),
+            "{path} should omit full execution details"
+        );
+    }
+
+    let full: serde_json::Value = client
+        .get(format!("{base}/api/agents/default?detail=full"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert!(full["identity"]["agent_id"].is_string());
+    assert!(full["skills"].is_object());
+    assert!(full["execution"].is_object());
+
+    let explicit_compact: serde_json::Value = client
+        .get(format!("{base}/api/agents/default/status?detail=compact"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(
+        explicit_compact.get("skills"),
+        None,
+        "detail=compact must use the same projection as the default"
+    );
+
+    server.abort();
+    Ok(())
+}
+
 async fn wait_for_event_type(runtime: &RuntimeHandle, event_type: &str) -> Result<()> {
     wait_until(|| {
         Ok(runtime

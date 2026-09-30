@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    http_dto::SlimAgentDto,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AuthorityClass, GetAgentResult, ToolCapabilityFamily},
+    types::{AuthorityClass, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -19,6 +20,21 @@ pub(crate) const NAME: &str = crate::tool::names::GET_AGENT;
 pub(crate) struct GetAgentArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<GetAgentDetail>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema, Default)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum GetAgentDetail {
+    #[default]
+    Compact,
+    Full,
+}
+
+#[derive(Serialize)]
+struct GetAgentResponse {
+    agent: Value,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -46,5 +62,9 @@ pub(crate) async fn execute(
             runtime.agent_summary_for(&requested_id).await?
         }
     };
-    serialize_success(NAME, &GetAgentResult { agent: summary })
+    let agent = match args.detail.unwrap_or_default() {
+        GetAgentDetail::Compact => serde_json::to_value(SlimAgentDto::from(&summary))?,
+        GetAgentDetail::Full => serde_json::to_value(summary)?,
+    };
+    serialize_success(NAME, &GetAgentResponse { agent })
 }
