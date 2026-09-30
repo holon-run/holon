@@ -796,10 +796,19 @@ impl RuntimeModelCatalog {
         selected_adapter_reason: &str,
         unavailable_reason: &str,
     ) -> ResolvedViewImageVisionSelection {
+        let primary = self.canonicalize_model_route_ref(&primary);
+        let mut canonical_model_refs = Vec::with_capacity(model_refs.len());
+        for route_ref in model_refs {
+            let route_ref = self.canonicalize_model_route_ref(&route_ref);
+            if !canonical_model_refs.contains(&route_ref) {
+                canonical_model_refs.push(route_ref);
+            }
+        }
+
         let mut candidates = Vec::new();
         let mut selected = None;
 
-        for route_ref in &model_refs {
+        for route_ref in &canonical_model_refs {
             let resolved = self.resolve_explicit_model_metadata(base_context_config, route_ref);
             let policy = resolved
                 .as_ref()

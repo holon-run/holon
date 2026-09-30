@@ -4071,6 +4071,11 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
         .get_mut(&crate::config::ProviderId::parse("ollama").unwrap())
         .unwrap()
         .base_url = base_url;
+    let ollama_id = crate::config::ProviderId::parse("ollama").unwrap();
+    config
+        .providers
+        .retain(|provider_id, _| provider_id == &ollama_id);
+    config.vision_candidate_models.clear();
     let discovery_cache = crate::model_discovery::discovery_cache_path(&config.home_dir);
     let host = RuntimeHost::new(config).unwrap();
     let runtime = host.default_runtime().await.unwrap();
