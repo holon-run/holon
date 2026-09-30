@@ -940,6 +940,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
         if (state.online) viewModel.ensureBriefs(state.briefLoads.filterValues { it is BriefLoadState.Failed }.keys.toList(), retry = true)
     }
     var agentChooser by remember { mutableStateOf(false) }
+    var modelChooser by remember(agent.id) { mutableStateOf(false) }
     var agentSearch by remember { mutableStateOf("") }
     val isDetail = state.planFile != null || state.preparedArtifact != null || state.selectedWorkItem != null || state.selectedBrief != null || state.fullScreenTurn
     val context = LocalContext.current
@@ -975,6 +976,9 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     }
                 },
                 actions = {
+                    TextButton(onClick = { modelChooser = true; viewModel.loadModelCatalog() }) {
+                        Text(ui("模型"), maxLines = 1)
+                    }
                     IconButton(onClick = { viewModel.selectAgentSection(AgentSection.Work) }) {
                         Icon(Icons.Default.Description, contentDescription = ui("工作记录"))
                     }
@@ -1057,6 +1061,13 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
             }
         }
     }
+    if (modelChooser) ModelPickerSheet(
+        state = state,
+        onDismiss = { modelChooser = false },
+        onRefresh = { viewModel.loadModelCatalog(refresh = true) },
+        onSelect = { model, effort -> viewModel.setAgentModel(model, effort) },
+        onAuto = viewModel::clearAgentModel,
+    )
 }
 
 
@@ -1088,6 +1099,111 @@ private class ConversationTimelinePosition(val listState: LazyListState = LazyLi
                 }
             },
         )
+    }
+}
+
+@Composable
+private fun ModelPickerSheet(
+    state: HolonUiState,
+    onDismiss: () -> Unit,
+    onRefresh: () -> Unit,
+    onSelect: (String, String?) -> Unit,
+    onAuto: () -> Unit,
+) {
+    val agent = state.selectedAgent ?: return
+    var search by remember(agent.id) { mutableStateOf("") }
+    var pendingModel by remember(agent.id) { mutableStateOf<String?>(null) }
+    var effort by remember(agent.id, pendingModel) { mutableStateOf<String?>(null) }
+    val options = state.modelCatalog?.options.orEmpty()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding(),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(ui("选择模型"), style = MaterialTheme.typography.titleLarge)
+                    Text(ui("当前生效：") + agent.effectiveModel, style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        if (agent.modelSource == "agent_override") ui("Agent 自定义")
+                        else ui("Auto · 运行时默认"),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                IconButton(onClick = onRefresh, enabled = !state.modelBusy && state.online) {
+                    Icon(Icons.Default.Refresh, contentDescription = ui("刷新模型"))
+                }
+            }
+            state.modelError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            if (state.modelBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            OutlinedButton(
+                onClick = { onAuto(); pendingModel = null },
+                enabled = !state.modelBusy && state.online,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(ui("Auto · 恢复运行时默认"))
+            }
+            OutlinedTextField(
+                value = search,
+                onValueChange = { search = it },
+                label = { Text(ui("搜索模型")) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            if (options.isEmpty() && !state.modelBusy) {
+                Text(ui("暂无模型目录，请刷新后重试"), style = MaterialTheme.typography.bodySmall)
+            }
+            LazyColumn(
+                Modifier.heightIn(max = 380.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                items(
+                    options.filter { it.model.contains(search, true) || it.displayName.contains(search, true) },
+                    key = { it.model },
+                ) { option ->
+                    OutlinedButton(
+                        onClick = { pendingModel = option.model; effort = null },
+                        enabled = option.available && state.online && !state.modelBusy,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+                            Text(option.displayName)
+                            Text(option.model, style = MaterialTheme.typography.bodySmall)
+                            if (!option.available) {
+                                Text(option.unavailableReason ?: ui("当前不可用"), style = MaterialTheme.typography.bodySmall)
+                            }
+                        }
+                    }
+                }
+            }
+            pendingModel?.let { model ->
+                val option = options.firstOrNull { it.model == model }
+                Text(ui("待应用：") + model)
+                if (option?.supportsReasoningEffort == true) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        (listOf<String?>(null) + option.reasoningEffortOptions).forEach { value ->
+                            FilterChip(
+                                selected = effort == value,
+                                onClick = { effort = value },
+                                label = { Text(value ?: ui("默认")) },
+                            )
+                        }
+                    }
+                }
+                Button(
+                    onClick = { onSelect(model, effort); pendingModel = null },
+                    enabled = !state.modelBusy && state.online,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(ui("应用到此 Agent"))
+                }
+            }
+            Text(
+                ui("模型更改保存到此 Agent；运行中的任务不会被切换。"),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Spacer(Modifier.height(8.dp))
+        }
     }
 }
 

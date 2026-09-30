@@ -12,6 +12,7 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -119,6 +120,96 @@ public class HolonHttpClient internal constructor(
             path = "agents/list",
             serializer = ListSerializer(AgentListEntry.serializer()),
         ).map(AgentListEntry::toAgentSummary)
+
+    public fun modelCatalog(refresh: Boolean = false): HolonModelCatalog {
+        val document = (if (refresh) postJson("models/refresh") else getJson("models")).objectOrNull
+            ?: throw HolonProtocolException("Holon model catalog response is not an object")
+        val options = linkedMapOf<String, HolonModelOption>()
+        (document["available_models"] as? JsonArray).orEmpty().forEach { entry ->
+            val option =
+                when (entry) {
+                    is JsonPrimitive -> {
+                        val model = entry.contentOrNull ?: return@forEach
+                        HolonModelOption(model, model, model.substringBefore('/'))
+                    }
+                    is JsonObject -> {
+                        val model = entry.string("model") ?: return@forEach
+                        val policy = entry["policy"] as? JsonObject
+                        val capabilities = (entry["capabilities"] as? JsonObject)
+                            ?: (policy?.get("capabilities") as? JsonObject)
+                        HolonModelOption(
+                            model = model,
+                            displayName = entry.string("display_name") ?: model,
+                            provider = entry.string("provider") ?: model.substringBefore('/'),
+                            supportsReasoningEffort =
+                                policy?.boolean("supports_reasoning") == true ||
+                                    capabilities?.boolean("supports_reasoning") == true,
+                            reasoningEffortOptions =
+                                (policy?.get("reasoning_effort_options") as? JsonArray)
+                                    ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                                    .orEmpty(),
+                        )
+                    }
+                    else -> return@forEach
+                }
+            options[option.model] = option
+        }
+        (document["model_availability"] as? JsonArray).orEmpty().forEach { entry ->
+            val item = entry as? JsonObject ?: return@forEach
+            val model = item.string("model") ?: return@forEach
+            val existing = options[model]
+            val policy = item["policy"] as? JsonObject
+            val capabilities = policy?.get("capabilities") as? JsonObject
+            options[model] =
+                (existing ?: HolonModelOption(model, item.string("display_name") ?: model, item.string("provider") ?: model.substringBefore('/'))).copy(
+                    available = item.boolean("available") ?: existing?.available ?: false,
+                    unavailableReason = item.string("unavailable_reason"),
+                    supportsReasoningEffort =
+                        policy?.boolean("supports_reasoning") == true ||
+                            capabilities?.boolean("supports_reasoning") == true ||
+                            existing?.supportsReasoningEffort == true,
+                    reasoningEffortOptions =
+                        (policy?.get("reasoning_effort_options") as? JsonArray)
+                            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                            ?.takeIf { it.isNotEmpty() }
+                            ?: existing?.reasoningEffortOptions.orEmpty(),
+                )
+        }
+        return HolonModelCatalog(options.values.sortedBy { it.displayName.lowercase() })
+    }
+
+    public fun setAgentModel(agentId: String, model: String, reasoningEffort: String? = null): HolonAgentModelState =
+        agentModelState(
+            postJson(
+                "control/agents/${agentId.pathSegment()}/model",
+                buildJsonObject {
+                    put("model", model)
+                    reasoningEffort?.let { put("reasoning_effort", it) }
+                    put("authority_class", "operator_instruction")
+                },
+            ),
+        )
+
+    public fun clearAgentModel(agentId: String): HolonAgentModelState =
+        agentModelState(
+            postJson(
+                "control/agents/${agentId.pathSegment()}/model/clear",
+                buildJsonObject { put("authority_class", "operator_instruction") },
+            ),
+        )
+
+    private fun agentModelState(document: HolonJsonDocument): HolonAgentModelState {
+        val model = document.objectOrNull?.get("model") as? JsonObject
+            ?: document.objectOrNull
+            ?: throw HolonProtocolException("Holon agent model response is not an object")
+        return HolonAgentModelState(
+            runtimeDefaultModel = model.string("runtime_default_model"),
+            source = model.string("source") ?: "runtime_default",
+            effectiveModel = model.string("effective_model"),
+            activeModel = model.string("active_model"),
+            overrideReasoningEffort = model.string("override_reasoning_effort"),
+        )
+    }
 
     public fun briefReadStates(): List<HolonBriefReadState> {
         val values = getJson("agents/brief-read-states").raw as? JsonArray
