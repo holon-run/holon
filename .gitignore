@@ -27,5 +27,11 @@ e2e-manual/**/artifacts/
 
 # Local tool state
 .gradle/
+.kotlin/
 .claude/
 .playwright-mcp/
+
+# Private Android signing material (public certificate fingerprints are tracked).
+*.jks
+*.keystore
+keystore.properties

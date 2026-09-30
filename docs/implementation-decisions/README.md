@@ -18,6 +18,7 @@ Prefer one decision per file. Keep each note short and focused:
 
 Current decision notes:
 
+- [Android Release Signing And Cadence](./android-release-signing-and-cadence.md)
 - [001 Anthropic Compatibility](./001-anthropic-compatibility.md)
 - [002 Context V1 And Compaction](./002-context-v1-and-compaction.md)
 - [003 Background Task V1](./003-background-task-v1.md)

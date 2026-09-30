@@ -7,6 +7,28 @@ plugins {
     kotlin("plugin.serialization")
 }
 
+val appVersion = providers.environmentVariable("HOLON_ANDROID_VERSION_NAME")
+    .orElse(provider {
+        Regex("""(?m)^version = "([^"]+)"$""")
+            .find(rootProject.file("../../Cargo.toml").readText())!!.groupValues[1]
+    }).get()
+val versionParts = Regex("""(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)""")
+    .matchEntire(appVersion)?.groupValues?.drop(1)?.map { it.toLong() }
+    ?: error("Android version must be a stable major.minor.patch version")
+require(versionParts[0] <= 2099 && versionParts[1] < 1000 && versionParts[2] < 1000)
+val appVersionCode = versionParts[0] * 1_000_000 + versionParts[1] * 1000 + versionParts[2]
+require(appVersionCode in 1..2_100_000_000)
+
+val signingEnvNames = listOf(
+    "HOLON_ANDROID_KEYSTORE_PATH", "HOLON_ANDROID_STORE_PASSWORD",
+    "HOLON_ANDROID_KEY_ALIAS", "HOLON_ANDROID_KEY_PASSWORD",
+)
+val signingValues = signingEnvNames.map { providers.environmentVariable(it).orNull }
+require(signingValues.all { it.isNullOrBlank() } || signingValues.all { !it.isNullOrBlank() }) {
+    "Android release signing requires all four HOLON_ANDROID signing variables"
+}
+val hasReleaseSigning = signingValues.all { !it.isNullOrBlank() }
+
 android {
     namespace = "run.holon.android.app"
     compileSdk = 36
@@ -15,14 +37,27 @@ android {
         applicationId = "run.holon.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appVersionCode.toInt()
+        versionName = appVersion
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("officialRelease") {
+                storeFile = file(signingValues[0]!!)
+                storeType = "JKS"
+                storePassword = signingValues[1]
+                keyAlias = signingValues[2]
+                keyPassword = signingValues[3]
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("officialRelease")
         }
     }
 

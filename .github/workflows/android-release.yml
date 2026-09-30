@@ -1,0 +1,81 @@
+name: Android signed release
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: true
+        type: string
+    secrets:
+      ANDROID_SIGNING_KEYSTORE_BASE64:
+        required: true
+      ANDROID_SIGNING_STORE_PASSWORD:
+        required: true
+      ANDROID_SIGNING_KEY_ALIAS:
+        required: true
+      ANDROID_SIGNING_KEY_PASSWORD:
+        required: true
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Stable Holon version (vX.Y.Z); blank uses Cargo.toml. Builds artifacts only.'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Signed APK and AAB
+    # No signing credentials in pull requests or arbitrary branch builds.
+    if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build and verify official Android packages
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          HOLON_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          HOLON_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          HOLON_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          export HOLON_ANDROID_KEYSTORE_PATH="$RUNNER_TEMP/holon-release.jks"
+          trap 'rm -f "$HOLON_ANDROID_KEYSTORE_PATH"' EXIT
+          test -n "$KEYSTORE_BASE64" || { echo 'Android signing keystore secret is missing.' >&2; exit 1; }
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$HOLON_ANDROID_KEYSTORE_PATH"
+          unset KEYSTORE_BASE64
+          version="$VERSION_INPUT"
+          if [ -z "$version" ]; then
+            version="$(awk -F '"' '/^version = / { print $2; exit }' Cargo.toml)"
+          fi
+          bash scripts/test-android-release-version.sh
+          bash scripts/test-android-release-packaging.sh
+          bash scripts/package-android-release.sh "$version"
+
+      - name: Upload signed Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-holon-android
+          path: dist/android/holon-android-*
+          if-no-files-found: error
+          retention-days: 30

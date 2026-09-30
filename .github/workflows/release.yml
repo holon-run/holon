@@ -275,12 +275,25 @@ jobs:
             dist/appcast.xml
           if-no-files-found: error
 
+  android-app:
+    name: Build signed Android app
+    needs: e2e-gate
+    uses: ./.github/workflows/android-release.yml
+    with:
+      version: ${{ github.ref_name }}
+    secrets:
+      ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+      ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+      ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+      ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+
   release:
     name: Publish GitHub release
     runs-on: ubuntu-latest
     needs:
       - build
       - macos-app
+      - android-app
       - e2e-gate
     permissions:
       contents: write
@@ -310,7 +323,7 @@ jobs:
           (
             cd dist-artifacts
             rm -f ./*.tar.gz.sha256
-            shasum -a 256 ./*.tar.gz ./*.dmg | sort -k2 > checksums.txt
+            shasum -a 256 ./*.tar.gz ./*.dmg ./*.apk ./*.aab ./*android*.json | sort -k2 > checksums.txt
           )
           bash scripts/generate-homebrew-formula.sh \
             "$GITHUB_REF_NAME" \
@@ -330,7 +343,7 @@ jobs:
           cat > release-notes.md <<EOF
           This release matures the Holon Android client with a brief-first agent workspace, live agent-list sync, English and Chinese localization, and richer file reading and message links, improves the Web GUI conversation timeline with server-side read state, adds per-agent brief unread cursors and agent reply expectations for clients, and hardens runtime storage, provider, wait, and memory-search behavior.
 
-          Supported binary assets for this release are Linux amd64, macOS amd64, and macOS arm64. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer).
+          Supported binary assets for this release are Linux amd64, macOS amd64, macOS arm64, and Android. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer). The signed Android APK requires Android 8.0 (API 26) or newer; the AAB is for store submission, not direct installation.
 
           ## Changes
 
@@ -343,6 +356,10 @@ jobs:
 
 
           ## Install
+
+          Android:
+
+          Download [\`holon-android-${GITHUB_REF_NAME}.apk\`](https://github.com/holon-run/holon/releases/download/${GITHUB_REF_NAME}/holon-android-${GITHUB_REF_NAME}.apk) on your device and allow installation from the download source. Future official APKs use the same signing identity and upgrade in place. Existing debug-signed installations require a one-time reinstall; uninstalling removes their local sessions, drafts, and outbox.
 
           Homebrew:
 
@@ -372,10 +389,15 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           body_path: release-notes.md
+          fail_on_unmatched_files: true
           files: |
             dist-artifacts/*.tar.gz
             dist-artifacts/*.dmg
             dist-artifacts/*.dmg.sha256
+            dist-artifacts/*.apk
+            dist-artifacts/*.aab
+            dist-artifacts/*android*.json
+            dist-artifacts/*android*.sha256
             dist-artifacts/appcast.xml
             dist-artifacts/checksums.txt
 
