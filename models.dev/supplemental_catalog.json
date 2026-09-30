@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "2c225d8893f884193ba2cfc44a0cc8a79ca1689fb890069b6f10b017f9963e02",
-  "adapter_version": "0.46.0 (f7bc6f7)",
+  "upstream_revision": "d187e60e79b97a4d0dee682138d44e1dc60690e98fbbaf1d4e8c13fab1a1b8e3",
+  "adapter_version": "0.46.0 (3502597)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -63,6 +63,34 @@
       "model_ref": "anthropic/claude-opus-5-5",
       "display_name": "Claude Opus 5.5",
       "description": "Claude model for long-running agentic coding and knowledge work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "anthropic/claude-sonnet-5-5",
+      "display_name": "Claude Sonnet 5.5",
+      "description": "Fast Claude model for everyday coding, agents, and knowledge work",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -653,6 +681,34 @@
       },
       "reasoning_effort_options": [
         "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "openai/gpt-6.1-sol",
+      "display_name": "GPT-6.1 Sol",
+      "description": "Near-Astra performance for complex coding, computer use, and professional work at a lower cost.",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
         "low",
         "medium",
         "high",
