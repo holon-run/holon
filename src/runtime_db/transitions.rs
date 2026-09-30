@@ -398,6 +398,8 @@ pub(crate) struct StartupRuntimeRecoveryReport {
     pub superseded_turns: usize,
     pub orphaned_claim_turns: usize,
     pub daemon_restart_turns: usize,
+    pub interrupted_execution_attempts: usize,
+    pub unresolved_execution_attempts: usize,
 }
 
 #[derive(Debug, Default)]
@@ -552,6 +554,85 @@ impl RuntimeDb {
                 };
                 append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
                 report.interrupted_turns += 1;
+            }
+            // A freshly started process cannot own a legitimately open
+            // execution attempt: every still-open attempt belongs to an
+            // execution interrupted by the restart. Queue-message sources
+            // re-drive through new admissions, so a leftover open attempt
+            // would reject every later admission for that agent with a
+            // non-retryable protocol error. Settle each one as interrupted.
+            let open_attempts: Vec<(String, String)> = {
+                let mut statement = tx.prepare(
+                    "SELECT a.agent_id, a.attempt_id
+                     FROM execution_protocol_attempts a
+                     JOIN agent_identities i
+                       ON i.agent_id = a.agent_id
+                      AND i.status = 'active'
+                     WHERE a.lifecycle_state = 'open'
+                     ORDER BY a.agent_id, a.attempt_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows
+            };
+            for (agent_id, attempt_id) in open_attempts {
+                let command =
+                    crate::domain::execution_protocol::ExecutionProtocolCommand::Interrupt(
+                        crate::domain::execution_protocol::InterruptExecution {
+                            attempt_id: attempt_id.clone(),
+                            outcome_id: format!("outcome:startup_interrupted:{attempt_id}"),
+                            reason: "startup_recovery/daemon_restart".into(),
+                            interrupted_at: recovered_at.to_rfc3339(),
+                        },
+                    );
+                let prepared = execution_protocol_repository::validate_execution_commands_tx(
+                    tx,
+                    &agent_id,
+                    None,
+                    std::slice::from_ref(&command),
+                    &[],
+                    &[],
+                    &[],
+                );
+                match prepared {
+                    Ok(Some(prepared)) => {
+                        execution_protocol_repository::persist_execution_commands_tx(
+                            tx,
+                            Some(prepared),
+                        )?;
+                        append_audit_event_tx(
+                            tx,
+                            Some(&agent_id),
+                            &AuditEvent {
+                                id: format!(
+                                    "audit:startup-interrupted-attempt:{agent_id}:{attempt_id}"
+                                ),
+                                event_seq: 0,
+                                event_log_epoch: String::new(),
+                                created_at: recovered_at,
+                                kind: "startup_interrupted_execution_attempt_recovered".into(),
+                                contract_version:
+                                    crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA
+                                    .to_string(),
+                                payload_schema_version: 1,
+                                data: serde_json::json!({
+                                    "agent_id": &agent_id,
+                                    "attempt_id": &attempt_id,
+                                    "reason": "startup_recovery/daemon_restart",
+                                }),
+                            },
+                        )?;
+                        report.interrupted_execution_attempts += 1;
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        report.unresolved_execution_attempts += 1;
+                    }
+                }
             }
             Ok(report)
         })
@@ -5139,6 +5220,116 @@ mod tests {
         )?;
         assert_eq!(attempts, 1);
         assert_eq!(command_results, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_settles_open_execution_attempts() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))?;
+        let transition =
+            execution_admission("message-execution", "attempt-execution", "work-execution");
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("admission state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Open
+        );
+
+        // Guard the failure mode being fixed: while the restart-interrupted
+        // attempt stays open, the domain rejects any later admission for the
+        // agent with a non-retryable protocol error.
+        let blocked = execution_admission("message-blocked", "attempt-blocked", "work-execution");
+        let blocked_command = match &blocked.commands[0] {
+            ExecutionProtocolCommand::Admit(command) => command.as_ref().clone(),
+            other => panic!("expected admit command, got {other:?}"),
+        };
+        let rejection =
+            crate::domain::execution_protocol::admit_execution(&state, &blocked_command)
+                .expect_err("open attempt must block later admissions before recovery");
+        assert!(rejection.contains("already owns an open execution attempt"));
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 0);
+        assert_eq!(report.interrupted_execution_attempts, 1);
+        assert_eq!(report.unresolved_execution_attempts, 0);
+
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        match &state.work_items["work-execution"].state {
+            WorkItemExecutionState::Runnable { recovery_ref, .. } => {
+                assert_eq!(recovery_ref.as_deref(), Some("interrupted"));
+            }
+            other => panic!("recovered work item should be runnable, got {other:?}"),
+        }
+
+        // After recovery the same admission passes the domain guard once the
+        // scheduling generation fence matches the interrupted hand-off.
+        let unblocked = execution_admission("message-blocked", "attempt-blocked", "work-execution");
+        let mut unblocked_command = match &unblocked.commands[0] {
+            ExecutionProtocolCommand::Admit(command) => command.as_ref().clone(),
+            other => panic!("expected admit command, got {other:?}"),
+        };
+        unblocked_command
+            .attempt
+            .admitted_fences
+            .work_item_generation = Some(2);
+        crate::domain::execution_protocol::admit_execution(&state, &unblocked_command)
+            .expect("admission must succeed after startup recovery settles the open attempt");
+
+        // Recovery is idempotent: a second run settles nothing new.
+        let repeated = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(repeated.interrupted_execution_attempts, 0);
+        let recovery_audits = db
+            .audit_events()
+            .recent(Some("agent-a"), 10)?
+            .iter()
+            .filter(|event| event.kind == "startup_interrupted_execution_attempt_recovered")
+            .count();
+        assert_eq!(recovery_audits, 1);
         Ok(())
     }
 
