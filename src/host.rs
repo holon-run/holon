@@ -76,7 +76,8 @@ use crate::{
         MessageBody, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
         OperatorNotificationRecord, Priority, QueueEntryStatus, RuntimeFailureSummary, TaskKind,
         TaskRecord, TaskStatus, TimerRecord, TokenUsage, TranscriptEntry, TranscriptEntryKind,
-        WaitConditionSummary, WorkspaceEntry, WorkspaceOccupancyRecord,
+        WaitConditionStatus, WaitConditionSummary, WakeSource, WorkspaceEntry,
+        WorkspaceOccupancyRecord,
     },
 };
 
@@ -1930,6 +1931,7 @@ impl RuntimeHost {
         let recovery_report = self
             .runtime_db()
             .recover_interrupted_runtime_state_at_startup()?;
+        let stale_waits = self.reconcile_stale_waits_at_startup()?;
         for operation in self
             .runtime_db()
             .destructive_operations()
@@ -1961,6 +1963,7 @@ impl RuntimeHost {
             superseded_turns = recovery_report.superseded_turns,
             orphaned_claim_turns = recovery_report.orphaned_claim_turns,
             daemon_restart_turns = recovery_report.daemon_restart_turns,
+            stale_waits_cancelled = stale_waits,
             "startup runtime state recovery completed"
         );
         let recovered_queue_agent_ids = recovery_report.recovered_queue_agent_ids;
@@ -2006,6 +2009,95 @@ impl RuntimeHost {
             runtime.wait_for_bootstrap().await?;
         }
         Ok(recovered_queue_agent_ids)
+    }
+
+    fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
+        let runtime_db = self.runtime_db();
+        let waits = runtime_db.wait_conditions().unresolved_all()?;
+        let tasks = runtime_db.tasks().latest_all()?;
+        let external_triggers = runtime_db.external_triggers().latest_all()?;
+        let timers = runtime_db.timers().latest_all()?;
+        let mut stopped_agents = runtime_db
+            .agent_states()
+            .latest_all()?
+            .into_iter()
+            .filter(|state| state.status == AgentStatus::Stopped)
+            .map(|state| state.id)
+            .collect::<HashSet<_>>();
+        let mut cancelled = 0;
+
+        for wait in waits {
+            let state = runtime_db
+                .agent_states()
+                .latest(&wait.agent_id)?
+                .unwrap_or_else(|| AgentState::new(&wait.agent_id));
+            let task_stale = wait.wake_sources.iter().any(|source| {
+                let WakeSource::TaskResult { task_id } = source else {
+                    return false;
+                };
+                tasks
+                    .iter()
+                    .find(|task| task.id == *task_id && task.agent_id == wait.agent_id)
+                    .is_none_or(|task| {
+                        matches!(
+                            task.status,
+                            TaskStatus::Completed
+                                | TaskStatus::Failed
+                                | TaskStatus::Cancelled
+                                | TaskStatus::Interrupted
+                        )
+                    })
+            });
+            let external_stale = wait.wake_sources.iter().any(|source| {
+                let WakeSource::ExternalIngress {
+                    external_trigger_id,
+                } = source
+                else {
+                    return false;
+                };
+                external_trigger_id.as_ref().is_none_or(|trigger_id| {
+                    !external_triggers.iter().any(|trigger| {
+                        trigger.external_trigger_id == *trigger_id
+                            && trigger.target_agent_id == wait.agent_id
+                            && trigger.status == ExternalTriggerStatus::Active
+                    })
+                })
+            });
+            let timer_stale = wait.kind == crate::types::WaitConditionKind::Timer
+                && wait.subject_ref.as_ref().is_none_or(|timer_id| {
+                    !timers.iter().any(|timer| {
+                        timer.id == *timer_id
+                            && timer.agent_id == wait.agent_id
+                            && timer.status == crate::types::TimerStatus::Active
+                    })
+                });
+
+            if state.status == AgentStatus::Stopped {
+                stopped_agents.insert(wait.agent_id.clone());
+            }
+            if state.status == AgentStatus::Stopped || task_stale || external_stale || timer_stale {
+                let mut cancelled_wait = wait;
+                cancelled_wait.status = WaitConditionStatus::Cancelled;
+                cancelled_wait.updated_at = Utc::now();
+                cancelled_wait.cancelled_at = Some(cancelled_wait.updated_at);
+                runtime_db.wait_conditions().upsert(&cancelled_wait)?;
+                cancelled += 1;
+            }
+        }
+
+        for agent_id in stopped_agents {
+            runtime_db
+                .timers()
+                .cancel_active_for_agent(&agent_id, Utc::now())?;
+            runtime_db
+                .queue_entries()
+                .abort_pending_for_agent(&agent_id)?;
+            if let Some(mut state) = runtime_db.agent_states().latest(&agent_id)? {
+                state.pending = 0;
+                runtime_db.agent_states().upsert(&state)?;
+            }
+        }
+        Ok(cancelled)
     }
 
     fn active_agent_identity(
@@ -13101,6 +13193,19 @@ mod tests {
                 Some(overdue),
             ))
             .unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "message-startup-stopped-queued-1".into(),
+                agent_id: agent_id.into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        state.pending = 1;
+        storage.write_agent(&state).unwrap();
 
         host.recover_orphaned_queue_claims_at_startup()
             .await
@@ -13111,11 +13216,21 @@ mod tests {
             .latest_timer_record("timer-startup-stopped-1")
             .unwrap()
             .unwrap();
-        assert_eq!(timer.status, TimerStatus::Active);
+        assert_eq!(timer.status, TimerStatus::Cancelled);
         assert_eq!(timer.fire_count, 0);
         assert_startup_timer_tick_count(&storage, "timer-startup-stopped-1", 0);
+        let queue_entry = host
+            .runtime_db()
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == "message-startup-stopped-queued-1")
+            .expect("stopped startup input should remain durable for reconciliation");
+        assert_eq!(queue_entry.status, QueueEntryStatus::Aborted);
         let state = storage.read_agent().unwrap().unwrap();
         assert_eq!(state.status, AgentStatus::Stopped);
+        assert_eq!(state.pending, 0);
     }
 
     #[tokio::test]

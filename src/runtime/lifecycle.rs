@@ -356,6 +356,37 @@ impl RuntimeHandle {
             self.interrupt_active_tasks_for_lifecycle_stop(active_tasks)
                 .await?;
 
+            let cancelled_waits = self
+                .inner
+                .runtime_db
+                .wait_conditions()
+                .cancel_unresolved_for_agent(&agent_id, Utc::now())?;
+            let cancelled_timers = self
+                .inner
+                .runtime_db
+                .timers()
+                .cancel_active_for_agent(&agent_id, Utc::now())?;
+            let aborted_queue_entries = self
+                .inner
+                .runtime_db
+                .queue_entries()
+                .abort_pending_for_agent(&agent_id)?;
+            {
+                let mut guard = self.inner.agent.lock().await;
+                guard.queue.clear();
+                guard.state.pending = 0;
+                guard.persist_state(&self.inner.storage)?;
+            }
+            self.inner.storage.append_event(&AuditEvent::legacy(
+                "agent_stop_state_discarded",
+                serde_json::json!({
+                    "agent_id": agent_id,
+                    "waits_cancelled": cancelled_waits,
+                    "timers_cancelled": cancelled_timers,
+                    "queue_entries_aborted": aborted_queue_entries,
+                }),
+            ))?;
+
             // Revoke all active external triggers to prevent capability
             // secret leakage and unexpected wake after the agent is stopped.
             let triggers = self.latest_external_triggers().await?;

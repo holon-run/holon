@@ -12288,7 +12288,7 @@ async fn message_admission_does_not_wake_stopped_agents() {
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::Stopped);
-    assert_eq!(state.pending, 1);
+    assert_eq!(state.pending, 0);
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
     assert!(!events.iter().any(|event| {
         event.kind == "scheduler_posture_decision" && event.data["boundary"] == "message_admission"
@@ -12341,7 +12341,7 @@ async fn control_start_hands_stopped_agent_to_scheduler_without_model_turn() {
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(state.status, AgentStatus::AwakeIdle);
-    assert_eq!(state.pending, 1);
+    assert_eq!(state.pending, 0);
     assert_eq!(provider.call_count().await, 0);
     let events = wait_for_audit_events(
         &runtime,
@@ -12421,6 +12421,104 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
             && event.data["previous_status"] == "asleep"
             && event.data["next_status"] == "stopped"
     }));
+}
+
+#[tokio::test]
+async fn control_stop_cancels_waits_and_discards_pending_input() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(CountingProvider {
+            calls: Mutex::new(0),
+            reply: "unused",
+        }),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let now = Utc::now();
+
+    for (id, status, triggered_at) in [
+        ("wait-stop-active", WaitConditionStatus::Active, None),
+        (
+            "wait-stop-triggered",
+            WaitConditionStatus::Triggered,
+            Some(now),
+        ),
+    ] {
+        runtime
+            .inner
+            .runtime_db
+            .wait_conditions()
+            .upsert(&WaitConditionRecord {
+                id: id.into(),
+                agent_id: "default".into(),
+                work_item_id: None,
+                status,
+                kind: WaitConditionKind::Operator,
+                source: Some("test".into()),
+                subject_ref: None,
+                waiting_for: "operator input".into(),
+                wake_sources: Vec::new(),
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: None,
+                trigger_message_id: triggered_at.map(|_| "trigger-message".into()),
+                triggered_at,
+            })
+            .unwrap();
+    }
+
+    for (message_id, status) in [
+        ("message-stop-queued", QueueEntryStatus::Queued),
+        ("message-stop-interrupted", QueueEntryStatus::Interrupted),
+    ] {
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: message_id.into(),
+                agent_id: "default".into(),
+                priority: Priority::Normal,
+                status,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+    }
+
+    runtime.control(ControlAction::Stop).await.unwrap();
+
+    let waits = runtime
+        .inner
+        .runtime_db
+        .wait_conditions()
+        .latest_all()
+        .unwrap();
+    assert!(waits
+        .iter()
+        .filter(|wait| wait.id.starts_with("wait-stop-"))
+        .all(|wait| wait.status == WaitConditionStatus::Cancelled));
+    let queue_entries = runtime
+        .inner
+        .runtime_db
+        .queue_entries()
+        .latest_all()
+        .unwrap();
+    assert!(queue_entries
+        .iter()
+        .filter(|entry| entry.message_id.starts_with("message-stop-"))
+        .all(|entry| entry.status == QueueEntryStatus::Aborted));
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
 }
 
 #[tokio::test(start_paused = true)]
@@ -12509,7 +12607,7 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
 
     let committed_state = runtime.storage().read_agent().unwrap().unwrap();
     assert_eq!(committed_state.total_input_tokens, 41);
-    assert_eq!(committed_state.pending, 1);
+    assert_eq!(committed_state.pending, 0);
     assert_eq!(committed_state.total_message_count, 1);
     assert!(runtime
         .storage()
@@ -12527,7 +12625,7 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
         1
     );
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
-    for kind in ["message_admitted", "message_enqueued"] {
+    for kind in ["message_admitted", "message_discarded_agent_stopped"] {
         assert_eq!(
             events
                 .iter()

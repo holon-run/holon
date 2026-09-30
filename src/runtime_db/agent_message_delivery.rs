@@ -790,7 +790,9 @@ mod tests {
         next.updated_at = Utc::now();
         let mutation = match operation {
             QueueOperation::Claim | QueueOperation::Interject => QueueMutation::Consume(next),
-            QueueOperation::Settle | QueueOperation::RepairDrop => QueueMutation::Upsert(next),
+            QueueOperation::Settle | QueueOperation::RepairDrop | QueueOperation::Discard => {
+                QueueMutation::Upsert(next)
+            }
             QueueOperation::Admit | QueueOperation::Requeue => {
                 unreachable!("test helper only advances admitted deliveries")
             }

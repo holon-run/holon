@@ -4571,30 +4571,24 @@ impl RuntimeHandle {
         }) {
             return Ok(TransitionCommit::default());
         }
-        let mut audit_events = vec![
-            AuditEvent::legacy(
-                "message_admitted",
-                serde_json::json!({
-                    "message_id": message.id.clone(),
-                    "agent_id": message.agent_id.clone(),
-                    "kind": message.kind.clone(),
-                    "origin": message.origin.clone(),
-                    "authority_class": message.authority_class,
-                    "delivery_surface": message.delivery_surface,
-                    "admission_context": message.admission_context,
-                    "trigger_kind": message.trigger_kind,
-                    "work_item_id": message.work_item_id.clone(),
-                    "task_id": message.task_id.clone(),
-                    "source_refs": message.source_refs.clone(),
-                    "correlation_id": message.correlation_id.clone(),
-                    "causation_id": message.causation_id.clone(),
-                }),
-            ),
-            AuditEvent::typed(
-                RuntimeEventKind::MessageEnqueued,
-                &MessageLifecycleAuditEvent::from_message(&message),
-            )?,
-        ];
+        let mut audit_events = vec![AuditEvent::legacy(
+            "message_admitted",
+            serde_json::json!({
+                "message_id": message.id.clone(),
+                "agent_id": message.agent_id.clone(),
+                "kind": message.kind.clone(),
+                "origin": message.origin.clone(),
+                "authority_class": message.authority_class,
+                "delivery_surface": message.delivery_surface,
+                "admission_context": message.admission_context,
+                "trigger_kind": message.trigger_kind,
+                "work_item_id": message.work_item_id.clone(),
+                "task_id": message.task_id.clone(),
+                "source_refs": message.source_refs.clone(),
+                "correlation_id": message.correlation_id.clone(),
+                "causation_id": message.causation_id.clone(),
+            }),
+        )];
         let commit = {
             let mut guard = self.inner.agent.lock().await;
             let queue_needs_push = guard
@@ -4603,19 +4597,22 @@ impl RuntimeHandle {
                 .is_none();
             let expected_persisted_state = guard.last_persisted_state.clone();
             let mut committed_state = guard.state.clone();
+            let discard_due_to_stop = committed_state.status == AgentStatus::Stopped;
             let previous_status = committed_state.status.clone();
             let previous_sleeping_until = committed_state.sleeping_until;
             committed_state.pending = guard
                 .queue
                 .len()
-                .saturating_add(usize::from(queue_needs_push));
+                .saturating_add(usize::from(queue_needs_push && !discard_due_to_stop));
             committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
             committed_state.total_message_count = self
                 .inner
                 .storage
                 .count_messages()?
                 .saturating_add(usize::from(message_is_new));
-            if scheduler::apply_message_wake_projection(&mut committed_state) {
+            if !discard_due_to_stop
+                && scheduler::apply_message_wake_projection(&mut committed_state)
+            {
                 audit_events.push(AuditEvent::legacy(
                     "scheduler_posture_decision",
                     serde_json::json!({
@@ -4631,14 +4628,36 @@ impl RuntimeHandle {
                     }),
                 ));
             }
+            let queue_status = if discard_due_to_stop {
+                audit_events.push(AuditEvent::legacy(
+                    "message_discarded_agent_stopped",
+                    serde_json::json!({
+                        "message_id": message.id,
+                        "agent_id": message.agent_id,
+                        "message_kind": message.kind,
+                        "origin": message.origin,
+                    }),
+                ));
+                QueueEntryStatus::Aborted
+            } else {
+                audit_events.push(AuditEvent::typed(
+                    RuntimeEventKind::MessageEnqueued,
+                    &MessageLifecycleAuditEvent::from_message(&message),
+                )?);
+                QueueEntryStatus::Queued
+            };
             let command = crate::runtime_db::transitions::QueueTransitionCommand {
                 agent_id: message.agent_id.clone(),
-                operation: crate::runtime_db::transitions::QueueOperation::Admit,
+                operation: if discard_due_to_stop {
+                    crate::runtime_db::transitions::QueueOperation::Discard
+                } else {
+                    crate::runtime_db::transitions::QueueOperation::Admit
+                },
                 mutation: crate::runtime_db::transitions::QueueMutation::Upsert(QueueEntryRecord {
                     message_id: message.id.clone(),
                     agent_id: message.agent_id.clone(),
                     priority: message.priority.clone(),
-                    status: QueueEntryStatus::Queued,
+                    status: queue_status.clone(),
                     created_at: existing_queue_entry
                         .as_ref()
                         .map_or(message.created_at, |entry| entry.created_at),
@@ -4653,7 +4672,7 @@ impl RuntimeHandle {
                 transcript_entries: Vec::new(),
                 turn_record: None,
                 audit_events,
-                notify_scheduler: true,
+                notify_scheduler: queue_status == QueueEntryStatus::Queued,
                 fault: self.take_transition_fault(),
                 brief_evidence: Vec::new(),
             };
@@ -4672,7 +4691,7 @@ impl RuntimeHandle {
                 receipt.outcome == AgentMessageDeliveryOutcome::Accepted
                     && !receipt.idempotent_replay
             });
-            if queue_admitted && queue_needs_push {
+            if queue_admitted && queue_needs_push && queue_status == QueueEntryStatus::Queued {
                 guard.queue.push(message.clone());
             }
             if queue_admitted {
