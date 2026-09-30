@@ -17,6 +17,12 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AgentDetailArg {
+    Compact,
+    Full,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum TimerCommands {
     Create {
@@ -869,9 +875,13 @@ pub enum AgentCommands {
     },
     Get {
         agent_id: Option<String>,
+        #[arg(long, value_enum, default_value_t = AgentDetailArg::Compact)]
+        detail: AgentDetailArg,
     },
     Status {
         agent_id: Option<String>,
+        #[arg(long, value_enum, default_value_t = AgentDetailArg::Compact)]
+        detail: AgentDetailArg,
     },
     Create {
         agent_id: String,
