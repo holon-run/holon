@@ -68,7 +68,8 @@ pub(crate) async fn execute(
     let mut visual_reference = image.visual_reference;
     visual_reference.workspace_uri = Some(resolved_path.to_string_lossy().into_owned());
     let cache_key = observation_cache_key(&visual_reference, &prompt);
-    let vision_selection = runtime.current_view_image_vision_selection().await?;
+    let resolved_selection = runtime.current_view_image_vision_route_selection().await?;
+    let vision_selection = resolved_selection.selection.clone();
     if let Some(observation) = runtime.cached_view_image_observation(&cache_key).await {
         let selected_mode = vision_selection.selected_mode.clone();
         return serialize_success(
@@ -86,53 +87,78 @@ pub(crate) async fn execute(
         return Err(vision_adapter_unavailable(vision_selection));
     }
     let generation_runtime = runtime.clone();
+    let generation_selection = resolved_selection.clone();
     let generation_media_type = visual_reference.mime.clone();
     let generation_bytes = image.bytes;
-    let observation = generate_and_parse_view_image_observation(
+    let generation_result = generate_and_parse_view_image_observation(
         &prompt,
         &visual_reference,
         &vision_selection,
         move |request_prompt| {
             let runtime = generation_runtime.clone();
+            let selection = generation_selection.clone();
             let media_type = generation_media_type.clone();
             let bytes = generation_bytes.clone();
             async move {
                 runtime
-                    .generate_view_image_observation(&request_prompt, &media_type, &bytes)
+                    .generate_view_image_observation(
+                        &selection,
+                        &request_prompt,
+                        &media_type,
+                        &bytes,
+                    )
                     .await
             }
         },
     )
-    .await
-    .map_err(|failure| match failure {
-        ViewImageObservationGenerationError::Provider {
+    .await;
+    let observation = match generation_result {
+        Ok(observation) => {
+            runtime
+                .record_view_image_candidate_success(&resolved_selection)
+                .await;
+            observation
+        }
+        Err(ViewImageObservationGenerationError::Provider {
             initial_validation_error: None,
             error,
             ..
-        } => vision_observation_failed(&vision_selection, error),
-        ViewImageObservationGenerationError::Provider {
+        }) => return Err(vision_observation_failed(&vision_selection, error)),
+        Err(ViewImageObservationGenerationError::Provider {
             initial_validation_error: Some(first_validation_error),
             initial_response_preview,
             error,
-        } => vision_observation_failed_after_validation_retry(
-            &vision_selection,
-            &first_validation_error,
-            initial_response_preview.as_deref().unwrap_or(""),
-            error,
-        ),
-        ViewImageObservationGenerationError::Validation {
+        }) => {
+            return Err(vision_observation_failed_after_validation_retry(
+                &vision_selection,
+                &first_validation_error,
+                initial_response_preview.as_deref().unwrap_or(""),
+                error,
+            ));
+        }
+        Err(ViewImageObservationGenerationError::Validation {
             first_raw,
             second_raw,
             first_error,
             second_error,
-        } => vision_observation_validation_failed(
-            &vision_selection,
-            &first_raw,
-            &second_raw,
-            &first_error,
-            second_error,
-        ),
-    })?;
+        }) => {
+            let candidate_health = runtime
+                .record_view_image_candidate_protocol_failure(&resolved_selection)
+                .await;
+            return Err(vision_observation_validation_failed(
+                &vision_selection,
+                &first_raw,
+                &second_raw,
+                &first_error,
+                second_error,
+                resolved_selection
+                    .selected_route
+                    .as_ref()
+                    .map(|route| route.as_string()),
+                candidate_health,
+            ));
+        }
+    };
     runtime
         .cache_view_image_observation(cache_key, observation.clone())
         .await;
@@ -313,6 +339,8 @@ fn vision_observation_validation_failed(
     second_raw: &str,
     first_error: &anyhow::Error,
     second_error: anyhow::Error,
+    candidate_model_ref: Option<String>,
+    candidate_health: Option<crate::runtime::ViewImageCandidateFailureStatus>,
 ) -> anyhow::Error {
     ToolError::new(
         "vision_observation_failed",
@@ -331,6 +359,13 @@ fn vision_observation_validation_failed(
         "final_validation_error": second_error.to_string(),
         "initial_response_preview": bounded_response_preview(first_raw),
         "final_response_preview": bounded_response_preview(second_raw),
+        "candidate_health": {
+            "model_ref": candidate_model_ref,
+            "consecutive_protocol_failures": candidate_health.map(|health| health.consecutive_protocol_failures),
+            "failure_threshold": crate::runtime::VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
+            "circuit_open": candidate_health.is_some_and(|health| health.circuit_open),
+            "cooldown_seconds": candidate_health.map_or(0, |health| health.cooldown_seconds),
+        },
     }))
     .with_recovery_hint(
         "the vision endpoint returned an incompatible response twice; inspect the selected model's JSON compatibility or configure another vision model",

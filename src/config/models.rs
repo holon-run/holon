@@ -5,6 +5,13 @@ use crate::model_catalog::{
 };
 use std::collections::HashSet;
 
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedViewImageVisionSelection {
+    pub(crate) selection: crate::types::ViewImageVisionSelection,
+    pub(crate) selected_route: Option<ModelRouteRef>,
+    pub(crate) primary_route: ModelRouteRef,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModelRef {
     pub provider: ProviderId,
@@ -719,13 +726,27 @@ impl RuntimeModelCatalog {
         model_override: Option<&ModelRouteRef>,
         pending_fallback_model: Option<&ModelRouteRef>,
     ) -> ViewImageVisionSelection {
+        self.select_view_image_vision_model_with_route(
+            base_context_config,
+            model_override,
+            pending_fallback_model,
+        )
+        .selection
+    }
+
+    pub(crate) fn select_view_image_vision_model_with_route(
+        &self,
+        base_context_config: &ContextConfig,
+        model_override: Option<&ModelRouteRef>,
+        pending_fallback_model: Option<&ModelRouteRef>,
+    ) -> ResolvedViewImageVisionSelection {
         let chain = self.provider_chain_for_turn(model_override, pending_fallback_model);
         let primary = chain
             .first()
             .cloned()
             .unwrap_or_else(|| self.effective_model(model_override));
         if let Some(model_ref) = &self.vision_model {
-            return self.select_view_image_vision_model_from_candidates(
+            return self.select_view_image_vision_model_from_candidates_with_route(
                 base_context_config,
                 primary,
                 vec![model_ref.clone()],
@@ -758,7 +779,7 @@ impl RuntimeModelCatalog {
             }
         }
 
-        self.select_view_image_vision_model_from_candidates(
+        self.select_view_image_vision_model_from_candidates_with_route(
             base_context_config,
             primary,
             candidates,
@@ -767,14 +788,14 @@ impl RuntimeModelCatalog {
         )
     }
 
-    pub(crate) fn select_view_image_vision_model_from_candidates(
+    pub(crate) fn select_view_image_vision_model_from_candidates_with_route(
         &self,
         base_context_config: &ContextConfig,
         primary: ModelRouteRef,
         model_refs: Vec<ModelRouteRef>,
         selected_adapter_reason: &str,
         unavailable_reason: &str,
-    ) -> ViewImageVisionSelection {
+    ) -> ResolvedViewImageVisionSelection {
         let mut candidates = Vec::new();
         let mut selected = None;
 
@@ -811,35 +832,43 @@ impl RuntimeModelCatalog {
         }
 
         let Some(selected) = selected else {
-            return ViewImageVisionSelection {
-                selected_mode: ViewImageSelectedMode::Unavailable,
-                vision_provider: None,
-                vision_model: None,
-                selection_reason: unavailable_reason.to_string(),
-                primary_provider: Some(primary.provider.as_str().to_string()),
-                primary_model: Some(primary.model),
-                candidates,
+            return ResolvedViewImageVisionSelection {
+                selection: ViewImageVisionSelection {
+                    selected_mode: ViewImageSelectedMode::Unavailable,
+                    vision_provider: None,
+                    vision_model: None,
+                    selection_reason: unavailable_reason.to_string(),
+                    primary_provider: Some(primary.provider.as_str().to_string()),
+                    primary_model: Some(primary.model.clone()),
+                    candidates,
+                },
+                selected_route: None,
+                primary_route: primary,
             };
         };
 
         let primary_supports_image = selected == primary;
-        ViewImageVisionSelection {
-            selected_mode: if primary_supports_image {
-                ViewImageSelectedMode::NativeImageWithObservation
-            } else {
-                ViewImageSelectedMode::VisionAdapter
+        ResolvedViewImageVisionSelection {
+            selection: ViewImageVisionSelection {
+                selected_mode: if primary_supports_image {
+                    ViewImageSelectedMode::NativeImageWithObservation
+                } else {
+                    ViewImageSelectedMode::VisionAdapter
+                },
+                vision_provider: Some(selected.provider.as_str().to_string()),
+                vision_model: Some(selected.model.clone()),
+                selection_reason: if primary_supports_image {
+                    "current_primary_model_supports_image_input"
+                } else {
+                    selected_adapter_reason
+                }
+                .to_string(),
+                primary_provider: Some(primary.provider.as_str().to_string()),
+                primary_model: Some(primary.model.clone()),
+                candidates,
             },
-            vision_provider: Some(selected.provider.as_str().to_string()),
-            vision_model: Some(selected.model.clone()),
-            selection_reason: if primary_supports_image {
-                "current_primary_model_supports_image_input"
-            } else {
-                selected_adapter_reason
-            }
-            .to_string(),
-            primary_provider: Some(primary.provider.as_str().to_string()),
-            primary_model: Some(primary.model),
-            candidates,
+            selected_route: Some(selected),
+            primary_route: primary,
         }
     }
 

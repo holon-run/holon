@@ -4071,6 +4071,7 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
         .get_mut(&crate::config::ProviderId::parse("ollama").unwrap())
         .unwrap()
         .base_url = base_url;
+    let discovery_cache = crate::model_discovery::discovery_cache_path(&config.home_dir);
     let host = RuntimeHost::new(config).unwrap();
     let runtime = host.default_runtime().await.unwrap();
 
@@ -4078,6 +4079,23 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
         runtime.current_view_image_vision_selection(),
         runtime.current_view_image_vision_selection()
     );
+    let cooled_selection = async {
+        let selection = runtime.current_view_image_vision_route_selection().await?;
+        runtime
+            .record_view_image_candidate_protocol_failure(&selection)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("expected the selected Ollama model to be tracked"))?;
+        let failure = runtime
+            .record_view_image_candidate_protocol_failure(&selection)
+            .await
+            .ok_or_else(|| anyhow::anyhow!("expected the selected Ollama model to be tracked"))?;
+        if !failure.circuit_open {
+            anyhow::bail!("expected the selected Ollama model cooldown to open");
+        }
+        std::fs::remove_file(discovery_cache)?;
+        runtime.current_view_image_vision_route_selection().await
+    }
+    .await;
     stopped.store(true, Ordering::SeqCst);
     server.join().unwrap();
 
@@ -4089,6 +4107,15 @@ async fn concurrent_view_image_selection_discovers_ollama_vision_once_from_cold_
         assert_eq!(selection.primary_provider.as_deref(), Some("ollama"));
         assert_eq!(selection.primary_model.as_deref(), Some("qwen3-vl:latest"));
     }
+    let unavailable = cooled_selection.unwrap();
+    assert_eq!(
+        unavailable.selection.selected_mode,
+        crate::types::ViewImageSelectedMode::Unavailable
+    );
+    assert_eq!(
+        unavailable.selection.selection_reason,
+        "all_configured_view_image_candidates_cooling_after_protocol_validation_failures"
+    );
     assert_eq!(tags_requests.load(Ordering::SeqCst), 1);
     assert_eq!(show_requests.load(Ordering::SeqCst), 1);
 }
