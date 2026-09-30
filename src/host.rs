@@ -13666,9 +13666,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recover_orphaned_dequeued_claims_recovers_only_orphaned() {
+    async fn startup_recovery_recovers_prior_process_claims_and_settles_completed_sources() {
         let (_home, host) = test_host();
-        let agent_id = host.config().default_agent_id.clone();
+        // Isolate persisted recovery from live replay; owner activation is tested separately.
+        let agent_id = "startup-unregistered-claims".to_string();
         let runtime_db = host.runtime_db().clone();
         let storage = AppStorage::new_for_agent(
             host.agent_data_dir(&agent_id),
@@ -13710,7 +13711,7 @@ mod tests {
             .append_queue_entry(&make_queue_entry(&msg_a, QueueEntryStatus::Dequeued))
             .unwrap();
 
-        // Has unified execution attempt: should NOT be recovered.
+        // A prior-process execution attempt must be interrupted with its claim.
         let msg_b = make_message("msg-activated");
         storage.append_message(&msg_b).unwrap();
         storage
@@ -13752,25 +13753,13 @@ mod tests {
             admitted_at: Utc::now().to_rfc3339(),
             terminal_at: None,
         };
+        let attempt_id = attempt.attempt_id.clone();
+        let mut execution =
+            crate::domain::execution_protocol::ExecutionProtocolState::empty(&agent_id);
+        execution.attempts.insert(attempt_id.clone(), attempt);
         runtime_db
-            .transaction(|tx| {
-                tx.execute(
-                    "INSERT INTO execution_protocol_attempts (
-                       agent_id, attempt_id, lifecycle_state,
-                       source_identity_json, source_generation,
-                       recovery_of_attempt_id, terminal_outcome_id, payload_json
-                     ) VALUES (?1, ?2, 'open', ?3, ?4, NULL, NULL, ?5)",
-                    rusqlite::params![
-                        &agent_id,
-                        &attempt.attempt_id,
-                        serde_json::to_string(&attempt.source.identity)?,
-                        attempt.source.generation as i64,
-                        serde_json::to_string(&attempt)?,
-                    ],
-                )?;
-                Ok(())
-            })
-            .expect("insert execution attempt");
+            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+            .expect("persist execution protocol fixture");
 
         // A legacy activation without a unified attempt no longer protects a claim.
         let msg_legacy = make_message("msg-legacy-activation");
@@ -13885,8 +13874,8 @@ mod tests {
                 ),
                 "msg-activated" => assert_eq!(
                     entry.status,
-                    QueueEntryStatus::Dequeued,
-                    "open-attempt claim is retained for bootstrap reconciliation"
+                    QueueEntryStatus::Interrupted,
+                    "prior-process attempt and claim should be recovered together"
                 ),
                 "msg-terminal" | "msg-result-brief" | "msg-delivery" => assert_eq!(
                     entry.status,
@@ -13901,6 +13890,30 @@ mod tests {
                 _ => {}
             }
         }
+
+        let execution = runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(&agent_id)
+            .unwrap()
+            .expect("recovered execution partition");
+        assert_eq!(
+            execution.attempts[&attempt_id].state,
+            ExecutionAttemptState::Interrupted
+        );
+        assert!(host
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .expect("second recovery")
+            .is_empty());
+        assert_eq!(storage.latest_queue_entries().unwrap(), entries);
+        assert_eq!(
+            runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized(&agent_id)
+                .unwrap()
+                .expect("execution partition after second recovery"),
+            execution
+        );
 
         let events = storage.read_recent_events(32).unwrap();
         assert!(events.iter().any(|event| {
