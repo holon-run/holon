@@ -13,6 +13,9 @@ on:
       - "src/**"
       - "tests/**"
       - "apps/android/**"
+      - ".github/workflows/android-release.yml"
+      - ".github/workflows/release.yml"
+      - "scripts/*android-release*.sh"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "packages/api-sdk/**"
@@ -48,6 +51,9 @@ on:
       - "src/**"
       - "tests/**"
       - "apps/android/**"
+      - ".github/workflows/android-release.yml"
+      - ".github/workflows/release.yml"
+      - "scripts/*android-release*.sh"
       - "packages/client-wire-kotlin/**"
       - "packages/conversation-sdk/**"
       - "packages/api-sdk/**"
@@ -158,6 +164,9 @@ jobs:
               - 'docs/website/reference/openapi.json'
             android:
               - 'apps/android/**'
+              - '.github/workflows/android-release.yml'
+              - '.github/workflows/release.yml'
+              - 'scripts/*android-release*.sh'
               - 'packages/client-wire-kotlin/**'
               - '.github/workflows/ci.yml'
             macos_app:
@@ -239,7 +248,10 @@ jobs:
 
       - name: Test SDK and build APKs
         working-directory: apps/android
-        run: ./gradlew --no-daemon :sdk:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
+        run: |
+          bash ../../scripts/test-android-release-version.sh
+          bash ../../scripts/test-android-release-packaging.sh
+          ./gradlew --no-daemon :sdk:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
 
   conversation-sdk:
     name: Conversation SDK

@@ -5,8 +5,10 @@ This directory contains the native Android client implementation.
 `:sdk` is a Kotlin/JVM library that keeps generated wire models separate from
 stable client-facing domain models. `:app` is a Compose application with native
 session login, recent conversations, Agent browsing, offline caches, a durable
-prompt outbox, attachments, and brief/artifact viewing. Store signing and public
-distribution configuration are intentionally out of scope.
+prompt outbox, attachments, and brief/artifact viewing. Official signed APK/AAB
+builds are described in [RELEASING.md](./RELEASING.md). Store listing, privacy
+declarations and review access remain tracked in
+[#3229](https://github.com/holon-run/holon/issues/3229).
 
 The app UI supports English and Simplified Chinese. It follows the device or
 Android per-app language by default; the login and Settings screens also offer
