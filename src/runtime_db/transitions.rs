@@ -399,7 +399,6 @@ pub(crate) struct StartupRuntimeRecoveryReport {
     pub orphaned_claim_turns: usize,
     pub daemon_restart_turns: usize,
     pub interrupted_execution_attempts: usize,
-    pub unresolved_execution_attempts: usize,
 }
 
 #[derive(Debug, Default)]
@@ -560,16 +559,16 @@ impl RuntimeDb {
             // execution interrupted by the restart. Queue-message sources
             // re-drive through new admissions, so a leftover open attempt
             // would reject every later admission for that agent with a
-            // non-retryable protocol error. Settle each one as interrupted.
+            // non-retryable protocol error. Settle each one as interrupted,
+            // regardless of identity lifecycle status: deleting/deleted
+            // identities unload their runtime before the attempt settles,
+            // and reincarnation does not clear the execution-protocol rows.
             let open_attempts: Vec<(String, String)> = {
                 let mut statement = tx.prepare(
-                    "SELECT a.agent_id, a.attempt_id
-                     FROM execution_protocol_attempts a
-                     JOIN agent_identities i
-                       ON i.agent_id = a.agent_id
-                      AND i.status = 'active'
-                     WHERE a.lifecycle_state = 'open'
-                     ORDER BY a.agent_id, a.attempt_id",
+                    "SELECT agent_id, attempt_id
+                     FROM execution_protocol_attempts
+                     WHERE lifecycle_state = 'open'
+                     ORDER BY agent_id, attempt_id",
                 )?;
                 let rows = statement
                     .query_map([], |row| {
@@ -629,8 +628,14 @@ impl RuntimeDb {
                         report.interrupted_execution_attempts += 1;
                     }
                     Ok(None) => {}
-                    Err(_) => {
-                        report.unresolved_execution_attempts += 1;
+                    Err(error) => {
+                        // Fail closed: continuing startup with an attempt we
+                        // could not settle would leave later admissions
+                        // blocked by a non-retryable protocol error.
+                        return Err(anyhow!(
+                            "startup recovery could not settle open execution attempt \
+                             {attempt_id} for agent {agent_id}: {error:#}"
+                        ));
                     }
                 }
             }
@@ -5289,7 +5294,6 @@ mod tests {
         let report = db.recover_interrupted_runtime_state_at_startup()?;
         assert_eq!(report.interrupted_turns, 0);
         assert_eq!(report.interrupted_execution_attempts, 1);
-        assert_eq!(report.unresolved_execution_attempts, 0);
 
         let state = db
             .transitions()
@@ -5330,6 +5334,104 @@ mod tests {
             .filter(|event| event.kind == "startup_interrupted_execution_attempt_recovered")
             .count();
         assert_eq!(recovery_audits, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_settles_open_attempts_for_deleting_identities() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        let mut identity = AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        db.agent_identities().upsert(&identity)?;
+        let transition =
+            execution_admission("message-execution", "attempt-execution", "work-execution");
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+
+        // Delete flows flip the registry status to Deleting before the
+        // runtime unloads; a restart in that window must not skip the
+        // still-open attempt, or the id blocks its next incarnation.
+        identity.status = crate::types::AgentRegistryStatus::Deleting;
+        db.agent_identities().upsert(&identity)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 1);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_fails_closed_on_unsettleable_open_attempt() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        // Orphaned open attempt row with no execution protocol partition:
+        // validation cannot even prepare the interrupt, so recovery must
+        // fail closed with agent/attempt context instead of silently
+        // continuing with the attempt still blocking later admissions.
+        db.connection()?.execute(
+            "INSERT INTO execution_protocol_attempts (
+               agent_id, attempt_id, lifecycle_state,
+               source_identity_json, source_generation, recovery_of_attempt_id,
+               terminal_outcome_id, payload_json
+             ) VALUES ('agent-orphan', 'attempt-orphan', 'open', '{}', 1, NULL, NULL, '{}')",
+            [],
+        )?;
+
+        let error = db
+            .recover_interrupted_runtime_state_at_startup()
+            .expect_err("recovery must fail closed on unsettleable open attempt");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("agent-orphan") && message.contains("attempt-orphan"),
+            "error must carry agent and attempt context: {message}"
+        );
+        // The failed transaction rolled back: the attempt is still open and
+        // nothing was reported as settled.
+        let still_open: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_attempts
+             WHERE agent_id = 'agent-orphan' AND lifecycle_state = 'open'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(still_open, 1);
         Ok(())
     }
 

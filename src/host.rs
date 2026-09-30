@@ -1964,7 +1964,6 @@ impl RuntimeHost {
             orphaned_claim_turns = recovery_report.orphaned_claim_turns,
             daemon_restart_turns = recovery_report.daemon_restart_turns,
             interrupted_execution_attempts = recovery_report.interrupted_execution_attempts,
-            unresolved_execution_attempts = recovery_report.unresolved_execution_attempts,
             stale_waits_cancelled = stale_waits,
             "startup runtime state recovery completed"
         );
