@@ -889,6 +889,15 @@ mod tests {
                                 "input": ["text", "audio"],
                                 "output": ["text", "audio"]
                             }
+                        },
+                        "gpt-realtime-2.2": {
+                            "id": "gpt-realtime-2.2",
+                            "name": "GPT-Realtime-2.2",
+                            "release_date": "2026-08-31",
+                            "modalities": {
+                                "input": ["text", "audio"],
+                                "output": ["text", "audio"]
+                            }
                         }
                     }
                 }
@@ -930,6 +939,10 @@ mod tests {
             .models
             .iter()
             .any(|model| { model.model_ref.as_string() == "openai/gpt-realtime-2.1" }));
+        assert!(update.deferred.iter().any(|deferred| {
+            deferred.model_ref == "openai-codex/gpt-realtime-2.2"
+                && deferred.reason == DeferredReason::UnsupportedByProvider
+        }));
     }
 
     #[test]
