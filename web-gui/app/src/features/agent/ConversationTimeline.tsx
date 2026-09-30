@@ -376,13 +376,28 @@ function InputSender({ input }: { input: TurnInputSummary }) {
   return name ? <div className="conversation-input-sender"><User size={12} aria-hidden="true" /><span>{name}</span></div> : null;
 }
 
+/** Same-day messages keep the compact time-only label; older ones carry
+ *  their calendar date so cross-day turns stay readable. */
+export function formatMessageTimestamp(created: Date): string {
+  const now = new Date();
+  const sameDay = created.getFullYear() === now.getFullYear()
+    && created.getMonth() === now.getMonth()
+    && created.getDate() === now.getDate();
+  if (sameDay) {
+    return created.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  return created.toLocaleString([], created.getFullYear() === now.getFullYear()
+    ? { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }
+    : { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
 function InputTimestamp({ timestamp }: { timestamp?: string | null }) {
   if (!timestamp) return null;
   const created = new Date(timestamp);
   if (Number.isNaN(created.getTime())) return null;
   return (
     <time dateTime={timestamp} title={created.toLocaleString()}>
-      {created.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+      {formatMessageTimestamp(created)}
     </time>
   );
 }
@@ -510,7 +525,7 @@ function BriefCardBody({ brief, onOpenWorkItemId }: { brief: BriefRecord; onOpen
         </button>
         {created !== null && !Number.isNaN(created.getTime()) ? (
           <time dateTime={brief.created_at} title={created.toLocaleString()}>
-            {created.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+            {formatMessageTimestamp(created)}
           </time>
         ) : null}
       </div>
