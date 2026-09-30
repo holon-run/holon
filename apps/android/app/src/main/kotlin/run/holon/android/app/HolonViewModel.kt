@@ -205,6 +205,8 @@ internal fun isCurrentLiveSync(
 ): Boolean =
     foreground && phase == AppPhase.Ready && expectedGeneration == currentGeneration
 
+private const val SESSION_KEEPALIVE_INTERVAL_MILLIS = 15 * 60 * 1000L
+
 internal class AppContainer(context: Context) {
     private val database = HolonDatabase.create(context)
     val traceRecorder = TraceRecorder(context)
@@ -242,6 +244,7 @@ internal class HolonViewModel(
     private var workspaceBrowseGeneration = 0L
     private var workspaceBrowseRequest: WorkspaceBrowseRequest? = null
     private var refreshJob: Job? = null
+    private var sessionKeepAliveJob: Job? = null
     @Volatile private var foreground = true
     private val draftSaveJobs = mutableMapOf<String, Job>()
     private val composerSaveJobs = mutableMapOf<String, Job>()
@@ -701,6 +704,7 @@ internal class HolonViewModel(
     ) {
         if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) return
         eventLogEpoch?.let { liveEventLogEpoch = it }
+        startSessionKeepAlive(generation)
         if (globalEventStreamJob?.isActive != true) {
             globalEventStreamJob =
                 viewModelScope.launch(eventStreamIo) {
@@ -856,12 +860,55 @@ internal class HolonViewModel(
         }
 
     private fun stopLiveSync() {
+        sessionKeepAliveJob?.cancel()
+        sessionKeepAliveJob = null
         globalEventStreamJob?.cancel()
         globalEventStreamJob = null
         agentEventStreamJobs.values.forEach(Job::cancel)
         agentEventStreamJobs.clear()
         liveRosterRefreshJob?.cancel()
         liveRosterRefreshJob = null
+    }
+
+    private fun startSessionKeepAlive(generation: Long) {
+        if (sessionKeepAliveJob?.isActive == true) return
+        sessionKeepAliveJob =
+            viewModelScope.launch(eventStreamIo) {
+                while (
+                    isActive &&
+                        isCurrentLiveSync(
+                            foreground,
+                            state.value.phase,
+                            generation,
+                            liveSyncGeneration,
+                        )
+                ) {
+                    try {
+                        delay(SESSION_KEEPALIVE_INTERVAL_MILLIS)
+                        if (
+                            !isActive ||
+                                !isCurrentLiveSync(
+                                    foreground,
+                                    state.value.phase,
+                                    generation,
+                                    liveSyncGeneration,
+                                )
+                        ) {
+                            break
+                        }
+                        withContext(Dispatchers.IO) {
+                            repository.keepSessionAlive()
+                        }
+                    } catch (_: CancellationException) {
+                        break
+                    } catch (error: Throwable) {
+                        if (error.isAuthenticationFailure() || error is SessionScopeChangedException) {
+                            withContext(Dispatchers.Main) { handleRuntimeFailure(error) }
+                            break
+                        }
+                    }
+                }
+            }
     }
 
     private fun invalidateLiveSync(): Long {
