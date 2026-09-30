@@ -1,1 +1,1 @@
-Read one work item by id, including its lifecycle view, current focus flag, plan artifact descriptor, bounded plan preview, and optional todo_list.
+Read one work item by id, including its lifecycle view, current focus flag, plan artifact descriptor when available, plan_artifact_status, bounded plan preview, and optional todo_list. A `missing` or `unreadable` status means the work item remains queryable but its plan artifact could not be read; `not_recorded` means no artifact metadata or file is present.
