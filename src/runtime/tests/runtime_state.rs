@@ -12625,7 +12625,7 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
         1
     );
     let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
-    for kind in ["message_admitted", "message_enqueued"] {
+    for kind in ["message_admitted", "message_discarded_agent_stopped"] {
         assert_eq!(
             events
                 .iter()
