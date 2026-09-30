@@ -5921,6 +5921,28 @@ mod tests {
             None,
             None,
         ))?;
+        // A previous startup interrupted this source, but never consumed it.
+        // Its historical terminal marker must not abort the next retained claim.
+        db.turn_records().upsert(&active_turn(
+            "agent-a",
+            "turn-previous-startup",
+            1,
+            Some("message-execution"),
+            Utc::now(),
+        ))?;
+        assert_eq!(
+            db.recover_interrupted_runtime_state_at_startup()?
+                .interrupted_turns,
+            1
+        );
+        assert_eq!(
+            db.turn_records()
+                .by_id(Some("agent-a"), "turn-previous-startup")?
+                .expect("historical turn")
+                .terminal
+                .map(|terminal| terminal.kind),
+            Some(TurnTerminalKind::Interrupted)
+        );
         let transition = execution_admission(
             "message-execution",
             "activation:message:message-execution",
