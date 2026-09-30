@@ -302,6 +302,457 @@ async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane
 }
 
 #[tokio::test]
+async fn startup_recovery_preserves_retained_external_wait_before_bootstrap() {
+    let mut fixture = open_external_wake_claim_fixture().await;
+    fixture.harness.restart();
+    let runtime = fixture.harness.runtime();
+    let report = runtime
+        .inner
+        .runtime_db
+        .recover_interrupted_runtime_state_at_startup()
+        .unwrap();
+    assert_eq!(report.interrupted_execution_attempts, 1);
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+    let state = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(state.open_attempt().is_none());
+    assert_eq!(
+        state.attempts[&fixture.attempt_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&fixture.message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interrupted
+    );
+    let wait = runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .into_iter()
+        .find(|wait| wait.id == fixture.wait_id)
+        .unwrap();
+    assert_eq!(wait.status, WaitConditionStatus::Resolved);
+    assert_eq!(wait.trigger_message_id(), Some(fixture.message_id.as_str()));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .recover_interrupted_runtime_state_at_startup()
+            .unwrap(),
+        crate::runtime_db::transitions::StartupRuntimeRecoveryReport::default()
+    );
+}
+
+#[tokio::test]
+async fn startup_recovery_without_work_item_or_retained_claim_admits_operator_interject() {
+    let mut harness = LifecycleHarness::new();
+    let attempt_id = {
+        let runtime = harness.runtime();
+        let message = runtime
+            .enqueue(trusted_operator_prompt(None, "interrupted input"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Message(_)
+        ));
+        finish_claimed_test_run(runtime).await;
+        let mut entry = runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap();
+        entry.status = QueueEntryStatus::Processed;
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .upsert(&entry)
+            .unwrap();
+        scheduler_executor::canonical_activation_id(&message.id)
+    };
+    harness.restart();
+    let runtime = harness.runtime();
+    let report = runtime
+        .inner
+        .runtime_db
+        .recover_interrupted_runtime_state_at_startup()
+        .unwrap();
+    assert_eq!(report.interrupted_execution_attempts, 1);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(execution.open_attempt().is_none());
+    assert!(execution.work_items.is_empty());
+    assert_eq!(
+        execution.attempts[&attempt_id].state,
+        crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+    );
+    assert!(runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_run_id
+        .is_none());
+    let mut interject = trusted_operator_prompt(None, "new operator interject after restart");
+    interject.priority = Priority::Interject;
+    let interject = runtime.enqueue(interject).await.unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!("operator interject must be admitted after startup releases the old lane");
+    };
+    assert_eq!(scheduled.message.id, interject.id);
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_ne!(execution.open_attempt().unwrap().attempt_id, attempt_id);
+}
+
+#[tokio::test]
+async fn startup_recovery_retained_task_result_obeys_exact_rejoin_wait_and_revision_fences() {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+
+    for (case, expected_status) in [
+        ("unadvanced", QueueEntryStatus::Queued),
+        ("advanced", QueueEntryStatus::Queued),
+        ("cancelled", QueueEntryStatus::Quarantined),
+        ("missing", QueueEntryStatus::Quarantined),
+        ("bounded", QueueEntryStatus::Quarantined),
+        ("wrong-owner", QueueEntryStatus::Quarantined),
+        ("wrong-rejoin", QueueEntryStatus::Quarantined),
+        ("ambiguous", QueueEntryStatus::Quarantined),
+    ] {
+        let task_id = format!("task-startup-{case}-claim");
+        let mut fixture = match case {
+            "unadvanced" => unadvanced_task_result_claim_fixture(&task_id).await,
+            "cancelled" => cancelled_wait_task_result_claim_fixture(&task_id).await,
+            "missing" => missing_wait_task_result_claim_fixture(&task_id).await,
+            _ => stale_task_result_claim_fixture(&task_id).await,
+        };
+        if matches!(case, "wrong-owner" | "wrong-rejoin") {
+            let mut task = fixture
+                .runtime
+                .inner
+                .runtime_db
+                .tasks()
+                .latest(&task_id)
+                .unwrap()
+                .unwrap();
+            if case == "wrong-owner" {
+                task.agent_id = "another-owner".into();
+            } else {
+                task.detail.as_mut().unwrap()["rejoin_generation"] = serde_json::json!(2);
+            }
+            fixture
+                .runtime
+                .inner
+                .runtime_db
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE tasks SET owner_agent_id = ?1, payload_json = ?2 WHERE task_id = ?3",
+                        rusqlite::params![task.agent_id, serde_json::to_string(&task)?, task.id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        if case == "ambiguous" {
+            let mut duplicate = fixture
+                .runtime
+                .storage()
+                .latest_wait_conditions()
+                .unwrap()
+                .into_iter()
+                .find(|wait| wait.trigger_message_id() == Some(fixture.result.id.as_str()))
+                .expect("resolved exact result wait");
+            duplicate.id = format!("duplicate-{}", duplicate.id);
+            duplicate.trigger_message_id = None;
+            fixture
+                .runtime
+                .inner
+                .runtime_db
+                .wait_conditions()
+                .upsert(&duplicate)
+                .unwrap();
+            // Simulate contradictory legacy payloads without dropping the unique index.
+            duplicate.trigger_message_id = Some(fixture.result.id.clone());
+            fixture
+                .runtime
+                .inner
+                .runtime_db
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE wait_conditions SET payload_json = ?1 WHERE wait_condition_id = ?2",
+                        rusqlite::params![serde_json::to_string(&duplicate)?, duplicate.id],
+                    )?;
+                    Ok(())
+                })
+                .unwrap();
+        }
+        if case == "bounded" {
+            let mut state = fixture
+                .runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            state
+                .attempts
+                .get_mut(&fixture.attempt_id)
+                .unwrap()
+                .recovery_of_attempt_id = Some("attempt:already-replayed".into());
+            fixture
+                .runtime
+                .inner
+                .runtime_db
+                .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &state))
+                .unwrap();
+        }
+        let waits_before = fixture.runtime.storage().latest_wait_conditions().unwrap();
+        finish_claimed_test_run(&fixture.runtime).await;
+        let report = fixture
+            .runtime
+            .inner
+            .runtime_db
+            .recover_interrupted_runtime_state_at_startup()
+            .unwrap();
+        assert_eq!(report.interrupted_execution_attempts, 1, "{case}");
+        // Production performs the startup transaction before loading runtime queues.
+        fixture.runtime = RuntimeHandle::new(
+            "default",
+            fixture._dir.path().to_path_buf(),
+            fixture._workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(CountingProvider {
+                calls: Mutex::new(0),
+                reply: "unused",
+            }),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        assert_eq!(
+            fixture
+                .runtime
+                .recover_scheduler_bootstrap_claims()
+                .await
+                .unwrap(),
+            0,
+            "{case}"
+        );
+        let state = fixture
+            .runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert!(state.open_attempt().is_none(), "{case}");
+        assert_eq!(
+            state.attempts[&fixture.attempt_id].state,
+            ExecutionAttemptState::Interrupted,
+            "{case}"
+        );
+        assert_eq!(
+            fixture
+                .runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&fixture.result.id)
+                .unwrap()
+                .unwrap()
+                .status,
+            expected_status,
+            "{case}"
+        );
+        assert_eq!(
+            fixture.runtime.storage().latest_wait_conditions().unwrap(),
+            waits_before,
+            "{case}"
+        );
+        assert_eq!(
+            fixture
+                .runtime
+                .inner
+                .runtime_db
+                .recover_interrupted_runtime_state_at_startup()
+                .unwrap(),
+            crate::runtime_db::transitions::StartupRuntimeRecoveryReport::default(),
+            "{case}"
+        );
+        if expected_status == QueueEntryStatus::Queued {
+            let scheduled = scheduler_executor::SchedulerDecisionExecutor::new(&fixture.runtime)
+                .poll()
+                .await
+                .unwrap();
+            let scheduler_executor::RunLoopPoll::Message(scheduled) = scheduled else {
+                panic!(
+                    "startup recovery must re-admit exact retained {case} result; events: {:?}",
+                    fixture.runtime.storage().read_recent_events(6).unwrap()
+                );
+            };
+            assert_eq!(scheduled.message.id, fixture.result.id, "{case}");
+            let state = fixture
+                .runtime
+                .inner
+                .runtime_db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            let recovery = state.open_attempt().expect("re-admitted exact result");
+            assert_ne!(recovery.attempt_id, fixture.attempt_id, "{case}");
+            assert_eq!(
+                recovery.recovery_of_attempt_id.as_deref(),
+                Some(fixture.attempt_id.as_str()),
+                "{case}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active_turn() {
+    let mut harness = LifecycleHarness::new();
+    let (message_id, attempt_id) = {
+        let runtime = harness.runtime();
+        let mut message = trusted_operator_prompt(None, "retained operator input");
+        message.turn_id = Some("turn-startup-retained-operator".into());
+        let message = runtime.enqueue(message).await.unwrap();
+        assert!(matches!(
+            scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap(),
+            scheduler_executor::RunLoopPoll::Message(_)
+        ));
+        finish_claimed_test_run(runtime).await;
+        let mut turn =
+            crate::types::TurnRecord::new("default", message.turn_id.as_ref().unwrap(), 1);
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+        runtime
+            .inner
+            .runtime_db
+            .turn_records()
+            .upsert(&turn)
+            .unwrap();
+        (
+            message.id.clone(),
+            scheduler_executor::canonical_activation_id(&message.id),
+        )
+    };
+    harness.restart();
+    let runtime = harness.runtime();
+    let report = runtime
+        .inner
+        .runtime_db
+        .recover_interrupted_runtime_state_at_startup()
+        .unwrap();
+    assert_eq!(report.interrupted_execution_attempts, 1);
+    assert_eq!(report.interrupted_turns, 1);
+    harness.restart();
+    let runtime = harness.runtime();
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interrupted
+    );
+    assert_eq!(
+        runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
+        0
+    );
+    let scheduler_executor::RunLoopPoll::Message(scheduled) =
+        scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+            .poll()
+            .await
+            .unwrap()
+    else {
+        panic!(
+            "newly interrupted startup turn must not quarantine retained operator input; events: {:?}",
+            runtime.storage().read_recent_events(6).unwrap()
+        );
+    };
+    assert_eq!(scheduled.message.id, message_id);
+    let state = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    let recovery = state.open_attempt().unwrap();
+    assert_ne!(recovery.attempt_id, attempt_id);
+    assert_eq!(
+        recovery.recovery_of_attempt_id.as_deref(),
+        Some(attempt_id.as_str())
+    );
+    finish_claimed_test_run(runtime).await;
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .recover_interrupted_runtime_state_at_startup()
+            .unwrap()
+            .interrupted_execution_attempts,
+        1
+    );
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Quarantined,
+        "ordinary operator input replay must remain bounded across restarts"
+    );
+}
+
+#[tokio::test]
 async fn scheduler_recovery_routes_external_wake_claim_through_generic_interruption() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionProtocolCommand};
 

@@ -361,6 +361,31 @@ A committed terminal outcome is never reentered into the model. Missing or
 corrupt non-authoritative evidence may be diagnosed or rebuilt without
 changing eligibility.
 
+The daemon startup transaction enumerates open protocol attempts directly;
+turns and queue claims are not proxies for lane ownership. It uses the existing
+interruption/rejoin commands and persists their outcomes, command receipts,
+matching WorkItem recovery generation, source-claim disposition, interrupted
+turns, and audit evidence together. Recovery fails closed on an invalid
+partition and rolls back the entire transaction. Repeating startup recovery
+does not add outcomes, receipts, or recovery generations.
+
+Retained claims are classified before closing their attempts. Exact retained
+task results use the source-specific recovery command, including the task owner,
+resolved wait, admitted rejoin identity, source revision, and bounded-replay
+checks; missing, cancelled, or ambiguous authority does not permit replay.
+Ordinary replayable input becomes `Interrupted` under its existing source
+policy, rather than remaining `Dequeued` for bootstrap to mistake for a
+terminal-attempt claim. This does not authorize generic replay of interrupted
+or settled attempts. A consumed result with no retained claim is never
+reconstructed merely because its task is terminal.
+
+The startup host also discovers owners whose execution was recovered, even
+without queue, task, or timer wake candidates. Their matching Runnable
+WorkItems can continue through new admissions; lifecycle-only owners can
+accept later operator input. This discovery does not start stopped agents or
+revive deleting/deleted identities. The sweep runs only before live executions
+are admitted, never as an online repair on admission failure.
+
 ## Atomic Handoffs
 
 Each of the following is one business transition, not a command sequence:

@@ -393,11 +393,13 @@ pub(crate) struct RuntimeTransitionRepository<'a> {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct StartupRuntimeRecoveryReport {
     pub recovered_queue_agent_ids: Vec<String>,
+    pub recovered_execution_agent_ids: Vec<String>,
     pub queue_entries_changed: usize,
     pub interrupted_turns: usize,
     pub superseded_turns: usize,
     pub orphaned_claim_turns: usize,
     pub daemon_restart_turns: usize,
+    pub interrupted_execution_attempts: usize,
 }
 
 #[derive(Debug, Default)]
@@ -424,6 +426,14 @@ impl RuntimeDb {
     ) -> Result<StartupRuntimeRecoveryReport> {
         self.transaction(|tx| {
             let recovered_at = Utc::now();
+            inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+            let terminal_sources = {
+                // Interrupted history is recovery lineage, not evidence that
+                // the input was consumed by a completed execution.
+                let mut statement = tx.prepare("SELECT agent_id, trigger_message_id, terminal_kind FROM turn_records WHERE terminal_kind IS NOT NULL AND terminal_kind != 'interrupted' AND trigger_message_id IS NOT NULL ORDER BY completed_at")?;
+                let sources = statement.query_map([], |row| Ok(((row.get::<_, String>(0)?, row.get::<_, String>(1)?), if row.get::<_, String>(2)? == "completed" { QueueEntryStatus::Processed } else { QueueEntryStatus::Aborted })))?.collect::<std::result::Result<BTreeMap<_, _>, _>>()?;
+                sources
+            };
             let queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
             tx.execute(
                 "UPDATE destructive_operations
@@ -431,8 +441,6 @@ impl RuntimeDb {
                  WHERE phase = 'scheduled' AND recovery_policy = 'verify_only'",
                 [recovered_at.to_rfc3339()],
             )?;
-            inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
-
             let mut active_turns = {
                 let mut statement = tx.prepare(
                     "SELECT payload_json
@@ -553,9 +561,323 @@ impl RuntimeDb {
                 append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
                 report.interrupted_turns += 1;
             }
+            // Startup owns every open attempt, including retained dequeued claims.
+            let open_attempts: Vec<(String, String)> = {
+                let mut statement = tx.prepare(
+                    "SELECT a.agent_id, a.attempt_id
+                     FROM execution_protocol_attempts a
+                     WHERE a.lifecycle_state = 'open'
+                     ORDER BY a.agent_id, a.attempt_id",
+                )?;
+                let rows = statement
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                rows
+            };
+            for (agent_id, attempt_id) in open_attempts {
+                let (recovery_command, queue_change) =
+                    startup_claim_recovery_tx(tx, &agent_id, &attempt_id, recovered_at, &terminal_sources)
+                        .with_context(|| format!("startup recovery could not classify open execution attempt {attempt_id} for agent {agent_id}"))?;
+                let command = recovery_command.unwrap_or_else(|| {
+                    crate::domain::execution_protocol::ExecutionProtocolCommand::Interrupt(
+                        crate::domain::execution_protocol::InterruptExecution {
+                            attempt_id: attempt_id.clone(),
+                            outcome_id: format!("outcome:startup_interrupted:{attempt_id}"),
+                            reason: "startup_recovery/daemon_restart".into(),
+                            interrupted_at: recovered_at.to_rfc3339(),
+                        },
+                    )
+                });
+                let prepared = execution_protocol_repository::validate_execution_commands_tx(
+                    tx,
+                    &agent_id,
+                    None,
+                    std::slice::from_ref(&command),
+                    &[],
+                    &[],
+                    &[],
+                );
+                match prepared {
+                    Ok(Some(prepared)) => {
+                        execution_protocol_repository::persist_execution_commands_tx(
+                            tx,
+                            Some(prepared),
+                        )?;
+                        if let Some((expected, recovered)) = queue_change {
+                            if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
+                                bail!("startup execution claim changed inside transaction");
+                            }
+                            let delivery_state = match recovered.status {
+                                QueueEntryStatus::Processed => Some(AgentMessageDeliveryState::Consumed),
+                                QueueEntryStatus::Aborted | QueueEntryStatus::Quarantined => Some(AgentMessageDeliveryState::Failed),
+                                _ => None,
+                            };
+                            if let Some(next) = delivery_state {
+                                advance_delivery_state_for_message_tx(
+                                    tx, &recovered.message_id, next,
+                                    (next == AgentMessageDeliveryState::Failed)
+                                        .then_some("startup recovery quarantined execution claim"),
+                                )?;
+                            }
+                            report.queue_entries_changed += 1;
+                            if !report.recovered_queue_agent_ids.contains(&agent_id) {
+                                report.recovered_queue_agent_ids.push(agent_id.clone());
+                            }
+                        }
+                        append_audit_event_tx(
+                            tx,
+                            Some(&agent_id),
+                            &AuditEvent {
+                                id: format!(
+                                    "audit:startup-interrupted-attempt:{agent_id}:{attempt_id}"
+                                ),
+                                event_seq: 0,
+                                event_log_epoch: String::new(),
+                                created_at: recovered_at,
+                                kind: "startup_interrupted_execution_attempt_recovered".into(),
+                                contract_version:
+                                    crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA
+                                    .to_string(),
+                                payload_schema_version: 1,
+                                data: serde_json::json!({
+                                    "agent_id": &agent_id,
+                                    "attempt_id": &attempt_id,
+                                    "reason": "startup_recovery/daemon_restart",
+                                }),
+                            },
+                        )?;
+                        report.interrupted_execution_attempts += 1;
+                        if !report.recovered_execution_agent_ids.contains(&agent_id) {
+                            report.recovered_execution_agent_ids.push(agent_id.clone());
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        // Fail closed: continuing startup with an attempt we
+                        // could not settle would leave later admissions
+                        // blocked by a non-retryable protocol error.
+                        return Err(anyhow!(
+                            "startup recovery could not settle open execution attempt \
+                             {attempt_id} for agent {agent_id}: {error:#}"
+                        ));
+                    }
+                }
+            }
+            inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+            inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
+            inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
             Ok(report)
         })
     }
+}
+
+fn startup_claim_recovery_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    attempt_id: &str,
+    recovered_at: chrono::DateTime<Utc>,
+    terminal_sources: &BTreeMap<(String, String), QueueEntryStatus>,
+) -> Result<(
+    Option<crate::domain::execution_protocol::ExecutionProtocolCommand>,
+    Option<(QueueEntryRecord, QueueEntryRecord)>,
+)> {
+    use crate::domain::execution_protocol::ExecutionBinding;
+    use crate::runtime::{TaskResultClaimRecovery, TaskResultClaimRecoveryAuthority};
+    let state = execution_protocol_repository::load_state_tx(tx, agent_id)?;
+    let attempt = &state.attempts[attempt_id];
+    let source_message_id = attempt.source_message_id.as_deref().or_else(|| {
+        use crate::domain::execution_protocol::ExecutionSourceIdentity;
+        match &attempt.source.identity {
+            ExecutionSourceIdentity::QueueMessage { message_id }
+            | ExecutionSourceIdentity::InternalFollowup { message_id } => Some(message_id.as_str()),
+            ExecutionSourceIdentity::TaskResult {
+                result_message_id, ..
+            }
+            | ExecutionSourceIdentity::ChildResult {
+                result_message_id, ..
+            } => Some(result_message_id.as_str()),
+            ExecutionSourceIdentity::TriggeredWait {
+                trigger_message_id, ..
+            } => Some(trigger_message_id.as_str()),
+            _ => None,
+        }
+    });
+    let Some(message_id) = source_message_id else {
+        return Ok((None, None));
+    };
+    let queue = tx
+        .query_row(
+            "SELECT payload_json FROM queue_entries WHERE agent_id = ?1 AND message_id = ?2",
+            [agent_id, message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
+        .transpose()?;
+    let Some(expected) = queue.filter(|q| q.status == QueueEntryStatus::Dequeued) else {
+        return Ok((None, None));
+    };
+    let message = tx
+        .query_row(
+            "SELECT payload_json FROM messages WHERE agent_id = ?1 AND message_id = ?2",
+            [agent_id, message_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| serde_json::from_str::<MessageEnvelope>(&payload))
+        .transpose()?;
+    let delivery = delivery_by_message_id_tx(tx, message_id)?;
+    let terminal = terminal_sources.contains_key(&(agent_id.to_string(), message_id.to_string()))
+        || state.outcomes.values().any(|outcome| outcome.attempt_id == attempt_id)
+        || delivery.as_ref().is_some_and(|delivery| delivery.state == AgentMessageDeliveryState::Consumed)
+        || tx.query_row("SELECT EXISTS(SELECT 1 FROM briefs WHERE agent_id = ?1 AND message_id = ?2 AND kind IN ('result', 'failure'))", [agent_id, message_id], |row| row.get::<_, bool>(0))?;
+    let mut command = None;
+    let status = if terminal {
+        terminal_sources
+            .get(&(agent_id.to_string(), message_id.to_string()))
+            .cloned()
+            .unwrap_or(QueueEntryStatus::Processed)
+    } else if attempt.source_message_id.as_deref() != Some(message_id) {
+        QueueEntryStatus::Quarantined
+    } else if attempt.recovery_of_attempt_id.is_some()
+        && !matches!(attempt.binding, ExecutionBinding::AgentLifecycle { .. })
+    {
+        QueueEntryStatus::Quarantined
+    } else if let Some(message) = message.as_ref() {
+        match &attempt.binding {
+            ExecutionBinding::WorkItem { work_item_id }
+                if message.kind == crate::types::MessageKind::TaskResult =>
+            {
+                let task = message
+                    .task_id
+                    .as_deref()
+                    .map(|id| {
+                        tx.query_row(
+                            "SELECT payload_json FROM tasks WHERE task_id = ?1",
+                            [id],
+                            |row| row.get::<_, String>(0),
+                        )
+                        .optional()?
+                        .map(|p| serde_json::from_str::<TaskRecord>(&p))
+                        .transpose()
+                        .map_err(anyhow::Error::from)
+                    })
+                    .transpose()?
+                    .flatten();
+                let work_item = tx.query_row(
+                    "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND work_item_id = ?2",
+                    [agent_id, work_item_id], |row| row.get::<_, String>(0),
+                ).optional()?.map(|p| serde_json::from_str::<WorkItemRecord>(&p)).transpose()?;
+                let mut statement =
+                    tx.prepare("SELECT payload_json FROM wait_conditions WHERE agent_id = ?1")?;
+                let waits = statement
+                    .query_map([agent_id], |row| row.get::<_, String>(0))?
+                    .map(|row| Ok(serde_json::from_str::<WaitConditionRecord>(&row?)?))
+                    .collect::<Result<Vec<_>>>()?;
+                match crate::runtime::exact_task_result_claim_recovery_from_facts(
+                    message,
+                    attempt,
+                    work_item_id,
+                    recovered_at,
+                    TaskResultClaimRecoveryAuthority::RuntimeTerminatedBootstrap,
+                    task.as_ref(),
+                    &waits,
+                    work_item.as_ref(),
+                )? {
+                    TaskResultClaimRecovery::Replayable { transition, .. } => {
+                        command = transition.commands.into_iter().next();
+                        QueueEntryStatus::Queued
+                    }
+                    _ => QueueEntryStatus::Quarantined,
+                }
+            }
+            _ if attempt.recovery_of_attempt_id.is_none()
+                && attempt.attempt_id == format!("activation:message:{}", message.id) =>
+            {
+                if startup_triggered_wait_is_exact_tx(tx, message, attempt)? {
+                    QueueEntryStatus::Interrupted
+                } else {
+                    QueueEntryStatus::Quarantined
+                }
+            }
+            ExecutionBinding::AgentLifecycle { .. } => {
+                let valid = crate::runtime::scheduler_executor::canonical_lifecycle_scenario_for_attempt(message, attempt)
+                    .is_some_and(|scenario| crate::runtime::scheduler_executor::canonical_lifecycle_attempt_lineage_is_valid(
+                        &state, message, &scenario, attempt_id,
+                    ));
+                let valid = valid
+                    && (attempt.attempt_id == format!("activation:message:{}", message.id)
+                        || delivery.as_ref().is_some_and(|delivery| {
+                            delivery.target_agent_id == agent_id
+                                && delivery.activation_id.as_deref() == Some(attempt_id)
+                        }));
+                if valid && startup_triggered_wait_is_exact_tx(tx, message, attempt)? {
+                    QueueEntryStatus::Interrupted
+                } else {
+                    QueueEntryStatus::Quarantined
+                }
+            }
+            ExecutionBinding::WorkItem { work_item_id }
+                if matches!((&message.kind, &message.origin), (crate::types::MessageKind::SystemTick, crate::types::MessageOrigin::System { subsystem }) if subsystem == "work_queue")
+                    && message.work_item_id.as_deref() == Some(work_item_id) =>
+            {
+                QueueEntryStatus::Interrupted
+            }
+            ExecutionBinding::WorkItem { .. } if matches!(&attempt.source.identity, crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait { trigger_message_id, .. } if trigger_message_id == &message.id) => {
+                if startup_triggered_wait_is_exact_tx(tx, message, attempt)? {
+                    QueueEntryStatus::Interrupted
+                } else {
+                    QueueEntryStatus::Quarantined
+                }
+            }
+            _ if attempt.attempt_id == format!("activation:message:{}", message.id)
+                && matches!(&attempt.source.identity, crate::domain::execution_protocol::ExecutionSourceIdentity::QueueMessage { message_id } | crate::domain::execution_protocol::ExecutionSourceIdentity::InternalFollowup { message_id } if message_id == &message.id) =>
+            {
+                QueueEntryStatus::Interrupted
+            }
+            _ => QueueEntryStatus::Quarantined,
+        }
+    } else {
+        QueueEntryStatus::Quarantined
+    };
+    let mut recovered = expected.clone();
+    recovered.status = status;
+    recovered.updated_at = recovered_at;
+    Ok((command, Some((expected, recovered))))
+}
+
+fn startup_triggered_wait_is_exact_tx(
+    tx: &Transaction<'_>,
+    message: &MessageEnvelope,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+) -> Result<bool> {
+    use crate::domain::execution_protocol::{ExecutionBinding, ExecutionSourceIdentity};
+    let ExecutionSourceIdentity::TriggeredWait {
+        wait_id,
+        trigger_message_id,
+    } = &attempt.source.identity
+    else {
+        return Ok(true);
+    };
+    let wait = tx.query_row(
+        "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1 AND agent_id = ?2",
+        [wait_id, &attempt.agent_id], |row| row.get::<_, String>(0),
+    ).optional()?.map(|payload| serde_json::from_str::<WaitConditionRecord>(&payload)).transpose()?;
+    let owner = match &attempt.binding {
+        ExecutionBinding::WorkItem { work_item_id } => Some(work_item_id.as_str()),
+        ExecutionBinding::AgentLifecycle { .. } => None,
+        _ => return Ok(false),
+    };
+    Ok(wait.is_some_and(|wait| {
+        wait.status == WaitConditionStatus::Resolved
+            && wait.work_item_id.as_deref() == owner
+            && wait.trigger_message_id() == Some(message.id.as_str())
+            && trigger_message_id == &message.id
+            && message.source_refs.get("wait_id") == Some(wait_id)
+    }))
 }
 
 fn reconcile_orphaned_dequeued_claims_tx(
@@ -564,51 +886,93 @@ fn reconcile_orphaned_dequeued_claims_tx(
     recovered_at: chrono::DateTime<Utc>,
 ) -> Result<OrphanedQueueRecovery> {
     let sql = if agent_id.is_some() {
-        "SELECT q.payload_json
-                 FROM queue_entries q
-                 JOIN agent_identities i
-                   ON i.agent_id = q.agent_id
-                  AND i.status = 'active'
-                 WHERE q.status = 'dequeued'
-                   AND q.agent_id = ?1
-                   AND NOT EXISTS (
-                     SELECT 1
-                     FROM execution_protocol_attempts a
-                     WHERE a.agent_id = q.agent_id
-                       AND a.attempt_id = 'activation:message:' || q.message_id
-                   )
-                 ORDER BY q.agent_id, q.updated_at, q.message_id"
+        "WITH dequeued_claims AS (
+             SELECT q.payload_json,
+                    q.agent_id,
+                    q.updated_at,
+                    q.message_id,
+                    EXISTS (
+                      SELECT 1
+                      FROM execution_protocol_attempts a
+                      WHERE a.agent_id = q.agent_id
+                        AND (a.attempt_id = 'activation:message:' || q.message_id
+                             OR (a.lifecycle_state = 'open'
+                                 AND json_extract(a.payload_json, '$.source_message_id') = q.message_id))
+                    ) AS has_attempt,
+                    EXISTS (
+                      SELECT 1
+                      FROM agent_identities i
+                      WHERE i.agent_id = q.agent_id
+                        AND i.status = 'active'
+                    ) AS identity_active
+             FROM queue_entries q
+             WHERE q.status = 'dequeued'
+               AND q.agent_id = ?1
+           )
+           SELECT payload_json, has_attempt
+           FROM dequeued_claims
+           WHERE NOT identity_active OR NOT has_attempt
+           ORDER BY agent_id, updated_at, message_id"
     } else {
-        "SELECT q.payload_json
-                 FROM queue_entries q
-                 JOIN agent_identities i
-                   ON i.agent_id = q.agent_id
-                  AND i.status = 'active'
-                 WHERE q.status = 'dequeued'
-                   AND NOT EXISTS (
-                     SELECT 1
-                     FROM execution_protocol_attempts a
-                     WHERE a.agent_id = q.agent_id
-                       AND a.attempt_id = 'activation:message:' || q.message_id
-                   )
-                 ORDER BY q.agent_id, q.updated_at, q.message_id"
+        "WITH dequeued_claims AS (
+             SELECT q.payload_json,
+                    q.agent_id,
+                    q.updated_at,
+                    q.message_id,
+                    EXISTS (
+                      SELECT 1
+                      FROM execution_protocol_attempts a
+                      WHERE a.agent_id = q.agent_id
+                        AND (a.attempt_id = 'activation:message:' || q.message_id
+                             OR (a.lifecycle_state = 'open'
+                                 AND json_extract(a.payload_json, '$.source_message_id') = q.message_id))
+                    ) AS has_attempt,
+                    EXISTS (
+                      SELECT 1
+                      FROM agent_identities i
+                      WHERE i.agent_id = q.agent_id
+                        AND i.status = 'active'
+                    ) AS identity_active
+             FROM queue_entries q
+             WHERE q.status = 'dequeued'
+           )
+           SELECT payload_json, has_attempt
+           FROM dequeued_claims
+           WHERE NOT identity_active OR NOT has_attempt
+           ORDER BY agent_id, updated_at, message_id"
     };
     let mut statement = tx.prepare(sql)?;
     let candidates = if let Some(agent_id) = agent_id {
         statement
-            .query_map([agent_id], |row| row.get::<_, String>(0))?
-            .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+            .query_map([agent_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })?
+            .map(|row| {
+                let (payload, has_attempt) = row?;
+                Ok((
+                    serde_json::from_str::<QueueEntryRecord>(&payload)?,
+                    has_attempt,
+                ))
+            })
             .collect::<Result<Vec<_>>>()?
     } else {
         statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })?
+            .map(|row| {
+                let (payload, has_attempt) = row?;
+                Ok((
+                    serde_json::from_str::<QueueEntryRecord>(&payload)?,
+                    has_attempt,
+                ))
+            })
             .collect::<Result<Vec<_>>>()?
     };
     drop(statement);
 
     let mut recovery = OrphanedQueueRecovery::default();
-    for expected in candidates {
+    for (expected, has_attempt) in candidates {
         let mut recovered = expected.clone();
         let terminal_kind = tx
             .query_row(
@@ -661,6 +1025,15 @@ fn reconcile_orphaned_dequeued_claims_tx(
             (
                 QueueEntryStatus::Aborted,
                 "terminal_failure_completion_evidence",
+            )
+        } else if has_attempt {
+            // Deletion window: no active identity owns a runtime that
+            // would ever reconcile this claim, so the startup attempt
+            // sweep later in the same transaction interrupts the attempt
+            // and the claim follows it as interrupted.
+            (
+                QueueEntryStatus::Interrupted,
+                "identity_inactive_attempt_interrupted_at_startup",
             )
         } else {
             (
@@ -3803,6 +4176,287 @@ mod tests {
         Ok(())
     }
 
+    fn startup_recovery_snapshot(db: &RuntimeDb) -> Result<Vec<Vec<String>>> {
+        db.transaction(|tx| {
+            let mut snapshot = Vec::new();
+            for table in [
+                "queue_entries", "turn_records", "execution_protocol_attempts",
+                "execution_protocol_work_items", "execution_protocol_outcomes",
+                "agent_message_deliveries", "messages", "tasks", "wait_conditions", "work_items",
+            ] {
+                let mut statement = tx.prepare(&format!("SELECT payload_json FROM {table} ORDER BY payload_json"))?;
+                snapshot.push(statement.query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?);
+            }
+            let mut audit = tx.prepare("SELECT audit_event_id || data_json FROM audit_events ORDER BY audit_event_id")?;
+            snapshot.push(audit.query_map([], |row| row.get::<_, String>(0))?.collect::<std::result::Result<Vec<_>, _>>()?);
+            let mut statement = tx.prepare(
+                "SELECT command_kind || command_identity || payload_hash || references_json
+                 FROM execution_protocol_command_results ORDER BY agent_id, command_kind, command_identity",
+            )?;
+            snapshot.push(statement.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?);
+            Ok(snapshot)
+        })
+    }
+
+    #[test]
+    fn startup_recovery_sweeps_all_agents_without_turn_claim_or_work_item() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        for agent_id in ["agent-a", "agent-b", "agent-c"] {
+            let mut admission = execution_admission("message", "attempt", "work");
+            let ExecutionProtocolCommand::Admit(command) = &mut admission.commands[0] else {
+                unreachable!()
+            };
+            command.attempt.agent_id = agent_id.into();
+            command.attempt.binding = ExecutionBinding::AgentLifecycle {
+                agent_id: agent_id.into(),
+            };
+            command.attempt.admitted_fences.work_item_source_revision = None;
+            command.attempt.admitted_fences.work_item_generation = None;
+            let state = crate::domain::execution_protocol::admit_execution(
+                &ExecutionProtocolState::empty(agent_id),
+                command,
+            )
+            .map_err(anyhow::Error::msg)?
+            .state;
+            db.transaction(|tx| persist_state_tx(tx, &state))?;
+        }
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 3);
+        assert_eq!(
+            report.recovered_execution_agent_ids,
+            vec!["agent-a", "agent-b", "agent-c"]
+        );
+        assert_eq!(report.interrupted_turns, 0);
+        assert_eq!(report.queue_entries_changed, 0);
+        let after = startup_recovery_snapshot(&db)?;
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )?;
+        assert_eq!(
+            reopened
+                .recover_interrupted_runtime_state_at_startup()?
+                .interrupted_execution_attempts,
+            0
+        );
+        assert_eq!(startup_recovery_snapshot(&reopened)?, after);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_exact_task_result_claims_are_atomic_and_bounded() -> Result<()> {
+        for case in [
+            "equal",
+            "advanced",
+            "cancelled",
+            "missing_wait",
+            "ambiguous_wait",
+            "missing_task",
+            "missing_work",
+            "bounded",
+            "terminal",
+        ] {
+            let (dir, db) = runtime_db()?;
+            db.agent_identities().upsert(&active_agent("agent-a"))?;
+            let mut result = message("result-startup");
+            result.kind = crate::types::MessageKind::TaskResult;
+            result.origin = crate::types::MessageOrigin::Task {
+                task_id: "task-startup".into(),
+            };
+            result.authority_class = AuthorityClass::RuntimeInstruction;
+            result.admission_context = Some(crate::types::AdmissionContext::RuntimeOwned);
+            result.delivery_surface = Some(crate::types::MessageDeliverySurface::TaskRejoin);
+            result.task_id = Some("task-startup".into());
+            result.work_item_id = Some("work-startup".into());
+            let mut task_record = task("task-startup", TaskStatus::Completed);
+            task_record.work_item_id = result.work_item_id.clone();
+            task_record.parent_message_id = Some(result.id.clone());
+            task_record.detail = Some(serde_json::json!({
+                "rejoin_obligation_id": "task-startup", "rejoin_generation": 1, "parent_turn_id": "parent-turn"
+            }));
+            let mut work = work_item("work-startup");
+            work.revision = if case == "advanced" { 2 } else { 1 };
+            let mut wait = wait_condition("wait-startup", "work-startup", "task-startup");
+            wait.status = if case == "cancelled" {
+                WaitConditionStatus::Cancelled
+            } else {
+                WaitConditionStatus::Resolved
+            };
+            wait.trigger_message_id = Some(result.id.clone());
+            let mut admission = execution_admission(
+                &result.id,
+                "activation:message:result-startup",
+                "work-startup",
+            );
+            let ExecutionProtocolCommand::Admit(command) = &mut admission.commands[0] else {
+                unreachable!()
+            };
+            command.attempt.source.identity = ExecutionSourceIdentity::TaskResult {
+                task_id: "task-startup".into(),
+                result_message_id: result.id.clone(),
+            };
+            command.attempt.admitted_fences.rejoin =
+                Some(task_record.rejoin_fence().map_err(anyhow::Error::msg)?);
+            let state = crate::domain::execution_protocol::admit_execution(
+                admission.bootstrap.as_ref().unwrap(),
+                command,
+            )
+            .map_err(anyhow::Error::msg)?
+            .state;
+            db.transaction(|tx| {
+                persist_state_tx(tx, &state)?;
+                append_message_tx(tx, &result)?;
+                if case != "missing_task" {
+                    upsert_task_tx(tx, &task_record)?;
+                }
+                if case != "missing_work" {
+                    let mut initial = work.clone();
+                    initial.revision = 1;
+                    insert_new_work_item_tx(tx, &initial)?;
+                    if work.revision > 1 {
+                        update_expected_work_item_tx(tx, &work, 1)?;
+                    }
+                }
+                if case != "missing_wait" {
+                    upsert_wait_condition_tx(tx, &wait)?;
+                }
+                if case == "ambiguous_wait" {
+                    let mut second = wait.clone();
+                    second.id = "wait-other".into();
+                    second.trigger_message_id = None;
+                    upsert_wait_condition_tx(tx, &second)?;
+                    // Simulate contradictory legacy payload facts without weakening
+                    // the canonical unique trigger index.
+                    second.trigger_message_id = Some(result.id.clone());
+                    tx.execute(
+                        "UPDATE wait_conditions SET payload_json = ?1 WHERE wait_condition_id = ?2",
+                        params![serde_json::to_string(&second)?, second.id],
+                    )?;
+                }
+                if case == "bounded" {
+                    // A valid predecessor makes this an already-replayed exact result.
+                    let next = crate::domain::execution_protocol::interrupt_execution(
+                        &state,
+                        &crate::domain::execution_protocol::InterruptExecution {
+                            attempt_id: "activation:message:result-startup".into(),
+                            outcome_id: "outcome:prior".into(),
+                            reason: "prior interruption".into(),
+                            interrupted_at: Utc::now().to_rfc3339(),
+                        },
+                    )
+                    .map_err(anyhow::Error::msg)?
+                    .state;
+                    let mut leaf = state.attempts["activation:message:result-startup"].clone();
+                    leaf.attempt_id = "activation:recovered:result-startup".into();
+                    leaf.recovery_of_attempt_id = Some("activation:message:result-startup".into());
+                    leaf.admitted_fences.work_item_generation = Some(2);
+                    let next = crate::domain::execution_protocol::admit_execution(
+                        &next,
+                        &AdmitExecution { attempt: leaf },
+                    )
+                    .map_err(anyhow::Error::msg)?
+                    .state;
+                    persist_state_tx(tx, &next)?;
+                }
+                upsert_queue_entry_tx(
+                    tx,
+                    &QueueEntryRecord {
+                        message_id: result.id.clone(),
+                        agent_id: "agent-a".into(),
+                        priority: Priority::Normal,
+                        status: QueueEntryStatus::Dequeued,
+                        created_at: Utc::now(),
+                        updated_at: Utc::now(),
+                    },
+                )?;
+                if case == "terminal" {
+                    let mut turn = active_turn(
+                        "agent-a",
+                        "terminal-startup",
+                        1,
+                        Some(&result.id),
+                        Utc::now(),
+                    );
+                    turn.terminal = Some(TurnTerminalSummary {
+                        kind: TurnTerminalKind::Completed,
+                        reason: None,
+                        duration_ms: 0,
+                        no_brief_reason: None,
+                        completed_at: Utc::now(),
+                    });
+                    upsert_turn_record_tx(tx, &turn)?;
+                }
+                Ok(())
+            })?;
+            let before = startup_recovery_snapshot(&db)?;
+            for fault in [
+                TransitionFaultPoint::AfterValidation,
+                TransitionFaultPoint::AfterCanonicalWrites,
+                TransitionFaultPoint::AfterAuditWrites,
+                TransitionFaultPoint::BeforeCommit,
+            ] {
+                db.recover_interrupted_runtime_state_at_startup_with_fault(Some(fault))
+                    .unwrap_err();
+                assert_eq!(startup_recovery_snapshot(&db)?, before, "{case}: {fault:?}");
+            }
+            let report = db.recover_interrupted_runtime_state_at_startup()?;
+            assert_eq!(report.interrupted_execution_attempts, 1, "{case}");
+            let recovered = db
+                .transitions()
+                .load_execution_protocol_state_if_initialized("agent-a")?
+                .unwrap();
+            assert!(recovered.open_attempt().is_none(), "{case}");
+            if matches!(case, "equal" | "advanced") {
+                assert_eq!(
+                    recovered.work_items["work-startup"].generation(),
+                    2,
+                    "{case}"
+                );
+                assert_eq!(
+                    recovered.work_items["work-startup"].source_revision, work.revision,
+                    "{case}"
+                );
+                let kind = if case == "equal" {
+                    "recover_unadvanced_task_result_claim"
+                } else {
+                    "recover_interrupted_task_result_claim"
+                };
+                let count = db.transaction(|tx| Ok(tx.query_row(
+                    "SELECT COUNT(*) FROM execution_protocol_command_results WHERE agent_id = 'agent-a' AND command_kind = ?1",
+                    [kind], |row| row.get::<_, i64>(0),
+                )?))?;
+                assert_eq!(count, 1, "{case}");
+            }
+            let expected = match case {
+                "equal" | "advanced" => QueueEntryStatus::Queued,
+                "terminal" => QueueEntryStatus::Processed,
+                _ => QueueEntryStatus::Quarantined,
+            };
+            assert_eq!(
+                db.queue_entries().latest_all()?[0].status,
+                expected,
+                "{case}"
+            );
+            let after = startup_recovery_snapshot(&db)?;
+            drop(db);
+            let reopened = RuntimeDb::open_and_migrate(
+                dir.path().join("state/runtime.sqlite"),
+                dir.path().join("state/runtime.lock"),
+            )?;
+            assert_eq!(
+                reopened
+                    .recover_interrupted_runtime_state_at_startup()?
+                    .interrupted_execution_attempts,
+                0
+            );
+            assert_eq!(startup_recovery_snapshot(&reopened)?, after, "{case}");
+        }
+        Ok(())
+    }
+
     fn execution_admission(
         message_id: &str,
         attempt_id: &str,
@@ -5139,6 +5793,463 @@ mod tests {
         )?;
         assert_eq!(attempts, 1);
         assert_eq!(command_results, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_settles_open_execution_attempts() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))?;
+        let transition =
+            execution_admission("message-execution", "attempt-execution", "work-execution");
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("admission state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Open
+        );
+
+        // Guard the failure mode being fixed: while the restart-interrupted
+        // attempt stays open, the domain rejects any later admission for the
+        // agent with a non-retryable protocol error.
+        let blocked = execution_admission("message-blocked", "attempt-blocked", "work-execution");
+        let blocked_command = match &blocked.commands[0] {
+            ExecutionProtocolCommand::Admit(command) => command.as_ref().clone(),
+            other => panic!("expected admit command, got {other:?}"),
+        };
+        let rejection =
+            crate::domain::execution_protocol::admit_execution(&state, &blocked_command)
+                .expect_err("open attempt must block later admissions before recovery");
+        assert!(rejection.contains("already owns an open execution attempt"));
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 0);
+        assert_eq!(report.interrupted_execution_attempts, 1);
+
+        assert_eq!(report.recovered_execution_agent_ids, vec!["agent-a"]);
+
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        match &state.work_items["work-execution"].state {
+            WorkItemExecutionState::Runnable { recovery_ref, .. } => {
+                assert_eq!(recovery_ref.as_deref(), Some("interrupted"));
+            }
+            other => panic!("recovered work item should be runnable, got {other:?}"),
+        }
+
+        // After recovery the same admission passes the domain guard once the
+        // scheduling generation fence matches the interrupted hand-off.
+        let unblocked = execution_admission("message-blocked", "attempt-blocked", "work-execution");
+        let mut unblocked_command = match &unblocked.commands[0] {
+            ExecutionProtocolCommand::Admit(command) => command.as_ref().clone(),
+            other => panic!("expected admit command, got {other:?}"),
+        };
+        unblocked_command
+            .attempt
+            .admitted_fences
+            .work_item_generation = Some(2);
+        crate::domain::execution_protocol::admit_execution(&state, &unblocked_command)
+            .expect("admission must succeed after startup recovery settles the open attempt");
+
+        // Recovery is idempotent: a second run settles nothing new.
+        let repeated = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(repeated.interrupted_execution_attempts, 0);
+        assert!(repeated.recovered_execution_agent_ids.is_empty());
+        let recovery_audits = db
+            .audit_events()
+            .recent(Some("agent-a"), 10)?
+            .iter()
+            .filter(|event| event.kind == "startup_interrupted_execution_attempt_recovered")
+            .count();
+        assert_eq!(recovery_audits, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_interrupts_and_quarantines_retained_claim_without_message() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))?;
+        // A previous startup interrupted this source, but never consumed it.
+        // Its historical terminal marker must not abort the next retained claim.
+        db.turn_records().upsert(&active_turn(
+            "agent-a",
+            "turn-previous-startup",
+            1,
+            Some("message-execution"),
+            Utc::now(),
+        ))?;
+        assert_eq!(
+            db.recover_interrupted_runtime_state_at_startup()?
+                .interrupted_turns,
+            1
+        );
+        assert_eq!(
+            db.turn_records()
+                .by_id(Some("agent-a"), "turn-previous-startup")?
+                .expect("historical turn")
+                .terminal
+                .map(|terminal| terminal.kind),
+            Some(TurnTerminalKind::Interrupted)
+        );
+        let transition = execution_admission(
+            "message-execution",
+            "activation:message:message-execution",
+            "work-execution",
+        );
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+        let claimed = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Dequeued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &ExecutionProtocolTransition::default(),
+        )?;
+        assert!(claimed.applied);
+
+        let before = startup_recovery_snapshot(&db)?;
+        for fault in [
+            TransitionFaultPoint::AfterValidation,
+            TransitionFaultPoint::AfterCanonicalWrites,
+            TransitionFaultPoint::AfterAuditWrites,
+            TransitionFaultPoint::BeforeCommit,
+        ] {
+            db.recover_interrupted_runtime_state_at_startup_with_fault(Some(fault))
+                .unwrap_err();
+            assert_eq!(startup_recovery_snapshot(&db)?, before);
+        }
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 1);
+        assert_eq!(report.recovered_execution_agent_ids, vec!["agent-a"]);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("admission state");
+        assert_eq!(
+            state.attempts["activation:message:message-execution"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        assert_eq!(
+            db.queue_entries().latest_all()?[0].status,
+            QueueEntryStatus::Quarantined
+        );
+        let after = startup_recovery_snapshot(&db)?;
+        assert_eq!(
+            db.recover_interrupted_runtime_state_at_startup()?
+                .interrupted_execution_attempts,
+            0
+        );
+        assert_eq!(startup_recovery_snapshot(&db)?, after);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_settles_open_attempts_for_deleting_identities() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        let mut identity = AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        db.agent_identities().upsert(&identity)?;
+        let transition =
+            execution_admission("message-execution", "attempt-execution", "work-execution");
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+
+        // Delete flows flip the registry status to Deleting before the
+        // runtime unloads; a restart in that window must not skip the
+        // still-open attempt, or the id blocks its next incarnation.
+        identity.status = crate::types::AgentRegistryStatus::Deleting;
+        db.agent_identities().upsert(&identity)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 1);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["attempt-execution"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_repairs_deleting_identity_dequeued_claim_with_open_attempt() -> Result<()> {
+        // A restart inside the deletion window can leave the identity
+        // `Deleting` while its activation claim is still `dequeued` and the
+        // execution attempt still open. Bootstrap claim reconciliation and
+        // recovery-agent selection only cover active identities, so startup
+        // recovery itself must settle both the claim and the attempt;
+        // otherwise the pair strands together and the open attempt blocks
+        // every later admission for the agent's next incarnation.
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        let mut identity = AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        db.agent_identities().upsert(&identity)?;
+        let transition = execution_admission(
+            "message-execution",
+            "activation:message:message-execution",
+            "work-execution",
+        );
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+        let claimed = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Dequeued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &ExecutionProtocolTransition::default(),
+        )?;
+        assert!(claimed.applied);
+
+        // Delete flows flipped the registry status before the runtime
+        // unloaded; the restart hit before the claim settled.
+        identity.status = crate::types::AgentRegistryStatus::Deleting;
+        db.agent_identities().upsert(&identity)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 1);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["activation:message:message-execution"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        // The stranded dequeued claim followed the attempt to a terminal
+        // status instead of lingering for an identity with no runtime.
+        let claim: QueueEntryRecord = serde_json::from_str(&db.connection()?.query_row(
+            "SELECT payload_json FROM queue_entries
+                 WHERE agent_id = 'agent-a' AND message_id = 'message-execution'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?)?;
+        assert_eq!(claim.status, QueueEntryStatus::Interrupted);
+        let claim_recovery_audits = db
+            .audit_events()
+            .recent(Some("agent-a"), 10)?
+            .iter()
+            .filter(|event| {
+                event.kind == "orphaned_queue_claim_recovered"
+                    && event.data["reason"] == "identity_inactive_attempt_interrupted_at_startup"
+            })
+            .count();
+        assert_eq!(claim_recovery_audits, 1);
+
+        // Recovery is idempotent: a rerun settles nothing new.
+        let repeated = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(repeated.interrupted_execution_attempts, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_fails_closed_on_unsettleable_open_attempt() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        // Orphaned open attempt row with no execution protocol partition:
+        // validation cannot even prepare the interrupt, so recovery must
+        // fail closed with agent/attempt context instead of silently
+        // continuing with the attempt still blocking later admissions.
+        db.connection()?.execute(
+            "INSERT INTO execution_protocol_attempts (
+               agent_id, attempt_id, lifecycle_state,
+               source_identity_json, source_generation, recovery_of_attempt_id,
+               terminal_outcome_id, payload_json
+             ) VALUES ('agent-orphan', 'attempt-orphan', 'open', '{}', 1, NULL, NULL, '{}')",
+            [],
+        )?;
+
+        let error = db
+            .recover_interrupted_runtime_state_at_startup()
+            .expect_err("recovery must fail closed on unsettleable open attempt");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("agent-orphan") && message.contains("attempt-orphan"),
+            "error must carry agent and attempt context: {message}"
+        );
+        // The failed transaction rolled back: the attempt is still open and
+        // nothing was reported as settled.
+        let still_open: i64 = db.connection()?.query_row(
+            "SELECT COUNT(*) FROM execution_protocol_attempts
+             WHERE agent_id = 'agent-orphan' AND lifecycle_state = 'open'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(still_open, 1);
         Ok(())
     }
 

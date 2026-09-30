@@ -20,7 +20,7 @@ mod repair;
 mod scheduler;
 mod scheduler_acceptance;
 mod scheduler_continuation;
-mod scheduler_executor;
+pub(crate) mod scheduler_executor;
 mod subagent;
 mod task_result_recovery;
 mod task_state_reducer;
@@ -1433,7 +1433,7 @@ fn exact_agent_scope_wait_recheck(
     Ok(Some(wait.clone()))
 }
 
-enum TaskResultClaimRecovery {
+pub(crate) enum TaskResultClaimRecovery {
     Replayable {
         transition: crate::runtime_db::transitions::ExecutionProtocolTransition,
         reason: &'static str,
@@ -1450,7 +1450,7 @@ enum TaskResultClaimRecovery {
 }
 
 #[derive(Clone, Copy)]
-enum TaskResultClaimRecoveryAuthority {
+pub(crate) enum TaskResultClaimRecoveryAuthority {
     Diagnostic,
     RuntimeTerminatedBootstrap,
 }
@@ -1463,6 +1463,36 @@ fn exact_task_result_claim_recovery(
     work_item_id: &str,
     interrupted_at: chrono::DateTime<Utc>,
     authority: TaskResultClaimRecoveryAuthority,
+) -> Result<TaskResultClaimRecovery> {
+    let task = message
+        .task_id
+        .as_deref()
+        .map(|id| storage.latest_task_record(id))
+        .transpose()?
+        .flatten();
+    let waits = storage.latest_wait_conditions_for_agent(&message.agent_id)?;
+    let work_item = runtime_db.work_items().latest(work_item_id)?;
+    exact_task_result_claim_recovery_from_facts(
+        message,
+        attempt,
+        work_item_id,
+        interrupted_at,
+        authority,
+        task.as_ref(),
+        &waits,
+        work_item.as_ref(),
+    )
+}
+
+pub(crate) fn exact_task_result_claim_recovery_from_facts(
+    message: &MessageEnvelope,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    work_item_id: &str,
+    interrupted_at: chrono::DateTime<Utc>,
+    authority: TaskResultClaimRecoveryAuthority,
+    task: Option<&TaskRecord>,
+    waits: &[WaitConditionRecord],
+    work_item: Option<&WorkItemRecord>,
 ) -> Result<TaskResultClaimRecovery> {
     use crate::domain::execution_protocol::{
         ExecutionSourceIdentity, RecoverInterruptedTaskResultClaim,
@@ -1491,7 +1521,7 @@ fn exact_task_result_claim_recovery(
             reason: "task_result_message_identity_mismatch",
         });
     }
-    let Some(task) = storage.latest_task_record(task_id)? else {
+    let Some(task) = task else {
         return Ok(TaskResultClaimRecovery::Ineligible {
             reason: "task_result_task_missing",
         });
@@ -1504,14 +1534,20 @@ fn exact_task_result_claim_recovery(
     if task.agent_id != message.agent_id
         || task.work_item_id.as_deref() != Some(work_item_id)
         || task.parent_message_id.as_deref() != Some(message.id.as_str())
+        || !matches!(
+            task.status,
+            crate::types::TaskStatus::Completed
+                | crate::types::TaskStatus::Failed
+                | crate::types::TaskStatus::Cancelled
+                | crate::types::TaskStatus::Interrupted
+        )
         || attempt.admitted_fences.rejoin.as_ref() != Some(&rejoin)
     {
         return Ok(TaskResultClaimRecovery::Ineligible {
             reason: "task_result_rejoin_identity_mismatch",
         });
     }
-    let matching_waits = storage
-        .latest_wait_conditions_for_agent(&message.agent_id)?
+    let matching_waits = waits
         .into_iter()
         .filter(|wait| {
             wait.work_item_id.as_deref() == Some(work_item_id)
@@ -1532,7 +1568,7 @@ fn exact_task_result_claim_recovery(
         .collect::<Vec<_>>();
     let wait = match matching_waits.as_slice() {
         [] => None,
-        [wait] => Some(wait.clone()),
+        [wait] => Some((*wait).clone()),
         _ => {
             return Ok(TaskResultClaimRecovery::Ineligible {
                 reason: "task_result_wait_ambiguous",
@@ -1547,7 +1583,7 @@ fn exact_task_result_claim_recovery(
             });
         }
     }
-    let Some(work_item) = runtime_db.work_items().latest(work_item_id)? else {
+    let Some(work_item) = work_item else {
         return Ok(TaskResultClaimRecovery::Ineligible {
             reason: "task_result_work_item_missing",
         });
