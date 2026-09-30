@@ -56,6 +56,13 @@ pub const AUTO_SUPPLEMENT_PROVIDERS: &[&str] = &[
     "mistral",
 ];
 
+/// Runtime providers that share an upstream models.dev catalog.
+///
+/// `openai-codex` is an existing first-party runtime transport, not a
+/// separate models.dev provider. Keep its catalog in sync with OpenAI models
+/// so the same model can be selected through either supported transport.
+const SUPPLEMENT_PROVIDER_ALIASES: &[(&str, &str)] = &[("openai", "openai-codex")];
+
 /// How many days back a model's upstream release date may lie and still be
 /// auto-drafted. Gates entry only; retention is sticky.
 pub const RECENCY_WINDOW_DAYS: i64 = 120;
@@ -325,75 +332,78 @@ pub fn generate(
             providers_not_allowlisted.push(md_provider_id.clone());
             continue;
         }
-        let holon_provider_id = mapping.holon_provider_id.clone();
-        for (md_model_id, model) in &provider.models {
-            let Ok(model_ref) =
-                ModelRef::parse(format!("{holon_provider_id}/{md_model_id}").as_str())
-            else {
-                deferred.push(DeferredModel {
-                    model_ref: format!("{holon_provider_id}/{md_model_id}"),
-                    reason: DeferredReason::InvalidModelRef,
-                    release_date: None,
-                });
-                continue;
-            };
-            let model_ref_string = model_ref.as_string();
-            if legacy.entries.contains_key(&model_ref) {
-                if remaining_previous.remove(&model_ref_string) {
-                    promoted.push(model_ref_string);
+        for holon_provider_id in
+            supplement_provider_targets(md_provider_id, &mapping.holon_provider_id)
+        {
+            for (md_model_id, model) in &provider.models {
+                let Ok(model_ref) =
+                    ModelRef::parse(format!("{holon_provider_id}/{md_model_id}").as_str())
+                else {
+                    deferred.push(DeferredModel {
+                        model_ref: format!("{holon_provider_id}/{md_model_id}"),
+                        reason: DeferredReason::InvalidModelRef,
+                        release_date: None,
+                    });
+                    continue;
+                };
+                let model_ref_string = model_ref.as_string();
+                if legacy.entries.contains_key(&model_ref) {
+                    if remaining_previous.remove(&model_ref_string) {
+                        promoted.push(model_ref_string);
+                    }
+                    continue;
                 }
-                continue;
+                if legacy.aliases.contains_key(&model_ref) {
+                    deferred.push(DeferredModel {
+                        model_ref: model_ref_string,
+                        reason: DeferredReason::LegacyAliasConflict,
+                        release_date: release_date_key(model).map(str::to_string),
+                    });
+                    continue;
+                }
+                if remaining_previous.remove(&model_ref_string) {
+                    // Retained: refresh metadata from the current snapshot but
+                    // keep the entry admitted.
+                    retained.push(model_ref_string);
+                    continue;
+                }
+                let Some(modalities) = model.modalities.as_ref() else {
+                    deferred.push(DeferredModel {
+                        model_ref: model_ref_string,
+                        reason: DeferredReason::NotTextOutput,
+                        release_date: release_date_key(model).map(str::to_string),
+                    });
+                    continue;
+                };
+                if !modalities.output.iter().any(|m| m == "text") {
+                    deferred.push(DeferredModel {
+                        model_ref: model_ref_string,
+                        reason: DeferredReason::NotTextOutput,
+                        release_date: release_date_key(model).map(str::to_string),
+                    });
+                    continue;
+                }
+                let Some(date_key) = release_date_key(model) else {
+                    deferred.push(DeferredModel {
+                        model_ref: model_ref_string,
+                        reason: DeferredReason::NoReleaseDate,
+                        release_date: None,
+                    });
+                    continue;
+                };
+                if date_key < cutoff {
+                    deferred.push(DeferredModel {
+                        model_ref: model_ref_string,
+                        reason: DeferredReason::ReleaseOutsideWindow,
+                        release_date: Some(date_key.to_string()),
+                    });
+                    continue;
+                }
+                let mut metadata = project_model(&model_ref, model);
+                metadata.source = ModelMetadataSource::ModelsDevSupplement;
+                metadata.endpoint = None;
+                drafted.push(metadata);
             }
-            if legacy.aliases.contains_key(&model_ref) {
-                deferred.push(DeferredModel {
-                    model_ref: model_ref_string,
-                    reason: DeferredReason::LegacyAliasConflict,
-                    release_date: release_date_key(model).map(str::to_string),
-                });
-                continue;
-            }
-            if remaining_previous.remove(&model_ref_string) {
-                // Retained: refresh metadata from the current snapshot but
-                // keep the entry admitted.
-                retained.push(model_ref_string);
-                continue;
-            }
-            let Some(modalities) = model.modalities.as_ref() else {
-                deferred.push(DeferredModel {
-                    model_ref: model_ref_string,
-                    reason: DeferredReason::NotTextOutput,
-                    release_date: release_date_key(model).map(str::to_string),
-                });
-                continue;
-            };
-            if !modalities.output.iter().any(|m| m == "text") {
-                deferred.push(DeferredModel {
-                    model_ref: model_ref_string,
-                    reason: DeferredReason::NotTextOutput,
-                    release_date: release_date_key(model).map(str::to_string),
-                });
-                continue;
-            }
-            let Some(date_key) = release_date_key(model) else {
-                deferred.push(DeferredModel {
-                    model_ref: model_ref_string,
-                    reason: DeferredReason::NoReleaseDate,
-                    release_date: None,
-                });
-                continue;
-            };
-            if date_key < cutoff {
-                deferred.push(DeferredModel {
-                    model_ref: model_ref_string,
-                    reason: DeferredReason::ReleaseOutsideWindow,
-                    release_date: Some(date_key.to_string()),
-                });
-                continue;
-            }
-            let mut metadata = project_model(&model_ref, model);
-            metadata.source = ModelMetadataSource::ModelsDevSupplement;
-            metadata.endpoint = None;
-            drafted.push(metadata);
         }
     }
 
@@ -404,10 +414,7 @@ pub fn generate(
     for model_ref_string in &retained {
         let model_ref = ModelRef::parse(model_ref_string)
             .map_err(|error| format!("invalid retained model ref {model_ref_string}: {error}"))?;
-        let md_provider_id = mappings
-            .iter()
-            .find(|(_, mapping)| mapping.holon_provider_id == model_ref.provider.as_str())
-            .map(|(md_id, _)| md_id.to_string())
+        let md_provider_id = supplement_source_provider_id(&mappings, model_ref.provider.as_str())
             .ok_or_else(|| format!("retained model {model_ref_string} has no provider mapping"))?;
         let provider = snapshot.providers.get(&md_provider_id).ok_or_else(|| {
             format!("retained model {model_ref_string} lost its upstream provider")
@@ -443,6 +450,7 @@ pub fn generate(
         reason: RemovalReason::PromotedToLegacy,
     }));
 
+    drafted.sort_by_key(|model| model.model_ref.as_string());
     models.sort_by_key(|model| model.model_ref.as_string());
     let current_model_refs: HashSet<ModelRef> =
         models.iter().map(|model| model.model_ref.clone()).collect();
@@ -501,6 +509,34 @@ fn supplemental_route_endpoints(provider: &str) -> &'static [&'static str] {
         "xiaomi" => &["token-plan"],
         _ => &[],
     }
+}
+
+fn supplement_provider_targets(md_provider_id: &str, holon_provider_id: &str) -> Vec<String> {
+    let mut targets = vec![holon_provider_id.to_string()];
+    targets.extend(
+        SUPPLEMENT_PROVIDER_ALIASES
+            .iter()
+            .filter(|(source, _)| *source == md_provider_id)
+            .map(|(_, target)| (*target).to_string()),
+    );
+    targets
+}
+
+fn supplement_source_provider_id(
+    mappings: &BTreeMap<&str, &ProviderMapping>,
+    holon_provider_id: &str,
+) -> Option<String> {
+    mappings.iter().find_map(|(md_provider_id, mapping)| {
+        if mapping.holon_provider_id == holon_provider_id
+            || SUPPLEMENT_PROVIDER_ALIASES
+                .iter()
+                .any(|(source, target)| *source == *md_provider_id && *target == holon_provider_id)
+        {
+            Some((*md_provider_id).to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn release_date_key(model: &ModelsDevModel) -> Option<&str> {
@@ -698,6 +734,44 @@ mod tests {
         assert_eq!(
             update.providers_not_allowlisted,
             vec!["openrouter".to_string()]
+        );
+    }
+
+    #[test]
+    fn drafts_openai_models_for_api_and_codex_providers() {
+        let parsed: ModelsDevSnapshot = serde_json::from_str(
+            r#"{
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-6.1-sol": {
+                            "id": "gpt-6.1-sol",
+                            "name": "GPT-6.1 Sol",
+                            "release_date": "2026-08-30",
+                            "modalities": {
+                                "input": ["text", "image"],
+                                "output": ["text"]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let update = generate(&parsed, None, &legacy(), "2026-05-05", "rev", "ver").unwrap();
+        let drafted_refs: Vec<String> = update
+            .drafted
+            .iter()
+            .map(|model| model.model_ref.as_string())
+            .collect();
+
+        assert_eq!(
+            drafted_refs,
+            vec![
+                "openai-codex/gpt-6.1-sol".to_string(),
+                "openai/gpt-6.1-sol".to_string()
+            ]
         );
     }
 
