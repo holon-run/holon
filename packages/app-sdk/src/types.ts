@@ -1,6 +1,5 @@
 export interface AppSession {
   readonly authenticated: boolean;
-  readonly permissions: readonly string[];
 }
 
 export interface AppContext {

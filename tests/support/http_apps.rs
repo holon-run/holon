@@ -449,6 +449,11 @@ pub async fn apps_sdk_request_and_events() -> Result<()> {
     assert_eq!(context["agent_id"], agent);
     assert_eq!(context["app_id"], "sdk");
     assert_eq!(context["session"]["authenticated"], true);
+    assert_eq!(
+        context["session"].as_object().map(|session| session.len()),
+        Some(1)
+    );
+    assert!(context["session"].get("permissions").is_none());
 
     let sdk = client
         .get(format!("{base}/apps/{agent}/sdk/holon.js"))
