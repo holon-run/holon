@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "a174062643509bd51dc6338a3e8bb26ae19d398cdd445af1762ca2d1186f1a50",
-  "adapter_version": "0.46.0 (9b83d06c)",
+  "upstream_revision": "e2c7ccfcd2315060e1baf90f68c66a6e457fab2c3bb1df8d3f400c8d5b6c9065",
+  "adapter_version": "0.46.0 (0602173e)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -715,34 +715,6 @@
         "high",
         "xhigh",
         "max"
-      ],
-      "source": "models_dev_supplement"
-    },
-    {
-      "model_ref": "openai-codex/gpt-realtime-2.1",
-      "display_name": "GPT-Realtime-2.1",
-      "description": "Realtime speech-to-speech model with configurable reasoning, tool use, and robust voice-agent behavior",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 32000,
-      "max_output_tokens_upper_limit": 32000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh"
       ],
       "source": "models_dev_supplement"
     },

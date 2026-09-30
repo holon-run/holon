@@ -1,12 +1,16 @@
 # models.dev refresh summary
 
-- Supplement models: 52 (drafted this run: 0, retained: 52, removed: 0)
+- Supplement models: 51 (drafted this run: 0, retained: 51, removed: 1)
 - Deferred candidates: 203 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
 (none this run)
+
+## Removed from previous supplement
+
+- `openai-codex/gpt-realtime-2.1` — UnsupportedByProvider
 
 ## Deferred (needs human decision or outside policy)
 
