@@ -159,7 +159,12 @@ pub(crate) async fn view_for_record(
             crate::work_item_plan::PlanArtifactQuery::Missing => (
                 None,
                 WorkItemPlanArtifactStatus::Missing,
-                Some(format!("plan artifact missing for work item {}", record.id)),
+                Some(format!(
+                    "plan artifact missing at {} for work item {}",
+                    crate::work_item_plan::plan_path(runtime.agent_home().as_path(), &record.id)
+                        .display(),
+                    record.id
+                )),
             ),
             crate::work_item_plan::PlanArtifactQuery::Available(artifact) => {
                 (Some(artifact), WorkItemPlanArtifactStatus::Available, None)

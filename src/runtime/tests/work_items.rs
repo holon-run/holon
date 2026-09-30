@@ -2305,6 +2305,15 @@ async fn work_item_query_preserves_view_when_plan_artifact_is_missing() {
         context_config(),
     )
     .unwrap();
+    let available_work_item = runtime
+        .create_work_item(
+            "Keep normal work item visible".into(),
+            Some(WorkItemPlanStatus::Ready),
+            Some("available plan".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
     let work_item = runtime
         .create_work_item(
             "Keep queryable when plan is missing".into(),
@@ -2348,9 +2357,10 @@ async fn work_item_query_preserves_view_when_plan_artifact_is_missing() {
         .as_array()
         .unwrap()
         .iter()
-        .any(|diagnostic| diagnostic
-            .as_str()
-            .is_some_and(|value| value.contains("plan artifact missing"))));
+        .any(|diagnostic| diagnostic.as_str().is_some_and(|value| {
+            value.contains("plan artifact missing")
+                && value.contains(plan_path.to_string_lossy().as_ref())
+        })));
 
     let (list_result, _) = registry
         .execute(
@@ -2375,6 +2385,73 @@ async fn work_item_query_preserves_view_when_plan_artifact_is_missing() {
     assert_eq!(listed["plan_artifact_status"].as_str(), Some("missing"));
     assert!(listed["plan_artifact"].is_null());
     assert!(!plan_path.exists());
+    let listed_available = list_payload["work_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["id"].as_str() == Some(available_work_item.id.as_str()))
+        .expect("normal work item should remain listed");
+    assert_eq!(
+        listed_available["plan_artifact_status"].as_str(),
+        Some("available")
+    );
+}
+
+#[tokio::test]
+async fn work_item_query_reports_unreadable_plan_artifact() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let work_item = runtime
+        .create_work_item(
+            "Keep queryable when plan is unreadable".into(),
+            Some(WorkItemPlanStatus::Ready),
+            Some("plan body".into()),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let plan_path = work_item.plan_artifact.as_ref().unwrap().path.clone();
+    std::fs::remove_file(&plan_path).unwrap();
+    std::fs::create_dir(&plan_path).unwrap();
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+
+    let (result, _) = registry
+        .execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "get-unreadable-plan".into(),
+                name: "GetWorkItem".into(),
+                input: serde_json::json!({"work_item_id": work_item.id}),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = result.envelope.result.unwrap();
+    assert_eq!(
+        payload["work_item"]["plan_artifact_status"].as_str(),
+        Some("unreadable")
+    );
+    assert!(payload["work_item"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| {
+            diagnostic
+                .as_str()
+                .is_some_and(|value| value.contains(plan_path.to_string_lossy().as_ref()))
+        }));
 }
 
 #[tokio::test]

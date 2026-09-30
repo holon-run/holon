@@ -25,6 +25,7 @@ fn work_item(value: &Value, objective_chars: usize) -> Value {
             "is_current",
             "is_runnable",
             "reason_code",
+            "plan_artifact_status",
         ],
     );
     if objective_chars > 0 {
@@ -214,7 +215,12 @@ fn semantic_result(name: &str, value: &Value, chars: usize, rows: usize) -> Valu
                 .collect::<Vec<_>>());
             result["shown"] = json!(shown);
             result["omitted_count"] = json!(items.map_or(0, Vec::len) - shown);
-            let mut omitted = vec!["plan_artifact", "completion_report", "work_refs"];
+            let mut omitted = vec![
+                "plan_artifact",
+                "plan_artifact_status",
+                "completion_report",
+                "work_refs",
+            ];
             if chars <= 1024 {
                 omitted.push("todo_list");
             }

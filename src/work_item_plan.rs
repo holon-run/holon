@@ -102,6 +102,24 @@ pub(crate) fn query_plan_artifact(agent_home: &Path, record: &WorkItemRecord) ->
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{WorkItemRecord, WorkItemState};
+    use tempfile::tempdir;
+
+    #[test]
+    fn query_plan_artifact_reports_not_recorded_when_metadata_and_file_are_absent() {
+        let agent_home = tempdir().unwrap();
+        let record = WorkItemRecord::new("default", "without a plan", WorkItemState::Open);
+
+        assert_eq!(
+            query_plan_artifact(agent_home.path(), &record),
+            PlanArtifactQuery::NotRecorded
+        );
+    }
+}
+
 pub(crate) fn describe_plan_artifact(
     path: &Path,
     owner_agent_id: &str,
