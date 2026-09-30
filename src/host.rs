@@ -2013,11 +2013,17 @@ impl RuntimeHost {
 
     fn reconcile_stale_waits_at_startup(&self) -> Result<usize> {
         let runtime_db = self.runtime_db();
-        let waits = runtime_db.wait_conditions().active_all()?;
+        let waits = runtime_db.wait_conditions().unresolved_all()?;
         let tasks = runtime_db.tasks().latest_all()?;
         let external_triggers = runtime_db.external_triggers().latest_all()?;
         let timers = runtime_db.timers().latest_all()?;
-        let mut stopped_agents = HashSet::new();
+        let mut stopped_agents = runtime_db
+            .agent_states()
+            .latest_all()?
+            .into_iter()
+            .filter(|state| state.status == AgentStatus::Stopped)
+            .map(|state| state.id)
+            .collect::<HashSet<_>>();
         let mut cancelled = 0;
 
         for wait in waits {
@@ -2086,6 +2092,10 @@ impl RuntimeHost {
             runtime_db
                 .queue_entries()
                 .abort_pending_for_agent(&agent_id)?;
+            if let Some(mut state) = runtime_db.agent_states().latest(&agent_id)? {
+                state.pending = 0;
+                runtime_db.agent_states().upsert(&state)?;
+            }
         }
         Ok(cancelled)
     }
@@ -13183,6 +13193,19 @@ mod tests {
                 Some(overdue),
             ))
             .unwrap();
+        host.runtime_db()
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "message-startup-stopped-queued-1".into(),
+                agent_id: agent_id.into(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Queued,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        state.pending = 1;
+        storage.write_agent(&state).unwrap();
 
         host.recover_orphaned_queue_claims_at_startup()
             .await
@@ -13193,11 +13216,21 @@ mod tests {
             .latest_timer_record("timer-startup-stopped-1")
             .unwrap()
             .unwrap();
-        assert_eq!(timer.status, TimerStatus::Active);
+        assert_eq!(timer.status, TimerStatus::Cancelled);
         assert_eq!(timer.fire_count, 0);
         assert_startup_timer_tick_count(&storage, "timer-startup-stopped-1", 0);
+        let queue_entry = host
+            .runtime_db()
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.message_id == "message-startup-stopped-queued-1")
+            .expect("stopped startup input should remain durable for reconciliation");
+        assert_eq!(queue_entry.status, QueueEntryStatus::Aborted);
         let state = storage.read_agent().unwrap().unwrap();
         assert_eq!(state.status, AgentStatus::Stopped);
+        assert_eq!(state.pending, 0);
     }
 
     #[tokio::test]

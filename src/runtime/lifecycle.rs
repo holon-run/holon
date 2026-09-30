@@ -371,6 +371,12 @@ impl RuntimeHandle {
                 .runtime_db
                 .queue_entries()
                 .abort_pending_for_agent(&agent_id)?;
+            {
+                let mut guard = self.inner.agent.lock().await;
+                guard.queue.clear();
+                guard.state.pending = 0;
+                guard.persist_state(&self.inner.storage)?;
+            }
             self.inner.storage.append_event(&AuditEvent::legacy(
                 "agent_stop_state_discarded",
                 serde_json::json!({

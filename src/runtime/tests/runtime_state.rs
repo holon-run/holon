@@ -12518,6 +12518,7 @@ async fn control_stop_cancels_waits_and_discards_pending_input() {
         .iter()
         .filter(|entry| entry.message_id.starts_with("message-stop-"))
         .all(|entry| entry.status == QueueEntryStatus::Aborted));
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 0);
 }
 
 #[tokio::test(start_paused = true)]

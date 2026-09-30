@@ -314,6 +314,15 @@ impl AgentStateRepository<'_> {
             .map(|payload| decode_agent_state_payload(&payload))
             .transpose()
     }
+
+    pub fn latest_all(&self) -> Result<Vec<AgentState>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare("SELECT payload_json FROM agent_states")?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.map(|row| decode_agent_state_payload(&row?))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading all agent states: {e}"))
+    }
 }
 
 impl WorkspaceEntryRepository<'_> {
@@ -2448,7 +2457,7 @@ impl WaitConditionRepository<'_> {
                 resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
                 wake_sources_json, continuation_json
              FROM wait_conditions
-             WHERE status IN ('active', 'triggered')
+             WHERE status = 'active'
              ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
         )?;
         let rows = statement.query_map([], |row| {
@@ -2456,6 +2465,24 @@ impl WaitConditionRepository<'_> {
         })?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(|e| anyhow::anyhow!("reading wait conditions: {e}"))
+    }
+
+    pub fn unresolved_all(&self) -> Result<Vec<WaitConditionRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT wait_condition_id, agent_id, work_item_id, status, kind, source,
+                subject_ref, waiting_for, created_at, updated_at, expires_at,
+                resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
+                wake_sources_json, continuation_json
+             FROM wait_conditions
+             WHERE status IN ('active', 'triggered')
+             ORDER BY updated_at DESC, created_at DESC, wait_condition_id ASC",
+        )?;
+        let rows = statement.query_map([], |row| {
+            decode_wait_condition_row(row).map_err(wait_condition_decode_error)
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("reading unresolved wait conditions: {e}"))
     }
 
     pub fn cancel_unresolved_for_agent(

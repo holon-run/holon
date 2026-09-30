@@ -4571,30 +4571,24 @@ impl RuntimeHandle {
         }) {
             return Ok(TransitionCommit::default());
         }
-        let mut audit_events = vec![
-            AuditEvent::legacy(
-                "message_admitted",
-                serde_json::json!({
-                    "message_id": message.id.clone(),
-                    "agent_id": message.agent_id.clone(),
-                    "kind": message.kind.clone(),
-                    "origin": message.origin.clone(),
-                    "authority_class": message.authority_class,
-                    "delivery_surface": message.delivery_surface,
-                    "admission_context": message.admission_context,
-                    "trigger_kind": message.trigger_kind,
-                    "work_item_id": message.work_item_id.clone(),
-                    "task_id": message.task_id.clone(),
-                    "source_refs": message.source_refs.clone(),
-                    "correlation_id": message.correlation_id.clone(),
-                    "causation_id": message.causation_id.clone(),
-                }),
-            ),
-            AuditEvent::typed(
-                RuntimeEventKind::MessageEnqueued,
-                &MessageLifecycleAuditEvent::from_message(&message),
-            )?,
-        ];
+        let mut audit_events = vec![AuditEvent::legacy(
+            "message_admitted",
+            serde_json::json!({
+                "message_id": message.id.clone(),
+                "agent_id": message.agent_id.clone(),
+                "kind": message.kind.clone(),
+                "origin": message.origin.clone(),
+                "authority_class": message.authority_class,
+                "delivery_surface": message.delivery_surface,
+                "admission_context": message.admission_context,
+                "trigger_kind": message.trigger_kind,
+                "work_item_id": message.work_item_id.clone(),
+                "task_id": message.task_id.clone(),
+                "source_refs": message.source_refs.clone(),
+                "correlation_id": message.correlation_id.clone(),
+                "causation_id": message.causation_id.clone(),
+            }),
+        )];
         let commit = {
             let mut guard = self.inner.agent.lock().await;
             let queue_needs_push = guard
@@ -4646,6 +4640,10 @@ impl RuntimeHandle {
                 ));
                 QueueEntryStatus::Aborted
             } else {
+                audit_events.push(AuditEvent::typed(
+                    RuntimeEventKind::MessageEnqueued,
+                    &MessageLifecycleAuditEvent::from_message(&message),
+                )?);
                 QueueEntryStatus::Queued
             };
             let command = crate::runtime_db::transitions::QueueTransitionCommand {

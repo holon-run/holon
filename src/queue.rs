@@ -93,6 +93,13 @@ impl RuntimeQueue {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    pub fn clear(&mut self) {
+        self.interject.clear();
+        self.next.clear();
+        self.normal.clear();
+        self.background.clear();
+    }
 }
 
 fn pop_matching_from(
