@@ -90,7 +90,7 @@ export interface paths {
         };
         /**
          * Get agent
-         * @description Return the canonical public AgentSummary read model.
+         * @description Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.
          */
         get: operations["getAgent"];
         put?: never;
@@ -430,7 +430,7 @@ export interface paths {
         };
         /**
          * Agent status
-         * @description Return the public AgentSummary read model.
+         * @description Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.
          */
         get: operations["agentStatus"];
         put?: never;
@@ -2490,7 +2490,7 @@ export interface paths {
         };
         /**
          * Default agent status alias
-         * @description Compatibility alias for the default agent status route.
+         * @description Compatibility alias for the default agent status route; pass detail=full for the complete AgentSummary read model.
          */
         get: operations["defaultStatus"];
         put?: never;

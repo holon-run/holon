@@ -1330,7 +1330,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
             &ToolCall {
                 id: "tool-get-state".into(),
                 name: "GetAgent".into(),
-                input: json!({}),
+                input: json!({"detail": "full"}),
             },
         )
         .await?;
