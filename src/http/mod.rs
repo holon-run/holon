@@ -902,7 +902,7 @@ pub fn router(state: AppState) -> Router {
                     tracing::info_span!(
                         "http_request",
                         method = %request.method(),
-                        path = %request.uri().path(),
+                        path = %redact_request_path(request.uri().path()),
                         matched_path,
                         status = tracing::field::Empty,
                         response_bytes = tracing::field::Empty,
@@ -1279,6 +1279,18 @@ fn cookie_session_credential(headers: &HeaderMap) -> Option<String> {
                 (name == SESSION_COOKIE_NAME && !value.is_empty()).then(|| value.to_string())
             })
         })
+}
+
+fn redact_request_path(path: &str) -> String {
+    let parts: Vec<_> = path.split('/').collect();
+    if parts.len() == 5
+        && parts[1] == "api"
+        && parts[2] == "callbacks"
+        && matches!(parts[3], "enqueue" | "wake")
+    {
+        return format!("/api/callbacks/{}/<redacted>", parts[3]);
+    }
+    path.to_string()
 }
 
 pub(crate) fn session_credential(headers: &HeaderMap) -> Option<String> {
@@ -1863,8 +1875,9 @@ pub async fn serve_unix(
 mod tests {
     use super::{
         add_retry_after_to_service_unavailable, authenticate_session, error_response,
-        if_none_match_satisfied, projection_gate_error_response, router, session_credential,
-        tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
+        if_none_match_satisfied, projection_gate_error_response, redact_request_path, router,
+        session_credential, tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate,
+        ProjectionGateError,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -1888,6 +1901,19 @@ mod tests {
     use std::{fs, path::Path, sync::Arc, time::Duration};
     use tempfile::tempdir;
     use tower::ServiceExt;
+
+    #[test]
+    fn callback_paths_hide_capabilities() {
+        assert_eq!(
+            redact_request_path("/api/callbacks/wake/opaque"),
+            "/api/callbacks/wake/<redacted>"
+        );
+        assert_eq!(
+            redact_request_path("/api/callbacks/enqueue/opaque"),
+            "/api/callbacks/enqueue/<redacted>"
+        );
+        assert_eq!(redact_request_path("/api/agents"), "/api/agents");
+    }
 
     fn test_host() -> (tempfile::TempDir, RuntimeHost) {
         let home = tempdir().unwrap();

@@ -83,6 +83,7 @@ function renderTimeline(
     status?: never;
     pendingInputs?: never;
     localPendingPrompts?: never;
+    brief?: BriefRecord;
     onLoadBrief?: (briefId: string) => void;
     details?: ConversationStateView["details"];
   } = {},
@@ -91,7 +92,7 @@ function renderTimeline(
     status: options.status ?? { kind: "ready" },
     view: { ...stateView(turns), details: options.details ?? [] },
     historyState: { kind: "idle" },
-    briefs: new Map([["brief-1", brief]]),
+    briefs: new Map([["brief-1", options.brief ?? brief]]),
     briefLoadStates: new Map(),
     detailLoadStates: new Map(),
   });
@@ -110,9 +111,9 @@ function renderTimeline(
       onLoadDetail={() => {}}
       onLoadOlderActivities={() => {}}
       onRetry={() => {}}
-      briefRecord={(id) => (id === "brief-1" ? brief : null)}
+      briefRecord={(id) => (id === "brief-1" ? options.brief ?? brief : null)}
       briefLoadState={(id) =>
-        id === "brief-1" ? ({ kind: "ready", brief } as ConversationBriefLoadState) : null
+        id === "brief-1" ? ({ kind: "ready", brief: options.brief ?? brief } as ConversationBriefLoadState) : null
       }
       detailLoadState={(): ConversationDetailLoadState => ({ kind: "idle" })}
     />,
@@ -509,5 +510,40 @@ describe("input event presentation", () => {
     expect(inspector.body).toBe("Structured event");
     expect(summarizeActivity(activity).display).toBe("Structured event");
     expect(executionProcessActivities([activity], [], false, [])).toEqual([activity]);
+  });
+});
+
+describe("message timestamps", () => {
+  const terminalTurn = (overrides: Partial<ConversationTurnSummary> = {}) => turnSummary("ts-turn", 1, {
+    execution: { kind: "terminal", outcome: "completed" },
+    result: { kind: "available" },
+    settled: true,
+    brief_ids: ["brief-1"],
+    ...overrides,
+  });
+
+  it("labels same-day messages with time only", () => {
+    const today = new Date();
+    const created = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 9, 5);
+    const html = renderTimeline([terminalTurn()], { brief: { ...brief, created_at: created.toISOString() } });
+    expect(html).toContain(`>${created.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}<`);
+  });
+
+  it("carries the date for cross-day brief messages", () => {
+    const created = new Date("2020-01-02T03:04:00Z");
+    const html = renderTimeline([terminalTurn()], { brief: { ...brief, created_at: "2020-01-02T03:04:00Z" } });
+    expect(html).toContain(`>${created.toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}<`);
+  });
+
+  it("shows the date on turn input timestamps from another day", () => {
+    const html = renderTimeline([turnSummary("sys", 1, {
+      presentation_class: "system",
+      inputs: [{ message_id: "sys-input", preview: "recheck" }],
+      started_at: "2020-01-02T03:04:00Z",
+      execution: { kind: "terminal", outcome: "completed" }, result: { kind: "available" },
+      settled: true, brief_ids: ["brief-1"],
+    })]);
+    const created = new Date("2020-01-02T03:04:00Z");
+    expect(html).toContain(`>${created.toLocaleString([], { year: "numeric", month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}<`);
   });
 });
