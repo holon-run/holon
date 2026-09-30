@@ -345,6 +345,15 @@ internal class HolonRepository(
         return requireSession() to roster
     }
 
+    suspend fun keepSessionAlive() {
+        val current = requireSession()
+        val user = requireClient().currentUser()
+        if (user.userId != current.user.userId) {
+            clearAuthentication()
+            throw SessionScopeChangedException()
+        }
+    }
+
     suspend fun modelCatalog(refresh: Boolean = false): HolonModelCatalog =
         withContext(Dispatchers.IO) {
             requireClient().modelCatalog(refresh)

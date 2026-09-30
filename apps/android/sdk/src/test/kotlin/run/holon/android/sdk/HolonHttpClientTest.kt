@@ -18,6 +18,28 @@ import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
     @Test
+    fun `current user keepalive uses the authenticated session endpoint`() {
+        MockWebServer().use { server ->
+            server.enqueue(
+                jsonResponse(
+                    """{"ok":true,"user_id":"user-1","display_name":"Test User","auth_method":"local"}""",
+                ),
+            )
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    bearerTokenProvider = BearerTokenProvider { "test-session" },
+                )
+
+            assertEquals("user-1", client.currentUser().userId)
+
+            val request = server.takeRequest()
+            assertEquals("/auth/session/me", request.path)
+            assertEquals("Bearer test-session", request.getHeader("Authorization"))
+        }
+    }
+
+    @Test
     fun `model catalog parses available model metadata and availability`() {
         MockWebServer().use { server ->
             server.enqueue(jsonResponse(fixture("models-v1.json")))
