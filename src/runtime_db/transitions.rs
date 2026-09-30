@@ -556,19 +556,32 @@ impl RuntimeDb {
             }
             // A freshly started process cannot own a legitimately open
             // execution attempt: every still-open attempt belongs to an
-            // execution interrupted by the restart. Queue-message sources
-            // re-drive through new admissions, so a leftover open attempt
-            // would reject every later admission for that agent with a
-            // non-retryable protocol error. Settle each one as interrupted,
-            // regardless of identity lifecycle status: deleting/deleted
+            // execution interrupted by the restart, and a leftover open
+            // attempt would reject every later admission for that agent
+            // with a non-retryable protocol error. Attempts whose
+            // activation claim is still dequeued are left untouched: the
+            // runtime bootstrap unsettled-claim reconciliation settles
+            // those attempts itself and requeues or quarantines the claim
+            // according to its replay fence. This sweep only settles the
+            // attempts that reconciliation can never reach, because the
+            // claim was already settled from terminal turn evidence or no
+            // longer exists and non-replayable sources never re-admit. It
+            // covers every identity lifecycle status: deleting/deleted
             // identities unload their runtime before the attempt settles,
             // and reincarnation does not clear the execution-protocol rows.
             let open_attempts: Vec<(String, String)> = {
                 let mut statement = tx.prepare(
-                    "SELECT agent_id, attempt_id
-                     FROM execution_protocol_attempts
-                     WHERE lifecycle_state = 'open'
-                     ORDER BY agent_id, attempt_id",
+                    "SELECT a.agent_id, a.attempt_id
+                     FROM execution_protocol_attempts a
+                     WHERE a.lifecycle_state = 'open'
+                       AND NOT EXISTS (
+                         SELECT 1
+                         FROM queue_entries q
+                         WHERE q.agent_id = a.agent_id
+                           AND q.message_id = substr(a.attempt_id, 20)
+                           AND q.status = 'dequeued'
+                       )
+                     ORDER BY a.agent_id, a.attempt_id",
                 )?;
                 let rows = statement
                     .query_map([], |row| {
@@ -5334,6 +5347,93 @@ mod tests {
             .filter(|event| event.kind == "startup_interrupted_execution_attempt_recovered")
             .count();
         assert_eq!(recovery_audits, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_leaves_dequeued_claims_to_bootstrap_reconciliation() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        db.agent_identities().upsert(&AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))?;
+        let transition = execution_admission(
+            "message-execution",
+            "activation:message:message-execution",
+            "work-execution",
+        );
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+        let claimed = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Dequeued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &ExecutionProtocolTransition::default(),
+        )?;
+        assert!(claimed.applied);
+
+        // A still-dequeued activation claim belongs to the runtime bootstrap
+        // unsettled-claim reconciliation, which settles the attempt and
+        // requeues or quarantines the claim by replay fence. The startup
+        // sweep must not pre-empt it.
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 0);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("admission state");
+        assert_eq!(
+            state.attempts["activation:message:message-execution"].state,
+            ExecutionAttemptState::Open
+        );
         Ok(())
     }
 

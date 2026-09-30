@@ -13630,7 +13630,7 @@ mod tests {
                 "msg-activated" => assert_eq!(
                     entry.status,
                     QueueEntryStatus::Dequeued,
-                    "active execution should retain its claim"
+                    "open-attempt claim is retained for bootstrap reconciliation"
                 ),
                 "msg-terminal" | "msg-result-brief" | "msg-delivery" => assert_eq!(
                     entry.status,
