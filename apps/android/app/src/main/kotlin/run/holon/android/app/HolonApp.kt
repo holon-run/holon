@@ -1679,7 +1679,7 @@ internal fun ActivityRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             } else {
-                MarkdownText(activity.summary.ifBlank { ui("（空消息）") })
+                MarkdownText(assistantActivityText(activity.summary).ifBlank { ui("（空消息）") })
             }
             AnimatedVisibility(visible = isTool && expanded) {
                 Surface(
@@ -1710,8 +1710,9 @@ internal fun ActivityRow(
                             detail.summary?.takeIf { it.isNotBlank() && it != activity.summary }?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall)
                             }
-                            detail.raw["input"]?.let { ToolPayloadPreview(ui("输入"), it.toString()) }
-                            detail.raw["output"]?.let { ToolPayloadPreview(ui("输出"), it.toString()) }
+                            activityPayloadBlocks(detail).forEach { block ->
+                                ToolPayloadPreview(block.title, block.text, code = block.code)
+                            }
                             if (detail.artifactCount > 0) {
                                 Text(
                                     ui("产生 ${detail.artifactCount} 个产物"),
@@ -1779,16 +1780,17 @@ private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
                     if (detail.artifactCount > 0) SettingsValue(ui("产物"), detail.artifactCount.toString())
                 }
             }
-            detail.raw["input"]?.let { input -> item { ToolPayloadPreview(ui("输入"), input.toString()) } }
-            detail.raw["output"]?.let { output -> item { ToolPayloadPreview(ui("输出"), output.toString()) } }
+            activityPayloadBlocks(detail).forEach { block ->
+                item { ToolPayloadPreview(block.title, block.text, code = block.code, limit = 4_000) }
+            }
             item { TextButton(onClick = { showRaw = !showRaw }) { Text(if (showRaw) ui("收起原始记录") else ui("查看原始记录")) } }
-            if (showRaw) item { ToolPayloadPreview(ui("原始记录"), detail.raw.toString(), 16_000) }
+            if (showRaw) item { ToolPayloadPreview(ui("原始记录"), detail.raw.toString(), limit = 16_000) }
         }
     }
 }
 
 @Composable
-private fun ToolPayloadPreview(title: String, payload: String, limit: Int = 2_000) {
+private fun ToolPayloadPreview(title: String, payload: String, code: Boolean = true, limit: Int = 2_000) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(title, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(8.dp)) {
@@ -1797,7 +1799,7 @@ private fun ToolPayloadPreview(title: String, payload: String, limit: Int = 2_00
                     payload.take(limit),
                     modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(10.dp),
                     style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
+                    fontFamily = if (code) FontFamily.Monospace else FontFamily.Default,
                 )
             }
         }
