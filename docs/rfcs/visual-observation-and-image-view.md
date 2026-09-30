@@ -496,6 +496,26 @@ The first implementation should not require a dedicated `[vision]` config block.
 It may use deterministic built-in ordering over configured providers and model
 metadata. A later RFC may add override policy if real deployments need it.
 
+### Candidate Health
+
+Runtime response validation may temporarily exclude an otherwise eligible
+candidate after two consecutive `visual_observation` schema failures, counting
+only the final failure after the bounded correction retry. Provider, transport,
+network, image-read, and image-decode errors do not affect candidate health.
+The runtime cools that exact provider endpoint/model route for five minutes and
+selects the next candidate already present in the configured, authenticated,
+image-capable route list. If every eligible route is cooling, `ViewImage`
+returns an unavailable selection with a diagnostic reason instead of expanding
+the candidate scope.
+
+A valid response clears that candidate's failures and decays other candidates'
+failure counts by one. Cooldown still prevents an immediately failing candidate
+from re-entering selection; it can be tried again after expiry. Health state is
+runtime-instance local and resets on process restart, config reload, or an
+eligible candidate-list change. A mutex serializes concurrent outcomes; calls
+already in flight may finish with the candidate they selected before a
+cooldown opened.
+
 ### Lowering Policy
 
 Holon's durable history should always be:

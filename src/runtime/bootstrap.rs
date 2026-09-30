@@ -4,6 +4,7 @@ use std::{
     collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{atomic::AtomicBool, Arc, Mutex as StdMutex},
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Result};
@@ -12,7 +13,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 use crate::{
-    config::{AppConfig, ModelRef, ModelRouteCapability, ModelRouteRef, RuntimeModelCatalog},
+    config::{
+        AppConfig, ModelRouteCapability, ModelRouteRef, ResolvedViewImageVisionSelection,
+        RuntimeModelCatalog,
+    },
     context::ContextConfig,
     host::RuntimeHostBridge,
     model_discovery::{
@@ -37,6 +41,192 @@ use crate::{
         SkillActivationSource, SkillActivationState,
     },
 };
+
+pub(crate) const VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD: u32 = 2;
+const VIEW_IMAGE_CANDIDATE_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+const VIEW_IMAGE_ALL_CANDIDATES_COOLING_REASON: &str =
+    "all_configured_view_image_candidates_cooling_after_protocol_validation_failures";
+const VIEW_IMAGE_CANDIDATE_COOLDOWN_FALLBACK_REASON: &str =
+    "view_image_candidate_cooldown_fallback_after_protocol_validation_failures";
+const VIEW_IMAGE_SUPPORTED_CANDIDATE_REASON: &str = "model_advertises_image_input";
+
+#[derive(Debug, Default)]
+pub(super) struct ViewImageCandidateHealth {
+    candidate_refs: Vec<ModelRouteRef>,
+    failures: HashMap<ModelRouteRef, ViewImageCandidateFailure>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ViewImageCandidateFailure {
+    consecutive_protocol_failures: u32,
+    cooling_until: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ViewImageCandidateFailureStatus {
+    pub(crate) consecutive_protocol_failures: u32,
+    pub(crate) circuit_open: bool,
+    pub(crate) cooldown_seconds: u64,
+}
+
+impl ViewImageCandidateHealth {
+    fn sync_candidate_pool(&mut self, selection: &ResolvedViewImageVisionSelection) {
+        let candidate_refs = selection
+            .selection
+            .candidates
+            .iter()
+            .filter(|candidate| {
+                candidate.image_input && candidate.reason == VIEW_IMAGE_SUPPORTED_CANDIDATE_REASON
+            })
+            .filter_map(|candidate| ModelRouteRef::parse_compatible(&candidate.model_ref).ok())
+            .collect::<Vec<_>>();
+        if self.candidate_refs == candidate_refs {
+            return;
+        }
+        if !self.candidate_refs.is_empty() {
+            tracing::debug!(
+                previous_candidates = ?self.candidate_refs,
+                current_candidates = ?candidate_refs,
+                "reset ViewImage candidate health after the eligible candidate list changed"
+            );
+        }
+        self.candidate_refs = candidate_refs;
+        self.failures.clear();
+    }
+
+    fn select_candidate(
+        &mut self,
+        mut selection: ResolvedViewImageVisionSelection,
+        now: Instant,
+    ) -> ResolvedViewImageVisionSelection {
+        self.sync_candidate_pool(&selection);
+        let mut cooling_candidates = Vec::new();
+        let selected_candidate = self.candidate_refs.iter().find(|model_ref| {
+            let Some(failure) = self.failures.get(*model_ref) else {
+                return true;
+            };
+            let Some(cooling_until) = failure.cooling_until else {
+                return true;
+            };
+            if cooling_until <= now {
+                return true;
+            }
+            cooling_candidates.push((
+                model_ref.as_string(),
+                failure.consecutive_protocol_failures,
+                cooling_until
+                    .duration_since(now)
+                    .as_secs()
+                    .saturating_add(1),
+            ));
+            false
+        });
+
+        let Some(selected_candidate) = selected_candidate else {
+            if !cooling_candidates.is_empty() {
+                selection.selection.selected_mode =
+                    crate::types::ViewImageSelectedMode::Unavailable;
+                selection.selection.vision_provider = None;
+                selection.selection.vision_model = None;
+                selection.selected_route = None;
+                selection.selection.selection_reason =
+                    VIEW_IMAGE_ALL_CANDIDATES_COOLING_REASON.to_string();
+                tracing::debug!(
+                    candidates = ?cooling_candidates,
+                    "ViewImage has no eligible candidate outside its cooldown"
+                );
+            }
+            return selection;
+        };
+
+        if selection.selected_route.as_ref() == Some(selected_candidate) {
+            return selection;
+        }
+
+        let Some(candidate) = selection
+            .selection
+            .candidates
+            .iter()
+            .find(|candidate| candidate.model_ref == selected_candidate.as_string())
+        else {
+            return selection;
+        };
+        let selected_provider = candidate.provider.clone();
+        let selected_model = candidate.model.clone();
+        selection.selection.selected_mode = if *selected_candidate == selection.primary_route {
+            crate::types::ViewImageSelectedMode::NativeImageWithObservation
+        } else {
+            crate::types::ViewImageSelectedMode::VisionAdapter
+        };
+        selection.selection.vision_provider = Some(selected_provider);
+        selection.selection.vision_model = Some(selected_model);
+        selection.selected_route = Some(selected_candidate.clone());
+        selection.selection.selection_reason =
+            VIEW_IMAGE_CANDIDATE_COOLDOWN_FALLBACK_REASON.to_string();
+        tracing::info!(
+            cooled_candidates = ?cooling_candidates,
+            selected_candidate = %selected_candidate.as_string(),
+            "selected a healthy ViewImage candidate after protocol validation failures"
+        );
+        selection
+    }
+
+    fn record_protocol_failure(
+        &mut self,
+        selection: &ResolvedViewImageVisionSelection,
+        now: Instant,
+    ) -> Option<ViewImageCandidateFailureStatus> {
+        self.sync_candidate_pool(selection);
+        let model_ref = selection.selected_route.as_ref()?;
+        if !self.candidate_refs.contains(model_ref) {
+            return None;
+        }
+        let failure = self.failures.entry(model_ref.clone()).or_default();
+        failure.consecutive_protocol_failures =
+            failure.consecutive_protocol_failures.saturating_add(1);
+        let circuit_open =
+            failure.consecutive_protocol_failures >= VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD;
+        if circuit_open {
+            failure.cooling_until = Some(now + VIEW_IMAGE_CANDIDATE_COOLDOWN);
+        }
+        Some(ViewImageCandidateFailureStatus {
+            consecutive_protocol_failures: failure.consecutive_protocol_failures,
+            circuit_open,
+            cooldown_seconds: if circuit_open {
+                VIEW_IMAGE_CANDIDATE_COOLDOWN.as_secs()
+            } else {
+                0
+            },
+        })
+    }
+
+    fn record_success(&mut self, selection: &ResolvedViewImageVisionSelection) -> bool {
+        self.sync_candidate_pool(selection);
+        let Some(model_ref) = selection.selected_route.as_ref() else {
+            return false;
+        };
+        let mut recovered = self.failures.remove(model_ref).is_some();
+        for (failed_candidate, failure) in &mut self.failures {
+            if failed_candidate == model_ref || failure.consecutive_protocol_failures == 0 {
+                continue;
+            }
+            failure.consecutive_protocol_failures -= 1;
+            recovered = true;
+        }
+        if recovered {
+            tracing::info!(
+                candidate = %model_ref.as_string(),
+                "decayed ViewImage candidate failure state after a valid response"
+            );
+        }
+        recovered
+    }
+
+    fn reset(&mut self) {
+        self.candidate_refs.clear();
+        self.failures.clear();
+    }
+}
 
 use super::{
     clock::{Clock, SystemClock},
@@ -547,6 +737,7 @@ impl RuntimeHandle {
                 context_config: RwLock::new(resolved_context_config),
                 builtin_web_search_probe_cache: Mutex::new(HashMap::new()),
                 view_image_observation_cache: Mutex::new(HashMap::new()),
+                view_image_candidate_health: Mutex::new(ViewImageCandidateHealth::default()),
                 model_discovery_refreshes: Mutex::new(HashSet::new()),
                 model_discovery_refresh_notify: Notify::new(),
                 callback_base_url,
@@ -766,6 +957,7 @@ impl RuntimeHandle {
             .map(|hook| Arc::new(hook) as Arc<dyn scheduler::AsyncSemanticCandidateSelectionHook>);
         // Atomically swap the snapshot.
         self.inner.config_snapshot.store(new_snapshot);
+        self.inner.view_image_candidate_health.lock().await.reset();
         *self
             .inner
             .autonomous_continuation_decision_hook
@@ -789,21 +981,31 @@ impl RuntimeHandle {
         self.inner.context_config.read().await.clone()
     }
 
+    #[cfg(test)]
     pub(crate) async fn current_view_image_vision_selection(
         &self,
     ) -> Result<crate::types::ViewImageVisionSelection> {
+        Ok(self
+            .current_view_image_vision_route_selection()
+            .await?
+            .selection)
+    }
+
+    pub(crate) async fn current_view_image_vision_route_selection(
+        &self,
+    ) -> Result<ResolvedViewImageVisionSelection> {
         let selection = self.view_image_vision_selection().await?;
-        if selection.selected_mode
-            == crate::types::ViewImageSelectedMode::NativeImageWithObservation
-        {
+        let selection = self.select_healthy_view_image_candidate(selection).await;
+        if !should_refresh_view_image_discovery(&selection) {
             return Ok(selection);
         }
         let failures = self
-            .refresh_view_image_discovery_candidates(&selection)
+            .refresh_view_image_discovery_candidates(&selection.selection)
             .await?;
         let mut selection = self.view_image_vision_selection().await?;
         for (provider, error) in failures {
             selection
+                .selection
                 .candidates
                 .push(crate::types::ViewImageVisionCandidate {
                     provider: provider.as_str().to_string(),
@@ -813,18 +1015,69 @@ impl RuntimeHandle {
                     reason: format!("provider_model_discovery_failed: {error}"),
                 });
         }
-        Ok(selection)
+        Ok(self.select_healthy_view_image_candidate(selection).await)
     }
 
-    async fn view_image_vision_selection(&self) -> Result<crate::types::ViewImageVisionSelection> {
+    async fn select_healthy_view_image_candidate(
+        &self,
+        selection: ResolvedViewImageVisionSelection,
+    ) -> ResolvedViewImageVisionSelection {
+        self.inner
+            .view_image_candidate_health
+            .lock()
+            .await
+            .select_candidate(selection, Instant::now())
+    }
+
+    pub(crate) async fn record_view_image_candidate_protocol_failure(
+        &self,
+        selection: &ResolvedViewImageVisionSelection,
+    ) -> Option<ViewImageCandidateFailureStatus> {
+        let status = self
+            .inner
+            .view_image_candidate_health
+            .lock()
+            .await
+            .record_protocol_failure(selection, Instant::now());
+        if let Some(status) = status {
+            tracing::warn!(
+                candidate = selection
+                    .selected_route
+                    .as_ref()
+                    .map(ModelRouteRef::as_string)
+                    .unwrap_or_else(|| "unknown".to_string()),
+                consecutive_protocol_failures = status.consecutive_protocol_failures,
+                failure_threshold = VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
+                cooldown_seconds = status.cooldown_seconds,
+                circuit_open = status.circuit_open,
+                "ViewImage candidate returned an invalid visual observation"
+            );
+        }
+        status
+    }
+
+    pub(crate) async fn record_view_image_candidate_success(
+        &self,
+        selection: &ResolvedViewImageVisionSelection,
+    ) {
+        self.inner
+            .view_image_candidate_health
+            .lock()
+            .await
+            .record_success(selection);
+    }
+
+    async fn view_image_vision_selection(&self) -> Result<ResolvedViewImageVisionSelection> {
         let state = self.agent_state().await?;
         let fallback_model = self.inner.turn_fallback_model.read().await.clone();
         let snap = self.inner.config_snapshot.load();
-        Ok(snap.model_catalog.select_view_image_vision_model(
-            &snap.base_context_config,
-            state.model_override.as_ref(),
-            fallback_model.as_ref(),
-        ))
+        Ok(snap
+            .model_catalog
+            .select_view_image_vision_model_with_route(
+                &snap.base_context_config,
+                state.model_override.as_ref(),
+                fallback_model.as_ref(),
+            ))
     }
 
     async fn refresh_view_image_discovery_candidates(
@@ -954,27 +1207,32 @@ impl RuntimeHandle {
 
     pub(crate) async fn generate_view_image_observation(
         &self,
+        selection: &ResolvedViewImageVisionSelection,
         prompt: &str,
         media_type: &str,
         bytes: &[u8],
     ) -> Result<String> {
-        let selection = self.current_view_image_vision_selection().await?;
-        if selection.selected_mode == crate::types::ViewImageSelectedMode::Unavailable {
+        if selection.selection.selected_mode == crate::types::ViewImageSelectedMode::Unavailable {
             return Err(anyhow!("no configured model supports image_input"));
         }
         let provider_name = selection
+            .selection
             .vision_provider
             .as_deref()
             .ok_or_else(|| anyhow!("vision selection did not include a provider"))?;
         let model_name = selection
+            .selection
             .vision_model
             .as_deref()
             .ok_or_else(|| anyhow!("vision selection did not include a model"))?;
         let snap = self.inner.config_snapshot.load();
-        let vision_model_ref = ModelRef::parse(&format!("{provider_name}/{model_name}"))?;
+        let vision_model_ref = selection
+            .selected_route
+            .as_ref()
+            .ok_or_else(|| anyhow!("ViewImage selection did not include its exact model route"))?;
         let vision_route = snap
             .model_catalog
-            .resolve_model_route(
+            .resolve_explicit_model_route(
                 &snap.base_context_config,
                 &vision_model_ref,
                 ModelRouteCapability::VisionObservation,
@@ -1481,6 +1739,13 @@ fn prepare_runtime_storage(
     })
 }
 
+fn should_refresh_view_image_discovery(selection: &ResolvedViewImageVisionSelection) -> bool {
+    selection.selection.selected_mode
+        != crate::types::ViewImageSelectedMode::NativeImageWithObservation
+        && selection.selection.selection_reason != VIEW_IMAGE_ALL_CANDIDATES_COOLING_REASON
+        && selection.selection.selection_reason != VIEW_IMAGE_CANDIDATE_COOLDOWN_FALLBACK_REASON
+}
+
 fn visual_observation_response_format() -> ProviderResponseFormatRequest {
     ProviderResponseFormatRequest::JsonSchema(ProviderJsonSchemaResponseFormat {
         name: "visual_observation_v1".into(),
@@ -1512,4 +1777,300 @@ fn visual_observation_response_format() -> ProviderResponseFormatRequest {
             }
         }),
     })
+}
+
+#[cfg(test)]
+mod view_image_candidate_health_tests {
+    use super::*;
+
+    use crate::config::ResolvedViewImageVisionSelection;
+    use crate::types::{ViewImageSelectedMode, ViewImageVisionCandidate, ViewImageVisionSelection};
+
+    fn candidate(
+        provider: &str,
+        model: &str,
+        model_ref: &str,
+        reason: &str,
+    ) -> ViewImageVisionCandidate {
+        ViewImageVisionCandidate {
+            provider: provider.to_string(),
+            model: model.to_string(),
+            model_ref: model_ref.to_string(),
+            image_input: true,
+            reason: reason.to_string(),
+        }
+    }
+
+    fn configured_selection(
+        candidates: Vec<ViewImageVisionCandidate>,
+    ) -> ResolvedViewImageVisionSelection {
+        let selection = ViewImageVisionSelection {
+            selected_mode: ViewImageSelectedMode::NativeImageWithObservation,
+            vision_provider: Some("openai".to_string()),
+            vision_model: Some("vision-a".to_string()),
+            selection_reason: "current_primary_model_supports_image_input".to_string(),
+            primary_provider: Some("openai".to_string()),
+            primary_model: Some("vision-a".to_string()),
+            candidates,
+        };
+        ResolvedViewImageVisionSelection {
+            selected_route: Some(
+                ModelRouteRef::parse_compatible("openai@default/vision-a").unwrap(),
+            ),
+            primary_route: ModelRouteRef::parse_compatible("openai@default/vision-a").unwrap(),
+            selection,
+        }
+    }
+
+    fn two_candidates() -> ResolvedViewImageVisionSelection {
+        configured_selection(vec![
+            candidate(
+                "openai",
+                "vision-a",
+                "openai@default/vision-a",
+                VIEW_IMAGE_SUPPORTED_CANDIDATE_REASON,
+            ),
+            candidate(
+                "anthropic",
+                "vision-b",
+                "anthropic@default/vision-b",
+                VIEW_IMAGE_SUPPORTED_CANDIDATE_REASON,
+            ),
+        ])
+    }
+
+    #[test]
+    fn repeated_validation_failures_cool_candidate_and_successful_fallback_decays_it() {
+        let now = Instant::now();
+        let mut health = ViewImageCandidateHealth::default();
+        let primary = two_candidates();
+
+        assert_eq!(
+            health
+                .record_protocol_failure(&primary, now)
+                .unwrap()
+                .consecutive_protocol_failures,
+            1
+        );
+        assert_eq!(
+            health
+                .select_candidate(primary.clone(), now)
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string)
+                .as_deref(),
+            Some("openai@default/vision-a")
+        );
+
+        let opened = health.record_protocol_failure(&primary, now).unwrap();
+        assert!(opened.circuit_open);
+        assert_eq!(opened.cooldown_seconds, 5 * 60);
+        let fallback = health.select_candidate(primary.clone(), now);
+        assert_eq!(
+            fallback
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string),
+            Some("anthropic@default/vision-b".to_string())
+        );
+        assert_eq!(
+            fallback.selection.selected_mode,
+            ViewImageSelectedMode::VisionAdapter
+        );
+        assert_eq!(
+            fallback.selection.selection_reason,
+            VIEW_IMAGE_CANDIDATE_COOLDOWN_FALLBACK_REASON
+        );
+        assert!(!should_refresh_view_image_discovery(&fallback));
+
+        health.record_success(&fallback);
+        health.record_success(&fallback);
+        assert_eq!(
+            health
+                .failures
+                .get(&ModelRouteRef::parse_compatible("openai@default/vision-a").unwrap())
+                .unwrap()
+                .consecutive_protocol_failures,
+            0
+        );
+        assert_eq!(
+            health
+                .select_candidate(primary.clone(), now + Duration::from_secs(299))
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string),
+            Some("anthropic@default/vision-b".to_string())
+        );
+        let recovered_candidate =
+            health.select_candidate(primary.clone(), now + Duration::from_secs(301));
+        assert_eq!(
+            recovered_candidate
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string),
+            Some("openai@default/vision-a".to_string())
+        );
+        health.record_success(&recovered_candidate);
+        let next_failure = health
+            .record_protocol_failure(&recovered_candidate, now + Duration::from_secs(302))
+            .unwrap();
+        assert_eq!(next_failure.consecutive_protocol_failures, 1);
+        assert!(!next_failure.circuit_open);
+    }
+
+    #[test]
+    fn candidate_list_changes_reset_health_without_admitting_unsupported_routes() {
+        let now = Instant::now();
+        let mut health = ViewImageCandidateHealth::default();
+        let initial = two_candidates();
+        health.record_protocol_failure(&initial, now);
+        health.record_protocol_failure(&initial, now);
+        assert_eq!(
+            health
+                .select_candidate(initial.clone(), now)
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string),
+            Some("anthropic@default/vision-b".to_string())
+        );
+
+        let changed = configured_selection(vec![
+            candidate(
+                "openai",
+                "vision-a",
+                "openai@default/vision-a",
+                VIEW_IMAGE_SUPPORTED_CANDIDATE_REASON,
+            ),
+            candidate(
+                "custom",
+                "vision-c",
+                "custom@default/vision-c",
+                "provider_transport_unsupported_for_view_image_observation",
+            ),
+        ]);
+        assert_eq!(
+            health
+                .select_candidate(changed.clone(), now)
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string)
+                .as_deref(),
+            Some("openai@default/vision-a")
+        );
+        health.record_protocol_failure(&changed, now);
+        health.record_protocol_failure(&changed, now);
+        let unavailable = health.select_candidate(changed, now);
+        assert_eq!(
+            unavailable.selection.selected_mode,
+            ViewImageSelectedMode::Unavailable
+        );
+        assert_eq!(unavailable.selected_route, None);
+        assert_eq!(
+            unavailable.selection.selection_reason,
+            VIEW_IMAGE_ALL_CANDIDATES_COOLING_REASON
+        );
+        assert!(!should_refresh_view_image_discovery(&unavailable));
+
+        let mut no_candidates = configured_selection(Vec::new());
+        no_candidates.selection.selected_mode = ViewImageSelectedMode::Unavailable;
+        no_candidates.selection.vision_provider = None;
+        no_candidates.selection.vision_model = None;
+        no_candidates.selection.selection_reason =
+            "no_configured_view_image_candidates".to_string();
+        no_candidates.selected_route = None;
+        assert!(should_refresh_view_image_discovery(&no_candidates));
+    }
+
+    #[tokio::test]
+    async fn fresh_runtime_state_does_not_inherit_candidate_cooldowns() {
+        let selection = two_candidates();
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let previous_runtime = RuntimeHandle::new(
+            "default",
+            runtime_dir.path().to_path_buf(),
+            workspace_dir.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        previous_runtime
+            .record_view_image_candidate_protocol_failure(&selection)
+            .await;
+        previous_runtime
+            .record_view_image_candidate_protocol_failure(&selection)
+            .await;
+        assert_eq!(
+            previous_runtime
+                .select_healthy_view_image_candidate(selection.clone())
+                .await
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string)
+                .as_deref(),
+            Some("anthropic@default/vision-b")
+        );
+
+        drop(previous_runtime);
+        let restarted_runtime = RuntimeHandle::new(
+            "default",
+            runtime_dir.path().to_path_buf(),
+            workspace_dir.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            restarted_runtime
+                .select_healthy_view_image_candidate(selection)
+                .await
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string)
+                .as_deref(),
+            Some("openai@default/vision-a")
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_protocol_failures_update_candidate_health_atomically() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let workspace_dir = tempfile::tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            runtime_dir.path().to_path_buf(),
+            workspace_dir.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            ContextConfig::default(),
+        )
+        .unwrap();
+        let selection = two_candidates();
+
+        let (first, second) = tokio::join!(
+            runtime.record_view_image_candidate_protocol_failure(&selection),
+            runtime.record_view_image_candidate_protocol_failure(&selection)
+        );
+        let mut counts = [
+            first.unwrap().consecutive_protocol_failures,
+            second.unwrap().consecutive_protocol_failures,
+        ];
+        counts.sort_unstable();
+        assert_eq!(counts, [1, 2]);
+        assert_eq!(
+            runtime
+                .select_healthy_view_image_candidate(selection)
+                .await
+                .selected_route
+                .as_ref()
+                .map(ModelRouteRef::as_string)
+                .as_deref(),
+            Some("anthropic@default/vision-b")
+        );
+    }
 }

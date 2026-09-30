@@ -80,6 +80,9 @@ use std::{
 use anyhow::{anyhow, bail, Context, Result};
 use arc_swap::ArcSwap;
 use bootstrap::ConfigSnapshot;
+pub(crate) use bootstrap::{
+    ViewImageCandidateFailureStatus, VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
+};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
@@ -421,6 +424,7 @@ struct RuntimeInner {
         Mutex<HashMap<BuiltinWebSearchProbeKey, BuiltinWebSearchProbeCacheEntry>>,
     view_image_observation_cache:
         Mutex<HashMap<ViewImageObservationCacheKey, ViewImageObservation>>,
+    view_image_candidate_health: Mutex<bootstrap::ViewImageCandidateHealth>,
     model_discovery_refreshes: Mutex<HashSet<crate::config::ProviderId>>,
     model_discovery_refresh_notify: Notify,
     callback_base_url: String,

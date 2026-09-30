@@ -3377,6 +3377,48 @@ fn view_image_vision_selection_prefers_primary_over_other_candidates() {
 }
 
 #[test]
+fn view_image_vision_selection_canonicalizes_and_deduplicates_model_aliases() {
+    let mut fixture = test_app_config("arcee/trinity-mini", &[]);
+    let mistral = ProviderId::parse("mistral").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture
+        .config
+        .providers
+        .insert(mistral.clone(), built_ins.get(&mistral).unwrap().clone());
+    fixture.config.vision_candidate_models = vec![
+        ModelRouteRef::parse("mistral@default/pixtral-large-latest").unwrap(),
+        ModelRouteRef::parse("mistral@default/mistral-medium-latest").unwrap(),
+    ];
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let selection =
+        catalog.select_view_image_vision_model_with_route(&ContextConfig::default(), None, None);
+
+    assert_eq!(
+        selection
+            .selected_route
+            .as_ref()
+            .map(ModelRouteRef::as_string),
+        Some("mistral@default/mistral-medium-latest".to_string())
+    );
+    assert_eq!(
+        selection
+            .selection
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.model_ref == "mistral@default/mistral-medium-latest")
+            .count(),
+        1
+    );
+    assert_eq!(selection.selection.candidates.len(), 2);
+    assert!(selection
+        .selection
+        .candidates
+        .iter()
+        .all(|candidate| candidate.model_ref != "mistral@default/pixtral-large-latest"));
+}
+
+#[test]
 fn runtime_model_catalog_materializes_legacy_provider_as_default_route_endpoint() {
     let fixture = test_app_config("openai/gpt-5.4", &[]);
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
