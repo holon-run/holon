@@ -1,13 +1,12 @@
 # models.dev refresh summary
 
-- Supplement models: 46 (drafted this run: 2, retained: 44, removed: 0)
-- Deferred candidates: 165 (not auto-drafted; see below)
+- Supplement models: 52 (drafted this run: 0, retained: 52, removed: 0)
+- Deferred candidates: 203 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `anthropic/claude-sonnet-5-5` — Claude Sonnet 5.5 (context 1000000, reasoning true, image input true)
-- `openai/gpt-6.1-sol` — GPT-6.1 Sol (context 1050000, reasoning true, image input true)
+(none this run)
 
 ## Deferred (needs human decision or outside policy)
 
@@ -51,4 +50,4 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 125 more (see `holon models-dev audit`)
+- … and 163 more (see `holon models-dev audit`)
