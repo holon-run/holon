@@ -562,13 +562,18 @@ impl RuntimeDb {
             // activation claim is still dequeued are left untouched: the
             // runtime bootstrap unsettled-claim reconciliation settles
             // those attempts itself and requeues or quarantines the claim
-            // according to its replay fence. This sweep only settles the
-            // attempts that reconciliation can never reach, because the
-            // claim was already settled from terminal turn evidence or no
-            // longer exists and non-replayable sources never re-admit. It
-            // covers every identity lifecycle status: deleting/deleted
-            // identities unload their runtime before the attempt settles,
-            // and reincarnation does not clear the execution-protocol rows.
+            // according to its replay fence. Dequeued claims with no
+            // active identity (deleting/deleted/missing) were already
+            // settled from terminal evidence earlier in this transaction,
+            // so any attempt still holding a dequeued claim here belongs
+            // to an active identity whose bootstrap engine will reach it.
+            // This sweep only settles the attempts that reconciliation can
+            // never reach, because the claim was already settled from
+            // terminal turn evidence or no longer exists and
+            // non-replayable sources never re-admit. It covers every
+            // identity lifecycle status: deleting/deleted identities
+            // unload their runtime before the attempt settles, and
+            // reincarnation does not clear the execution-protocol rows.
             let open_attempts: Vec<(String, String)> = {
                 let mut statement = tx.prepare(
                     "SELECT a.agent_id, a.attempt_id
@@ -663,51 +668,89 @@ fn reconcile_orphaned_dequeued_claims_tx(
     recovered_at: chrono::DateTime<Utc>,
 ) -> Result<OrphanedQueueRecovery> {
     let sql = if agent_id.is_some() {
-        "SELECT q.payload_json
-                 FROM queue_entries q
-                 JOIN agent_identities i
-                   ON i.agent_id = q.agent_id
-                  AND i.status = 'active'
-                 WHERE q.status = 'dequeued'
-                   AND q.agent_id = ?1
-                   AND NOT EXISTS (
-                     SELECT 1
-                     FROM execution_protocol_attempts a
-                     WHERE a.agent_id = q.agent_id
-                       AND a.attempt_id = 'activation:message:' || q.message_id
-                   )
-                 ORDER BY q.agent_id, q.updated_at, q.message_id"
+        "WITH dequeued_claims AS (
+             SELECT q.payload_json,
+                    q.agent_id,
+                    q.updated_at,
+                    q.message_id,
+                    EXISTS (
+                      SELECT 1
+                      FROM execution_protocol_attempts a
+                      WHERE a.agent_id = q.agent_id
+                        AND a.attempt_id = 'activation:message:' || q.message_id
+                    ) AS has_attempt,
+                    EXISTS (
+                      SELECT 1
+                      FROM agent_identities i
+                      WHERE i.agent_id = q.agent_id
+                        AND i.status = 'active'
+                    ) AS identity_active
+             FROM queue_entries q
+             WHERE q.status = 'dequeued'
+               AND q.agent_id = ?1
+           )
+           SELECT payload_json, has_attempt
+           FROM dequeued_claims
+           WHERE NOT identity_active OR NOT has_attempt
+           ORDER BY agent_id, updated_at, message_id"
     } else {
-        "SELECT q.payload_json
-                 FROM queue_entries q
-                 JOIN agent_identities i
-                   ON i.agent_id = q.agent_id
-                  AND i.status = 'active'
-                 WHERE q.status = 'dequeued'
-                   AND NOT EXISTS (
-                     SELECT 1
-                     FROM execution_protocol_attempts a
-                     WHERE a.agent_id = q.agent_id
-                       AND a.attempt_id = 'activation:message:' || q.message_id
-                   )
-                 ORDER BY q.agent_id, q.updated_at, q.message_id"
+        "WITH dequeued_claims AS (
+             SELECT q.payload_json,
+                    q.agent_id,
+                    q.updated_at,
+                    q.message_id,
+                    EXISTS (
+                      SELECT 1
+                      FROM execution_protocol_attempts a
+                      WHERE a.agent_id = q.agent_id
+                        AND a.attempt_id = 'activation:message:' || q.message_id
+                    ) AS has_attempt,
+                    EXISTS (
+                      SELECT 1
+                      FROM agent_identities i
+                      WHERE i.agent_id = q.agent_id
+                        AND i.status = 'active'
+                    ) AS identity_active
+             FROM queue_entries q
+             WHERE q.status = 'dequeued'
+           )
+           SELECT payload_json, has_attempt
+           FROM dequeued_claims
+           WHERE NOT identity_active OR NOT has_attempt
+           ORDER BY agent_id, updated_at, message_id"
     };
     let mut statement = tx.prepare(sql)?;
     let candidates = if let Some(agent_id) = agent_id {
         statement
-            .query_map([agent_id], |row| row.get::<_, String>(0))?
-            .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+            .query_map([agent_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })?
+            .map(|row| {
+                let (payload, has_attempt) = row?;
+                Ok((
+                    serde_json::from_str::<QueueEntryRecord>(&payload)?,
+                    has_attempt,
+                ))
+            })
             .collect::<Result<Vec<_>>>()?
     } else {
         statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?))
+            })?
+            .map(|row| {
+                let (payload, has_attempt) = row?;
+                Ok((
+                    serde_json::from_str::<QueueEntryRecord>(&payload)?,
+                    has_attempt,
+                ))
+            })
             .collect::<Result<Vec<_>>>()?
     };
     drop(statement);
 
     let mut recovery = OrphanedQueueRecovery::default();
-    for expected in candidates {
+    for (expected, has_attempt) in candidates {
         let mut recovered = expected.clone();
         let terminal_kind = tx
             .query_row(
@@ -760,6 +803,15 @@ fn reconcile_orphaned_dequeued_claims_tx(
             (
                 QueueEntryStatus::Aborted,
                 "terminal_failure_completion_evidence",
+            )
+        } else if has_attempt {
+            // Deletion window: no active identity owns a runtime that
+            // would ever reconcile this claim, so the startup attempt
+            // sweep later in the same transaction interrupts the attempt
+            // and the claim follows it as interrupted.
+            (
+                QueueEntryStatus::Interrupted,
+                "identity_inactive_attempt_interrupted_at_startup",
             )
         } else {
             (
@@ -5496,6 +5548,125 @@ mod tests {
             state.attempts["attempt-execution"].state,
             ExecutionAttemptState::Interrupted
         );
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_repairs_deleting_identity_dequeued_claim_with_open_attempt() -> Result<()> {
+        // A restart inside the deletion window can leave the identity
+        // `Deleting` while its activation claim is still `dequeued` and the
+        // execution attempt still open. Bootstrap claim reconciliation and
+        // recovery-agent selection only cover active identities, so startup
+        // recovery itself must settle both the claim and the attempt;
+        // otherwise the pair strands together and the open attempt blocks
+        // every later admission for the agent's next incarnation.
+        let (_dir, db) = runtime_db()?;
+        db.agent_states().upsert(&AgentState::new("agent-a"))?;
+        let mut identity = AgentIdentityRecord::new(
+            "agent-a",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        db.agent_identities().upsert(&identity)?;
+        let transition = execution_admission(
+            "message-execution",
+            "activation:message:message-execution",
+            "work-execution",
+        );
+        let now = Utc::now();
+        let commit = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Admit,
+                mutation: QueueMutation::Upsert(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Queued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &transition,
+        )?;
+        assert!(commit.applied);
+        let claimed = db.transitions().commit_queue_with_execution_protocol(
+            &QueueTransitionCommand {
+                agent_id: "agent-a".into(),
+                operation: QueueOperation::Claim,
+                mutation: QueueMutation::Consume(QueueEntryRecord {
+                    message_id: "message-execution".into(),
+                    agent_id: "agent-a".into(),
+                    priority: Priority::Normal,
+                    status: QueueEntryStatus::Dequeued,
+                    created_at: now,
+                    updated_at: now,
+                }),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            },
+            &ExecutionProtocolTransition::default(),
+        )?;
+        assert!(claimed.applied);
+
+        // Delete flows flipped the registry status before the runtime
+        // unloaded; the restart hit before the claim settled.
+        identity.status = crate::types::AgentRegistryStatus::Deleting;
+        db.agent_identities().upsert(&identity)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_execution_attempts, 1);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered state");
+        assert_eq!(
+            state.attempts["activation:message:message-execution"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        // The stranded dequeued claim followed the attempt to a terminal
+        // status instead of lingering for an identity with no runtime.
+        let claim: QueueEntryRecord = serde_json::from_str(&db.connection()?.query_row(
+            "SELECT payload_json FROM queue_entries
+                 WHERE agent_id = 'agent-a' AND message_id = 'message-execution'",
+            [],
+            |row| row.get::<_, String>(0),
+        )?)?;
+        assert_eq!(claim.status, QueueEntryStatus::Interrupted);
+        let claim_recovery_audits = db
+            .audit_events()
+            .recent(Some("agent-a"), 10)?
+            .iter()
+            .filter(|event| {
+                event.kind == "orphaned_queue_claim_recovered"
+                    && event.data["reason"] == "identity_inactive_attempt_interrupted_at_startup"
+            })
+            .count();
+        assert_eq!(claim_recovery_audits, 1);
+
+        // Recovery is idempotent: a rerun settles nothing new.
+        let repeated = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(repeated.interrupted_execution_attempts, 0);
         Ok(())
     }
 
