@@ -26,7 +26,7 @@ class ActivityPayloadPresentationTest {
 
         val blocks = activityPayloadBlocks(detail)
 
-        assertEquals(listOf("命令", "标准输出", "退出状态"), blocks.map { it.title })
+        assertEquals(listOf(ui("命令"), ui("标准输出"), ui("退出状态")), blocks.map { it.title })
         assertEquals("cargo test --all", blocks[0].text)
         assertEquals("running 3 tests\nok", blocks[1].text)
         assertTrue(blocks[0].code)
@@ -52,8 +52,8 @@ class ActivityPayloadPresentationTest {
         val blocks = activityPayloadBlocks(detail)
 
         assertEquals("1. pwd\n2. rg -n TODO src", blocks.first().text)
-        assertTrue(blocks.any { it.title == "错误" && it.text == "command failed" })
-        assertTrue(blocks.any { it.title == "退出状态" && it.text == "2" })
+        assertTrue(blocks.any { it.title == ui("错误") && it.text == "command failed" })
+        assertTrue(blocks.any { it.title == ui("退出状态") && it.text == "2" })
     }
 
     @Test

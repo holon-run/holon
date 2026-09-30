@@ -1643,6 +1643,7 @@ internal fun ActivityRow(
         return
     }
     var showRaw by remember(activity.id) { mutableStateOf(false) }
+    val payloadBlocks = if (detail != null) remember(detail) { activityPayloadBlocks(detail) } else emptyList()
     Row(
         modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -1710,7 +1711,7 @@ internal fun ActivityRow(
                             detail.summary?.takeIf { it.isNotBlank() && it != activity.summary }?.let {
                                 Text(it, style = MaterialTheme.typography.bodySmall)
                             }
-                            activityPayloadBlocks(detail).forEach { block ->
+                            payloadBlocks.forEach { block ->
                                 ToolPayloadPreview(block.title, block.text, code = block.code)
                             }
                             if (detail.artifactCount > 0) {
@@ -1751,6 +1752,7 @@ private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
     val activity = state.selectedActivity ?: return
     val tool = state.selectedToolExecution
     var showRaw by remember(activity.id) { mutableStateOf(false) }
+    val payloadBlocks = if (tool != null) remember(tool) { activityPayloadBlocks(tool) } else emptyList()
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
@@ -1780,7 +1782,7 @@ private fun ActivityDetailScreen(state: HolonUiState, viewModel: HolonViewModel)
                     if (detail.artifactCount > 0) SettingsValue(ui("产物"), detail.artifactCount.toString())
                 }
             }
-            activityPayloadBlocks(detail).forEach { block ->
+            payloadBlocks.forEach { block ->
                 item { ToolPayloadPreview(block.title, block.text, code = block.code, limit = 4_000) }
             }
             item { TextButton(onClick = { showRaw = !showRaw }) { Text(if (showRaw) ui("收起原始记录") else ui("查看原始记录")) } }
