@@ -1,5 +1,25 @@
 import { expect, test } from "@playwright/test";
 
+test("settings starts with General and remembers mouse and keyboard selections", async ({ page }) => {
+  await page.goto("/settings");
+  const general = page.locator("#settings-tab-general");
+  const models = page.locator("#settings-tab-models");
+  await expect(general).toHaveAttribute("aria-selected", "true");
+  await models.click();
+  await page.reload();
+  await expect(models).toHaveAttribute("aria-selected", "true");
+  await models.focus();
+  await page.keyboard.press("End");
+  await page.reload();
+  await expect(page.locator("#settings-tab-advanced")).toHaveAttribute("aria-selected", "true");
+});
+
+test("settings ignores stale saved tabs", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("holon.webGui.settingsTab.v1", "obsolete"));
+  await page.goto("/settings");
+  await expect(page.locator("#settings-tab-general")).toHaveAttribute("aria-selected", "true");
+});
+
 test("settings sections support keyboard navigation with a single tab stop", async ({ page }) => {
   await page.goto("/settings");
   const tabs = page.getByRole("tab");

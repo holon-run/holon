@@ -56,6 +56,7 @@ test("provider directory searches aliases, edits one service and preserves draft
   await setup(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto("/settings");
+  await page.locator("#settings-tab-models").click();
   const directory = page.locator(".provider-directory");
   await expect(directory.locator("[data-provider]")).toHaveCount(2);
   await page.screenshot({ path: "/tmp/holon-model-settings.png" });
@@ -109,6 +110,7 @@ test("model search keeps routes distinct, persists favorites and next-run select
 test("global defaults and image settings share search with capability filtering", async ({ page }) => {
   const { updates } = await setup(page);
   await page.goto("/settings");
+  await page.locator("#settings-tab-models").click();
   await page.locator(".model-select-trigger").first().click();
   const panel = page.locator(".model-select-panel");
   await panel.getByRole("textbox", { name: "Search models or services…" }).fill("百炼");
@@ -191,6 +193,7 @@ for (const kind of ["bearer_token", "api_key"] as const) {
       await route.fulfill({ json: { profile: stored ?? { profile, kind, configured: false }, reload_generation: 0 } });
     });
     await page.goto("/settings");
+    await page.locator("#settings-tab-models").click();
     await page.getByRole("button", { name: "Connect a service", exact: true }).click();
     await page.locator(`[data-provider="${id}"]`).click();
     const editor = page.locator(".model-services-card .settings-provider-editor");

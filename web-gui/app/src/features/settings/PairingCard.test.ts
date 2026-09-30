@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { pairingIssueUrl, pairingLink } from "./PairingCard";
+import { pairingIssueUrl, pairingLink, pairingOrigin } from "./PairingCard";
 import { tailscaleServeUrl } from "./TailscaleServeCard";
 import type { RuntimeConnection } from "../../runtime/types";
 
@@ -11,6 +11,28 @@ describe("pairingLink", () => {
     expect(link.pathname).toBe("/login");
     expect(link.search).toBe("");
     expect(new URLSearchParams(link.hash.slice(1)).get("pair")).toBe("secret/+==");
+  });
+});
+
+describe("device-accessible pairing origins", () => {
+  it.each([
+    "http://192.168.1.10:7878",
+    "https://holon.example.ts.net",
+    "http://100.64.0.1:7878",
+    "http://[fd7a:115c:a1e0::1]:7878",
+  ])("accepts %s", (origin) => {
+    expect(pairingOrigin(origin)).toBe(origin);
+  });
+
+  it.each([
+    "", "not a URL", "http://localhost:7878", "http://localhost.:7878",
+    "http://foo.localhost", "http://127.0.0.1:7878", "http://127.2.3.4",
+    "http://0.0.0.0:7878", "http://[::1]:7878", "http://[::]:7878",
+    "http://[::ffff:127.0.0.1]", "http://[::ffff:0.0.0.0]",
+    "ftp://192.168.1.10", "https://user:password@holon.example",
+    "https://holon.example/path", "https://holon.example?token=secret", "https://holon.example#secret",
+  ])("rejects %s", (origin) => {
+    expect(pairingOrigin(origin)).toBeUndefined();
   });
 });
 
