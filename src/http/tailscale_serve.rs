@@ -125,7 +125,8 @@ fn inspect(
     result.conflict = (root.is_some() && !result.serving && !result.legacy_serving)
         || serve["TCP"]
             .as_object()
-            .is_some_and(|tcp| tcp.contains_key("443"));
+            .and_then(|tcp| tcp.get("443"))
+            .is_some_and(|listener| listener["HTTPS"] != true);
     result.status_known = true;
     result.message = if result.conflict {
         "A different Tailscale Serve root rule exists"
@@ -440,5 +441,41 @@ mod tests {
         );
         assert!(!status.serving);
         assert!(!status.conflict);
+    }
+
+    #[test]
+    fn https_listener_for_owned_root_is_not_a_conflict() {
+        let status = inspect(
+            &Mock {
+                serve: serde_json::json!({
+                    "TCP": {"443": {"HTTPS": true}},
+                    "Web": {"host.example.ts.net:443": {"Handlers": {
+                        "/": {"Proxy": "http://127.0.0.1:7878"}
+                    }}}
+                }),
+            },
+            true,
+            "http://127.0.0.1:7878",
+            None,
+        );
+        assert!(status.serving);
+        assert!(!status.conflict);
+        assert_eq!(status.message, "Holon is served");
+    }
+
+    #[test]
+    fn tcp_forward_listener_is_a_conflict() {
+        let status = inspect(
+            &Mock {
+                serve: serde_json::json!({"TCP": {"443": {
+                    "TCPForward": "127.0.0.1:9000"
+                }}, "Web": {}}),
+            },
+            true,
+            "http://127.0.0.1:7878",
+            None,
+        );
+        assert!(!status.serving);
+        assert!(status.conflict);
     }
 }

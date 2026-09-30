@@ -29,6 +29,8 @@ Tailscale rule. A status request inspects Tailscale's actual rule and reports
 whether it serves Holon, conflicts with another root handler, or is absent or
 unavailable. An externally removed rule leaves the desired value untouched;
 clients show the drift and offer **manual** recovery, not a background retry.
+Tailscale's HTTPS listener marker on TCP 443 accompanies a normal HTTPS Serve
+rule and is not itself a conflict; a separate TCP forwarding listener is.
 
 `GET /api/control/network/tailscale/serve` returns `desired_enabled`,
 `available`, `connected`, `status_known`, `serving`, `conflict`, `hostname`,
