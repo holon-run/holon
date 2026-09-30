@@ -1,15 +1,13 @@
 # models.dev refresh summary
 
-- Supplement models: 44 (drafted this run: 4, retained: 40, removed: 0)
-- Deferred candidates: 166 (not auto-drafted; see below)
+- Supplement models: 46 (drafted this run: 2, retained: 44, removed: 0)
+- Deferred candidates: 165 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
 
-- `dashscope/qwen3.7-flash` — Qwen3.7 Flash (context 1000000, reasoning true, image input true)
-- `dashscope/qwen3.8-omni-flash` — Qwen3.8 Omni Flash (context 1000000, reasoning true, image input true)
-- `openai/gpt-daybreak-blue-latest` — Daybreak Blue (context 1050000, reasoning true, image input true)
-- `openai/gpt-daybreak-red-latest` — Daybreak Red (context 400000, reasoning true, image input true)
+- `anthropic/claude-sonnet-5-5` — Claude Sonnet 5.5 (context 1000000, reasoning true, image input true)
+- `openai/gpt-6.1-sol` — GPT-6.1 Sol (context 1050000, reasoning true, image input true)
 
 ## Deferred (needs human decision or outside policy)
 
@@ -53,4 +51,4 @@
 - `dashscope/qwen3-livetranslate-flash-realtime` — ReleaseOutsideWindow (release 2025-09-22)
 - `dashscope/qwen3-max` — ReleaseOutsideWindow (release 2025-09-23)
 - `dashscope/qwen3-next-80b-a3b-instruct` — ReleaseOutsideWindow (release 2025-09)
-- … and 126 more (see `holon models-dev audit`)
+- … and 125 more (see `holon models-dev audit`)

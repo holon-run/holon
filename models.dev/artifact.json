@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-2c225d8893f884193ba2cfc44a0cc8a79ca1689fb890069b6f10b017f9963e02",
+  "revision": "models-dev-d187e60e79b97a4d0dee682138d44e1dc60690e98fbbaf1d4e8c13fab1a1b8e3",
   "upstream": {
     "source": "models.dev",
-    "revision": "2c225d8893f884193ba2cfc44a0cc8a79ca1689fb890069b6f10b017f9963e02",
-    "fetched_at": "2026-09-28T12:48:30.872953148+00:00",
-    "content_sha256": "2c225d8893f884193ba2cfc44a0cc8a79ca1689fb890069b6f10b017f9963e02",
-    "adapter_version": "0.46.0 (f7bc6f7)"
+    "revision": "d187e60e79b97a4d0dee682138d44e1dc60690e98fbbaf1d4e8c13fab1a1b8e3",
+    "fetched_at": "2026-09-30T00:34:52.999276867+00:00",
+    "content_sha256": "d187e60e79b97a4d0dee682138d44e1dc60690e98fbbaf1d4e8c13fab1a1b8e3",
+    "adapter_version": "0.46.0 (3502597)"
   },
   "models": [
     {
@@ -371,6 +371,34 @@
       "model_ref": "anthropic/claude-sonnet-5",
       "display_name": "Claude Sonnet 5",
       "description": "Everyday Claude agent model for coding, planning, browsing, and general work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "anthropic/claude-sonnet-5-5",
+      "display_name": "Claude Sonnet 5.5",
+      "description": "Fast Claude model for everyday coding, agents, and knowledge work",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -6148,27 +6176,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "mistral/magistral-small",
-      "display_name": "Magistral Small",
-      "description": "Mistral reasoning model for transparent analysis, math, and complex decisions",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "mistral/ministral-3b-latest",
       "display_name": "Ministral 3B (latest)",
       "description": "Compact Mistral model for edge, latency-sensitive, and cost-efficient workloads",
@@ -8515,27 +8522,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "nvidia/moonshotai/kimi-k2-instruct-0905",
-      "display_name": "Kimi K2 0905",
-      "description": "Kimi model for long-context chat, coding, and agentic reasoning",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "nvidia/moonshotai/kimi-k2.6",
       "display_name": "Kimi K2.6",
       "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
@@ -9408,32 +9394,6 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "nvidia/openai/gpt-oss-120b",
-      "display_name": "GPT-OSS-120B",
-      "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 8192,
-      "max_output_tokens_upper_limit": 8192,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "low",
-        "medium",
-        "high"
-      ],
       "source": "remote_discovered"
     },
     {
@@ -10748,6 +10708,34 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openai/gpt-6.1-sol",
+      "display_name": "GPT-6.1 Sol",
+      "description": "Near-Astra performance for complex coding, computer use, and professional work at a lower cost.",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openai/gpt-daybreak-blue-latest",
       "display_name": "Daybreak Blue",
       "description": "Alias for flagship general-purpose models with safeguards for defensive cybersecurity work",
@@ -11754,6 +11742,34 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/anthropic/claude-sonnet-5.5",
+      "display_name": "Claude Sonnet 5.5",
+      "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/arcee-ai/trinity-large-thinking",
       "display_name": "Trinity Large Thinking",
       "description": "Reasoning-optimized 398B MoE agent model with extended thinking for long-horizon and multi-turn tool use",
@@ -12212,35 +12228,14 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/deepseek/deepseek-r1-distill-llama-70b",
-      "display_name": "R1 Distill Llama 70B",
-      "description": "DeepSeek reasoning model for multi-step analysis, math, coding, and tools",
-      "context_window_tokens": 8192,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 7782,
-      "default_max_output_tokens": 7372,
-      "max_output_tokens_upper_limit": 7372,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/deepseek/deepseek-v3.1-terminus",
       "display_name": "DeepSeek V3.1 Terminus",
       "description": "DeepSeek chat model for instruction following, coding, and analysis",
       "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 155648,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12281,8 +12276,8 @@
       "context_window_tokens": 163840,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 155648,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 147456,
+      "max_output_tokens_upper_limit": 147456,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12353,8 +12348,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943717,
-      "max_output_tokens_upper_limit": 943717,
+      "default_max_output_tokens": 262144,
+      "max_output_tokens_upper_limit": 262144,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -12430,8 +12425,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13359,27 +13354,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/inclusionai/ling-3.0-flash-fin:free",
-      "display_name": "Ling 3.0 Flash Fin (free)",
-      "description": "Efficient model for low-latency assistance, extraction, and routine automation",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/inclusionai/ling-3.0-flash-sante:free",
       "display_name": "Ling 3.0 Flash Sante (free)",
       "description": "Efficient model for low-latency assistance, extraction, and routine automation",
@@ -14059,8 +14033,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 194560,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 176947,
+      "max_output_tokens_upper_limit": 176947,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14696,6 +14670,58 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/nex-agi/nex-n2.5-mini",
+      "display_name": "Nex-N2.5-Mini",
+      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/nex-agi/nex-n2.5-pro",
+      "display_name": "Nex-N2.5-Pro",
+      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/nousresearch/hermes-3-llama-3.1-405b",
       "display_name": "Hermes 3 405B Instruct",
       "description": "Open Llama instruction model for multilingual chat, reasoning, and coding",
@@ -14946,11 +14972,11 @@
       "model_ref": "openrouter/nvidia/nemotron-3.5-lightning",
       "display_name": "Nemotron 3.5 Lightning 30B A3B",
       "description": "Nemotron model for efficient reasoning, coding, and specialized AI agents",
-      "context_window_tokens": 1000000,
+      "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -16221,6 +16247,62 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/openai/gpt-6.1-sol",
+      "display_name": "GPT-6.1 Sol",
+      "description": "Near-Astra performance for complex coding, computer use, and professional work at a lower cost.",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/openai/gpt-6.1-sol-pro",
+      "display_name": "GPT-6.1 Sol Pro",
+      "description": "Frontier GPT model for professional reasoning, coding, and multimodal work",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/openai/gpt-audio",
       "display_name": "GPT Audio",
       "description": "Speech generation model for controllable voice, narration, and audio delivery",
@@ -16290,8 +16372,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17141,8 +17223,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 32000,
+      "max_output_tokens_upper_limit": 32000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17561,8 +17643,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17923,8 +18005,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19381,8 +19463,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19636,8 +19718,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 384000,
-      "max_output_tokens_upper_limit": 384000,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19662,8 +19744,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 393216,
+      "max_output_tokens_upper_limit": 393216,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19890,7 +19972,6 @@
         "interactive_exec": false
       },
       "reasoning_effort_options": [
-        "none",
         "low",
         "medium",
         "high",
@@ -19962,8 +20043,8 @@
       "context_window_tokens": 1310720,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 1245184,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19988,8 +20069,8 @@
       "context_window_tokens": 1310720,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 1245184,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20758,69 +20839,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "together/moonshotai/Kimi-K2.5",
-      "display_name": "Kimi K2.5",
-      "description": "Legacy model retained for compatibility with older integrations",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 262144,
-      "max_output_tokens_upper_limit": 262144,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "together/moonshotai/Kimi-K2.6",
-      "display_name": "Kimi K2.6",
-      "description": "Kimi multimodal agent model for visual understanding, coding, and planning",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 131000,
-      "max_output_tokens_upper_limit": 131000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "together/moonshotai/Kimi-K2.7-Code",
-      "display_name": "Kimi K2.7 Code",
-      "description": "Kimi coding model for software agents, refactors, and repository reasoning",
-      "context_window_tokens": 262144,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "together/moonshotai/Kimi-K3",
       "display_name": "Kimi K3",
       "description": "Multimodal Kimi model with 1M context and toggleable max-effort thinking for long-horizon agent work",
@@ -21417,6 +21435,34 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "venice/claude-opus-5-5-fast",
+      "display_name": "Claude Opus 5.5 Fast",
+      "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "venice/claude-opus-5-fast",
       "display_name": "Claude Opus 5 Fast",
       "description": "Flagship Claude model for deep reasoning, coding, and long-horizon agents",
@@ -21501,6 +21547,34 @@
       "auto_compact_token_limit": 950000,
       "default_max_output_tokens": 64000,
       "max_output_tokens_upper_limit": 64000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/claude-sonnet-5-5",
+      "display_name": "Claude Sonnet 5.5",
+      "description": "Balanced Claude model for coding, analysis, agent workflows, and cost control",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -23102,6 +23176,34 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "venice/openai-gpt-61-sol",
+      "display_name": "GPT-6.1 Sol",
+      "description": "GPT model for general reasoning, writing, coding, and tool-assisted tasks",
+      "context_window_tokens": 1050000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 997500,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "venice/openai-gpt-oss-120b",
       "display_name": "OpenAI GPT OSS 120B",
       "description": "Open GPT reasoning model for self-hosted agents and controllable deployments",
@@ -23592,6 +23694,33 @@
       "auto_compact_token_limit": 950000,
       "default_max_output_tokens": 65536,
       "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "venice/xiaomi-mimo-v2-6-flash",
+      "display_name": "MiMo-V2.6-Flash",
+      "description": "MiMo flash model for fast multimodal assistance and agent workflows",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
