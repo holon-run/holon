@@ -238,6 +238,8 @@ impl ModelsDevSupplement {
 pub enum DeferredReason {
     /// Output modalities do not include text (image/audio/embedding-only).
     NotTextOutput,
+    /// The model uses modalities unsupported by the target runtime provider.
+    UnsupportedByProvider,
     /// Release date is older than the recency window.
     ReleaseOutsideWindow,
     /// No usable release date upstream; needs a human decision.
@@ -256,6 +258,8 @@ pub enum RemovalReason {
     PromotedToLegacy,
     /// The model vanished from the upstream snapshot.
     MissingUpstream,
+    /// The model is not supported by the target runtime provider.
+    UnsupportedByProvider,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -321,6 +325,7 @@ pub fn generate(
     let mut drafted: Vec<BuiltInModelMetadata> = Vec::new();
     let mut retained: Vec<String> = Vec::new();
     let mut deferred: Vec<DeferredModel> = Vec::new();
+    let mut removed: Vec<RemovedModel> = Vec::new();
     let mut promoted: Vec<String> = Vec::new();
     let mut providers_not_allowlisted: Vec<String> = Vec::new();
 
@@ -347,6 +352,21 @@ pub fn generate(
                     continue;
                 };
                 let model_ref_string = model_ref.as_string();
+                if !supplement_model_supported_by_provider(&holon_provider_id, model) {
+                    if remaining_previous.remove(&model_ref_string) {
+                        removed.push(RemovedModel {
+                            model_ref: model_ref_string,
+                            reason: RemovalReason::UnsupportedByProvider,
+                        });
+                    } else {
+                        deferred.push(DeferredModel {
+                            model_ref: model_ref_string,
+                            reason: DeferredReason::UnsupportedByProvider,
+                            release_date: release_date_key(model).map(str::to_string),
+                        });
+                    }
+                    continue;
+                }
                 if legacy.entries.contains_key(&model_ref) {
                     if remaining_previous.remove(&model_ref_string) {
                         promoted.push(model_ref_string);
@@ -429,22 +449,24 @@ pub fn generate(
         models.push(metadata);
     }
 
-    let mut removed = remaining_previous
-        .into_iter()
-        .map(|model_ref_string| {
-            let is_promoted = ModelRef::parse(&model_ref_string)
-                .map(|model_ref| legacy.entries.contains_key(&model_ref))
-                .unwrap_or(false);
-            RemovedModel {
-                reason: if is_promoted {
-                    RemovalReason::PromotedToLegacy
-                } else {
-                    RemovalReason::MissingUpstream
-                },
-                model_ref: model_ref_string,
-            }
-        })
-        .collect::<Vec<_>>();
+    removed.extend(
+        remaining_previous
+            .into_iter()
+            .map(|model_ref_string| {
+                let is_promoted = ModelRef::parse(&model_ref_string)
+                    .map(|model_ref| legacy.entries.contains_key(&model_ref))
+                    .unwrap_or(false);
+                RemovedModel {
+                    reason: if is_promoted {
+                        RemovalReason::PromotedToLegacy
+                    } else {
+                        RemovalReason::MissingUpstream
+                    },
+                    model_ref: model_ref_string,
+                }
+            })
+            .collect::<Vec<_>>(),
+    );
     removed.extend(promoted.into_iter().map(|model_ref| RemovedModel {
         model_ref,
         reason: RemovalReason::PromotedToLegacy,
@@ -520,6 +542,19 @@ fn supplement_provider_targets(md_provider_id: &str, holon_provider_id: &str) ->
             .map(|(_, target)| (*target).to_string()),
     );
     targets
+}
+
+fn supplement_model_supported_by_provider(provider: &str, model: &ModelsDevModel) -> bool {
+    if provider != "openai-codex" {
+        return true;
+    }
+    model.modalities.as_ref().is_none_or(|modalities| {
+        !modalities
+            .input
+            .iter()
+            .chain(&modalities.output)
+            .any(|modality| modality == "audio")
+    })
 }
 
 fn supplement_source_provider_id(
@@ -773,6 +808,128 @@ mod tests {
                 "openai/gpt-6.1-sol".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn retains_openai_codex_models_from_the_openai_snapshot_provider() {
+        let parsed: ModelsDevSnapshot = serde_json::from_str(
+            r#"{
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-6.1-sol": {
+                            "id": "gpt-6.1-sol",
+                            "name": "GPT-6.1 Sol",
+                            "release_date": "2026-08-30",
+                            "modalities": {
+                                "input": ["text", "image"],
+                                "output": ["text"]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let previous = ModelsDevSupplement {
+            schema_version: SUPPLEMENT_SCHEMA_VERSION,
+            upstream_revision: "abc".into(),
+            adapter_version: "test".into(),
+            models: vec![supplement_metadata(
+                "openai-codex/gpt-6.1-sol",
+                "GPT-6.1 Sol",
+            )],
+            routes: Vec::new(),
+        };
+
+        let update = generate(
+            &parsed,
+            Some(&previous),
+            &legacy(),
+            "2026-05-05",
+            "rev",
+            "ver",
+        )
+        .unwrap();
+
+        assert_eq!(
+            update.retained,
+            vec!["openai-codex/gpt-6.1-sol".to_string()]
+        );
+        assert_eq!(
+            update
+                .drafted
+                .iter()
+                .map(|model| model.model_ref.as_string())
+                .collect::<Vec<_>>(),
+            vec!["openai/gpt-6.1-sol".to_string()]
+        );
+        let retained = update
+            .supplement
+            .models
+            .iter()
+            .find(|model| model.model_ref.as_string() == "openai-codex/gpt-6.1-sol")
+            .expect("retained codex model");
+        assert_eq!(retained.display_name, "GPT-6.1 Sol");
+        assert_eq!(retained.context_window_tokens, None);
+    }
+
+    #[test]
+    fn excludes_audio_models_from_the_openai_codex_projection() {
+        let parsed: ModelsDevSnapshot = serde_json::from_str(
+            r#"{
+                "openai": {
+                    "id": "openai",
+                    "models": {
+                        "gpt-realtime-2.1": {
+                            "id": "gpt-realtime-2.1",
+                            "name": "GPT-Realtime-2.1",
+                            "release_date": "2026-08-30",
+                            "modalities": {
+                                "input": ["text", "audio"],
+                                "output": ["text", "audio"]
+                            }
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        let previous = ModelsDevSupplement {
+            schema_version: SUPPLEMENT_SCHEMA_VERSION,
+            upstream_revision: "abc".into(),
+            adapter_version: "test".into(),
+            models: vec![supplement_metadata(
+                "openai-codex/gpt-realtime-2.1",
+                "GPT-Realtime-2.1",
+            )],
+            routes: Vec::new(),
+        };
+
+        let update = generate(
+            &parsed,
+            Some(&previous),
+            &legacy(),
+            "2026-05-05",
+            "rev",
+            "ver",
+        )
+        .unwrap();
+
+        assert!(!update
+            .supplement
+            .models
+            .iter()
+            .any(|model| { model.model_ref.as_string() == "openai-codex/gpt-realtime-2.1" }));
+        assert!(update.removed.iter().any(|removed| {
+            removed.model_ref == "openai-codex/gpt-realtime-2.1"
+                && removed.reason == RemovalReason::UnsupportedByProvider
+        }));
+        assert!(update
+            .supplement
+            .models
+            .iter()
+            .any(|model| { model.model_ref.as_string() == "openai/gpt-realtime-2.1" }));
     }
 
     #[test]
