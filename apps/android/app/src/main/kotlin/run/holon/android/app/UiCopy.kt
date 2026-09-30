@@ -192,12 +192,18 @@ internal object UiCopy {
         打开查看工具输入与输出|Open tool input and output
         执行中|Running
         执行记录|Activity
+        命令|Command
         技术详情|Technical details
         拍照|Take photo
         排版|Rendered
         搜索|Search
         搜索名称或 ID|Search name or ID
         摘要|Summary
+        标准输出|Standard output
+        错误输出|Standard error
+        错误|Error
+        退出状态|Exit status
+        记录|Record
         收起  ⌃|Collapse  ⌃
         收起原始记录|Hide raw record
         收起技术详情|Hide technical details
