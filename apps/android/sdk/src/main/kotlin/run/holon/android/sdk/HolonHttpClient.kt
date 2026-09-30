@@ -133,7 +133,7 @@ public class HolonHttpClient internal constructor(
                         HolonModelOption(model, model, model.substringBefore('/'))
                     }
                     is JsonObject -> {
-                        val model = entry.string("model") ?: return@forEach
+                        val model = entry.string("model_ref") ?: entry.string("model") ?: return@forEach
                         val policy = entry["policy"] as? JsonObject
                         val capabilities = (entry["capabilities"] as? JsonObject)
                             ?: (policy?.get("capabilities") as? JsonObject)
@@ -145,7 +145,8 @@ public class HolonHttpClient internal constructor(
                                 policy?.boolean("supports_reasoning") == true ||
                                     capabilities?.boolean("supports_reasoning") == true,
                             reasoningEffortOptions =
-                                (policy?.get("reasoning_effort_options") as? JsonArray)
+                                ((entry["reasoning_effort_options"] as? JsonArray)
+                                    ?: (policy?.get("reasoning_effort_options") as? JsonArray))
                                     ?.mapNotNull { it.jsonPrimitive.contentOrNull }
                                     .orEmpty(),
                         )
