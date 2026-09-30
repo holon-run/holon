@@ -8,3 +8,8 @@ App global.
 The hosted artifact is `dist/holon.js`; Holon serves it from the logical
 `/apps/{agent_id}/{app_id}/holon.js` route. The artifact discovers its own
 route-relative base URL and installs `window.Holon`.
+
+The `/context` response reports whether the existing control-plane session is
+authenticated. It does not expose App-specific permissions or capability
+grants; the current Local App routes use the same broader session authorization
+for context, requests, and events.

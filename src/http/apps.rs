@@ -61,7 +61,6 @@ struct AppContext {
 #[derive(Debug, Serialize)]
 struct AppSession {
     authenticated: bool,
-    permissions: [&'static str; 2],
 }
 
 #[derive(Debug, Deserialize)]
@@ -98,7 +97,6 @@ async fn app_context(
         app_id,
         session: AppSession {
             authenticated: true,
-            permissions: ["agent.request", "agent.events"],
         },
     }))
 }
