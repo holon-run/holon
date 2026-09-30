@@ -118,7 +118,8 @@ loading full per-agent runtime summaries.
 
 **`GET /api/agents/:id/status`** — Single agent status
 
-Returns the same `AgentSummary` shape for the named agent.
+Returns the compact public agent status projection by default. Pass
+`detail=full` to return the complete `AgentSummary` read model.
 
 **`GET /api/agents/:id/state`** — Lightweight agent state bootstrap
 

@@ -4103,6 +4103,15 @@ pub struct GetAgentResult {
     pub agent: AgentSummary,
 }
 
+/// Compact projection returned by the default `GetAgent` tool response.
+///
+/// `GetAgentResult` remains the stable full-detail result type; the tool
+/// contract explicitly distinguishes this compact result from it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct GetAgentCompactResult {
+    pub agent: crate::http_dto::SlimAgentDto,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AgentModelRequest {

@@ -18242,6 +18242,20 @@
               "type": "string"
             },
             "style": "simple"
+          },
+          {
+            "description": "Response detail level. Compact is the default; full returns the complete AgentSummary read model.",
+            "in": "query",
+            "name": "detail",
+            "schema": {
+              "default": "compact",
+              "enum": [
+                "compact",
+                "full"
+              ],
+              "type": "string"
+            },
+            "style": "form"
           }
         ],
         "responses": {
@@ -19345,6 +19359,20 @@
               "type": "string"
             },
             "style": "simple"
+          },
+          {
+            "description": "Response detail level. Compact is the default; full returns the complete AgentSummary read model.",
+            "in": "query",
+            "name": "detail",
+            "schema": {
+              "default": "compact",
+              "enum": [
+                "compact",
+                "full"
+              ],
+              "type": "string"
+            },
+            "style": "form"
           }
         ],
         "responses": {
@@ -25679,6 +25707,22 @@
       "get": {
         "description": "Compatibility alias for the default agent status route; pass detail=full for the complete AgentSummary read model.",
         "operationId": "defaultStatus",
+        "parameters": [
+          {
+            "description": "Response detail level. Compact is the default; full returns the complete AgentSummary read model.",
+            "in": "query",
+            "name": "detail",
+            "schema": {
+              "default": "compact",
+              "enum": [
+                "compact",
+                "full"
+              ],
+              "type": "string"
+            },
+            "style": "form"
+          }
+        ],
         "responses": {
           "200": {
             "content": {

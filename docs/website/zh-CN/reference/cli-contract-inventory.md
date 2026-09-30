@@ -120,7 +120,7 @@ order: 11
 |---|---|---|---|---:|---|
 | `holon agent` / `holon agents` | 可选子命令 | none | 默认为 `agent list` JSON | `stable` 候选 | `agents` 是别名。 |
 | `holon agent list` | none | none | JSON agent 条目 | `stable` 候选 | 公开的多 Agent 检查接口。 |
-| `holon agent status` | 可选 `[AGENT_ID]` | none | JSON agent 状态 | `stable` 候选 | 位置参数 agent id；默认为配置的默认 agent。 |
+| `holon agent status` | 可选 `[AGENT_ID]` | `--detail <compact\|full>` 默认 `compact` | JSON compact agent 状态；传入 `--detail full` 时返回完整 `AgentSummary` | `stable` 候选 | 位置参数 agent id；默认为配置的默认 agent。 |
 | `holon agent create` | `<AGENT_ID>` | `--template <TEMPLATE>` | 美化 JSON 控制平面响应 | `stable` 候选 | 模板标识符契约应与 Agent 初始化文档对齐。 |
 | `holon agent repair` | `<AGENT_ID>` | none | 美化 JSON `AgentDetail` | `experimental` | 重试未完成的创建后引导步骤，而不重建 Agent。 |
 | `holon agent start` | 可选 `[AGENT_ID]` | none | JSON 生命周期控制响应 | `stable` 候选 | 已废弃 `control start` 的替代。 |

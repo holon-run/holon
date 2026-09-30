@@ -1564,6 +1564,33 @@ async fn get_agent_default_returns_current_agent_summary() {
         envelope_str.contains("default"),
         "GetAgent default should contain 'default' agent id"
     );
+    let compact = envelope
+        .result
+        .clone()
+        .expect("compact GetAgent result should be present");
+    let compact: crate::types::GetAgentCompactResult =
+        serde_json::from_value(compact).expect("compact GetAgent result should deserialize");
+    assert_eq!(compact.agent.agent.id, "default");
+
+    let full = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &crate::tool::ToolCall {
+            id: "agent-get-default-full".into(),
+            name: "GetAgent".into(),
+            input: serde_json::json!({"detail": "full"}),
+        },
+    )
+    .await
+    .expect("full GetAgent should succeed");
+    let full = full
+        .envelope
+        .result
+        .expect("full GetAgent result should be present");
+    let full: crate::types::GetAgentResult =
+        serde_json::from_value(full).expect("full GetAgent result should deserialize");
+    assert_eq!(full.agent.agent.id, "default");
 }
 
 #[tokio::test]

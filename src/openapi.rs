@@ -491,6 +491,22 @@ fn operation(spec: &RouteSpec) -> Value {
             "schema": { "type": "string" }
         }));
     }
+    if matches!(
+        spec.operation_id,
+        "getAgent" | "agentStatus" | "defaultStatus"
+    ) {
+        parameters.push(json!({
+            "name": "detail",
+            "in": "query",
+            "required": false,
+            "description": "Response detail level. Compact is the default; full returns the complete AgentSummary read model.",
+            "schema": {
+                "type": "string",
+                "enum": ["compact", "full"],
+                "default": "compact"
+            }
+        }));
+    }
     if spec.operation_id == "runtimeTraceSearch" {
         parameters.push(json!({
             "name": "query",

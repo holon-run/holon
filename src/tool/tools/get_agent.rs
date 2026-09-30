@@ -7,7 +7,7 @@ use crate::{
     http_dto::SlimAgentDto,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AuthorityClass, ToolCapabilityFamily},
+    types::{AuthorityClass, GetAgentCompactResult, GetAgentResult, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -33,8 +33,10 @@ pub(crate) enum GetAgentDetail {
 }
 
 #[derive(Serialize)]
-struct GetAgentResponse {
-    agent: Value,
+#[serde(untagged)]
+enum GetAgentResponse {
+    Compact(GetAgentCompactResult),
+    Full(GetAgentResult),
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -62,9 +64,11 @@ pub(crate) async fn execute(
             runtime.agent_summary_for(&requested_id).await?
         }
     };
-    let agent = match args.detail.unwrap_or_default() {
-        GetAgentDetail::Compact => serde_json::to_value(SlimAgentDto::from(&summary))?,
-        GetAgentDetail::Full => serde_json::to_value(summary)?,
+    let response = match args.detail.unwrap_or_default() {
+        GetAgentDetail::Compact => GetAgentResponse::Compact(GetAgentCompactResult {
+            agent: SlimAgentDto::from(&summary),
+        }),
+        GetAgentDetail::Full => GetAgentResponse::Full(GetAgentResult { agent: summary }),
     };
-    serialize_success(NAME, &GetAgentResponse { agent })
+    serialize_success(NAME, &response)
 }

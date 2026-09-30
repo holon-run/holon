@@ -7852,7 +7852,10 @@ export interface operations {
     };
     getAgent: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Response detail level. Compact is the default; full returns the complete AgentSummary read model. */
+                detail?: "compact" | "full";
+            };
             header?: never;
             path: {
                 /** @description Agent id. */
@@ -8568,7 +8571,10 @@ export interface operations {
     };
     agentStatus: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Response detail level. Compact is the default; full returns the complete AgentSummary read model. */
+                detail?: "compact" | "full";
+            };
             header?: never;
             path: {
                 /** @description Agent id. */
@@ -13042,7 +13048,10 @@ export interface operations {
     };
     defaultStatus: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Response detail level. Compact is the default; full returns the complete AgentSummary read model. */
+                detail?: "compact" | "full";
+            };
             header?: never;
             path?: never;
             cookie?: never;

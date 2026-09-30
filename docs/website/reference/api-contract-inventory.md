@@ -78,6 +78,8 @@ Representative current examples:
   without an `ok` field.
 - `/api/agents/list`, `/api/agents/:id/status`, `/api/agents/:id/state`,
   `/api/agents/:id/tasks`, and similar read routes return direct records or arrays.
+- `/api/agents/:id` and `/api/agents/:id/status` return compact `SlimAgentDto`
+  projections by default; `?detail=full` returns the complete `AgentSummary`.
 - `/api/control/agents/:id/prompt`, `/api/control/agents/:id/wake`, and
   workspace/model mutation routes return `{ "ok": true, ... }`.
 - `/api/control/agents/:id/tasks`, `/api/control/agents/:id/work-items`, and
@@ -162,7 +164,7 @@ response directly.
 | Method | Path | Inputs | Success response | Stability | Notes |
 |--------|------|--------|------------------|-----------|-------|
 | `GET` | `/api/agents/list` | Auth header when bearer mode is active. | `AgentListEntry[]` | Candidate stable | Lightweight list for selection/navigation. |
-| `GET` | `/api/agents/:agent_id/status` | Path `agent_id`; auth header when bearer mode is active. | `AgentSummary` | Candidate stable | Main read model for one agent. |
+| `GET` | `/api/agents/:agent_id/status` | Path `agent_id`; optional `detail=compact\|full`; auth header when bearer mode is active. | `SlimAgentDto` by default; `AgentSummary` with `detail=full` | Candidate stable | Main read model for one agent. |
 | `GET` | `/api/agents/:agent_id/state` | Path `agent_id`; auth header when bearer mode is active. | `AgentStateSnapshot` | Experimental | Lightweight bootstrap snapshot; omits operator notifications, duplicate execution details, task details, and full work-item internals. |
 | `GET` | `/api/agents/:agent_id/briefs` | Path `agent_id`; query `limit?`. | `BriefRecord[]` | Candidate stable | Defaults to `20`. |
 | `GET` | `/api/agents/:agent_id/tasks` | Path `agent_id`; query `limit?`. | `TaskRecord[]` | Candidate stable for list; DTO schema still broad | Defaults to `50`; active/recent task listing. |
@@ -361,7 +363,7 @@ treated as schema surfaces, not incidental Rust structs:
 
 | Shape | Returned by | Key stability concerns |
 |-------|-------------|------------------------|
-| `AgentSummary` | `/api/agents/:id/status`, `/api/agents/:id/state`, agent creation | Identity/profile fields, status enum, model state, workspace fields. |
+| `SlimAgentDto` / `AgentSummary` | `/api/agents/:id/status` and `/api/agents/:id` (compact by default; `?detail=full` for `AgentSummary`); `/api/agents/:id/state` and agent creation use their documented envelopes. | Identity/profile fields, status enum, model state, workspace fields. |
 | `AgentListEntry` | `/api/agents/list` | Keep lightweight; avoid reintroducing heavy runtime/model payloads. |
 | `TaskRecord` | `/api/agents/:id/tasks`, task creation, state snapshot, events | Task kind/status enums, detail truncation, recovery metadata, output references. |
 | `WorkItemRecord` | work-item creation, state snapshot, events | State, plan status, plan artifact, todo list, blockers/recheck timestamps. |

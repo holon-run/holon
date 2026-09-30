@@ -616,7 +616,7 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "GetAgentResult",
+        "success_result": "GetAgentResult (full) or GetAgentCompactResult (compact)",
         "success_result_schema": null
       },
       "stability": "stable"

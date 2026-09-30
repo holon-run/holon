@@ -97,7 +97,7 @@ fn tool_stability_level(name: &str) -> &'static str {
 
 fn tool_success_result_contract(name: &str) -> &'static str {
     match name {
-        tn::GET_AGENT => "GetAgentResult",
+        tn::GET_AGENT => "GetAgentResult (full) or GetAgentCompactResult (compact)",
         tn::APPLY_PATCH => "ApplyPatchResult",
         tn::ATTACH_WORKSPACE => "AttachWorkspaceResult",
         tn::COMPLETE_WORK_ITEM | tn::CREATE_WORK_ITEM | tn::UPDATE_WORK_ITEM => {

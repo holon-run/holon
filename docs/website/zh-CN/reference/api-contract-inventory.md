@@ -74,6 +74,8 @@ order: 25
   没有 `ok` 字段。
 - `/api/agents/list`、`/api/agents/:id/status`、`/api/agents/:id/state`、
   `/api/agents/:id/tasks` 等读取路由直接返回记录或数组。
+- `/api/agents/:id` 和 `/api/agents/:id/status` 默认返回 compact 的
+  `SlimAgentDto` 投影；`?detail=full` 返回完整的 `AgentSummary`。
 - `/api/control/agents/:id/prompt`、`/api/control/agents/:id/wake` 以及
   workspace/model 变更路由返回 `{ "ok": true, ... }`。
 - `/api/control/agents/:id/tasks`、`/api/control/agents/:id/work-items` 和
@@ -155,7 +157,7 @@ order: 25
 | 方法 | 路径 | 输入 | 成功响应 | 稳定性 | 备注 |
 |--------|------|--------|------------------|-----------|-------|
 | `GET` | `/api/agents/list` | bearer 模式下的认证头。 | `AgentListEntry[]` | 候选稳定 | 供选择/导航的轻量列表。 |
-| `GET` | `/api/agents/:agent_id/status` | 路径 `agent_id`；bearer 模式下的认证头。 | `AgentSummary` | 候选稳定 | 单个 agent 的主要读模型。 |
+| `GET` | `/api/agents/:agent_id/status` | 路径 `agent_id`；可选 `detail=compact\|full`；bearer 模式下的认证头。 | 默认 `SlimAgentDto`；`detail=full` 时为 `AgentSummary` | 候选稳定 | 单个 agent 的主要读模型。 |
 | `GET` | `/api/agents/:agent_id/state` | 路径 `agent_id`；bearer 模式下的认证头。 | `AgentStateSnapshot` | 实验性 | 轻量引导快照；省略 operator 通知、重复执行细节、任务细节和完整工作项内部信息。 |
 | `GET` | `/api/agents/:agent_id/briefs` | 路径 `agent_id`；查询 `limit?`。 | `BriefRecord[]` | 候选稳定 | 默认 `20`。 |
 | `GET` | `/api/agents/:agent_id/tasks` | 路径 `agent_id`；查询 `limit?`。 | `TaskRecord[]` | 列表为候选稳定；DTO schema 仍然宽泛 | 默认 `50`；列出活跃/近期任务。 |
@@ -347,7 +349,7 @@ Body 解码规则：
 
 | 形状 | 返回者 | 关键稳定性关注点 |
 |-------|-------------|------------------------|
-| `AgentSummary` | `/api/agents/:id/status`、`/api/agents/:id/state`、agent 创建 | 身份/profile 字段、status 枚举、模型状态、工作区字段。 |
+| `SlimAgentDto` / `AgentSummary` | `/api/agents/:id/status` 和 `/api/agents/:id`（默认 compact；`?detail=full` 返回 `AgentSummary`）；`/api/agents/:id/state` 和 agent 创建使用各自文档中的 envelope。 | 身份/profile 字段、status 枚举、模型状态、工作区字段。 |
 | `AgentListEntry` | `/api/agents/list` | 保持轻量；避免重新引入沉重的运行时/模型 payload。 |
 | `TaskRecord` | `/api/agents/:id/tasks`、任务创建、状态快照、事件 | 任务 kind/status 枚举、详情截断、恢复元数据、输出引用。 |
 | `WorkItemRecord` | 工作项创建、状态快照、事件 | state、plan status、plan artifact、todo list、blocker/recheck 时间戳。 |
