@@ -11,6 +11,18 @@ pub(crate) struct PairingTickets {
     expires: HashMap<String, chrono::DateTime<Utc>>,
 }
 
+fn oidc_state_cookie(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(COOKIE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value.split(';').find_map(|part| {
+                let (name, value) = part.trim().split_once('=')?;
+                (name == "holon_oidc_state").then_some(value)
+            })
+        })
+}
+
 fn issue_local_session(
     state: &AppState,
     auth_method: &str,
@@ -290,13 +302,28 @@ pub async fn start_oidc_login(
         .map_err(error_response)?;
     let location = HeaderValue::from_str(&login.authorization_url)
         .map_err(|error| error_response(anyhow!("invalid OIDC authorization URL: {error}")))?;
-    Ok((StatusCode::FOUND, [(LOCATION, location)]))
+    let state_cookie = HeaderValue::from_str(&format!(
+        "holon_oidc_state={}; Path=/; HttpOnly; SameSite=Lax",
+        login.state
+    ))
+    .map_err(|error| error_response(anyhow!("invalid OIDC state cookie: {error}")))?;
+    Ok((
+        StatusCode::FOUND,
+        [(LOCATION, location), (SET_COOKIE, state_cookie)],
+    ))
 }
 
 pub async fn complete_oidc_login(
     State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     Query(query): Query<OidcCallbackQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let browser_state = oidc_state_cookie(&headers);
+    if browser_state != Some(query.state.as_str()) {
+        return Err(error_response(anyhow!(
+            "OIDC login browser session does not match"
+        )));
+    }
     let config = state.host.config().auth.clone();
     let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
     let session = client
@@ -317,6 +344,12 @@ pub async fn complete_oidc_login(
                 SET_COOKIE,
                 HeaderValue::from_str(&cookie)
                     .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
+            ),
+            (
+                SET_COOKIE,
+                HeaderValue::from_static(
+                    "holon_oidc_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
+                ),
             ),
         ],
     ))
@@ -495,6 +528,28 @@ mod pairing_tests {
             (left.join().unwrap(), right.join().unwrap())
         });
         assert_ne!(results.0, results.1);
+    }
+}
+
+#[cfg(test)]
+mod oidc_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_browser_state_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            "other=value; holon_oidc_state=opaque-state"
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(oidc_state_cookie(&headers), Some("opaque-state"));
+    }
+
+    #[test]
+    fn missing_browser_state_is_rejected() {
+        assert_eq!(oidc_state_cookie(&HeaderMap::new()), None);
     }
 }
 
