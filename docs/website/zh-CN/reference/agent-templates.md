@@ -23,6 +23,7 @@ Agent 会以一个通用的默认契约启动。
 - **变更落地后的验收** — `holon agent create qa --template qa-engineer`
 - **文档卫生** — `holon agent create docs --template docs-steward`
 - **维护营销上下文与 campaign brief** — `holon agent create marketing --template marketing-steward`
+- **维护社区健康与贡献者体验** — `holon agent create community --template community-steward`
 - **防御性安全评审** — `holon agent create security --template security-reviewer`
 - **依赖更新队列** — `holon agent create deps --template dependency-steward`
 - **把目标收成规格** — `holon agent create pm --template product-manager`
@@ -118,6 +119,13 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 `marketing-steward` 维护产品营销上下文、内容队列、文案草案、页面或漏斗审计，
 以及可审阅的 campaign brief。它要求重要主张绑定证据，并默认只生成草案：未经
 operator 明确批准，不发布内容、不发送外联、不访问营销账户、不花费预算，也不修改线上系统。
+
+## 社区健康
+
+`community-steward` 维护贡献者入门、社区证据、重复主题、升级队列和周期性健康
+brief，可处理仓库材料及经过授权的渠道导出。它默认只读、草案优先；Discord 和
+Telegram 可以通过 `uxc`/`agentinbox` 作为限定范围的事件适配器接入，但发消息、
+moderation 和渠道设置变更都需要单独明确授权。
 
 ## 依赖更新
 
