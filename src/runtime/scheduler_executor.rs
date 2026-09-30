@@ -2066,6 +2066,35 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 work_item_id: work_item.id.clone(),
             },
         );
+        // Retained first-attempt queue input must keep its replay lineage too,
+        // even when it has no lifecycle delivery or TaskResult rejoin record.
+        let interrupted_queue = recovery_of_attempt_id.is_none()
+            && self
+                .runtime
+                .inner
+                .runtime_db
+                .queue_entries()
+                .latest(&message.id)?
+                .is_some_and(|queue| queue.status == QueueEntryStatus::Interrupted);
+        let recovery_of_attempt_id = recovery_of_attempt_id.or_else(|| {
+            if !interrupted_queue {
+                return None;
+            }
+            existing.as_ref()?.attempts.values().find_map(|prior| {
+                (prior.attempt_id == canonical_activation_id(&message.id)
+                    && prior.state == ExecutionAttemptState::Interrupted
+                    && prior.recovery_of_attempt_id.is_none()
+                    && prior.source_message_id.as_deref() == Some(message.id.as_str())
+                    && prior.source.identity == source_identity
+                    && prior.source.generation == source_revision
+                    && prior.binding == binding
+                    && prior.provenance.origin
+                        == canonical_execution_origin_for_scenario(message, scenario)
+                    && prior.provenance.trust
+                        == canonical_execution_trust_for_scenario(message, scenario))
+                .then(|| prior.attempt_id.clone())
+            })
+        });
         let mut commands = Vec::with_capacity(2);
         let (work_item_source_revision, work_item_generation) =
             if let Some((work_item, scheduling_generation)) = work_item {
@@ -2576,7 +2605,7 @@ fn execution_attempt_matches_scenario(
     }
 }
 
-pub(super) fn canonical_lifecycle_scenario_for_attempt(
+pub(crate) fn canonical_lifecycle_scenario_for_attempt(
     message: &MessageEnvelope,
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
 ) -> Option<scheduler::CanonicalActivationScenario> {
@@ -2606,7 +2635,7 @@ pub(super) fn canonical_lifecycle_scenario_for_attempt(
     .filter(|scenario| execution_attempt_matches_scenario(attempt, message, scenario))
 }
 
-pub(super) fn canonical_lifecycle_attempt_lineage_is_valid(
+pub(crate) fn canonical_lifecycle_attempt_lineage_is_valid(
     state: &crate::domain::execution_protocol::ExecutionProtocolState,
     message: &MessageEnvelope,
     scenario: &scheduler::CanonicalActivationScenario,

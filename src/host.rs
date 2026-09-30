@@ -1993,7 +1993,21 @@ impl RuntimeHost {
         recovery_agent_ids.extend(queue_recovery_candidate_ids.iter().cloned());
         recovery_agent_ids.extend(active_task_owner_ids.iter().cloned());
         recovery_agent_ids.extend(active_timer_owner_ids.iter().cloned());
+        recovery_agent_ids.extend(
+            recovery_report
+                .recovered_execution_agent_ids
+                .iter()
+                .cloned(),
+        );
         for agent_id in recovery_agent_ids {
+            if self
+                .runtime_db()
+                .agent_identities()
+                .latest(&agent_id)?
+                .is_none_or(|identity| identity.status != AgentRegistryStatus::Active)
+            {
+                continue;
+            }
             let state = self
                 .agent_storage_read_only(&agent_id)?
                 .read_agent()?
@@ -6943,6 +6957,248 @@ mod tests {
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
         (home, host)
+    }
+
+    fn seed_startup_consumed_result_attempt(
+        host: &RuntimeHost,
+        agent_id: &str,
+    ) -> (String, String) {
+        use crate::domain::execution_protocol::{
+            ExecutionProtocolState, RejoinFence, WorkItemExecutionRecord, WorkItemExecutionState,
+        };
+
+        let storage = host.agent_storage(agent_id).unwrap();
+        let mut work_item =
+            WorkItemRecord::new(agent_id, "resume interrupted work", WorkItemState::Open);
+        work_item.plan_status = crate::types::WorkItemPlanStatus::Ready;
+        storage.append_work_item(&work_item).unwrap();
+        let mut agent = storage.read_agent().unwrap().unwrap();
+        agent.current_work_item_id = Some(work_item.id.clone());
+        storage.write_agent(&agent).unwrap();
+        let authority = host
+            .runtime_db()
+            .transitions()
+            .load_execution_authority_fences(agent_id)
+            .unwrap();
+        let task_id = format!("task-consumed-{agent_id}");
+        let message_id = format!("result-consumed-{agent_id}");
+        let attempt_id = format!("activation:message:{message_id}");
+        let rejoin = RejoinFence {
+            obligation_id: task_id.clone(),
+            generation: 1,
+            parent_turn_id: format!("parent-{agent_id}"),
+        };
+        host.runtime_db()
+            .tasks()
+            .upsert(&TaskRecord {
+                id: task_id.clone(),
+                agent_id: agent_id.into(),
+                kind: crate::types::TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: Some(message_id.clone()),
+                work_item_id: Some(work_item.id.clone()),
+                summary: Some("consumed result".into()),
+                detail: Some(serde_json::json!({
+                    "terminal_reentry": false,
+                    "rejoin_obligation_id": rejoin.obligation_id,
+                    "rejoin_generation": rejoin.generation,
+                    "parent_turn_id": rejoin.parent_turn_id,
+                })),
+                recovery: None,
+            })
+            .unwrap();
+        let mut execution = ExecutionProtocolState::empty(agent_id);
+        execution.work_items.insert(
+            work_item.id.clone(),
+            WorkItemExecutionRecord {
+                source_revision: work_item.revision,
+                state: WorkItemExecutionState::InFlight {
+                    generation: 1,
+                    attempt_id: attempt_id.clone(),
+                },
+            },
+        );
+        execution.attempts.insert(
+            attempt_id.clone(),
+            ExecutionAttempt {
+                attempt_id: attempt_id.clone(),
+                agent_id: agent_id.into(),
+                source_message_id: Some(message_id.clone()),
+                source: ExecutionSource {
+                    identity: ExecutionSourceIdentity::TaskResult {
+                        task_id,
+                        result_message_id: message_id,
+                    },
+                    generation: 1,
+                },
+                binding: ExecutionBinding::WorkItem {
+                    work_item_id: work_item.id.clone(),
+                },
+                provenance: ExecutionProvenance {
+                    origin: ExecutionOrigin::Task,
+                    trust: ExecutionTrust::RuntimeInstruction,
+                    priority: ExecutionPriority::Normal,
+                    correlation_id: None,
+                    causation_id: None,
+                },
+                admitted_fences: AdmittedFences {
+                    source_revision: 1,
+                    work_item_source_revision: Some(work_item.revision),
+                    work_item_generation: Some(1),
+                    rejoin: Some(rejoin),
+                    agent_control_revision: authority.agent_control_revision,
+                    host_registry_revision: authority.host_registry_revision,
+                },
+                state: ExecutionAttemptState::Open,
+                run_id: None,
+                turn_id: None,
+                recovery_of_attempt_id: None,
+                terminal_outcome_id: None,
+                admitted_at: Utc::now().to_rfc3339(),
+                terminal_at: None,
+            },
+        );
+        host.runtime_db()
+            .transaction(|tx| crate::runtime_db::transitions::persist_state_tx(tx, &execution))
+            .unwrap();
+        (work_item.id, attempt_id)
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_discovers_consumed_result_owner_without_queue_task_or_timer_wake() {
+        let (_home, host) = canonical_test_host();
+        let config = host.config().as_ref().clone();
+        let agent_id = "startup-consumed-result-owner";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let (work_item_id, attempt_id) = seed_startup_consumed_result_attempt(&host, agent_id);
+        assert!(host
+            .runtime_db()
+            .queue_entries()
+            .latest_all()
+            .unwrap()
+            .is_empty());
+        assert!(host
+            .runtime_db()
+            .tasks()
+            .active_owner_agent_ids()
+            .unwrap()
+            .is_empty());
+        drop(host);
+
+        let started = Arc::new(Notify::new());
+        let started_wait = started.notified();
+        tokio::pin!(started_wait);
+        started_wait.as_mut().enable();
+        let restarted = RuntimeHost::new_with_provider(
+            config,
+            Arc::new(BlockingProvider {
+                started: started.clone(),
+            }),
+        )
+        .unwrap();
+        restarted
+            .recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), &mut started_wait)
+            .await
+            .expect("recovered WorkItem should reenter without an old result wake");
+        let execution = restarted
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            execution.attempts[&attempt_id].state,
+            ExecutionAttemptState::Interrupted
+        );
+        let new_attempt = execution.open_attempt().expect("new recovery execution");
+        assert_ne!(new_attempt.attempt_id, attempt_id);
+        assert_eq!(
+            new_attempt.binding,
+            ExecutionBinding::WorkItem { work_item_id }
+        );
+        assert!(!matches!(
+            new_attempt.source.identity,
+            ExecutionSourceIdentity::TaskResult { .. }
+        ));
+        restarted.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_releases_stopped_execution_lane_without_starting_owner() {
+        let (_home, host) = canonical_test_host();
+        let agent_id = "startup-stopped-execution-owner";
+        host.create_named_agent(agent_id, None).await.unwrap();
+        host.unload_runtime(agent_id).await;
+        let (_work_item_id, attempt_id) = seed_startup_consumed_result_attempt(&host, agent_id);
+        let storage = host.agent_storage(agent_id).unwrap();
+        let mut state = storage.read_agent().unwrap().unwrap();
+        state.status = AgentStatus::Stopped;
+        storage.write_agent(&state).unwrap();
+
+        host.recover_orphaned_queue_claims_at_startup()
+            .await
+            .unwrap();
+        assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+        assert_eq!(
+            storage.read_agent().unwrap().unwrap().status,
+            AgentStatus::Stopped
+        );
+        let execution = host
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)
+            .unwrap()
+            .unwrap();
+        assert!(execution.open_attempt().is_none());
+        assert_eq!(
+            execution.attempts[&attempt_id].state,
+            ExecutionAttemptState::Interrupted
+        );
+    }
+
+    #[tokio::test]
+    async fn startup_recovery_releases_deleted_execution_lane_without_reviving_identity() {
+        let (_home, host) = canonical_test_host();
+        for (agent_id, status) in [
+            ("startup-deleting-execution", AgentRegistryStatus::Deleting),
+            ("startup-deleted-execution", AgentRegistryStatus::Deleted),
+        ] {
+            host.create_named_agent(agent_id, None).await.unwrap();
+            host.unload_runtime(agent_id).await;
+            let (_work_item_id, attempt_id) = seed_startup_consumed_result_attempt(&host, agent_id);
+            let mut identity = host
+                .runtime_db()
+                .agent_identities()
+                .latest(agent_id)
+                .unwrap()
+                .unwrap();
+            identity.status = status;
+            host.runtime_db()
+                .agent_identities()
+                .upsert(&identity)
+                .unwrap();
+            host.recover_orphaned_queue_claims_at_startup()
+                .await
+                .unwrap();
+            assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+            let execution = host
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized(agent_id)
+                .unwrap()
+                .unwrap();
+            assert!(execution.open_attempt().is_none());
+            assert_eq!(
+                execution.attempts[&attempt_id].state,
+                ExecutionAttemptState::Interrupted
+            );
+        }
     }
 
     #[tokio::test]
