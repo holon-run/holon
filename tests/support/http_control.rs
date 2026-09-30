@@ -1986,13 +1986,13 @@ pub async fn control_agent_model_override_set_and_clear_updates_status() -> Resu
     );
 
     let status_payload: serde_json::Value = client
-        .get(format!("{base}/api/agents/default/status"))
+        .get(format!("{base}/api/agents/default/status?detail=full"))
         .send()
         .await?
         .json()
         .await?;
     let agent_payload: serde_json::Value = client
-        .get(format!("{base}/api/agents/default"))
+        .get(format!("{base}/api/agents/default?detail=full"))
         .send()
         .await?
         .json()

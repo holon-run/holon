@@ -1668,7 +1668,7 @@ async fn work_item_query_tools_return_current_open_done_views() {
             &crate::tool::ToolCall {
                 id: "agent-get".into(),
                 name: "GetAgent".into(),
-                input: serde_json::json!({}),
+                input: serde_json::json!({"detail": "full"}),
             },
         )
         .await

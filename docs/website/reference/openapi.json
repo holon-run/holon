@@ -18230,7 +18230,7 @@
     },
     "/api/agents/{agent_id}": {
       "get": {
-        "description": "Return the canonical public AgentSummary read model.",
+        "description": "Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.",
         "operationId": "getAgent",
         "parameters": [
           {
@@ -19333,7 +19333,7 @@
     },
     "/api/agents/{agent_id}/status": {
       "get": {
-        "description": "Return the public AgentSummary read model.",
+        "description": "Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.",
         "operationId": "agentStatus",
         "parameters": [
           {
@@ -25677,7 +25677,7 @@
     },
     "/api/status": {
       "get": {
-        "description": "Compatibility alias for the default agent status route.",
+        "description": "Compatibility alias for the default agent status route; pass detail=full for the complete AgentSummary read model.",
         "operationId": "defaultStatus",
         "responses": {
           "200": {
