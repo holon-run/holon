@@ -3512,6 +3512,7 @@ mod tests {
             "product-manager",
             "dependency-steward",
             "marketing-steward",
+            "community-steward",
         ] {
             let template_dir = syncable.join(template_id);
             assert!(
@@ -3547,6 +3548,25 @@ mod tests {
         assert!(marketing_agents_md.contains("does not grant account access"));
         assert!(marketing_agents_md.contains("`product-manager`"));
         assert!(marketing_agents_md.contains("`research-steward`"));
+
+        let community_template = syncable.join("community-steward");
+        assert_eq!(
+            local_template_skills(&community_template),
+            vec![
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/sview/skills/sview",
+                "holon-run/uxc/skills/uxc",
+                "obra/the-elements-of-style/skills/writing-clearly-and-concisely",
+            ]
+        );
+        let community_agents_md =
+            fs::read_to_string(community_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(community_agents_md.contains("Community Steward Agent"));
+        assert!(community_agents_md.contains("`uxc` and `agentinbox`"));
+        assert!(community_agents_md.contains("read-only ingestion and draft output"));
+        assert!(community_agents_md.contains("Do not speak for maintainers"));
+        assert!(community_agents_md.contains("`security-reviewer`"));
 
         let solve_template = syncable.join(GITHUB_SOLVE_AGENT_TEMPLATE_ID);
         assert_eq!(
