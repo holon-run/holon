@@ -134,6 +134,11 @@
         "name": "agent_id",
         "location": "path",
         "required": true
+      },
+      {
+        "name": "detail",
+        "location": "query",
+        "required": false
       }
     ],
     "request_schema": null,
@@ -467,6 +472,11 @@
         "name": "agent_id",
         "location": "path",
         "required": true
+      },
+      {
+        "name": "detail",
+        "location": "query",
+        "required": false
       }
     ],
     "request_schema": null,
@@ -1297,7 +1307,13 @@
     "handler": "status_default",
     "operation_id": "defaultStatus",
     "tag": "compat",
-    "parameters": [],
+    "parameters": [
+      {
+        "name": "detail",
+        "location": "query",
+        "required": false
+      }
+    ],
     "request_schema": null,
     "request_strict": null,
     "response_content_types": [

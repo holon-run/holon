@@ -65,11 +65,11 @@ use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use holon::cli::{
-    AgentCommands, AgentModelCommands, Cli, Commands, ConfigCommands, ConfigCredentialCommands,
-    ConfigModelCommands, ConfigProviderCommands, ControlCommandAction, DaemonCommands,
-    DebugCommands, EventsCommands, MemoryIndexCommands, ModelsDevCommands, ServeAccess,
-    ServeOptions, SkillsCommands, TaskCommands, TimerCommands, TimerCreateArgs, WorkItemCommands,
-    WorkspaceCommands,
+    AgentCommands, AgentDetailArg, AgentModelCommands, Cli, Commands, ConfigCommands,
+    ConfigCredentialCommands, ConfigModelCommands, ConfigProviderCommands, ControlCommandAction,
+    DaemonCommands, DebugCommands, EventsCommands, MemoryIndexCommands, ModelsDevCommands,
+    ServeAccess, ServeOptions, SkillsCommands, TaskCommands, TimerCommands, TimerCreateArgs,
+    WorkItemCommands, WorkspaceCommands,
 };
 
 // Linux daemons swap in jemalloc so freed pages are purged back to the OS
@@ -1449,12 +1449,13 @@ mod tests {
     fn agent_lifecycle_commands_parse_with_optional_agent_id() {
         let cli = Cli::parse_from(["holon", "agent", "get", "foo"]);
         let Commands::Agent {
-            command: Some(AgentCommands::Get { agent_id }),
+            command: Some(AgentCommands::Get { agent_id, detail }),
         } = cli.command
         else {
             panic!("expected agent get command");
         };
         assert_eq!(agent_id.as_deref(), Some("foo"));
+        assert_eq!(detail, AgentDetailArg::Compact);
 
         let cli = Cli::parse_from(["holon", "agent", "start"]);
         let Commands::Agent {
@@ -5287,16 +5288,33 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                 client.list_agent_entries_for_parent(&parent).await?,
             )?)
         }
-        Some(AgentCommands::Get { agent_id }) => {
+        Some(AgentCommands::Get { agent_id, detail }) => {
             let agent = cli_target_agent(config, agent_id)?;
             let client = LocalClient::new(config.clone())?;
-            print_json(&serde_json::to_value(client.get_agent(&agent).await?)?)
+            match detail {
+                AgentDetailArg::Compact => print_json(&serde_json::to_value(
+                    client.get_agent_compact(&agent).await?,
+                )?),
+                AgentDetailArg::Full => {
+                    print_json(&serde_json::to_value(client.get_agent(&agent).await?)?)
+                }
+            }
         }
-        Some(AgentCommands::Status { agent_id }) => {
+        Some(AgentCommands::Status { agent_id, detail }) => {
             let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
             let client = LocalClient::new(config.clone())?;
-            match client.agent_status(&agent).await {
-                Ok(summary) => print_json(&serde_json::to_value(summary)?),
+            let status = match detail {
+                AgentDetailArg::Compact => client
+                    .agent_status_compact(&agent)
+                    .await
+                    .and_then(|summary| serde_json::to_value(summary).map_err(Into::into)),
+                AgentDetailArg::Full => client
+                    .agent_status(&agent)
+                    .await
+                    .and_then(|summary| serde_json::to_value(summary).map_err(Into::into)),
+            };
+            match status {
+                Ok(summary) => print_json(&summary),
                 Err(err) => {
                     // If the agent is being deleted, show deletion status as JSON instead.
                     if let Some(http_err) = err.downcast_ref::<LocalHttpError>() {

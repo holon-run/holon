@@ -581,13 +581,24 @@
       "stability": "stable"
     },
     {
-      "description": "Read an agent-plane summary, including identity, lifecycle, active work focus,\nwaiting state, and child-agent lineage.\n\nWhen called without arguments, returns the current agent's summary. When called\nwith `agent_id`, returns the requested agent's canonical detail projection.\nRead-only inspection does not start an unloaded target runtime.\n",
+      "description": "Read an agent-plane summary, including identity, lifecycle, active work focus,\nwaiting state, and child-agent lineage. The default response is a compact\nruntime summary. Pass `{\"detail\":\"full\"}` when complete execution, skills,\nloaded guidance, token usage, and diagnostic fields are required.\n\nWhen called without arguments, returns the current agent's summary. When called\nwith `agent_id`, returns the requested agent's summary. Read-only inspection\ndoes not start an unloaded target runtime.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
         "properties": {
           "agent_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "detail": {
+            "enum": [
+              "compact",
+              "full",
+              null
+            ],
             "type": [
               "string",
               "null"
@@ -605,7 +616,7 @@
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "GetAgentResult",
+        "success_result": "GetAgentResult (full) or GetAgentCompactResult (compact)",
         "success_result_schema": null
       },
       "stability": "stable"

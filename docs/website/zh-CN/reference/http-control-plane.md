@@ -109,7 +109,8 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
 
 **`GET /api/agents/:id/status`** — 单个 agent 状态
 
-为指定 agent 返回相同的 `AgentSummary` 结构。
+默认返回 compact 的公开 agent 状态投影。传入 `detail=full` 时返回完整的
+`AgentSummary` 读模型。
 
 **`GET /api/agents/:id/state`** — 轻量 agent 状态引导
 

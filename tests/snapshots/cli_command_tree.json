@@ -110,7 +110,18 @@
         "required": false
       }
     ],
-    "flags": [],
+    "flags": [
+      {
+        "long": "detail",
+        "short": null,
+        "default_value": "compact",
+        "possible_values": [
+          "compact",
+          "full"
+        ],
+        "required": false
+      }
+    ],
     "aliases": []
   },
   {
@@ -249,7 +260,18 @@
         "required": false
       }
     ],
-    "flags": [],
+    "flags": [
+      {
+        "long": "detail",
+        "short": null,
+        "default_value": "compact",
+        "possible_values": [
+          "compact",
+          "full"
+        ],
+        "required": false
+      }
+    ],
     "aliases": []
   },
   {

@@ -93,8 +93,8 @@ const ROUTES: &[RouteSpec] = &[
     event_stream_route("get", "/agents/{agent_id}/conversation/stream", "agentConversationStream", "agents", "Conversation change stream", "Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/activities", "agentConversationActivities", "agents", "Conversation turn activity snapshot", "Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationActivityResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/control/agents/{agent_id}/conversation/shadow-diagnostics", "agentConversationShadowDiagnostics", "runtime", "Conversation shadow diagnostics", "Control-authenticated, metadata-only bounded comparison of canonical turn/source metadata and the conversation projection from one deferred read transaction. It never returns Brief bodies, transcript/tool payloads, or a second event ledger. Query parameter: turn_limit.", None, "ConversationShadowDiagnostics", AuthKind::Control),
-    aide_route("get", "/agents/{agent_id}", "getAgent", "agents", "Get agent", "Return the canonical public AgentSummary read model.", None, AuthKind::RemoteAccess),
-    aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the public AgentSummary read model.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/{agent_id}", "getAgent", "agents", "Get agent", "Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/briefs", "agentBriefs", "agents", "Recent briefs", "Return recent user-facing delivery briefs. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route_with_response("post", "/agents/{agent_id}/briefs:batchGet", "agentBriefsBatchGet", "agents", "Batch get briefs", "Return persisted briefs for the selected agent. Missing or cross-agent ids are reported in missing_brief_ids.", Some("BatchGetBriefsRequest"), "BatchGetBriefsResponse", AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/briefs/{brief_id}", "agentBrief", "agents", "Brief detail", "Return a persisted user-facing delivery brief by id.", None, "BriefRecord", AuthKind::RemoteAccess),
@@ -212,7 +212,7 @@ const ROUTES: &[RouteSpec] = &[
     route("post", "/control/agents/{agent_id}/skills/disable", "disableSkill", "skills", "Disable agent skill", "Disable a skill for an agent.", Some("DisableSkillRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/skills/install", "installSkill", "skills", "Install skill compatibility alias", "Compatibility alias for older agent skill install behavior.", Some("InstallSkillRequest"), AuthKind::Control),
     route("post", "/control/agents/{agent_id}/skills/uninstall", "uninstallSkill", "skills", "Uninstall skill compatibility alias", "Compatibility alias for disabling an agent skill.", Some("UninstallSkillRequest"), AuthKind::Control),
-    aide_route("get", "/status", "defaultStatus", "compat", "Default agent status alias", "Compatibility alias for the default agent status route.", None, AuthKind::RemoteAccess),
+    aide_route("get", "/status", "defaultStatus", "compat", "Default agent status alias", "Compatibility alias for the default agent status route; pass detail=full for the complete AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/briefs", "defaultBriefs", "compat", "Default agent briefs alias", "Compatibility alias for the default agent briefs route. Query parameter: limit.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/state", "defaultState", "compat", "Default agent state alias", "Compatibility alias for the default agent state route.", None, "AgentStateSnapshotDto", AuthKind::RemoteAccess),
     aide_route("get", "/transcript", "defaultTranscript", "compat", "Default agent transcript alias", "Compatibility alias for the default agent transcript route. Query parameter: limit.", None, AuthKind::RemoteAccess),
@@ -489,6 +489,22 @@ fn operation(spec: &RouteSpec) -> Value {
             "required": false,
             "description": "Exact direct parent agent id; filters only the lightweight public roster.",
             "schema": { "type": "string" }
+        }));
+    }
+    if matches!(
+        spec.operation_id,
+        "getAgent" | "agentStatus" | "defaultStatus"
+    ) {
+        parameters.push(json!({
+            "name": "detail",
+            "in": "query",
+            "required": false,
+            "description": "Response detail level. Compact is the default; full returns the complete AgentSummary read model.",
+            "schema": {
+                "type": "string",
+                "enum": ["compact", "full"],
+                "default": "compact"
+            }
         }));
     }
     if spec.operation_id == "runtimeTraceSearch" {
