@@ -35,6 +35,15 @@ pub(crate) enum WorkItemCompletionReportSource {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum WorkItemPlanArtifactStatus {
+    NotRecorded,
+    Available,
+    Missing,
+    Unreadable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct WorkItemCompletionReportView {
     pub(crate) text: String,
     pub(crate) source: WorkItemCompletionReportSource,
@@ -63,7 +72,9 @@ pub(crate) struct WorkItemView {
     pub(crate) is_current: bool,
     pub(crate) is_runnable: bool,
     pub(crate) plan_status: WorkItemPlanStatus,
-    pub(crate) plan_artifact: WorkItemPlanArtifact,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_artifact: Option<WorkItemPlanArtifact>,
+    pub(crate) plan_artifact_status: WorkItemPlanArtifactStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -139,15 +150,26 @@ pub(crate) async fn view_for_record(
                 )
             }),
     };
-    let mut record = record;
-    crate::work_item_plan::refresh_plan_artifact_metadata(
-        runtime.agent_home().as_path(),
-        &mut record,
-    )?;
-    let plan_artifact = record
-        .plan_artifact
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!("missing plan artifact for work item {}", record.id))?;
+    let record = record;
+    let (plan_artifact, plan_artifact_status, plan_diagnostic) =
+        match crate::work_item_plan::query_plan_artifact(runtime.agent_home().as_path(), &record) {
+            crate::work_item_plan::PlanArtifactQuery::NotRecorded => {
+                (None, WorkItemPlanArtifactStatus::NotRecorded, None)
+            }
+            crate::work_item_plan::PlanArtifactQuery::Missing => (
+                None,
+                WorkItemPlanArtifactStatus::Missing,
+                Some(format!("plan artifact missing for work item {}", record.id)),
+            ),
+            crate::work_item_plan::PlanArtifactQuery::Available(artifact) => {
+                (Some(artifact), WorkItemPlanArtifactStatus::Available, None)
+            }
+            crate::work_item_plan::PlanArtifactQuery::Unreadable(diagnostic) => (
+                None,
+                WorkItemPlanArtifactStatus::Unreadable,
+                Some(diagnostic),
+            ),
+        };
     let todo_list = if include_todo_list {
         record.todo_list.clone()
     } else {
@@ -155,6 +177,10 @@ pub(crate) async fn view_for_record(
     };
     let state = lifecycle_view(&record.state);
     let completion_report = completion_report_for_record(runtime, &record, delivery_summaries)?;
+    let mut diagnostics = projection.diagnostics;
+    if let Some(diagnostic) = plan_diagnostic {
+        diagnostics.push(diagnostic);
+    }
     Ok(WorkItemView {
         id: record.id,
         agent_id: record.agent_id,
@@ -170,6 +196,7 @@ pub(crate) async fn view_for_record(
         is_runnable: projection.is_runnable,
         plan_status: record.plan_status,
         plan_artifact,
+        plan_artifact_status,
         todo_list,
         work_refs: record.work_refs,
         blocked_by: record.blocked_by,
@@ -177,7 +204,7 @@ pub(crate) async fn view_for_record(
         recheck_consumed_at: record.recheck_consumed_at,
         completion_report,
         active_wait_conditions: projection.active_wait_conditions,
-        diagnostics: projection.diagnostics,
+        diagnostics,
         created_at: record.created_at,
         updated_at: record.updated_at,
     })
