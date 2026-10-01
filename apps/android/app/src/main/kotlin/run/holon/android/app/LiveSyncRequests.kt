@@ -15,19 +15,23 @@ internal class RosterRefreshRequest<T>(
     private val scope: CoroutineScope,
     private val read: suspend () -> T,
 ) {
+    private val lock = Any()
     private var request: Deferred<T>? = null
 
-    fun load(): Deferred<T> {
-        request?.takeIf { it.isActive }?.let { return it }
-        return scope.async(start = CoroutineStart.LAZY) { read() }.also {
-            request = it
-            it.start()
+    fun load(): Deferred<T> =
+        synchronized(lock) {
+            request?.takeIf { it.isActive }?.let { return@synchronized it }
+            scope.async(start = CoroutineStart.LAZY) { read() }.also {
+                request = it
+                it.start()
+            }
         }
-    }
 
     fun reset() {
-        request?.cancel()
-        request = null
+        synchronized(lock) {
+            request?.cancel()
+            request = null
+        }
     }
 }
 
@@ -75,7 +79,7 @@ internal class BriefReadStateLoader(
                     throw cancelled
                 } catch (error: Throwable) {
                     if (expected != generation) return@launch
-                    if (!reportedFailure) onFailure(error)
+                    if (!reportedFailure || !error.isTransientNetworkFailure()) onFailure(error)
                     reportedFailure = true
                     if (expected != generation || !error.isTransientNetworkFailure()) return@launch
                     delay(retryDelay)
