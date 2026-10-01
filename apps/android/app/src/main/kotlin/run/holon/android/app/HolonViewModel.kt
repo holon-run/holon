@@ -209,8 +209,25 @@ private const val SESSION_KEEPALIVE_INTERVAL_MILLIS = 15 * 60 * 1000L
 
 internal class SessionResetBarrier(private val scope: kotlinx.coroutines.CoroutineScope) {
     private var pending: Job? = null
+    private var activeTransitions = 0
+
+    fun beginTransition() {
+        synchronized(this) {
+            activeTransitions += 1
+        }
+    }
+
+    fun endTransition() {
+        synchronized(this) {
+            check(activeTransitions > 0)
+            activeTransitions -= 1
+        }
+    }
 
     fun schedule(reset: suspend () -> Unit): Job {
+        synchronized(this) {
+            if (activeTransitions > 0) return scope.launch {}
+        }
         val previous = pending
         val next =
             scope.launch {
@@ -468,8 +485,10 @@ internal class HolonViewModel(
                 agents = emptyList(),
             )
         }
+        sessionResetBarrier.beginTransition()
         viewModelScope.launch {
-            sessionResetBarrier.await()
+            try {
+                sessionResetBarrier.await()
             runCatching {
                 withContext(Dispatchers.IO) {
                     repository.switchNetwork(networkId) to repository.networkProfiles()
@@ -557,6 +576,9 @@ internal class HolonViewModel(
                     }
                 }
             }
+            } finally {
+                sessionResetBarrier.endTransition()
+            }
         }
     }
 
@@ -627,8 +649,10 @@ internal class HolonViewModel(
         val tokenChars = pairing?.let { charArrayOf() } ?: before.token.toCharArray()
         sessionTransitionGeneration += 1
         mutableState.update { it.copy(busy = true, error = null, statusMessage = "正在安全登录…") }
+        sessionResetBarrier.beginTransition()
         viewModelScope.launch {
-            sessionResetBarrier.await()
+            try {
+                sessionResetBarrier.await()
             runCatching {
                 withContext(Dispatchers.IO) {
                     val (session, roster) =
@@ -668,6 +692,9 @@ internal class HolonViewModel(
                         statusMessage = null,
                     )
                 }
+            }
+            } finally {
+                sessionResetBarrier.endTransition()
             }
         }
     }

@@ -74,6 +74,20 @@ class HolonViewModelTest {
         login.await()
     }
 
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `session cleanup scheduled during a new transition is ignored`() = runTest {
+        val barrier = SessionResetBarrier(this)
+        var resetRan = false
+
+        barrier.beginTransition()
+        barrier.schedule { resetRan = true }
+        runCurrent()
+
+        assertFalse(resetRan)
+        barrier.endTransition()
+    }
+
     @Test
     fun `adding a network preserves the current session until a new login succeeds`() {
         val session =
