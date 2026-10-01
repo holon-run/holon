@@ -23,6 +23,7 @@ export HOLON_ANDROID_KEYSTORE_PATH="$test_dir/test.jks"
 export HOLON_ANDROID_STORE_PASSWORD=ephemeral-test-password
 export HOLON_ANDROID_KEY_PASSWORD="$HOLON_ANDROID_STORE_PASSWORD"
 export HOLON_ANDROID_KEY_ALIAS=test-only
+export ANDROID_HOME="$test_dir/android-sdk"
 "${JAVA_HOME:?}/bin/keytool" -genkeypair -keystore "$HOLON_ANDROID_KEYSTORE_PATH" \
   -storetype JKS -alias "$HOLON_ANDROID_KEY_ALIAS" -keyalg RSA -keysize 2048 \
   -validity 1 -dname 'CN=Android Debug' -storepass:env HOLON_ANDROID_STORE_PASSWORD \
