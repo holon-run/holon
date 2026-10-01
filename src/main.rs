@@ -3700,7 +3700,7 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
                 .artifact
                 .to_json()
                 .map_err(|e| anyhow!("failed to serialize artifact: {e}"))?;
-            std::fs::write(&artifact_path, &artifact_json)
+            std::fs::write(&artifact_path, format!("{artifact_json}\n"))
                 .map_err(|e| anyhow!("failed to write artifact: {e}"))?;
 
             let parsed_snapshot =
