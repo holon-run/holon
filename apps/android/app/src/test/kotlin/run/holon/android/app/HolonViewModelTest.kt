@@ -178,4 +178,47 @@ class HolonViewModelTest {
             ).isTransientNetworkFailure(),
         )
     }
+
+    @Test
+    fun `unread count errors have one localized prefix`() {
+        assertEquals(
+            "Could not load unread counts: Cannot connect to Holon. Check the network and address.",
+            UiCopy.translate("无法加载未读数：无法连接 Holon，请检查网络和地址", "en"),
+        )
+    }
+
+    @Test
+    fun `transient unread count failure keeps the cached read state`() {
+        val cached =
+            run.holon.android.sdk.HolonBriefReadState(
+                agentId = "agent-1",
+                eventHeadSeq = 12,
+                eventLogEpoch = "epoch-1",
+                oldestRetainedSeq = 1,
+                readThroughEventSeq = 4,
+                resetRequired = false,
+                retentionGap = false,
+                revision = 2,
+                unreadCount = 3,
+                visibilityScopeId = "scope-1",
+            )
+        val current =
+            HolonUiState(
+                phase = AppPhase.Ready,
+                online = true,
+                briefReadStates = mapOf("agent-1" to cached),
+                briefReadStatesLoaded = true,
+            )
+
+        val afterTransientFailure =
+            current.copy(
+                online = false,
+                error = null,
+                statusMessage = TRANSIENT_NETWORK_STATUS_MESSAGE,
+            )
+
+        assertEquals(current.briefReadStates, afterTransientFailure.briefReadStates)
+        assertTrue(afterTransientFailure.briefReadStatesLoaded)
+        assertEquals(null, afterTransientFailure.error)
+    }
 }
