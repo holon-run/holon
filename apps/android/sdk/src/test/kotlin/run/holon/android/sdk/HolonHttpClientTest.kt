@@ -18,6 +18,29 @@ import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
     @Test
+    fun `credential storage read failures do not send an unauthenticated request`() {
+        MockWebServer().use { server ->
+            val expected = IllegalStateException("credential storage unavailable")
+            val store =
+                object : SessionCredentialStore {
+                    override fun read(): String? = throw expected
+
+                    override fun write(credential: String) = Unit
+
+                    override fun clear() = Unit
+                }
+            val client =
+                HolonHttpClient(
+                    baseUrl = server.url("/").toString(),
+                    sessionCredentialStore = store,
+                )
+
+            assertFailsWith<IllegalStateException> { client.listAgents() }
+            assertEquals(0, server.requestCount)
+        }
+    }
+
+    @Test
     fun `current user keepalive uses the authenticated session endpoint`() {
         MockWebServer().use { server ->
             server.enqueue(

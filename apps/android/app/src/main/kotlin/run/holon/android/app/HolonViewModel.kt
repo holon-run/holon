@@ -207,6 +207,49 @@ internal fun isCurrentLiveSync(
 
 private const val SESSION_KEEPALIVE_INTERVAL_MILLIS = 15 * 60 * 1000L
 
+internal class SessionResetBarrier(private val scope: kotlinx.coroutines.CoroutineScope) {
+    private var pending: Job? = null
+    private var activeTransitions = 0
+
+    fun beginTransition() {
+        synchronized(this) {
+            activeTransitions += 1
+        }
+    }
+
+    fun endTransition() {
+        synchronized(this) {
+            check(activeTransitions > 0)
+            activeTransitions -= 1
+        }
+    }
+
+    fun schedule(reset: suspend () -> Unit): Job {
+        synchronized(this) {
+            if (activeTransitions > 0) return scope.launch {}
+        }
+        val previous = pending
+        val next =
+            scope.launch {
+                previous?.join()
+                runCatching { reset() }
+            }
+        pending = next
+        return next
+    }
+
+    suspend fun await() {
+        while (true) {
+            val current = pending ?: return
+            current.join()
+            if (pending === current) {
+                pending = null
+                return
+            }
+        }
+    }
+}
+
 internal class AppContainer(context: Context) {
     private val database = HolonDatabase.create(context)
     val traceRecorder = TraceRecorder(context)
@@ -244,6 +287,8 @@ internal class HolonViewModel(
     private var workspaceBrowseGeneration = 0L
     private var workspaceBrowseRequest: WorkspaceBrowseRequest? = null
     private var refreshJob: Job? = null
+    private val sessionResetBarrier = SessionResetBarrier(viewModelScope)
+    private var sessionTransitionGeneration = 0L
     private var briefReadStateScope: String? = null
     private val rosterRefresh = RosterRefreshRequest(viewModelScope) {
         withContext(Dispatchers.IO) { repository.refreshSessionAndRoster() }
@@ -426,6 +471,7 @@ internal class HolonViewModel(
         val profile = before.networkProfiles.firstOrNull { it.networkId == networkId } ?: return
         if (before.busy || before.session?.networkId == networkId) return
         val generation = invalidateLiveSync()
+        sessionTransitionGeneration += 1
         mutableState.update {
             it.copy(
                 busy = true,
@@ -439,7 +485,10 @@ internal class HolonViewModel(
                 agents = emptyList(),
             )
         }
+        sessionResetBarrier.beginTransition()
         viewModelScope.launch {
+            try {
+                sessionResetBarrier.await()
             runCatching {
                 withContext(Dispatchers.IO) {
                     repository.switchNetwork(networkId) to repository.networkProfiles()
@@ -527,6 +576,9 @@ internal class HolonViewModel(
                     }
                 }
             }
+            } finally {
+                sessionResetBarrier.endTransition()
+            }
         }
     }
 
@@ -595,8 +647,12 @@ internal class HolonViewModel(
             return
         }
         val tokenChars = pairing?.let { charArrayOf() } ?: before.token.toCharArray()
+        sessionTransitionGeneration += 1
         mutableState.update { it.copy(busy = true, error = null, statusMessage = "正在安全登录…") }
+        sessionResetBarrier.beginTransition()
         viewModelScope.launch {
+            try {
+                sessionResetBarrier.await()
             runCatching {
                 withContext(Dispatchers.IO) {
                     val (session, roster) =
@@ -636,6 +692,9 @@ internal class HolonViewModel(
                         statusMessage = null,
                     )
                 }
+            }
+            } finally {
+                sessionResetBarrier.endTransition()
             }
         }
     }
@@ -2440,14 +2499,25 @@ internal class HolonViewModel(
             error is SessionScopeChangedException
         ) {
             invalidateLiveSync()
-            viewModelScope.launch {
+            val resetGeneration = ++sessionTransitionGeneration
+            mutableState.update {
+                it.copy(
+                    phase = AppPhase.SignedOut,
+                    busy = false,
+                    session = null,
+                    selectedAgent = null,
+                    conversation = null,
+                    agents = emptyList(),
+                    error = "登录已失效，请重新登录",
+                    statusMessage = null,
+                )
+            }
+            sessionResetBarrier.schedule {
                 withContext(Dispatchers.IO) { repository.logout() }
-                mutableState.value =
-                    HolonUiState(
-                        phase = AppPhase.SignedOut,
-                        baseUrl = state.value.baseUrl,
-                        error = "登录已失效，请重新登录",
-                    )
+                val profiles = withContext(Dispatchers.IO) { repository.networkProfiles() }
+                if (sessionTransitionGeneration == resetGeneration) {
+                    mutableState.update { it.copy(networkProfiles = profiles) }
+                }
             }
             return
         }
