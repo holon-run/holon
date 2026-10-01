@@ -1030,9 +1030,14 @@ fn update_max(target: &AtomicU64, value: u64) {
 }
 
 fn decrement(target: &AtomicU64) {
-    let _ = target.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-        Some(value.saturating_sub(1))
-    });
+    let mut current = target.load(Ordering::Relaxed);
+    loop {
+        let next = current.saturating_sub(1);
+        match target.compare_exchange_weak(current, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => break,
+            Err(observed) => current = observed,
+        }
+    }
 }
 
 fn memory_index_writer_operation_accumulator(
