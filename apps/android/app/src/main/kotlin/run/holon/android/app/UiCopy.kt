@@ -451,6 +451,7 @@ internal object UiCopy {
             "正在保存 " to "Saving ",
             "已保存到设备：" to "Saved to device: ",
             "无法保存已读状态：" to "Could not save read state: ",
+            "无法加载未读数：" to "Could not load unread counts: ",
             "列表同步已暂停：" to "List sync paused: ",
             "无法打开计划：" to "Could not open plan: ",
             "文件无法打开：" to "Could not open file: ",
