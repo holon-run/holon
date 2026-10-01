@@ -14,6 +14,7 @@ import { Card } from "../../components/ui/Card";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { StatusChip } from "../../components/ui/StatusChip";
 import { PairingCard } from "./PairingCard";
+import { readSettingsTab, rememberSettingsTab, type SettingsTabKey } from "./settings-preferences";
 import { TailscaleServeCard } from "./TailscaleServeCard";
 import {
   clearRuntimeTraceRecords,
@@ -253,8 +254,6 @@ export function buildStandardSearchProviderDefinitions(
     .sort((left, right) => right.capabilities.defaultPriority - left.capabilities.defaultPriority);
 }
 
-type SettingsTabKey = "general" | "models" | "vision" | "decision" | "search" | "advanced";
-
 const settingsTabs: Array<{ key: SettingsTabKey; labelKey: string; descriptionKey: string }> = [
   { key: "general", labelKey: "settings.tabGeneral", descriptionKey: "settings.tabGeneralDesc" },
   { key: "models", labelKey: "settings.tabModels", descriptionKey: "settings.tabModelsDesc" },
@@ -372,7 +371,16 @@ export function SettingsPage({
   const [imageGenSaveMessage, setImageGenSaveMessage] = useState<string | undefined>();
   const [decisionSaveMessage, setDecisionSaveMessage] = useState<string | undefined>();
   const [providerSaveMessage, setProviderSaveMessage] = useState<string | undefined>();
-  const [activeTab, setActiveTab] = useState<SettingsTabKey>("models");
+  const [activeTab, updateActiveTab] = useState<SettingsTabKey>(() => readSettingsTab(window.location.search));
+  function setActiveTab(tab: SettingsTabKey) {
+    updateActiveTab(tab);
+    rememberSettingsTab(tab);
+    const url = new URL(window.location.href);
+    if (url.searchParams.has("tab")) {
+      url.searchParams.set("tab", tab);
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }
   const [apiKeyDrafts, setApiKeyDrafts] = useState<Record<string, string>>({});
   const [searchApiKeyDrafts, setSearchApiKeyDrafts] = useState<Record<string, string>>({});
   const [credentialMessages, setCredentialMessages] = useState<Record<string, string>>({});

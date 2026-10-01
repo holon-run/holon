@@ -831,7 +831,7 @@ export function AgentPage({
                       </button>
                       <ModelList options={modelCatalog.options} value={activeAgent.modelSelection ?? activeAgent.model} autoFocus disabled={changingModel !== null}
                         onSelect={(option) => void handleSelectModel(option)} />
-                      <a className="model-browser-more" href="/settings">{t("modelUi.manageServices")}</a>
+                      <a className="model-browser-more" href="/settings?tab=models">{t("modelUi.manageServices")}</a>
                       {!modelCatalogLoading && modelCatalog.options.length === 0 ? (
                         <EmptyState
                           className="model-picker-empty"
