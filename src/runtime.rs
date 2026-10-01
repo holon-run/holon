@@ -3006,6 +3006,78 @@ impl RuntimeHandle {
         self.inner.clock.now()
     }
 
+    pub(crate) async fn mark_current_turn_external_side_effect_possible(
+        &self,
+        tool_name: &str,
+    ) -> Result<()> {
+        let (agent_id, turn_id) = {
+            let guard = self.inner.agent.lock().await;
+            (guard.state.id.clone(), guard.state.current_turn_id.clone())
+        };
+        let Some(turn_id) = turn_id else {
+            return Ok(());
+        };
+        let Some(mut turn) = self
+            .inner
+            .runtime_db
+            .turn_records()
+            .by_id(Some(&agent_id), &turn_id)?
+        else {
+            return Ok(());
+        };
+        if turn.terminal.is_some() || turn.external_side_effect_possible {
+            return Ok(());
+        }
+        turn.external_side_effect_possible = true;
+        self.inner.runtime_db.turn_records().upsert(&turn)?;
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "external_command_no_replay_barrier",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "turn_id": turn_id,
+                "tool_name": tool_name,
+                "recovery_policy": "never_replay_unknown_external_side_effect",
+            }),
+        ))?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_current_turn_external_side_effect_possible(
+        &self,
+        tool_name: &str,
+    ) -> Result<()> {
+        let (agent_id, turn_id) = {
+            let guard = self.inner.agent.lock().await;
+            (guard.state.id.clone(), guard.state.current_turn_id.clone())
+        };
+        let Some(turn_id) = turn_id else {
+            return Ok(());
+        };
+        let Some(mut turn) = self
+            .inner
+            .runtime_db
+            .turn_records()
+            .by_id(Some(&agent_id), &turn_id)?
+        else {
+            return Ok(());
+        };
+        if turn.terminal.is_some() || !turn.external_side_effect_possible {
+            return Ok(());
+        }
+        turn.external_side_effect_possible = false;
+        self.inner.runtime_db.turn_records().upsert(&turn)?;
+        self.inner.storage.append_event(&AuditEvent::legacy(
+            "external_command_checkpoint_durable",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "turn_id": turn_id,
+                "tool_name": tool_name,
+                "recovery_policy": "resume_from_durable_tool_result",
+            }),
+        ))?;
+        Ok(())
+    }
+
     fn take_transition_fault(&self) -> Option<TransitionFaultPoint> {
         self.inner
             .transition_faults

@@ -540,6 +540,8 @@ impl RuntimeHandle {
             .await?;
 
         let resolved = self.resolve_command_task(&spec).await?;
+        self.mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
+            .await?;
         let running = self
             .start_command_process(&resolved, None, crate::tool::names::EXEC_COMMAND)
             .await?;
@@ -587,6 +589,8 @@ impl RuntimeHandle {
                 });
             }
         }
+        self.mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
+            .await?;
         let mut running = self
             .start_command_process(&resolved, trace_context, crate::tool::names::EXEC_COMMAND)
             .await?;
@@ -734,6 +738,10 @@ impl RuntimeHandle {
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
+        self.mark_current_turn_external_side_effect_possible(
+            crate::tool::names::EXEC_COMMAND_BATCH,
+        )
+        .await?;
         let mut captured = CapturedOutput::new(resolved.output_policy);
         let mut running = self
             .start_command_process(

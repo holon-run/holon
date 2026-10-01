@@ -2396,6 +2396,10 @@ pub struct TurnRecord {
     /// Durable fence for a destructive lifecycle operation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub destructive_operation_id: Option<String>,
+    /// An external process may have produced a side effect before this turn
+    /// reached a durable tool-result checkpoint. Such turns are never replayed.
+    #[serde(default)]
+    pub external_side_effect_possible: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -2418,6 +2422,7 @@ impl TurnRecord {
             terminal: None,
             replay: None,
             destructive_operation_id: None,
+            external_side_effect_possible: false,
             created_at: Utc::now(),
         }
     }
