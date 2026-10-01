@@ -3525,6 +3525,40 @@ mod tests {
             );
         }
 
+        let syncable_template_ids = [
+            "software-developer",
+            "github-solver",
+            "holon-ops",
+            "release-manager",
+            "code-reviewer",
+            "office-assistant",
+            "server-ops",
+            "video-producer",
+            "qa-engineer",
+            "issue-triager",
+            "docs-steward",
+            "security-reviewer",
+            "product-manager",
+            "dependency-steward",
+            "marketing-steward",
+            "community-steward",
+        ];
+        for template_id in syncable_template_ids {
+            let agents_md =
+                fs::read_to_string(syncable.join(template_id).join(TEMPLATE_AGENTS_FILENAME))
+                    .unwrap();
+            for other_template_id in syncable_template_ids {
+                if template_id == other_template_id {
+                    continue;
+                }
+                let route_reference = format!("`{other_template_id}`");
+                assert!(
+                    !agents_md.contains(&route_reference),
+                    "{template_id} must not statically route to {other_template_id}"
+                );
+            }
+        }
+
         let marketing_template = syncable.join("marketing-steward");
         assert_eq!(
             local_template_skills(&marketing_template),
@@ -3546,8 +3580,6 @@ mod tests {
         assert!(marketing_agents_md.contains("Campaign Brief Minimum"));
         assert!(marketing_agents_md.contains("operator approval before experiment"));
         assert!(marketing_agents_md.contains("does not grant account access"));
-        assert!(marketing_agents_md.contains("`product-manager`"));
-        assert!(marketing_agents_md.contains("`research-steward`"));
 
         let community_template = syncable.join("community-steward");
         assert_eq!(
@@ -3566,7 +3598,6 @@ mod tests {
         assert!(community_agents_md.contains("`uxc` and `agentinbox`"));
         assert!(community_agents_md.contains("read-only ingestion and draft output"));
         assert!(community_agents_md.contains("Do not speak for maintainers"));
-        assert!(community_agents_md.contains("`security-reviewer`"));
 
         let solve_template = syncable.join(GITHUB_SOLVE_AGENT_TEMPLATE_ID);
         assert_eq!(
@@ -3601,7 +3632,6 @@ mod tests {
             fs::read_to_string(server_ops_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
         assert!(server_ops_agents_md.contains("Scheduled inspection is disabled by default"));
         assert!(server_ops_agents_md.contains("report, not remediate"));
-        assert!(server_ops_agents_md.contains("future `holon-ops` role"));
 
         let holon_ops_template = syncable.join("holon-ops");
         assert_eq!(
@@ -3681,7 +3711,6 @@ mod tests {
             ]
         );
         let qa_agents_md = fs::read_to_string(qa_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
-        assert!(qa_agents_md.contains("do not replace `software-developer` or `code-reviewer`"));
         assert!(qa_agents_md.contains("Never change product code by default"));
         assert!(qa_agents_md.contains("prefer `agent_home/skills/`"));
         assert!(qa_agents_md.contains("There is no official `issue-verify` skill"));
@@ -3705,8 +3734,6 @@ mod tests {
         );
         let triage_agents_md =
             fs::read_to_string(triage_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
-        assert!(triage_agents_md
-            .contains("do not replace `software-developer`, `github-solver`, or `qa-engineer`"));
         assert!(triage_agents_md.contains("Never close by default"));
         assert!(triage_agents_md.contains("prefer `agent_home/skills/`"));
         assert!(triage_agents_md.contains("There is no official `issue-triage` skill"));
@@ -3730,17 +3757,13 @@ mod tests {
         );
         let docs_agents_md =
             fs::read_to_string(docs_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
-        assert!(docs_agents_md.contains("do not replace `software-developer`"));
-        assert!(docs_agents_md.contains("`release-manager`"));
-        assert!(docs_agents_md.contains("`office-assistant`"));
-        assert!(docs_agents_md.contains("`issue-triager`"));
         assert!(docs_agents_md.contains("Never merge by default"));
         assert!(docs_agents_md.contains("prefer `agent_home/skills/`"));
         assert!(docs_agents_md.contains("There is no official `docs-steward` skill"));
         assert!(docs_agents_md.contains("cannot be overridden by a project skill"));
         assert!(docs_agents_md.contains("Verify, then write"));
         assert!(docs_agents_md.contains("Post-release user docs"));
-        assert!(docs_agents_md.contains("Do not take on `github-issue-solve`"));
+        assert!(docs_agents_md.contains("Do not take on implementation or review work"));
         assert!(docs_agents_md.contains("`humanizer`"));
         assert!(docs_agents_md.contains("`humanizer-zh`"));
         assert!(docs_agents_md.contains("`writing-clearly-and-concisely`"));
@@ -3760,19 +3783,13 @@ mod tests {
         );
         let security_agents_md =
             fs::read_to_string(security_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
-        assert!(security_agents_md.contains("do not replace `software-developer`"));
-        assert!(security_agents_md.contains("`code-reviewer`"));
-        assert!(security_agents_md.contains("`qa-engineer`"));
-        assert!(security_agents_md.contains("`server-ops`"));
-        assert!(security_agents_md.contains("`holon-ops`"));
         assert!(security_agents_md.contains("Never merge by default"));
         assert!(security_agents_md.contains("prefer `agent_home/skills/`"));
         assert!(security_agents_md.contains("There is no official `security-reviewer` skill"));
         assert!(security_agents_md.contains("cannot be overridden by a project skill"));
         assert!(security_agents_md.contains("Do not produce exploits"));
         assert!(security_agents_md.contains("PoC"));
-        assert!(security_agents_md.contains("not a live `agent_id`"));
-        assert!(security_agents_md.contains("Never use a template id as an `agent_id`"));
+        assert!(security_agents_md.contains("do not invent an agent"));
         assert!(security_agents_md.contains("`security-review`"));
         assert!(security_agents_md.contains("Full-repository audit"));
         assert!(security_agents_md.contains("payloads"));
@@ -3808,8 +3825,7 @@ mod tests {
         assert!(product_agents_md.contains("prefer `agent_home/skills/`"));
         assert!(product_agents_md.contains("There is no official `product-manager` skill"));
         assert!(product_agents_md.contains("cannot be overridden by a project skill"));
-        assert!(product_agents_md.contains("not a live `agent_id`"));
-        assert!(product_agents_md.contains("Never use a template id as an `agent_id`"));
+        assert!(product_agents_md.contains("explicitly names an available recipient"));
         assert!(product_agents_md.contains("escalate authority"));
         assert!(product_agents_md.contains("`unconfirmed`"));
         assert!(product_agents_md.contains("`prd`"));
@@ -3841,11 +3857,9 @@ mod tests {
         assert!(dependency_agents_md.contains("prefer `agent_home/skills/`"));
         assert!(dependency_agents_md.contains("There is no official `dependency-steward` skill"));
         assert!(dependency_agents_md.contains("cannot be overridden by a project skill"));
-        assert!(dependency_agents_md.contains("not a live `agent_id`"));
-        assert!(dependency_agents_md.contains("Never use a template id as an `agent_id`"));
+        assert!(dependency_agents_md.contains("operator explicitly names an available recipient"));
         assert!(dependency_agents_md.contains("escalate authority"));
         assert!(dependency_agents_md.contains("`dependabot`"));
-        assert!(dependency_agents_md.contains("`security-reviewer`"));
         assert!(dependency_agents_md.contains("Renovate syntax"));
         assert!(dependency_agents_md.contains("Do not silently ignore"));
         assert!(dependency_agents_md.contains("not a grade"));

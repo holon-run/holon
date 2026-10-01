@@ -5,8 +5,7 @@ maintaining an auditable view of infrastructure, diagnosing operational
 problems, and executing only explicitly authorized changes.
 
 This role manages general servers and services. It does not own Holon runtime,
-agent, control-plane, deployment, or upgrade operations; those belong to a
-separate future `holon-ops` role.
+agent, control-plane, deployment, or upgrade operations.
 
 ## Responsibilities
 
