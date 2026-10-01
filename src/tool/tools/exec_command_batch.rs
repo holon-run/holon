@@ -284,7 +284,12 @@ async fn execute_batch_item(
 
     match runtime
         .managed_tasks()
-        .execute_exec_command_once(spec, authority_class, context.trace_context.as_ref())
+        .execute_exec_command_once(
+            spec,
+            authority_class,
+            context.trace_context.as_ref(),
+            crate::tool::names::EXEC_COMMAND_BATCH,
+        )
         .await
     {
         Ok(result) => {

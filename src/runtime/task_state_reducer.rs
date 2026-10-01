@@ -382,14 +382,23 @@ impl RuntimeHandle {
 
     #[cfg(test)]
     async fn inject_task_transition_conflict_if_armed(&self) -> Result<()> {
-        let remaining = match self.inner.task_transition_conflicts_remaining.fetch_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |remaining| remaining.checked_sub(1),
-        ) {
-            Ok(remaining) => remaining,
-            Err(_) => return Ok(()),
-        };
+        let mut remaining = self
+            .inner
+            .task_transition_conflicts_remaining
+            .load(Ordering::SeqCst);
+        loop {
+            if remaining == 0 {
+                return Ok(());
+            }
+            match self
+                .inner
+                .task_transition_conflicts_remaining
+                .compare_exchange_weak(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(observed) => remaining = observed,
+            }
+        }
         let mut guard = self.inner.agent.lock().await;
         guard.state.pending_wake_hint = Some(crate::types::PendingWakeHint {
             reason: "test_conflict".into(),
@@ -418,15 +427,23 @@ impl RuntimeHandle {
 
     #[cfg(test)]
     fn inject_terminal_task_transition_conflict_if_armed(&self) -> Result<()> {
-        let remaining = match self
+        let mut remaining = self
             .inner
             .terminal_task_transition_conflicts_remaining
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
-                remaining.checked_sub(1)
-            }) {
-            Ok(remaining) => remaining,
-            Err(_) => return Ok(()),
-        };
+            .load(Ordering::SeqCst);
+        loop {
+            if remaining == 0 {
+                return Ok(());
+            }
+            match self
+                .inner
+                .terminal_task_transition_conflicts_remaining
+                .compare_exchange_weak(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => break,
+                Err(observed) => remaining = observed,
+            }
+        }
         let mut state = self
             .inner
             .runtime_db

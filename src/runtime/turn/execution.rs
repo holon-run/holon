@@ -4065,6 +4065,12 @@ impl TurnExecution<'_> {
                             } else {
                                 runtime.persist_tool_execution_evidence(&record)?;
                                 runtime.inner.storage.append_event(&tool_executed_event)?;
+                                runtime
+                                    .clear_current_turn_external_side_effect_possible(
+                                        tool_name.as_str(),
+                                        &record.status,
+                                    )
+                                    .await?;
                             }
                             Ok(())
                         }

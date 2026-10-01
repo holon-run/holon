@@ -505,6 +505,33 @@ impl RuntimeDb {
                         "startup_recovery/superseded_by_replay",
                         "superseded_by_replay",
                     )
+                } else if turn.external_side_effect_possible {
+                    if let Some(message_id) = trigger_message_id.as_deref() {
+                        let queue = tx
+                            .query_row(
+                                "SELECT payload_json
+                                 FROM queue_entries
+                                 WHERE agent_id = ?1
+                                   AND message_id = ?2
+                                   AND status IN ('queued', 'dequeued', 'interrupted')",
+                                rusqlite::params![turn.agent_id, message_id],
+                                |row| row.get::<_, String>(0),
+                            )
+                            .optional()?
+                            .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
+                            .transpose()?;
+                        if let Some(mut queue) = queue {
+                            let expected = queue.clone();
+                            queue.status = QueueEntryStatus::Aborted;
+                            queue.updated_at = recovered_at;
+                            let _ = compare_and_set_queue_entry_tx(tx, &expected, &queue)?;
+                        }
+                    }
+                    report.daemon_restart_turns += 1;
+                    (
+                        "startup_recovery/external_side_effect_indeterminate",
+                        "external_side_effect_indeterminate",
+                    )
                 } else if trigger_message_id.as_deref().is_some_and(|message_id| {
                     queue_recovery
                         .interrupted_messages
@@ -559,6 +586,32 @@ impl RuntimeDb {
                     }),
                 };
                 append_audit_event_tx(tx, Some(&turn.agent_id), &event)?;
+                if turn.external_side_effect_possible {
+                    append_audit_event_tx(
+                        tx,
+                        Some(&turn.agent_id),
+                        &AuditEvent {
+                            id: format!(
+                                "audit:startup-external-side-effect-indeterminate:{}",
+                                turn.turn_id
+                            ),
+                            event_seq: 0,
+                            event_log_epoch: String::new(),
+                            created_at: recovered_at,
+                            kind: "startup_external_side_effect_indeterminate".into(),
+                            contract_version:
+                                crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                            payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
+                            payload_schema_version: 1,
+                            data: serde_json::json!({
+                                "agent_id": &turn.agent_id,
+                                "turn_id": &turn.turn_id,
+                                "recovery_policy": "never_replay_unknown_external_side_effect",
+                                "operator_action": "submit_explicit_recovery_or_retry",
+                            }),
+                        },
+                    )?;
+                }
                 report.interrupted_turns += 1;
             }
             // Startup owns every open attempt, including retained dequeued claims.
@@ -6673,6 +6726,55 @@ mod tests {
         let terminal = recovered.terminal.unwrap();
         assert_eq!(terminal.kind, TurnTerminalKind::Interrupted);
         assert_eq!(terminal.no_brief_reason, None);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_recovery_quarantines_external_side_effect_before_orphaned_claim() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        let agent_id = "startup-external-side-effect";
+        let message_id = "message-startup-external-side-effect";
+        let turn_id = "turn-startup-external-side-effect";
+        let created_at = Utc::now() - chrono::Duration::seconds(5);
+        db.agent_identities().upsert(&active_agent(agent_id))?;
+        db.queue_entries().upsert(&QueueEntryRecord {
+            message_id: message_id.into(),
+            agent_id: agent_id.into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at,
+            updated_at: created_at,
+        })?;
+        let mut turn = active_turn(agent_id, turn_id, 1, Some(message_id), created_at);
+        turn.external_side_effect_possible = true;
+        db.turn_records().upsert(&turn)?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_turns, 1);
+        assert_eq!(report.daemon_restart_turns, 1);
+        assert_eq!(report.orphaned_claim_turns, 0);
+        assert_eq!(
+            db.queue_entries().latest_all()?.pop().unwrap().status,
+            QueueEntryStatus::Aborted
+        );
+        let recovered = db.turn_records().by_id(Some(agent_id), turn_id)?.unwrap();
+        assert_eq!(
+            recovered.terminal.unwrap().reason.as_deref(),
+            Some("startup_recovery/external_side_effect_indeterminate")
+        );
+        assert_eq!(
+            db.audit_events()
+                .recent(Some(agent_id), 20)?
+                .into_iter()
+                .filter(|event| event.kind == "startup_external_side_effect_indeterminate")
+                .count(),
+            1
+        );
+
+        assert_eq!(
+            db.recover_interrupted_runtime_state_at_startup()?,
+            StartupRuntimeRecoveryReport::default()
+        );
         Ok(())
     }
 

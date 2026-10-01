@@ -35,9 +35,10 @@ impl ManagedTaskSupervisor<'_> {
         spec: CommandTaskSpec,
         authority_class: &AuthorityClass,
         trace_context: Option<&TraceContext>,
+        tool_name: &str,
     ) -> Result<ExecCommandResult> {
         self.runtime
-            .execute_exec_command_once(spec, authority_class, trace_context)
+            .execute_exec_command_once(spec, authority_class, trace_context, tool_name)
             .await
     }
 
