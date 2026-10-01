@@ -47,47 +47,77 @@ internal class BriefReadStateLoader(
     private val onLoaded: (BriefReadSnapshot) -> Unit,
     private val onFailure: (Throwable) -> Unit,
 ) {
+    private val lock = Any()
     private var job: Job? = null
     private var generation = 0L
     private var pending = false
 
     fun reset() {
-        generation++
-        job?.cancel()
-        job = null
-        pending = false
+        synchronized(lock) {
+            generation++
+            job?.cancel()
+            job = null
+            pending = false
+        }
     }
 
     fun request() {
-        if (job?.isActive == true) {
-            pending = true
-            return
+        synchronized(lock) {
+            if (job?.isActive == true) {
+                pending = true
+                return
+            }
+            val expected = generation
+            job =
+                scope.launch(start = CoroutineStart.LAZY) {
+                    runRequest(expected)
+                }.also { it.start() }
         }
-        val expected = generation
-        job = scope.launch(start = CoroutineStart.LAZY) {
-            var retryDelay = 1_000L
-            var reportedFailure = false
-            do {
+    }
+
+    private suspend fun runRequest(expected: Long) {
+        var retryDelay = 1_000L
+        var reportedFailure = false
+        while (true) {
+            synchronized(lock) {
+                if (expected != generation) return
                 pending = false
-                try {
-                    val value = read()
-                    if (expected != generation) return@launch
-                    onLoaded(value)
-                    reportedFailure = false
-                    retryDelay = 1_000L
-                } catch (cancelled: CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    if (expected != generation) return@launch
-                    if (!reportedFailure || !error.isTransientNetworkFailure()) onFailure(error)
-                    reportedFailure = true
-                    if (expected != generation || !error.isTransientNetworkFailure()) return@launch
-                    delay(retryDelay)
-                    if (expected != generation) return@launch
+            }
+            try {
+                val value = read()
+                synchronized(lock) {
+                    if (expected != generation) return
+                }
+                onLoaded(value)
+                reportedFailure = false
+                retryDelay = 1_000L
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                val (shouldReport, shouldRetry) =
+                    synchronized(lock) {
+                        if (expected != generation) return
+                        val transient = error.isTransientNetworkFailure()
+                        (!reportedFailure || !transient) to transient
+                    }
+                if (shouldReport) onFailure(error)
+                reportedFailure = true
+                if (!shouldRetry) return
+                delay(retryDelay)
+                synchronized(lock) {
+                    if (expected != generation) return
                     retryDelay = (retryDelay * 2).coerceAtMost(30_000L)
                     pending = true
                 }
-            } while (pending && expected == generation)
-        }.also { it.start() }
+            }
+
+            synchronized(lock) {
+                if (expected != generation) return
+                if (!pending) {
+                    job = null
+                    return
+                }
+            }
+        }
     }
 }

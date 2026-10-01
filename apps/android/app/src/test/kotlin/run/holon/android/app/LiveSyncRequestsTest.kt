@@ -166,4 +166,48 @@ class LiveSyncRequestsTest {
             loaded,
         )
     }
+
+    @Test
+    fun `brief read request and reset are safe across dispatchers`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var old = true
+        var reads = 0
+        val loaded = mutableListOf<BriefReadSnapshot>()
+        val loader =
+            BriefReadStateLoader(
+                scope = this,
+                read = {
+                    reads++
+                    if (old) {
+                        withContext(NonCancellable) {
+                            gate.await()
+                            BriefReadSnapshot.Legacy(mapOf("agent-1" to "old"))
+                        }
+                    } else {
+                        BriefReadSnapshot.Legacy(mapOf("agent-1" to "new"))
+                    }
+                },
+                onLoaded = loaded::add,
+                onFailure = {},
+            )
+
+        launch(Dispatchers.Default) { loader.request() }.join()
+        runCurrent()
+        assertEquals(1, reads)
+
+        launch(Dispatchers.IO) { loader.reset() }.join()
+        old = false
+        launch(Dispatchers.Default) { loader.request() }.join()
+        runCurrent()
+        assertEquals(2, reads)
+
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(
+            listOf<BriefReadSnapshot>(
+                BriefReadSnapshot.Legacy(mapOf("agent-1" to "new")),
+            ),
+            loaded,
+        )
+    }
 }
