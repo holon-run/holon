@@ -3496,24 +3496,38 @@ mod tests {
             vec!["holon-default"]
         );
 
-        for template_id in [
-            "software-developer",
+        let expected_syncable_template_ids = [
+            "code-reviewer",
+            "community-steward",
+            "dependency-steward",
+            "docs-steward",
             "github-solver",
             "holon-ops",
-            "release-manager",
-            "code-reviewer",
-            "office-assistant",
-            "server-ops",
-            "video-producer",
-            "qa-engineer",
             "issue-triager",
-            "docs-steward",
-            "security-reviewer",
-            "product-manager",
-            "dependency-steward",
             "marketing-steward",
-            "community-steward",
-        ] {
+            "office-assistant",
+            "product-manager",
+            "qa-engineer",
+            "release-manager",
+            "security-reviewer",
+            "server-ops",
+            "software-developer",
+            "video-producer",
+        ];
+        let mut syncable_template_ids: Vec<_> = fs::read_dir(&syncable)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        syncable_template_ids.sort();
+        assert_eq!(
+            syncable_template_ids,
+            expected_syncable_template_ids
+                .iter()
+                .map(|template_id| (*template_id).to_owned())
+                .collect::<Vec<_>>()
+        );
+
+        for template_id in &syncable_template_ids {
             let template_dir = syncable.join(template_id);
             assert!(
                 template_dir.join(TEMPLATE_AGENTS_FILENAME).is_file(),
@@ -3525,35 +3539,27 @@ mod tests {
             );
         }
 
-        let syncable_template_ids = [
-            "software-developer",
-            "github-solver",
-            "holon-ops",
-            "release-manager",
-            "code-reviewer",
-            "office-assistant",
-            "server-ops",
-            "video-producer",
-            "qa-engineer",
-            "issue-triager",
-            "docs-steward",
-            "security-reviewer",
-            "product-manager",
-            "dependency-steward",
-            "marketing-steward",
-            "community-steward",
-        ];
         for template_id in syncable_template_ids {
             let agents_md =
-                fs::read_to_string(syncable.join(template_id).join(TEMPLATE_AGENTS_FILENAME))
+                fs::read_to_string(syncable.join(&template_id).join(TEMPLATE_AGENTS_FILENAME))
                     .unwrap();
-            for other_template_id in syncable_template_ids {
-                if template_id == other_template_id {
+            for other_template_id in &expected_syncable_template_ids {
+                if template_id == *other_template_id {
                     continue;
                 }
-                let route_reference = format!("`{other_template_id}`");
                 assert!(
-                    !agents_md.contains(&route_reference),
+                    !agents_md
+                        .match_indices(other_template_id)
+                        .any(|(start, _)| {
+                            let before = agents_md[..start].chars().next_back();
+                            let end = start + other_template_id.len();
+                            let after = agents_md[end..].chars().next();
+                            !before.is_some_and(|character| {
+                                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                            }) && !after.is_some_and(|character| {
+                                character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                            })
+                        }),
                     "{template_id} must not statically route to {other_template_id}"
                 );
             }

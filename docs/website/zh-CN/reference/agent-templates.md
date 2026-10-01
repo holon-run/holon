@@ -64,8 +64,7 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 
 ## 验收与质量
 
-`qa-engineer` 负责变更落地后的验收。它不是补产品功能的许可，也不替代
-`code-reviewer`。
+`qa-engineer` 负责变更落地后的验收。它不是补产品功能的许可。
 
 - **验收所有权 ≠ 补单测。** 把需求映射到覆盖、跑分层门禁、给出证据、分诊 flake。
   issue 关闭不等于已经验收。
@@ -81,7 +80,7 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 `docs-steward` 负责代码、契约和文档的一致性。它不是补产品功能的许可，也不拥有发版。
 
 - **卫生，不是整站重写。** 检测漂移、追问缺失的用户步骤或语言对应，授权后提交最小
-  docs-only PR。发版后对用户文档做缺口对账。changelog 仍归 `release-manager`。
+  docs-only PR。发版后对用户文档做缺口对账。
 - **写作工具，不是 writer 角色。** 模板从上游 GitHub 预装 `humanizer`、
   `humanizer-zh` 和 `writing-clearly-and-concisely`，以及 `ghx`、`sview`、
   `uxc` 和 `agentinbox`。事实校对后再润色。
@@ -96,17 +95,14 @@ Agent 会明确报告缺失能力，不把未验证的渲染当成交付。无�
 
 ## 安全评审
 
-`security-reviewer` 负责防御性安全发现和告警分诊。它不是补产品功能、合并、
-写 exploit 的许可，也不替代 `code-reviewer`、`qa-engineer`、`server-ops` 或
-`holon-ops`。
+`security-reviewer` 负责防御性安全发现和告警分诊。它不是补产品功能、合并或
+写 exploit 的许可。
 
 - **发现，不是合并就绪。** 评审 diff 和导入的 GitHub 安全告警。只报告有证据的
   发现。不写 exploit、PoC payload 或攻击步骤。告警不是 merge 许可。
 - **方法论 skill，不是扫描器包。** 模板从 `github/awesome-copilot` 预装
   `security-review`，以及 `ghx`、`sview`、`uxc` 和 `agentinbox`。角色合同覆盖
   该 skill 的全仓扫描默认、攻击示例和自动补丁提案。扫描器包装不进入默认安装。
-- **路由是角色类名，不是 live agent id。** 建议下一责任模板角色。禁止把
-  template id 当 `agent_id`。
 - **项目 skill，不是官方 playbook。** 模板不附带 `security-reviewer` skill。
   首次评审时，Agent 在 `agent_home/skills/` 为当前项目创建安全 skill，并按实践
   补丁式改进。把 skill 写入仓库仍须操作者确认。
@@ -139,8 +135,7 @@ moderation 和渠道设置变更都需要单独明确授权。
   skill 的合并建议、静默 `@dependabot ignore`，以及提交前漏洞扫描。仓库用
   Renovate 或其他 bot 时沿用同一队列纪律；这个 skill 不覆盖它们的语法。不预装
   `security-review` 或 `agent-supply-chain`。
-- **路由是角色类名，不是 live agent id。** 建议下一责任模板角色。漏洞定级交给
-  `security-reviewer`。禁止把 template id 当 `agent_id`。
+- **后续动作：** 描述下一步和所需专业能力，不要指定模板或 live `agent_id`。
 - **项目 skill，不是官方 playbook。** 模板不附带 `dependency-steward` skill。
   首次处理时，Agent 在 `agent_home/skills/` 为当前项目创建依赖 skill，并按实践
   补丁式改进。把 skill 写入仓库仍须操作者确认。
@@ -159,8 +154,6 @@ moderation 和渠道设置变更都需要单独明确授权。
   `breakdown-feature-prd` 和 `gen-specs-as-issues`，以及 `ghx`、`sview`、`uxc`
   和 `agentinbox`。角色合同覆盖这些 skill 的固定路径、完整 PRD schema，以及未授权的
   写文件或开 issue。默认产出仍是短规格加可测试验收标准。
-- **路由是角色类名，不是 live agent id。** 建议下一责任模板角色。禁止把
-  template id 当 `agent_id`。
 - **项目 skill，不是官方 playbook。** 模板不附带 `product-manager` skill。
   首次处理时，Agent 在 `agent_home/skills/` 为当前项目创建产品 skill，并按实践
   补丁式改进。把 skill 写入仓库仍须操作者确认。
