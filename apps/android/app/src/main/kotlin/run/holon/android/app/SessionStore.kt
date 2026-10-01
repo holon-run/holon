@@ -3,10 +3,15 @@ package run.holon.android.app
 import android.content.Context
 import android.content.SharedPreferences
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyPermanentlyInvalidatedException
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import java.nio.charset.StandardCharsets
+import java.security.InvalidAlgorithmParameterException
+import java.security.InvalidKeyException
 import java.security.KeyStore
+import javax.crypto.AEADBadTagException
+import javax.crypto.BadPaddingException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -30,6 +35,9 @@ internal interface LegacySessionCredentialMigrator {
 private class EncryptedSessionStore(
     private val preferences: SharedPreferences,
 ) : ProfileSessionCredentialStore, LegacySessionCredentialMigrator {
+    private val lock = Any()
+    private val cachedCredentials = mutableMapOf<String, String>()
+
     override fun read(): String? = readEncoded(SESSION_KEY)
 
     override fun read(profileId: String): String? = readEncoded(profileKey(profileId))
@@ -43,21 +51,29 @@ private class EncryptedSessionStore(
     }
 
     private fun readEncoded(keyName: String): String? {
-        val encoded = preferences.getString(keyName, null) ?: return null
-        return runCatching {
-            val parts = encoded.split(':', limit = 2)
-            require(parts.size == 2)
-            val cipher = Cipher.getInstance(TRANSFORMATION)
-            cipher.init(
-                Cipher.DECRYPT_MODE,
-                key(),
-                GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)),
-            )
-            cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP))
-                .toString(StandardCharsets.UTF_8)
-        }.getOrElse {
-            preferences.edit().remove(keyName).commit()
-            null
+        synchronized(lock) {
+            cachedCredentials[keyName]?.let { return it }
+            val encoded = preferences.getString(keyName, null) ?: return null
+            return try {
+                val parts = encoded.split(':', limit = 2)
+                require(parts.size == 2) { "Malformed encrypted session credential" }
+                val cipher = Cipher.getInstance(TRANSFORMATION)
+                cipher.init(
+                    Cipher.DECRYPT_MODE,
+                    key(),
+                    GCMParameterSpec(128, Base64.decode(parts[0], Base64.NO_WRAP)),
+                )
+                cipher.doFinal(Base64.decode(parts[1], Base64.NO_WRAP))
+                    .toString(StandardCharsets.UTF_8)
+                    .also { cachedCredentials[keyName] = it }
+            } catch (error: Throwable) {
+                if (!isPermanentCredentialFailure(error)) throw error
+                check(preferences.edit().remove(keyName).commit()) {
+                    "Unable to clear the invalid native session credential"
+                }
+                cachedCredentials.remove(keyName)
+                null
+            }
         }
     }
 
@@ -67,30 +83,48 @@ private class EncryptedSessionStore(
         writeEncoded(profileKey(profileId), credential)
 
     private fun writeEncoded(keyName: String, credential: String) {
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.ENCRYPT_MODE, key())
-        val iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
-        val encrypted =
-            Base64.encodeToString(
-                cipher.doFinal(credential.toByteArray(StandardCharsets.UTF_8)),
-                Base64.NO_WRAP,
-            )
-        check(preferences.edit().putString(keyName, "$iv:$encrypted").commit()) {
-            "Unable to persist the native session credential"
+        synchronized(lock) {
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, key())
+            val iv = Base64.encodeToString(cipher.iv, Base64.NO_WRAP)
+            val encrypted =
+                Base64.encodeToString(
+                    cipher.doFinal(credential.toByteArray(StandardCharsets.UTF_8)),
+                    Base64.NO_WRAP,
+                )
+            check(preferences.edit().putString(keyName, "$iv:$encrypted").commit()) {
+                "Unable to persist the native session credential"
+            }
+            cachedCredentials[keyName] = credential
         }
     }
 
     override fun clear() {
-        check(preferences.edit().remove(SESSION_KEY).commit()) {
-            "Unable to clear the native session credential"
+        synchronized(lock) {
+            check(preferences.edit().remove(SESSION_KEY).commit()) {
+                "Unable to clear the native session credential"
+            }
+            cachedCredentials.remove(SESSION_KEY)
         }
     }
 
     override fun clear(profileId: String) {
-        check(preferences.edit().remove(profileKey(profileId)).commit()) {
-            "Unable to clear the native session credential"
+        synchronized(lock) {
+            val keyName = profileKey(profileId)
+            check(preferences.edit().remove(keyName).commit()) {
+                "Unable to clear the native session credential"
+            }
+            cachedCredentials.remove(keyName)
         }
     }
+
+    private fun isPermanentCredentialFailure(error: Throwable): Boolean =
+        error is AEADBadTagException ||
+            error is BadPaddingException ||
+            error is IllegalArgumentException ||
+            error is InvalidAlgorithmParameterException ||
+            error is InvalidKeyException ||
+            error is KeyPermanentlyInvalidatedException
 
     private fun key(): SecretKey {
         val keyStore = KeyStore.getInstance(KEYSTORE).apply { load(null) }

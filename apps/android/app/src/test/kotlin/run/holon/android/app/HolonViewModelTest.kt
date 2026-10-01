@@ -7,8 +7,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import run.holon.android.sdk.HolonApiError
 import run.holon.android.sdk.HolonHttpException
 import run.holon.android.sdk.HolonProtocolException
@@ -26,6 +29,50 @@ class HolonViewModelTest {
             executionRootId = "root-1",
             projectionKind = "git_worktree_root",
         )
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `new session transition waits for expired session cleanup`() = runTest {
+        val barrier = SessionResetBarrier(this)
+        val release = CompletableDeferred<Unit>()
+        var resetCompleted = false
+        var loginStarted = false
+
+        barrier.schedule {
+            release.await()
+            resetCompleted = true
+        }
+        val login = launch {
+            barrier.await()
+            loginStarted = true
+        }
+
+        runCurrent()
+        assertFalse(resetCompleted)
+        assertFalse(loginStarted)
+
+        release.complete(Unit)
+        login.join()
+        assertTrue(resetCompleted)
+        assertTrue(loginStarted)
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun `failed session cleanup does not block a new session transition`() = runTest {
+        val barrier = SessionResetBarrier(this)
+        val login = CompletableDeferred<Unit>()
+
+        barrier.schedule { error("expired session cleanup failed") }
+        launch {
+            barrier.await()
+            login.complete(Unit)
+        }
+
+        runCurrent()
+        assertTrue(login.isCompleted)
+        login.await()
+    }
 
     @Test
     fun `adding a network preserves the current session until a new login succeeds`() {
