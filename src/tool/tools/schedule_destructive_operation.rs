@@ -127,6 +127,7 @@ pub(crate) async fn execute(
             },
             authority_class,
             context.trace_context.as_ref(),
+            NAME,
         )
         .await?;
     let launched = matches!(

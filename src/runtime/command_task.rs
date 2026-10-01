@@ -540,8 +540,6 @@ impl RuntimeHandle {
             .await?;
 
         let resolved = self.resolve_command_task(&spec).await?;
-        self.mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
-            .await?;
         let running = self
             .start_command_process(&resolved, None, crate::tool::names::EXEC_COMMAND)
             .await?;
@@ -732,23 +730,17 @@ impl RuntimeHandle {
         mut spec: CommandTaskSpec,
         _authority_class: &AuthorityClass,
         trace_context: Option<&crate::observability::TraceContext>,
+        tool_name: &str,
     ) -> Result<ExecCommandResult> {
-        self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND_BATCH)
-            .await?;
+        self.ensure_process_execution_exposed(tool_name).await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
-        self.mark_current_turn_external_side_effect_possible(
-            crate::tool::names::EXEC_COMMAND_BATCH,
-        )
-        .await?;
+        self.mark_current_turn_external_side_effect_possible(tool_name)
+            .await?;
         let mut captured = CapturedOutput::new(resolved.output_policy);
         let mut running = self
-            .start_command_process(
-                &resolved,
-                trace_context,
-                crate::tool::names::EXEC_COMMAND_BATCH,
-            )
+            .start_command_process(&resolved, trace_context, tool_name)
             .await?;
         let sleep = tokio::time::sleep(Duration::from_millis(resolved.spec.yield_time_ms));
         let mut status_tick = tokio::time::interval(PROCESS_STATUS_POLL_INTERVAL);

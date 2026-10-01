@@ -148,11 +148,11 @@ use crate::{
         QueueEntryStatus, RuntimeFailurePhase, RuntimeFailureSummary, RuntimePosture,
         SkillActivationSource, SkillActivationState, SkillCatalogEntry, SkillLoadReason,
         SkillsRuntimeView, TaskKind, TaskLifecycleAuditEvent, TaskRecord, TaskRecoverySpec,
-        TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, TranscriptEntry,
-        TranscriptEntryKind, TurnNoBriefReason, TurnRecord, TurnTerminalKind, ViewImageObservation,
-        WaitConditionRecord, WaitConditionStatus, WaitingReason, WorkItemExecutionBinding,
-        WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState, WorkspaceEntry,
-        AGENT_HOME_WORKSPACE_ID,
+        TaskStatus, TimerRecord, TimerStatus, ToolExecutionRecord, ToolExecutionStatus,
+        TranscriptEntry, TranscriptEntryKind, TurnNoBriefReason, TurnRecord, TurnTerminalKind,
+        ViewImageObservation, WaitConditionRecord, WaitConditionStatus, WaitingReason,
+        WorkItemExecutionBinding, WorkItemLifecycleAuditEvent, WorkItemRecord, WorkItemState,
+        WorkspaceEntry, AGENT_HOME_WORKSPACE_ID,
     },
     web::{WebConfig, WebProviderKind},
 };
@@ -3045,7 +3045,19 @@ impl RuntimeHandle {
     pub(crate) async fn clear_current_turn_external_side_effect_possible(
         &self,
         tool_name: &str,
+        status: &ToolExecutionStatus,
     ) -> Result<()> {
+        if !matches!(
+            status,
+            ToolExecutionStatus::Success | ToolExecutionStatus::Error
+        ) || !matches!(
+            tool_name,
+            crate::tool::names::EXEC_COMMAND
+                | crate::tool::names::EXEC_COMMAND_BATCH
+                | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
+        ) {
+            return Ok(());
+        }
         let (agent_id, turn_id) = {
             let guard = self.inner.agent.lock().await;
             (guard.state.id.clone(), guard.state.current_turn_id.clone())

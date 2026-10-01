@@ -10,3 +10,13 @@ a recovery notice. The runtime may continue from a later explicit input, but it
 does not replay the old turn or retry an external command whose outcome is
 unknown. This covers wrappers, scripts, subprocesses, D-Bus, and service
 managers without parsing command text.
+
+The fence belongs to the replayable tool turn, not to whichever turn happens to
+be active. Out-of-band HTTP/control command tasks do not mark an unrelated turn;
+that ingress is not replayed as an `ExecCommand` call. Commands promoted from
+`ExecCommand` remain fenced until their tool result is durable.
+
+The shared one-shot executor receives the owning tool name.
+`ScheduleDestructiveOperation` checkpoints clear the command barrier after a
+durable success or error result, preserving the operation ledger's verify-only
+recovery policy. Deferred or interrupted results never clear the barrier.
