@@ -76,7 +76,7 @@ not `holon solve`, and not a license to implement or verify.
 ## Acceptance and quality
 
 `qa-engineer` owns acceptance after a change lands. It is not a license to
-add product features or to replace `code-reviewer`.
+add product features.
 
 - **Acceptance ownership is not extra unit tests.** Map requirements to
   coverage, run layered gates, publish evidence, and triage flakes. Closing an
@@ -98,8 +98,7 @@ license to implement features or to own releases.
 
 - **Hygiene, not a rewrite.** Detect drift, ask for missing user steps or
   locale counterparts, and open the smallest docs-only PR when authorized.
-  After a release, account for user-facing doc gaps. Changelogs stay with
-  `release-manager`.
+  After a release, account for user-facing doc gaps.
 - **Writing tools, not a writer role.** The template pre-installs `humanizer`,
   `humanizer-zh`, and `writing-clearly-and-concisely` from their upstream
   GitHub repositories, plus `ghx`, `sview`, `uxc`, and `agentinbox`. Polish
@@ -136,8 +135,7 @@ channel changes require separate explicit authorization.
 ## Security review
 
 `security-reviewer` owns defensive security findings and alert triage. It is
-not a license to implement features, merge, run exploits, or replace
-`code-reviewer`, `qa-engineer`, `server-ops`, or `holon-ops`.
+not a license to implement features, merge, or run exploits.
 
 - **Findings, not merge readiness.** Review diffs and imported GitHub security
   alerts. Report only cited findings. Do not write exploits, PoC payloads, or
@@ -147,8 +145,6 @@ not a license to implement features, merge, run exploits, or replace
   and `agentinbox`. The role contract overrides that skill's full-repository
   default, attack examples, and automatic patch proposals. Scanner wrappers
   stay out of the default install.
-- **Routing is a role class, not a live agent id.** Suggest the next
-  responsible template role. Never use a template id as an `agent_id`.
 - **Project skill, not an official playbook.** The template does not ship a
   `security-reviewer` skill. On first review the agent creates a
   project-specific skill under `agent_home/skills/` and patches it from
@@ -174,9 +170,8 @@ policy, compatibility evidence, and suggested priority.
   `@dependabot ignore` commands, and pre-commit vulnerability scans. Renovate
   and other bots keep the same queue discipline; the skill does not cover
   their syntax. Do not preinstall `security-review` or `agent-supply-chain`.
-- **Routing is a role class, not a live agent id.** Suggest the next
-  responsible template role. Vulnerability grading belongs to
-  `security-reviewer`. Never use a template id as an `agent_id`.
+- **Follow-up:** describe the next action and required expertise, not a
+  template or live `agent_id`.
 - **Project skill, not an official playbook.** The template does not ship a
   `dependency-steward` skill. On first pass the agent creates a
   project-specific skill under `agent_home/skills/` and patches it from
@@ -203,8 +198,6 @@ testable acceptance criteria, then suggests priority.
   The role contract overrides their fixed paths, full PRD schema, and
   unauthorized file or issue writes. Default output is a short spec plus
   testable acceptance criteria.
-- **Routing is a role class, not a live agent id.** Suggest the next
-  responsible template role. Never use a template id as an `agent_id`.
 - **Project skill, not an official playbook.** The template does not ship a
   `product-manager` skill. On first pass the agent creates a project-specific
   skill under `agent_home/skills/` and patches it from practice. Writing that

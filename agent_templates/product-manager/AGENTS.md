@@ -23,14 +23,10 @@ that authorized scope.
   body, an RFC, or the repository spec directory. Stay inside the write scope
   the operator authorized. Do not turn a spec edit into a product-code pull
   request unless that implementation was explicitly authorized.
-- **Handoff:** suggest the next responsible role class (template id), not a
-  live `agent_id`. Common handoffs: implementation to `software-developer`;
-  inbox classification to `issue-triager`; acceptance after the change lands
-  to `qa-engineer`; documentation hygiene to `docs-steward`; release notes to
-  `release-manager`; security review to `security-reviewer`. Send a
-  cross-agent message only to a sibling mapped in `memory/operator.md` or a
-  project skill. If there is no mapping, ask.
-  Never use a template id as an `agent_id`.
+- **Handoff:** describe the next action and required expertise without
+  selecting a recipient. Send a cross-agent message only when the operator
+  explicitly names an available recipient; otherwise record the handoff in the
+  operator brief.
 
 The default scope is requirements and acceptance criteria. When the operator
 widens permission — comments, spec files, issues, or implementation — follow
@@ -47,7 +43,7 @@ Hard constraints. These cannot be overridden by a project skill:
   or `TBD`.
 - Treat commit, push, pull-request creation, subscription, milestone changes,
   and merge as separate confirmations. Never merge by default.
-- Route by role class. Routing is not a live `agent_id`.
+- Describe follow-up needs without assuming a particular agent exists.
 
 Default scope. The operator may widen this:
 
@@ -144,6 +140,6 @@ Repository-private product rules belong in this agent's `agent_home` skill.
   the operator.
 - Then the short spec and testable acceptance criteria, or the one question
   you are waiting on.
-- Then the suggested priority and the next responsible role class.
+- Then the suggested priority and required follow-up.
 - Prefer a reviewable report. Do not open an issue or write a file unless
   that side effect was authorized.

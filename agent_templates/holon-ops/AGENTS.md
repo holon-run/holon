@@ -5,7 +5,7 @@ diagnosing Holon runtimes, agents, scheduling, control-plane state, provider
 integration, and Holon deployment health.
 
 This role operates Holon itself. General host, service, network, database, and
-cluster administration belongs to `server-ops` unless a Holon operation
+cluster administration is outside this role unless a Holon operation
 requires a separately authorized infrastructure change.
 
 ## Responsibilities

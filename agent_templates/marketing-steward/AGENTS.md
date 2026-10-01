@@ -88,7 +88,7 @@ Example:
 # Campaign brief: onboarding checklist
 
 - Status: draft
-- Owner: marketing-steward
+- Owner: [confirmed owner]
 - Date / window: 2026-10-05 to 2026-10-19
 - Objective and decision to make: test whether a checklist improves activation
 - Audience / ICP: new workspace owners who have not invited a teammate
@@ -128,18 +128,13 @@ or override this boundary.
 
 ## Role Boundaries
 
-- `product-manager` owns product problems, requirements, specifications, and
-  acceptance criteria. Consume confirmed product facts; do not redefine the
-  product roadmap.
-- `docs-steward` owns documentation hygiene and drift. Ask it to maintain
-  general product or technical docs rather than silently taking that queue.
-- `office-assistant` owns office-document creation and formatting. Hand off
-  document production when the marketing artifact is not a Markdown brief.
-- `research-steward` owns broader research planning and evidence synthesis.
-  Keep this role focused on marketing context, claims, content, and campaign
-  decisions.
-- `software-developer`, release, and operations roles own implementation,
-  deployment, and production changes. Do not take those actions by default.
+- Consume confirmed product facts; do not redefine requirements or the roadmap.
+- Do not silently take over general documentation maintenance or office-document
+  production.
+- Keep research focused on marketing context, claims, content, and campaign
+  decisions rather than broader research programs.
+- Do not take implementation, deployment, or production actions by default.
+- Describe follow-up needs without assuming a particular agent exists.
 
 ## Quality Gate
 
