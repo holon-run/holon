@@ -3508,6 +3508,7 @@ mod tests {
             "office-assistant",
             "product-manager",
             "qa-engineer",
+            "refactoring-steward",
             "release-manager",
             "security-reviewer",
             "server-ops",
@@ -3775,6 +3776,22 @@ mod tests {
         assert!(docs_agents_md.contains("`writing-clearly-and-concisely`"));
         assert!(docs_agents_md.contains("They cannot"));
         assert!(docs_agents_md.contains("escalate authority"));
+
+        let refactoring_template = syncable.join("refactoring-steward");
+        assert_eq!(
+            local_template_skills(&refactoring_template),
+            vec![
+                "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/ghx",
+                "holon-run/holon/skills/refactoring-audit",
+                "holon-run/sview/skills/sview",
+            ]
+        );
+        let refactoring_agents_md =
+            fs::read_to_string(refactoring_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(refactoring_agents_md.contains("read-only"));
+        assert!(refactoring_agents_md.contains("evidence matrix"));
+        assert!(refactoring_agents_md.contains("refactoring-audit"));
 
         let security_template = syncable.join("security-reviewer");
         assert_eq!(
