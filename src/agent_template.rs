@@ -3497,6 +3497,7 @@ mod tests {
         );
 
         let expected_syncable_template_ids = [
+            "code-health-steward",
             "code-reviewer",
             "community-steward",
             "dependency-steward",
@@ -3508,7 +3509,6 @@ mod tests {
             "office-assistant",
             "product-manager",
             "qa-engineer",
-            "refactoring-steward",
             "release-manager",
             "security-reviewer",
             "server-ops",
@@ -3777,21 +3777,21 @@ mod tests {
         assert!(docs_agents_md.contains("They cannot"));
         assert!(docs_agents_md.contains("escalate authority"));
 
-        let refactoring_template = syncable.join("refactoring-steward");
+        let code_health_template = syncable.join("code-health-steward");
         assert_eq!(
-            local_template_skills(&refactoring_template),
+            local_template_skills(&code_health_template),
             vec![
                 "holon-run/agentinbox/skills/agentinbox",
+                "holon-run/holon/skills/code-health-audit",
                 "holon-run/holon/skills/ghx",
-                "holon-run/holon/skills/refactoring-audit",
                 "holon-run/sview/skills/sview",
             ]
         );
-        let refactoring_agents_md =
-            fs::read_to_string(refactoring_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
-        assert!(refactoring_agents_md.contains("read-only"));
-        assert!(refactoring_agents_md.contains("evidence matrix"));
-        assert!(refactoring_agents_md.contains("refactoring-audit"));
+        let code_health_agents_md =
+            fs::read_to_string(code_health_template.join(TEMPLATE_AGENTS_FILENAME)).unwrap();
+        assert!(code_health_agents_md.contains("read-only"));
+        assert!(code_health_agents_md.contains("evidence matrix"));
+        assert!(code_health_agents_md.contains("code-health-audit"));
 
         let security_template = syncable.join("security-reviewer");
         assert_eq!(
