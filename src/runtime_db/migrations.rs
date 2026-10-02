@@ -3737,6 +3737,11 @@ CREATE INDEX IF NOT EXISTS idx_destructive_operations_phase
         name: "destructive_operation_command_digest",
         sql: "",
     },
+    Migration {
+        version: 76,
+        name: "authentication_native_redirect",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4028,6 +4033,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "authentication_login_verifier" {
         ensure_authentication_login_verifier_schema(transaction)?;
+    }
+    if migration.name == "authentication_native_redirect" {
+        ensure_authentication_native_redirect_schema(transaction)?;
     }
     if migration.name == "execution_root_registry_backfill" {
         backfill_execution_root_entries(transaction)?;
@@ -4997,6 +5005,23 @@ fn ensure_authentication_login_verifier_schema(transaction: &Transaction<'_>) ->
         transaction.execute_batch(
             "ALTER TABLE auth_login_transactions
              ADD COLUMN code_verifier TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
+}
+
+fn ensure_authentication_native_redirect_schema(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "auth_login_transactions")? {
+        return Ok(());
+    }
+    let columns = transaction
+        .prepare("PRAGMA table_info(auth_login_transactions)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|column| column == "native_redirect_uri") {
+        transaction.execute_batch(
+            "ALTER TABLE auth_login_transactions
+             ADD COLUMN native_redirect_uri TEXT;",
         )?;
     }
     Ok(())

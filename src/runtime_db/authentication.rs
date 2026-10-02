@@ -206,13 +206,15 @@ impl AuthenticationRepository<'_> {
             tx.execute(
                 "INSERT INTO auth_login_transactions (
                     transaction_digest, state_digest, nonce_digest,
-                    code_verifier, created_at, expires_at, consumed_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    code_verifier, native_redirect_uri,
+                    created_at, expires_at, consumed_at
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     login.transaction_digest,
                     login.state_digest,
                     login.nonce_digest,
                     login.code_verifier,
+                    login.native_redirect_uri,
                     timestamp(login.created_at),
                     timestamp(login.expires_at),
                     login.consumed_at.map(timestamp),
@@ -241,7 +243,8 @@ impl AuthenticationRepository<'_> {
             }
             tx.query_row(
                 "SELECT transaction_digest, state_digest, nonce_digest,
-                        code_verifier, created_at, expires_at, consumed_at
+                        code_verifier, native_redirect_uri,
+                        created_at, expires_at, consumed_at
                  FROM auth_login_transactions
                  WHERE state_digest = ?1",
                 [state_digest],
@@ -251,10 +254,11 @@ impl AuthenticationRepository<'_> {
                         state_digest: row.get(1)?,
                         nonce_digest: row.get(2)?,
                         code_verifier: row.get(3)?,
-                        created_at: parse_timestamp(row.get(4)?)?,
-                        expires_at: parse_timestamp(row.get(5)?)?,
+                        native_redirect_uri: row.get(4)?,
+                        created_at: parse_timestamp(row.get(5)?)?,
+                        expires_at: parse_timestamp(row.get(6)?)?,
                         consumed_at: row
-                            .get::<_, Option<String>>(6)?
+                            .get::<_, Option<String>>(7)?
                             .map(parse_timestamp)
                             .transpose()?,
                     })

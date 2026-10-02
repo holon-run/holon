@@ -167,6 +167,7 @@ pub struct LoginTransactionRecord {
     pub state_digest: String,
     pub nonce_digest: String,
     pub code_verifier: String,
+    pub native_redirect_uri: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub consumed_at: Option<DateTime<Utc>>,

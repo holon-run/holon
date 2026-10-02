@@ -4,6 +4,12 @@ use url::Url;
 
 const PAIRING_TTL: chrono::Duration = chrono::Duration::minutes(2);
 const MAX_PAIRING_TICKETS: usize = 128;
+const ANDROID_OIDC_REDIRECT_URI: &str = "run.holon.android://oidc/callback";
+
+#[derive(Debug, Deserialize)]
+pub struct NativeOidcStartQuery {
+    pub state: Option<String>,
+}
 
 #[derive(Default)]
 pub(crate) struct PairingTickets {
@@ -313,11 +319,48 @@ pub async fn start_oidc_login(
     ))
 }
 
+pub async fn start_native_oidc_login(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<NativeOidcStartQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let config = state.host.config().auth.clone();
+    let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
+    let native_redirect_uri = query
+        .state
+        .filter(|state| !state.is_empty() && state.len() <= 128)
+        .map(|state| {
+            let mut redirect = Url::parse(ANDROID_OIDC_REDIRECT_URI)
+                .expect("static Android OIDC redirect URI must be valid");
+            redirect.query_pairs_mut().append_pair("state", &state);
+            redirect.to_string()
+        })
+        .unwrap_or_else(|| ANDROID_OIDC_REDIRECT_URI.to_string());
+    let login = client
+        .begin_login_with_native_redirect(
+            state.host.runtime_db(),
+            Utc::now(),
+            Some(native_redirect_uri),
+        )
+        .await
+        .map_err(error_response)?;
+    let location = HeaderValue::from_str(&login.authorization_url)
+        .map_err(|error| error_response(anyhow!("invalid OIDC authorization URL: {error}")))?;
+    let state_cookie = HeaderValue::from_str(&format!(
+        "holon_oidc_state={}; Path=/; HttpOnly; SameSite=Lax",
+        login.state
+    ))
+    .map_err(|error| error_response(anyhow!("invalid OIDC state cookie: {error}")))?;
+    Ok((
+        StatusCode::FOUND,
+        [(LOCATION, location), (SET_COOKIE, state_cookie)],
+    ))
+}
+
 pub async fn complete_oidc_login(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Query(query): Query<OidcCallbackQuery>,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<axum::http::Response<axum::body::Body>, (StatusCode, Json<Value>)> {
     let browser_state = oidc_state_cookie(&headers);
     if browser_state != Some(query.state.as_str()) {
         return Err(error_response(anyhow!(
@@ -326,7 +369,7 @@ pub async fn complete_oidc_login(
     }
     let config = state.host.config().auth.clone();
     let client = crate::oidc::OidcClient::new(config).map_err(error_response)?;
-    let session = client
+    let completed = client
         .complete_login(
             state.host.runtime_db(),
             &query.state,
@@ -335,24 +378,66 @@ pub async fn complete_oidc_login(
         )
         .await
         .map_err(error_response)?;
+    if let Some(native_redirect_uri) = completed.native_redirect_uri {
+        let ticket = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        let now = Utc::now();
+        state
+            .host
+            .runtime_db()
+            .authentication()
+            .insert_bootstrap_credential(&crate::authentication::BootstrapCredentialRecord {
+                credential_digest: crate::authentication::digest_secret(&ticket),
+                user_id: Some(completed.session.record.user_id),
+                scope: "session".to_string(),
+                created_at: now,
+                expires_at: now + PAIRING_TTL,
+                consumed_at: None,
+                revoked_at: None,
+            })
+            .map_err(error_response)?;
+        let mut redirect = Url::parse(&native_redirect_uri).map_err(|error| {
+            error_response(anyhow!("invalid native OIDC redirect URL: {error}"))
+        })?;
+        redirect.query_pairs_mut().append_pair("ticket", &ticket);
+        let location = axum::http::HeaderValue::from_str(redirect.as_str())
+            .map_err(|error| error_response(anyhow!("invalid native OIDC redirect: {error}")))?;
+        let mut response = axum::http::Response::new(axum::body::Body::empty());
+        *response.status_mut() = axum::http::StatusCode::FOUND;
+        response
+            .headers_mut()
+            .insert(axum::http::header::LOCATION, location);
+        response.headers_mut().insert(
+            axum::http::header::SET_COOKIE,
+            axum::http::HeaderValue::from_static(
+                "holon_oidc_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
+            ),
+        );
+        return Ok(response);
+    }
+    let session = completed.session;
     let cookie = session_cookie(&state, &session.credential);
-    Ok((
-        StatusCode::FOUND,
-        [
-            (LOCATION, HeaderValue::from_static("/")),
-            (
-                SET_COOKIE,
-                HeaderValue::from_str(&cookie)
-                    .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
-            ),
-            (
-                SET_COOKIE,
-                HeaderValue::from_static(
-                    "holon_oidc_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
-                ),
-            ),
-        ],
-    ))
+    let mut response = axum::http::Response::new(axum::body::Body::empty());
+    *response.status_mut() = axum::http::StatusCode::FOUND;
+    response.headers_mut().insert(
+        axum::http::header::LOCATION,
+        axum::http::HeaderValue::from_static("/"),
+    );
+    response.headers_mut().append(
+        axum::http::header::SET_COOKIE,
+        axum::http::HeaderValue::from_str(&cookie)
+            .map_err(|error| error_response(anyhow!("invalid session cookie: {error}")))?,
+    );
+    response.headers_mut().append(
+        axum::http::header::SET_COOKIE,
+        axum::http::HeaderValue::from_static(
+            "holon_oidc_state=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax",
+        ),
+    );
+    Ok(response)
 }
 
 async fn exchange_session_credential(
