@@ -299,6 +299,126 @@ describe("global event stream recovery", () => {
   });
 });
 
+describe("global event stream auth rejection", () => {
+  afterEach(() => {
+    useRuntimeStore.getState().stopGlobalEventStream();
+    useRuntimeStore.getState().unregisterAgentForEvents("agent-a");
+    useRuntimeStore.setState({
+      sessionsByAgentId: {},
+      globalStreamStatus: "idle",
+      selectedAgentId: "",
+    });
+    vi.unstubAllGlobals();
+  });
+
+  it("stops reconnecting after a 401 stream rejection and surfaces unauthorized (#3299)", async () => {
+    const timers: Array<() => void> = [];
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout: (callback: () => void) => {
+        timers.push(callback);
+        return timers.length;
+      },
+      clearTimeout: () => undefined,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    let streamRequests = 0;
+    let snapshotRequests = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.pathname.endsWith("/agents/list")) {
+        return Promise.resolve(jsonResponse([listEntry("agent-a")]));
+      }
+      if (url.pathname.endsWith("/agents/snapshot")) {
+        snapshotRequests += 1;
+        return Promise.resolve(jsonResponse(rosterSnapshot(["agent-a"])));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        streamRequests += 1;
+        return Promise.resolve(errorJsonResponse(401, { error: "control token required", code: "auth_required" }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("unauthorized");
+    });
+    const discovery = useRuntimeStore.getState().discovery;
+    expect(discovery.freshness).toBe("unauthorized");
+    expect(discovery.unauthorizedReason).toContain("control token required");
+    expect(discovery.retryAt).toBeUndefined();
+    // The stream was attempted exactly once and discovery never started.
+    expect(streamRequests).toBe(1);
+    expect(snapshotRequests).toBe(0);
+
+    // Firing every captured timer must not schedule another stream attempt:
+    // an auth rejection is terminal for this session, not transient (#3299).
+    for (const timer of timers.splice(0)) timer();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(streamRequests).toBe(1);
+    expect(snapshotRequests).toBe(0);
+    expect(useRuntimeStore.getState().globalStreamStatus).toBe("unauthorized");
+  });
+
+  it("keeps bounded reconnect backoff after a non-auth stream failure", async () => {
+    const reconnectCallbacks: Array<() => void> = [];
+    vi.stubGlobal("window", {
+      localStorage: new MemoryStorage(),
+      sessionStorage: new MemoryStorage(),
+      setTimeout: (callback: () => void, delay?: number) => {
+        if (delay == null || delay >= 900) reconnectCallbacks.push(callback);
+        return reconnectCallbacks.length;
+      },
+      clearTimeout: () => undefined,
+      location: { hostname: "localhost", protocol: "http:" },
+    });
+    let streamRequests = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.pathname.endsWith("/agents/list")) {
+        return Promise.resolve(jsonResponse([listEntry("agent-a")]));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        streamRequests += 1;
+        return Promise.resolve(errorJsonResponse(503, { error: "daemon restarting", code: "internal" }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("reconnecting");
+    });
+    expect(streamRequests).toBe(1);
+
+    // A transport-style failure still schedules exactly one reconnect.
+    expect(reconnectCallbacks.length).toBeGreaterThanOrEqual(1);
+    reconnectCallbacks.shift()?.();
+    await vi.waitFor(() => {
+      expect(streamRequests).toBe(2);
+    });
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("reconnecting");
+    });
+  });
+});
+
 
 describe("authoritative discovery cutover", () => {
   afterEach(() => {
