@@ -9,8 +9,8 @@ macOS menu bar control surface for Holon.
 ## Runtime shape
 
 - macOS 13+
-- SwiftUI `MenuBarExtra`
-- accessory app lifecycle
+- AppKit `NSApplication`/`NSStatusItem` accessory app lifecycle
+- SwiftUI content hosted in an `NSPopover`; no SwiftUI scenes or default windows
 - bundled `holon` CLI lookup via `HOLON_BINARY_PATH` or app bundle lookup
 - `SMAppService.mainApp` login item toggle
 - fake client for Swift tests
