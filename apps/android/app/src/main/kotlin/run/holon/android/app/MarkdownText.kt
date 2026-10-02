@@ -301,7 +301,9 @@ internal fun markdownLinkAt(text: String, start: Int): MarkdownLinkTarget? {
         }
     }
     if (destinationDepth != 0) return null
-    val destination = text.substring(destinationStart, cursor - 1).replace(Regex("\\\\([()\\\\])"), "$1")
+    val destination = text.substring(destinationStart, cursor - 1)
+        .trim()
+        .replace(Regex("\\\\([()\\\\])"), "$1")
     return MarkdownLinkTarget(label, destination, cursor)
 }
 
