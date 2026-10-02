@@ -116,6 +116,11 @@ public data class HolonTaskSnapshot(
     public val status: String,
     public val summary: String?,
     public val raw: JsonObject,
+    public val kind: String = "unknown",
+    public val updatedAt: String? = null,
+    public val command: String? = null,
+    public val childAgentId: String? = null,
+    public val progress: String? = null,
 ) {
     public companion object {
         public fun from(raw: JsonObject): HolonTaskSnapshot =
@@ -124,6 +129,14 @@ public data class HolonTaskSnapshot(
                 status = raw.string("status") ?: "unknown",
                 summary = raw.string("summary"),
                 raw = raw,
+                kind = raw.string("kind") ?: "unknown",
+                updatedAt = raw.string("updated_at"),
+                command = (raw["command"] as? JsonObject)?.string("cmd")
+                    ?: (raw["detail"] as? JsonObject)?.string("cmd"),
+                childAgentId = raw.string("child_agent_id") ?: (raw["detail"] as? JsonObject)?.string("child_agent_id"),
+                progress = (raw["child_observability"] as? JsonObject)?.let {
+                    it.string("last_progress_brief") ?: it.string("work_summary")
+                },
             )
     }
 }
@@ -134,6 +147,7 @@ public data class HolonTaskOutputSnapshot(
     public val outputPreview: String?,
     public val resultSummary: String?,
     public val raw: JsonObject,
+    public val truncated: Boolean = false,
 ) {
     public companion object {
         public fun from(raw: JsonObject): HolonTaskOutputSnapshot =
@@ -143,6 +157,7 @@ public data class HolonTaskOutputSnapshot(
                 outputPreview = raw.string("output_preview"),
                 resultSummary = raw.string("result_summary"),
                 raw = raw,
+                truncated = raw["output_truncated"]?.jsonPrimitive?.contentOrNull == "true",
             )
     }
 }

@@ -18,6 +18,96 @@ import run.holon.android.sdk.HolonProtocolException
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class LiveSyncRequestsTest {
+    @Test fun `permanent read failures are traced once per watermark until foreground reset`() = runTest {
+        var attempts = 0
+        val writer = BriefReadStateWriter(this, write = { _, _ -> attempts++; throw HolonHttpException(409, null) }, onFailure = {})
+        writer.request("tester", 10)
+        runCurrent()
+        writer.request("tester", 10)
+        runCurrent()
+        assertEquals(1, attempts)
+        writer.reset()
+        writer.request("tester", 10)
+        runCurrent()
+        assertEquals(2, attempts)
+    }
+
+    @Test fun `preview reset discards late non cancellable response`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val received = mutableListOf<String>()
+        val loader = AgentPreviewLoader(this, read = { id: String -> withContext(NonCancellable) { gate.await(); id } },
+            onLoaded = { _, value -> received.add(value) }, onFailure = { throw it })
+        loader.request("old-user")
+        advanceTimeBy(250)
+        runCurrent()
+        loader.reset()
+        gate.complete(Unit)
+        runCurrent()
+        assertEquals(emptyList(), received)
+    }
+
+    @Test fun `read receipt retries lost response and coalesces newer read watermark`() = runTest {
+        val writes = mutableListOf<Long>()
+        var failures = 0
+        val writer = BriefReadStateWriter(this, write = { _, through ->
+            writes.add(through)
+            if (writes.size == 1) throw ConnectException("offline")
+        }, onFailure = { failures++ })
+        writer.request("tester", 10)
+        runCurrent()
+        writer.request("tester", 12)
+        writer.request("tester", 11)
+        advanceTimeBy(1_000)
+        runCurrent()
+        assertEquals(listOf(10L, 12L), writes)
+        assertEquals(1, failures)
+        writer.request("tester", 12)
+        runCurrent()
+        assertEquals(2, writes.size)
+    }
+
+    @Test fun `read receipt reset stops retry and clears identity watermarks`() = runTest {
+        var writes = 0
+        var offline = true
+        val writer = BriefReadStateWriter(this, write = { _, _ -> writes++; if (offline) throw ConnectException("offline") }, onFailure = {})
+        writer.request("tester", 20)
+        runCurrent()
+        writer.reset()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(1, writes)
+        offline = false
+        writer.request("tester", 1)
+        runCurrent()
+        assertEquals(2, writes)
+    }
+
+    @Test fun `preview reads bound concurrency and coalesce while requests run`() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        var active = 0
+        var maximum = 0
+        var reads = 0
+        val received = mutableListOf<String>()
+        val loader = AgentPreviewLoader(this, read = { id: String ->
+            active++
+            maximum = maxOf(maximum, active)
+            reads++
+            gate.await()
+            active--
+            id
+        }, onLoaded = { _, value -> received.add(value) }, onFailure = { throw it })
+        repeat(12) { loader.request("agent-$it") }
+        advanceTimeBy(250)
+        runCurrent()
+        repeat(5) { loader.request("agent-0") }
+        assertEquals(4, maximum)
+        gate.complete(Unit)
+        advanceTimeBy(500)
+        runCurrent()
+        assertEquals(13, reads)
+        assertEquals(13, received.size)
+    }
+
     @Test
     fun `roster refresh shares one active request`() = runTest {
         val gate = CompletableDeferred<Unit>()

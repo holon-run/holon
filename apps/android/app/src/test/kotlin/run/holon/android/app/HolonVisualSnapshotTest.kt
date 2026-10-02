@@ -32,6 +32,26 @@ import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefAttachment
 
 class HolonVisualSnapshotTest {
+    @Test fun fileFiltersAndActiveTasks() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                Text("文件", style = MaterialTheme.typography.titleLarge)
+                FileFilterBar("", {}, false, {}, false, {})
+                FileFilterBar("report", {}, true, {}, true, {})
+                Text("进行中的任务", style = MaterialTheme.typography.titleMedium)
+                TaskRow(run.holon.android.sdk.HolonTaskSnapshot("task", "running", "运行 Android 回归测试", buildJsonObject {}, kind = "command", command = "./gradlew test")) {}
+                TaskRow(run.holon.android.sdk.HolonTaskSnapshot("child-task", "queued", "检查文件浏览体验", buildJsonObject {}, kind = "child_agent", childAgentId = "holon-tester")) {}
+            }
+        }
+    }
+
+    @Test fun operatorInputBeforeBrief() {
+        paparazzi.snapshot {
+            PreviewFrame {
+                AgentConversationRow(sampleAgents().last().copy(latestBrief = null), operatorPreview = OperatorPreview("请检查报告并给出改进建议。", null), onClick = {})
+            }
+        }
+    }
     private val originalTimeZone = TimeZone.getDefault()
     @get:Rule
     val paparazzi =

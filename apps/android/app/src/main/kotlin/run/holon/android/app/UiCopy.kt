@@ -108,6 +108,25 @@ internal object UiCopy {
         关于|About
         关联工作|Related work
         关闭|Close
+        常用模型|Common models
+        全部模型|All models
+        仅显示常用|Show common models
+        查看全部|Show all
+        进行中的任务|Active tasks
+        暂无进行中的任务|No active tasks
+        任务详情|Task details
+        刷新任务|Refresh tasks
+        查看任务输出|View task output
+        刷新任务输出|Refresh task output
+        任务输出为截断预览|Task output is a truncated preview
+        暂无任务输出|No task output yet
+        正在取消|Cancelling
+        已中断|Interrupted
+        状态未知|Unknown status
+        子 Agent|Child Agent
+        文件筛选与排序|File filters and sorting
+        按名称排序|Sort by name
+        按修改时间排序|Sort by modified time
         关闭图片预览|Close image preview
         关闭搜索|Close search
         关闭预览|Close preview

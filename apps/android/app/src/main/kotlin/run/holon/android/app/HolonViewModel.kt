@@ -3,6 +3,7 @@ package run.holon.android.app
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.os.Looper
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
@@ -40,6 +41,8 @@ import run.holon.android.sdk.HolonRosterSnapshot
 import run.holon.android.sdk.HolonSseConnection
 import run.holon.android.sdk.HolonToolExecutionSnapshot
 import run.holon.android.sdk.HolonWorkItemSnapshot
+import run.holon.android.sdk.HolonTaskSnapshot
+import run.holon.android.sdk.HolonTaskOutputSnapshot
 import run.holon.android.sdk.HolonWorkspace
 import run.holon.android.sdk.HolonWorkspaceDirectory
 import run.holon.android.sdk.toConversationEvent
@@ -100,6 +103,7 @@ internal data class HolonUiState(
     val networkProfiles: List<NetworkProfile> = emptyList(),
     val switchingNetworkId: String? = null,
     val agents: List<AgentSummary> = emptyList(),
+    val operatorPreviews: Map<String, OperatorPreview?> = emptyMap(),
     val briefReadStates: Map<String, HolonBriefReadState> = emptyMap(),
     val briefReadStatesLoaded: Boolean = false,
     val readBriefIds: Map<String, String> = emptyMap(),
@@ -139,6 +143,11 @@ internal data class HolonUiState(
     val workItemsHasMore: Boolean = false,
     val workItemsLoadingMore: Boolean = false,
     val selectedWorkItem: HolonWorkItemSnapshot? = null,
+    val tasks: List<HolonTaskSnapshot> = emptyList(),
+    val tasksBusy: Boolean = false,
+    val tasksError: String? = null,
+    val selectedTask: HolonTaskSnapshot? = null,
+    val taskOutput: HolonTaskOutputSnapshot? = null,
     val workItemsBusy: Boolean = false,
     val planFile: PreparedArtifact? = null,
     val workspaces: List<HolonWorkspace> = emptyList(),
@@ -162,7 +171,7 @@ internal data class HolonUiState(
                             readBriefsLoaded && it.hasUnreadBrief(readBriefIds)
                         }
                     }
-                    .thenByDescending { it.latestBrief?.createdAt.orEmpty() }
+                    .thenByDescending { listOfNotNull(activityTime(it.latestBrief?.createdAt), activityTime(operatorPreviews[it.id]?.createdAt)).maxOrNull() }
                     .thenBy { it.displayName.lowercase() },
             )
 
@@ -292,6 +301,26 @@ internal class HolonViewModel(
     private val sessionResetBarrier = SessionResetBarrier(viewModelScope)
     private var sessionTransitionGeneration = 0L
     private var briefReadStateScope: String? = null
+    private var taskRefreshJob: Job? = null
+    private var taskRefreshPending = false
+    private val operatorPreviewLoader = AgentPreviewLoader(
+        scope = viewModelScope,
+        read = { id: String -> withContext(Dispatchers.IO) { repository.operatorPreview(id) } },
+        onLoaded = { id, preview -> mutableState.update { it.copy(operatorPreviews = it.operatorPreviews + (id to preview)) } },
+        onFailure = { error ->
+            if (error.isAuthenticationFailure() || error is SessionScopeChangedException) handleRuntimeFailure(error)
+        },
+    )
+    private val briefReadStateWriter = BriefReadStateWriter(
+        scope = viewModelScope,
+        write = { id, through -> saveBriefRead(id, through) },
+        onFailure = { error ->
+            traceRecorder.record(TraceScope.Global, TraceLevel.WARN, "read-state", "read-state.save.failed",
+                statusCode = (error as? HolonHttpException)?.statusCode,
+                attributes = mapOf("error" to error::class.simpleName.orEmpty(), "code" to (error as? HolonHttpException)?.apiError?.code.orEmpty()))
+            if (error.isAuthenticationFailure() || error is SessionScopeChangedException) handleRuntimeFailure(error)
+        },
+    )
     private val rosterRefresh = RosterRefreshRequest(viewModelScope) {
         withContext(Dispatchers.IO) { repository.refreshSessionAndRoster() }
     }
@@ -604,36 +633,27 @@ internal class HolonViewModel(
         ) {
             return
         }
-        val scopeKey = current.session?.scopeKey ?: return
-        viewModelScope.launch {
-            runCatching { withContext(Dispatchers.IO) { repository.markBriefRead(agentId, readThroughEventSeq) } }
-                .onSuccess { result ->
-                    if (state.value.session?.scopeKey == scopeKey) {
-                        mutableState.update {
-                            it.copy(
-                                briefReadStates = it.briefReadStates + (agentId to result.state),
-                                briefReadStatesLoaded = true,
-                            )
-                        }
-                    }
-                }
-                .onFailure { error ->
-                    if (state.value.session?.scopeKey == scopeKey) {
-                        if (isBriefReadStateUnsupported(error)) {
-                            viewModelScope.launch(Dispatchers.IO) {
-                                repository.markBriefRead(agentId, latestBriefId)
-                            }
-                            mutableState.update {
-                                it.copy(
-                                    readBriefIds = it.readBriefIds + (agentId to latestBriefId),
-                                    readBriefsLoaded = true,
-                                )
-                            }
-                        } else {
-                            mutableState.update { it.copy(error = "无法保存已读状态：${humanError(error)}") }
-                        }
-                    }
-                }
+        if (foreground && current.session != null) briefReadStateWriter.request(agentId, readThroughEventSeq)
+    }
+
+    private suspend fun saveBriefRead(agentId: String, through: Long) {
+        val scopeKey = state.value.session?.scopeKey ?: throw CancellationException("No session")
+        val briefId = state.value.agents.firstOrNull { it.id == agentId }?.latestBrief?.briefId ?: return
+        try {
+            val result = withContext(Dispatchers.IO) { repository.markBriefRead(agentId, through) }
+            if (state.value.session?.scopeKey == scopeKey) mutableState.update { current ->
+                val previous = current.briefReadStates[agentId]
+                current.copy(briefReadStates = current.briefReadStates +
+                    (agentId to if (previous != null && previous.eventLogEpoch == result.state.eventLogEpoch &&
+                        previous.visibilityScopeId == result.state.visibilityScopeId && previous.revision > result.state.revision) previous else result.state),
+                    briefReadStatesLoaded = true)
+            }
+        } catch (error: Throwable) {
+            if (!isBriefReadStateUnsupported(error)) throw error
+            withContext(Dispatchers.IO) { repository.markBriefRead(agentId, briefId) }
+            if (state.value.session?.scopeKey == scopeKey) mutableState.update {
+                it.copy(readBriefIds = it.readBriefIds + (agentId to briefId), readBriefsLoaded = true)
+            }
         }
     }
 
@@ -831,7 +851,18 @@ internal class HolonViewModel(
         eventLogEpoch: String? = null,
         generation: Long = liveSyncGeneration,
     ) {
+        // Stale-cursor recovery can arrive from an IO stream; loaders are UI-owned.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            viewModelScope.launch { startLiveSync(agents, eventLogEpoch, generation) }
+            return
+        }
         if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) return
+        if (eventLogEpoch != null && liveEventLogEpoch != null && liveEventLogEpoch != eventLogEpoch) {
+            operatorPreviewLoader.reset()
+            briefReadStateWriter.reset()
+            mutableState.update { it.copy(operatorPreviews = emptyMap()) }
+            agents.forEach { agent -> viewModelScope.launch { operatorPreviewLoader.request(agent.id) } }
+        }
         eventLogEpoch?.let { liveEventLogEpoch = it }
         startSessionKeepAlive(generation)
         if (globalEventStreamJob?.isActive != true) {
@@ -882,6 +913,7 @@ internal class HolonViewModel(
             }
         agents.forEach { agent ->
             if (agentEventStreamJobs[agent.id]?.isActive == true) return@forEach
+            viewModelScope.launch { operatorPreviewLoader.request(agent.id) }
             agentEventStreamJobs[agent.id] =
                 viewModelScope.launch(eventStreamIo) {
                     runCatching {
@@ -946,6 +978,10 @@ internal class HolonViewModel(
                                     agentEventCursors[agent.id] = event.eventSeq
                                     repository.saveAgentEventCursor(agent.id, event)
                                     scheduleLiveRosterRefresh()
+                                    withContext(Dispatchers.Main) {
+                                        if (event.type in setOf("message_enqueued", "message_processing_started", "brief_created", "agent_state_changed")) operatorPreviewLoader.request(agent.id)
+                                        if (state.value.selectedAgent?.id == agent.id && event.type.startsWith("task_")) refreshTasks()
+                                    }
                                 }
                             } catch (error: HolonHttpException) {
                                 if (!error.isStaleAgentEventCursor()) throw error
@@ -991,6 +1027,9 @@ internal class HolonViewModel(
         }
 
     private fun stopLiveSync() {
+        operatorPreviewLoader.reset()
+        briefReadStateWriter.reset()
+        taskRefreshJob?.cancel()
         briefReadStateLoader.reset()
         sessionKeepAliveJob?.cancel()
         sessionKeepAliveJob = null
@@ -1045,6 +1084,10 @@ internal class HolonViewModel(
 
     private fun invalidateLiveSync(): Long {
         liveSyncGeneration += 1
+        operatorPreviewLoader.reset()
+        briefReadStateWriter.reset()
+        taskRefreshJob?.cancel()
+        mutableState.update { it.copy(operatorPreviews = emptyMap(), tasks = emptyList(), selectedTask = null, taskOutput = null, tasksError = null) }
         briefLoader.reset()
         briefScope = null
         detailRefreshJob?.cancel()
@@ -1100,6 +1143,8 @@ internal class HolonViewModel(
         if (!sameAgentBeforeLoad) rememberConversation()
         val savedReading = if (!sameAgentBeforeLoad) readingCache["${state.value.session?.scopeKey}:${agent.id}"] else null
         if (!sameAgentBeforeLoad) {
+            taskRefreshJob?.cancel()
+            taskRefreshPending = false
             artifactJob?.cancel()
             briefLoader.reset()
             briefScope = null
@@ -1140,6 +1185,11 @@ internal class HolonViewModel(
                 workItemsHasMore = sameConversation && current.workItemsHasMore,
                 workItemsLoadingMore = false,
                 selectedWorkItem = current.selectedWorkItem.takeIf { sameConversation },
+                tasks = current.tasks.takeIf { sameConversation }.orEmpty(),
+                tasksBusy = sameConversation && current.tasksBusy,
+                selectedTask = current.selectedTask.takeIf { sameConversation },
+                taskOutput = current.taskOutput.takeIf { sameConversation },
+                tasksError = null,
                 workspaces = current.workspaces.takeIf { sameConversation }.orEmpty(),
                 selectedWorkspace = current.selectedWorkspace.takeIf { sameConversation },
                 workspaceDirectory = current.workspaceDirectory.takeIf { sameConversation },
@@ -1213,6 +1263,7 @@ internal class HolonViewModel(
         briefScope = null
         conversationJob?.cancel()
         detailRefreshJob?.cancel()
+        taskRefreshJob?.cancel()
         stopConversationStream()
         mutableState.update {
             it.copy(
@@ -1245,6 +1296,11 @@ internal class HolonViewModel(
                 workItemsHasMore = false,
                 workItemsLoadingMore = false,
                 selectedWorkItem = null,
+                tasks = emptyList(),
+                tasksBusy = false,
+                tasksError = null,
+                selectedTask = null,
+                taskOutput = null,
                 planFile = null,
                 workspaces = emptyList(),
                 selectedWorkspace = null,
@@ -1485,6 +1541,7 @@ internal class HolonViewModel(
         val pendingDraftSave = draftSaveJobs[agent.id]
         val pendingComposerSave = composerSaveJobs[agent.id]
         val sentDraftRevision = draftRevision
+        val sentScope = current.session?.scopeKey
         mutableState.update { it.copy(enqueueing = true, error = null) }
         viewModelScope.launch {
             runCatching {
@@ -1519,7 +1576,8 @@ internal class HolonViewModel(
                 }
                 runCatching {
                     withContext(Dispatchers.IO) { repository.deliverOutbox(pending) }
-                }.onSuccess { sent ->
+                }.onSuccess sentSuccess@{ sent ->
+                    if (state.value.session?.scopeKey != sentScope) return@sentSuccess
                     mutableState.update { value ->
                         value.copy(
                             outbox = value.outbox.map {
@@ -1527,7 +1585,7 @@ internal class HolonViewModel(
                             },
                         )
                     }
-                    openAgent(agent)
+                    if (state.value.selectedAgent?.id == agent.id) openAgent(agent)
                     delay(250)
                     refresh(showProgress = false)
                 }.onFailure(::handleRuntimeFailure)
@@ -1669,11 +1727,14 @@ internal class HolonViewModel(
                 selectedActivity = null,
                 selectedToolExecution = null,
                 selectedWorkItem = null,
+                selectedTask = null,
+                taskOutput = null,
                 planFile = null,
                 preparedArtifact = null,
                 fileLinkOrigin = null,
             )
         }
+        if (section == AgentSection.Work) refreshTasks()
     }
 
     fun openTurn(turn: HolonConversationTurn) {
@@ -1829,6 +1890,66 @@ internal class HolonViewModel(
                 }
             }.onFailure { error ->
                 mutableState.update { it.copy(workItemsBusy = false, error = humanError(error)) }
+            }
+        }
+    }
+
+    fun refreshTasks() {
+        val current = state.value
+        val agentId = current.selectedAgent?.id ?: return
+        val scopeKey = current.session?.scopeKey ?: return
+        if (!foreground || current.phase != AppPhase.Ready) return
+        taskRefreshPending = true
+        if (taskRefreshJob?.isActive == true) return
+        mutableState.update { it.copy(tasksBusy = true) }
+        taskRefreshJob = viewModelScope.launch {
+            while (taskRefreshPending) {
+                taskRefreshPending = false
+                delay(200)
+                try {
+                    val tasks = withContext(Dispatchers.IO) { repository.tasks(agentId) }
+                    if (state.value.session?.scopeKey != scopeKey || state.value.selectedAgent?.id != agentId) return@launch
+                    mutableState.update { it.copy(tasks = tasks, tasksError = null) }
+                    val selected = state.value.selectedTask
+                    val detail = selected?.let { withContext(Dispatchers.IO) { repository.task(agentId, it.taskId) } }
+                    if (state.value.session?.scopeKey != scopeKey || state.value.selectedAgent?.id != agentId) return@launch
+                    mutableState.update { latest -> latest.copy(tasksBusy = false,
+                        selectedTask = if (latest.selectedTask?.taskId == selected?.taskId) detail else latest.selectedTask) }
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    if (state.value.session?.scopeKey != scopeKey || state.value.selectedAgent?.id != agentId) return@launch
+                    if (error.isAuthenticationFailure() || error is SessionScopeChangedException) handleRuntimeFailure(error)
+                    else mutableState.update { it.copy(tasksBusy = false, tasksError = humanError(error)) }
+                }
+            }
+        }
+    }
+
+    fun openTask(task: HolonTaskSnapshot) {
+        mutableState.update { it.copy(selectedTask = task, taskOutput = null, tasksError = null, selectedWorkItem = null, planFile = null, workOriginBrief = null) }
+        refreshTasks()
+    }
+
+    fun closeTask() = mutableState.update { it.copy(selectedTask = null, taskOutput = null, tasksError = null) }
+
+    fun loadTaskOutput() {
+        val current = state.value
+        val agentId = current.selectedAgent?.id ?: return
+        val taskId = current.selectedTask?.taskId ?: return
+        val scopeKey = current.session?.scopeKey ?: return
+        mutableState.update { it.copy(tasksBusy = true, tasksError = null) }
+        viewModelScope.launch {
+            try {
+                val output = withContext(Dispatchers.IO) { repository.taskOutput(agentId, taskId) }
+                if (state.value.session?.scopeKey == scopeKey && state.value.selectedAgent?.id == agentId && state.value.selectedTask?.taskId == taskId)
+                    mutableState.update { it.copy(taskOutput = output, tasksBusy = false) }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (state.value.session?.scopeKey != scopeKey || state.value.selectedAgent?.id != agentId || state.value.selectedTask?.taskId != taskId) return@launch
+                if (error.isAuthenticationFailure() || error is SessionScopeChangedException) handleRuntimeFailure(error)
+                else mutableState.update { it.copy(tasksBusy = false, tasksError = humanError(error)) }
             }
         }
     }
@@ -2140,71 +2261,23 @@ internal class HolonViewModel(
 
     fun handleSystemBack(): Boolean {
         val current = state.value
-        return when {
-            current.pendingShare != null -> {
-                dismissShare()
-                true
-            }
-            artifactJob?.isActive == true -> {
-                clearPreparedArtifact()
-                true
-            }
-            current.phase == AppPhase.AddingNetwork -> {
-                cancelAddNetwork()
-                true
-            }
-            current.fileLinkOrigin != null -> {
-                returnFromMessageFile()
-                true
-            }
-            current.planFile != null -> {
-                closePlanFile()
-                true
-            }
-            current.preparedArtifact != null -> {
-                clearPreparedArtifact()
-                true
-            }
-            current.selectedActivity != null && current.selectedWorkItem == null && current.selectedBrief == null && current.agentSection == AgentSection.Results -> {
-                closeActivity()
-                true
-            }
-            current.fullScreenTurn -> {
-                setTurnFullScreen(false)
-                true
-            }
-            current.selectedTurn != null && current.agentSection == AgentSection.Results && current.selectedWorkItem == null && current.selectedBrief == null -> {
-                closeTurn()
-                true
-            }
-            current.selectedWorkItem != null -> {
-                closeWorkItem()
-                true
-            }
-            current.selectedBrief != null -> {
-                closeBrief()
-                true
-            }
-            current.selectedAgent != null &&
-                current.agentSection == AgentSection.Files &&
-                !current.workspaceDirectory?.path.isNullOrBlank() -> {
-                navigateWorkspaceUp()
-                true
-            }
-            current.selectedAgent != null && current.agentSection != AgentSection.Results -> {
-                selectAgentSection(AgentSection.Results)
-                true
-            }
-            current.selectedAgent != null -> {
-                closeConversation()
-                true
-            }
-            current.mainDestination != MainDestination.Agents -> {
-                selectMainDestination(MainDestination.Agents)
-                true
-            }
-            else -> false
+        when (current.backTarget(artifactJob?.isActive == true)) {
+            BackTarget.Share -> dismissShare()
+            BackTarget.Artifact -> clearPreparedArtifact()
+            BackTarget.AddingNetwork -> cancelAddNetwork()
+            BackTarget.MessageFile -> returnFromMessageFile()
+            BackTarget.Plan -> closePlanFile()
+            BackTarget.Activity -> closeActivity()
+            BackTarget.FullScreenTurn -> setTurnFullScreen(false)
+            BackTarget.Task -> closeTask()
+            BackTarget.WorkItem -> closeWorkItem()
+            BackTarget.Brief -> closeBrief()
+            BackTarget.Folder -> navigateWorkspaceUp()
+            BackTarget.Conversation -> selectAgentSection(AgentSection.Results)
+            BackTarget.Agents -> if (current.selectedAgent != null) closeConversation() else selectMainDestination(MainDestination.Agents)
+            BackTarget.Exit -> return false
         }
+        return true
     }
 
     fun relogin() = endSession(keepCurrentHost = true)
@@ -2459,6 +2532,7 @@ internal class HolonViewModel(
     }
 
     private fun loadAgentWorkspace(agent: AgentSummary) {
+        refreshTasks()
         val activeWorkspace =
             agent.workspaceId?.let { workspaceId ->
                 HolonWorkspace(
@@ -2547,6 +2621,10 @@ internal class HolonViewModel(
     }
 
     private fun handleRuntimeFailure(error: Throwable) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            viewModelScope.launch { handleRuntimeFailure(error) }
+            return
+        }
         if (error is CancellationException) return
         if (error.isAuthenticationFailure() ||
             error is SessionScopeChangedException

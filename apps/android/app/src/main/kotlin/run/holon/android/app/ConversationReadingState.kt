@@ -20,6 +20,7 @@ internal data class ConversationReadingState(
         selectedBrief = null, selectedTurn = null, fullScreenTurn = false, conversationDetail = null,
         briefOriginWork = null, workOriginBrief = null,
         selectedActivity = null, selectedToolExecution = null, selectedWorkItem = null, planFile = null,
+        selectedTask = null, taskOutput = null, tasks = emptyList(), tasksBusy = false, tasksError = null,
         preparedArtifact = null, fileLinkOrigin = null, workItems = emptyList(), workspaces = emptyList(),
         selectedWorkspace = null, workspaceDirectory = null, briefLoads = emptyMap(),
     )

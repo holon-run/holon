@@ -16,6 +16,14 @@ an app-language override (System default, English, 简体中文). The override s
 on this device across sign-out. Agent messages, briefs, tool output, and file
 contents are displayed as authored, without translation.
 
+Agent rows show the newest operator input until that turn has a brief. Model
+selection starts with models used by Agents on the current network, with the
+full searchable catalog still available. The Work page separates active Tasks
+(command and child-Agent progress, status and output preview) from WorkItems.
+Task updates are foreground/event-driven; the refresh controls can also reload
+status and output. Read-receipt transport failures retry without error banners
+and remain available in the diagnostic trace.
+
 The Settings connection diagnostics section can export a redacted trace or send
 it directly to a selected Agent. Android's Share menu can also send text, links,
 images, and files to Holon. The app previews the content and asks which Agent
