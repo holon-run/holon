@@ -359,6 +359,7 @@ public class HolonHttpClient internal constructor(
                 body = SessionExchangeRequest(credential = credential),
                 bodySerializer = SessionExchangeRequest.serializer(),
                 responseSerializer = NativeSessionResponse.serializer(),
+                unauthenticated = true,
             )
         val session =
             SessionCredentials(
@@ -369,6 +370,9 @@ public class HolonHttpClient internal constructor(
         sessionCredentialStore?.write(session.credential)
         return session
     }
+
+    /** Returns the browser entry point for the server-managed OIDC Authorization Code flow. */
+    public fun nativeOidcStartUrl(): String = endpoint("auth/oidc/native/start").toString()
 
     /** Redeems a short-lived QR ticket without sending any existing session to the pairing endpoint. */
     public fun redeemPairingTicket(ticket: String): SessionCredentials {

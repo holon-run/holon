@@ -404,6 +404,17 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel, addingNe
                 enabled = !state.busy,
                 modifier = Modifier.fillMaxWidth(),
             )
+            OutlinedButton(
+                onClick = {
+                    viewModel.startOidcLogin()?.let { url ->
+                        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    }
+                },
+                enabled = !state.busy && (!isInsecureHttp || state.allowInsecureHttp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(ui("使用组织浏览器登录"))
+            }
             state.error?.let { ErrorBanner(it, viewModel::clearError) }
             Button(
                 onClick = viewModel::login,
@@ -421,7 +432,7 @@ private fun LoginScreen(state: HolonUiState, viewModel: HolonViewModel, addingNe
                 Text(if (state.busy) ui(if (addingNetwork) "正在连接" else "正在登录") else ui(if (addingNetwork) "添加并切换" else "登录"))
             }
             Text(
-                ui("HTTPS 默认安全；HTTP 需要确认。扫码可填写地址，登录仍需 token。"),
+                ui("HTTPS 默认安全；HTTP 需要确认。可使用组织浏览器登录，也可保留扫码和 token fallback。"),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

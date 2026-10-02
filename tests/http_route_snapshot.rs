@@ -25,6 +25,7 @@ fn is_openapi_route(route: &HttpRoute) -> bool {
         route.handler.as_str(),
         "web_or_not_found_handler"
             | "start_oidc_login"
+            | "start_native_oidc_login"
             | "complete_oidc_login"
             | "exchange_session"
             | "logout"
@@ -93,7 +94,7 @@ fn render_live_inventory() -> String {
             route
         })
         .collect();
-    assert_eq!(routes.len(), 139, "unexpected parsed HTTP route count");
+    assert_eq!(routes.len(), 140, "unexpected parsed HTTP route count");
 
     let openapi = holon::openapi::generate_openapi_json();
     let mut entries = Vec::new();

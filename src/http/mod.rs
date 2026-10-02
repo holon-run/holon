@@ -736,6 +736,10 @@ pub fn router(state: AppState) -> Router {
             post(auth::start_oauth_device_login),
         )
         .route("/auth/oidc/start", get(auth::start_oidc_login))
+        .route(
+            "/auth/oidc/native/start",
+            get(auth::start_native_oidc_login),
+        )
         .route("/auth/oidc/callback", get(auth::complete_oidc_login))
         .route("/auth/method", get(auth::auth_method))
         .route("/auth/session/exchange", post(auth::exchange_session))

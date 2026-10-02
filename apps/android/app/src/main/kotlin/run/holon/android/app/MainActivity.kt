@@ -98,6 +98,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (incoming.action == Intent.ACTION_VIEW) {
+            if (incoming.data?.let(viewModel::handleOidcCallback) == true) return
             val shortcutId = incoming.getStringExtra(AgentShareShortcuts.EXTRA_SHORTCUT_ID) ?: return
             lifecycleScope.launch {
                 val ready = viewModel.state.first { it.phase == AppPhase.Ready && it.session != null }

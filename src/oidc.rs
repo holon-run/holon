@@ -100,6 +100,12 @@ pub struct IssuedSession {
     pub record: AuthSessionRecord,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedLogin {
+    pub session: IssuedSession,
+    pub native_redirect_uri: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct OidcClient {
     pub config: AuthConfig,
@@ -167,6 +173,15 @@ impl OidcClient {
     }
 
     pub async fn begin_login(&self, db: &RuntimeDb, now: DateTime<Utc>) -> Result<LoginStart> {
+        self.begin_login_with_native_redirect(db, now, None).await
+    }
+
+    pub async fn begin_login_with_native_redirect(
+        &self,
+        db: &RuntimeDb,
+        now: DateTime<Utc>,
+        native_redirect_uri: Option<String>,
+    ) -> Result<LoginStart> {
         let discovery = self.discover().await?;
         let state = random_secret();
         let nonce = random_secret();
@@ -177,6 +192,7 @@ impl OidcClient {
             state_digest: digest_secret(&state),
             nonce_digest: digest_secret(&nonce),
             code_verifier: code_verifier.clone(),
+            native_redirect_uri,
             created_at: now,
             expires_at: now + chrono::Duration::minutes(10),
             consumed_at: None,
@@ -213,7 +229,7 @@ impl OidcClient {
         state: &str,
         code: &str,
         now: DateTime<Utc>,
-    ) -> Result<IssuedSession> {
+    ) -> Result<CompletedLogin> {
         if code.is_empty() || state.is_empty() {
             bail!("OIDC callback is missing required parameters");
         }
@@ -285,7 +301,10 @@ impl OidcClient {
             updated_at: now,
             disabled_at: None,
         })?;
-        issue_session(db, &self.config, &user_id, "oidc", now)
+        Ok(CompletedLogin {
+            session: issue_session(db, &self.config, &user_id, "oidc", now)?,
+            native_redirect_uri: transaction.native_redirect_uri,
+        })
     }
 
     async fn validate_id_token(

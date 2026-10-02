@@ -270,6 +270,8 @@ internal class HolonViewModel(
 ) : AndroidViewModel(application) {
     private val mutableState = MutableStateFlow(HolonUiState(baseUrl = defaultBaseUrl()))
     val state: StateFlow<HolonUiState> = mutableState.asStateFlow()
+    private val oidcPreferences =
+        application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
     private var conversationJob: Job? = null
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
@@ -639,10 +641,60 @@ internal class HolonViewModel(
         login(null)
     }
 
-    private fun login(pairing: ScannedPairing?) {
+    fun startOidcLogin(): String? {
+        val before = state.value
+        if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return null
+        val baseUrl =
+            runCatching { normalizeAddress(before.baseUrl, before.allowInsecureHttp) }
+                .getOrElse { error ->
+                    mutableState.update { it.copy(error = humanError(error)) }
+                    return null
+                }
+        val state = UUID.randomUUID().toString().replace("-", "")
+        oidcPreferences.edit()
+            .putString("state", state)
+            .putString("base_url", baseUrl)
+            .putBoolean("allow_insecure_http", before.allowInsecureHttp)
+            .apply()
+        return Uri.parse("$baseUrl/auth/oidc/native/start")
+            .buildUpon()
+            .appendQueryParameter("state", state)
+            .build()
+            .toString()
+    }
+
+    fun handleOidcCallback(uri: Uri): Boolean {
+        if (uri.scheme != "run.holon.android" || uri.host != "oidc" || uri.path != "/callback") {
+            return false
+        }
+        val expectedState = oidcPreferences.getString("state", null)
+        val address = oidcPreferences.getString("base_url", null)
+        val allowInsecureHttp = oidcPreferences.getBoolean("allow_insecure_http", false)
+        val ticket = uri.getQueryParameter("ticket")
+        val callbackState = uri.getQueryParameter("state")
+        oidcPreferences.edit().clear().apply()
+        if (expectedState.isNullOrBlank() || expectedState != callbackState || address.isNullOrBlank()) {
+            mutableState.update { it.copy(error = "OIDC 登录回调无效，请重新开始登录") }
+            return true
+        }
+        if (ticket.isNullOrBlank() || ticket.length > 256) {
+            mutableState.update { it.copy(error = "OIDC 登录票据无效，请重新开始登录") }
+            return true
+        }
+        mutableState.update {
+            it.copy(
+                baseUrl = address,
+                allowInsecureHttp = allowInsecureHttp,
+            )
+        }
+        login(null, ticket)
+        return true
+    }
+
+    private fun login(pairing: ScannedPairing?, nativeSessionTicket: String? = null) {
         val before = state.value
         if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return
-        if (pairing == null && before.token.isBlank()) {
+        if (pairing == null && nativeSessionTicket == null && before.token.isBlank()) {
             mutableState.update { it.copy(error = "请输入 token") }
             return
         }
@@ -661,6 +713,7 @@ internal class HolonViewModel(
                             tokenChars,
                             pairing?.address?.startsWith("http://") ?: before.allowInsecureHttp,
                             pairing?.ticket,
+                            nativeSessionTicket,
                         )
                     Triple(session, roster, repository.networkProfiles())
                 }

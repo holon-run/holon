@@ -168,7 +168,11 @@ internal class HolonRepository(
         token: CharArray,
         allowInsecureHttp: Boolean,
         pairingTicket: String? = null,
+        nativeSessionTicket: String? = null,
     ): Pair<ActiveSession, HolonRosterSnapshot> {
+        require(pairingTicket == null || nativeSessionTicket == null) {
+            "Pairing and OIDC session tickets are mutually exclusive"
+        }
         val baseUrl = normalizeAddress(address, allowInsecureHttp)
         val profile =
             preferences.profiles().firstOrNull { it.baseUrl == baseUrl }
@@ -190,7 +194,8 @@ internal class HolonRepository(
         val previousCredential = scopedStore.read()
         val previousActive = active
         val previousClient = client
-        var transientToken: String? = if (pairingTicket == null) token.concatToString() else null
+        var transientToken: String? =
+            if (pairingTicket == null && nativeSessionTicket == null) token.concatToString() else null
         token.fill('\u0000')
         val candidate =
             HolonHttpClient(
@@ -202,7 +207,9 @@ internal class HolonRepository(
                 sseRetryObserver = traceSseRetryObserver(traceRecorder, traceScope),
             )
         return try {
-            if (pairingTicket == null) {
+            if (nativeSessionTicket != null) {
+                candidate.exchangeSession(nativeSessionTicket)
+            } else if (pairingTicket == null) {
                 candidate.exchangeSession(transientToken.orEmpty())
             } else {
                 candidate.redeemPairingTicket(pairingTicket)
