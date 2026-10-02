@@ -3,6 +3,7 @@ package run.holon.android.app
 import android.app.Application
 import android.content.Context
 import android.net.Uri
+import android.os.Looper
 import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
@@ -797,6 +798,11 @@ internal class HolonViewModel(
         eventLogEpoch: String? = null,
         generation: Long = liveSyncGeneration,
     ) {
+        // Stale-cursor recovery can arrive from an IO stream; loaders are UI-owned.
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            viewModelScope.launch { startLiveSync(agents, eventLogEpoch, generation) }
+            return
+        }
         if (!isCurrentLiveSync(foreground, state.value.phase, generation, liveSyncGeneration)) return
         if (eventLogEpoch != null && liveEventLogEpoch != null && liveEventLogEpoch != eventLogEpoch) {
             operatorPreviewLoader.reset()
@@ -2562,6 +2568,10 @@ internal class HolonViewModel(
     }
 
     private fun handleRuntimeFailure(error: Throwable) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            viewModelScope.launch { handleRuntimeFailure(error) }
+            return
+        }
         if (error is CancellationException) return
         if (error.isAuthenticationFailure() ||
             error is SessionScopeChangedException
