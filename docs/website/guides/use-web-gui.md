@@ -217,6 +217,8 @@ Configure Holon from the browser:
 - **Runtime configuration** — view the current execution environment,
   attached workspaces, and policy snapshot.
 - **Decision settings** — configure decision routes and providers directly from the browser. Switch between remote endpoints (such as TypeSafe Jev or OpenAI-compatible models) and zero-egress local ONNX presets, view decision telemetry, and toggle advisory tool access.
+- **Device pairing** — generate short-lived, single-use pairing QR codes and links directly from the Settings page. Scan with the Holon Android client or open in another browser to establish an authenticated session without exposing your long-lived control token.
+- **Tailscale Serve** — inspect status and toggle Tailscale Serve from the browser. When enabled, your Holon instance is securely shared across your private tailnet with automatic HTTPS certificates, requiring no manual firewall or reverse proxy setup.
 
 ### Internationalization (i18n)
 

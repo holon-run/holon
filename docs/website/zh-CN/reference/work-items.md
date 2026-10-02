@@ -50,6 +50,7 @@ order: 38
 
 - **objective** — 目标的简短陈述
 - **plan artifact** — 描述预期做法的持久 markdown 文件
+- **plan artifact status** — 计划产物解析状态：`available`（就绪）、`missing`（元数据已记录但文件缺失）、`unreadable`（不可读）或 `not_recorded`（未记录产物）
 - **plan status** — `draft`、`ready` 或 `needs_input`
 - **todo list** — 有意义的进度步骤清单
 - **blocked by** — 进度无法继续时的具体阻塞项

@@ -1,9 +1,9 @@
 ---
 title: CLI 参考
-summary: Holon 命令行界面——基于 holon --help 验证（v0.46.0）。
+summary: Holon 命令行界面——基于 holon --help 验证（v0.47.0）。
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.46.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.47.0. -->
 
 # CLI 参考
 
@@ -16,7 +16,7 @@ Holon 的命令行界面。所有命令都接受 `--help`，用于查看详细�
 ## 命令树
 
 ```text
-holon (v0.46.0)
+holon (v0.47.0)
 ├── context      显示本次 CLI 调用的声明式调用方上下文
 ├── commands     显示机器可读的 CLI 命令元数据
 ├── serve        启动 HTTP 控制平面服务

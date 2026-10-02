@@ -73,6 +73,10 @@ how to confirm success.
   Point a vision model at a local image and read back what it sees.
   <!-- mdorigin:index kind=article -->
 
+- [Host local apps](./host-local-apps.md)
+  Host agent-owned HTML/JS static applications, interact with agents through the App SDK, and serve lightweight UI tools.
+  <!-- mdorigin:index kind=article -->
+
 - [Troubleshoot a Holon task](./troubleshooting.md)
   Work through a stalled, failing, or silent task to a concrete next step.
   <!-- mdorigin:index kind=article -->
@@ -82,7 +86,7 @@ how to confirm success.
   <!-- mdorigin:index kind=article -->
 
 - [Connect with the Android client](./connect-android-client.md)
-  Set up the native Android client, connect to a running Holon daemon, and manage agents from mobile.
+  Set up the native Android client, pair with a running Holon daemon, and manage agents on mobile.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -3,7 +3,7 @@ title: 配置
 summary: Holon 的配置文件、配置键、凭据、环境变量与诊断。
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.46.0. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.47.0. -->
 
 # 配置参考
 
