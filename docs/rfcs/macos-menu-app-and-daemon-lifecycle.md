@@ -18,13 +18,17 @@ The first supported system is macOS 13.
 
 `Holon.app` contains:
 
-- a SwiftUI `MenuBarExtra` application;
+- an AppKit menu bar application with SwiftUI content in an `NSPopover`;
 - the matching Rust `holon` executable under `Contents/Resources/bin`;
 - update metadata and, when release signing is configured, Sparkle;
 - no launch agent or privileged helper.
 
-The menu app is an accessory application without a default Dock icon. It may
-open ordinary settings and diagnostics windows.
+The menu app is an accessory application without a default Dock icon. AppKit
+owns startup and the `NSStatusItem`; SwiftUI only renders the popover content.
+There is no placeholder settings scene or default window. Reopening the app
+does not create a window, and closing the last window does not quit the menu
+app. Any future settings or diagnostics window must be added explicitly with
+real content.
 
 ## Runtime Ownership
 

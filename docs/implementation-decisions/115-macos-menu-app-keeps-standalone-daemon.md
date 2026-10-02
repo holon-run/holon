@@ -2,8 +2,11 @@
 
 ## Decision
 
-The first Holon macOS menu bar application uses SwiftUI `MenuBarExtra` on
-macOS 13 or later and invokes the bundled Rust CLI as its lifecycle adapter.
+The Holon macOS menu bar application uses an AppKit `NSApplication`/`NSStatusItem`
+accessory lifecycle on macOS 13 or later, with SwiftUI rendering the `NSPopover`
+content, and invokes the bundled Rust CLI as its daemon lifecycle adapter.
+It does not register SwiftUI scenes or create a default window; see the
+[menu app lifecycle RFC](../rfcs/macos-menu-app-and-daemon-lifecycle.md).
 The existing standalone daemon remains the single runtime. The app registers
 only itself with `SMAppService.mainApp`; it does not install a LaunchAgent.
 

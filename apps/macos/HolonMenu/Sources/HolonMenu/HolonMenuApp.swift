@@ -2,20 +2,21 @@ import AppKit
 import SwiftUI
 
 @main
-struct HolonMenuApp: App {
-    @NSApplicationDelegateAdaptor(HolonMenuAppDelegate.self) private var appDelegate
-    private static let statusController = HolonMenuStatusController()
-
-    init() {
-        Self.statusController.install(
-            viewModel: HolonMenuViewModel(client: HolonCLIClient()),
-            updater: HolonUpdater()
-        )
-    }
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
+enum HolonMenuApp {
+    @MainActor
+    static func main() {
+        let application = NSApplication.shared
+        let statusController = HolonMenuStatusController()
+        let delegate = HolonMenuAppDelegate {
+            statusController.install(
+                viewModel: HolonMenuViewModel(client: HolonCLIClient()),
+                updater: HolonUpdater()
+            )
+        }
+        application.delegate = delegate
+        // NSApplication holds its delegate weakly.
+        withExtendedLifetime(delegate) {
+            application.run()
         }
     }
 }
