@@ -94,18 +94,24 @@ console.log("Enqueued request ID:", response.request_id);
 
 The call sends a `POST` to `/apps/<agent_id>/<app_id>/request`, recording origin provenance.
 
-### 3. `window.Holon.events(onEvent, onError)`
+### 3. `window.Holon.events(options)`
 
-Subscribes to an SSE stream of app lifecycle events:
+Streams app lifecycle events over Server-Sent Events (SSE). It returns an `AsyncIterable<AppEvent>` and accepts an options object with an optional `AbortSignal`:
 
 ```javascript
-const eventSource = window.Holon.events(
-  (event) => console.log("Received event:", event),
-  (err) => console.error("Stream error:", err)
-);
+const controller = new AbortController();
 
-// Close the stream when done
-// eventSource.close();
+try {
+  for await (const event of window.Holon.events({ signal: controller.signal })) {
+    console.log("Received event:", event);
+  }
+} catch (err) {
+  if (err.name !== "AbortError") {
+    console.error("Stream error:", err);
+  }
+}
+
+// Breaking out of the loop or calling controller.abort() closes the SSE stream.
 ```
 
 ## Security Invariants

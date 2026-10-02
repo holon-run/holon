@@ -94,18 +94,24 @@ console.log("请求已入队，ID:", response.request_id);
 
 该方法向 `/apps/<agent_id>/<app_id>/request` 发起 `POST` 请求，并在事件日志中保留来源标记。
 
-### 3. `window.Holon.events(onEvent, onError)`
+### 3. `window.Holon.events(options)`
 
-通过 Server-Sent Events（SSE）订阅由应用发起的生命周期事件：
+通过 Server-Sent Events（SSE）流式接收应用生命周期事件。该方法返回 `AsyncIterable<AppEvent>`，支持传入包含可选 `AbortSignal` 的配置选项：
 
 ```javascript
-const eventSource = window.Holon.events(
-  (event) => console.log("收到事件:", event),
-  (err) => console.error("事件流异常:", err)
-);
+const controller = new AbortController();
 
-// 完成后关闭连接：
-// eventSource.close();
+try {
+  for await (const event of window.Holon.events({ signal: controller.signal })) {
+    console.log("收到事件:", event);
+  }
+} catch (err) {
+  if (err.name !== "AbortError") {
+    console.error("事件流异常:", err);
+  }
+}
+
+// 通过 break 退出循环或调用 controller.abort() 均会关闭底层 SSE 连接。
 ```
 
 ## 安全边界与限制
