@@ -25,7 +25,7 @@ Each app lives in its own subdirectory under the agent's home:
 When a user or browser visits `/apps/<agent_id>/<app_id>/`, Holon:
 
 1. Validates the directory and `manifest.json`.
-2. Applies strict Content Security Policy (CSP) headers and traversal checks.
+2. Applies baseline Content Security Policy (CSP) headers and traversal checks.
 3. Serves the configured entry document and requested static assets.
 4. Mounts the built browser SDK at `/apps/<agent_id>/<app_id>/holon.js`.
 
@@ -43,7 +43,7 @@ Every app directory must contain a valid `manifest.json` (maximum 64 KiB):
 }
 ```
 
-### Required Fields
+### Manifest Fields
 
 | Field | Type | Description |
 |---|---|---|
@@ -113,7 +113,7 @@ const eventSource = window.Holon.events(
 The Local App Engine enforces several strict security boundaries:
 
 - **Same-Origin Session:** Hosted apps share the origin with the Holon daemon. They inherit ambient session cookie authentication for control-plane calls, but do not gain additional privileges.
-- **Content Security Policy (CSP):** The server sends a baseline CSP restricting scripts, styles, images, fonts, and network connections to the same origin (`'self'`). Inline script execution and external script loading are blocked.
+- **Content Security Policy (CSP):** The server sends a baseline CSP restricting network connections and external resource loading to the same origin (`'self'`), with `data:` URIs allowed for images and fonts. Same-origin scripts and inline scripts/styles (`'unsafe-inline'`) are allowed so self-contained UI components work without external bundlers. Cross-origin scripts, embeds, and outside network calls are blocked. Stronger isolation (such as unique origins or sandboxed iframes) is out of scope for this slice.
 - **Asset Boundaries:** Static assets are capped at 8 MiB per file. Holon only serves allowlisted file types (HTML, JS, CSS, JSON, TXT, SVG, common images, and common fonts). Executable binaries or unknown extensions return an error.
 - **Path Confinement:** Every request canonicalizes the target path. Requests attempting path traversal (`../`) or traversing symlinks outside the app directory are rejected immediately.
 

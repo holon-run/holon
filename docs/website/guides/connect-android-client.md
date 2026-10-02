@@ -20,10 +20,12 @@ This guide covers installation, connection setup, network profiles, and mobile f
 
 ### Download Official Releases
 
-Download signed `app-release.apk` or `app-release.aab` packages directly from the [Holon GitHub Releases](https://github.com/holon-run/holon/releases) page. Install the APK directly on your device:
+Download official signed packages directly from the [Holon GitHub Releases](https://github.com/holon-run/holon/releases) page. Each release provides `holon-android-v<version>.apk` for direct device installation and `holon-android-v<version>.aab` for Google Play distribution.
+
+Install the APK directly on your device:
 
 ```bash
-adb install app-release.apk
+adb install holon-android-v0.47.0.apk
 ```
 
 ### Build from Source

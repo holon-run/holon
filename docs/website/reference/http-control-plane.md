@@ -642,7 +642,7 @@ Holon can host static HTML/JS applications stored in an agent's `agent_home/apps
 
 **`GET /apps/:agent_id`** — Discover agent apps
 
-Returns an array of valid apps owned by the specified agent. Each app must contain a valid `manifest.json`.
+Returns the valid apps owned by the specified agent in an `apps` array (alongside `agent_id`). Each app entry includes its manifest metadata and root `url`. Each app must contain a valid `manifest.json`.
 
 **`GET /apps/:agent_id/:app_id`** or **`GET /apps/:agent_id/:app_id/`** — Serve app entry document
 

@@ -20,10 +20,12 @@ Holon 提供了专为移动端工作流设计的原生 Android 客户端。应�
 
 ### 下载官方安装包
 
-直接从 [Holon GitHub Releases](https://github.com/holon-run/holon/releases) 页面下载官方签名的 `app-release.apk` 或 `app-release.aab` 文件。通过 `adb` 安装到设备：
+直接从 [Holon GitHub Releases](https://github.com/holon-run/holon/releases) 页面下载官方签名的发布包。每个版本提供用于设备直接安装的 `holon-android-v<version>.apk`，以及用于 Google Play 分发的 `holon-android-v<version>.aab`（Bundle 格式不可直接通过 `adb` 安装）。
+
+通过 `adb` 将 APK 安装到设备：
 
 ```bash
-adb install app-release.apk
+adb install holon-android-v0.47.0.apk
 ```
 
 ### 从源码编译

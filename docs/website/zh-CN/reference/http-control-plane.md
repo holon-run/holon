@@ -608,7 +608,7 @@ Holon 支持托管由 Agent 自主拥有的静态 HTML/JS 应用。这些应用�
 
 **`GET /apps/:agent_id`** — 发现 Agent 拥有的 Local App
 
-返回指定 Agent 拥有的所有有效应用列表。每个应用目录下必须包含合法的 `manifest.json`。
+以 `apps` 数组形式返回指定 Agent 拥有的有效应用列表（同时包含 `agent_id`）。每个条目包含其清单元数据及访问路径 `url`。每个应用目录下必须包含合法的 `manifest.json`。
 
 **`GET /apps/:agent_id/:app_id`** 或 **`GET /apps/:agent_id/:app_id/`** — 获取 App 入口 HTML 文档
 
