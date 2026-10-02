@@ -3,7 +3,7 @@ title: HTTP control plane
 summary: How to think about Holon's headless integration surface.
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.46.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.47.0. -->
 
 # HTTP control plane
 
@@ -34,6 +34,9 @@ Starting in v0.36.0, Holon supports a **session-first authentication** architect
 - **`POST /api/auth/session/logout`** — Invalidate current session and clear session cookies.
 - **`GET /api/auth/oidc/start`** and **`GET /api/auth/oidc/callback`** — Initiate and complete OpenID Connect PKCE authorization code flow when `auth.mode="oidc"`.
 - **`POST /api/auth/:provider/device/start`** — Initiate OAuth device authorization flows (e.g. OpenAI Codex).
+- **`POST /api/auth/pairing/issue`** — Issue a single-use pairing ticket (2-minute expiration) for browser and device handoff. Requires control token or valid session in local mode; rejected in OIDC mode.
+- **`POST /api/auth/pairing/redeem`** — Redeem a pairing ticket for an HttpOnly browser session cookie.
+- **`POST /api/auth/pairing/redeem/native`** — Redeem a pairing ticket for a revocable native session credential (used by Android and mobile clients).
 
 For step-by-step IdP registration and session configuration, see [Configure OIDC authentication](/guides/configure-oidc-authentication.md).
 
@@ -620,6 +623,68 @@ Reverts to the default model. Accepts an optional body:
 ```json
 { "authority_class": "operator_instruction" }
 ```
+
+**`GET /api/control/network/tailscale/serve`** — Tailscale Serve status
+
+Returns current Tailscale Serve status, target loopback port, and the active tailnet domain when configured.
+
+**`POST /api/control/network/tailscale/serve/enable`** — Enable Tailscale Serve
+
+Enables Tailscale Serve to expose the local HTTP control plane securely over HTTPS on your tailnet.
+
+**`POST /api/control/network/tailscale/serve/disable`** — Disable Tailscale Serve
+
+Disables Tailscale Serve sharing.
+
+### Local Apps
+
+Holon can host static HTML/JS applications stored in an agent's `agent_home/apps/<app-id>/` directory. Apps are addressed through logical `/apps` routes rather than direct filesystem paths.
+
+**`GET /apps/:agent_id`** — Discover agent apps
+
+Returns the valid apps owned by the specified agent in an `apps` array (alongside `agent_id`). Each app entry includes its manifest metadata and root `url`. Each app must contain a valid `manifest.json`.
+
+**`GET /apps/:agent_id/:app_id`** or **`GET /apps/:agent_id/:app_id/`** — Serve app entry document
+
+Serves the app entry HTML document declared in `manifest.json`. Served with `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and a restrictive Content Security Policy.
+
+**`GET /apps/:agent_id/:app_id/context`** — App SDK context
+
+Returns runtime metadata for the hosted app:
+
+```json
+{
+  "sdk_version": "1",
+  "agent_id": "main",
+  "app_id": "dashboard",
+  "session": { "authenticated": true }
+}
+```
+
+**`POST /apps/:agent_id/:app_id/request`** — Send app request
+
+Enqueues a structured app request to the agent queue:
+
+```json
+{
+  "version": "1",
+  "request_type": "refresh_data",
+  "payload": { "force": true },
+  "request_id": "req-123"
+}
+```
+
+**`GET /apps/:agent_id/:app_id/events`** — Stream app events
+
+Streams app-originated lifecycle events via Server-Sent Events (SSE).
+
+**`GET /apps/:agent_id/:app_id/holon.js`** — Browser App SDK
+
+Serves the built `@holon/app-sdk` client artifact exposing `window.Holon`.
+
+**`GET /apps/:agent_id/:app_id/:asset_path`** — Serve static asset
+
+Serves allowlisted static assets (JS, CSS, images, fonts) within the app root directory. Path traversal attempts and symlinks pointing outside the app root are rejected.
 
 ### Runtime management
 

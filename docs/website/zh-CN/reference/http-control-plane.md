@@ -3,7 +3,7 @@ title: HTTP 控制平面
 summary: 如何理解 Holon 的无头集成接口。
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.46.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.47.0. -->
 
 # HTTP 控制平面
 
@@ -29,6 +29,9 @@ Holon 在设计上是无头的。HTTP 和事件驱动的集成接口应当保留
 - **`POST /api/auth/session/logout`** — 注销当前 Session 并清除 Session Cookie。
 - **`GET /api/auth/oidc/start`** 与 **`GET /api/auth/oidc/callback`** — 当 `auth.mode="oidc"` 时发起并完成 OpenID Connect PKCE 授权码流程。
 - **`POST /api/auth/:provider/device/start`** — 发起 OAuth 设备授权码流程（如 OpenAI Codex）。
+- **`POST /api/auth/pairing/issue`** — 签发有效期 2 分钟的一次性配对票据，用于浏览器与移动端快速配对。本地模式需 control token 或有效 session；OIDC 模式拒绝签发。
+- **`POST /api/auth/pairing/redeem`** — 浏览器兑换配对票据，换取 HttpOnly session cookie。
+- **`POST /api/auth/pairing/redeem/native`** — 移动端（如 Android）兑换配对票据，换取可撤销的原生 session credential。
 
 有关 IdP 注册与会话配置的逐步指南，请参阅[配置 OIDC 身份认证](/zh-CN/guides/configure-oidc-authentication.md)。
 
@@ -586,6 +589,68 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 ```json
 { "authority_class": "operator_instruction" }
 ```
+
+**`GET /api/control/network/tailscale/serve`** — Tailscale Serve 状态
+
+返回当前 Tailscale Serve 的运行状态、本地目标端口以及激活的 tailnet 域名。
+
+**`POST /api/control/network/tailscale/serve/enable`** — 启用 Tailscale Serve
+
+启用 Tailscale Serve，通过 Tailscale 内网为当前 HTTP 控制平面提供安全的 HTTPS 访问。
+
+**`POST /api/control/network/tailscale/serve/disable`** — 禁用 Tailscale Serve
+
+停止 Tailscale Serve 共享。
+
+### Local App
+
+Holon 支持托管由 Agent 自主拥有的静态 HTML/JS 应用。这些应用存放于 Agent 的 `agent_home/apps/<app-id>/` 目录下，并通过逻辑 `/apps` 路径访问，无需暴露本地文件系统绝对路径。
+
+**`GET /apps/:agent_id`** — 发现 Agent 拥有的 Local App
+
+以 `apps` 数组形式返回指定 Agent 拥有的有效应用列表（同时包含 `agent_id`）。每个条目包含其清单元数据及访问路径 `url`。每个应用目录下必须包含合法的 `manifest.json`。
+
+**`GET /apps/:agent_id/:app_id`** 或 **`GET /apps/:agent_id/:app_id/`** — 获取 App 入口 HTML 文档
+
+返回 `manifest.json` 中声明的入口 HTML 文件。响应带 `Cache-Control: no-store`、`X-Content-Type-Options: nosniff` 以及严格的 Content Security Policy（CSP）。
+
+**`GET /apps/:agent_id/:app_id/context`** — App SDK 上下文
+
+返回当前托管应用的运行时元数据：
+
+```json
+{
+  "sdk_version": "1",
+  "agent_id": "main",
+  "app_id": "dashboard",
+  "session": { "authenticated": true }
+}
+```
+
+**`POST /apps/:agent_id/:app_id/request`** — 发送 App 请求
+
+向 Agent 消息队列提交结构化的 App 请求：
+
+```json
+{
+  "version": "1",
+  "request_type": "refresh_data",
+  "payload": { "force": true },
+  "request_id": "req-123"
+}
+```
+
+**`GET /apps/:agent_id/:app_id/events`** — 订阅 App 事件流
+
+通过 Server-Sent Events（SSE）订阅由 App 发起的相关生命周期事件。
+
+**`GET /apps/:agent_id/:app_id/holon.js`** — 浏览器 App SDK 脚本
+
+返回预构建的 `@holon/app-sdk` 浏览器脚本，在前端暴露 `window.Holon` 全局对象。
+
+**`GET /apps/:agent_id/:app_id/:asset_path`** — 获取静态资源
+
+返回应用目录下的静态资源文件（JS、CSS、图片、字体等）。服务内置路径安全检查，拒绝任何路径穿越或符号链接越界访问。
 
 ### 运行时管理
 

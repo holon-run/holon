@@ -50,6 +50,7 @@ Each work item can contain:
 
 - **objective** — short statement of the goal
 - **plan artifact** — durable markdown file describing the intended approach
+- **plan artifact status** — artifact resolution state: `available`, `missing`, `unreadable`, or `not_recorded`
 - **plan status** — `draft`, `ready`, or `needs_input`
 - **todo list** — checklist of meaningful progress steps
 - **blocked by** — specific blocker when progress cannot continue

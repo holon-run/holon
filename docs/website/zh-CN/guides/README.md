@@ -70,6 +70,10 @@ order: 30
   让视觉模型看一张本地图片，并读回它看到的内容。
   <!-- mdorigin:index kind=article -->
 
+- [托管 Local App](./host-local-apps.md)
+  为 Agent 托管静态 HTML/JS 应用，通过内置 App SDK 与 Agent 交互，构建轻量级前端工具。
+  <!-- mdorigin:index kind=article -->
+
 - [排查 Holon 任务问题](./troubleshooting.md)
   把卡住、失败或无输出的任务定位到一个明确的下一步。
   <!-- mdorigin:index kind=article -->
@@ -79,7 +83,7 @@ order: 30
   <!-- mdorigin:index kind=article -->
 
 - [连接 Android 客户端](./connect-android-client.md)
-  配置并连接原生 Android 客户端，在移动设备上管理 Holon Agent 与查看任务交付物。
+  安装并配置原生 Android 客户端，通过扫码配对连接运行中的 Holon 守护进程，在移动端管理 Agent 与对话。
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->
