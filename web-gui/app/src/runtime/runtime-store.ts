@@ -301,7 +301,7 @@ export interface RuntimeStoreState {
   currentUser?: CurrentUser;
   currentUserLoaded: boolean;
   bootstrapError?: string;
-  globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting";
+  globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting" | "unauthorized";
   discovery: RosterDiscoveryState;
   modelCatalog: RuntimeModelCatalog;
   modelCatalogLoading: boolean;

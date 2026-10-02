@@ -2020,7 +2020,11 @@ async function readEventStream(
       signal,
     });
     if (!response.ok) {
-      throw new Error(`GET ${new URL(url).pathname} failed with ${response.status}`);
+      // Preserve the server's error envelope (status + machine code) so an
+      // auth rejection on the stream stays distinguishable from transport
+      // failures (#3299). Same-origin requests pass a relative URL, so the
+      // path must be resolved against a dummy base before use.
+      throw await httpRequestError("GET", requestPathForError(url), response);
     }
     if (!response.body) {
       throw new Error("event stream response body is not readable");
@@ -2065,6 +2069,16 @@ type EventStreamReadOptions = Omit<AgentEventStreamOptions, "onEvent"> & {
   onRosterHint?: (agentId: string) => void;
   rosterOnly?: boolean;
 };
+
+/** Absolute-or-relative request path for error reporting. */
+function requestPathForError(url: string | URL): string {
+  if (url instanceof URL) return url.pathname;
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return new URL(url, "http://holon.invalid").pathname;
+  }
+}
 
 function takeSseFrames(buffer: string): { frames: string[]; remaining: string } {
   const frames: string[] = [];
@@ -3180,6 +3194,17 @@ async function readErrorEnvelope(
 /** True when the remote rejected the request's authorization. */
 export function isAuthRequiredError(error: unknown): boolean {
   return error instanceof RuntimeHttpError && error.code === "auth_required";
+}
+
+/**
+ * True when the remote rejected the request's authorization outright
+ * (401/403, with or without a machine-readable code). Unlike
+ * {@link isAuthRequiredError} this also covers proxies and gateways that
+ * answer without a JSON error envelope.
+ */
+export function isAuthRejectionError(error: unknown): boolean {
+  return error instanceof RuntimeHttpError
+    && (error.status === 401 || error.status === 403 || error.code === "auth_required");
 }
 
 export function isProjectionBusyError(error: unknown): boolean {

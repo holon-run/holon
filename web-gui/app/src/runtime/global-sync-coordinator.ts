@@ -2,6 +2,7 @@ import {
   createRuntimeClient,
   httpRetryAfterMs,
   isAuthRequiredError,
+  isAuthRejectionError,
   rosterAgentEntries,
   type AgentEventStreamSubscription,
   type AgentRosterSnapshotDto,
@@ -39,7 +40,13 @@ export type GlobalSyncStoreState = {
     agents: Array<{ id: string }>;
     capabilities?: string[];
   };
-  globalStreamStatus: "idle" | "connecting" | "catching_up" | "streaming" | "reconnecting";
+  globalStreamStatus:
+    | "idle"
+    | "connecting"
+    | "catching_up"
+    | "streaming"
+    | "reconnecting"
+    | "unauthorized";
   discovery: RosterDiscoveryState;
   sessionsByAgentId: Record<string, AgentSessionState>;
 };
@@ -131,6 +138,12 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   private globalStreamReconnectTimer: number | undefined;
   private globalStreamStaleTimer: number | undefined;
   private globalStreamReconnectAttempt = 0;
+  /**
+   * Terminal auth rejection on the global stream (#3299): retrying with the
+   * same credentials cannot succeed, so the reconnect loop stops until the
+   * operator reauthenticates and the session (or client) is recreated.
+   */
+  private streamAuthRejected = false;
   private readonly subscribedAgents = new Set<string>();
   private readonly catchUpPendingAgents = new Set<string>();
   private readonly recovery = new EventGapRecoveryTracker();
@@ -159,6 +172,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       onOpen: () => {
         if (!this.dependencies.isCurrentClientRequest(request)) return;
         this.globalStreamReconnectAttempt = 0;
+        this.streamAuthRejected = false;
         connectSpan.end("ok");
         this.scheduleStaleWatchdog(get, set);
         // Discovery first: the authoritative roster (when the capability is
@@ -182,6 +196,10 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       },
       onError: (error) => {
         if (this.dependencies.isCurrentClientRequest(request)) {
+          if (isAuthRejectionError(error)) {
+            this.handleStreamAuthRejection(get, set, error.message);
+            return;
+          }
           this.scheduleReconnect(get, set, error.message);
         }
       },
@@ -203,6 +221,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       this.globalStreamStaleTimer = undefined;
     }
     this.globalStreamReconnectAttempt = 0;
+    this.streamAuthRejected = false;
     this.catchUpPendingAgents.clear();
     for (const agentId of Array.from(this.backfillRetryTimers.keys())) {
       this.clearBackfillRetry(agentId);
@@ -377,6 +396,13 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
         span.end("skipped", { reason: "stream_unavailable" });
         return;
       }
+      if (this.streamAuthRejected) {
+        // The stream hit a terminal auth rejection while this cycle was in
+        // flight; its unauthorized state stays authoritative instead of a
+        // racing snapshot settle flipping discovery back to fresh (#3299).
+        span.end("skipped", { reason: "stream_unauthorized" });
+        return;
+      }
       if (lastServedStale) {
         // The runtime served its last good projection marked stale (via
         // x-holon-projection-stale). The applied roster stays usable, but
@@ -435,6 +461,12 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     set: GlobalSyncStoreSet<State>,
     error: unknown,
   ): void {
+    if (this.streamAuthRejected) {
+      // The stream hit a terminal auth rejection while this snapshot was
+      // in flight; its unauthorized state stays authoritative instead of a
+      // racing failure settle flipping discovery back to stale (#3299).
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (isAuthRequiredError(error)) {
       // Authorization failed: the cached roster must stop being presented
@@ -651,6 +683,7 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     this.subscribedAgents.clear();
     this.recovery.clear();
     this.globalStreamReconnectAttempt = 0;
+    this.streamAuthRejected = false;
   }
 
   closeForResume(set: GlobalSyncStoreSet<State>): void {
@@ -1023,6 +1056,52 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       this.globalStreamReconnectTimer = undefined;
       this.start(get, set);
     }, delay);
+  }
+
+  /**
+   * Terminal auth rejection on the global stream (#3299): the session is no
+   * longer authorized, retrying with the same credentials cannot succeed,
+   * and the server rejects further attempts. Stop the reconnect loop (and
+   * every auxiliary timer) instead of rescheduling, mark the stream
+   * unauthorized, and let discovery present the same terminal state the
+   * roster path already renders. A successful reauthentication followed by
+   * a client reconnect (page refresh or new client generation) restarts it.
+   */
+  private handleStreamAuthRejection(
+    get: () => State,
+    set: GlobalSyncStoreSet<State>,
+    reason: string,
+  ): void {
+    this.globalEventStream?.close();
+    this.globalEventStream = undefined;
+    this.streamAuthRejected = true;
+    this.clearRosterRetrySchedule();
+    this.rosterRetryAttempt = 0;
+    if (this.globalStreamReconnectTimer != null) {
+      window.clearTimeout(this.globalStreamReconnectTimer);
+      this.globalStreamReconnectTimer = undefined;
+    }
+    if (this.globalStreamStaleTimer != null) {
+      window.clearTimeout(this.globalStreamStaleTimer);
+      this.globalStreamStaleTimer = undefined;
+    }
+    this.globalStreamReconnectAttempt = 0;
+    this.catchUpPendingAgents.clear();
+    for (const agentId of Array.from(this.backfillRetryTimers.keys())) {
+      this.clearBackfillRetry(agentId);
+    }
+    set((state) => ({
+      globalStreamStatus: "unauthorized",
+      discovery: {
+        ...state.discovery,
+        mode: "authoritative",
+        freshness: "unauthorized",
+        unauthorizedReason: reason,
+        staleReason: undefined,
+        retryAttempt: 0,
+        retryAt: undefined,
+      },
+    } as Partial<State>));
   }
 }
 
