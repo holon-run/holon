@@ -121,4 +121,20 @@ class MarkdownTextTest {
         )
         assertNull(markdownLinkAt("[broken](path", 0))
     }
+
+    @Test
+    fun trimsOptionalWhitespaceAroundLinkDestinations() {
+        val source = "See [APK]( /home/build/app-debug.apk )"
+
+        assertEquals(
+            MarkdownLinkTarget("APK", "/home/build/app-debug.apk", source.length),
+            markdownLinkAt(source, source.indexOf('[')),
+        )
+        assertEquals(
+            MessageFileReference(HolonFileReference.AbsolutePath("/home/build/app-debug.apk")),
+            classifyMessageFileReference(
+                requireNotNull(markdownLinkAt(source, source.indexOf('['))).destination,
+            ),
+        )
+    }
 }
