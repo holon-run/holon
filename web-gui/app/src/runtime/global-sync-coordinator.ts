@@ -461,6 +461,12 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
     set: GlobalSyncStoreSet<State>,
     error: unknown,
   ): void {
+    if (this.streamAuthRejected) {
+      // The stream hit a terminal auth rejection while this snapshot was
+      // in flight; its unauthorized state stays authoritative instead of a
+      // racing failure settle flipping discovery back to stale (#3299).
+      return;
+    }
     const message = error instanceof Error ? error.message : String(error);
     if (isAuthRequiredError(error)) {
       // Authorization failed: the cached roster must stop being presented

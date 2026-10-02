@@ -417,6 +417,152 @@ describe("global event stream auth rejection", () => {
       expect(useRuntimeStore.getState().globalStreamStatus).toBe("reconnecting");
     });
   });
+
+  it("keeps terminal unauthorized discovery when a roster failure settles after the stream 401 (#3299)", async () => {
+    const timers = stubWindowWithRecordingTimers();
+    let streamRequests = 0;
+    let snapshotRequests = 0;
+    let failSnapshot!: (error: unknown) => void;
+    const snapshotResponse = new Promise<Response>((_, reject) => {
+      failSnapshot = reject;
+    });
+    let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.pathname.endsWith("/agents/list")) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url.pathname.endsWith("/agents/snapshot")) {
+        snapshotRequests += 1;
+        return snapshotResponse;
+      }
+      if (url.pathname.endsWith("/projection-snapshot")) {
+        return Promise.resolve(errorJsonResponse(503, { error: "capability unavailable", code: "capability_unavailable" }));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        streamRequests += 1;
+        if (streamRequests === 1) {
+          return Promise.resolve(new Response(new ReadableStream<Uint8Array>({
+            start(controller) {
+              streamController = controller;
+            },
+          }), {
+            status: 200,
+            headers: {
+              "content-type": "text/event-stream",
+              "x-holon-event-contract-version": "3",
+            },
+          }));
+        }
+        return Promise.resolve(errorJsonResponse(401, { error: "control token required", code: "auth_required" }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+
+    // The stream opens and discovery starts an in-flight roster snapshot.
+    await vi.waitFor(() => {
+      expect(streamRequests).toBe(1);
+      expect(snapshotRequests).toBe(1);
+      expect(streamController).toBeTruthy();
+    });
+
+    // The healthy stream drops, and the reconnect attempt hits the
+    // terminal 401 while the roster snapshot is still in flight.
+    streamController?.close();
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("reconnecting");
+    });
+    const reconnectTimer = timers.find(
+      (timer) => !timer.cancelled && (timer.delay ?? 0) >= 900 && (timer.delay ?? 0) < 45_000,
+    );
+    expect(reconnectTimer).toBeDefined();
+    reconnectTimer?.callback();
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("unauthorized");
+    });
+    // Consume the manually fired timer so the final sweep cannot re-run it.
+    if (reconnectTimer) reconnectTimer.cancelled = true;
+    expect(useRuntimeStore.getState().discovery.freshness).toBe("unauthorized");
+
+    // The in-flight snapshot now fails with a non-auth error (the same
+    // auth outage can break it through a proxy or network reset). The
+    // terminal unauthorized state must survive the late failure settle.
+    failSnapshot(new Error("network reset while unauthorized"));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    const discovery = useRuntimeStore.getState().discovery;
+    expect(discovery.freshness).toBe("unauthorized");
+    expect(discovery.unauthorizedReason).toContain("control token required");
+    expect(discovery.staleReason).toBeUndefined();
+    expect(discovery.retryAt).toBeUndefined();
+
+    // Firing every still-armed timer must not restart stream or roster.
+    fireRecordedTimers(timers);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(streamRequests).toBe(2);
+    expect(snapshotRequests).toBe(1);
+    expect(useRuntimeStore.getState().globalStreamStatus).toBe("unauthorized");
+  });
+
+  it("cancels an armed reconnect timer when a later stream attempt hits 401 (#3299)", async () => {
+    const timers = stubWindowWithRecordingTimers();
+    let streamRequests = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input), "http://localhost");
+      if (url.pathname.endsWith("/handshake")) {
+        return Promise.resolve(jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES }));
+      }
+      if (url.pathname.endsWith("/agents/list")) {
+        return Promise.resolve(jsonResponse([]));
+      }
+      if (url.pathname.endsWith("/events/stream")) {
+        streamRequests += 1;
+        if (streamRequests === 1) {
+          return Promise.resolve(errorJsonResponse(503, { error: "daemon restarting", code: "internal" }));
+        }
+        return Promise.resolve(errorJsonResponse(401, { error: "control token required", code: "auth_required" }));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    fetchMock.mockClear();
+
+    useRuntimeStore.getState().registerAgentForEvents("agent-a");
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("reconnecting");
+    });
+    expect(streamRequests).toBe(1);
+    const reconnectTimer = timers.find(
+      (timer) => !timer.cancelled && (timer.delay ?? 0) >= 900 && (timer.delay ?? 0) < 45_000,
+    );
+    expect(reconnectTimer).toBeDefined();
+
+    // A second registration restarts the stream while the reconnect timer
+    // is still armed; that attempt hits the terminal 401.
+    useRuntimeStore.getState().registerAgentForEvents("agent-b");
+    await vi.waitFor(() => {
+      expect(useRuntimeStore.getState().globalStreamStatus).toBe("unauthorized");
+    });
+    expect(streamRequests).toBe(2);
+    // The armed reconnect timer was cancelled by the terminal rejection, so
+    // it can no longer restart the loop afterwards.
+    expect(reconnectTimer?.cancelled).toBe(true);
+
+    fireRecordedTimers(timers);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(streamRequests).toBe(2);
+    expect(useRuntimeStore.getState().globalStreamStatus).toBe("unauthorized");
+    useRuntimeStore.getState().unregisterAgentForEvents("agent-b");
+  });
 });
 
 
@@ -1200,6 +1346,41 @@ throw new Error(`Unexpected request: ${url}`);
     expect(stored.runtimeId).toBe("rt-1");
   });
 });
+
+interface RecordedTimer {
+  id: number;
+  callback: () => void;
+  delay?: number;
+  cancelled: boolean;
+}
+
+function stubWindowWithRecordingTimers(): RecordedTimer[] {
+  const timers: RecordedTimer[] = [];
+  let nextTimerId = 1;
+  vi.stubGlobal("window", {
+    localStorage: new MemoryStorage(),
+    sessionStorage: new MemoryStorage(),
+    setTimeout: (callback: () => void, delay?: number) => {
+      const timer: RecordedTimer = { id: nextTimerId, callback, delay, cancelled: false };
+      nextTimerId += 1;
+      timers.push(timer);
+      return timer.id;
+    },
+    clearTimeout: (id?: number) => {
+      for (const timer of timers) {
+        if (timer.id === id) timer.cancelled = true;
+      }
+    },
+    location: { hostname: "localhost", protocol: "http:" },
+  });
+  return timers;
+}
+
+function fireRecordedTimers(timers: RecordedTimer[]): void {
+  for (const timer of timers.splice(0)) {
+    if (!timer.cancelled) timer.callback();
+  }
+}
 
 function jsonResponse(body: unknown): Response {
   const isEventPage = body && typeof body === "object"
