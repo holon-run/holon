@@ -112,6 +112,8 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -142,6 +144,7 @@ import run.holon.android.sdk.AgentSummary
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonWorkItemSnapshot
+import run.holon.android.sdk.HolonTaskSnapshot
 import run.holon.android.sdk.HolonWorkspaceEntry
 
 @Composable
@@ -568,6 +571,7 @@ private fun AgentsScreen(state: HolonUiState, viewModel: HolonViewModel) {
                 items(filtered, key = AgentSummary::id) { agent ->
                     AgentConversationRow(
                         agent,
+                        operatorPreview = state.operatorPreviews[agent.id],
                         unreadCount =
                             if (state.briefReadStatesLoaded) agent.unreadCount(state.briefReadStates)
                             else if (state.readBriefsLoaded && agent.hasUnreadBrief(state.readBriefIds)) 1
@@ -617,10 +621,12 @@ internal fun AgentConversationRow(
     agent: AgentSummary,
     compact: Boolean = false,
     unreadCount: Int = 0,
+    operatorPreview: OperatorPreview? = null,
     onClick: () -> Unit,
 ) {
     val tone = agent.statusTone()
     val briefPreview = plainTextPreview(agent.latestBrief?.preview.orEmpty())
+    val inputPreview = agent.inputPreview(operatorPreview)?.let(::plainTextPreview)
     val postureReason = agent.postureReason.orEmpty()
     Surface(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
@@ -636,6 +642,7 @@ internal fun AgentConversationRow(
             }
             Text(
                 when {
+                    !inputPreview.isNullOrBlank() -> inputPreview
                     agent.needsReply() -> ui("正在等你回应")
                     briefPreview.isNotBlank() -> briefPreview
                     postureReason.isNotBlank() -> plainTextPreview(postureReason)
@@ -657,9 +664,9 @@ internal fun AgentConversationRow(
                     }
                     Text(
                         listOfNotNull(
-                            agent.latestBrief?.createdAt?.let(::relativeTime),
+                            (operatorPreview?.createdAt.takeIf { inputPreview != null } ?: agent.latestBrief?.createdAt)?.let(::relativeTime),
                             agent.currentWorkItemId?.let { ui("有进行中的 WorkItem") },
-                        ).joinToString(" · ").ifBlank { ui("尚无活动") },
+                        ).joinToString(" · ").ifBlank { ui(if (inputPreview != null) "已提交输入" else "尚无活动") },
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.labelSmall,
@@ -942,7 +949,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
     var agentChooser by remember { mutableStateOf(false) }
     var modelChooser by remember(agent.id) { mutableStateOf(false) }
     var agentSearch by remember { mutableStateOf("") }
-    val isDetail = state.planFile != null || state.preparedArtifact != null || state.selectedWorkItem != null || state.selectedBrief != null || state.fullScreenTurn
+    val isDetail = state.planFile != null || state.preparedArtifact != null || state.selectedWorkItem != null || state.selectedTask != null || state.selectedBrief != null || state.fullScreenTurn
     val context = LocalContext.current
     var cameraUri by remember { mutableStateOf<Uri?>(null) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) {
@@ -1008,7 +1015,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     )
                     state.preparedArtifact != null -> WorkspaceBrowserScreen(state, viewModel, Modifier.fillMaxSize(), filePosition)
                     state.selectedBrief != null && state.selectedWorkItem == null -> BriefScreen(state, viewModel)
-                    wideWorkLayout -> {
+                    wideWorkLayout && state.selectedTask == null -> {
                         Row(Modifier.fillMaxSize()) {
                             WorkItemsScreen(state, viewModel, Modifier.width(340.dp).fillMaxHeight(), workListState)
                             Box(Modifier.width(1.dp).fillMaxHeight().background(MaterialTheme.colorScheme.outlineVariant))
@@ -1024,6 +1031,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                     state.selectedActivity != null && state.selectedTurn == null -> ActivityDetailScreen(state, viewModel)
                     state.selectedTurn != null && state.fullScreenTurn -> TurnDetailScreen(state, viewModel)
                     state.selectedWorkItem != null -> WorkItemDetailScreen(state, viewModel)
+                    state.selectedTask != null -> TaskDetailScreen(state, viewModel)
                     else -> when (state.agentSection) {
                         AgentSection.Results -> Column(Modifier.fillMaxSize()) {
                             state.workItems.firstOrNull { it.workItemId == agent.currentWorkItemId }?.let { work ->
@@ -1034,6 +1042,9 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
                                 }
                             }
                             ConversationTimeline(state, viewModel, Modifier.weight(1f), timelinePosition)
+                            if (state.tasks.isNotEmpty()) TextButton(onClick = { viewModel.selectAgentSection(AgentSection.Work) }, modifier = Modifier.align(Alignment.Start)) {
+                                Text(ui("进行中的任务") + " · ${state.tasks.size}", style = MaterialTheme.typography.labelMedium)
+                            }
                             Composer(
                                 state = state,
                                 viewModel = viewModel,
@@ -1057,7 +1068,7 @@ private fun ConversationScreen(state: HolonUiState, viewModel: HolonViewModel) {
         OutlinedTextField(value = agentSearch, onValueChange = { agentSearch = it }, placeholder = { Text(ui("搜索名称或 ID")) }, singleLine = true, modifier = Modifier.fillMaxWidth().padding(16.dp))
         LazyColumn {
             items(state.recentAgents.filter { it.displayName.contains(agentSearch, true) || it.id.contains(agentSearch, true) }, key = AgentSummary::id) { other ->
-                AgentConversationRow(other, unreadCount = other.unreadCount(state.briefReadStates), onClick = { agentChooser = false; viewModel.openAgent(other) })
+                AgentConversationRow(other, unreadCount = other.unreadCount(state.briefReadStates), operatorPreview = state.operatorPreviews[other.id], onClick = { agentChooser = false; viewModel.openAgent(other) })
             }
         }
     }
@@ -1112,9 +1123,13 @@ private fun ModelPickerSheet(
 ) {
     val agent = state.selectedAgent ?: return
     var search by remember(agent.id) { mutableStateOf("") }
+    var showAll by remember(agent.id) { mutableStateOf(false) }
     var pendingModel by remember(agent.id) { mutableStateOf<String?>(null) }
     var effort by remember(agent.id, pendingModel) { mutableStateOf<String?>(null) }
     val options = state.modelCatalog?.options.orEmpty()
+    val common = commonModelOptions(options, state.agents, agent.effectiveModel)
+    val visibleOptions = if (search.isNotBlank()) options.filter { it.model.contains(search, true) || it.displayName.contains(search, true) }
+        else if (showAll || common.isEmpty()) options else common
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(
             Modifier.fillMaxWidth().padding(horizontal = 20.dp).navigationBarsPadding(),
@@ -1153,12 +1168,16 @@ private fun ModelPickerSheet(
             if (options.isEmpty() && !state.modelBusy) {
                 Text(ui("暂无模型目录，请刷新后重试"), style = MaterialTheme.typography.bodySmall)
             }
+            if (search.isBlank() && common.isNotEmpty()) Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(ui(if (showAll) "全部模型" else "常用模型"), style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                TextButton(onClick = { showAll = !showAll }) { Text(ui(if (showAll) "仅显示常用" else "查看全部")) }
+            }
             LazyColumn(
                 Modifier.heightIn(max = 380.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 items(
-                    options.filter { it.model.contains(search, true) || it.displayName.contains(search, true) },
+                    visibleOptions,
                     key = { it.model },
                 ) { option ->
                     OutlinedButton(
@@ -1835,6 +1854,22 @@ private fun WorkItemsScreen(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
     ) {
         item {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(ui("进行中的任务") + " · ${state.tasks.size}", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                IconButton(onClick = viewModel::refreshTasks, enabled = !state.tasksBusy && state.online) { Icon(Icons.Default.Refresh, contentDescription = ui("刷新任务")) }
+            }
+            if (state.tasksBusy) LinearProgressIndicator(Modifier.fillMaxWidth())
+            state.tasksError?.let { Text(ui(it), color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp)) }
+            if (state.tasks.isEmpty() && !state.tasksBusy && state.tasksError == null) Text(ui("暂无进行中的任务"), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+        }
+        items(state.tasks, key = { "task:${it.taskId}" }) { task ->
+            TaskRow(task) { viewModel.openTask(task) }
+        }
+        item {
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            Text(ui("工作记录"), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(horizontal = 16.dp))
+        }
+        item {
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(
                     ui("已加载 ${state.workItems.size} 项 · ${state.workItems.count { it.state !in setOf("completed", "aborted", "failed") }} 项进行中 · ${state.workItems.count { it.state == "completed" }} 项已完成"),
@@ -2203,29 +2238,7 @@ private fun WorkspaceBrowserScreen(
             }
         }
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                OutlinedTextField(
-                    value = position.search,
-                    onValueChange = { position.search = it },
-                    placeholder = { Text(ui("查找当前文件夹")) },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                )
-                FilterChip(
-                    selected = position.showHidden,
-                    onClick = { position.showHidden = !position.showHidden },
-                    label = { Text(ui("隐藏文件")) },
-                )
-                FilterChip(
-                    selected = position.sortRecent,
-                    onClick = { position.sortRecent = !position.sortRecent },
-                    label = { Text(if (position.sortRecent) ui("最新") else ui("名称")) },
-                )
-            }
+            FileFilterBar(position.search, { position.search = it }, position.showHidden, { position.showHidden = !position.showHidden }, position.sortRecent, { position.sortRecent = !position.sortRecent })
         }
         if (state.workspaceBusy) {
             item { Box(Modifier.fillMaxWidth().padding(20.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator() } }
@@ -2352,6 +2365,8 @@ private fun Composer(
     onFile: () -> Unit,
     onCamera: () -> Unit,
 ) {
+    val focus = LocalFocusManager.current
+    val keyboard = LocalSoftwareKeyboardController.current
     MessageComposer(
         draft = state.draft,
         attachments = state.attachments,
@@ -2360,7 +2375,7 @@ private fun Composer(
         canStop = state.selectedAgent?.currentRunId != null,
         stopping = state.abortingRun,
         onDraft = viewModel::updateDraft,
-        onSend = viewModel::send,
+        onSend = { focus.clearFocus(); keyboard?.hide(); viewModel.send() },
         onStop = viewModel::stopCurrentTurn,
         onRemove = viewModel::removeAttachment,
         onImage = onImage,

@@ -774,6 +774,18 @@ internal class HolonRepository(
     suspend fun workItems(agentId: String, limit: Int = 30): List<HolonWorkItemSnapshot> =
         requireClient().workItemSnapshots(agentId, limit = limit)
 
+    suspend fun operatorPreview(agentId: String): OperatorPreview? =
+        requireClient().conversationSnapshot(agentId, limit = 1).also { validateConversationScope(it) }.operatorPreview()
+
+    suspend fun tasks(agentId: String): List<run.holon.android.sdk.HolonTaskSnapshot> =
+        requireClient().taskSnapshots(agentId, limit = 50)
+
+    suspend fun task(agentId: String, taskId: String): run.holon.android.sdk.HolonTaskSnapshot =
+        requireClient().taskStatusSnapshot(agentId, taskId)
+
+    suspend fun taskOutput(agentId: String, taskId: String): run.holon.android.sdk.HolonTaskOutputSnapshot =
+        requireClient().taskOutputSnapshot(agentId, taskId, block = false)
+
     suspend fun workItem(agentId: String, workItemId: String): HolonWorkItemSnapshot =
         requireClient().workItemSnapshot(agentId, workItemId)
 
