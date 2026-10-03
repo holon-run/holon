@@ -1496,12 +1496,16 @@ async fn bootstrap_guard_middleware(
     request: AxumRequest<Body>,
     next: Next,
 ) -> AxumResponse {
-    if !state.host.config().bootstrap_mode_enabled() {
+    if !state.host.bootstrap_mode_active() {
         return next.run(request).await;
     }
 
     let request_path = request.uri().path();
     let path = request_path.strip_prefix("/api").unwrap_or(request_path);
+    let is_device_start = path
+        .strip_prefix("/auth/")
+        .and_then(|provider| provider.strip_suffix("/device/start"))
+        .is_some_and(|provider| !provider.is_empty() && !provider.contains('/'));
     let setup_write = matches!(
         request_path,
         "/auth/session/exchange"
@@ -1516,9 +1520,8 @@ async fn bootstrap_guard_middleware(
                 | "/models/refresh"
                 | "/control/runtime/config"
                 | "/control/runtime/credentials"
-                | "/auth/codex/device/start"
-                | "/auth/{provider}/device/start"
         )
+        || is_device_start
         || path.starts_with("/control/runtime/credentials/");
     let is_mutation = !matches!(
         *request.method(),

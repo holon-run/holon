@@ -4065,7 +4065,7 @@ fn default_provider_ready_matches_the_selected_endpoint() {
 }
 
 #[test]
-fn default_provider_ready_false_for_credential_source_none() {
+fn default_provider_ready_for_credential_source_none() {
     let mut fixture = test_app_config("openai/gpt-4o", &[]);
     // Simulate a local provider (e.g. vllm) with CredentialSource::None.
     let vllm = ProviderId::parse("vllm").unwrap();
@@ -4095,8 +4095,8 @@ fn default_provider_ready_false_for_credential_source_none() {
     );
     fixture.config.default_model = route_ref("vllm/test-model");
     assert!(
-        !fixture.config.default_provider_ready(),
-        "CredentialSource::None providers should not be considered ready"
+        fixture.config.default_provider_ready(),
+        "explicitly credential-free providers should be considered ready"
     );
 }
 

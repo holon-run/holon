@@ -145,9 +145,9 @@ impl AppConfig {
     /// Returns true when the default model provider has a usable credential,
     /// indicating the agent can actually make model calls.
     ///
-    /// Local providers with `CredentialSource::None` (e.g. vllm) are excluded
-    /// because their availability cannot be verified from config alone — they
-    /// exist in the builtin registry regardless of whether the service is running.
+    /// Providers with `CredentialSource::None` are ready when they explicitly
+    /// declare `CredentialKind::None`; availability is then governed by the
+    /// provider transport rather than a stored credential.
     pub fn default_provider_ready(&self) -> bool {
         self.providers
             .values()

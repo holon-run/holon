@@ -5954,6 +5954,9 @@ impl RuntimeHandle {
     }
 
     pub async fn run(self) -> Result<()> {
+        if let Some(bridge) = self.inner.host_bridge.as_ref() {
+            bridge.wait_for_bootstrap_ready().await?;
+        }
         let bootstrap = async {
             self.bootstrap_recovery().await?;
             scheduler_executor::SchedulerDecisionExecutor::new(&self)
@@ -5965,9 +5968,6 @@ impl RuntimeHandle {
         .await;
         self.complete_bootstrap(&bootstrap);
         bootstrap?;
-        if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge.wait_for_bootstrap_ready().await?;
-        }
 
         loop {
             if self.emit_due_task_result_recovery().await? {
