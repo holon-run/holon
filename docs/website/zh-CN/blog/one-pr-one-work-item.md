@@ -38,7 +38,7 @@ Holon 仓库的 PR #2854 就经历过这个过程。它修改了工作项的完�
 holon agent create reviewer --template https://github.com/holon-run/holon/tree/4895eafce1926cb4cc4687c5b9a99c13b071a1e4/agent_templates/code-reviewer
 ```
 
-这里固定模板版本，避免命令依赖 `holon-reviewer` 更名为 `code-reviewer` 的改动何时进入 `main`。如果已经安装或同步了更名后的模板，也可以用模板名；两种方式选一种即可：
+这里固定模板版本，避免命令依赖该模板版本何时进入 `main`。创建 Agent 时使用当前模板 ID：
 
 ```bash
 holon agent create reviewer --template code-reviewer

@@ -166,16 +166,7 @@ moderation 和渠道设置变更都需要单独明确授权。
 `holon-` 前缀专门留给运维 Holon 本身的角色，例如 `holon-ops`。
 `holon-default` 这类仅运行时的预设与可同步的模板目录分开命名。
 
-以下旧 ID 仍作为兼容选择器被接受：
-
-| 旧 ID | 当前 ID |
-| --- | --- |
-| `holon-developer` | `software-developer` |
-| `holon-reviewer` | `code-reviewer` |
-| `holon-release` | `release-manager` |
-| `holon-github-solve` | `github-solver` |
-
-用旧 ID 的精确本地安装优先于兼容回退。模板改名不会重命名已有的 Agent ID。
+模板 ID 会严格按当前模板库中的名称解析。模板改名不会重命名已有的 Agent ID。
 
 ## 模板库和默认引导
 
