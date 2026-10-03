@@ -20,6 +20,7 @@ pub fn render(snapshot: &PerformanceDiagnosticsSnapshot) -> String {
         .chain(&snapshot.scheduler)
         .chain(&snapshot.turn)
         .chain(&snapshot.provider)
+        .chain(&snapshot.tools)
         .chain(&snapshot.conversation.queries)
     {
         render_metric(&mut output, metric);
@@ -403,6 +404,7 @@ mod tests {
         assert!(names.contains("holon_otlp_exporter_exported_spans_total"));
         assert!(names.contains("holon_otlp_exporter_failed_batches_total"));
         assert!(names.contains("holon_memory_index_writer_queue_depth"));
+        assert!(names.contains("holon_tool_execution_bytes_total"));
         assert!(names.contains("holon_memory_index_writer_foreground_timeouts_total"));
         assert!(names.contains("holon_memory_index_writer_maintenance_timeouts_total"));
         assert!(names.contains(

@@ -3,6 +3,7 @@
 use anyhow::{anyhow, Result};
 use serde_json::json;
 use serde_json::Value;
+use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -21,6 +22,22 @@ use super::{
 /// Tool registry that manages tool execution.
 #[derive(Clone)]
 pub struct ToolRegistry;
+
+#[derive(Default)]
+struct ByteCountingWriter {
+    bytes: usize,
+}
+
+impl Write for ByteCountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 #[derive(Clone)]
 struct ToolSpecCatalog {
@@ -187,9 +204,10 @@ impl ToolRegistry {
             result.envelope.input_coercion = input_coercion;
         }
         tools::attach_result_recovery(runtime, &mut result, &execution_id).await?;
-        let output_bytes = serde_json::to_vec(&result.envelope)
+        let mut byte_counter = ByteCountingWriter::default();
+        let output_bytes = serde_json::to_writer(&mut byte_counter, &result.envelope)
             .ok()
-            .map(|bytes| bytes.len());
+            .map(|_| byte_counter.bytes);
         crate::diagnostics::record_tool_execution(&call.name, tool_started.elapsed(), output_bytes);
         if !result.is_error() {
             if let Err(error) =

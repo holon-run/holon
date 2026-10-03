@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod attribution;
 
-const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 18] = [
+const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 27] = [
     0,
     1,
     2,
@@ -26,6 +26,15 @@ const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 18] = [
     10_000,
     30_000,
     60_000,
+    120_000,
+    300_000,
+    600_000,
+    1_800_000,
+    3_600_000,
+    7_200_000,
+    21_600_000,
+    43_200_000,
+    86_400_000,
     u64::MAX,
 ];
 
@@ -236,6 +245,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
+    #[serde(default)]
+    pub tools: Vec<MetricSnapshot>,
     #[serde(default)]
     pub conversation: ConversationDiagnosticsSnapshot,
     #[serde(default)]
@@ -1009,6 +1020,7 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROVIDER_ROUND_TOTAL.snapshot(false),
             PROVIDER_RETRY.snapshot(false),
         ],
+        tools: vec![TOOL_EXECUTION.snapshot(true)],
         conversation: ConversationDiagnosticsSnapshot {
             queries: vec![
                 CONVERSATION_SUMMARY.snapshot(true),
@@ -1191,8 +1203,8 @@ mod tests {
 
         assert_eq!(snapshot.count, 8);
         assert_eq!(snapshot.p50_ms, 4);
-        assert_eq!(snapshot.p95_ms, u64::MAX);
-        assert_eq!(snapshot.p99_ms, u64::MAX);
+        assert_eq!(snapshot.p95_ms, 120_000);
+        assert_eq!(snapshot.p99_ms, 120_000);
     }
 
     #[test]
@@ -1251,6 +1263,37 @@ mod tests {
             .scheduler
             .iter()
             .any(|metric| metric.name == "scheduler.poll.idle" && metric.count >= 1));
+    }
+
+    #[test]
+    fn snapshot_includes_scheduler_queue_wait_trigger_groups() {
+        for trigger_kind in [
+            "operator_input",
+            "task_result",
+            "external_event",
+            "timer_fire",
+            "internal_followup",
+            "system_tick",
+            "unrecognized",
+        ] {
+            record_scheduler_queue_wait(trigger_kind, Duration::from_millis(10));
+        }
+
+        let snapshot = performance_snapshot();
+        for name in [
+            "scheduler.queue_wait.operator_input",
+            "scheduler.queue_wait.task_result",
+            "scheduler.queue_wait.external_event",
+            "scheduler.queue_wait.timer_fire",
+            "scheduler.queue_wait.internal_followup",
+            "scheduler.queue_wait.system_tick",
+            "scheduler.queue_wait.unknown",
+        ] {
+            assert!(snapshot
+                .scheduler
+                .iter()
+                .any(|metric| metric.name == name && metric.count >= 1));
+        }
     }
 
     #[test]
@@ -1321,6 +1364,11 @@ mod tests {
             .provider
             .iter()
             .any(|metric| metric.name == "provider.retry" && metric.count >= 1));
+        assert!(snapshot.tools.iter().any(|metric| {
+            metric.name == "tool.execution"
+                && metric.count >= 1
+                && metric.total_bytes.unwrap_or_default() >= 512
+        }));
         assert!(snapshot.projection_gate.leaders >= 1);
         assert!(snapshot.projection_gate.joined_waiters >= 1);
         assert!(snapshot.projection_gate.cache_hits >= 1);
