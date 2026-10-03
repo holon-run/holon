@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod attribution;
 
-const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 18] = [
+const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 27] = [
     0,
     1,
     2,
@@ -26,6 +26,15 @@ const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 18] = [
     10_000,
     30_000,
     60_000,
+    120_000,
+    300_000,
+    600_000,
+    1_800_000,
+    3_600_000,
+    7_200_000,
+    21_600_000,
+    43_200_000,
+    86_400_000,
     u64::MAX,
 ];
 
@@ -112,6 +121,21 @@ static SCHEDULER_POLL_STOPPED: MetricAccumulator = MetricAccumulator::new("sched
 static SCHEDULER_POLL_SHUTDOWN: MetricAccumulator =
     MetricAccumulator::new("scheduler.poll.shutdown");
 static SCHEDULER_POLL_SKIPPED: MetricAccumulator = MetricAccumulator::new("scheduler.poll.skipped");
+static SCHEDULER_QUEUE_WAIT: MetricAccumulator = MetricAccumulator::new("scheduler.queue_wait");
+static SCHEDULER_QUEUE_WAIT_OPERATOR_INPUT: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.operator_input");
+static SCHEDULER_QUEUE_WAIT_TASK_RESULT: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.task_result");
+static SCHEDULER_QUEUE_WAIT_EXTERNAL_EVENT: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.external_event");
+static SCHEDULER_QUEUE_WAIT_TIMER_FIRE: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.timer_fire");
+static SCHEDULER_QUEUE_WAIT_INTERNAL_FOLLOWUP: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.internal_followup");
+static SCHEDULER_QUEUE_WAIT_SYSTEM_TICK: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.system_tick");
+static SCHEDULER_QUEUE_WAIT_UNKNOWN: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.unknown");
 static SCHEDULER_MISSING_TERMINAL_TURN: MetricAccumulator =
     MetricAccumulator::new("scheduler.missing_terminal_turn_detected");
 static SCHEDULER_UNSETTLED_CLAIM_RECOVERY: MetricAccumulator =
@@ -221,6 +245,8 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub scheduler: Vec<MetricSnapshot>,
     pub turn: Vec<MetricSnapshot>,
     pub provider: Vec<MetricSnapshot>,
+    #[serde(default)]
+    pub tools: Vec<MetricSnapshot>,
     #[serde(default)]
     pub conversation: ConversationDiagnosticsSnapshot,
     #[serde(default)]
@@ -639,6 +665,12 @@ pub fn record_scheduler_poll(outcome: &'static str, elapsed: Duration) {
     scheduler_poll_accumulator(outcome).record(elapsed, None);
 }
 
+pub fn record_scheduler_queue_wait(trigger_kind: &'static str, elapsed: Duration) {
+    process_started_at();
+    SCHEDULER_QUEUE_WAIT.record(elapsed, None);
+    scheduler_queue_wait_accumulator(trigger_kind).record(elapsed, None);
+}
+
 pub fn record_missing_terminal_turn_detected() {
     process_started_at();
     SCHEDULER_MISSING_TERMINAL_TURN.record(Duration::ZERO, None);
@@ -964,6 +996,14 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             SCHEDULER_POLL_STOPPED.snapshot(false),
             SCHEDULER_POLL_SHUTDOWN.snapshot(false),
             SCHEDULER_POLL_SKIPPED.snapshot(false),
+            SCHEDULER_QUEUE_WAIT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_OPERATOR_INPUT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_TASK_RESULT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_EXTERNAL_EVENT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_TIMER_FIRE.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_INTERNAL_FOLLOWUP.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_SYSTEM_TICK.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_UNKNOWN.snapshot(false),
             SCHEDULER_MISSING_TERMINAL_TURN.snapshot(false),
             SCHEDULER_UNSETTLED_CLAIM_RECOVERY.snapshot(false),
             SCHEDULER_POISON_MESSAGE_QUARANTINED.snapshot(false),
@@ -980,6 +1020,7 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             PROVIDER_ROUND_TOTAL.snapshot(false),
             PROVIDER_RETRY.snapshot(false),
         ],
+        tools: vec![TOOL_EXECUTION.snapshot(true)],
         conversation: ConversationDiagnosticsSnapshot {
             queries: vec![
                 CONVERSATION_SUMMARY.snapshot(true),
@@ -1103,6 +1144,18 @@ fn scheduler_poll_accumulator(outcome: &'static str) -> &'static MetricAccumulat
     }
 }
 
+fn scheduler_queue_wait_accumulator(trigger_kind: &'static str) -> &'static MetricAccumulator {
+    match trigger_kind {
+        "operator_input" => &SCHEDULER_QUEUE_WAIT_OPERATOR_INPUT,
+        "task_result" => &SCHEDULER_QUEUE_WAIT_TASK_RESULT,
+        "external_event" => &SCHEDULER_QUEUE_WAIT_EXTERNAL_EVENT,
+        "timer_fire" => &SCHEDULER_QUEUE_WAIT_TIMER_FIRE,
+        "internal_followup" => &SCHEDULER_QUEUE_WAIT_INTERNAL_FOLLOWUP,
+        "system_tick" => &SCHEDULER_QUEUE_WAIT_SYSTEM_TICK,
+        _ => &SCHEDULER_QUEUE_WAIT_UNKNOWN,
+    }
+}
+
 fn process_started_at() -> &'static Instant {
     PROCESS_STARTED_AT.get_or_init(Instant::now)
 }
@@ -1150,8 +1203,8 @@ mod tests {
 
         assert_eq!(snapshot.count, 8);
         assert_eq!(snapshot.p50_ms, 4);
-        assert_eq!(snapshot.p95_ms, u64::MAX);
-        assert_eq!(snapshot.p99_ms, u64::MAX);
+        assert_eq!(snapshot.p95_ms, 120_000);
+        assert_eq!(snapshot.p99_ms, 120_000);
     }
 
     #[test]
@@ -1210,6 +1263,37 @@ mod tests {
             .scheduler
             .iter()
             .any(|metric| metric.name == "scheduler.poll.idle" && metric.count >= 1));
+    }
+
+    #[test]
+    fn snapshot_includes_scheduler_queue_wait_trigger_groups() {
+        for trigger_kind in [
+            "operator_input",
+            "task_result",
+            "external_event",
+            "timer_fire",
+            "internal_followup",
+            "system_tick",
+            "unrecognized",
+        ] {
+            record_scheduler_queue_wait(trigger_kind, Duration::from_millis(10));
+        }
+
+        let snapshot = performance_snapshot();
+        for name in [
+            "scheduler.queue_wait.operator_input",
+            "scheduler.queue_wait.task_result",
+            "scheduler.queue_wait.external_event",
+            "scheduler.queue_wait.timer_fire",
+            "scheduler.queue_wait.internal_followup",
+            "scheduler.queue_wait.system_tick",
+            "scheduler.queue_wait.unknown",
+        ] {
+            assert!(snapshot
+                .scheduler
+                .iter()
+                .any(|metric| metric.name == name && metric.count >= 1));
+        }
     }
 
     #[test]
@@ -1280,6 +1364,11 @@ mod tests {
             .provider
             .iter()
             .any(|metric| metric.name == "provider.retry" && metric.count >= 1));
+        assert!(snapshot.tools.iter().any(|metric| {
+            metric.name == "tool.execution"
+                && metric.count >= 1
+                && metric.total_bytes.unwrap_or_default() >= 512
+        }));
         assert!(snapshot.projection_gate.leaders >= 1);
         assert!(snapshot.projection_gate.joined_waiters >= 1);
         assert!(snapshot.projection_gate.cache_hits >= 1);
