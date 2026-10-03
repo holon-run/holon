@@ -5765,6 +5765,37 @@ export interface components {
                 /** Format: uint64 */
                 total_ms: number;
             }[];
+            /** @default [] */
+            tools: {
+                /** Format: double */
+                avg_bytes?: number | null;
+                /** Format: double */
+                avg_ms: number;
+                /** Format: uint64 */
+                count: number;
+                /** Format: uint64 */
+                max_ms: number;
+                name: string;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p50_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p95_ms: number;
+                /**
+                 * Format: uint64
+                 * @default 0
+                 */
+                p99_ms: number;
+                /** Format: uint64 */
+                total_bytes?: number | null;
+                /** Format: uint64 */
+                total_ms: number;
+            }[];
             turn: {
                 /** Format: double */
                 avg_bytes?: number | null;
