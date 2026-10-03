@@ -137,15 +137,13 @@ def validate_github_skill(path: Path, index: int, skill: dict) -> None:
     skill_path = skill.get("path")
     git_ref = skill.get("ref")
 
-    present = [
-        name
-        for name, value in (
-            ("package", package),
-            ("uses", uses),
-            ("structured", repo is not None or skill_path is not None or git_ref is not None),
-        )
-        if value is not None
-    ]
+    present = []
+    if package is not None:
+        present.append("package")
+    if uses is not None:
+        present.append("uses")
+    if repo is not None or skill_path is not None or git_ref is not None:
+        present.append("structured")
     if len(present) != 1:
         fail(
             path,
