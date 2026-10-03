@@ -3679,6 +3679,15 @@ impl RuntimeHandle {
         self.inner.config_snapshot.load().web_config.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_provider_reconfig(&self) -> bool {
+        self.inner
+            .config_snapshot
+            .load()
+            .provider_reconfig
+            .is_some()
+    }
+
     pub(crate) fn advisory_decision_tool_config(&self) -> (bool, Option<usize>, u64, f32) {
         let snap = self.inner.config_snapshot.load();
         (

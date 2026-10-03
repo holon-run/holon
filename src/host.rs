@@ -304,7 +304,8 @@ pub(crate) struct HostInner {
     pub(crate) daemon_deletion_handle: Mutex<Option<JoinHandle<()>>>,
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
-    static_provider: Option<Arc<dyn AgentProvider>>,
+    static_provider: Mutex<Option<Arc<dyn AgentProvider>>>,
+    bootstrap_provider_active: AtomicBool,
     runtimes: RwLock<HostRuntimeRegistry>,
     runtime_recovery_tx: mpsc::UnboundedSender<RuntimeRecoveryNotice>,
     runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
@@ -688,7 +689,7 @@ impl RuntimeHost {
 
     pub fn new(config: AppConfig) -> Result<Self> {
         if config.bootstrap_mode_enabled() {
-            return Self::new_inner(config, Some(Arc::new(BootstrapProvider)));
+            return Self::new_inner_with_bootstrap_provider(config);
         }
         let _ = build_provider_from_config(&config)?;
         Self::new_inner(config, None)
@@ -711,13 +712,36 @@ impl RuntimeHost {
         config: AppConfig,
         static_provider: Option<Arc<dyn AgentProvider>>,
     ) -> Result<Self> {
-        Self::new_inner_with_event_bus_capacity(config, static_provider, 1024)
+        Self::new_inner_with_event_bus_capacity_and_bootstrap(config, static_provider, 1024, false)
     }
 
     fn new_inner_with_event_bus_capacity(
         config: AppConfig,
         static_provider: Option<Arc<dyn AgentProvider>>,
         event_bus_capacity: usize,
+    ) -> Result<Self> {
+        Self::new_inner_with_event_bus_capacity_and_bootstrap(
+            config,
+            static_provider,
+            event_bus_capacity,
+            false,
+        )
+    }
+
+    fn new_inner_with_bootstrap_provider(config: AppConfig) -> Result<Self> {
+        Self::new_inner_with_event_bus_capacity_and_bootstrap(
+            config,
+            Some(Arc::new(BootstrapProvider)),
+            1024,
+            true,
+        )
+    }
+
+    fn new_inner_with_event_bus_capacity_and_bootstrap(
+        config: AppConfig,
+        static_provider: Option<Arc<dyn AgentProvider>>,
+        event_bus_capacity: usize,
+        bootstrap_provider_active: bool,
     ) -> Result<Self> {
         let runtime_db =
             RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
@@ -738,7 +762,8 @@ impl RuntimeHost {
                 daemon_deletion_handle: Mutex::new(None),
                 runtime_db_maintenance_lock: Mutex::new(None),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
-                static_provider,
+                static_provider: Mutex::new(static_provider),
+                bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
                 runtimes: RwLock::new(HostRuntimeRegistry {
                     phase: HostRuntimePhase::Open,
                     agents: HashMap::new(),
@@ -913,6 +938,18 @@ impl RuntimeHost {
                 errors.len(),
                 errors.join("; ")
             );
+        }
+        if new_config.default_provider_ready()
+            && self
+                .inner
+                .bootstrap_provider_active
+                .swap(false, Ordering::AcqRel)
+        {
+            *self
+                .inner
+                .static_provider
+                .lock()
+                .expect("static provider lock poisoned") = None;
         }
         Ok(())
     }
@@ -4580,10 +4617,13 @@ impl RuntimeHost {
                 )
                 .effective_model
             });
-        let provider = self
+        let static_provider = self
             .inner
             .static_provider
-            .clone()
+            .lock()
+            .expect("static provider lock poisoned")
+            .clone();
+        let provider = static_provider
             .map(Ok)
             .unwrap_or_else(|| build_provider_from_config(&config))?;
         let apply_patch_surface = ApplyPatchSurface::for_model_route_ref(&model_ref.as_string());
@@ -6331,7 +6371,13 @@ impl RuntimeHost {
         watch::Receiver<AgentRuntimePhase>,
     )> {
         let config = self.config();
-        let runtime = if let Some(provider) = self.inner.static_provider.as_ref() {
+        let static_provider = self
+            .inner
+            .static_provider
+            .lock()
+            .expect("static provider lock poisoned")
+            .clone();
+        let runtime = if let Some(provider) = static_provider {
             RuntimeHandle::new_static_with_host_bridge(
                 agent_id.to_string(),
                 self.agent_data_dir(agent_id),
@@ -7329,6 +7375,56 @@ mod tests {
         assert_eq!(recovered.last_error, None);
 
         host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn bootstrap_provider_is_cleared_before_post_onboarding_runtime_creation() {
+        let _env_lock = crate::test_env::lock_env();
+        let original_bootstrap = std::env::var_os("HOLON_BOOTSTRAP");
+        let original_openai_key = std::env::var_os("OPENAI_API_KEY");
+        std::env::set_var("HOLON_BOOTSTRAP", "1");
+        std::env::remove_var("OPENAI_API_KEY");
+
+        let home = tempdir().unwrap();
+        write_test_model_config(home.path());
+        let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+        config.user_home_dir = Some(home.path().to_path_buf());
+        let host = RuntimeHost::new(config).unwrap();
+        host.default_runtime().await.unwrap();
+
+        std::env::set_var("OPENAI_API_KEY", "test-key");
+        assert_eq!(host.schedule_config_reload().unwrap(), 1);
+        let status = wait_for_config_reload(&host, |status| status.completed_generation == 1).await;
+        assert_eq!(status.state, ConfigReloadState::Completed);
+        assert!(!host.inner.bootstrap_provider_active.load(Ordering::Acquire));
+        assert!(host
+            .inner
+            .static_provider
+            .lock()
+            .expect("static provider lock poisoned")
+            .is_none());
+
+        host.create_named_agent("post-onboarding-runtime", None)
+            .await
+            .unwrap();
+        let runtime = host
+            .activate_agent(
+                "post-onboarding-runtime",
+                RuntimeActivationReason::OperatorControl,
+            )
+            .await
+            .unwrap();
+        assert!(runtime.has_provider_reconfig());
+
+        host.shutdown().await.unwrap();
+        match original_bootstrap {
+            Some(value) => std::env::set_var("HOLON_BOOTSTRAP", value),
+            None => std::env::remove_var("HOLON_BOOTSTRAP"),
+        }
+        match original_openai_key {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
     }
 
     #[tokio::test]
