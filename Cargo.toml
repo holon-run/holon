@@ -41,6 +41,7 @@ crossterm = "0.28"
 decision-core = { version = "0.1.0", path = "crates/decision-core" }
 decision-jev = { version = "0.1.0", path = "crates/decision-jev" }
 decision-openai = { version = "0.1.0", path = "crates/decision-openai" }
+decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-decisions" }
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 encoding_rs = "0.8"
 fs2 = "0.4"
