@@ -306,6 +306,7 @@ pub(crate) struct HostInner {
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     static_provider: Mutex<Option<Arc<dyn AgentProvider>>>,
     bootstrap_provider_active: AtomicBool,
+    bootstrap_ready_notify: Notify,
     runtimes: RwLock<HostRuntimeRegistry>,
     runtime_recovery_tx: mpsc::UnboundedSender<RuntimeRecoveryNotice>,
     runtime_recovery_rx: Mutex<Option<mpsc::UnboundedReceiver<RuntimeRecoveryNotice>>>,
@@ -764,6 +765,7 @@ impl RuntimeHost {
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 static_provider: Mutex::new(static_provider),
                 bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
+                bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
                     phase: HostRuntimePhase::Open,
                     agents: HashMap::new(),
@@ -940,18 +942,35 @@ impl RuntimeHost {
             );
         }
         if new_config.default_provider_ready()
-            && self
-                .inner
-                .bootstrap_provider_active
-                .swap(false, Ordering::AcqRel)
+            && self.inner.bootstrap_provider_active.load(Ordering::Acquire)
         {
             *self
                 .inner
                 .static_provider
                 .lock()
                 .expect("static provider lock poisoned") = None;
+            self.inner
+                .bootstrap_provider_active
+                .store(false, Ordering::Release);
+            self.inner.bootstrap_ready_notify.notify_waiters();
         }
         Ok(())
+    }
+
+    pub(crate) fn bootstrap_mode_active(&self) -> bool {
+        self.inner.bootstrap_provider_active.load(Ordering::Acquire)
+    }
+
+    async fn wait_for_bootstrap_ready(&self) {
+        loop {
+            let notified = self.inner.bootstrap_ready_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if !self.bootstrap_mode_active() {
+                return;
+            }
+            notified.await;
+        }
     }
 
     async fn shutdown_config_reload_coordinator(&self) {
@@ -3785,6 +3804,9 @@ impl RuntimeHost {
             if agent_id == self.config().default_agent_id {
                 self.ensure_default_agent_identity()?;
             }
+            if agent_id != self.config().default_agent_id && self.bootstrap_mode_active() {
+                self.wait_for_bootstrap_ready().await;
+            }
             self.active_agent_identity(agent_id)
                 .map_err(anyhow::Error::new)?;
             if agent_id == self.config().default_agent_id {
@@ -6521,6 +6543,11 @@ impl RuntimeHostBridge {
         Ok(RuntimeHost { inner })
     }
 
+    pub(crate) async fn wait_for_bootstrap_ready(&self) -> Result<()> {
+        self.host()?.wait_for_bootstrap_ready().await;
+        Ok(())
+    }
+
     pub(crate) fn agent_storage(&self, agent_id: &str) -> Result<AppStorage> {
         self.host()?.agent_storage(agent_id)
     }
@@ -7390,7 +7417,7 @@ mod tests {
         let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
         config.user_home_dir = Some(home.path().to_path_buf());
         let host = RuntimeHost::new(config).unwrap();
-        host.default_runtime().await.unwrap();
+        let bootstrap_runtime = host.default_runtime().await.unwrap();
 
         std::env::set_var("OPENAI_API_KEY", "test-key");
         assert_eq!(host.schedule_config_reload().unwrap(), 1);
@@ -7403,6 +7430,7 @@ mod tests {
             .lock()
             .expect("static provider lock poisoned")
             .is_none());
+        assert!(bootstrap_runtime.has_provider_reconfig());
 
         host.create_named_agent("post-onboarding-runtime", None)
             .await

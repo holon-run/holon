@@ -891,6 +891,10 @@ pub fn router(state: AppState) -> Router {
         Arc::new(state.clone()),
         session_auth_middleware,
     ));
+    let app_routes = app_routes.layer(from_fn_with_state(
+        Arc::new(state.clone()),
+        bootstrap_guard_middleware,
+    ));
 
     Router::new()
         .nest("/api", api_routes)
@@ -1512,6 +1516,8 @@ async fn bootstrap_guard_middleware(
                 | "/models/refresh"
                 | "/control/runtime/config"
                 | "/control/runtime/credentials"
+                | "/auth/codex/device/start"
+                | "/auth/{provider}/device/start"
         )
         || path.starts_with("/control/runtime/credentials/");
     let is_mutation = !matches!(

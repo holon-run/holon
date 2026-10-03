@@ -34,7 +34,7 @@ pub async fn web_or_not_found_handler(
                 )
                     .into_response();
             }
-            if request_path.is_empty() && state.host.config().bootstrap_mode_enabled() {
+            if request_path.is_empty() && state.host.bootstrap_mode_active() {
                 return (
                     StatusCode::FOUND,
                     [(LOCATION, HeaderValue::from_static("/settings"))],

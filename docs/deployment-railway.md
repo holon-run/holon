@@ -2,7 +2,7 @@
 
 Holon can run as a regular Railway Service built from this repository's
 `Dockerfile`. The checked-in [`railway.json`](../railway.json) supplies the
-service build, `PORT`-aware start command, and `/settings` healthcheck.
+service build, `PORT`-aware start command, and `/index.html` healthcheck.
 
 ## Service settings
 
@@ -12,8 +12,8 @@ source for a Template) and keep these settings:
 | Setting | Value |
 | --- | --- |
 | Build | `Dockerfile` |
-| Start command | `serve --listen 0.0.0.0:${PORT:-7878}` |
-| Healthcheck path | `/settings` |
+| Start command | `/bin/sh -c 'exec holon serve --listen 0.0.0.0:${PORT:-7878}'` |
+| Healthcheck path | `/index.html` |
 | Healthcheck timeout | `300` seconds |
 | Public networking | Generate a Railway domain |
 
