@@ -10833,6 +10833,77 @@
             },
             "type": "array"
           },
+          "tools": {
+            "default": [],
+            "items": {
+              "properties": {
+                "avg_bytes": {
+                  "format": "double",
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "avg_ms": {
+                  "format": "double",
+                  "type": "number"
+                },
+                "count": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "max_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "p50_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p95_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "p99_ms": {
+                  "default": 0,
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "total_bytes": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "total_ms": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "name",
+                "count",
+                "total_ms",
+                "max_ms",
+                "avg_ms"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "turn": {
             "items": {
               "properties": {
