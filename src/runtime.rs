@@ -6102,6 +6102,25 @@ impl RuntimeHandle {
             }
             self.append_state_changed_events(&scheduled.running_state)?;
 
+            let queue_wait = self
+                .now()
+                .signed_duration_since(scheduled.message.created_at)
+                .to_std()
+                .unwrap_or_default();
+            let trigger_kind = scheduled
+                .message
+                .trigger_kind
+                .map(|kind| match kind {
+                    crate::types::ContinuationTriggerKind::OperatorInput => "operator_input",
+                    crate::types::ContinuationTriggerKind::TaskResult => "task_result",
+                    crate::types::ContinuationTriggerKind::ExternalEvent => "external_event",
+                    crate::types::ContinuationTriggerKind::TimerFire => "timer_fire",
+                    crate::types::ContinuationTriggerKind::InternalFollowup => "internal_followup",
+                    crate::types::ContinuationTriggerKind::SystemTick => "system_tick",
+                })
+                .unwrap_or("unknown");
+            crate::diagnostics::record_scheduler_queue_wait(trigger_kind, queue_wait);
+
             // Cancellation and setup failures can bypass the provider's turn timer.
             let processing_started = std::time::Instant::now();
             let terminal_transition = match self

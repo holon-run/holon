@@ -187,7 +187,10 @@ impl ToolRegistry {
             result.envelope.input_coercion = input_coercion;
         }
         tools::attach_result_recovery(runtime, &mut result, &execution_id).await?;
-        crate::diagnostics::record_tool_execution(&call.name, tool_started.elapsed(), None);
+        let output_bytes = serde_json::to_vec(&result.envelope)
+            .ok()
+            .map(|bytes| bytes.len());
+        crate::diagnostics::record_tool_execution(&call.name, tool_started.elapsed(), output_bytes);
         if !result.is_error() {
             if let Err(error) =
                 maybe_refresh_memory_index_after_tool(runtime, call.name.as_str(), &result).await

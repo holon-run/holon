@@ -112,6 +112,21 @@ static SCHEDULER_POLL_STOPPED: MetricAccumulator = MetricAccumulator::new("sched
 static SCHEDULER_POLL_SHUTDOWN: MetricAccumulator =
     MetricAccumulator::new("scheduler.poll.shutdown");
 static SCHEDULER_POLL_SKIPPED: MetricAccumulator = MetricAccumulator::new("scheduler.poll.skipped");
+static SCHEDULER_QUEUE_WAIT: MetricAccumulator = MetricAccumulator::new("scheduler.queue_wait");
+static SCHEDULER_QUEUE_WAIT_OPERATOR_INPUT: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.operator_input");
+static SCHEDULER_QUEUE_WAIT_TASK_RESULT: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.task_result");
+static SCHEDULER_QUEUE_WAIT_EXTERNAL_EVENT: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.external_event");
+static SCHEDULER_QUEUE_WAIT_TIMER_FIRE: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.timer_fire");
+static SCHEDULER_QUEUE_WAIT_INTERNAL_FOLLOWUP: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.internal_followup");
+static SCHEDULER_QUEUE_WAIT_SYSTEM_TICK: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.system_tick");
+static SCHEDULER_QUEUE_WAIT_UNKNOWN: MetricAccumulator =
+    MetricAccumulator::new("scheduler.queue_wait.unknown");
 static SCHEDULER_MISSING_TERMINAL_TURN: MetricAccumulator =
     MetricAccumulator::new("scheduler.missing_terminal_turn_detected");
 static SCHEDULER_UNSETTLED_CLAIM_RECOVERY: MetricAccumulator =
@@ -639,6 +654,12 @@ pub fn record_scheduler_poll(outcome: &'static str, elapsed: Duration) {
     scheduler_poll_accumulator(outcome).record(elapsed, None);
 }
 
+pub fn record_scheduler_queue_wait(trigger_kind: &'static str, elapsed: Duration) {
+    process_started_at();
+    SCHEDULER_QUEUE_WAIT.record(elapsed, None);
+    scheduler_queue_wait_accumulator(trigger_kind).record(elapsed, None);
+}
+
 pub fn record_missing_terminal_turn_detected() {
     process_started_at();
     SCHEDULER_MISSING_TERMINAL_TURN.record(Duration::ZERO, None);
@@ -964,6 +985,14 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             SCHEDULER_POLL_STOPPED.snapshot(false),
             SCHEDULER_POLL_SHUTDOWN.snapshot(false),
             SCHEDULER_POLL_SKIPPED.snapshot(false),
+            SCHEDULER_QUEUE_WAIT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_OPERATOR_INPUT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_TASK_RESULT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_EXTERNAL_EVENT.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_TIMER_FIRE.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_INTERNAL_FOLLOWUP.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_SYSTEM_TICK.snapshot(false),
+            SCHEDULER_QUEUE_WAIT_UNKNOWN.snapshot(false),
             SCHEDULER_MISSING_TERMINAL_TURN.snapshot(false),
             SCHEDULER_UNSETTLED_CLAIM_RECOVERY.snapshot(false),
             SCHEDULER_POISON_MESSAGE_QUARANTINED.snapshot(false),
@@ -1100,6 +1129,18 @@ fn scheduler_poll_accumulator(outcome: &'static str) -> &'static MetricAccumulat
         "stopped" => &SCHEDULER_POLL_STOPPED,
         "shutdown" => &SCHEDULER_POLL_SHUTDOWN,
         _ => &SCHEDULER_POLL_SKIPPED,
+    }
+}
+
+fn scheduler_queue_wait_accumulator(trigger_kind: &'static str) -> &'static MetricAccumulator {
+    match trigger_kind {
+        "operator_input" => &SCHEDULER_QUEUE_WAIT_OPERATOR_INPUT,
+        "task_result" => &SCHEDULER_QUEUE_WAIT_TASK_RESULT,
+        "external_event" => &SCHEDULER_QUEUE_WAIT_EXTERNAL_EVENT,
+        "timer_fire" => &SCHEDULER_QUEUE_WAIT_TIMER_FIRE,
+        "internal_followup" => &SCHEDULER_QUEUE_WAIT_INTERNAL_FOLLOWUP,
+        "system_tick" => &SCHEDULER_QUEUE_WAIT_SYSTEM_TICK,
+        _ => &SCHEDULER_QUEUE_WAIT_UNKNOWN,
     }
 }
 
