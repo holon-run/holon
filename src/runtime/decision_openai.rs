@@ -189,9 +189,8 @@ pub(crate) fn resolve_shared_decision_route(
                 matches!(
                     provider_config.transport,
                     crate::config::ProviderTransportKind::OpenAiResponses
-                        | crate::config::ProviderTransportKind::OpenAiCodexResponses
                 ),
-                "OpenAI Decisions requires an OpenAI Responses-compatible provider transport"
+                "OpenAI Decisions requires the OpenAI Responses provider transport"
             );
             let mut provider = OpenAiDecisionsConfig::new(endpoint, model).with_timeout(timeout);
             if let Some(credential) = credential {

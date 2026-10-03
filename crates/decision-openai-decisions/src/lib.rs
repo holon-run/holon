@@ -73,6 +73,16 @@ impl OpenAiDecisionsConfig {
         self.timeout = timeout;
         self
     }
+
+    pub fn with_max_request_bytes(mut self, max_request_bytes: usize) -> Self {
+        self.max_request_bytes = max_request_bytes;
+        self
+    }
+
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes;
+        self
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -125,15 +135,22 @@ impl DecisionProvider<Value, Value> for OpenAiDecisionsProvider {
             headers.insert(AUTHORIZATION, header);
         }
 
+        let timeout = context
+            .remaining()
+            .map(|remaining| remaining.min(self.config.timeout))
+            .unwrap_or(self.config.timeout);
         let request_builder = self
             .client
             .post(&self.config.endpoint)
             .headers(headers)
+            .timeout(timeout)
             .body(body);
         let response = send_with_context(request_builder, &context).await?;
+        context.check()?;
         let status = response.status();
         let response_body =
             read_bounded(response, &context, self.config.max_response_bytes).await?;
+        context.check()?;
         if !status.is_success() {
             return Err(DecisionError::Provider(format!(
                 "OpenAI Decisions API returned {status}: {}",
@@ -269,13 +286,24 @@ fn map_response(
                 .ok_or_else(|| {
                     DecisionError::InvalidResponse("choice answer has no choice".into())
                 })?;
-            let selected = choice
-                .as_str()
-                .and_then(|key| key.strip_prefix("candidate_"))
-                .and_then(|index| index.parse::<usize>().ok())
-                .and_then(|index| request.candidates.get(index))
-                .cloned()
-                .unwrap_or_else(|| choice.clone());
+            let selected = if let Some(key) = choice.as_str() {
+                if let Some(index) = key.strip_prefix("candidate_") {
+                    let index = index.parse::<usize>().map_err(|_| {
+                        DecisionError::InvalidResponse(format!(
+                            "choice answer contains invalid candidate id {key}"
+                        ))
+                    })?;
+                    request.candidates.get(index).cloned().ok_or_else(|| {
+                        DecisionError::InvalidResponse(format!(
+                            "choice answer references unknown candidate {key}"
+                        ))
+                    })?
+                } else {
+                    choice.clone()
+                }
+            } else {
+                choice.clone()
+            };
             let mut evidence = Evidence::new("openai_decisions", "OpenAI Decisions choice answer");
             if let Some(probabilities) = answer.get("probabilities") {
                 evidence
@@ -380,7 +408,7 @@ async fn read_bounded(
                 continue;
             }
         }
-        .map_err(|error| DecisionError::Transport(error.to_string()))?;
+        .map_err(|error| map_request_error(error, context))?;
         let Some(chunk) = next else {
             break;
         };
@@ -394,6 +422,16 @@ async fn read_bounded(
     String::from_utf8(body).map_err(|error| DecisionError::Serialization(error.to_string()))
 }
 
+fn map_request_error(error: reqwest::Error, context: &DecisionContext) -> DecisionError {
+    if error.is_timeout() {
+        DecisionError::DeadlineExceeded
+    } else if context.is_cancelled() {
+        DecisionError::Cancelled
+    } else {
+        DecisionError::Transport(error.to_string())
+    }
+}
+
 fn truncate_for_error(body: &str) -> String {
     body.chars().take(512).collect()
 }
@@ -401,8 +439,14 @@ fn truncate_for_error(body: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use decision_core::DecisionProvider;
     use serde_json::json;
-    use std::collections::BTreeMap;
+    use std::{
+        collections::BTreeMap,
+        io::{Read, Write},
+        net::TcpListener,
+        thread,
+    };
 
     fn request(metadata: BTreeMap<String, String>) -> DecisionRequest<Value, Value> {
         DecisionRequest {
@@ -414,6 +458,59 @@ mod tests {
             metadata,
             deadline_ms: None,
         }
+    }
+
+    fn test_server(response: Option<&'static [u8]>, delay: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            thread::sleep(delay);
+            if let Some(response) = response {
+                stream.write_all(response).expect("response");
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn auth_test_server() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 4096];
+            let length = stream.read(&mut request).expect("request");
+            let request = String::from_utf8_lossy(&request[..length]).to_ascii_lowercase();
+            let response: &[u8] = if request.contains("authorization: bearer secret") {
+                b"HTTP/1.1 200 OK\r\nContent-Length: 86\r\nConnection: close\r\n\r\n{\"model\":\"gpt-6-luna\",\"answers\":{\"decision\":{\"type\":\"choice\",\"choice\":\"candidate_1\"}}}"
+            } else {
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 7\r\nConnection: close\r\n\r\nmissing"
+            };
+            stream.write_all(response).expect("response");
+        });
+        format!("http://{address}")
+    }
+
+    fn drip_test_server(
+        head: &'static [u8],
+        chunks: &'static [&'static [u8]],
+        gap: Duration,
+    ) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("address");
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("connection");
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            stream.write_all(head).expect("head");
+            for chunk in chunks {
+                thread::sleep(gap);
+                stream.write_all(chunk).expect("chunk");
+            }
+        });
+        format!("http://{address}")
     }
 
     #[test]
@@ -496,6 +593,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unknown_choice_candidate() {
+        let error = map_response(
+            &request(BTreeMap::new()),
+            &json!({"answers": {"decision": {
+                "type": "choice", "choice": "candidate_2"
+            }}}),
+            Duration::ZERO,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            DecisionError::InvalidResponse(message) if message.contains("candidate_2")
+        ));
+    }
+
+    #[test]
     fn maps_predicate_and_score() {
         let predicate = map_response(
             &request(BTreeMap::new()),
@@ -533,5 +646,150 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(error, DecisionError::InvalidResponse(_)));
+    }
+
+    #[tokio::test]
+    async fn sends_bearer_auth_and_maps_successful_response() {
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new(auth_test_server(), "gpt-6-luna").with_api_key("secret"),
+        )
+        .expect("provider");
+        let response = provider
+            .decide(request(BTreeMap::new()), DecisionContext::new())
+            .await
+            .expect("decision");
+        assert!(matches!(
+            response.outcome,
+            DecisionOutcome::Select { value } if value == json!({"id": "b"})
+        ));
+    }
+
+    #[tokio::test]
+    async fn maps_non_success_response_to_provider_error() {
+        let endpoint = test_server(
+            Some(
+                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 7\r\nConnection: close\r\n\r\ninvalid",
+            ),
+            Duration::ZERO,
+        );
+        let provider = OpenAiDecisionsProvider::new(OpenAiDecisionsConfig::new(endpoint, "test"))
+            .expect("provider");
+        let result = provider
+            .decide(request(BTreeMap::new()), DecisionContext::new())
+            .await;
+        assert!(matches!(result, Err(DecisionError::Provider(message)) if message.contains("401")));
+    }
+
+    #[tokio::test]
+    async fn rejects_oversized_request_before_http_call() {
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new("http://127.0.0.1:1", "test").with_max_request_bytes(1),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(request(BTreeMap::new()), DecisionContext::new())
+            .await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_response_exceeding_content_length_limit() {
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\n123456"),
+            Duration::ZERO,
+        );
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new(endpoint, "test").with_max_response_bytes(5),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(request(BTreeMap::new()), DecisionContext::new())
+            .await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn rejects_response_exceeding_incremental_limit_without_content_length() {
+        let endpoint = test_server(
+            Some(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n123456"),
+            Duration::ZERO,
+        );
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new(endpoint, "test").with_max_response_bytes(5),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(request(BTreeMap::new()), DecisionContext::new())
+            .await;
+        assert!(matches!(result, Err(DecisionError::ResourceExhausted(_))));
+    }
+
+    #[tokio::test]
+    async fn propagates_cancellation_and_configured_timeout_to_http_request() {
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new(test_server(None, Duration::from_millis(250)), "test")
+                .with_timeout(Duration::from_secs(2)),
+        )
+        .expect("provider");
+        let context = DecisionContext::new();
+        let cancellation = context.cancellation_token();
+        let task = tokio::spawn({
+            let provider = provider.clone();
+            let context = context.clone();
+            async move { provider.decide(request(BTreeMap::new()), context).await }
+        });
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        cancellation.cancel();
+        assert!(matches!(
+            task.await.expect("cancel task"),
+            Err(DecisionError::Cancelled)
+        ));
+
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new(test_server(None, Duration::from_millis(250)), "test")
+                .with_timeout(Duration::from_millis(30)),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(request(BTreeMap::new()), DecisionContext::new())
+            .await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
+    }
+
+    #[tokio::test]
+    async fn classifies_body_read_timeout_as_deadline_exceeded() {
+        let endpoint = drip_test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n",
+            &[b"{}"],
+            Duration::from_millis(400),
+        );
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new(endpoint, "test").with_timeout(Duration::from_millis(100)),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(request(BTreeMap::new()), DecisionContext::new())
+            .await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
+    }
+
+    #[tokio::test]
+    async fn deadline_expiring_during_bounded_body_read_is_not_reported_as_success() {
+        let endpoint = drip_test_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 8\r\nConnection: close\r\n\r\n",
+            &[b"{}", b"{}", b"{}", b"{}"],
+            Duration::from_millis(8),
+        );
+        let provider = OpenAiDecisionsProvider::new(
+            OpenAiDecisionsConfig::new(endpoint, "test").with_timeout(Duration::from_secs(5)),
+        )
+        .expect("provider");
+        let result = provider
+            .decide(
+                request(BTreeMap::new()),
+                DecisionContext::with_timeout(Duration::from_millis(20)),
+            )
+            .await;
+        assert!(matches!(result, Err(DecisionError::DeadlineExceeded)));
     }
 }
