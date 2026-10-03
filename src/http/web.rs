@@ -34,6 +34,13 @@ pub async fn web_or_not_found_handler(
                 )
                     .into_response();
             }
+            if request_path.is_empty() && state.host.config().bootstrap_mode_enabled() {
+                return (
+                    StatusCode::FOUND,
+                    [(LOCATION, HeaderValue::from_static("/settings"))],
+                )
+                    .into_response();
+            }
             if let Some(response) =
                 web_asset_response(&state, "index.html", &headers, head_only).await
             {

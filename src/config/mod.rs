@@ -159,6 +159,12 @@ impl AppConfig {
             .unwrap_or(false)
     }
 
+    /// Returns true when browser-first bootstrap was explicitly requested and
+    /// the configured default provider is not ready yet.
+    pub fn bootstrap_mode_enabled(&self) -> bool {
+        bootstrap_mode_requested() && !self.default_provider_ready()
+    }
+
     fn load_with_home_and_mode(
         home_override: Option<PathBuf>,
         mode: ConfigLoadMode,
@@ -324,7 +330,10 @@ impl AppConfig {
         ) {
             Ok(selection) => selection,
             Err(error) if mode.allow_unresolved_model() => {
-                tracing::debug!(error = %error, "using unresolved diagnostic model for config inspection");
+                tracing::debug!(
+                    error = %error,
+                    "using unresolved model for bootstrap or config inspection"
+                );
                 (
                     ModelRouteRef::new(
                         ProviderId::openai(),
@@ -521,11 +530,21 @@ pub(crate) enum ConfigLoadMode {
 impl ConfigLoadMode {
     fn allow_unresolved_model(self) -> bool {
         matches!(self, Self::ConfigInspection)
+            || matches!(self, Self::Runtime) && bootstrap_mode_requested()
     }
 
     fn skip_authenticated_model_resolution(self) -> bool {
         matches!(self, Self::ConfigInspection)
     }
+}
+
+fn bootstrap_mode_requested() -> bool {
+    env::var("HOLON_BOOTSTRAP").ok().is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 impl AltScreenMode {

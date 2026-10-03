@@ -38,7 +38,7 @@ use crate::{
     host_registry::{RuntimeRegistry, WorkspaceCleanupLeaseGuard},
     ids,
     prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
-    provider::{build_provider_from_config, AgentProvider},
+    provider::{build_provider_from_config, AgentProvider, BootstrapProvider},
     runtime::{
         InitialWorkspaceBinding, LightweightAgentStateProjection, RuntimeHandle,
         SchedulerRepairInspection,
@@ -687,6 +687,9 @@ impl RuntimeHost {
     }
 
     pub fn new(config: AppConfig) -> Result<Self> {
+        if config.bootstrap_mode_enabled() {
+            return Self::new_inner(config, Some(Arc::new(BootstrapProvider)));
+        }
         let _ = build_provider_from_config(&config)?;
         Self::new_inner(config, None)
     }
