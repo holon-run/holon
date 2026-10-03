@@ -39,7 +39,7 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
-      - "scripts/validate-agent-templates.py"
+      - "scripts/validate-agent-templates*.py"
   pull_request:
     branches: [main]
     paths:
@@ -78,7 +78,7 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
-      - "scripts/validate-agent-templates.py"
+      - "scripts/validate-agent-templates*.py"
   workflow_dispatch:
   schedule:
     # Nightly full-sweep safety net: path-tiered main pushes skip
@@ -151,7 +151,8 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'agent_templates/**'
               - 'builtin_templates/**'
-              - 'scripts/validate-agent-templates.py'
+              - 'scripts/validate-agent-templates*.py'
+              - 'Makefile'
             conversation_sdk:
               - 'packages/conversation-sdk/**'
               - '.github/workflows/ci.yml'

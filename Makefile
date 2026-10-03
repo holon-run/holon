@@ -1,8 +1,11 @@
 
 .PHONY: help web web-ci api-sdk app-sdk android-sdk-test android-sdk-integration-test conversation-sdk-ci macos-menu-test macos-menu-package transport-types transport-types-check transport-types-kotlin-check snapshots-check snapshots-refresh build all test test-shard test-resource-lint test-concurrent test-concurrent-repeat test-live test-live-openai test-live-anthropic test-live-codex test-live-xai test-live-images test-live-runtime validate-agent-templates docker-build docker-smoke docker-e2e docker-e2e-scheduler-required docker-e2e-scheduler-live-canary docker-e2e-validate docker-live-acceptance fmt fmt-check lint check ci run clean
 
-validate-agent-templates: ## Validate checked-in agent templates without Rust
-	python3 scripts/validate-agent-templates.py
+PYTHON ?= python3
+
+validate-agent-templates: ## Validate checked-in agent templates without Rust (Python 3.11+)
+	$(PYTHON) scripts/validate-agent-templates-test.py
+	$(PYTHON) scripts/validate-agent-templates.py
 
 ANDROID_DIR := apps/android
 WEB_DIR := web-gui/app
