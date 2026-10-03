@@ -215,17 +215,8 @@ for roles that specifically operate Holon itself, such as `holon-ops`.
 Runtime-only presets such as `holon-default` are named separately from the
 syncable template catalog.
 
-The following older IDs remain accepted as compatibility selectors:
-
-| Older ID | Current ID |
-| --- | --- |
-| `holon-developer` | `software-developer` |
-| `holon-reviewer` | `code-reviewer` |
-| `holon-release` | `release-manager` |
-| `holon-github-solve` | `github-solver` |
-
-An exact local installation using an older ID takes precedence over the
-compatibility fallback. Template renames do not rename existing agent IDs.
+Template IDs are resolved exactly as named in the current catalog. Renaming a
+template does not rename existing agent IDs.
 
 ## Template library and default bootstrap
 
