@@ -3679,6 +3679,15 @@ impl RuntimeHandle {
         self.inner.config_snapshot.load().web_config.clone()
     }
 
+    #[cfg(test)]
+    pub(crate) fn has_provider_reconfig(&self) -> bool {
+        self.inner
+            .config_snapshot
+            .load()
+            .provider_reconfig
+            .is_some()
+    }
+
     pub(crate) fn advisory_decision_tool_config(&self) -> (bool, Option<usize>, u64, f32) {
         let snap = self.inner.config_snapshot.load();
         (
@@ -5945,6 +5954,9 @@ impl RuntimeHandle {
     }
 
     pub async fn run(self) -> Result<()> {
+        if let Some(bridge) = self.inner.host_bridge.as_ref() {
+            bridge.wait_for_bootstrap_ready().await?;
+        }
         let bootstrap = async {
             self.bootstrap_recovery().await?;
             scheduler_executor::SchedulerDecisionExecutor::new(&self)

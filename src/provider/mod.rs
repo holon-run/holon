@@ -717,6 +717,17 @@ impl AgentProvider for StubProvider {
     }
 }
 
+pub(crate) struct BootstrapProvider;
+
+#[async_trait]
+impl AgentProvider for BootstrapProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Err(anyhow!(
+            "model provider is not configured; complete onboarding before running an agent turn"
+        ))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderAttemptOutcome {

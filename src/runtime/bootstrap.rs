@@ -944,6 +944,7 @@ impl RuntimeHandle {
         let mut config = config.clone();
         config.user_home_dir = self.inner.config_snapshot.load().user_home_dir.clone();
         let new_snapshot = Arc::new(ConfigSnapshot::from_config(&config)?);
+        let should_reconfigure_provider = new_snapshot.provider_reconfig.is_some();
         let decision_hook = new_snapshot
             .provider_reconfig
             .as_ref()
@@ -963,10 +964,9 @@ impl RuntimeHandle {
             .autonomous_continuation_decision_hook
             .write()
             .await = decision_hook;
-        // Rebuild provider + context_config for current state.
-        // If this runtime has no provider_reconfig (static provider), skip.
-        let snap = self.inner.config_snapshot.load();
-        if snap.provider_reconfig.is_some() {
+        // Rebuild provider + context_config for current state. This also
+        // upgrades a bootstrap runtime when the reloaded config is ready.
+        if should_reconfigure_provider {
             let state = {
                 let guard = self.inner.agent.lock().await;
                 guard.state.clone()
