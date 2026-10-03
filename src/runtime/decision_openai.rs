@@ -15,6 +15,7 @@ use decision_jev::{JevConfig, JevProvider};
 #[cfg(feature = "local-onnx")]
 use decision_local_onnx::{LocalOnnxConfig, LocalOnnxProvider};
 use decision_openai::{OpenAiConfig, OpenAiProvider};
+use decision_openai_decisions::{OpenAiDecisionsConfig, OpenAiDecisionsProvider};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
@@ -54,6 +55,7 @@ pub(crate) struct ResolvedDecisionRoute {
 
 enum DecisionProviderKind {
     OpenAi(OpenAiConfig),
+    OpenAiDecisions(OpenAiDecisionsConfig),
     Jev(JevConfig),
     #[cfg(feature = "local-onnx")]
     LocalOnnx(LocalOnnxConfig),
@@ -67,6 +69,9 @@ fn build_provider(
 ) -> Result<Box<DecisionProviderObject>, DecisionError> {
     match provider {
         DecisionProviderKind::OpenAi(config) => Ok(Box::new(OpenAiProvider::new(config)?)),
+        DecisionProviderKind::OpenAiDecisions(config) => {
+            Ok(Box::new(OpenAiDecisionsProvider::new(config)?))
+        }
         DecisionProviderKind::Jev(config) => Ok(Box::new(JevProvider::new(config)?)),
         #[cfg(feature = "local-onnx")]
         DecisionProviderKind::LocalOnnx(config) => LocalOnnxProvider::new(config)
@@ -179,6 +184,21 @@ pub(crate) fn resolve_shared_decision_route(
     let model = route.route_ref.model.clone();
     let credential = provider_config.credential.clone();
     let provider = match route.policy.decision_protocol {
+        Some(crate::model_catalog::DecisionProtocol::OpenAiDecisions) => {
+            anyhow::ensure!(
+                matches!(
+                    provider_config.transport,
+                    crate::config::ProviderTransportKind::OpenAiResponses
+                        | crate::config::ProviderTransportKind::OpenAiCodexResponses
+                ),
+                "OpenAI Decisions requires an OpenAI Responses-compatible provider transport"
+            );
+            let mut provider = OpenAiDecisionsConfig::new(endpoint, model).with_timeout(timeout);
+            if let Some(credential) = credential {
+                provider = provider.with_api_key(credential);
+            }
+            DecisionProviderKind::OpenAiDecisions(provider)
+        }
         Some(crate::model_catalog::DecisionProtocol::Jev) => {
             let mut provider = JevConfig::new(endpoint)
                 .with_model(model)

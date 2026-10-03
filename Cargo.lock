@@ -820,6 +820,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "decision-openai-decisions"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "decision-core",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1419,6 +1431,7 @@ dependencies = [
  "decision-jev",
  "decision-local-onnx",
  "decision-openai",
+ "decision-openai-decisions",
  "encoding_rs",
  "flate2",
  "fs2",
