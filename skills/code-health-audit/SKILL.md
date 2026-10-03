@@ -1,30 +1,33 @@
 ---
-name: refactoring-audit
-description: "Audit maintainability and technical-debt signals with evidence, rank refactoring candidates, and draft incremental behavior-preserving plans without implementing changes."
+name: code-health-audit
+description: "Audit code-health and technical-debt signals with evidence, rank proportionate interventions from focused cleanup to broad coordinated refactors, and draft implementation-ready plans without granting implementation permission."
 ---
 
-# Refactoring Audit Skill
+# Code Health Audit Skill
 
 ## Summary
 
-Use this skill for a read-only repository health audit or for preparing a
-small, safe refactoring plan. It defines an evidence discipline and an output
-shape; it does not provide a static analyzer and it does not authorize code
-changes.
+Use this skill for a read-only repository health audit or for preparing an
+evidence-backed maintenance plan. Plans may cover a focused cleanup, a
+multi-phase refactor, or a broad coordinated change when that scale is
+justified by the repository's maintenance cost. It defines an evidence
+discipline and an output shape; it does not provide a static analyzer and it
+does not authorize code changes.
 
 ## When To Use
 
 - Finding maintainability hotspots across a repository
 - Reviewing a technical-debt register for stale or duplicate entries
 - Comparing refactoring candidates before implementation
-- Drafting an incremental, behavior-preserving refactoring plan
+- Drafting a proportionate, behavior-preserving maintenance or refactoring plan
 - Preparing verification gates for an approved refactoring
 
 ## Do Not Use
 
 - As a substitute for reviewing a concrete change set or pull request
 - To declare a smell a bug, vulnerability, or performance issue without evidence
-- To run a broad rewrite, formatter sweep, or dependency upgrade
+- To run a broad rewrite, formatter sweep, or dependency upgrade as an
+  unapproved side effect of an audit
 - To infer permission to edit code, merge changes, or publish findings
 
 ## Evidence Rules
@@ -76,8 +79,10 @@ Rank candidates using a short qualitative score:
 | Regression risk | What can silently change? |
 | Verification readiness | Can behavior be checked before and after? |
 
-Prefer candidates with meaningful impact, strong evidence, bounded surface,
-low coupling, and a clear verification path. A low-confidence high-impact
+Prefer candidates with meaningful impact, strong evidence, a justified
+intervention surface, manageable coupling, and a clear verification path. A
+large surface is not itself a reason to reject a candidate when leaving the
+problem in place has greater maintenance cost. A low-confidence high-impact
 item belongs in an investigation queue, not at the top of an implementation
 queue.
 
@@ -103,17 +108,22 @@ Priority order
 - Why now:
 - Dependencies:
 
-Safe refactoring plan
+Maintenance or refactoring plan
 1. Preserve these invariants:
 2. Add or identify these verification gates:
-3. Make the smallest seam change:
-4. Re-run focused checks and compare behavior:
+3. Choose the right-sized intervention:
+   - use a focused seam change when it addresses the root cause;
+   - sequence a multi-phase change when that reduces risk;
+   - use a broad coordinated refactor when smaller changes would preserve the
+     maintenance problem or create temporary inconsistency.
+4. Re-run focused checks, broader gates, and compare behavior as appropriate:
 5. Stop or roll back if:
 
 Authorization state
 ```
 
 Plans must distinguish inspection, test-only preparation, implementation, and
-cleanup. Each implementation step should have a narrow diff boundary and a
-verification gate. If behavior cannot be characterized, recommend more
-investigation instead of inventing a safe refactoring sequence.
+cleanup. Each implementation phase should have an explicit boundary and a
+verification gate; the boundary may span many files when the change is
+coordinated and justified. If behavior cannot be characterized, recommend
+more investigation instead of inventing a safe refactoring sequence.

@@ -16,4 +16,4 @@ path = "skills/agentinbox"
 [[skills]]
 kind = "github"
 repo = "holon-run/holon"
-path = "skills/refactoring-audit"
+path = "skills/code-health-audit"
