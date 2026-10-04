@@ -676,7 +676,7 @@ internal class HolonViewModel(
             .putString("base_url", baseUrl)
             .putBoolean("allow_insecure_http", before.allowInsecureHttp)
             .apply()
-        return Uri.parse("$baseUrl/auth/oidc/native/start")
+        return Uri.parse("${baseUrl.trimEnd('/')}/auth/oidc/native/start")
             .buildUpon()
             .appendQueryParameter("state", state)
             .build()

@@ -1462,9 +1462,11 @@ async fn session_auth_middleware(
     let anonymous = matches!(
         api_path,
         "/auth/oidc/start"
+            | "/auth/oidc/native/start"
             | "/auth/oidc/callback"
             | "/auth/method"
             | "/auth/session/exchange"
+            | "/auth/session/exchange/native"
             | "/auth/pairing/redeem"
             | "/auth/pairing/redeem/native"
             | "/login"
@@ -2118,7 +2120,7 @@ mod tests {
         config.auth.mode = crate::authentication::AuthenticationMode::Oidc;
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done"))).unwrap();
-        let response = router(AppState::for_tcp(host))
+        let response = router(AppState::for_tcp(host.clone()))
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -2132,6 +2134,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = router(AppState::for_tcp(host.clone()))
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/auth/oidc/native/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = router(AppState::for_tcp(host))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/auth/session/exchange/native")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"credential": ""}).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

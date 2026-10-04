@@ -44,6 +44,16 @@ class HolonAppModelTest {
     }
 
     @Test
+    fun `native OIDC URL does not duplicate the API slash`() {
+        val baseUrl = normalizeAddress("http://10.0.2.2:7878", allowInsecureHttp = true)
+
+        assertEquals(
+            "http://10.0.2.2:7878/api/auth/oidc/native/start",
+            "${baseUrl.trimEnd('/')}/auth/oidc/native/start",
+        )
+    }
+
+    @Test
     fun `legacy profile keeps legacy cache scope and credential migration is profile specific`() {
         val baseUrl = "https://holon.example/api/"
         val legacyId = legacyNetworkId(baseUrl)

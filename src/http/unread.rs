@@ -9,26 +9,17 @@ pub(crate) struct MarkBriefReadRequest {
 
 fn principal_and_scope(headers: &HeaderMap, state: &AppState) -> Result<(String, String)> {
     let roster = state.host.agent_roster_snapshot()?;
-    let (principal, scope) =
+    let principal =
         if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
-            let actor = control_actor(headers, state)?;
-            let principal = actor.principal_id();
-            let scope = observer_sync::observer_visibility_scope_for(
-                &roster.runtime_id,
-                &principal,
-                observer_sync::CONTROL_SCOPE_ENTITLEMENT,
-                roster.visibility_policy_generation,
-            );
-            (principal, scope)
+            control_actor(headers, state)?.principal_id()
         } else {
-            let (principal, _) = observer_sync::observer_scope_authority(state);
-            let scope = observer_sync::observer_visibility_scope(
-                state,
-                &roster.runtime_id,
-                roster.visibility_policy_generation,
-            );
-            (principal.to_string(), scope)
+            observer_sync::observer_scope_authority(state).0.to_string()
         };
+    let scope = observer_sync::observer_visibility_scope(
+        state,
+        &roster.runtime_id,
+        roster.visibility_policy_generation,
+    );
     Ok((principal, scope))
 }
 
