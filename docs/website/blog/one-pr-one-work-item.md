@@ -38,7 +38,9 @@ In your own terminal, create an agent named `reviewer` from the official templat
 holon agent create reviewer --template https://github.com/holon-run/holon/tree/4895eafce1926cb4cc4687c5b9a99c13b071a1e4/agent_templates/code-reviewer
 ```
 
-This example pins the template revision so the command does not depend on when the rename from `holon-reviewer` to `code-reviewer` reaches `main`. If you have already installed or synced the renamed template, you can also use its name. Choose either method:
+This example pins the template revision so the command does not depend on when
+that template revision reaches `main`. Use the current template ID when
+creating the agent:
 
 ```bash
 holon agent create reviewer --template code-reviewer

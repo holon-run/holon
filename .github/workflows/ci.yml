@@ -39,6 +39,7 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
+      - "scripts/validate-agent-templates*.py"
   pull_request:
     branches: [main]
     paths:
@@ -77,6 +78,7 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
+      - "scripts/validate-agent-templates*.py"
   workflow_dispatch:
   schedule:
     # Nightly full-sweep safety net: path-tiered main pushes skip
@@ -104,6 +106,7 @@ jobs:
       full_sweep: ${{ github.event_name != 'push' && github.event_name != 'pull_request' }}
       docker: ${{ steps.filter.outputs.docker }}
       rust: ${{ steps.filter.outputs.rust }}
+      template_validation: ${{ steps.filter.outputs.template_validation }}
       conversation_sdk: ${{ steps.filter.outputs.conversation_sdk }}
       web: ${{ steps.filter.outputs.web }}
       android: ${{ steps.filter.outputs.android }}
@@ -142,10 +145,14 @@ jobs:
               - 'Cargo.lock'
               - 'build.rs'
               - 'Makefile'
-              - 'agent_templates/**'
-              - 'builtin_templates/**'
               - 'docs/website/reference/openapi.json'
               - 'scripts/ci_timing.py'
+            template_validation:
+              - '.github/workflows/ci.yml'
+              - 'agent_templates/**'
+              - 'builtin_templates/**'
+              - 'scripts/validate-agent-templates*.py'
+              - 'Makefile'
             conversation_sdk:
               - 'packages/conversation-sdk/**'
               - '.github/workflows/ci.yml'
@@ -461,6 +468,23 @@ jobs:
           repository="$(printf '%s' "ghcr.io/${GITHUB_REPOSITORY}" | tr '[:upper:]' '[:lower:]')"
           docker tag holon:ci "${repository}:latest"
           docker push "${repository}:latest"
+
+  template-validation:
+    name: Agent templates
+    needs: changes
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.template_validation == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate checked-in agent templates
+        run: make validate-agent-templates
 
   rust:
     name: Rust
