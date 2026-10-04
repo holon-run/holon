@@ -7,29 +7,62 @@ pub(crate) struct MarkBriefReadRequest {
     pub(crate) read_through_event_seq: u64,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oidc_read_scope_is_isolated_per_principal() {
+        let scope_a = observer_visibility_scope_for_principal(
+            "runtime_fixture",
+            "user-a",
+            observer_sync::CONTROL_SCOPE_ENTITLEMENT,
+            0,
+        );
+        let scope_b = observer_visibility_scope_for_principal(
+            "runtime_fixture",
+            "user-b",
+            observer_sync::CONTROL_SCOPE_ENTITLEMENT,
+            0,
+        );
+
+        assert_ne!(scope_a, scope_b);
+    }
+}
+
 fn principal_and_scope(headers: &HeaderMap, state: &AppState) -> Result<(String, String)> {
     let roster = state.host.agent_roster_snapshot()?;
-    let (principal, scope) =
+    let (principal, entitlement) =
         if state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc {
-            let actor = control_actor(headers, state)?;
-            let principal = actor.principal_id();
-            let scope = observer_sync::observer_visibility_scope_for(
-                &roster.runtime_id,
-                &principal,
+            (
+                control_actor(headers, state)?.principal_id(),
                 observer_sync::CONTROL_SCOPE_ENTITLEMENT,
-                roster.visibility_policy_generation,
-            );
-            (principal, scope)
+            )
         } else {
-            let (principal, _) = observer_sync::observer_scope_authority(state);
-            let scope = observer_sync::observer_visibility_scope(
-                state,
-                &roster.runtime_id,
-                roster.visibility_policy_generation,
-            );
-            (principal.to_string(), scope)
+            let (principal, entitlement) = observer_sync::observer_scope_authority(state);
+            (principal.to_string(), entitlement)
         };
+    let scope = observer_visibility_scope_for_principal(
+        &roster.runtime_id,
+        &principal,
+        entitlement,
+        roster.visibility_policy_generation,
+    );
     Ok((principal, scope))
+}
+
+fn observer_visibility_scope_for_principal(
+    runtime_id: &str,
+    principal: &str,
+    entitlement: &str,
+    visibility_policy_generation: u64,
+) -> String {
+    observer_sync::observer_visibility_scope_for(
+        runtime_id,
+        principal,
+        entitlement,
+        visibility_policy_generation,
+    )
 }
 
 pub(crate) async fn brief_read_states(
