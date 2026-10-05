@@ -1,9 +1,62 @@
 use super::*;
 use crate::domain::execution_protocol::WorkItemExecutionState;
 use crate::runtime_db::TaskResultSettlementDisposition;
+use sha2::{Digest, Sha256};
 
 const RESULT_RECHECK_SECONDS: i64 = 30;
 const RESULT_RECHECK_LIMIT: usize = 8;
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn recovery_owner_key(record: &crate::runtime_db::TaskResultSettlementRecord) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"holon.task-result-recovery-owner.v1\0");
+    hasher.update(record.agent_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(record.work_item_id.as_deref().unwrap_or("").as_bytes());
+    format!("recovery_owner_{}", hex(&hasher.finalize()[..16]))
+}
+
+fn recovery_message_id() -> String {
+    crate::ids::runtime_id("msg_task_result_recovery")
+}
+
+pub(super) fn outstanding_recovery_message_id(
+    runtime: &RuntimeHandle,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    owner_key: &str,
+) -> Result<Option<String>> {
+    let messages = runtime.inner.runtime_db.messages().all(Some(agent_id))?;
+    let queue_entries = runtime.inner.runtime_db.queue_entries().latest_all()?;
+    let queue_entries = queue_entries
+        .into_iter()
+        .map(|entry| (entry.message_id.clone(), entry))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    Ok(messages.into_iter().rev().find_map(|message| {
+        if !matches!(
+            message.origin,
+            MessageOrigin::System { ref subsystem } if subsystem == "task_result_recovery"
+        ) || message.authority_class != AuthorityClass::RuntimeInstruction
+            || message.work_item_id.as_deref() != work_item_id
+            || message.source_refs.get("task_result_owner_key") != Some(&owner_key.to_owned())
+        {
+            return None;
+        }
+        let entry = queue_entries.get(&message.id)?;
+        (!matches!(
+            entry.status,
+            QueueEntryStatus::Processed
+                | QueueEntryStatus::Aborted
+                | QueueEntryStatus::Dropped
+                | QueueEntryStatus::Quarantined
+        ))
+        .then_some(message.id)
+    }))
+}
 
 impl RuntimeHandle {
     /// Rechecks are eligibility probes, not permission to consume a wait.
@@ -87,7 +140,23 @@ impl RuntimeHandle {
                     now,
                     now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS),
                 )?;
-            if !eligible || !queued_owners.insert(record.work_item_id.clone()) {
+            let owner_key = recovery_owner_key(&record);
+            if !eligible || !queued_owners.insert(owner_key.clone()) {
+                continue;
+            }
+            if let Some(message_id) = outstanding_recovery_message_id(
+                self,
+                &state.id,
+                record.work_item_id.as_deref(),
+                &owner_key,
+            )? {
+                tracing::debug!(
+                    agent_id = %state.id,
+                    work_item_id = ?record.work_item_id,
+                    owner_key = %owner_key,
+                    message_id = %message_id,
+                    "task-result recovery wake already outstanding"
+                );
                 continue;
             }
             let mut message = MessageEnvelope::new(
@@ -106,7 +175,19 @@ impl RuntimeHandle {
                 MessageDeliverySurface::RuntimeSystem,
                 AdmissionContext::RuntimeOwned,
             );
+            message.id = recovery_message_id();
             message.work_item_id = record.work_item_id;
+            message
+                .source_refs
+                .insert("task_result_owner_key".into(), owner_key);
+            message.source_refs.insert(
+                "task_result_rejoin_generation".into(),
+                record.rejoin_generation.to_string(),
+            );
+            message.source_refs.insert(
+                "task_result_parent_turn_id".into(),
+                record.parent_turn_id.clone(),
+            );
             message
                 .source_refs
                 .insert("task_result_message_id".into(), record.message_id);
@@ -117,5 +198,102 @@ impl RuntimeHandle {
             enqueued = true;
         }
         Ok(enqueued)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::tests::support::context_config;
+    use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
+    use crate::types::QueueEntryStatus;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    fn recovery_message(owner_key: &str) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "task_result_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Background,
+            MessageBody::Text {
+                text: "recovery".into(),
+            },
+        );
+        message
+            .source_refs
+            .insert("task_result_owner_key".into(), owner_key.into());
+        message
+    }
+
+    #[test]
+    fn recovery_owner_key_ignores_result_fence_fields() {
+        let mut record = crate::runtime_db::TaskResultSettlementRecord {
+            result_identity: "result-1".into(),
+            agent_id: "agent-a".into(),
+            task_id: "task-1".into(),
+            message_id: "message-1".into(),
+            work_item_id: Some("work-a".into()),
+            rejoin_generation: 1,
+            parent_turn_id: "turn-1".into(),
+            task_status: "completed".into(),
+            state: TaskResultSettlementState::PersistedPending,
+            activation_id: None,
+            disposition: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            admitted_at: None,
+            settled_at: None,
+            deferred_reason: None,
+            deferred_at: None,
+            next_recheck_at: None,
+        };
+        let owner_key = recovery_owner_key(&record);
+        record.rejoin_generation = 2;
+        record.parent_turn_id = "turn-2".into();
+        record.result_identity = "result-2".into();
+        assert_eq!(owner_key, recovery_owner_key(&record));
+    }
+
+    #[tokio::test]
+    async fn processed_recovery_wake_can_be_rearmed() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let owner_key = "recovery_owner_test";
+        let first = recovery_message(owner_key);
+        let first_id = first.id.clone();
+        runtime.enqueue(first).await.unwrap();
+        assert_eq!(
+            outstanding_recovery_message_id(&runtime, "default", None, owner_key).unwrap(),
+            Some(first_id.clone())
+        );
+
+        let mut entry = runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&first_id)
+            .unwrap()
+            .unwrap();
+        entry.status = QueueEntryStatus::Processed;
+        entry.updated_at = Utc::now();
+        runtime.runtime_db().queue_entries().upsert(&entry).unwrap();
+
+        assert_eq!(
+            outstanding_recovery_message_id(&runtime, "default", None, owner_key).unwrap(),
+            None
+        );
     }
 }
