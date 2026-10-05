@@ -52,6 +52,7 @@ struct GeminiGenerationConfig {
 struct GeminiContent {
     #[serde(default)]
     role: String,
+    #[serde(default)]
     parts: Vec<GeminiPart>,
 }
 
@@ -671,6 +672,29 @@ mod tests {
 
         assert!(response.blocks.is_empty());
         assert_eq!(response.stop_reason.as_deref(), Some("MAX_TOKENS"));
+        assert_eq!(response.input_tokens, 11);
+        assert_eq!(response.output_tokens, 7);
+    }
+
+    #[test]
+    fn gemini_response_accepts_content_without_parts() {
+        let parsed: GenerateContentResponse = serde_json::from_value(json!({
+            "candidates": [{
+                "content": {},
+                "finishReason": "STOP"
+            }],
+            "usageMetadata": {
+                "promptTokenCount": 11,
+                "candidatesTokenCount": 7
+            }
+        }))
+        .expect("Gemini content without parts should still deserialize");
+
+        let response = gemini_response_to_provider_turn_response(parsed)
+            .expect("Gemini content without parts should still be valid");
+
+        assert!(response.blocks.is_empty());
+        assert_eq!(response.stop_reason.as_deref(), Some("STOP"));
         assert_eq!(response.input_tokens, 11);
         assert_eq!(response.output_tokens, 7);
     }
