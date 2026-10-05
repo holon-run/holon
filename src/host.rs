@@ -321,6 +321,7 @@ pub(crate) struct HostInner {
     config_reload_handle: Mutex<Option<JoinHandle<()>>>,
     config_reload_notify: Notify,
     bootstrap_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    bootstrap_handoff_lock: AsyncMutex<()>,
 }
 
 const CONFIG_RELOAD_IDLE: u8 = 0;
@@ -785,6 +786,7 @@ impl RuntimeHost {
                 config_reload_handle: Mutex::new(None),
                 config_reload_notify: Notify::new(),
                 bootstrap_locks: Mutex::new(HashMap::new()),
+                bootstrap_handoff_lock: AsyncMutex::new(()),
             }),
         };
         host.ensure_default_agent_identity()?;
@@ -914,11 +916,14 @@ impl RuntimeHost {
     }
 
     async fn reload_all_agents_config_once(&self) -> Result<()> {
+        // Keep config publication, provider handoff, and runtime activation in
+        // one critical section. A runtime must never observe the ready config
+        // while the host can still hand it the bootstrap provider.
+        let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
         let new_config = self
             .config()
             .reload_runtime_config()
             .map_err(|e| anyhow!("failed to reload config: {}", e))?;
-        self.inner.registry.replace_config(new_config.clone());
         let agent_handles: Vec<RuntimeHandle> = {
             let registry = self.inner.runtimes.read().await;
             registry
@@ -954,6 +959,10 @@ impl RuntimeHost {
                 .store(false, Ordering::Release);
             self.inner.bootstrap_ready_notify.notify_waiters();
         }
+        // Publish only after existing runtimes accepted the new provider
+        // configuration and new runtimes can no longer receive the bootstrap
+        // provider.
+        self.inner.registry.replace_config(new_config);
         Ok(())
     }
 
@@ -3807,6 +3816,7 @@ impl RuntimeHost {
             if agent_id != self.config().default_agent_id && self.bootstrap_mode_active() {
                 self.wait_for_bootstrap_ready().await;
             }
+            let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
             self.active_agent_identity(agent_id)
                 .map_err(anyhow::Error::new)?;
             if agent_id == self.config().default_agent_id {
@@ -3870,10 +3880,11 @@ impl RuntimeHost {
         })
     }
 
-    pub(crate) fn spawn_temporary_runtime(
+    pub(crate) async fn spawn_temporary_runtime(
         &self,
         category: &str,
     ) -> Result<(String, RuntimeHandle, JoinHandle<()>)> {
+        let _bootstrap_handoff_guard = self.inner.bootstrap_handoff_lock.lock().await;
         let agent_id = match category {
             "run" => ids::runtime_id(TEMP_RUN_AGENT_PREFIX.trim_end_matches('_')),
             other => ids::runtime_id(&format!("{TEMP_AGENT_PREFIX}{other}")),
