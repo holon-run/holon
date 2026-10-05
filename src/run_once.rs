@@ -470,7 +470,7 @@ async fn prepare_run_session(host: &RuntimeHost, request: &RunOnceRequest) -> Re
             is_persistent: true,
         })
     } else {
-        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run")?;
+        let (agent_id, runtime, runtime_task) = host.spawn_temporary_runtime("run").await?;
         Ok(RunSession {
             agent_id,
             runtime,
