@@ -283,7 +283,7 @@ pub fn map_response<I, C: Serialize>(
                 .get("noul")
                 .or_else(|| answer.get("yes"))
                 .or_else(|| answer.get("probability"))
-                .and_then(value_as_f32)
+                .and_then(value_as_f64)
                 .ok_or_else(|| {
                     DecisionError::InvalidResponse(
                         "Cloudflare Clef noul answer has no probability".into(),
@@ -294,7 +294,7 @@ pub fn map_response<I, C: Serialize>(
                 DecisionOutcome::Select {
                     value: Value::Bool(probability >= 0.5),
                 },
-                Some(probability.max(1.0 - probability)),
+                Some(probability.max(1.0 - probability) as f32),
                 format!("Cloudflare Clef noul answer (yes probability {probability:.4})"),
             )
         }
@@ -309,18 +309,18 @@ pub fn map_response<I, C: Serialize>(
                     )
                 })?;
             let value = resolve_choice(choice, request.candidates.iter())?;
-            let confidence = answer.get("confidence").and_then(value_as_f32).or_else(|| {
+            let confidence = answer.get("confidence").and_then(value_as_f64).or_else(|| {
                 answer
                     .get("probabilities")
                     .and_then(|probabilities| probabilities.get(choice))
-                    .and_then(value_as_f32)
+                    .and_then(value_as_f64)
             });
             if let Some(confidence) = confidence {
                 ensure_probability("choice confidence", confidence)?;
             }
             (
                 DecisionOutcome::Select { value },
-                confidence,
+                confidence.map(|confidence| confidence as f32),
                 format!("Cloudflare Clef choice answer: {choice}"),
             )
         }
@@ -328,7 +328,7 @@ pub fn map_response<I, C: Serialize>(
             let score = answer
                 .get("score")
                 .or_else(|| answer.get("value"))
-                .and_then(value_as_f32)
+                .and_then(value_as_f64)
                 .ok_or_else(|| {
                     DecisionError::InvalidResponse(
                         "Cloudflare Clef score answer has no score".into(),
@@ -339,15 +339,15 @@ pub fn map_response<I, C: Serialize>(
                     "Cloudflare Clef score must be finite".into(),
                 ));
             }
-            let confidence = answer.get("confidence").and_then(value_as_f32);
+            let confidence = answer.get("confidence").and_then(value_as_f64);
             if let Some(confidence) = confidence {
                 ensure_probability("score confidence", confidence)?;
             }
             (
                 DecisionOutcome::Select {
-                    value: Value::from(score as f64),
+                    value: Value::from(score),
                 },
-                confidence,
+                confidence.map(|confidence| confidence as f32),
                 format!("Cloudflare Clef score answer: {score}"),
             )
         }
@@ -404,11 +404,11 @@ where
     )))
 }
 
-fn value_as_f32(value: &Value) -> Option<f32> {
-    value.as_f64().map(|value| value as f32)
+fn value_as_f64(value: &Value) -> Option<f64> {
+    value.as_f64()
 }
 
-fn ensure_probability(name: &str, value: f32) -> Result<(), DecisionError> {
+fn ensure_probability(name: &str, value: f64) -> Result<(), DecisionError> {
     if !value.is_finite() || !(0.0..=1.0).contains(&value) {
         return Err(DecisionError::InvalidResponse(format!(
             "{name} must be a finite value between 0 and 1"
@@ -635,6 +635,35 @@ mod tests {
         assert!(
             matches!(error, DecisionError::InvalidResponse(message) if message.contains("between 0 and 1"))
         );
+    }
+
+    #[test]
+    fn preserves_f64_score_and_noul_threshold_precision() {
+        let score = 0.1_f64;
+        let mapped = map_response(
+            &response(serde_json::json!({"score": score})),
+            &request(Some("score")),
+            "clef",
+            Duration::ZERO,
+        )
+        .expect("score response");
+        assert!(matches!(
+            mapped.outcome,
+            DecisionOutcome::Select { value } if value.as_f64() == Some(score)
+        ));
+        assert!(mapped.evidence[0].summary.contains("0.1"));
+
+        let mapped = map_response(
+            &response(serde_json::json!({"noul": 0.49999999})),
+            &request(Some("noul")),
+            "clef-flash",
+            Duration::ZERO,
+        )
+        .expect("noul response");
+        assert!(matches!(
+            mapped.outcome,
+            DecisionOutcome::Select { value } if value == serde_json::json!(false)
+        ));
     }
 
     #[tokio::test]
