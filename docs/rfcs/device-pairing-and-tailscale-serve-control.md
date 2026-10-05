@@ -23,7 +23,10 @@ URL field alone is not proof of availability. The Web client does not select a
 server-provided LAN address or an untrusted URL parameter.
 
 The destination row explains that Serve requires the phone to join the tailnet
-and have ACL access, and keeps LAN/custom selection available. A loopback-only
+and have ACL access, and keeps LAN/custom selection available. The macOS menu
+keeps custom destination entry in Settings' advanced section rather than a text
+field in the popover; both surfaces use the same pairing state. The automatic
+destination and LAN selection remain visible in the menu. A loopback-only
 installation without Serve has no default phone destination. An HTTPS reverse
 proxy can use the current browser origin or an explicit custom HTTPS origin;
 `--advertise` is not required for Web pairing. The proxy must serve Web and API
@@ -67,20 +70,22 @@ Tailscale configuration. Mutations target the current tailnet host's HTTPS 443
 `/` handler; other paths and hosts are left untouched. Failed operations must
 not change the desired value.
 The Serve backend uses the daemon's local loopback listener on the HTTP port,
-not its advertised LAN address. A `localhost:port` listener retains its hostname
-target so the proxy resolves the same loopback address family as the listener.
-Enable accepts only a configured primary listener that is loopback, `localhost`,
-or wildcard, and rejects numeric LAN/tailnet primary addresses before changing a
-rule. This is a configuration policy, not a claim that CLI-started numeric
-listeners lack loopback: the CLI already adds a separate IPv4 loopback listener
-for these addresses. That existing dual-listener behavior remains unchanged;
-Serve enable does not infer eligibility from auxiliary sockets.
+not its advertised LAN address. Startup records the actual bound primary and
+additional loopback listener before publishing either control router. A resolved
+loopback primary or wildcard uses that address family and bound port; a numeric
+LAN/tailnet primary uses its additional IPv4 loopback listener. TCP and Unix
+control share this listener metadata. Enable requires this bound loopback
+target, not a configured primary-address policy; missing listener metadata is
+rejected before inspecting or changing Tailscale. Existing dual-listener binding
+behavior is unchanged, including refusal to start if the required alias cannot
+bind. A `localhost` primary uses its resolved, bound loopback address family.
 Enabling Serve requires effective Holon TCP control authentication, regardless
 of whether the request arrives over TCP or the Unix socket: a configured
 nonempty control token in local mode
 (with control authentication enabled), or OIDC session authentication. Existing
 valid sessions remain usable; no per-request token prompt is required. A root
-rule pointing to the current LAN listener is recognized as Holon's legacy rule,
+rule pointing to the current LAN listener or the configured `localhost` backend
+is recognized as Holon's legacy rule,
 reported as serving Holon and needing migration, and replaced by the loopback
 target only on explicit enable; unrelated root rules remain conflicts.
 The menu and Web Settings are clients of the same daemon operations, not owners

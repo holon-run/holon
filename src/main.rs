@@ -925,8 +925,38 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     spawn_stale_agent_template_remote_source_sync(&config, &host);
     emit_first_run_intro(&config, &runtime).await;
 
+    let listener = TcpListener::bind(&config.http_addr)
+        .await
+        .with_context(|| format!("failed to bind {}", config.http_addr))?;
+    let primary_addr = listener.local_addr()?;
+    println!("Holon listening on {primary_addr}");
+    if let Some(advertise_url) = &advertise_url {
+        println!("Holon advertised at {advertise_url}");
+    }
+    // Keep local control and the Serve backend reachable for LAN/tailnet primaries.
+    // Loopback and wildcard primaries already cover their loopback address family.
+    let local_listener = if !primary_addr.ip().is_loopback() && !primary_addr.ip().is_unspecified()
+    {
+        let local_addr = std::net::SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+            primary_addr.port(),
+        );
+        let local = TcpListener::bind(local_addr)
+            .await
+            .with_context(|| format!("failed to bind localhost listener on {local_addr}"))?;
+        println!("Holon local listening on {}", local.local_addr()?);
+        Some(local)
+    } else {
+        None
+    };
+    let local_addr = local_listener
+        .as_ref()
+        .map(TcpListener::local_addr)
+        .transpose()?;
+
     let tcp_state =
         AppState::for_tcp_with_runtime_service(host.clone(), Some(runtime_service.clone()))
+            .with_http_listener_addresses(primary_addr, local_addr)
             .with_desktop_integration(desktop_integration)
             .with_advertise_url(advertise_url.clone())
             .with_web_dist(web_dist.clone());
@@ -955,33 +985,6 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     // the advertised LAN or Tailscale address, so both sockets must serve the
     // same state instead of a per-listener copy.
     let tcp_router = http::router(tcp_state);
-    let listener = TcpListener::bind(&config.http_addr)
-        .await
-        .with_context(|| format!("failed to bind {}", config.http_addr))?;
-    println!("Holon listening on {}", listener.local_addr()?);
-    if let Some(advertise_url) = &advertise_url {
-        println!("Holon advertised at {advertise_url}");
-    }
-    // Always bind a localhost listener so local tools (holon tui, curl) can
-    // connect even when the primary address targets a tailnet or LAN IP.
-    // See: https://github.com/holon-run/holon/issues/1449
-    let primary_ip = listener.local_addr()?.ip();
-    let primary_is_unspecified = primary_ip.is_unspecified();
-    // Skip when primary is already loopback or binds all interfaces (0.0.0.0 / ::),
-    // since binding 127.0.0.1 on the same port would fail with EADDRINUSE.
-    let local_listener = if !primary_ip.is_loopback() && !primary_is_unspecified {
-        let local_addr = std::net::SocketAddr::new(
-            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            listener.local_addr()?.port(),
-        );
-        let local = TcpListener::bind(local_addr)
-            .await
-            .with_context(|| format!("failed to bind localhost listener on {local_addr}"))?;
-        println!("Holon local listening on {}", local.local_addr()?);
-        Some(local)
-    } else {
-        None
-    };
     runtime_service.mark_healthy();
 
     #[cfg(unix)]

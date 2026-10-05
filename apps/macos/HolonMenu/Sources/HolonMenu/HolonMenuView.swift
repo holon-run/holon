@@ -4,6 +4,7 @@ import SwiftUI
 struct HolonMenuView: View {
     @ObservedObject var viewModel: HolonMenuViewModel
     let updater: HolonUpdater
+    var openSettings: () -> Void = {}
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -150,7 +151,6 @@ struct HolonMenuView: View {
 
             GroupBox("Pairing destination") {
                 VStack(alignment: .leading, spacing: 6) {
-                    TextField("Custom remote origin (optional)", text: $viewModel.customPairingOrigin)
                     Toggle("Use LAN instead of Tailscale", isOn: $viewModel.preferLANPairing)
                     if let destination = viewModel.connectionURL {
                         Text(destination.absoluteString)
@@ -161,7 +161,7 @@ struct HolonMenuView: View {
                                 .font(.caption)
                         }
                     } else {
-                        Text("No valid remote origin. Enable LAN or Serve, or enter a custom origin without a path, query, or fragment.")
+                        Text("No valid remote origin. Enable LAN or Serve, or configure a custom origin in Settings.")
                             .font(.caption)
                     }
                 }
@@ -256,6 +256,8 @@ struct HolonMenuView: View {
             }
 
             Divider()
+
+            Button("Settings…", action: openSettings)
 
             Button("Quit Holon Menu App") {
                 NSApplication.shared.terminate(nil)

@@ -25,6 +25,7 @@ enum HolonMenuApp {
 final class HolonMenuStatusController: NSObject {
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
+    private var settingsWindow: NSWindow?
 
     func install(viewModel: HolonMenuViewModel, updater: HolonUpdater) {
         guard statusItem == nil else { return }
@@ -37,7 +38,9 @@ final class HolonMenuStatusController: NSObject {
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 320, height: 400)
         popover.contentViewController = NSHostingController(
-            rootView: HolonMenuView(viewModel: viewModel, updater: updater)
+            rootView: HolonMenuView(viewModel: viewModel, updater: updater, openSettings: { [weak self] in
+                self?.showSettings(viewModel: viewModel)
+            })
                 .fixedSize(horizontal: false, vertical: true)
                 .background {
                     GeometryReader { geometry in
@@ -50,6 +53,32 @@ final class HolonMenuStatusController: NSObject {
                 }
                 .task { await viewModel.bootstrap() }
         )
+    }
+
+    @discardableResult
+    func showSettings(viewModel: HolonMenuViewModel) -> NSWindow {
+        popover.performClose(nil)
+        let window: NSWindow
+        if let settingsWindow {
+            window = settingsWindow
+        } else {
+            window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 440, height: 180),
+                styleMask: [.titled, .closable],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Holon Settings"
+            window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(
+                rootView: HolonMenuSettingsView(viewModel: viewModel)
+            )
+            window.center()
+            settingsWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
+        return window
     }
 
     @objc private func togglePopover() {
