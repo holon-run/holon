@@ -2856,6 +2856,11 @@ pub(super) fn apply_bootstrap_recovered_projection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::work_item::{WorkItemRecord, WorkItemState};
+    use crate::runtime::tests::support::context_config;
+    use crate::types::{WaitConditionKind, WakeSource};
+    use std::sync::Arc;
+    use tempfile::tempdir;
 
     fn queued_message(priority: Priority, id: &str) -> MessageEnvelope {
         let mut message = MessageEnvelope::new(
@@ -2941,6 +2946,104 @@ mod tests {
 
         assert_eq!(selected.map(|message| message.id.as_str()), Some("backlog"));
         assert!(!wait_obligation);
+    }
+
+    #[tokio::test]
+    async fn task_result_recovery_requires_no_active_owner_wait() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let mut work_item =
+            WorkItemRecord::new("default", "task recovery eligibility", WorkItemState::Open);
+        work_item.id = "work-a".into();
+        runtime
+            .runtime_db()
+            .work_items()
+            .insert_new(&work_item)
+            .unwrap();
+        let now = Utc::now();
+        let task = TaskRecord {
+            id: "task-recovery-eligibility".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Completed,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: Some("task-parent".into()),
+            work_item_id: Some("work-a".into()),
+            summary: None,
+            detail: Some(serde_json::json!({
+                "rejoin_obligation_id": "task-recovery-eligibility",
+                "rejoin_generation": 1,
+                "parent_turn_id": "turn-parent",
+            })),
+            recovery: None,
+        };
+        runtime.runtime_db().tasks().upsert(&task).unwrap();
+        let mut result_message = MessageEnvelope::new(
+            "default",
+            MessageKind::TaskResult,
+            MessageOrigin::System {
+                subsystem: "task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Background,
+            MessageBody::Text {
+                text: "completed".into(),
+            },
+        );
+        result_message.id = "task-parent".into();
+        result_message.work_item_id = Some("work-a".into());
+        runtime.storage().append_message(&result_message).unwrap();
+        let record = runtime
+            .runtime_db()
+            .task_result_settlements()
+            .ensure_pending(&task, &result_message, now)
+            .unwrap()
+            .unwrap();
+        let executor = SchedulerDecisionExecutor::new(&runtime);
+        assert!(executor
+            .task_result_record_is_deliverable("default", &record)
+            .unwrap());
+
+        runtime
+            .runtime_db()
+            .wait_conditions()
+            .upsert(&WaitConditionRecord {
+                id: "wait-recovery-eligibility".into(),
+                agent_id: "default".into(),
+                work_item_id: Some("work-a".into()),
+                status: WaitConditionStatus::Active,
+                kind: WaitConditionKind::Task,
+                source: Some("test".into()),
+                subject_ref: None,
+                waiting_for: "task result".into(),
+                wake_sources: vec![WakeSource::TaskResult {
+                    task_id: task.id.clone(),
+                }],
+                continuation: None,
+                created_at: now,
+                updated_at: now,
+                expires_at: None,
+                resolved_at: None,
+                cancelled_at: None,
+                turn_id: Some("turn-parent".into()),
+                trigger_message_id: None,
+                triggered_at: None,
+            })
+            .unwrap();
+        assert!(!executor
+            .task_result_record_is_deliverable("default", &record)
+            .unwrap());
     }
 
     fn no_progress_cause(reason: &'static str) -> QueueHeadNoProgressCause {

@@ -200,3 +200,100 @@ impl RuntimeHandle {
         Ok(enqueued)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::runtime::tests::support::context_config;
+    use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
+    use crate::types::QueueEntryStatus;
+    use std::sync::Arc;
+    use tempfile::tempdir;
+
+    fn recovery_message(owner_key: &str) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "task_result_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Background,
+            MessageBody::Text {
+                text: "recovery".into(),
+            },
+        );
+        message
+            .source_refs
+            .insert("task_result_owner_key".into(), owner_key.into());
+        message
+    }
+
+    #[test]
+    fn recovery_owner_key_ignores_result_fence_fields() {
+        let mut record = crate::runtime_db::TaskResultSettlementRecord {
+            result_identity: "result-1".into(),
+            agent_id: "agent-a".into(),
+            task_id: "task-1".into(),
+            message_id: "message-1".into(),
+            work_item_id: Some("work-a".into()),
+            rejoin_generation: 1,
+            parent_turn_id: "turn-1".into(),
+            task_status: "completed".into(),
+            state: TaskResultSettlementState::PersistedPending,
+            activation_id: None,
+            disposition: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            admitted_at: None,
+            settled_at: None,
+            deferred_reason: None,
+            deferred_at: None,
+            next_recheck_at: None,
+        };
+        let owner_key = recovery_owner_key(&record);
+        record.rejoin_generation = 2;
+        record.parent_turn_id = "turn-2".into();
+        record.result_identity = "result-2".into();
+        assert_eq!(owner_key, recovery_owner_key(&record));
+    }
+
+    #[tokio::test]
+    async fn processed_recovery_wake_can_be_rearmed() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let owner_key = "recovery_owner_test";
+        let first = recovery_message(owner_key);
+        let first_id = first.id.clone();
+        runtime.enqueue(first).await.unwrap();
+        assert_eq!(
+            outstanding_recovery_message_id(&runtime, "default", None, owner_key).unwrap(),
+            Some(first_id.clone())
+        );
+
+        let mut entry = runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&first_id)
+            .unwrap()
+            .unwrap();
+        entry.status = QueueEntryStatus::Processed;
+        entry.updated_at = Utc::now();
+        runtime.runtime_db().queue_entries().upsert(&entry).unwrap();
+
+        assert_eq!(
+            outstanding_recovery_message_id(&runtime, "default", None, owner_key).unwrap(),
+            None
+        );
+    }
+}

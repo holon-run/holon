@@ -65,6 +65,29 @@ fn insert(db: &RuntimeDb, record: &TaskResultSettlementRecord) {
 }
 
 #[test]
+fn unsettled_for_owner_distinguishes_null_work_item_owner() {
+    let (_dir, db) = runtime_db();
+    let mut agent_scoped = pending_record(0);
+    agent_scoped.work_item_id = None;
+    insert(&db, &agent_scoped);
+    insert(&db, &pending_record(1));
+
+    let agent_records = db
+        .task_result_settlements()
+        .unsettled_for_owner("agent-a", None, 8)
+        .unwrap();
+    assert_eq!(agent_records.len(), 1);
+    assert_eq!(agent_records[0].result_identity, "result-00");
+
+    let work_item_records = db
+        .task_result_settlements()
+        .unsettled_for_owner("agent-a", Some("work-a"), 8)
+        .unwrap();
+    assert_eq!(work_item_records.len(), 1);
+    assert_eq!(work_item_records[0].result_identity, "result-01");
+}
+
+#[test]
 fn admission_is_bounded_and_leaves_overflow_pending() {
     let (_dir, db) = runtime_db();
     for index in 0..(TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT + 2) {
