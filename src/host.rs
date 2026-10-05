@@ -11861,8 +11861,16 @@ mod tests {
 
     #[test]
     fn runtime_host_new_fails_when_no_configured_provider_is_available() {
+        let _env_lock = crate::test_env::lock_env();
+        let original_bootstrap = std::env::var_os("HOLON_BOOTSTRAP");
+        std::env::remove_var("HOLON_BOOTSTRAP");
         let fixture = provider_test_config(None);
-        let err = RuntimeHost::new(fixture.config)
+        let result = RuntimeHost::new(fixture.config);
+        match original_bootstrap {
+            Some(value) => std::env::set_var("HOLON_BOOTSTRAP", value),
+            None => std::env::remove_var("HOLON_BOOTSTRAP"),
+        }
+        let err = result
             .err()
             .expect("missing provider auth should fail host construction");
         assert!(err
