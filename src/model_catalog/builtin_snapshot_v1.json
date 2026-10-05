@@ -5205,6 +5205,69 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "xai/grok-imagine-image",
+      "display_name": "Grok Imagine Image",
+      "description": "xAI Grok Imagine image generation model exposed through the OpenAI Images-compatible endpoint.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": true,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "xai/grok-imagine-image-2.0",
+      "display_name": "Grok Imagine Image 2.0",
+      "description": "xAI Grok Imagine image generation model exposed through the OpenAI Images-compatible endpoint.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": true,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "xai/grok-imagine-image-quality",
+      "display_name": "Grok Imagine Image Quality",
+      "description": "xAI Grok Imagine image generation model exposed through the OpenAI Images-compatible endpoint.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": true,
+        "supports_reasoning": false,
+        "interactive_exec": false
+      },
+      "source": "built_in_catalog"
+    },
+    {
       "model_ref": "xiaomi/mimo-v2.5",
       "display_name": "Xiaomi MiMo V2.5",
       "description": "Holon built-in runtime metadata for the xiaomi/mimo-v2.5 compatible provider model.",
@@ -10829,6 +10892,54 @@
       }
     },
     {
+      "route_ref": "xai@default/grok-imagine-image",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "xai@default/grok-imagine-image-2.0",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "xai@default/grok-imagine-image-quality",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "tool_output_truncation_estimated_tokens": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "xiaomi@default/mimo-v2.5",
       "policy": {
         "display_name": null,
@@ -12879,6 +12990,18 @@
     {
       "model_ref": "xai/grok-4.5",
       "route_ref": "xai@default/grok-4.5"
+    },
+    {
+      "model_ref": "xai/grok-imagine-image",
+      "route_ref": "xai@default/grok-imagine-image"
+    },
+    {
+      "model_ref": "xai/grok-imagine-image-2.0",
+      "route_ref": "xai@default/grok-imagine-image-2.0"
+    },
+    {
+      "model_ref": "xai/grok-imagine-image-quality",
+      "route_ref": "xai@default/grok-imagine-image-quality"
     },
     {
       "model_ref": "xiaomi/mimo-v2.5",

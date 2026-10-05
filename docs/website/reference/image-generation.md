@@ -100,6 +100,7 @@ Image generation is supported through providers whose models advertise the
 |----------|-------|-------|
 | OpenAI | gpt-image-2 | Native image generation |
 | Volcengine | doubao-seedream-5.0-lite | Via Volcengine Ark plan endpoint |
+| xAI | grok-imagine-image-2.0 | Grok Imagine via the xAI OpenAI-compatible Images API |
 
 > See [Models reference](/reference/models.md) for the current list of
 > image-generation capable models.
@@ -120,6 +121,28 @@ Then set the image generation default:
 ```bash
 holon config set image_generation.default "volcengine@image-openai/doubao-seedream-5.0-lite"
 ```
+
+## xAI Grok Imagine setup
+
+xAI Grok Imagine image models are exposed through the xAI OpenAI-compatible
+Images API and are selected explicitly, because they are image-only models and
+are not conversation turn candidates:
+
+```bash
+holon config set image_generation.default "xai@grok-imagine-image-2.0"
+```
+
+Supported models include `grok-imagine-image`, `grok-imagine-image-2.0`, and
+`grok-imagine-image-quality`. The `xai` provider resolves `XAI_API_KEY` or the
+Holon-managed xAI OAuth profile.
+
+xAI does not accept OpenAI's `size`, `background`, or `output_format` request
+fields. `size` is mapped to the closest `aspect_ratio` at `1k`
+(`1024x1024` -> `1:1`, `1536x1024` -> `3:2`, `1024x1536` -> `2:3`).
+`background` and `output_format` are rejected with a clear error instead of
+being silently ignored. The runtime records the media type xAI reports, so the
+saved file extension matches the image bytes.
+
 
 ## Output management
 
