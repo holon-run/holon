@@ -169,6 +169,7 @@ internal class HolonRepository(
         allowInsecureHttp: Boolean,
         pairingTicket: String? = null,
         nativeSessionTicket: String? = null,
+        nativeVerifier: String? = null,
     ): Pair<ActiveSession, HolonRosterSnapshot> {
         require(pairingTicket == null || nativeSessionTicket == null) {
             "Pairing and OIDC session tickets are mutually exclusive"
@@ -208,7 +209,7 @@ internal class HolonRepository(
             )
         return try {
             if (nativeSessionTicket != null) {
-                candidate.exchangeSession(nativeSessionTicket)
+                candidate.exchangeSession(nativeSessionTicket, nativeVerifier)
             } else if (pairingTicket == null) {
                 candidate.exchangeSession(transientToken.orEmpty())
             } else {
@@ -296,7 +297,7 @@ internal class HolonRepository(
                 saved.runtimeId != roster.runtimeId ||
                 saved.visibilityScopeId != roster.visibilityScopeId
             ) {
-                clearLocalState()
+                clearLocalState(saved.scopeKey)
             }
             val session =
                 ActiveSession(
@@ -318,11 +319,13 @@ internal class HolonRepository(
             )
             ResumeResult.Ready(session, roster)
         } catch (error: HolonHttpException) {
-            if (error.statusCode == 401 || error.statusCode == 403) {
+            if (error.isAuthenticationFailure()) {
                 clearAuthentication(networkId = saved.networkId, scopeKey = saved.scopeKey)
                 ResumeResult.NoSession
-            } else {
+            } else if (error.isTransientNetworkFailure()) {
                 offlineResult(saved, candidate)
+            } else {
+                throw error
             }
         } catch (error: HolonProtocolException) {
             if (error.isCompatibilityFailure()) {
@@ -404,6 +407,9 @@ internal class HolonRepository(
     }
 
     suspend fun deleteNetwork(networkId: String) {
+        preferences.profiles().firstOrNull { it.networkId == networkId }?.savedScopeKey()?.let {
+            clearLocalState(it)
+        }
         traceRecorder.record(TraceScope.Network(networkId), TraceLevel.INFO, "network", "network.deleted")
         traceRecorder.delete(TraceScope.Network(networkId))
         credentialStore(networkId).clear()
@@ -881,7 +887,7 @@ internal class HolonRepository(
         preferredName: String,
         download: (File) -> HolonDownloadedFile,
     ): PreparedArtifact {
-        val directory = File(context.cacheDir, "shared-artifacts").apply { mkdirs() }
+        val directory = File(context.cacheDir, "shared-artifacts/${scopeFileKey(requireSession().scopeKey)}").apply { mkdirs() }
         val cachedFiles = directory.listFiles().orEmpty().filter(File::isFile).sortedBy(File::lastModified)
         var cachedBytes = cachedFiles.sumOf(File::length)
         cachedFiles.forEach { cached ->
@@ -894,6 +900,7 @@ internal class HolonRepository(
         val target = File(directory, "${UUID.randomUUID()}-$name")
         return try {
             val downloaded = download(target)
+            trimArtifactCache(directory, protected = target)
             PreparedArtifact(locator, target.absolutePath, downloaded.mediaType, name)
         } catch (error: Throwable) {
             target.delete()
@@ -1089,8 +1096,19 @@ internal class HolonRepository(
     }
 
     private suspend fun clearLocalState(scopeKey: String) {
+        val removed = dao.attachmentPayloads(scopeKey).flatMap(::attachmentPaths).toSet()
         dao.clearScope(scopeKey)
+        val retained = dao.attachmentPayloads().flatMap(::attachmentPaths).toSet()
+        ScopedFiles(File(context.filesDir, "outbox")).removeUnreferenced(removed, retained)
+        File(context.cacheDir, "shared-artifacts/${scopeFileKey(scopeKey)}").deleteRecursively()
     }
+
+    private fun attachmentPaths(payload: String): List<String> =
+        runCatching { json.decodeFromString(ListSerializer(StagedAttachment.serializer()), payload) }
+            .getOrDefault(emptyList()).map(StagedAttachment::localPath)
+
+    fun isCurrentFailure(error: Throwable): Boolean =
+        error !is HolonHttpException || error.clientInstanceId == null || error.clientInstanceId == client?.instanceId
 
     private suspend fun clearAuthentication(
         removeProfile: Boolean = false,
@@ -1098,7 +1116,7 @@ internal class HolonRepository(
         scopeKey: String? = active?.scopeKey,
     ) {
         val current = active
-        val targetNetworkId = current?.networkId ?: networkId
+        val targetNetworkId = networkId ?: current?.networkId
         if (targetNetworkId != null) {
             credentialStore(targetNetworkId).clear()
             if (removeProfile) preferences.removeProfile(targetNetworkId)
@@ -1106,9 +1124,11 @@ internal class HolonRepository(
             sessionStore.clear()
             if (removeProfile) preferences.clear()
         }
-        if (scopeKey != null) clearLocalState(scopeKey) else clearLocalState()
-        active = null
-        client = null
+        if (scopeKey != null) clearLocalState(scopeKey)
+        if (current?.networkId == targetNetworkId) {
+            active = null
+            client = null
+        }
     }
 
     private fun migrateLegacyCredential(profile: NetworkProfile) {
@@ -1272,20 +1292,8 @@ internal fun pairingHumanError(error: Throwable): String =
     else humanError(error)
 
 internal fun Throwable.isAuthenticationFailure(): Boolean {
-    if (this !is HolonHttpException || statusCode != 401) return false
-    val apiError = apiError
-    return apiError == null || apiError.code in AUTHENTICATION_ERROR_CODES
+    return this is HolonHttpException && run.holon.android.sdk.requiresSessionRenewal(statusCode, apiError?.code)
 }
-
-private val AUTHENTICATION_ERROR_CODES =
-    setOf(
-        "auth_required",
-        "invalid_static_token",
-        "pairing_invalid_or_expired",
-        "session_invalid_or_expired",
-        "session_expired_or_revoked",
-        "session_user_disabled",
-    )
 
 internal fun Throwable.isTransientNetworkFailure(): Boolean =
     when (this) {

@@ -175,7 +175,32 @@ impl AuthenticationRepository<'_> {
         credential_digest: &str,
         consumed_at: DateTime<Utc>,
     ) -> Result<Option<BootstrapCredentialRecord>> {
+        self.consume_bootstrap_credential_for_scopes(credential_digest, consumed_at, None)
+    }
+
+    /// Proof validation and single-use consumption share one transaction.
+    pub fn consume_bootstrap_credential_for_scopes(
+        &self,
+        credential_digest: &str,
+        consumed_at: DateTime<Utc>,
+        allowed_scopes: Option<&[&str]>,
+    ) -> Result<Option<BootstrapCredentialRecord>> {
         self.db.transaction(|tx| {
+            if let Some(scopes) = allowed_scopes {
+                let scope: Option<String> = tx
+                    .query_row(
+                        "SELECT scope FROM auth_bootstrap_credentials WHERE credential_digest = ?1",
+                        [credential_digest],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if !scope
+                    .as_deref()
+                    .is_some_and(|value| scopes.contains(&value))
+                {
+                    return Ok(None);
+                }
+            }
             let updated = tx.execute(
                 "UPDATE auth_bootstrap_credentials
                  SET consumed_at = ?2
@@ -342,6 +367,52 @@ fn row_to_bootstrap(row: &rusqlite::Row<'_>) -> rusqlite::Result<BootstrapCreden
 mod tests {
     use super::*;
     use crate::runtime_db::RuntimeDb;
+
+    #[test]
+    fn native_bootstrap_proof_is_checked_before_single_use_consumption() -> Result<()> {
+        let temp_dir = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp_dir.path().join("runtime.sqlite"),
+            temp_dir.path().join("runtime.lock"),
+        )?;
+        let now = Utc::now();
+        db.authentication()
+            .insert_bootstrap_credential(&BootstrapCredentialRecord {
+                credential_digest: "native-ticket".into(),
+                user_id: None,
+                scope: "native-session:correct-challenge".into(),
+                created_at: now,
+                expires_at: now + chrono::Duration::minutes(2),
+                consumed_at: None,
+                revoked_at: None,
+            })?;
+        for scopes in [
+            &["session", "recovery"][..],
+            &["native-session:wrong-challenge"][..],
+        ] {
+            assert!(db
+                .authentication()
+                .consume_bootstrap_credential_for_scopes("native-ticket", now, Some(scopes))?
+                .is_none());
+        }
+        assert!(db
+            .authentication()
+            .consume_bootstrap_credential_for_scopes(
+                "native-ticket",
+                now,
+                Some(&["native-session:correct-challenge"])
+            )?
+            .is_some());
+        assert!(db
+            .authentication()
+            .consume_bootstrap_credential_for_scopes(
+                "native-ticket",
+                now,
+                Some(&["native-session:correct-challenge"])
+            )?
+            .is_none());
+        Ok(())
+    }
 
     #[test]
     fn bootstrap_credential_is_consumed_once() -> Result<()> {

@@ -32,13 +32,17 @@ import kotlinx.serialization.Contextual
  *
  *
  * @param credential
+ * @param nativeVerifier
  */
 @Serializable
 
 data class SessionExchangeRequest (
 
     @SerialName(value = "credential")
-    val credential: kotlin.String
+    val credential: kotlin.String,
+
+    @SerialName(value = "native_verifier")
+    val nativeVerifier: kotlin.String? = null
 
 ) {
 

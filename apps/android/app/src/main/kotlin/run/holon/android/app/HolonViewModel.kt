@@ -281,6 +281,7 @@ internal class HolonViewModel(
     val state: StateFlow<HolonUiState> = mutableState.asStateFlow()
     private val oidcPreferences =
         application.getSharedPreferences("holon_oidc_login", Context.MODE_PRIVATE)
+    private val nativeProofStore = createSessionStore(application)
     private var conversationJob: Job? = null
     private var conversationStreamJob: Job? = null
     private var conversationStream: HolonSseConnection? = null
@@ -671,14 +672,18 @@ internal class HolonViewModel(
                     return null
                 }
         val state = UUID.randomUUID().toString().replace("-", "")
+        val proof = run.holon.android.sdk.NativeLoginProof.create()
+        nativeProofStore.write("oidc-login-proof", proof.verifier)
         oidcPreferences.edit()
             .putString("state", state)
             .putString("base_url", baseUrl)
             .putBoolean("allow_insecure_http", before.allowInsecureHttp)
+            .putLong("started_at", System.currentTimeMillis())
             .apply()
         return Uri.parse("${baseUrl.trimEnd('/')}/auth/oidc/native/start")
             .buildUpon()
             .appendQueryParameter("state", state)
+            .appendQueryParameter("code_challenge", proof.challenge)
             .build()
             .toString()
     }
@@ -692,8 +697,15 @@ internal class HolonViewModel(
         val allowInsecureHttp = oidcPreferences.getBoolean("allow_insecure_http", false)
         val ticket = uri.getQueryParameter("ticket")
         val callbackState = uri.getQueryParameter("state")
-        oidcPreferences.edit().clear().apply()
         if (expectedState.isNullOrBlank() || expectedState != callbackState || address.isNullOrBlank()) {
+            mutableState.update { it.copy(error = "OIDC 登录回调无效，请重新开始登录") }
+            return true
+        }
+        val verifier = nativeProofStore.read("oidc-login-proof")
+        val age = System.currentTimeMillis() - oidcPreferences.getLong("started_at", 0)
+        oidcPreferences.edit().clear().apply()
+        nativeProofStore.clear("oidc-login-proof")
+        if (verifier.isNullOrBlank() || age !in 0..600_000) {
             mutableState.update { it.copy(error = "OIDC 登录回调无效，请重新开始登录") }
             return true
         }
@@ -707,11 +719,11 @@ internal class HolonViewModel(
                 allowInsecureHttp = allowInsecureHttp,
             )
         }
-        login(null, ticket)
+        login(null, ticket, verifier)
         return true
     }
 
-    private fun login(pairing: ScannedPairing?, nativeSessionTicket: String? = null) {
+    private fun login(pairing: ScannedPairing?, nativeSessionTicket: String? = null, nativeVerifier: String? = null) {
         val before = state.value
         if (before.busy || before.phase !in setOf(AppPhase.SignedOut, AppPhase.AddingNetwork)) return
         if (pairing == null && nativeSessionTicket == null && before.token.isBlank()) {
@@ -734,6 +746,7 @@ internal class HolonViewModel(
                             pairing?.address?.startsWith("http://") ?: before.allowInsecureHttp,
                             pairing?.ticket,
                             nativeSessionTicket,
+                            nativeVerifier,
                         )
                     Triple(session, roster, repository.networkProfiles())
                 }
@@ -2626,6 +2639,7 @@ internal class HolonViewModel(
             return
         }
         if (error is CancellationException) return
+        if (!repository.isCurrentFailure(error)) return
         val httpError = error as? HolonHttpException
         state.value.session?.networkId?.let { networkId ->
             if (httpError != null) {

@@ -17,6 +17,39 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class HolonHttpClientTest {
+    @Test fun `native exchange sends proof in body without authorizing the bootstrap request`() {
+        MockWebServer().use { server ->
+            server.enqueue(jsonResponse("""{"credential":"session","ok":true,"user_id":"u","expires_at":null}"""))
+            val client = HolonHttpClient(server.url("/").toString(), bearerTokenProvider = BearerTokenProvider { "previous-session" })
+            client.exchangeSession("ticket", "native-proof")
+            val request = server.takeRequest()
+            assertNull(request.getHeader("Authorization"))
+            val body = HolonWire.json.parseToJsonElement(request.body.readUtf8()).jsonObject
+            assertEquals("native-proof", body["native_verifier"]?.jsonPrimitive?.content)
+        }
+    }
+    @Test
+    fun `transport errors never erase credentials and identify their originating client`() {
+        MockWebServer().use { server ->
+            var saved = "session-A"
+            val store = object : SessionCredentialStore {
+                override fun read() = saved
+                override fun write(credential: String) { saved = credential }
+                override fun clear() { saved = "" }
+            }
+            val old = HolonHttpClient(server.url("/").toString(), sessionCredentialStore = store)
+            server.enqueue(jsonResponse("""{"code":"forbidden","message":"Permission denied"}""").setResponseCode(401))
+            val failure = assertFailsWith<HolonHttpException> { old.currentUser() }
+            store.write("session-B")
+            val replacement = HolonHttpClient(server.url("/").toString(), sessionCredentialStore = store)
+            assertEquals("session-B", saved)
+            assertEquals(old.instanceId, failure.clientInstanceId)
+            assertTrue(replacement.instanceId != failure.clientInstanceId)
+            assertTrue(!requiresSessionRenewal(401, "forbidden"))
+            assertTrue(!requiresSessionRenewal(403, "auth_required"))
+            assertTrue(requiresSessionRenewal(401, "session_expired_or_revoked"))
+        }
+    }
     @Test
     fun `credential storage read failures do not send an unauthenticated request`() {
         MockWebServer().use { server ->
@@ -430,7 +463,7 @@ class HolonHttpClientTest {
     }
 
     @Test
-    fun `unauthorized response clears the stored session credential`() {
+    fun `unauthorized response leaves invalidation to the session owner`() {
         MockWebServer().use { server ->
             server.enqueue(
                 jsonResponse(
@@ -447,7 +480,7 @@ class HolonHttpClientTest {
 
             assertFailsWith<HolonHttpException> { client.listAgents() }
 
-            assertNull(store.value)
+            assertEquals("expired-session", store.value)
             assertEquals("Bearer expired-session", server.takeRequest().getHeader("Authorization"))
         }
     }

@@ -49,6 +49,10 @@ internal data class SavedConnection(
         runCatching { URI(baseUrl).scheme.equals("http", ignoreCase = true) }.getOrDefault(false),
 )
 
+internal fun NetworkProfile.savedScopeKey(): String? =
+    if (runtimeId == null || userId == null || visibilityScopeId == null) null
+    else scopeKeyForNetwork(networkId, baseUrl, runtimeId, userId, visibilityScopeId)
+
 internal class HostPreferences(private val context: Context) {
     private val baseUrlKey = stringPreferencesKey("base_url")
     private val runtimeIdKey = stringPreferencesKey("runtime_id")
@@ -253,6 +257,11 @@ internal data class AgentSyncStateEntity(
 
 @Dao
 internal interface HolonDao {
+    @Query("SELECT attachmentsJson FROM outbox WHERE scopeKey = :scopeKey UNION ALL SELECT attachmentsJson FROM composer_attachments WHERE scopeKey = :scopeKey")
+    suspend fun attachmentPayloads(scopeKey: String): List<String>
+
+    @Query("SELECT attachmentsJson FROM outbox UNION ALL SELECT attachmentsJson FROM composer_attachments")
+    suspend fun attachmentPayloads(): List<String>
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putRuntimeScope(entry: RuntimeScopeEntity)
 
