@@ -431,6 +431,9 @@ pub async fn complete_oidc_login(
             redirect.query_pairs_mut().append_pair(key, value);
         }
         redirect.query_pairs_mut().append_pair("ticket", &ticket);
+        redirect
+            .query_pairs_mut()
+            .append_pair("code_challenge_method", "S256");
         let location = axum::http::HeaderValue::from_str(redirect.as_str())
             .map_err(|error| error_response(anyhow!("invalid native OIDC redirect: {error}")))?;
         let mut response = axum::http::Response::new(axum::body::Body::empty());

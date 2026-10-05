@@ -75,7 +75,9 @@ This proof is independent of the daemon-to-provider PKCE verifier.
 
 The login transaction retains only the native challenge. Its callback ticket
 has scope `native-session:<challenge>` and expires after two minutes. The
-callback URL contains state and ticket, never the verifier. Exchanging it at
+callback URL contains state, ticket and `code_challenge_method=S256`, never
+the verifier. Updated apps reject callbacks without the method marker so they
+do not silently downgrade when connected to an older daemon. Exchanging it at
 `/auth/session/exchange/native` requires `native_verifier`; all bootstrap
 exchange routes enforce the same scope check. A wrong or missing proof neither
 issues a session nor consumes the ticket. Validation and consumption are atomic.

@@ -2,27 +2,11 @@ package run.holon.android.app
 
 import android.net.Uri
 import run.holon.android.sdk.AgentSummary
-import run.holon.android.sdk.HolonAgentEvent
-import run.holon.android.sdk.HolonModelCatalog
-import run.holon.android.sdk.HolonBrief
-import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonConversationActivity
-import run.holon.android.sdk.HolonConversationDetail
-import run.holon.android.sdk.HolonConversationSnapshot
-import run.holon.android.sdk.SseReconnectPolicy
-import run.holon.android.sdk.HolonConversationStreamEvent
 import run.holon.android.sdk.HolonConversationTurn
-import run.holon.android.sdk.HolonHttpException
-import run.holon.android.sdk.HolonFileReferenceResult
-import run.holon.android.sdk.HolonRosterSnapshot
-import run.holon.android.sdk.HolonSseConnection
-import run.holon.android.sdk.HolonToolExecutionSnapshot
 import run.holon.android.sdk.HolonWorkItemSnapshot
 import run.holon.android.sdk.HolonTaskSnapshot
-import run.holon.android.sdk.HolonTaskOutputSnapshot
 import run.holon.android.sdk.HolonWorkspace
-import run.holon.android.sdk.HolonWorkspaceDirectory
-import run.holon.android.sdk.toConversationEvent
 
 internal interface ConnectionActions {
     fun applyScannedAddress(value: String): Unit

@@ -260,6 +260,10 @@ jobs:
           bash ../../scripts/test-android-release-packaging.sh
           ./gradlew --no-daemon :sdk:test :app:testDebugUnitTest :app:assembleDebug :app:assembleRelease
 
+      - name: Verify Android screenshots and lint
+        working-directory: apps/android
+        run: ./gradlew --no-daemon :app:verifyPaparazziDebug :app:lintRelease
+
   conversation-sdk:
     name: Conversation SDK
     runs-on: ubuntu-latest

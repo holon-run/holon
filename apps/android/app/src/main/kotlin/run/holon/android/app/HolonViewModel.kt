@@ -13,7 +13,6 @@ import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewmodel.CreationExtras
 import androidx.lifecycle.viewModelScope
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,18 +23,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import run.holon.android.sdk.AgentSummary
-import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonModelCatalog
 import run.holon.android.sdk.HolonBrief
 import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonConversationActivity
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
-import run.holon.android.sdk.SseReconnectPolicy
 import run.holon.android.sdk.HolonConversationStreamEvent
 import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonHttpException
@@ -75,7 +70,6 @@ internal class HolonViewModel(
     private var conversationStream: HolonSseConnection? = null
     // SSE readers block threads; keep them off the pool used by foreground sends and file staging.
     private val eventStreamIo = Dispatchers.IO.limitedParallelism(2)
-    private val staleCursorRecoveryMutex = Mutex()
     @Volatile private var liveEventLogEpoch: String? = null
     private var liveRosterRefreshJob: Job? = null
     private var detailRefreshJob: Job? = null
@@ -621,6 +615,11 @@ internal class HolonViewModel(
         stopLiveSync()
     }
 
+    override fun onCleared() {
+        onBackground()
+        super.onCleared()
+    }
+
     private suspend fun loadRoster(generation: Long = liveSyncGeneration): Pair<ActiveSession, HolonRosterSnapshot> {
         if (generation != liveSyncGeneration) throw CancellationException("Session changed")
         return rosterRefresh.load().await().also {
@@ -707,28 +706,6 @@ internal class HolonViewModel(
         foregroundSync.start(generation)
     }
 
-    private suspend fun recoverLiveRosterAfterStaleCursor(): String? =
-        staleCursorRecoveryMutex.withLock {
-            if (!foreground || state.value.phase != AppPhase.Ready) return@withLock liveEventLogEpoch
-            val generation = liveSyncGeneration
-            runCatching {
-                loadRoster(generation)
-            }.onSuccess { (session, roster) ->
-                if (generation != liveSyncGeneration) return@onSuccess
-                liveEventLogEpoch = roster.eventLogEpoch
-                mutableState.update {
-                    it.copy(
-                        session = session,
-                        agents = roster.agents,
-                        online = true,
-                        lastSyncedAt = System.currentTimeMillis(),
-                        statusMessage = null,
-                    )
-                }
-                loadBriefReadStates()
-                startLiveSync(roster.agents, roster.eventLogEpoch, generation)
-            }.onFailure(::handleRuntimeFailure).getOrNull()?.second?.eventLogEpoch
-        }
 
     private fun stopLiveSync() {
         operatorPreviewLoader.reset()

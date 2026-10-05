@@ -3939,6 +3939,98 @@ pub async fn auth_native_session_exchange_returns_reusable_session_and_logout_re
     Ok(())
 }
 
+pub async fn native_oidc_ticket_requires_matching_verifier_without_consuming_on_failure(
+) -> Result<()> {
+    let test_config = TestConfigBuilder::new().build();
+    let mut config = test_config.config().clone();
+    config.auth.mode = holon::authentication::AuthenticationMode::Oidc;
+    config.auth.oidc = Some(holon::authentication::OidcProviderConfig {
+        issuer_url: "https://issuer.example.com".into(),
+        client_id: "holon-test".into(),
+        client_secret_env: None,
+        redirect_uri: None,
+    });
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    let now = chrono::Utc::now();
+    host.runtime_db()
+        .authentication()
+        .upsert_user(&holon::authentication::AuthUserRecord {
+            user_id: "native-user".into(),
+            issuer: "https://issuer.example.com".into(),
+            subject: "native-subject".into(),
+            display_name: None,
+            email: None,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })?;
+    let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    host.runtime_db()
+        .authentication()
+        .insert_bootstrap_credential(&holon::authentication::BootstrapCredentialRecord {
+            credential_digest: holon::authentication::digest_secret("native-ticket"),
+            user_id: Some("native-user".into()),
+            scope: "native-session:E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM".into(),
+            created_at: now,
+            expires_at: now + chrono::Duration::minutes(2),
+            consumed_at: None,
+            revoked_at: None,
+        })?;
+    let client = reqwest::Client::new();
+    let missing_proof = client
+        .get(format!("{base}/api/auth/oidc/native/start?state=app-state"))
+        .send()
+        .await?;
+    assert_eq!(missing_proof.status(), reqwest::StatusCode::BAD_REQUEST);
+    for proof in [
+        None,
+        Some("wrong-verifier-with-valid-length-abcdefghijklm"),
+        Some("short"),
+    ] {
+        let response = client
+            .post(format!("{base}/api/auth/session/exchange/native"))
+            .json(&serde_json::json!({ "credential": "native-ticket", "native_verifier": proof }))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response.json::<serde_json::Value>().await?["code"],
+            "auth_required"
+        );
+    }
+    let body = serde_json::json!({ "credential": "native-ticket", "native_verifier": verifier });
+    let response = client
+        .post(format!("{base}/api/auth/session/exchange/native"))
+        .json(&body)
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let credential = response.json::<serde_json::Value>().await?["credential"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(
+        client
+            .get(format!("{base}/api/auth/session/me"))
+            .bearer_auth(credential)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    assert_eq!(
+        client
+            .post(format!("{base}/api/auth/session/exchange/native"))
+            .json(&body)
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    server.abort();
+    Ok(())
+}
+
 pub async fn auth_session_me_returns_oidc_user_identity() -> Result<()> {
     let test_config = TestConfigBuilder::new().build();
     let mut config = test_config.config().clone();

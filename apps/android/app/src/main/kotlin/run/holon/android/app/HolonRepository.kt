@@ -1,4 +1,5 @@
 package run.holon.android.app
+
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
@@ -12,7 +13,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -27,12 +27,9 @@ import run.holon.android.sdk.HolonBriefReadState
 import run.holon.android.sdk.HolonMarkBriefReadResult
 import run.holon.android.sdk.HolonConversationDetail
 import run.holon.android.sdk.HolonConversationSnapshot
-import run.holon.android.sdk.HolonConversationTurn
 import run.holon.android.sdk.HolonCurrentUser
-import run.holon.android.sdk.HolonAgentEvent
 import run.holon.android.sdk.HolonAgentModelState
 import run.holon.android.sdk.HolonModelCatalog
-import run.holon.android.sdk.HolonDownloadedFile
 import run.holon.android.sdk.HolonFileReference
 import run.holon.android.sdk.HolonFileReferenceResult
 import run.holon.android.sdk.HolonHttpClient
