@@ -3594,6 +3594,31 @@ fn runtime_model_catalog_resolves_image_generation_route() {
 }
 
 #[test]
+fn runtime_model_catalog_resolves_xai_imagine_image_generation_route() {
+    let mut fixture = test_app_config("openai/gpt-5.4", &[]);
+    let xai = ProviderId::parse("xai").unwrap();
+    let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    fixture
+        .config
+        .providers
+        .insert(xai.clone(), built_ins.get(&xai).unwrap().clone());
+    fixture.config.image_generation_model = Some(route_ref("xai@default/grok-imagine-image-2.0"));
+    let catalog = RuntimeModelCatalog::from_config(&fixture.config);
+
+    let route = catalog
+        .select_generate_image_route(&ContextConfig::default(), None, None)
+        .unwrap();
+
+    assert_eq!(route.model_ref.as_string(), "xai/grok-imagine-image-2.0");
+    assert_eq!(
+        route.requested_capability,
+        ModelRouteCapability::ImageGeneration
+    );
+    assert_eq!(route.endpoint.provider.as_str(), "xai");
+    assert_eq!(route.endpoint.endpoint.as_str(), "default");
+}
+
+#[test]
 fn runtime_model_catalog_resolves_legacy_multi_endpoint_provider_identity() {
     let mut fixture = test_app_config("openai/gpt-5.4", &["volcengine/doubao-seedream-5.0-lite"]);
     let legacy_provider = ProviderId::parse("volcengine").unwrap();

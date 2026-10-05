@@ -618,6 +618,69 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("xai"), "grok-imagine-image-2.0"),
+            display_name: "Grok Imagine Image 2.0".into(),
+            description: "xAI Grok Imagine image generation model exposed through the OpenAI Images-compatible endpoint.".into(),
+            context_window_tokens: None,
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+            ),
+            capabilities: ModelCapabilityFlags {
+                image_generation: true,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: Some(ProviderEndpointId::default_endpoint()),
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("xai"), "grok-imagine-image"),
+            display_name: "Grok Imagine Image".into(),
+            description: "xAI Grok Imagine image generation model exposed through the OpenAI Images-compatible endpoint.".into(),
+            context_window_tokens: None,
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+            ),
+            capabilities: ModelCapabilityFlags {
+                image_generation: true,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: Some(ProviderEndpointId::default_endpoint()),
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("xai"), "grok-imagine-image-quality"),
+            display_name: "Grok Imagine Image Quality".into(),
+            description: "xAI Grok Imagine image generation model exposed through the OpenAI Images-compatible endpoint.".into(),
+            context_window_tokens: None,
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: None,
+            max_output_tokens_upper_limit: None,
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(
+                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+            ),
+            capabilities: ModelCapabilityFlags {
+                image_generation: true,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: Some(ProviderEndpointId::default_endpoint()),
+        },
         catalog_model("zai", "glm-5.3", "GLM-5.3", 1_000_000, 131_072, true, false),
         catalog_model(
             "zai",

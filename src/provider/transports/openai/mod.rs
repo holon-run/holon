@@ -72,10 +72,12 @@ use auth::{
 #[cfg(test)]
 use images::parse_openai_codex_image_generation_response_items;
 use images::{
-    build_openai_codex_image_generation_request, build_openai_images_request,
+    build_images_request, build_openai_codex_image_generation_request, openai_images_dialect,
     openai_images_generations_url, send_openai_codex_image_generation_request,
     send_openai_images_request,
 };
+#[cfg(test)]
+use images::{parse_openai_images_response, OpenAiImagesDialect};
 
 #[cfg(test)]
 pub(crate) use chat::{
@@ -663,7 +665,8 @@ impl AgentProvider for OpenAiProvider {
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
-        let body = build_openai_images_request(&self.model, &request);
+        let dialect = openai_images_dialect(&self.provider_id, &self.base_url);
+        let body = build_images_request(dialect, &self.model, &request)?;
         let mut headers = self.resolve_auth_headers().await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let images = match send_openai_images_request(
@@ -671,6 +674,7 @@ impl AgentProvider for OpenAiProvider {
             openai_images_generations_url(&self.base_url),
             body.clone(),
             headers.clone(),
+            &self.provider_id,
             trace.as_ref(),
             None,
         )
@@ -689,6 +693,7 @@ impl AgentProvider for OpenAiProvider {
                     openai_images_generations_url(&self.base_url),
                     body,
                     headers,
+                    &self.provider_id,
                     trace.as_ref(),
                     None,
                 )
@@ -1181,7 +1186,8 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
-        let body = build_openai_images_request(&self.model, &request);
+        let dialect = openai_images_dialect(&self.provider_id, &self.base_url);
+        let body = build_images_request(dialect, &self.model, &request)?;
         let headers = self
             .api_key
             .as_ref()
@@ -1193,6 +1199,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             openai_images_generations_url(&self.base_url),
             body,
             headers,
+            &self.provider_id,
             trace.as_ref(),
             None,
         )

@@ -11,6 +11,92 @@ pub(super) fn openai_images_generations_url(base_url: &str) -> String {
     }
 }
 
+/// Wire dialect for an OpenAI-compatible `POST /images/generations` endpoint.
+///
+/// OpenAI and xAI Grok Imagine share the endpoint path and the
+/// `data[].b64_json` response envelope, but their request fields differ: OpenAI
+/// accepts `size`, `background`, and `output_format`, while xAI accepts
+/// `aspect_ratio` and `resolution` and rejects `size`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OpenAiImagesDialect {
+    OpenAi,
+    Xai,
+}
+
+pub(super) fn openai_images_dialect(provider_id: &str, base_url: &str) -> OpenAiImagesDialect {
+    if provider_id.eq_ignore_ascii_case("xai") || base_url_host(base_url) == Some("api.x.ai") {
+        OpenAiImagesDialect::Xai
+    } else {
+        OpenAiImagesDialect::OpenAi
+    }
+}
+
+/// Extract the host from a base URL without pulling in a full URL parser.
+fn base_url_host(base_url: &str) -> Option<&str> {
+    let after_scheme = base_url.split_once("://").map(|(_, rest)| rest)?;
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+    let host = host_port.split(':').next().unwrap_or(host_port);
+    (!host.is_empty()).then_some(host)
+}
+
+pub(super) fn build_images_request(
+    dialect: OpenAiImagesDialect,
+    model: &str,
+    request: &ProviderGenerateImageRequest,
+) -> Result<Value> {
+    match dialect {
+        OpenAiImagesDialect::OpenAi => Ok(build_openai_images_request(model, request)),
+        OpenAiImagesDialect::Xai => build_xai_images_request(model, request),
+    }
+}
+
+/// xAI Grok Imagine image generation request.
+///
+/// xAI rejects OpenAI's `size` argument and exposes `aspect_ratio` plus
+/// `resolution` instead, so the tool's OpenAI-shaped `size` is mapped to the
+/// closest supported ratio at 1k. OpenAI-only options are rejected instead of
+/// being silently dropped, so the caller's intent is never ignored.
+fn build_xai_images_request(model: &str, request: &ProviderGenerateImageRequest) -> Result<Value> {
+    if let Some(background) = non_empty(request.background.as_deref()) {
+        anyhow::bail!(
+            "xAI image generation does not support `background` ({background:?}); omit `background`"
+        );
+    }
+    if let Some(output_format) = non_empty(request.output_format.as_deref()) {
+        anyhow::bail!(
+            "xAI image generation chooses its own output format and does not support `output_format` ({output_format:?}); omit `output_format`"
+        );
+    }
+    let (aspect_ratio, resolution) = xai_image_size(request.size.as_deref())?;
+    Ok(json!({
+        "model": model,
+        "prompt": request.prompt,
+        "n": 1,
+        "response_format": "b64_json",
+        "aspect_ratio": aspect_ratio,
+        "resolution": resolution,
+    }))
+}
+
+fn xai_image_size(size: Option<&str>) -> Result<(&'static str, &'static str)> {
+    match non_empty(size) {
+        None | Some("1024x1024") => Ok(("1:1", "1k")),
+        Some("1536x1024") => Ok(("3:2", "1k")),
+        Some("1024x1536") => Ok(("2:3", "1k")),
+        Some(other) => anyhow::bail!(
+            "xAI image generation does not support size {other:?}; use 1024x1024, 1536x1024, or 1024x1536"
+        ),
+    }
+}
+
+fn non_empty(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
 pub(super) fn build_openai_images_request(
     model: &str,
     request: &ProviderGenerateImageRequest,
@@ -99,14 +185,15 @@ pub(super) async fn send_openai_images_request(
     url: String,
     body: Value,
     headers: Vec<(&str, String)>,
+    provider_id: &str,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
 ) -> Result<Vec<ProviderGeneratedImage>> {
-    let model_ref = provider_model_ref("openai", &body);
+    let model_ref = provider_model_ref(provider_id, &body);
     let request_trace = trace.and_then(|trace| {
         trace.begin_request(
             agent_id,
-            "openai",
+            provider_id,
             Some(&model_ref),
             url.as_str(),
             "images_generations",
@@ -120,9 +207,9 @@ pub(super) async fn send_openai_images_request(
     }
     let response = send_openai_request(
         request.json(&body),
-        "OpenAI Images request failed",
+        "Images request failed",
         "request_send",
-        "openai",
+        provider_id,
         Some(&model_ref),
         Some(url.as_str()),
         false,
@@ -143,9 +230,9 @@ pub(super) async fn send_openai_images_request(
         };
         trace_response_body(request_trace.as_ref(), &body);
         return Err(classify_status_error_with_trace(
-            "OpenAI Images request failed",
+            "Images request failed",
             "response_status",
-            Some("openai"),
+            Some(provider_id),
             Some(&model_ref),
             Some(url.as_str()),
             status,
@@ -158,9 +245,9 @@ pub(super) async fn send_openai_images_request(
         Ok(Ok(text)) => text,
         Ok(Err(error)) => {
             return Err(classify_reqwest_transport_error_with_trace(
-                "OpenAI Images response body failed",
+                "Images response body failed",
                 "response_body",
-                "openai",
+                provider_id,
                 Some(&model_ref),
                 Some(url.as_str()),
                 error,
@@ -169,9 +256,9 @@ pub(super) async fn send_openai_images_request(
         }
         Err(_elapsed) => {
             return Err(timeout_transport_error_with_trace(
-                "OpenAI Images response body read timed out",
+                "Images response body read timed out",
                 "response_body",
-                "openai",
+                provider_id,
                 Some(&model_ref),
                 Some(url.as_str()),
                 format!("timed out after {:?}", response_body_timeout()),
@@ -203,7 +290,13 @@ pub(super) fn parse_openai_images_response(value: Value) -> Result<Vec<ProviderG
         let bytes = BASE64_STANDARD.decode(b64).map_err(|error| {
             invalid_response_error("invalid OpenAI Images base64 payload", error)
         })?;
-        images.push(ProviderGeneratedImage { bytes, mime: None });
+        // xAI Grok Imagine reports the real media type per item; OpenAI omits
+        // it and lets the runtime detect the format from the decoded bytes.
+        let mime = item
+            .get("mime_type")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        images.push(ProviderGeneratedImage { bytes, mime });
     }
     if images.is_empty() {
         return Err(invalid_response_error(

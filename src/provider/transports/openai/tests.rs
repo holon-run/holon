@@ -1,14 +1,16 @@
 use super::{
-    build_openai_codex_image_generation_request, build_openai_responses_request,
-    chat_completions_url, choose_openai_codex_credential, consume_openai_sse_event,
-    incremental_diagnostics, latest_openai_compaction_index, native_web_search_diagnostics,
-    openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
+    build_images_request, build_openai_codex_image_generation_request,
+    build_openai_responses_request, chat_completions_url, choose_openai_codex_credential,
+    consume_openai_sse_event, incremental_diagnostics, latest_openai_compaction_index,
+    native_web_search_diagnostics, openai_compaction_trigger_for_request_plan,
+    openai_compaction_trigger_for_window, openai_images_dialect,
     openai_model_policy_for_runtime_config, openai_provider_window_compaction_candidate,
-    parse_openai_codex_image_generation_response_items, plan_openai_responses_request,
-    resolve_openai_codex_credential, CredentialStoreRefreshLock, OpenAiChatCompletionsProvider,
-    OpenAiCodexProvider, OpenAiCompactionPolicy, OpenAiContinuationState, OpenAiProvider,
-    OpenAiProviderWindow, OpenAiRequestPlan, OpenAiRequestShape,
-    OpenAiResponsesContinuationContract, OpenAiResponsesTransportContract, ToolSchemaContract,
+    parse_openai_codex_image_generation_response_items, parse_openai_images_response,
+    plan_openai_responses_request, resolve_openai_codex_credential, CredentialStoreRefreshLock,
+    OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
+    OpenAiContinuationState, OpenAiImagesDialect, OpenAiProvider, OpenAiProviderWindow,
+    OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesContinuationContract,
+    OpenAiResponsesTransportContract, ToolSchemaContract,
 };
 use crate::auth::CodexCliCredential;
 use crate::config::{
@@ -912,6 +914,102 @@ fn openai_codex_image_generation_response_accepts_done_item_with_generating_stat
 
     assert_eq!(images.len(), 1);
     assert_eq!(images[0].bytes, b"fake_png");
+}
+
+#[test]
+fn openai_images_dialect_detects_xai_by_provider_and_host() {
+    assert_eq!(
+        openai_images_dialect("xai", "https://api.x.ai/v1"),
+        OpenAiImagesDialect::Xai
+    );
+    assert_eq!(
+        openai_images_dialect("custom-xai", "https://api.x.ai/v1"),
+        OpenAiImagesDialect::Xai
+    );
+    assert_eq!(
+        openai_images_dialect("openai", "https://api.openai.com/v1"),
+        OpenAiImagesDialect::OpenAi
+    );
+}
+
+#[test]
+fn xai_images_request_maps_size_and_omits_openai_fields() {
+    let request = ProviderGenerateImageRequest {
+        prompt: "draw a small holon".into(),
+        size: Some("1536x1024".into()),
+        background: None,
+        output_format: None,
+    };
+    let body = build_images_request(OpenAiImagesDialect::Xai, "grok-imagine-image-2.0", &request)
+        .expect("xai request should build");
+    assert_eq!(
+        body,
+        json!({
+            "model": "grok-imagine-image-2.0",
+            "prompt": "draw a small holon",
+            "n": 1,
+            "response_format": "b64_json",
+            "aspect_ratio": "3:2",
+            "resolution": "1k",
+        })
+    );
+    assert!(body.get("size").is_none());
+    assert!(body.get("background").is_none());
+    assert!(body.get("output_format").is_none());
+}
+
+#[test]
+fn xai_images_request_defaults_to_square_without_size() {
+    let request = ProviderGenerateImageRequest {
+        prompt: "draw".into(),
+        size: None,
+        background: None,
+        output_format: None,
+    };
+    let body = build_images_request(OpenAiImagesDialect::Xai, "grok-imagine-image", &request)
+        .expect("xai request should build");
+    assert_eq!(body["aspect_ratio"], json!("1:1"));
+    assert_eq!(body["resolution"], json!("1k"));
+}
+
+#[test]
+fn xai_images_request_rejects_unsupported_openai_options() {
+    let background = ProviderGenerateImageRequest {
+        prompt: "draw".into(),
+        size: None,
+        background: Some("transparent".into()),
+        output_format: None,
+    };
+    let error = build_images_request(OpenAiImagesDialect::Xai, "grok-imagine-image", &background)
+        .expect_err("background must be rejected");
+    assert!(error.to_string().contains("background"));
+    let output_format = ProviderGenerateImageRequest {
+        prompt: "draw".into(),
+        size: None,
+        background: None,
+        output_format: Some("webp".into()),
+    };
+    let error = build_images_request(
+        OpenAiImagesDialect::Xai,
+        "grok-imagine-image",
+        &output_format,
+    )
+    .expect_err("output_format must be rejected");
+    assert!(error.to_string().contains("output_format"));
+}
+
+#[test]
+fn openai_images_response_reads_provider_mime_type() {
+    let images = parse_openai_images_response(json!({
+        "data": [
+            {"b64_json": BASE64_STANDARD.encode(b"fake_jpeg"), "mime_type": "image/jpeg"},
+            {"b64_json": BASE64_STANDARD.encode(b"fake_png")}
+        ]
+    }))
+    .expect("images response should parse");
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0].mime.as_deref(), Some("image/jpeg"));
+    assert_eq!(images[1].mime, None);
 }
 
 #[test]

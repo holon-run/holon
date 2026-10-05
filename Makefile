@@ -191,10 +191,11 @@ test-live-xai: ## Run xAI live tests
 
 test-live-images: ## Run provider-backed image and vision live tests
 	@printf '%s\n' \
-		'Requires an OpenAI-compatible vision credential and a Volcengine Ark image credential, plus network access.' \
-		'Test binaries: live_view_image, live_volcengine_image'
+		'Requires an OpenAI-compatible vision credential, a Volcengine Ark image credential, and an xAI credential, plus network access.' \
+		'Test binaries: live_view_image, live_volcengine_image, live_xai_image'
 	cargo test --test live_view_image -- --ignored --nocapture
 	cargo test --test live_volcengine_image -- --ignored --nocapture
+	cargo test --test live_xai_image -- --ignored --nocapture
 
 test-live-runtime: ## Run end-to-end runtime and workspace-tool live tests
 	@printf '%s\n' \
