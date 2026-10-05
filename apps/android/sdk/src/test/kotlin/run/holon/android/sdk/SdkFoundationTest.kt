@@ -76,6 +76,17 @@ class SdkFoundationTest {
     }
 
     @Test
+    fun `error fixture preserves authentication reason code in context`() {
+        val error =
+            HolonWire.json.decodeFromString<ErrorResponse>(
+                """{"ok":false,"error":"invalid or expired session","code":"auth_required","context":{"auth_reason_code":"session_invalid_or_expired"}}""",
+            ).toHolonApiError()
+
+        assertEquals("auth_required", error.code)
+        assertEquals("session_invalid_or_expired", error.context["auth_reason_code"])
+    }
+
+    @Test
     fun `error fixture preserves a future domain value`() {
         val error =
             HolonWire.json.decodeFromString<ErrorResponse>(

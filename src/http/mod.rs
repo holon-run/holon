@@ -276,6 +276,11 @@ impl HttpErrorEnvelope {
         self
     }
 
+    fn context(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.context.insert(key.into(), value.into());
+        self
+    }
+
     fn extension(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
         self.extensions.insert(key.into(), value.into());
         self
@@ -1620,11 +1625,25 @@ pub(crate) fn forbidden(reason: impl Into<String>) -> (StatusCode, Json<Value>) 
 }
 
 pub(crate) fn auth_required(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
+    let reason = reason.into();
+    let auth_reason_code = auth_error_code(&reason);
     http_error(
         StatusCode::UNAUTHORIZED,
         HttpErrorEnvelope::new("auth_required", reason)
+            .context("auth_reason_code", auth_reason_code)
             .hint("retry with an Authorization: Bearer <session> header or session cookie"),
     )
+}
+
+fn auth_error_code(reason: &str) -> &'static str {
+    match reason {
+        "invalid or expired session" => "session_invalid_or_expired",
+        "session is expired or revoked" => "session_expired_or_revoked",
+        "session user is disabled" => "session_user_disabled",
+        "invalid static token" => "invalid_static_token",
+        "invalid or expired pairing ticket" => "pairing_invalid_or_expired",
+        _ => "auth_required",
+    }
 }
 
 pub(crate) fn bad_request(reason: impl Into<String>) -> (StatusCode, Json<Value>) {
@@ -1932,10 +1951,10 @@ pub async fn serve_unix(
 #[cfg(test)]
 mod tests {
     use super::{
-        add_retry_after_to_service_unavailable, authenticate_session, error_response,
-        if_none_match_satisfied, projection_gate_error_response, redact_request_path, router,
-        session_credential, tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate,
-        ProjectionGateError,
+        add_retry_after_to_service_unavailable, auth_error_code, auth_required,
+        authenticate_session, error_response, if_none_match_satisfied,
+        projection_gate_error_response, redact_request_path, router, session_credential,
+        tailscale_serve, AppState, HttpErrorEnvelope, ProjectionGate, ProjectionGateError,
     };
     use crate::{
         config::{AppConfig, ControlAuthMode},
@@ -1955,6 +1974,7 @@ mod tests {
         body::{to_bytes, Body},
         http::{header, HeaderMap, HeaderValue, Request, StatusCode},
         response::IntoResponse,
+        Json,
     };
     use std::{fs, path::Path, sync::Arc, time::Duration};
     use tempfile::tempdir;
@@ -2479,6 +2499,35 @@ mod tests {
             HeaderValue::from_static("holon_session=; theme=dark"),
         );
         assert!(session_credential(&headers).is_none());
+    }
+
+    #[test]
+    fn auth_error_codes_distinguish_session_failures() {
+        assert_eq!(
+            auth_error_code("invalid or expired session"),
+            "session_invalid_or_expired"
+        );
+        assert_eq!(
+            auth_error_code("session is expired or revoked"),
+            "session_expired_or_revoked"
+        );
+        assert_eq!(
+            auth_error_code("session user is disabled"),
+            "session_user_disabled"
+        );
+        assert_eq!(auth_error_code("invalid control token"), "auth_required");
+    }
+
+    #[test]
+    fn auth_required_preserves_stable_code_and_exposes_reason_code() {
+        let (status, Json(body)) = auth_required("invalid or expired session");
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "auth_required");
+        assert_eq!(
+            body["context"]["auth_reason_code"],
+            "session_invalid_or_expired"
+        );
     }
 
     fn oidc_test_host_with_session() -> (tempfile::TempDir, RuntimeHost, String) {

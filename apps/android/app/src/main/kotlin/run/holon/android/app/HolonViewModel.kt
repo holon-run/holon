@@ -2626,6 +2626,26 @@ internal class HolonViewModel(
             return
         }
         if (error is CancellationException) return
+        val httpError = error as? HolonHttpException
+        state.value.session?.networkId?.let { networkId ->
+            if (httpError != null) {
+                traceRecorder.record(
+                    TraceScope.Network(networkId),
+                    TraceLevel.WARN,
+                    "http",
+                    "http.request.failed",
+                    statusCode = httpError.statusCode,
+                    attributes = buildMap {
+                        httpError.requestPath?.let { put("path", it) }
+                        httpError.apiError?.code?.let { put("code", it) }
+                        httpError.apiError?.context?.get("auth_reason_code")?.let {
+                            put("auth_reason_code", it)
+                        }
+                        httpError.apiError?.domain?.let { put("domain", it) }
+                    },
+                )
+            }
+        }
         if (error.isAuthenticationFailure() ||
             error is SessionScopeChangedException
         ) {
