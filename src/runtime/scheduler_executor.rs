@@ -1184,6 +1184,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         {
             return Ok(false);
         }
+        if let Some(owner_key) = message.source_refs.get("task_result_owner_key") {
+            let records = self
+                .runtime
+                .inner
+                .runtime_db
+                .task_result_settlements()
+                .unsettled_for_owner(
+                &message.agent_id,
+                message.work_item_id.as_deref(),
+                crate::runtime_db::task_result_settlement::TASK_RESULT_SETTLEMENT_ADMISSION_LIMIT,
+            )?;
+            return Ok(records.iter().any(|record| {
+                crate::runtime::task_result_recovery::recovery_owner_key(record) == *owner_key
+            }));
+        }
         let Some(result_message_id) = message.source_refs.get("task_result_message_id") else {
             return Ok(false);
         };

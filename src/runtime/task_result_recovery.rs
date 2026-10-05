@@ -1,9 +1,34 @@
 use super::*;
 use crate::domain::execution_protocol::WorkItemExecutionState;
 use crate::runtime_db::TaskResultSettlementDisposition;
+use sha2::{Digest, Sha256};
 
 const RESULT_RECHECK_SECONDS: i64 = 30;
 const RESULT_RECHECK_LIMIT: usize = 8;
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn recovery_owner_key(record: &crate::runtime_db::TaskResultSettlementRecord) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"holon.task-result-recovery-owner.v1\0");
+    hasher.update(record.agent_id.as_bytes());
+    hasher.update([0]);
+    hasher.update(record.work_item_id.as_deref().unwrap_or("").as_bytes());
+    hasher.update([0]);
+    hasher.update(record.rejoin_generation.to_be_bytes());
+    hasher.update([0]);
+    hasher.update(record.parent_turn_id.as_bytes());
+    format!("recovery_owner_{}", hex(&hasher.finalize()[..16]))
+}
+
+fn recovery_message_id(owner_key: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"holon.task-result-recovery-message.v1\0");
+    hasher.update(owner_key.as_bytes());
+    format!("msg_task_result_recovery_{}", hex(&hasher.finalize()[..16]))
+}
 
 impl RuntimeHandle {
     /// Rechecks are eligibility probes, not permission to consume a wait.
@@ -87,7 +112,8 @@ impl RuntimeHandle {
                     now,
                     now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS),
                 )?;
-            if !eligible || !queued_owners.insert(record.work_item_id.clone()) {
+            let owner_key = recovery_owner_key(&record);
+            if !eligible || !queued_owners.insert(owner_key.clone()) {
                 continue;
             }
             let mut message = MessageEnvelope::new(
@@ -106,7 +132,19 @@ impl RuntimeHandle {
                 MessageDeliverySurface::RuntimeSystem,
                 AdmissionContext::RuntimeOwned,
             );
+            message.id = recovery_message_id(&owner_key);
             message.work_item_id = record.work_item_id;
+            message
+                .source_refs
+                .insert("task_result_owner_key".into(), owner_key);
+            message.source_refs.insert(
+                "task_result_rejoin_generation".into(),
+                record.rejoin_generation.to_string(),
+            );
+            message.source_refs.insert(
+                "task_result_parent_turn_id".into(),
+                record.parent_turn_id.clone(),
+            );
             message
                 .source_refs
                 .insert("task_result_message_id".into(), record.message_id);

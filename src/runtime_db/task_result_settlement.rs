@@ -429,6 +429,50 @@ impl TaskResultSettlementRepository<'_> {
         .map_err(Into::into)
     }
 
+    pub(crate) fn unsettled_for_owner(
+        &self,
+        agent_id: &str,
+        work_item_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<TaskResultSettlementRecord>> {
+        let connection = self.db.connection()?;
+        let mut statement = connection.prepare(
+            "SELECT payload_json
+             FROM task_result_settlements
+             WHERE agent_id = ?1
+               AND work_item_id IS ?2
+               AND (
+                 state = 'persisted_pending'
+                 OR (
+                   state = 'caller_admitted'
+                   AND NOT EXISTS (
+                     SELECT 1
+                     FROM execution_protocol_attempts attempts
+                     WHERE attempts.agent_id = task_result_settlements.agent_id
+                       AND attempts.attempt_id = task_result_settlements.activation_id
+                       AND attempts.lifecycle_state = 'open'
+                   )
+                 )
+               )
+             ORDER BY created_at ASC, result_identity ASC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![agent_id, work_item_id, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?;
+        rows.map(|row| {
+            serde_json::from_str(&row?).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })
+        })
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(Into::into)
+    }
+
     pub(crate) fn next_recheck_at(&self, agent_id: &str) -> Result<Option<DateTime<Utc>>> {
         let connection = self.db.connection()?;
         let value = connection.query_row(
