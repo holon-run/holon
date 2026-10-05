@@ -328,6 +328,7 @@ class CaseHarness:
         resource_names: dict[str, str] | None = None,
         control_token: str | None = None,
         previous_image: str | None = None,
+        credential_delivery: str = "env",
     ) -> None:
         suffix = secrets.token_hex(4)
         self.case_id = case_id
@@ -357,6 +358,7 @@ class CaseHarness:
         self.model_runtime_override = dict(model_runtime_override or {})
         self._model_runtime_override_seeded = False
         self.tool_assertion_mode = tool_assertion_mode
+        self.credential_delivery = credential_delivery
         self.previous_image = previous_image
         names = resource_names or {}
         self.volume = names.get("volume", f"holon-live-{case_id}-{suffix}")
@@ -725,11 +727,13 @@ class CaseHarness:
                     + json.dumps(self.model_fallbacks, separators=(",", ":")),
                 ]
             )
-        for name in self.credential_envs:
-            args.extend(["--env", name])
+        deliver_credentials = self.credential_delivery == "env"
+        if deliver_credentials:
+            for name in self.credential_envs:
+                args.extend(["--env", name])
         for name, value in sorted(self.runtime_env.items()):
             args.extend(["--env", f"{name}={value}"])
-        if self.env_file is not None:
+        if deliver_credentials and self.env_file is not None:
             args.extend(["--env-file", str(self.env_file)])
         args.append(self.image)
         self.docker(*args)
@@ -2538,6 +2542,183 @@ def run_runtime_case(harness: CaseHarness, case: dict[str, Any]) -> None:
         and marker in json.dumps(entry, ensure_ascii=False)
     ]
     require(assistant_rounds, "marker assistant round is missing from transcript")
+
+
+class _BootstrapNoRedirect(urllib.request.HTTPRedirectHandler):
+    """Surface the bootstrap ``/`` -> ``/settings`` redirect instead of following it."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+
+
+def html_get(harness: "CaseHarness", path: str) -> tuple[int, str, str]:
+    """Return ``(status, location, body)`` for a browser-style HTML GET."""
+    opener = urllib.request.build_opener(_BootstrapNoRedirect)
+    request = urllib.request.Request(
+        f"{harness.base_url}{path}",
+        headers={"Accept": "text/html"},
+        method="GET",
+    )
+    try:
+        with opener.open(request, timeout=30) as response:
+            return (
+                response.status,
+                response.headers.get("Location", ""),
+                response.read().decode("utf-8", "replace"),
+            )
+    except urllib.error.HTTPError as error:
+        return (
+            error.code,
+            error.headers.get("Location", "") if error.headers else "",
+            error.read().decode("utf-8", "replace"),
+        )
+
+
+def bootstrap_setup_secret(harness: "CaseHarness") -> str:
+    """Resolve the real provider credential without exposing it to the container."""
+    for name in harness.credential_envs:
+        value = os.environ.get(name)
+        if value:
+            return value
+    expected = inferred_credential_env(harness.model)
+    if harness.env_file is not None:
+        values = {key: value for key, value in parse_env_file(harness.env_file).items() if value}
+        if expected and values.get(expected):
+            return values[expected]
+        require(
+            len(values) == 1,
+            "bootstrap E2E env file must contain exactly the provider credential "
+            f"({expected or 'a single variable'})",
+        )
+        return next(iter(values.values()))
+    raise AssertionError(
+        "bootstrap E2E requires the provider credential in the process "
+        "environment or the provider env file"
+    )
+
+
+def run_runtime_bootstrap_first_task_case(
+    harness: CaseHarness, case: dict[str, Any]
+) -> None:
+    """Fresh node -> browser-first setup -> normal GUI -> first real task."""
+    harness.initialize_workspace()
+    harness.start()
+
+    provider = model_route_provider(harness.model)
+    profile = f"{provider}:default"
+
+    # A fresh node must enter browser-first bootstrap mode.
+    status, location, body = html_get(harness, "/")
+    write_json(
+        harness.evidence / "bootstrap-root-before.json",
+        {"status": status, "location": location, "body_chars": len(body)},
+    )
+    require(
+        status == 302 and location == "/settings",
+        "fresh node did not enter bootstrap mode: "
+        f"GET / returned {status} Location={location!r}",
+    )
+    settings_status, _, settings_body = html_get(harness, "/settings")
+    require(
+        settings_status == 200 and 'id="root"' in settings_body,
+        "bootstrap node did not serve the settings SPA shell: "
+        f"status={settings_status}",
+    )
+
+    # Complete the first-run setup through the same HTTP contracts as /settings.
+    secret = bootstrap_setup_secret(harness)
+    credential = harness.request(
+        "PUT",
+        f"/api/control/runtime/credentials/{urllib.parse.quote(profile, safe='')}",
+        body={"kind": "api_key", "material": secret},
+    )
+    require(
+        credential.get("ok") is True,
+        f"credential setup did not succeed: {credential}",
+    )
+    update = harness.request(
+        "PATCH",
+        "/api/control/runtime/config",
+        body={
+            "updates": [
+                {
+                    "key": f"providers.{provider}.auth.source",
+                    "value": "credential_profile",
+                },
+                {"key": f"providers.{provider}.auth.kind", "value": "api_key"},
+                {"key": f"providers.{provider}.auth.env", "value": ""},
+                {"key": f"providers.{provider}.auth.profile", "value": profile},
+                {"key": f"providers.{provider}.auth.external", "value": ""},
+                {"key": "model.default", "value": harness.model},
+            ]
+        },
+    )
+    write_json(harness.evidence / "bootstrap-config-update.json", update)
+    rejected = [
+        entry
+        for entry in (update.get("results") or [])
+        if entry.get("effect") == "rejected"
+    ]
+    require(not rejected, f"bootstrap config update was rejected: {rejected}")
+    require(update.get("changed") is True, "bootstrap config update persisted nothing")
+
+    # The node must leave bootstrap mode and serve the normal GUI at ``/``.
+    deadline = time.monotonic() + min(harness.timeout_seconds, 120)
+    last_root: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        status, location, body = html_get(harness, "/")
+        last_root = {"status": status, "location": location, "body_chars": len(body)}
+        if status == 200 and 'id="root"' in body:
+            break
+        time.sleep(1)
+    else:
+        write_json(harness.evidence / "bootstrap-root-timeout.json", last_root)
+        raise AssertionError(
+            f"node did not leave bootstrap mode after setup: {last_root}"
+        )
+    write_json(harness.evidence / "bootstrap-root-after.json", last_root)
+
+    readiness = harness.request("GET", "/api/control/runtime/readiness")
+    write_json(harness.evidence / "bootstrap-readiness.json", readiness)
+    runtime_surface = readiness["runtime_surface"]
+    models_payload = harness.request("GET", "/api/models")
+    write_json(harness.evidence / "bootstrap-models.json", models_payload)
+    require_runtime_model_route(
+        harness,
+        "bootstrap default",
+        runtime_surface["model_default"],
+        models_payload,
+    )
+
+    # The first real-model task completes through the normal agent path.
+    phase = case["phases"][0]
+    marker = f"BOOTSTRAP-FIRST-TASK-{secrets.token_hex(6)}"
+    baseline, _ = harness.prompt(
+        "bootstrap-first-task",
+        phase["prompt"].format(
+            case_id=case["id"],
+            provider=provider,
+            marker=marker,
+        ),
+    )
+    required, forbidden = phase_tools(phase)
+    harness.assert_tools(
+        "bootstrap-first-task",
+        baseline,
+        required,
+        forbidden,
+        message_id=harness.prompt_scope("bootstrap-first-task")["message_id"],
+    )
+    briefs = harness.request("GET", harness.agent_path("briefs?limit=20"))
+    write_json(harness.evidence / "bootstrap-first-task-briefs.json", briefs)
+    brief_rows = briefs if isinstance(briefs, list) else briefs.get("briefs", [])
+    matching = [
+        brief
+        for brief in brief_rows
+        if marker in (brief.get("text") or "")
+        and int(brief.get("turn_index") or 0) > baseline
+    ]
+    require(len(matching) == 1, f"expected one bootstrap first-task brief: {matching}")
 
 
 def require_previous_schema_revision(snapshot: dict[str, Any]) -> int:
@@ -5194,6 +5375,7 @@ CASE_RUNNERS = {
     "memory-agent-home-persistence": run_memory_case,
     "workspace-restart-lifecycle": run_workspace_case,
     "workitem-wait-restart-complete": run_workitem_case,
+    "runtime-bootstrap-first-task": run_runtime_bootstrap_first_task_case,
     "scheduler-task-wait-resume": run_scheduler_task_wait_resume_case,
     "scheduler-provider-failure-work-queue-retry": (
         run_scheduler_provider_failure_retry_case
@@ -5320,6 +5502,17 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             require(
                 isinstance(case.get("stub_scenario"), str) and case["stub_scenario"],
                 f"{case_id} stub provider mode requires stub_scenario",
+            )
+        credential_delivery = case.get("credential_delivery", "env")
+        require(
+            credential_delivery in {"env", "api"},
+            f"{case_id} has invalid credential_delivery",
+        )
+        if credential_delivery == "api":
+            require(
+                provider_mode == "live"
+                and case.get("requires_model", True) is True,
+                f"{case_id} api credential delivery requires the real model",
             )
         runtime_env = case.get("runtime_env", {})
         require(
@@ -6134,6 +6327,7 @@ def main(argv: list[str] | None = None) -> int:
             model_runtime_override=case.get("model_runtime_override"),
             tool_assertion_mode=profile.get("tool_assertion_mode", "strict"),
             previous_image=args.previous_image,
+            credential_delivery=case.get("credential_delivery", "env"),
         )
         control_tokens.append(harness.token)
         error_text = ""

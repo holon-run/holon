@@ -145,6 +145,45 @@ writes `scheduler-acceptance-report.json`, which binds the result to the Git
 SHA, immutable image digest, runtime schema revision, fixture corpus revision,
 manifest hash, the canonical scheduler label, and per-case evidence identities.
 
+### Browser-first setup and first task (opt-in)
+
+`runtime-bootstrap-first-task` covers the browser-first onboarding path that
+core release cases do not exercise: a brand-new node has no provider
+credential and no default model, so `holon serve` starts in bootstrap mode and
+serves only the `/settings` shell while redirecting `/` to `/settings`. The
+case then completes the same setup the settings page performs through the
+public HTTP contracts (`PUT /api/control/runtime/credentials/<profile>` and
+`PATCH /api/control/runtime/config`), verifies the node leaves bootstrap mode
+and serves the normal GUI at `/`, and finishes with a first real-model task
+through the normal agent prompt path.
+
+The case requires a real provider credential and is not selected by the
+default `--suite core` run. The credential must not reach the container
+environment, because any ready provider would disable bootstrap mode, so the
+runner delivers it through the public set-credential API instead
+(`credential_delivery: "api"` in the manifest). Supply the credential through
+`HOLON_E2E_CREDENTIAL_ENVS` (for example `DEEPSEEK_API_KEY`) or through
+`--env-file`; a single-entry env file is accepted.
+
+```bash
+DEEPSEEK_API_KEY='...' \
+HOLON_E2E_CREDENTIAL_ENVS=DEEPSEEK_API_KEY \
+make docker-e2e-bootstrap
+```
+
+```bash
+DEEPSEEK_API_KEY='...' \
+HOLON_E2E_CREDENTIAL_ENVS=DEEPSEEK_API_KEY \
+python3 scripts/docker-e2e.py \
+  --image holon:release-candidate \
+  --skip-build \
+  --case runtime-bootstrap-first-task
+```
+
+It runs against the same release image and through the same runner and
+evidence layout as the rest of the release Docker acceptance suite, so it can
+be added to a release run without a separate harness.
+
 ### Checked-in cases
 
 #### `runtime-auth-model-delivery`
@@ -195,6 +234,19 @@ manifest hash, the canonical scheduler label, and per-case evidence identities.
    `GetWorkItem`, update its todos, and complete the exact same WorkItem.
 5. Assert the required tools succeeded and the durable completion result
    contains the generated completion marker.
+
+#### `runtime-bootstrap-first-task`
+
+1. Start a fresh node with `HOLON_BOOTSTRAP=1`, no provider credential, and no
+   default model, and assert `/` redirects to `/settings`.
+2. Store the real provider credential through
+   `PUT /api/control/runtime/credentials/<profile>` and persist the provider
+   credential profile plus `model.default` through
+   `PATCH /api/control/runtime/config`.
+3. Assert the node leaves bootstrap mode, serves the normal GUI shell at `/`,
+   and reports the configured model route as ready.
+4. Run the first real-model task through the normal agent prompt path, require
+   the expected tool, and assert the result brief contains the generated marker.
 
 #### Scheduler release acceptance cases
 

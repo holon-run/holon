@@ -238,6 +238,27 @@
       ]
     },
     {
+      "id": "runtime-bootstrap-first-task",
+      "tier": "extended",
+      "tags": ["runtime", "bootstrap", "gui", "setup", "first-task"],
+      "timeout_seconds": 900,
+      "requires_model": true,
+      "provider_mode": "live",
+      "credential_delivery": "api",
+      "runtime_env": {
+        "HOLON_BOOTSTRAP": "1"
+      },
+      "description": "Start a fresh node in browser-first bootstrap mode, complete the /settings provider and model setup through the public GUI HTTP contracts, verify the node then serves the normal GUI, and complete the first real-model task.",
+      "phases": [
+        {
+          "id": "first-task",
+          "required_tools": ["GetAgent"],
+          "forbidden_tools": ["ApplyPatch", "ExecCommand", "CreateWorkItem"],
+          "prompt": "Browser-first bootstrap E2E case {case_id}. Call GetAgent for the current agent, then answer with one concise sentence containing the literal marker {marker}."
+        }
+      ]
+    },
+    {
       "id": "scheduler-task-wait-resume",
       "coverage_ids": ["scheduler-task-wait-resume"],
       "stub_scenario": "scheduler-task-wait",
