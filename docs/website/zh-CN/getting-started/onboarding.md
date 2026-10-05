@@ -22,6 +22,8 @@ holon onboard
 ```
 
 这会启动交互式 TUI。完成后你就拥有可用的默认模型配置——不需要手动编辑配置文件。
+当 stdin 或 stdout 不是 TTY 时，`holon onboard` 会自动输出与
+`holon onboard --json` 相同的可脚本化 JSON 诊断，而不会进入向导。
 
 ## 引导流程
 
@@ -89,9 +91,10 @@ holon config get model.default
 # 启动 daemon 并创建第一个 Agent
 holon daemon start
 holon agent create my-first-agent
+holon tui
 ```
 
-完整流程见[创建你的第一个 Agent](first-agent.md)。
+在 TUI 中向新 Agent 发送第一项任务。完整流程见[创建你的第一个 Agent](first-agent.md)。
 
 ## 凭据修复
 
@@ -124,6 +127,8 @@ holon onboard --json
 - `failed` — 配置尝试失败，需要修复
 
 每部分包含 `summary` 字符串、可选的 `details`，以及带建议 CLI 命令的 `actions`。
+缺少提供商或凭据时，action 会指向 `holon onboard`，因此同一个命令可以安全地
+重复运行，用于修复配置或更换提供商/模型。
 
 ## 配置文件
 
